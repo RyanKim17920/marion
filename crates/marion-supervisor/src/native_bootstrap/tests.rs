@@ -226,17 +226,22 @@ impl crate::serve::Handle for ClaimLifecycleHandle {
     fn call(
         &self,
         _conn: ConnId,
-        call: &marion_proto::Call,
+        call: &marion_core::proto::Call,
         _out: &crate::serve::Outbound,
-    ) -> Result<marion_proto::MethodResult, marion_proto::RpcError> {
-        Err(marion_proto::RpcError::unimplemented(
+    ) -> Result<marion_core::proto::MethodResult, marion_core::proto::RpcError> {
+        Err(marion_core::proto::RpcError::unimplemented(
             call.method().as_str(),
             "claim lifecycle fixture accepts no calls",
             "native claim test",
         ))
     }
 
-    fn gone(&self, conn: ConnId, _gone: &marion_proto::ClientGone, _why: &crate::serve::Departure) {
+    fn gone(
+        &self,
+        conn: ConnId,
+        _gone: &marion_core::proto::ClientGone,
+        _why: &crate::serve::Departure,
+    ) {
         lock(&self.gone).push(conn);
     }
 }

@@ -22,7 +22,7 @@
 //! * **surfaces** — §3.4 gives claude-code a `Typed(StreamJson)` control plane headless and §3.4's
 //!   `opaque` on a pane, and the ceiling clips `permissions` off the second. A tree that keyed
 //!   every node on the node row would offer a pane node a permission routing it does not have,
-//!   which is precisely the defect clause 3 names. [`marion_proto::NodeSummary::pane`] is how the
+//!   which is precisely the defect clause 3 names. [`marion_core::proto::NodeSummary::pane`] is how the
 //!   third component reaches a client.
 //!
 //! # Navigation, and why attaching is not reimplemented here
@@ -51,8 +51,8 @@ use std::path::Path;
 
 use marion_core::harness::Harness;
 use marion_core::node::{NodeState, ReapState};
+use marion_core::proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
 use marion_harness::{Capabilities, ExecutionSurfaces};
-use marion_proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
 use marion_tui::tree::{self, Action, Focus, Nav, Tree};
 use marion_tui::{Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
@@ -296,9 +296,9 @@ impl Session {
     }
 
     fn subscribe(&mut self) -> Result<(), Refusal> {
-        let frame = Frame::Request(marion_proto::Request::new(
+        let frame = Frame::Request(marion_core::proto::Request::new(
             RequestId::Number(1),
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
         ));
         self.stream
             .write_all(frame.to_line().as_bytes())
@@ -315,15 +315,15 @@ impl Session {
             }
         };
         let body = match response.outcome {
-            marion_proto::Outcome::Result(b) => b,
-            marion_proto::Outcome::Error(e) => {
+            marion_core::proto::Outcome::Result(b) => b,
+            marion_core::proto::Outcome::Error(e) => {
                 return Err(format!(
                     "the supervisor refused tree/subscribe: {}",
                     e.message
                 ));
             }
         };
-        let MethodResult::TreeSubscribe(snapshot) = marion_proto::Method::TreeSubscribe
+        let MethodResult::TreeSubscribe(snapshot) = marion_core::proto::Method::TreeSubscribe
             .decode_result(&body)
             .map_err(|e| format!("the supervisor's tree/subscribe answer did not decode: {e}"))?
         else {

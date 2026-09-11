@@ -327,17 +327,17 @@ fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
 fn resume_node(
     session: &mut SupervisorSession,
     args: &ResumeArgs,
-) -> Result<marion_proto::result::NodeResumeResult, String> {
-    let id = session.send(marion_proto::Call::NodeResume(
-        marion_proto::params::NodeResumeParams {
+) -> Result<marion_core::proto::result::NodeResumeResult, String> {
+    let id = session.send(marion_core::proto::Call::NodeResume(
+        marion_core::proto::params::NodeResumeParams {
             agent_id: marion_core::contract::AgentId(args.agent_id.clone()),
             prompt: args.prompt.clone(),
         },
     ))?;
     match session.pump(Awaited::Response(id), &mut |_| {})? {
-        marion_proto::Outcome::Result(body) => {
-            match marion_proto::Method::NodeResume.decode_result(&body) {
-                Ok(marion_proto::MethodResult::NodeResume(r)) => Ok(r),
+        marion_core::proto::Outcome::Result(body) => {
+            match marion_core::proto::Method::NodeResume.decode_result(&body) {
+                Ok(marion_core::proto::MethodResult::NodeResume(r)) => Ok(r),
                 _ => Err(
                     "marion: this project's supervisor answered `node/resume` with a \
                               result marion cannot read"
@@ -345,7 +345,7 @@ fn resume_node(
                 ),
             }
         }
-        marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
+        marion_core::proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
     }
 }
 
@@ -358,9 +358,9 @@ fn resume_refused(session: &mut SupervisorSession, started: bool, reason: &str) 
     // node it was for is still gone, and an empty supervisor lingering out its idle grace
     // is a surprise, not a service. A supervisor that was already serving is left alone.
     if started {
-        let _ = session.send(marion_proto::Call::SessionQuit(
-            marion_proto::params::SessionQuitParams {
-                disposition: marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
+        let _ = session.send(marion_core::proto::Call::SessionQuit(
+            marion_core::proto::params::SessionQuitParams {
+                disposition: marion_core::proto::QuitDisposition::KillTree { confirmed: vec![] },
             },
         ));
     }
@@ -1479,12 +1479,12 @@ enum Awaited {
 }
 
 impl SupervisorSession {
-    fn send(&mut self, call: marion_proto::Call) -> Result<i64, String> {
+    fn send(&mut self, call: marion_core::proto::Call) -> Result<i64, String> {
         use std::io::Write as _;
         let id = self.next_id;
         self.next_id += 1;
-        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
-            marion_proto::RequestId::Number(id),
+        let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
+            marion_core::proto::RequestId::Number(id),
             call,
         ));
         self.stream
@@ -1499,7 +1499,7 @@ impl SupervisorSession {
     /// **EOF is an error here and not an end.** A supervisor that closed mid-run took the root's
     /// only live channel with it, and a client that returned success on a closed socket would be
     /// reporting a run it stopped watching.
-    fn next_frame(&mut self) -> Result<marion_proto::Frame, String> {
+    fn next_frame(&mut self) -> Result<marion_core::proto::Frame, String> {
         use std::io::BufRead as _;
         let mut line = String::new();
         match self.lines.read_line(&mut line) {
@@ -1507,7 +1507,7 @@ impl SupervisorSession {
                 &self.socket,
                 "it closed the connection while the run was still in flight",
             )),
-            Ok(_) => marion_proto::Frame::from_line(&line).map_err(|e| {
+            Ok(_) => marion_core::proto::Frame::from_line(&line).map_err(|e| {
                 supervisor_unreachable(
                     &self.socket,
                     &format!("it sent a frame marion cannot read: {e}"),
@@ -1521,14 +1521,14 @@ impl SupervisorSession {
     fn pump(
         &mut self,
         want: Awaited,
-        on_note: &mut dyn FnMut(marion_proto::notify::Event),
-    ) -> Result<marion_proto::Outcome, String> {
+        on_note: &mut dyn FnMut(marion_core::proto::notify::Event),
+    ) -> Result<marion_core::proto::Outcome, String> {
         loop {
             match self.next_frame()? {
-                marion_proto::Frame::Notification(n) => on_note(n.event),
-                marion_proto::Frame::Response(r) => {
+                marion_core::proto::Frame::Notification(n) => on_note(n.event),
+                marion_core::proto::Frame::Response(r) => {
                     let Awaited::Response(id) = want;
-                    if r.id == marion_proto::RequestId::Number(id) {
+                    if r.id == marion_core::proto::RequestId::Number(id) {
                         return Ok(r.outcome);
                     }
                     // A response marion is not waiting for cannot happen — one request is in
@@ -1610,17 +1610,17 @@ const QUIT_REPLY_FRAMES: usize = 4096;
 /// hands back the disposition it rendered, because the caller's only remaining decision — whether
 /// to wait for the socket to go — is the same fact and must not be re-derived from a second match.
 fn detach_report(
-    outcome: &marion_proto::QuitOutcome,
-) -> Option<(marion_proto::SupervisorDisposition, String)> {
+    outcome: &marion_core::proto::QuitOutcome,
+) -> Option<(marion_core::proto::SupervisorDisposition, String)> {
     use std::fmt::Write as _;
     let (supervisor, detached, gate_exposed, guidance, reaped) = match outcome {
-        marion_proto::QuitOutcome::Detached {
+        marion_core::proto::QuitOutcome::Detached {
             detached,
             gate_exposed,
             guidance,
             supervisor,
         } => (supervisor, detached, gate_exposed, guidance, Vec::new()),
-        marion_proto::QuitOutcome::ReapedAndDetached {
+        marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped,
             detached,
             gate_exposed,
@@ -1634,7 +1634,7 @@ fn detach_report(
             reaped.iter().map(|n| n.0.clone()).collect(),
         ),
         // A `Killed` outcome cannot arrive here: this guard only ever sends `DetachAll`.
-        marion_proto::QuitOutcome::Killed { .. } => return None,
+        marion_core::proto::QuitOutcome::Killed { .. } => return None,
     };
     let names = |ids: &[marion_core::contract::AgentId]| {
         ids.iter()
@@ -1644,7 +1644,7 @@ fn detach_report(
     };
     let mut out = String::new();
     match supervisor {
-        marion_proto::SupervisorDisposition::Resident(reason) => {
+        marion_core::proto::SupervisorDisposition::Resident(reason) => {
             let _ = writeln!(
                 out,
                 "marion: this project's supervisor is still running ({reason:?}); it holds work \
@@ -1652,7 +1652,7 @@ fn detach_report(
                  (§5.7)"
             );
         }
-        marion_proto::SupervisorDisposition::Exiting => {
+        marion_core::proto::SupervisorDisposition::Exiting => {
             let _ = writeln!(
                 out,
                 "marion: nothing in §5.7's exclusion list holds this project's supervisor, so it \
@@ -1706,11 +1706,11 @@ impl Drop for SupervisorSession {
         let Some(response) = self.quit_response() else {
             return;
         };
-        let marion_proto::Outcome::Result(body) = response.outcome else {
+        let marion_core::proto::Outcome::Result(body) = response.outcome else {
             return;
         };
-        let Ok(marion_proto::MethodResult::SessionQuit(result)) =
-            marion_proto::Method::SessionQuit.decode_result(&body)
+        let Ok(marion_core::proto::MethodResult::SessionQuit(result)) =
+            marion_core::proto::Method::SessionQuit.decode_result(&body)
         else {
             return;
         };
@@ -1718,7 +1718,7 @@ impl Drop for SupervisorSession {
             return;
         };
         let _ = write!(err, "{report}");
-        if supervisor == marion_proto::SupervisorDisposition::Exiting {
+        if supervisor == marion_core::proto::SupervisorDisposition::Exiting {
             self.wait_for_supervisor_exit(&mut err);
         }
     }
@@ -1728,10 +1728,10 @@ impl SupervisorSession {
     /// Send `session/quit DetachAll` and bound the wait for its answer. `false` when either step
     /// failed, and then there is nothing more this session can do or say.
     fn request_detach_all(&mut self) -> bool {
-        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
-            marion_proto::RequestId::Number(1),
-            marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
-                disposition: marion_proto::QuitDisposition::DetachAll,
+        let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
+            marion_core::proto::RequestId::Number(1),
+            marion_core::proto::Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
+                disposition: marion_core::proto::QuitDisposition::DetachAll,
             }),
         ));
         if self
@@ -1760,15 +1760,15 @@ impl SupervisorSession {
     /// [`request_detach_all`](Self::request_detach_all) set, which applies per read, and by the
     /// count, so a supervisor that streams for ever cannot hold an unwinding process. `None` on
     /// EOF, a read failure, an unreadable line or the count running out.
-    fn quit_response(&mut self) -> Option<marion_proto::Response> {
+    fn quit_response(&mut self) -> Option<marion_core::proto::Response> {
         for _ in 0..QUIT_REPLY_FRAMES {
             let mut line = String::new();
             match self.lines.read_line(&mut line) {
                 Ok(0) | Err(_) => return None,
                 Ok(_) => {}
             }
-            match marion_proto::Frame::from_line(&line) {
-                Ok(marion_proto::Frame::Response(r)) => return Some(r),
+            match marion_core::proto::Frame::from_line(&line) {
+                Ok(marion_core::proto::Frame::Response(r)) => return Some(r),
                 Ok(_) => continue,
                 Err(_) => return None,
             }
@@ -2299,7 +2299,7 @@ fn tail_children(
 
 /// **§11 item 28 step 6: the root is created over the socket, not in this process.**
 ///
-/// `caller: None` is what makes this a root — see `marion_proto::AgentSpawnParams`. The `repo`
+/// `caller: None` is what makes this a root — see `marion_core::proto::AgentSpawnParams`. The `repo`
 /// is required with it and is computed by the caller because only this client knows which of the
 /// trees one supervisor serves the operator meant (§2 keys the supervisor on the git common dir,
 /// so `<state>/<project-hash>` names the repository and every linked worktree of it at once).
@@ -2307,9 +2307,9 @@ fn spawn_root(
     supervisor: &mut SupervisorSession,
     args: &Args,
     repo: &Path,
-) -> Result<marion_proto::result::AgentSpawnResult, String> {
-    let id = supervisor.send(marion_proto::Call::AgentSpawn(
-        marion_proto::params::AgentSpawnParams {
+) -> Result<marion_core::proto::result::AgentSpawnResult, String> {
+    let id = supervisor.send(marion_core::proto::Call::AgentSpawn(
+        marion_core::proto::params::AgentSpawnParams {
             agent_type: args.agent_type.clone(),
             prompt: args.prompt.clone(),
             native_launch: None,
@@ -2343,9 +2343,9 @@ fn spawn_root(
     // to lose a run.
     let outcome = supervisor.pump(Awaited::Response(id), &mut |_| {})?;
     match outcome {
-        marion_proto::Outcome::Result(body) => {
-            match marion_proto::Method::AgentSpawn.decode_result(&body) {
-                Ok(marion_proto::MethodResult::AgentSpawn(r)) => Ok(r),
+        marion_core::proto::Outcome::Result(body) => {
+            match marion_core::proto::Method::AgentSpawn.decode_result(&body) {
+                Ok(marion_core::proto::MethodResult::AgentSpawn(r)) => Ok(r),
                 _ => Err(
                     "marion: this project's supervisor answered `agent/spawn` with a \
                           result marion cannot read"
@@ -2355,7 +2355,7 @@ fn spawn_root(
         }
         // The supervisor's own sentence, verbatim. It already names the rule and the field;
         // re-wording it here would put marion's guess in front of marion's answer.
-        marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
+        marion_core::proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
     }
 }
 
@@ -2440,9 +2440,9 @@ fn watch_the_root(
     }
 
     impl Rendering<'_> {
-        fn note(&mut self, event: marion_proto::notify::Event) {
+        fn note(&mut self, event: marion_core::proto::notify::Event) {
             use marion_core::event::{Lifecycle, Payload};
-            let marion_proto::notify::Event::NodeEvent {
+            let marion_core::proto::notify::Event::NodeEvent {
                 agent_id, payload, ..
             } = &event
             else {
@@ -2516,17 +2516,17 @@ fn watch_the_root(
         ended: None,
     };
 
-    let id = supervisor.send(marion_proto::Call::NodeAttach(
-        marion_proto::params::NodeAttachParams {
+    let id = supervisor.send(marion_core::proto::Call::NodeAttach(
+        marion_core::proto::params::NodeAttachParams {
             agent_id: root_id.clone(),
             pane_stream: None,
         },
     ))?;
     let outcome = supervisor.pump(Awaited::Response(id), &mut |e| r.note(e))?;
     match outcome {
-        marion_proto::Outcome::Result(body) => {
-            match marion_proto::Method::NodeAttach.decode_result(&body) {
-                Ok(marion_proto::MethodResult::NodeAttach(attached)) => {
+        marion_core::proto::Outcome::Result(body) => {
+            match marion_core::proto::Method::NodeAttach.decode_result(&body) {
+                Ok(marion_core::proto::MethodResult::NodeAttach(attached)) => {
                     // A node that already reached a terminal reading is `ReplayOnly`, and the
                     // bookend for it is already in the replay above. Anything else is live and
                     // the loop below is what reads it.
@@ -2541,7 +2541,7 @@ fn watch_the_root(
                 }
             }
         }
-        marion_proto::Outcome::Error(e) => return Err(format!("marion: {}", e.message)),
+        marion_core::proto::Outcome::Error(e) => return Err(format!("marion: {}", e.message)),
     }
 
     // The live leg. **No bound of its own**: the node's bound is the supervisor's to keep, and a
@@ -2550,7 +2550,7 @@ fn watch_the_root(
     // `next_frame` reports as the refusal it is rather than as an end.
     while r.ended.is_none() {
         match supervisor.next_frame()? {
-            marion_proto::Frame::Notification(n) => r.note(n.event),
+            marion_core::proto::Frame::Notification(n) => r.note(n.event),
             other => {
                 return Err(format!(
                     "marion: this project's supervisor sent an unexpected frame while the root was \
@@ -3817,8 +3817,8 @@ mod tests {
             .collect()
     }
 
-    fn guidance() -> marion_proto::DetachGuidance {
-        marion_proto::DetachGuidance {
+    fn guidance() -> marion_core::proto::DetachGuidance {
+        marion_core::proto::DetachGuidance {
             reattach: "Reconnect to /s/p/supervisor.sock and call tree/subscribe.".into(),
             stop_fleet: "Reconnect to /s/p/supervisor.sock and call session/quit with KillTree."
                 .into(),
@@ -3835,19 +3835,19 @@ mod tests {
     /// was already in the response and was discarded on the way to the terminal.
     #[test]
     fn a_detach_reports_every_fact_section_7_3_2_requires_before_leaving_a_fleet_running() {
-        let (supervisor, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+        let (supervisor, report) = detach_report(&marion_core::proto::QuitOutcome::Detached {
             detached: ids(&["root", "child"]),
             gate_exposed: ids(&["child"]),
             guidance: guidance(),
-            supervisor: marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode,
+            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode,
             ),
         })
         .expect("a detach renders");
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode
             ),
             "the caller's wait decision is the rendered fact, never a second match on the outcome"
         );
@@ -3885,12 +3885,12 @@ mod tests {
     /// be denied unattended while nobody is watching.
     #[test]
     fn a_detach_with_nothing_at_a_gate_reports_in_one_line() {
-        let (_, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+        let (_, report) = detach_report(&marion_core::proto::QuitOutcome::Detached {
             detached: ids(&["root"]),
             gate_exposed: Vec::new(),
             guidance: guidance(),
-            supervisor: marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode,
+            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode,
             ),
         })
         .expect("a detach renders");
@@ -3922,27 +3922,30 @@ mod tests {
     /// requires be reported *as resumable* — survives the render too.
     #[test]
     fn a_detach_that_left_nothing_running_says_so_and_a_reap_names_what_is_resumable() {
-        let (supervisor, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+        let (supervisor, report) = detach_report(&marion_core::proto::QuitOutcome::Detached {
             detached: Vec::new(),
             gate_exposed: Vec::new(),
             guidance: guidance(),
-            supervisor: marion_proto::SupervisorDisposition::Exiting,
+            supervisor: marion_core::proto::SupervisorDisposition::Exiting,
         })
         .expect("a detach renders");
-        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert_eq!(
+            supervisor,
+            marion_core::proto::SupervisorDisposition::Exiting
+        );
         assert!(report.contains("no node was left running"), "{report}");
         assert!(
             !report.contains("to re-attach"),
             "there is nothing to re-attach to: {report}"
         );
 
-        let (_, reaped) = detach_report(&marion_proto::QuitOutcome::ReapedAndDetached {
+        let (_, reaped) = detach_report(&marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped: ids(&["idle"]),
             detached: ids(&["busy"]),
             gate_exposed: Vec::new(),
             guidance: guidance(),
-            supervisor: marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode,
+            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode,
             ),
         })
         .expect("a reap renders");

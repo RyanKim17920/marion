@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/marion-core",
-    "crates/marion-proto",
     "crates/marion-provider",
     "crates/marion-supervisor",
     "crates/marion-harness",

@@ -36,7 +36,7 @@
 //! blocked for the length of a child's run would put a minutes-long request on the JSON-RPC surface
 //! — which is exactly what took a whole bridge down when it hung. So the tool call blocks and the
 //! wire does not: `agent/spawn` → `node/attach` → read the node's own stream until its terminal
-//! bookend → read `contracts/<task_id>.json`. [`marion_proto::Method::ALL`] stays at fifteen.
+//! bookend → read `contracts/<task_id>.json`. [`marion_core::proto::Method::ALL`] stays at fifteen.
 //!
 //! The reader may act on that bookend because `run_spawn` writes the contract *before* it — an
 //! ordering that is now explicit and commented there, since without it this module would race one
@@ -51,9 +51,9 @@ use marion_core::cap::cap_for_return;
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::paths::ProjectDir;
-use marion_proto::params::{AgentSpawnParams, NodeGetParams, TreeSubscribeParams};
-use marion_proto::result::{AgentSpawnResult, NodeGetResult, TreeSubscribeResult};
-use marion_proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
+use marion_core::proto::params::{AgentSpawnParams, NodeGetParams, TreeSubscribeParams};
+use marion_core::proto::result::{AgentSpawnResult, NodeGetResult, TreeSubscribeResult};
+use marion_core::proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
 use crate::spawn::SpawnError;
 
@@ -375,10 +375,12 @@ pub fn await_contract(
     let deadline = Instant::now() + bound;
     let mut c = Conn::dial(socket)?;
     c.bound(bound)?;
-    let attach = c.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
-        agent_id: agent_id.clone(),
-        pane_stream: None,
-    }))?;
+    let attach = c.send(Call::NodeAttach(
+        marion_core::proto::params::NodeAttachParams {
+            agent_id: agent_id.clone(),
+            pane_stream: None,
+        },
+    ))?;
     let mut ended: Option<Lifecycle> = None;
     while ended.is_none() {
         c.bound(deadline.saturating_duration_since(Instant::now()))?;
@@ -427,8 +429,8 @@ pub fn await_contract(
 ///
 /// Filtered by `agent_id` because one connection can legitimately carry more: `tree/node-added` and
 /// `node/state` are not this reader's news, and neither is another node's stream.
-fn terminal_of(agent_id: &AgentId, event: marion_proto::notify::Event) -> Option<Lifecycle> {
-    let marion_proto::notify::Event::NodeEvent {
+fn terminal_of(agent_id: &AgentId, event: marion_core::proto::notify::Event) -> Option<Lifecycle> {
+    let marion_core::proto::notify::Event::NodeEvent {
         agent_id: id,
         payload,
         ..
@@ -491,7 +493,7 @@ mod tests {
                 agent_type: "codex-impl".into(),
                 prompt: "nothing may be started by this call".into(),
                 native_launch: None,
-                caller: Some(marion_proto::SpawnCaller {
+                caller: Some(marion_core::proto::SpawnCaller {
                     agent_id: AgentId("019f-node".into()),
                     node_token: "tok".into(),
                 }),

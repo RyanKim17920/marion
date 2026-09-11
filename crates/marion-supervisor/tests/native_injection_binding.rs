@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 
 use marion_core::PRODUCTION_NATIVE_FACADES;
 use marion_core::contract::AgentId;
+use marion_core::proto::{
+    NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1,
+};
 use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
     NativeInjectionError, NativeNodeContext, NativeProcessBase, NativeTerminalGeometry,
     assemble_native,
-};
-use marion_proto::{
-    NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1,
 };
 use marion_supervisor::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use marion_testsupport::{Scratch, scratch};

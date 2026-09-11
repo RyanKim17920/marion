@@ -33,8 +33,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use marion_proto::params::AgentSpawnParams;
-use marion_proto::{Call, FailureKind, Frame, Outcome, Request, RequestId, RpcError, SpawnCaller};
+use marion_core::proto::params::AgentSpawnParams;
+use marion_core::proto::{
+    Call, FailureKind, Frame, Outcome, Request, RequestId, RpcError, SpawnCaller,
+};
 use marion_supervisor::detach::{Launch, ensure_supervisor};
 use marion_supervisor::socket::{SocketPaths, socket_paths};
 

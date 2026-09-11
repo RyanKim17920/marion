@@ -34,7 +34,7 @@
 //! # Why anything is left
 //!
 //! §5.4 addresses a `wait` by the `task_id` the handle carried, and the supervisor's fifteen
-//! methods do not include a lookup from a task id to a node — [`marion_proto::Method::ALL`] is
+//! methods do not include a lookup from a task id to a node — [`marion_core::proto::Method::ALL`] is
 //! pinned at fifteen and step 5 deliberately adds none. So the one fact this process must remember
 //! is the pairing the supervisor told it exactly once, in `agent/spawn`'s answer: **which node this
 //! handle is about**. That is what is left, plus the two bookkeeping facts that let a second `wait`

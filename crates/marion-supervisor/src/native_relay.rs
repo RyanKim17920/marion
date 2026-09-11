@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use marion_core::contract::AgentId;
-use marion_proto::{
+use marion_core::proto::{
     Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, NodePaneWriteV1,
     RequestId,
 };
@@ -1143,26 +1143,26 @@ impl<W: Write> RawPaneSession<W> {
 
     fn attach(&mut self, (cols, rows): (u16, u16)) -> Result<(), Refusal> {
         self.write_frame(
-            &Frame::Request(marion_proto::Request::new(
+            &Frame::Request(marion_core::proto::Request::new(
                 RequestId::Number(1),
-                Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                     agent_id: self.id.clone(),
-                    pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                    pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
                 }),
             )),
             "sending native node/attach",
         )?;
         let response = self.await_attach_response()?;
         let body = match response.outcome {
-            marion_proto::Outcome::Result(body) => body,
-            marion_proto::Outcome::Error(error) => {
+            marion_core::proto::Outcome::Result(body) => body,
+            marion_core::proto::Outcome::Error(error) => {
                 return Err(format!(
                     "the supervisor refused the native pane attach: {}",
                     error.message
                 ));
             }
         };
-        let MethodResult::NodeAttach(attached) = marion_proto::Method::NodeAttach
+        let MethodResult::NodeAttach(attached) = marion_core::proto::Method::NodeAttach
             .decode_result(&body)
             .map_err(|error| format!("the native node/attach answer did not decode: {error}"))?
         else {
@@ -1195,7 +1195,7 @@ impl<W: Write> RawPaneSession<W> {
         )
     }
 
-    fn await_attach_response(&mut self) -> Result<marion_proto::Response, Refusal> {
+    fn await_attach_response(&mut self) -> Result<marion_core::proto::Response, Refusal> {
         loop {
             let frame = self.next_frame().map_err(attach_frame_error)?;
             match frame {
@@ -1332,7 +1332,9 @@ impl<W: Write> RawPaneSession<W> {
                                     let frame = Frame::Input(ClientNotification::new(
                                         Input::NodePaneWrite(NodePaneWriteV1 {
                                             agent_id: id.clone(),
-                                            bytes: marion_proto::OpaquePaneBytesV1::new(bytes),
+                                            bytes: marion_core::proto::OpaquePaneBytesV1::new(
+                                                bytes,
+                                            ),
                                         }),
                                     ));
                                     if let Err(error) =
@@ -1569,7 +1571,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use marion_core::contract::AgentId;
-    use marion_proto::{Call, Event, Frame, Input, MethodResult, PaneFrameKindV1, RequestId};
+    use marion_core::proto::{Call, Event, Frame, Input, MethodResult, PaneFrameKindV1, RequestId};
 
     use super::{
         AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
@@ -3611,19 +3613,19 @@ mod tests {
         }
     }
 
-    fn pane_token() -> marion_proto::PaneReadyTokenV1 {
-        marion_proto::PaneReadyTokenV1::new([0x5a; 32])
+    fn pane_token() -> marion_core::proto::PaneReadyTokenV1 {
+        marion_core::proto::PaneReadyTokenV1::new([0x5a; 32])
     }
 
     fn attach_response() -> Frame {
         use marion_core::encoding::Duration;
         use marion_core::harness::Harness;
         use marion_core::node::{NodeState, ReapState};
-        use marion_proto::model::{AttachMode, NodeSummary, ReplayPoint};
+        use marion_core::proto::model::{AttachMode, NodeSummary, ReplayPoint};
 
-        Frame::Response(marion_proto::Response::ok(
+        Frame::Response(marion_core::proto::Response::ok(
             RequestId::Number(1),
-            &MethodResult::NodeAttach(marion_proto::result::NodeAttachResult {
+            &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
                     agent_id: AgentId("native".into()),
                     parent_id: None,
@@ -3641,12 +3643,12 @@ mod tests {
                     records: 0,
                     src_seq: None,
                 }),
-                pane: Some(marion_proto::result::PaneAttach {
+                pane: Some(marion_core::proto::result::PaneAttach {
                     cols: 80,
                     rows: 24,
                     writable: true,
                     held_by: None,
-                    pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                    pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                         token: pane_token(),
                         cut: 0,
                     }),
@@ -3656,8 +3658,8 @@ mod tests {
     }
 
     fn pane_frame(seq: u64, frame: PaneFrameKindV1) -> Frame {
-        Frame::Notification(marion_proto::Notification::new(Event::NodePaneFrame(
-            marion_proto::PaneFrameV1::new(AgentId("native".into()), seq, frame),
+        Frame::Notification(marion_core::proto::Notification::new(Event::NodePaneFrame(
+            marion_core::proto::PaneFrameV1::new(AgentId("native".into()), seq, frame),
         )))
     }
 
@@ -3727,7 +3729,7 @@ mod tests {
                             pane_frame(
                                 0,
                                 PaneFrameKindV1::Output {
-                                    bytes: marion_proto::OpaquePaneBytesV1::new(b"output"),
+                                    bytes: marion_core::proto::OpaquePaneBytesV1::new(b"output"),
                                 },
                             )
                             .to_line()
@@ -4013,11 +4015,11 @@ mod tests {
 
             assert!(matches!(
                 read_frame(&mut lines),
-                Frame::Input(note) if matches!(note.input, marion_proto::Input::NodeResize { cols: 111, rows: 37, .. })
+                Frame::Input(note) if matches!(note.input, marion_core::proto::Input::NodeResize { cols: 111, rows: 37, .. })
             ));
             assert!(matches!(
                 read_frame(&mut lines),
-                Frame::Input(note) if matches!(note.input, marion_proto::Input::NodePaneReady(_))
+                Frame::Input(note) if matches!(note.input, marion_core::proto::Input::NodePaneReady(_))
             ));
 
             let tail = [0xff, 0x00, 0x9b, b'3', b'1', b'm', b'Z'];
@@ -4026,7 +4028,7 @@ mod tests {
                     pane_frame(
                         0,
                         PaneFrameKindV1::Output {
-                            bytes: marion_proto::OpaquePaneBytesV1::new(tail),
+                            bytes: marion_core::proto::OpaquePaneBytesV1::new(tail),
                         },
                     )
                     .to_line()
@@ -4162,12 +4164,13 @@ mod tests {
                     let Frame::Response(ref mut response) = response else {
                         unreachable!()
                     };
-                    let MethodResult::NodeAttach(mut attached) = marion_proto::Method::NodeAttach
-                        .decode_result(match &response.outcome {
-                            marion_proto::Outcome::Result(body) => body,
-                            _ => unreachable!(),
-                        })
-                        .unwrap()
+                    let MethodResult::NodeAttach(mut attached) =
+                        marion_core::proto::Method::NodeAttach
+                            .decode_result(match &response.outcome {
+                                marion_core::proto::Outcome::Result(body) => body,
+                                _ => unreachable!(),
+                            })
+                            .unwrap()
                     else {
                         unreachable!()
                     };
@@ -4179,7 +4182,7 @@ mod tests {
                         .as_mut()
                         .unwrap()
                         .cut = 4;
-                    *response = marion_proto::Response::ok(
+                    *response = marion_core::proto::Response::ok(
                         RequestId::Number(1),
                         &MethodResult::NodeAttach(attached),
                     );

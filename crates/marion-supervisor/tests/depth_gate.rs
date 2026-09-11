@@ -89,9 +89,9 @@ use std::time::Duration;
 use marion_core::agent_type::DEFAULT_MAX_DEPTH;
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
+use marion_core::proto::params::AgentSpawnParams;
+use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_harness::adapter_for;
-use marion_proto::params::AgentSpawnParams;
-use marion_proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
@@ -433,7 +433,7 @@ struct Owned {
 ///
 /// The test is standing exactly where a bridge stands: it holds the caller's `agent_id` and the
 /// token marion wrote into that node's declaration, and it states nothing else. It cannot state a
-/// depth, an agent type or a child count, because [`marion_proto::SpawnCaller`] has nowhere to put
+/// depth, an agent type or a child count, because [`marion_core::proto::SpawnCaller`] has nowhere to put
 /// them — which is the property this whole file now rests on.
 fn spawn_over_socket(
     sup: &common::Supervisor,

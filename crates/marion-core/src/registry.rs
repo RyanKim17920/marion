@@ -126,7 +126,7 @@ pub struct ReplayedNode {
     /// however long the node has existed.
     ///
     /// They are here rather than stamped by whoever reads the tree because that reader's clock says
-    /// when it *noticed*, not when it *happened* — and `marion_proto::Event`'s `ts` is an event
+    /// when it *noticed*, not when it *happened* — and `proto::Event`'s `ts` is an event
     /// time throughout (`supervisor/exiting` is documented as *"sent as it is journaled"*). A
     /// follower that polls every 250 ms and stamps `now()` reports every transition up to 250 ms
     /// late, on a field a client renders as when the thing occurred.
@@ -471,7 +471,7 @@ pub struct Replay {
     pub truncation: Option<Truncation>,
     pub gaps: Vec<SeqGap>,
     /// The last source-side ordering evidence any record carried — §7.3.3's replay-to-subscribe
-    /// seam, and the value `marion_proto::ReplayPoint::src_seq` is built from.
+    /// seam, and the value `proto::ReplayPoint::src_seq` is built from.
     ///
     /// `None` on every journal marion writes today, and that is §4.2's rule rather than a gap:
     /// marion is the source of its own records and a source has no upstream ordinal to report. A

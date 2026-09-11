@@ -25,7 +25,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_proto::{Call, Frame, Outcome, Request, RequestId};
+use marion_core::proto::{Call, Frame, Outcome, Request, RequestId};
 use marion_supervisor::socket::{SocketPaths, socket_paths};
 use serde_json::Value;
 

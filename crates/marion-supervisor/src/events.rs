@@ -559,14 +559,14 @@ impl EventReader {
     }
 
     /// **The seam value**, in the vocabulary §7.3.3's re-attach already speaks
-    /// (`marion_proto::AttachMode` carries one on every arm).
+    /// (`marion_core::proto::AttachMode` carries one on every arm).
     ///
     /// `records` is what this cursor has delivered; `src_seq` is the last source-side ordering
     /// evidence any event carried, `None` where the harness supplies none — which on Codex and on
     /// Claude Code `headless` is most of what marion runs, and where §4.2 forbids implying loss
     /// detection marion does not have.
-    pub fn read_point(&self) -> marion_proto::ReplayPoint {
-        marion_proto::ReplayPoint {
+    pub fn read_point(&self) -> marion_core::proto::ReplayPoint {
+        marion_core::proto::ReplayPoint {
             records: self.log.records,
             src_seq: self.log.last_src_seq.clone(),
         }

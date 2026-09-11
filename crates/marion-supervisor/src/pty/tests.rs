@@ -188,17 +188,17 @@ fn pane_replay_starts_with_the_initial_geometry() {
     let line = captured
         .try_recv()
         .expect("the initial Resize is delivered");
-    let frame = marion_proto::Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
-    let marion_proto::Frame::Notification(note) = frame else {
+    let frame = marion_core::proto::Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
+    let marion_core::proto::Frame::Notification(note) = frame else {
         panic!("the replay emitted a non-notification")
     };
-    let marion_proto::Event::NodePaneFrame(frame) = note.event else {
+    let marion_core::proto::Event::NodePaneFrame(frame) = note.event else {
         panic!("the replay emitted a non-pane event")
     };
     assert_eq!(frame.seq, 0);
     assert_eq!(
         frame.frame,
-        marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }
+        marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }
     );
     lb.host.unlisten(conn);
     lb.hang_up();
@@ -1784,7 +1784,9 @@ fn pane_replay_delivers_end_retained_during_the_ready_handoff() {
 
     let frames = captured
         .into_iter()
-        .map(|bytes| marion_proto::Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+        .map(|bytes| {
+            marion_core::proto::Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap()
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         frames.len(),
@@ -1793,21 +1795,21 @@ fn pane_replay_delivers_end_retained_during_the_ready_handoff() {
     );
     assert!(matches!(
         &frames[0],
-        marion_proto::Frame::Notification(note)
+        marion_core::proto::Frame::Notification(note)
             if matches!(&note.event, Event::NodePaneFrame(frame)
                 if frame.seq == 0
                     && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
     ));
     assert!(matches!(
         &frames[1],
-        marion_proto::Frame::Notification(note)
+        marion_core::proto::Frame::Notification(note)
             if matches!(&note.event, Event::NodePaneFrame(frame)
                 if matches!(&frame.frame, PaneFrameKindV1::Output { bytes }
                     if bytes.as_bytes() == b"prefix"))
     ));
     assert!(matches!(
         &frames[2],
-        marion_proto::Frame::Notification(note)
+        marion_core::proto::Frame::Notification(note)
             if matches!(&note.event, Event::NodePaneFrame(frame)
                 if matches!(frame.frame, PaneFrameKindV1::End {}))
     ));

@@ -10,8 +10,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use marion_core::contract::AgentId;
-use marion_proto::notify::Event as Note;
-use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
+use marion_core::proto::notify::Event as Note;
+use marion_core::proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_supervisor::socket::{SocketPaths, socket_paths};
 
 use super::getuid;
@@ -86,7 +86,7 @@ impl Client {
         }
     }
 
-    pub fn tree(&mut self) -> Vec<marion_proto::NodeSummary> {
+    pub fn tree(&mut self) -> Vec<marion_core::proto::NodeSummary> {
         self.tree_at().nodes
     }
 
@@ -95,9 +95,9 @@ impl Client {
     /// `TreeSubscribeResult` carries the two because the supervisor builds them under one lock from
     /// one read (`handler::subscribe`). Splitting them here would re-introduce the race the
     /// protocol removed.
-    pub fn tree_at(&mut self) -> marion_proto::result::TreeSubscribeResult {
+    pub fn tree_at(&mut self) -> marion_core::proto::result::TreeSubscribeResult {
         let id = self.send(Call::TreeSubscribe(
-            marion_proto::params::TreeSubscribeParams {},
+            marion_core::proto::params::TreeSubscribeParams {},
         ));
         let (_, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {
@@ -116,11 +116,13 @@ impl Client {
     pub fn attach(
         &mut self,
         agent: &AgentId,
-    ) -> (Vec<Note>, marion_proto::result::NodeAttachResult) {
-        let id = self.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
-            agent_id: agent.clone(),
-            pane_stream: None,
-        }));
+    ) -> (Vec<Note>, marion_core::proto::result::NodeAttachResult) {
+        let id = self.send(Call::NodeAttach(
+            marion_core::proto::params::NodeAttachParams {
+                agent_id: agent.clone(),
+                pane_stream: None,
+            },
+        ));
         let (notes, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {
             panic!("node/attach was refused: {outcome:?}")
@@ -184,23 +186,25 @@ impl Client {
     /// which `marion run` is not: that process leaves when its root's turn is over, and the whole
     /// criterion is about a client leaving while a node is still mid-turn.
     pub fn spawn_root(&mut self, repo: &Path, prompt: &str, timeout_secs: u64) -> AgentId {
-        let id = self.send(Call::AgentSpawn(marion_proto::params::AgentSpawnParams {
-            agent_type: "claude".into(),
-            prompt: prompt.into(),
-            native_launch: None,
-            caller: None,
-            repo: Some(repo.to_path_buf()),
-            acceptance_criteria: vec![],
-            writable_scope: vec![],
-            timeout_secs: Some(timeout_secs),
-            model: None,
-            no_change_record: None,
-            pane: None,
-            // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
-            // beside `caller: None` (§6.6, §9).
-            isolation: None,
-            allow_concurrent_writes: None,
-        }));
+        let id = self.send(Call::AgentSpawn(
+            marion_core::proto::params::AgentSpawnParams {
+                agent_type: "claude".into(),
+                prompt: prompt.into(),
+                native_launch: None,
+                caller: None,
+                repo: Some(repo.to_path_buf()),
+                acceptance_criteria: vec![],
+                writable_scope: vec![],
+                timeout_secs: Some(timeout_secs),
+                model: None,
+                no_change_record: None,
+                pane: None,
+                // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
+                // beside `caller: None` (§6.6, §9).
+                isolation: None,
+                allow_concurrent_writes: None,
+            },
+        ));
         let (_, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {
             panic!("agent/spawn was refused: {outcome:?}")
@@ -214,10 +218,12 @@ impl Client {
     /// §7.3.2's voluntary departure. Sent so that a supervisor whose only other client was killed
     /// does not wait out §5.7's full grace after the suite has finished with it — the same call
     /// `marion run` makes on its way out.
-    pub fn quit(&mut self) -> marion_proto::QuitOutcome {
-        let id = self.send(Call::SessionQuit(marion_proto::params::SessionQuitParams {
-            disposition: marion_proto::QuitDisposition::DetachAll,
-        }));
+    pub fn quit(&mut self) -> marion_core::proto::QuitOutcome {
+        let id = self.send(Call::SessionQuit(
+            marion_core::proto::params::SessionQuitParams {
+                disposition: marion_core::proto::QuitDisposition::DetachAll,
+            },
+        ));
         let (_, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {
             panic!("session/quit was refused: {outcome:?}")

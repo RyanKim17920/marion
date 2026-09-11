@@ -62,6 +62,7 @@ use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
+use marion_core::proto::NativeLaunchContext;
 use marion_core::root_change::{
     Reason, RootChange, RootChanged, RootDelta, RootGrant, RootObservation, RootScope,
 };
@@ -69,7 +70,6 @@ use marion_harness::{
     Auth, CallOutcome, ChildExit, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
     LaunchSpec, MarionCall, McpDeclaration, SpawnCtx, adapter_for, json_frames,
 };
-use marion_proto::NativeLaunchContext;
 use serde_json::Value;
 
 use crate::duplex::{self, DuplexError, DuplexSpec};
@@ -2602,7 +2602,7 @@ mod tests {
         let frames = rx
             .try_iter()
             .map(|line| {
-                marion_proto::Frame::from_line(
+                marion_core::proto::Frame::from_line(
                     std::str::from_utf8(&line).expect("outbound replay is UTF-8"),
                 )
                 .expect("outbound replay frame")
@@ -2611,18 +2611,18 @@ mod tests {
         let mut output = Vec::new();
         let mut ends = 0;
         for frame in frames {
-            let marion_proto::Frame::Notification(note) = frame else {
+            let marion_core::proto::Frame::Notification(note) = frame else {
                 panic!("pane replay emitted a non-notification")
             };
-            let marion_proto::Event::NodePaneFrame(frame) = note.event else {
+            let marion_core::proto::Event::NodePaneFrame(frame) = note.event else {
                 panic!("pane replay emitted another event")
             };
             match frame.frame {
-                marion_proto::PaneFrameKindV1::Output { bytes } => {
+                marion_core::proto::PaneFrameKindV1::Output { bytes } => {
                     output.extend_from_slice(bytes.as_bytes());
                 }
-                marion_proto::PaneFrameKindV1::End {} => ends += 1,
-                marion_proto::PaneFrameKindV1::Resize { .. } => {}
+                marion_core::proto::PaneFrameKindV1::End {} => ends += 1,
+                marion_core::proto::PaneFrameKindV1::Resize { .. } => {}
             }
         }
         assert_eq!(output, b"fast-tail");

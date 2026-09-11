@@ -53,8 +53,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_proto::params::AgentSpawnParams;
-use marion_proto::{Call, Method, MethodResult};
+use marion_core::proto::params::AgentSpawnParams;
+use marion_core::proto::{Call, Method, MethodResult};
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{Liveness, Scratch, fixture_repo, liveness, scratch, survivors, sweep};
 use serde_json::{Value, json};

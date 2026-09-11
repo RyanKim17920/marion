@@ -1,7 +1,7 @@
 //! Client-side invariants shared by rendered attach and transparent native relay.
 
 use marion_core::contract::AgentId;
-use marion_proto::{Event, OpaquePaneBytesV1, PaneFrameKindV1};
+use marion_core::proto::{Event, OpaquePaneBytesV1, PaneFrameKindV1};
 
 pub(crate) enum PaneV1Action {
     Output(OpaquePaneBytesV1),
@@ -82,7 +82,7 @@ pub(crate) fn decode_pane_v1_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_proto::PaneFrameV1;
+    use marion_core::proto::PaneFrameV1;
 
     fn pane_frame(agent: &str, seq: u64, frame: PaneFrameKindV1) -> Event {
         Event::NodePaneFrame(PaneFrameV1::new(AgentId(agent.into()), seq, frame))

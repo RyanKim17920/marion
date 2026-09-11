@@ -32,7 +32,7 @@
 //! # The snapshot and the subscription begin at the same instant
 //!
 //! §7.3.3 makes the replay-to-subscribe seam *the* correctness question, and
-//! [`marion_proto::result::TreeSubscribeResult`] says why the two travel together: *"a client that
+//! [`marion_core::proto::result::TreeSubscribeResult`] says why the two travel together: *"a client that
 //! renders a tree and **then** starts listening has a window it cannot account for."*
 //!
 //! Here that is a lock, not a promise. [`RegistryHandle::subscribe`] takes the shared state's lock,
@@ -75,16 +75,16 @@ use marion_core::journal::{
     KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SupervisorExited,
 };
 use marion_core::node::{NodeState, ReapState};
-use marion_core::registry::{Replay, ReplayedNode};
-use marion_proto::notify::Event;
-use marion_proto::result::{
+use marion_core::proto::notify::Event;
+use marion_core::proto::result::{
     NodeAttachResult, NodeGetResult, SessionQuitResult, TreeSubscribeResult,
 };
-use marion_proto::{
+use marion_core::proto::{
     AttachMode, Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult,
     NativeLaunchContext, NodeSummary, QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason,
     RpcError, SpawnCaller, SupervisorDisposition,
 };
+use marion_core::registry::{Replay, ReplayedNode};
 
 use crate::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use crate::registry::{LiveRegistry, Registry};
@@ -1320,7 +1320,7 @@ fn resumable_root_cwd(project_root: &std::path::Path) -> PathBuf {
 }
 
 fn root_spec_from_spawn(
-    p: &marion_proto::params::AgentSpawnParams,
+    p: &marion_core::proto::params::AgentSpawnParams,
     repo: PathBuf,
     env: &crate::run::Env,
     agent_type: &marion_core::agent_type::AgentType,
@@ -1348,7 +1348,7 @@ fn root_spec_from_spawn(
     }
 }
 
-/// What one pane-directed [`marion_proto::Input`] asks of its pane, once the variant that
+/// What one pane-directed [`marion_core::proto::Input`] asks of its pane, once the variant that
 /// carries it has been read off the frame.
 #[derive(Clone, Copy)]
 enum PaneDelivery<'a> {
@@ -1552,7 +1552,7 @@ impl RegistryHandle {
     /// view or a notification can slip between them. An attach derives one: the reader's own read.
     ///
     /// **The replayed events go out as `node/event` notifications, before the response frame.**
-    /// [`marion_proto::result::NodeAttachResult`] has no field for them and deliberately so: a
+    /// [`marion_core::proto::result::NodeAttachResult`] has no field for them and deliberately so: a
     /// replayed event and a live one are the same event from the same file, and giving the replay a
     /// second shape on the wire would ask every client to write the splice this module exists to
     /// make impossible. Because they precede the response, the [`ReplayPoint`] in the answer is a
@@ -1685,7 +1685,7 @@ impl RegistryHandle {
         id: &AgentId,
         conn: ConnId,
         host: &Arc<crate::pty::PtyHost>,
-        descriptor: &marion_proto::result::PaneReadyDescriptorV1,
+        descriptor: &marion_core::proto::result::PaneReadyDescriptorV1,
     ) -> (bool, bool, Option<u64>) {
         let panes = lock(&self.panes);
         let (same_generation, writable, held_by) = match panes.hosts.get(id) {
@@ -1720,7 +1720,7 @@ impl RegistryHandle {
         &self,
         id: &AgentId,
         out: &Outbound,
-        reserved_pane: &mut Option<marion_proto::result::PaneAttach>,
+        reserved_pane: &mut Option<marion_core::proto::result::PaneAttach>,
         reserved_host: Option<&Arc<crate::pty::PtyHost>>,
     ) -> Result<(), RpcError> {
         if let (Some(pane), Some(host)) = (reserved_pane.as_mut(), reserved_host) {
@@ -1773,7 +1773,7 @@ impl RegistryHandle {
         &self,
         id: &AgentId,
         out: &Outbound,
-    ) -> Option<marion_proto::result::PaneAttach> {
+    ) -> Option<marion_core::proto::result::PaneAttach> {
         self.prune_completed_panes();
         // Held through listener and lease commit. `forget_pane` cannot invalidate a host between
         // those two halves, and neither host operation performs a delivery callback while this
@@ -1814,7 +1814,7 @@ impl RegistryHandle {
                 Err(crate::pty::WriterBusy::HeldBy(owner)) => (false, Some(owner.0)),
             }
         };
-        Some(marion_proto::result::PaneAttach {
+        Some(marion_core::proto::result::PaneAttach {
             cols: size.cols,
             rows: size.rows,
             writable,
@@ -1829,7 +1829,7 @@ impl RegistryHandle {
         out: &Outbound,
     ) -> Result<
         (
-            Option<marion_proto::result::PaneAttach>,
+            Option<marion_core::proto::result::PaneAttach>,
             Option<Arc<crate::pty::PtyHost>>,
         ),
         RpcError,
@@ -1893,7 +1893,7 @@ impl RegistryHandle {
             .size()
             .unwrap_or_else(|_| host.master().intended_size());
         Ok((
-            Some(marion_proto::result::PaneAttach {
+            Some(marion_core::proto::result::PaneAttach {
                 cols: size.cols,
                 rows: size.rows,
                 writable,
@@ -2255,12 +2255,12 @@ impl RegistryHandle {
     /// client was already told at `node/attach` that it may not type. Pane-v1 opaque input is
     /// stronger: it is accepted only from that connection's live negotiated slot, and any refusal
     /// visibly ends that exact socket before a terminal `End` can claim success.
-    fn deliver_input(&self, conn: ConnId, input: &marion_proto::Input) {
+    fn deliver_input(&self, conn: ConnId, input: &marion_core::proto::Input) {
         self.deliver_input_with_out(conn, input, None);
     }
 
     /// **The pane-v1 replay handshake**, completed by read-only viewers too.
-    fn deliver_pane_ready(&self, conn: ConnId, ready: &marion_proto::NodePaneReadyV1) {
+    fn deliver_pane_ready(&self, conn: ConnId, ready: &marion_core::proto::NodePaneReadyV1) {
         // Read-only viewers complete this handshake too, so it is deliberately independent of
         // the keyboard lease. Registry expiry runs first: a token cannot revive a Completed
         // host at or beyond its exact cache deadline.
@@ -2282,7 +2282,7 @@ impl RegistryHandle {
     fn deliver_opaque_input(
         &self,
         conn: ConnId,
-        input: &marion_proto::Input,
+        input: &marion_core::proto::Input,
         id: &AgentId,
         bytes: &[u8],
         wire_out: Option<&Outbound>,
@@ -2332,16 +2332,16 @@ impl RegistryHandle {
         }
     }
     /// **Which pane and what it is being asked to do**, read off the frame alone.
-    fn classify_pane_delivery(input: &marion_proto::Input) -> (&AgentId, PaneDelivery<'_>) {
+    fn classify_pane_delivery(input: &marion_core::proto::Input) -> (&AgentId, PaneDelivery<'_>) {
         match input {
-            marion_proto::Input::NodePtyWrite {
+            marion_core::proto::Input::NodePtyWrite {
                 agent_id, bytes, ..
             } => (agent_id, PaneDelivery::LegacyWrite(bytes.as_bytes())),
-            marion_proto::Input::NodePaneWrite(params) => (
+            marion_core::proto::Input::NodePaneWrite(params) => (
                 &params.agent_id,
                 PaneDelivery::OpaqueWrite(params.bytes.as_bytes()),
             ),
-            marion_proto::Input::NodeResize {
+            marion_core::proto::Input::NodeResize {
                 agent_id,
                 cols,
                 rows,
@@ -2352,7 +2352,7 @@ impl RegistryHandle {
                     rows: *rows,
                 },
             ),
-            marion_proto::Input::NodePaneReady(_) => unreachable!("handled above"),
+            marion_core::proto::Input::NodePaneReady(_) => unreachable!("handled above"),
         }
     }
 
@@ -2361,7 +2361,7 @@ impl RegistryHandle {
     fn deliver_leased_input(
         &self,
         conn: ConnId,
-        input: &marion_proto::Input,
+        input: &marion_core::proto::Input,
         id: &AgentId,
         delivery: PaneDelivery<'_>,
     ) {
@@ -2397,10 +2397,10 @@ impl RegistryHandle {
     fn deliver_input_with_out(
         &self,
         conn: ConnId,
-        input: &marion_proto::Input,
+        input: &marion_core::proto::Input,
         wire_out: Option<&Outbound>,
     ) {
-        if let marion_proto::Input::NodePaneReady(ready) = input {
+        if let marion_core::proto::Input::NodePaneReady(ready) = input {
             self.deliver_pane_ready(conn, ready);
             return;
         }
@@ -2621,7 +2621,7 @@ impl RegistryHandle {
     /// registry marion itself wrote.
     fn resolve_caller(
         &self,
-        c: &marion_proto::SpawnCaller,
+        c: &marion_core::proto::SpawnCaller,
     ) -> Result<crate::run::Caller, RpcError> {
         // **The token is checked before anything else is said about the node**, so a caller who
         // guesses an `AgentId` learns nothing from the shape of the refusal beyond "no".
@@ -2683,7 +2683,7 @@ impl RegistryHandle {
     /// what it deliberately does not.
     /// **§11 item 28 step 6's `caller`/`repo` pairing**, answered from the frame alone.
     fn check_caller_repo_pairing(
-        p: &marion_proto::params::AgentSpawnParams,
+        p: &marion_core::proto::params::AgentSpawnParams,
     ) -> Result<(), RpcError> {
         // **The `caller`/`repo` pairing, before anything else and before any state is consulted.**
         // It is a property of the frame alone, so it is answered from the frame alone — and
@@ -2725,7 +2725,9 @@ impl RegistryHandle {
         Ok(())
     }
     /// **A root's workspace is not a choice**: `isolation` on a spawn with no `caller`.
-    fn check_root_isolation(p: &marion_proto::params::AgentSpawnParams) -> Result<(), RpcError> {
+    fn check_root_isolation(
+        p: &marion_core::proto::params::AgentSpawnParams,
+    ) -> Result<(), RpcError> {
         // **The other half of the same pairing**, and refused for §11 item 23's reason rather than
         // ignored: §9's change record exists only for a root, because only a root runs in the
         // operator's own checkout. A child's writes are judged against the worktree marion made it,
@@ -2760,7 +2762,7 @@ impl RegistryHandle {
     }
     /// **A root has no caller's cwd to share**: `allow_concurrent_writes` without a `caller`.
     fn check_root_allow_concurrent_writes(
-        p: &marion_proto::params::AgentSpawnParams,
+        p: &marion_core::proto::params::AgentSpawnParams,
     ) -> Result<(), RpcError> {
         if p.caller.is_none() && p.allow_concurrent_writes.is_some() {
             return Err(RpcError::refused(
@@ -2776,7 +2778,7 @@ impl RegistryHandle {
     }
     /// **§9's change record is a root's**: `no_change_record` on a spawn with a `caller`.
     fn check_child_no_change_record(
-        p: &marion_proto::params::AgentSpawnParams,
+        p: &marion_core::proto::params::AgentSpawnParams,
     ) -> Result<(), RpcError> {
         if p.caller.is_some() && p.no_change_record.is_some() {
             return Err(RpcError::refused(
@@ -2793,7 +2795,7 @@ impl RegistryHandle {
         Ok(())
     }
     /// **A contracted child in a pane could only time out**: `pane` on a spawn with a `caller`.
-    fn check_child_pane(p: &marion_proto::params::AgentSpawnParams) -> Result<(), RpcError> {
+    fn check_child_pane(p: &marion_core::proto::params::AgentSpawnParams) -> Result<(), RpcError> {
         // **The third field on the same rule, refused for a reason of its own.** Not symmetry with
         // the two above: a pane is a TUI, and a TUI takes no turn until a human presses return,
         // while a child is defined by a `TaskContract` it must `report` against inside a wall
@@ -2818,9 +2820,9 @@ impl RegistryHandle {
     }
     fn agent_spawn(
         &self,
-        p: &marion_proto::params::AgentSpawnParams,
+        p: &marion_core::proto::params::AgentSpawnParams,
         peer: Peer,
-    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
         if p.caller.is_some() {
             validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
                 .map_err(NativeLaunchGateError::into_rpc)?;
@@ -2922,7 +2924,7 @@ impl RegistryHandle {
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
         let (agent_id, state) = self.launch_child(me, env, req, task_id, caller, repo, decision)?;
-        Ok(marion_proto::result::AgentSpawnResult {
+        Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
             // §9's contract, named before it exists: this call answers at `Spawned`, and the id is
@@ -3051,9 +3053,9 @@ impl RegistryHandle {
         &self,
         me: Arc<RegistryHandle>,
         env: crate::run::Env,
-        p: &marion_proto::params::AgentSpawnParams,
+        p: &marion_core::proto::params::AgentSpawnParams,
         peer: Peer,
-    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
         if let Some(context) = p.native_launch.as_deref() {
             return Err(native_launch_refusal(context));
@@ -3120,7 +3122,7 @@ impl RegistryHandle {
         ));
 
         let (agent_id, state) = self.launch_root(me, spec, repo, bound)?;
-        Ok(marion_proto::result::AgentSpawnResult {
+        Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
             // §9: a root has no `TaskContract`, so there is no file to name. See
@@ -3284,9 +3286,9 @@ impl RegistryHandle {
     /// path**, with the resume as a parameter to it.
     fn node_resume(
         &self,
-        p: &marion_proto::params::NodeResumeParams,
+        p: &marion_core::proto::params::NodeResumeParams,
         peer: Peer,
-    ) -> Result<marion_proto::result::NodeResumeResult, RpcError> {
+    ) -> Result<marion_core::proto::result::NodeResumeResult, RpcError> {
         // A resume starts work under a root's authority — the same filesystem-permission gate
         // `agent/spawn`'s root path answers, for the same reason (a resumed root has an id, but the
         // caller asking to resume it is not that node).
@@ -3419,7 +3421,7 @@ impl RegistryHandle {
         } else {
             self.relaunch_child(me, &node, &env, &p.prompt, repo, session)?
         };
-        Ok(marion_proto::result::NodeResumeResult {
+        Ok(marion_core::proto::result::NodeResumeResult {
             agent_id,
             state,
             // The lifetime this relaunch begins: replay folds a second `Spawned` as generation two,
@@ -4239,11 +4241,11 @@ impl Handle for RegistryHandle {
     /// §2's inbound table. Direct in-process callers retain the original compatibility surface;
     /// real transports use [`Self::input_with_out`] so pane-v1 failure is visible on the exact
     /// connection.
-    fn input(&self, conn: ConnId, input: &marion_proto::Input) {
+    fn input(&self, conn: ConnId, input: &marion_core::proto::Input) {
         self.deliver_input(conn, input);
     }
 
-    fn input_with_out(&self, conn: ConnId, input: &marion_proto::Input, out: &Outbound) {
+    fn input_with_out(&self, conn: ConnId, input: &marion_core::proto::Input, out: &Outbound) {
         self.deliver_input_with_out(conn, input, Some(out));
     }
 
@@ -4418,8 +4420,8 @@ fn deliver(g: &mut Shared, events: &[Event]) {
     }
     g.subs.retain(|s| {
         events.iter().all(|e| {
-            s.send(&marion_proto::Frame::Notification(
-                marion_proto::Notification::new(e.clone()),
+            s.send(&marion_core::proto::Frame::Notification(
+                marion_core::proto::Notification::new(e.clone()),
             ))
         })
     });
@@ -4503,7 +4505,7 @@ mod tests {
         Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, StateChanged, WriterId, encode,
     };
     use marion_core::node::BlockReason;
-    use marion_proto::Frame;
+    use marion_core::proto::Frame;
     use marion_testsupport::{append, scratch, until};
     use std::io::Write;
     use std::path::Path;
@@ -4740,12 +4742,12 @@ mod tests {
 
     fn quit(
         fx: &Fx,
-        disposition: marion_proto::QuitDisposition,
-    ) -> Result<marion_proto::result::SessionQuitResult, RpcError> {
+        disposition: marion_core::proto::QuitDisposition,
+    ) -> Result<marion_core::proto::result::SessionQuitResult, RpcError> {
         let out = crate::serve::sink(ConnId(9));
         match fx.handle.call(
             ConnId(9),
-            &Call::SessionQuit(marion_proto::params::SessionQuitParams { disposition }),
+            &Call::SessionQuit(marion_core::proto::params::SessionQuitParams { disposition }),
             &out,
         )? {
             MethodResult::SessionQuit(r) => Ok(r),
@@ -4831,8 +4833,8 @@ mod tests {
     }
 
     fn call(s: &mut std::os::unix::net::UnixStream, call: Call, id: i64) {
-        let f = Frame::Request(marion_proto::Request::new(
-            marion_proto::RequestId::Number(id),
+        let f = Frame::Request(marion_core::proto::Request::new(
+            marion_core::proto::RequestId::Number(id),
             call,
         ));
         s.write_all(f.to_line().as_bytes()).unwrap();
@@ -4856,7 +4858,7 @@ mod tests {
 
         call(
             &mut c,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             1,
@@ -4864,11 +4866,12 @@ mod tests {
         let Frame::Response(resp) = next_frame(&mut r) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Result(body) = resp.outcome else {
+        let marion_core::proto::Outcome::Result(body) = resp.outcome else {
             panic!("expected a result")
         };
-        let MethodResult::NodeGet(got) =
-            marion_proto::Method::NodeGet.decode_result(&body).unwrap()
+        let MethodResult::NodeGet(got) = marion_core::proto::Method::NodeGet
+            .decode_result(&body)
+            .unwrap()
         else {
             panic!("wrong result type")
         };
@@ -4880,7 +4883,7 @@ mod tests {
         // operator can tell "no such node" from "not yet".
         call(
             &mut c,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("nobody"),
             }),
             2,
@@ -4888,7 +4891,7 @@ mod tests {
         let Frame::Response(resp) = next_frame(&mut r) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Error(e) = resp.outcome else {
+        let marion_core::proto::Outcome::Error(e) = resp.outcome else {
             panic!("expected a refusal")
         };
         assert_eq!(e.kind(), Some(FailureKind::NotFound));
@@ -4911,16 +4914,16 @@ mod tests {
 
         call(
             &mut c,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Result(body) = resp.outcome else {
+        let marion_core::proto::Outcome::Result(body) = resp.outcome else {
             panic!("expected a result")
         };
-        let MethodResult::TreeSubscribe(snap) = marion_proto::Method::TreeSubscribe
+        let MethodResult::TreeSubscribe(snap) = marion_core::proto::Method::TreeSubscribe
             .decode_result(&body)
             .unwrap()
         else {
@@ -5015,16 +5018,16 @@ mod tests {
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
         call(
             &mut c,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Result(body) = resp.outcome else {
+        let marion_core::proto::Outcome::Result(body) = resp.outcome else {
             panic!("expected a result")
         };
-        let MethodResult::TreeSubscribe(snap) = marion_proto::Method::TreeSubscribe
+        let MethodResult::TreeSubscribe(snap) = marion_core::proto::Method::TreeSubscribe
             .decode_result(&body)
             .unwrap()
         else {
@@ -5056,7 +5059,7 @@ mod tests {
             let mut r = std::io::BufReader::new(c.try_clone().unwrap());
             call(
                 &mut c,
-                Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+                Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
                 1,
             );
             next_frame(&mut r);
@@ -5093,8 +5096,8 @@ mod tests {
             .handle
             .call(
                 ConnId(1),
-                &Call::SessionQuit(marion_proto::params::SessionQuitParams {
-                    disposition: marion_proto::QuitDisposition::DetachAll,
+                &Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
+                    disposition: marion_core::proto::QuitDisposition::DetachAll,
                 }),
                 &out,
             )
@@ -5102,7 +5105,7 @@ mod tests {
         let MethodResult::SessionQuit(result) = result else {
             panic!("wrong result type")
         };
-        let marion_proto::QuitOutcome::Detached {
+        let marion_core::proto::QuitOutcome::Detached {
             detached,
             gate_exposed,
             guidance,
@@ -5119,8 +5122,8 @@ mod tests {
         assert!(guidance.reattach.contains("is_error:true"));
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::SpawnOutstanding
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::SpawnOutstanding
             )
         );
         assert_eq!(std::fs::read(&fx.path).unwrap(), before);
@@ -5134,7 +5137,7 @@ mod tests {
         assert!(matches!(
             fx.handle.call(
                 ConnId(1),
-                &Call::NodeGet(marion_proto::params::NodeGetParams {
+                &Call::NodeGet(marion_core::proto::params::NodeGetParams {
                     agent_id: id("root")
                 }),
                 &out,
@@ -5164,7 +5167,7 @@ mod tests {
 
         let error = quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
+            marion_core::proto::QuitDisposition::KillTree { confirmed: vec![] },
         )
         .expect_err("an empty render did not confirm a live root");
         assert_eq!(error.kind(), Some(FailureKind::Refused));
@@ -5204,28 +5207,31 @@ mod tests {
             ],
         );
 
-        let disposition = marion_proto::QuitDisposition::KillTree {
+        let disposition = marion_core::proto::QuitDisposition::KillTree {
             confirmed: vec![id("child"), id("root")],
         };
         fx.handle.connected(ConnId(9));
         let result = quit(&fx, disposition.clone()).expect("the exact set was confirmed");
-        let marion_proto::QuitOutcome::Killed { nodes, supervisor } = result.outcome else {
+        let marion_core::proto::QuitOutcome::Killed { nodes, supervisor } = result.outcome else {
             panic!("kill returned another disposition's outcome")
         };
         assert_eq!(
             nodes,
             [
-                marion_proto::KilledNode {
+                marion_core::proto::KilledNode {
                     agent_id: id("root"),
                     was: NodeState::Running,
                 },
-                marion_proto::KilledNode {
+                marion_core::proto::KilledNode {
                     agent_id: id("child"),
                     was: NodeState::Blocked(BlockReason::Permission),
                 },
             ]
         );
-        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert_eq!(
+            supervisor,
+            marion_core::proto::SupervisorDisposition::Exiting
+        );
         assert_eq!(runtime.killed(), [101, 202], "one operation per live node");
         let mut tags = journal_tags(&fx.path);
         assert_eq!(
@@ -5324,14 +5330,17 @@ mod tests {
              satisfies without signalling anything"
         );
 
-        let result = quit(&fx, marion_proto::QuitDisposition::KillTree { confirmed });
+        let result = quit(
+            &fx,
+            marion_core::proto::QuitDisposition::KillTree { confirmed },
+        );
         // Reap before asserting, unconditionally: a failure here must not also leak the victim.
         let outcome = result.map(|r| r.outcome);
         let after = liveness(pid);
         let _ = victim.kill();
         let _ = victim.wait();
 
-        let marion_proto::QuitOutcome::Killed { nodes, .. } =
+        let marion_core::proto::QuitOutcome::Killed { nodes, .. } =
             outcome.expect("the exact live set was confirmed")
         else {
             panic!("kill returned another disposition's outcome")
@@ -5403,9 +5412,9 @@ mod tests {
             ],
         );
 
-        let result = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+        let result = quit(&fx, marion_core::proto::QuitDisposition::ReapIdleDetachBusy)
             .expect("the default disposition is implemented");
-        let marion_proto::QuitOutcome::ReapedAndDetached {
+        let marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped,
             detached,
             gate_exposed,
@@ -5435,8 +5444,8 @@ mod tests {
         assert!(guidance.stop_fleet.contains("session/quit"));
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::BlockedNode
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::BlockedNode
             )
         );
         assert!(!fx.handle.idle_exit_eligible());
@@ -5490,8 +5499,8 @@ mod tests {
                 }),
             ],
         );
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&aborted, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&aborted, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5499,7 +5508,7 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Exiting,
+            marion_core::proto::SupervisorDisposition::Exiting,
             "an abandoned spawn strands nothing, so §5.7's exclusion list does not name it"
         );
         assert!(
@@ -5511,8 +5520,8 @@ mod tests {
             "handler-quit-spawn-outstanding",
             vec![intent("root", None, "claude", 0)],
         );
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&outstanding, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&outstanding, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5520,8 +5529,8 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::SpawnOutstanding
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::SpawnOutstanding
             ),
             "an intent with no resolution beside it is exactly what §5.7 means by outstanding"
         );
@@ -5550,8 +5559,8 @@ mod tests {
                 }),
             ],
         );
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5559,8 +5568,8 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::SpawnOutstanding
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::SpawnOutstanding
             ),
             "the journal names pid 4242 and never says it died; exiting here strands it"
         );
@@ -5596,8 +5605,8 @@ mod tests {
                 }),
             ],
         );
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5605,13 +5614,13 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Exiting,
+            marion_core::proto::SupervisorDisposition::Exiting,
             "the control: with the journal readable, nothing here holds it"
         );
 
         append(&fx.path, b"this is a complete line and not a record\n");
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5619,8 +5628,8 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::RegistryStopped
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::RegistryStopped
             ),
             "§7.4: the tree is frozen, so no clause read off it may be quoted as the reason"
         );
@@ -5648,8 +5657,8 @@ mod tests {
             ],
         );
         fx.handle.connected(ConnId(9));
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
                 .unwrap()
                 .outcome
         else {
@@ -5657,13 +5666,13 @@ mod tests {
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode
             )
         );
         fx.handle.gone(
             ConnId(9),
-            &ClientGone::Quit(marion_proto::QuitDisposition::DetachAll),
+            &ClientGone::Quit(marion_core::proto::QuitDisposition::DetachAll),
             &Departure::QuitCompleted,
         );
         assert!(
@@ -5750,16 +5759,16 @@ mod tests {
                 state("idle", NodeState::Idle),
             ],
         );
-        let outcome = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+        let outcome = quit(&fx, marion_core::proto::QuitDisposition::ReapIdleDetachBusy)
             .unwrap()
             .outcome;
-        let marion_proto::QuitOutcome::ReapedAndDetached { supervisor, .. } = outcome else {
+        let marion_core::proto::QuitOutcome::ReapedAndDetached { supervisor, .. } = outcome else {
             panic!("wrong disposition outcome")
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::NonTerminalNode
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode
             )
         );
         assert_eq!(runtime.killed(), [88]);
@@ -5784,16 +5793,16 @@ mod tests {
                 }),
             ],
         );
-        let outcome = quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let outcome = quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
             .unwrap()
             .outcome;
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
             panic!("wrong disposition outcome")
         };
         assert_eq!(
             supervisor,
-            marion_proto::SupervisorDisposition::Resident(
-                marion_proto::ResidentReason::UnconfirmedReapIntent
+            marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::UnconfirmedReapIntent
             )
         );
         assert!(!fx.handle.idle_exit_eligible());
@@ -5858,7 +5867,7 @@ mod tests {
         );
         assert_eq!(
             fx.handle.residency(),
-            Some(marion_proto::ResidentReason::NonTerminalNode),
+            Some(marion_core::proto::ResidentReason::NonTerminalNode),
             "§7.2: marion does not know, and the operator is the one who resolves that",
         );
         assert!(!fx.handle.idle_exit_eligible());
@@ -6001,7 +6010,7 @@ mod tests {
 
         let error = quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree {
+            marion_core::proto::QuitDisposition::KillTree {
                 confirmed: vec![id("root")],
             },
         )
@@ -6037,7 +6046,7 @@ mod tests {
 
         quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree {
+            marion_core::proto::QuitDisposition::KillTree {
                 confirmed: vec![id("root"), id("child")],
             },
         )
@@ -6087,7 +6096,7 @@ mod tests {
 
         quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree {
+            marion_core::proto::QuitDisposition::KillTree {
                 confirmed: vec![id("live"), id("reaped")],
             },
         )
@@ -6150,13 +6159,13 @@ mod tests {
         let seeded = journal_records(&fx.path).len();
 
         // RPC 1 — reaps the idle root, detaches the busy one.
-        quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+        quit(&fx, marion_core::proto::QuitDisposition::ReapIdleDetachBusy)
             .expect("one idle root is reapable");
         // RPC 2 — a different handler method, over the same registry. The reaped node is still
         // non-terminal by `state`, so §7.3.2 requires it in the confirmed set.
         quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree {
+            marion_core::proto::QuitDisposition::KillTree {
                 confirmed: vec![id("idle"), id("busy")],
             },
         )
@@ -6230,7 +6239,7 @@ mod tests {
 
         let error = quit(
             &fx,
-            marion_proto::QuitDisposition::KillTree {
+            marion_core::proto::QuitDisposition::KillTree {
                 confirmed: vec![id("root")],
             },
         )
@@ -6276,9 +6285,9 @@ mod tests {
             ],
         );
 
-        let marion_proto::QuitOutcome::ReapedAndDetached {
+        let marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped, detached, ..
-        } = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+        } = quit(&fx, marion_core::proto::QuitDisposition::ReapIdleDetachBusy)
             .expect("no busy root blocks the reap of an idle one")
             .outcome
         else {
@@ -6331,9 +6340,9 @@ mod tests {
             ],
         );
 
-        let marion_proto::QuitOutcome::ReapedAndDetached {
+        let marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped, detached, ..
-        } = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+        } = quit(&fx, marion_core::proto::QuitDisposition::ReapIdleDetachBusy)
             .expect("one idle root was reapable")
             .outcome
         else {
@@ -6374,11 +6383,11 @@ mod tests {
             ],
         );
 
-        let marion_proto::QuitOutcome::Detached {
+        let marion_core::proto::QuitOutcome::Detached {
             detached,
             gate_exposed,
             ..
-        } = quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        } = quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
             .expect("detach is implemented")
             .outcome
         else {
@@ -6471,14 +6480,17 @@ mod tests {
                 }),
             ],
         );
-        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
-            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+        let marion_core::proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_core::proto::QuitDisposition::DetachAll)
                 .expect("detach is implemented")
                 .outcome
         else {
             panic!("detach returned another disposition's outcome")
         };
-        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert_eq!(
+            supervisor,
+            marion_core::proto::SupervisorDisposition::Exiting
+        );
         assert!(fx.handle.idle_exit_eligible());
 
         // A path the journal cannot be appended to. Nothing else about the decision changes, so
@@ -6501,7 +6513,7 @@ mod tests {
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
         call(
             &mut c,
-            Call::NodeCancel(marion_proto::params::NodeCancelParams {
+            Call::NodeCancel(marion_core::proto::params::NodeCancelParams {
                 agent_id: id("root"),
             }),
             1,
@@ -6509,7 +6521,7 @@ mod tests {
         let Frame::Response(resp) = next_frame(&mut r) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Error(e) = resp.outcome else {
+        let marion_core::proto::Outcome::Error(e) = resp.outcome else {
             panic!("expected a refusal")
         };
         assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
@@ -6530,7 +6542,7 @@ mod tests {
         let mut er = std::io::BufReader::new(early.try_clone().unwrap());
         call(
             &mut early,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         next_frame(&mut er);
@@ -6547,7 +6559,7 @@ mod tests {
         let mut lr = std::io::BufReader::new(late.try_clone().unwrap());
         call(
             &mut late,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
 
@@ -6555,10 +6567,10 @@ mod tests {
         let Frame::Response(resp) = next_frame(&mut lr) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Result(body) = resp.outcome else {
+        let marion_core::proto::Outcome::Result(body) = resp.outcome else {
             panic!("expected a result")
         };
-        let MethodResult::TreeSubscribe(snap) = marion_proto::Method::TreeSubscribe
+        let MethodResult::TreeSubscribe(snap) = marion_core::proto::Method::TreeSubscribe
             .decode_result(&body)
             .unwrap()
         else {
@@ -6670,10 +6682,10 @@ mod tests {
         r: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
         agent: &str,
         rid: i64,
-    ) -> (Vec<Event>, marion_proto::Outcome) {
+    ) -> (Vec<Event>, marion_core::proto::Outcome) {
         call(
             c,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id(agent),
                 pane_stream: None,
             }),
@@ -6689,11 +6701,13 @@ mod tests {
         }
     }
 
-    fn attached_ok(outcome: marion_proto::Outcome) -> marion_proto::result::NodeAttachResult {
-        let marion_proto::Outcome::Result(body) = outcome else {
+    fn attached_ok(
+        outcome: marion_core::proto::Outcome,
+    ) -> marion_core::proto::result::NodeAttachResult {
+        let marion_core::proto::Outcome::Result(body) = outcome else {
             panic!("node/attach was refused: {outcome:?}")
         };
-        let MethodResult::NodeAttach(r) = marion_proto::Method::NodeAttach
+        let MethodResult::NodeAttach(r) = marion_core::proto::Method::NodeAttach
             .decode_result(&body)
             .expect("the result decodes")
         else {
@@ -6702,9 +6716,9 @@ mod tests {
         r
     }
 
-    fn refusal(outcome: marion_proto::Outcome) -> RpcError {
+    fn refusal(outcome: marion_core::proto::Outcome) -> RpcError {
         match outcome {
-            marion_proto::Outcome::Error(e) => e,
+            marion_core::proto::Outcome::Error(e) => e,
             other => panic!("expected a refusal, got {other:?}"),
         }
     }
@@ -7072,8 +7086,8 @@ mod tests {
     }
 
     fn write_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &str) {
-        let f = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePtyWrite {
+        let f = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePtyWrite {
                 agent_id: id(agent),
                 bytes: bytes.into(),
             },
@@ -7083,10 +7097,10 @@ mod tests {
     }
 
     fn write_opaque_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &[u8]) {
-        let f = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneWrite(marion_proto::NodePaneWriteV1 {
+        let f = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneWrite(marion_core::proto::NodePaneWriteV1 {
                 agent_id: id(agent),
-                bytes: marion_proto::OpaquePaneBytesV1::new(bytes),
+                bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes),
             }),
         ));
         s.write_all(f.to_line().as_bytes()).unwrap();
@@ -7094,8 +7108,8 @@ mod tests {
     }
 
     fn send_resize(s: &mut std::os::unix::net::UnixStream, agent: &str, cols: u16, rows: u16) {
-        let f = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodeResize {
+        let f = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodeResize {
                 agent_id: id(agent),
                 cols,
                 rows,
@@ -7116,10 +7130,10 @@ mod tests {
 
         let mut c = w.dial();
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
-        let forged = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+        let forged = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
-                token: marion_proto::PaneReadyTokenV1::new([0x5a; 32]),
+                token: marion_core::proto::PaneReadyTokenV1::new([0x5a; 32]),
                 cut: 0,
             }),
         ));
@@ -7130,7 +7144,7 @@ mod tests {
         // It must be the next frame: the forged notification produces no notification of its own.
         call(
             &mut c,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             9,
@@ -7228,11 +7242,11 @@ mod tests {
             };
             assert_eq!(frame.seq, seq as u64, "the replay sequence stays dense");
             match &frame.frame {
-                marion_proto::PaneFrameKindV1::Output { bytes } => {
+                marion_core::proto::PaneFrameKindV1::Output { bytes } => {
                     output.extend_from_slice(bytes.as_bytes());
                 }
-                marion_proto::PaneFrameKindV1::End {} => ends += 1,
-                marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 } => {
+                marion_core::proto::PaneFrameKindV1::End {} => ends += 1,
+                marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 } => {
                     initial_geometry += 1;
                 }
                 other => panic!("unexpected replay geometry: {other:?}"),
@@ -7245,7 +7259,7 @@ mod tests {
             frames.last(),
             Some(Frame::Notification(note))
                 if matches!(&note.event, Event::NodePaneFrame(frame)
-                    if matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}))
+                    if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}))
         ));
     }
 
@@ -7659,7 +7673,7 @@ mod tests {
         let delivery = std::thread::spawn(move || {
             handle.deliver_input(
                 conn,
-                &marion_proto::Input::NodeResize {
+                &marion_core::proto::Input::NodeResize {
                     agent_id: id("root"),
                     cols: 140,
                     rows: 50,
@@ -7734,7 +7748,7 @@ mod tests {
         let delivery = std::thread::spawn(move || {
             handle.deliver_input(
                 conn,
-                &marion_proto::Input::NodePtyWrite {
+                &marion_core::proto::Input::NodePtyWrite {
                     agent_id: id("root"),
                     bytes: "late-input".into(),
                 },
@@ -7802,7 +7816,7 @@ mod tests {
         let delivery = std::thread::spawn(move || {
             handle.deliver_input(
                 conn,
-                &marion_proto::Input::NodePtyWrite {
+                &marion_core::proto::Input::NodePtyWrite {
                     agent_id: id("root"),
                     bytes: "admitted".into(),
                 },
@@ -7912,7 +7926,7 @@ mod tests {
         let delivery = std::thread::spawn(move || {
             handle.deliver_input(
                 conn,
-                &marion_proto::Input::NodePtyWrite {
+                &marion_core::proto::Input::NodePtyWrite {
                     agent_id: id("root"),
                     bytes: "recorded-but-undelivered".into(),
                 },
@@ -8025,7 +8039,7 @@ mod tests {
         w.fx.handle.completed_pane(&id("root"), &host, charge);
         w.fx.handle.input(
             closing_v1_conn,
-            &marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+            &marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: closing_descriptor.token,
                 cut: closing_descriptor.cut,
@@ -8040,13 +8054,13 @@ mod tests {
             Some(Frame::Notification(note))
                 if matches!(&note.event, Event::NodePaneFrame(frame)
                     if frame.seq == 0
-                        && matches!(frame.frame, marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+                        && matches!(frame.frame, marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
         ));
         assert!(matches!(
             pending_frames.last(),
             Some(Frame::Notification(note))
                 if matches!(&note.event, Event::NodePaneFrame(frame)
-                    if matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}))
+                    if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}))
         ));
         assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
         assert!(!w.fx.handle.pane_ids().contains(&id("root")));
@@ -8102,7 +8116,7 @@ mod tests {
         }));
         w.fx.handle.input(
             conn,
-            &marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+            &marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token,
                 cut: descriptor.cut,
@@ -8114,7 +8128,7 @@ mod tests {
             Frame::Notification(note)
                 if matches!(note.event, Event::NodePaneFrame(ref frame)
                     if frame.seq == 0
-                        && matches!(frame.frame, marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+                        && matches!(frame.frame, marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
         ));
         assert!(captured.try_iter().next().is_none(), "replay reaches Ready");
 
@@ -8131,7 +8145,7 @@ mod tests {
             tail.last(),
             Some(Frame::Notification(note))
                 if matches!(&note.event, Event::NodePaneFrame(frame)
-                    if matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}))
+                    if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}))
         ));
         assert_eq!(out.departed(), None);
         host.unlisten(conn);
@@ -8383,7 +8397,7 @@ mod tests {
 
         w.fx.handle.deliver_input(
             conn,
-            &marion_proto::Input::NodeResize {
+            &marion_core::proto::Input::NodeResize {
                 agent_id: id("root"),
                 cols: 140,
                 rows: 50,
@@ -8671,9 +8685,9 @@ mod tests {
 
         call(
             &mut c,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id("root"),
-                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
             }),
             1,
         );
@@ -8697,8 +8711,8 @@ mod tests {
                 .all(|event| !matches!(event, Event::NodePaneFrame(_))),
             "pane frames preceded the attach response"
         );
-        let ready = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+        let ready = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token,
                 cut: descriptor.cut,
@@ -8726,16 +8740,16 @@ mod tests {
         assert!(matches!(
             pane_frames.first(),
             Some(frame)
-                if matches!(frame.frame, marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 })
+                if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 })
         ));
         let output_at = pane_frames.iter().position(|frame| {
-            matches!(&frame.frame, marion_proto::PaneFrameKindV1::Output { bytes }
+            matches!(&frame.frame, marion_core::proto::PaneFrameKindV1::Output { bytes }
                 if bytes.as_bytes() == b"prefix")
         });
         let resize_at = pane_frames.iter().position(|frame| {
             matches!(
                 frame.frame,
-                marion_proto::PaneFrameKindV1::Resize {
+                marion_core::proto::PaneFrameKindV1::Resize {
                     cols: 100,
                     rows: 40
                 }
@@ -8765,7 +8779,7 @@ mod tests {
             (
                 conn,
                 id("root"),
-                marion_proto::PaneReadyTokenV1::new([0xa5; 32]),
+                marion_core::proto::PaneReadyTokenV1::new([0xa5; 32]),
                 descriptor.cut,
             ),
             (
@@ -8790,7 +8804,7 @@ mod tests {
         for (ready_conn, agent_id, token, cut) in wrong {
             w.fx.handle.input(
                 ready_conn,
-                &marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                &marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                     agent_id,
                     token,
                     cut,
@@ -8802,7 +8816,7 @@ mod tests {
 
         w.fx.handle.input(
             conn,
-            &marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+            &marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token.clone(),
                 cut: descriptor.cut,
@@ -8821,7 +8835,7 @@ mod tests {
             Frame::Notification(note)
                 if matches!(note.event, Event::NodePaneFrame(ref frame)
                     if frame.seq == 0
-                        && matches!(frame.frame, marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+                        && matches!(frame.frame, marion_core::proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
         ));
     }
 
@@ -8939,9 +8953,9 @@ mod tests {
         let mut first_reader = std::io::BufReader::new(first.try_clone().unwrap());
         call(
             &mut first,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id("root"),
-                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
             }),
             1,
         );
@@ -8958,8 +8972,8 @@ mod tests {
         let pane = attached.pane.expect("the live pane is attachable");
         assert!(pane.writable, "the v1 client must own the input lease");
         let descriptor = pane.pane_ready.expect("v1 replay was reserved");
-        let ready = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+        let ready = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token,
                 cut: descriptor.cut,
@@ -8976,7 +8990,7 @@ mod tests {
             };
             assert_eq!(frame.seq, expected);
             assert!(
-                !matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}),
+                !matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}),
                 "a live pane ended during its retained prefix"
             );
         }
@@ -8998,7 +9012,7 @@ mod tests {
                             frame,
                             Frame::Notification(note)
                                 if matches!(note.event, Event::NodePaneFrame(ref pane)
-                                    if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                                    if matches!(pane.frame, marion_core::proto::PaneFrameKindV1::End {}))
                         ),
                         "the refusal was forged into a successful terminal End"
                     );
@@ -9049,9 +9063,9 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         call(
             &mut client,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id("root"),
-                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
             }),
             1,
         );
@@ -9068,8 +9082,8 @@ mod tests {
         let pane = attached.pane.expect("a live pane is negotiated");
         assert!(pane.writable);
         let descriptor = pane.pane_ready.expect("v1 replay was reserved");
-        let ready = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+        let ready = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token,
                 cut: descriptor.cut,
@@ -9135,7 +9149,7 @@ mod tests {
                             frame,
                             Frame::Notification(note)
                                 if matches!(note.event, Event::NodePaneFrame(ref pane)
-                                    if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                                    if matches!(pane.frame, marion_core::proto::PaneFrameKindV1::End {}))
                         ),
                         "a failed admitted input was followed by a successful End"
                     );
@@ -9161,9 +9175,9 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         call(
             &mut client,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id("root"),
-                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
             }),
             1,
         );
@@ -9218,7 +9232,7 @@ mod tests {
                         frame,
                         Frame::Notification(note)
                             if matches!(note.event, Event::NodePaneFrame(ref pane)
-                                if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                                if matches!(pane.frame, marion_core::proto::PaneFrameKindV1::End {}))
                     ) {
                         break Err("terminal End preceded the grace-expiry refusal".to_string());
                     }
@@ -9267,9 +9281,9 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         call(
             &mut client,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: id("root"),
-                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+                pane_stream: Some(marion_core::proto::params::PaneStreamCapabilityV1::new()),
             }),
             1,
         );
@@ -9286,8 +9300,8 @@ mod tests {
         let pane = attached.pane.expect("the live pane is attachable");
         assert!(pane.writable, "the v1 client must own the input lease");
         let descriptor = pane.pane_ready.expect("v1 replay was reserved");
-        let ready = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+        let ready = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePaneReady(marion_core::proto::NodePaneReadyV1 {
                 agent_id: id("root"),
                 token: descriptor.token,
                 cut: descriptor.cut,
@@ -9314,7 +9328,7 @@ mod tests {
         // The socket is still a live, framed connection: nothing about the delivery departed it.
         call(
             &mut client,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             2,
@@ -9399,7 +9413,7 @@ mod tests {
         );
         call(
             &mut client,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             2,
@@ -9517,7 +9531,7 @@ mod tests {
         // the same connection instead of sleeping on a hope.
         call(
             &mut second,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             9,
@@ -9597,7 +9611,7 @@ mod tests {
         write_keys(&mut c, "root", "x");
         call(
             &mut c,
-            Call::NodeGet(marion_proto::params::NodeGetParams {
+            Call::NodeGet(marion_core::proto::params::NodeGetParams {
                 agent_id: id("root"),
             }),
             2,
@@ -9942,8 +9956,8 @@ mod tests {
     mod owns_nodes {
         use super::*;
         use marion_core::paths::ProjectDir;
-        use marion_proto::params::AgentSpawnParams;
-        use marion_proto::{
+        use marion_core::proto::params::AgentSpawnParams;
+        use marion_core::proto::{
             NativeEnvVarV1, NativeLaunchContextV1, NativeLaunchContextV2, OpaqueOsValueV1,
             SpawnCaller, TerminalGeometryV1,
         };
@@ -10033,7 +10047,7 @@ mod tests {
         fn spawn(
             fx: &Owning,
             p: AgentSpawnParams,
-        ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+        ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
             let out = crate::serve::sink(ConnId(3));
             match fx.handle.call(ConnId(3), &Call::AgentSpawn(p), &out)? {
                 MethodResult::AgentSpawn(r) => Ok(r),
@@ -11381,11 +11395,11 @@ mod tests {
             fx: &Owning,
             agent_id: AgentId,
             prompt: &str,
-        ) -> Result<marion_proto::result::NodeResumeResult, RpcError> {
+        ) -> Result<marion_core::proto::result::NodeResumeResult, RpcError> {
             let out = crate::serve::sink(ConnId(3));
             match fx.handle.call(
                 ConnId(3),
-                &Call::NodeResume(marion_proto::params::NodeResumeParams {
+                &Call::NodeResume(marion_core::proto::params::NodeResumeParams {
                     agent_id,
                     prompt: prompt.into(),
                 }),
@@ -11410,7 +11424,7 @@ mod tests {
                 .handle
                 .call(
                     ConnId(9),
-                    &Call::NodeGet(marion_proto::params::NodeGetParams {
+                    &Call::NodeGet(marion_core::proto::params::NodeGetParams {
                         agent_id: id("root"),
                     }),
                     &crate::serve::sink(ConnId(9)),

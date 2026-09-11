@@ -70,7 +70,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use marion_core::contract::AgentId;
-use marion_proto::{
+use marion_core::proto::{
     Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, NodePaneWriteV1,
     RequestId,
 };
@@ -112,7 +112,7 @@ fn arm_resize_tracking(resized: &AtomicBool, install: impl FnOnce()) {
 /// erases. §5.3's refusal is a sentence, so the holder is named whenever the supervisor named one.
 fn announce_read_only(
     screen: &Screen,
-    pane: &marion_proto::result::PaneAttach,
+    pane: &marion_core::proto::result::PaneAttach,
 ) -> Result<(), Refusal> {
     if pane.writable {
         return Ok(());
@@ -429,7 +429,7 @@ impl KeyboardEncoder {
             })),
             Self::V1 => Ok(Some(Input::NodePaneWrite(NodePaneWriteV1 {
                 agent_id: id.clone(),
-                bytes: marion_proto::OpaquePaneBytesV1::new(bytes),
+                bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes),
             }))),
         }
     }
@@ -708,11 +708,11 @@ impl Session {
     /// An older supervisor rejects the additive capability at parameter decoding. That is the one
     /// safe downgrade: the rejected request had no side effects. Every classified refusal and every
     /// internal failure remains visible instead of being retried through a weaker protocol.
-    fn negotiated_response(&mut self) -> Result<(marion_proto::Response, bool), Refusal> {
+    fn negotiated_response(&mut self) -> Result<(marion_core::proto::Response, bool), Refusal> {
         self.send_attach(RequestId::Number(1), true)?;
         let response = self.await_attach_response(RequestId::Number(1), true)?;
-        if !matches!(&response.outcome, marion_proto::Outcome::Error(e)
-            if e.code == marion_proto::error::INVALID_PARAMS)
+        if !matches!(&response.outcome, marion_core::proto::Outcome::Error(e)
+            if e.code == marion_core::proto::error::INVALID_PARAMS)
         {
             return Ok((response, true));
         }
@@ -724,18 +724,18 @@ impl Session {
     /// The display plane the answer attached to, or why this node has none.
     fn decode_attached_pane(
         &self,
-        response: marion_proto::Response,
-    ) -> Result<marion_proto::result::PaneAttach, Refusal> {
+        response: marion_core::proto::Response,
+    ) -> Result<marion_core::proto::result::PaneAttach, Refusal> {
         let body = match response.outcome {
-            marion_proto::Outcome::Result(body) => body,
-            marion_proto::Outcome::Error(error) => {
+            marion_core::proto::Outcome::Result(body) => body,
+            marion_core::proto::Outcome::Error(error) => {
                 return Err(format!(
                     "the supervisor refused the attach: {}",
                     error.message
                 ));
             }
         };
-        let MethodResult::NodeAttach(attached) = marion_proto::Method::NodeAttach
+        let MethodResult::NodeAttach(attached) = marion_core::proto::Method::NodeAttach
             .decode_result(&body)
             .map_err(|e| format!("the supervisor's node/attach answer did not decode: {e}"))?
         else {
@@ -758,7 +758,7 @@ impl Session {
     fn select_pane_stream(
         &self,
         requested_v1: bool,
-        ready: Option<&marion_proto::result::PaneReadyDescriptorV1>,
+        ready: Option<&marion_core::proto::result::PaneReadyDescriptorV1>,
     ) -> Result<PaneStream, Refusal> {
         match (requested_v1, ready) {
             (true, Some(descriptor)) => Ok(PaneStream::V1 {
@@ -784,7 +784,7 @@ impl Session {
     fn enter_view(
         &mut self,
         screen: Screen,
-        pane: &marion_proto::result::PaneAttach,
+        pane: &marion_core::proto::result::PaneAttach,
         viewport_cols: u16,
         viewport_rows: u16,
     ) -> Result<(), Refusal> {
@@ -807,11 +807,11 @@ impl Session {
     }
 
     fn send_attach(&mut self, id: RequestId, pane_v1: bool) -> Result<(), Refusal> {
-        let frame = Frame::Request(marion_proto::Request::new(
+        let frame = Frame::Request(marion_core::proto::Request::new(
             id,
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+            Call::NodeAttach(marion_core::proto::params::NodeAttachParams {
                 agent_id: self.id.clone(),
-                pane_stream: pane_v1.then(marion_proto::params::PaneStreamCapabilityV1::new),
+                pane_stream: pane_v1.then(marion_core::proto::params::PaneStreamCapabilityV1::new),
             }),
         ));
         self.write_frame(&frame, "sending node/attach")
@@ -821,7 +821,7 @@ impl Session {
         &mut self,
         expected: RequestId,
         pane_v1: bool,
-    ) -> Result<marion_proto::Response, Refusal> {
+    ) -> Result<marion_core::proto::Response, Refusal> {
         loop {
             match self.next_frame()? {
                 Some(Frame::Response(response)) if response.id == expected => return Ok(response),
@@ -852,7 +852,7 @@ impl Session {
     /// did not ask for.
     fn absorb_pre_response(
         &mut self,
-        note: marion_proto::Notification,
+        note: marion_core::proto::Notification,
         pane_v1: bool,
     ) -> Result<(), Refusal> {
         if pane_v1 && crate::pane_client::pane_event_targets(&self.id, &note.event) {
@@ -1183,7 +1183,7 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_proto::PaneFrameKindV1;
+    use marion_core::proto::PaneFrameKindV1;
     use std::io::{BufRead, BufReader};
     use std::os::fd::AsRawFd;
     use std::sync::Mutex;
@@ -1299,7 +1299,7 @@ mod tests {
             .consume_pane_event(pane_event(
                 0,
                 PaneFrameKindV1::Output {
-                    bytes: marion_proto::OpaquePaneBytesV1::new(b"unbracketed tail"),
+                    bytes: marion_core::proto::OpaquePaneBytesV1::new(b"unbracketed tail"),
                 },
             ))
             .unwrap();
@@ -1349,12 +1349,12 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    pane_attach_response(marion_proto::result::PaneAttach {
+                    pane_attach_response(marion_core::proto::result::PaneAttach {
                         cols: COLS,
                         rows: ROWS,
                         writable: true,
                         held_by: None,
-                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
                         }),
@@ -1374,16 +1374,18 @@ mod tests {
                 (
                     0,
                     PaneFrameKindV1::Output {
-                        bytes: marion_proto::OpaquePaneBytesV1::new(screenful),
+                        bytes: marion_core::proto::OpaquePaneBytesV1::new(screenful),
                     },
                 ),
                 (1, PaneFrameKindV1::End {}),
             ] {
                 server
                     .write_all(
-                        Frame::Notification(marion_proto::Notification::new(pane_event(seq, kind)))
-                            .to_line()
-                            .as_bytes(),
+                        Frame::Notification(marion_core::proto::Notification::new(pane_event(
+                            seq, kind,
+                        )))
+                        .to_line()
+                        .as_bytes(),
                     )
                     .unwrap();
             }
@@ -1451,12 +1453,12 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    pane_attach_response(marion_proto::result::PaneAttach {
+                    pane_attach_response(marion_core::proto::result::PaneAttach {
                         cols: 80,
                         rows: 24,
                         writable: true,
                         held_by: None,
-                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
                         }),
@@ -1486,26 +1488,26 @@ mod tests {
         server_thread.join().unwrap();
     }
 
-    fn pane_token() -> marion_proto::PaneReadyTokenV1 {
-        marion_proto::PaneReadyTokenV1::new([0x5a; 32])
+    fn pane_token() -> marion_core::proto::PaneReadyTokenV1 {
+        marion_core::proto::PaneReadyTokenV1::new([0x5a; 32])
     }
 
-    fn pane_attach_response(pane: marion_proto::result::PaneAttach) -> Frame {
+    fn pane_attach_response(pane: marion_core::proto::result::PaneAttach) -> Frame {
         pane_attach_response_with_id(RequestId::Number(1), pane)
     }
 
     fn pane_attach_response_with_id(
         id: RequestId,
-        pane: marion_proto::result::PaneAttach,
+        pane: marion_core::proto::result::PaneAttach,
     ) -> Frame {
         use marion_core::encoding::Duration;
         use marion_core::harness::Harness;
         use marion_core::node::{NodeState, ReapState};
-        use marion_proto::model::{AttachMode, NodeSummary, ReplayPoint};
+        use marion_core::proto::model::{AttachMode, NodeSummary, ReplayPoint};
 
-        Frame::Response(marion_proto::Response::ok(
+        Frame::Response(marion_core::proto::Response::ok(
             id,
-            &MethodResult::NodeAttach(marion_proto::result::NodeAttachResult {
+            &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
                     agent_id: AgentId("root".into()),
                     parent_id: None,
@@ -1549,7 +1551,7 @@ mod tests {
     }
 
     fn pane_event(seq: u64, frame: PaneFrameKindV1) -> Event {
-        Event::NodePaneFrame(marion_proto::PaneFrameV1::new(
+        Event::NodePaneFrame(marion_core::proto::PaneFrameV1::new(
             AgentId("root".into()),
             seq,
             frame,
@@ -1576,7 +1578,7 @@ mod tests {
                 .consume_pane_event(pane_event(
                     0,
                     PaneFrameKindV1::Output {
-                        bytes: marion_proto::OpaquePaneBytesV1::new(raw),
+                        bytes: marion_core::proto::OpaquePaneBytesV1::new(raw),
                     },
                 ))
                 .unwrap(),
@@ -1727,10 +1729,10 @@ mod tests {
             Some(v),
         );
         let bytes = vec![0x00, 0xff, 0x80, b'x'];
-        let frame = Frame::Notification(marion_proto::Notification::new(pane_event(
+        let frame = Frame::Notification(marion_core::proto::Notification::new(pane_event(
             0,
             PaneFrameKindV1::Output {
-                bytes: marion_proto::OpaquePaneBytesV1::new(bytes.clone()),
+                bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes.clone()),
             },
         )));
         let line = frame.to_line().into_bytes();
@@ -1793,12 +1795,12 @@ mod tests {
             assert!(params.pane_stream.is_some());
             server
                 .write_all(
-                    pane_attach_response(marion_proto::result::PaneAttach {
+                    pane_attach_response(marion_core::proto::result::PaneAttach {
                         cols: 80,
                         rows: 24,
                         writable: false,
                         held_by: Some(7),
-                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 4,
                         }),
@@ -1852,9 +1854,9 @@ mod tests {
             assert_eq!(first.id, RequestId::Number(1));
             server
                 .write_all(
-                    Frame::Response(marion_proto::Response::err(
+                    Frame::Response(marion_core::proto::Response::err(
                         RequestId::Number(1),
-                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                        marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
                     ))
                     .to_line()
                     .as_bytes(),
@@ -1875,7 +1877,7 @@ mod tests {
                 .write_all(
                     pane_attach_response_with_id(
                         RequestId::Number(2),
-                        marion_proto::result::PaneAttach {
+                        marion_core::proto::result::PaneAttach {
                             cols: 80,
                             rows: 24,
                             writable: false,
@@ -1922,9 +1924,9 @@ mod tests {
             assert!(first_params.pane_stream.is_some());
             server
                 .write_all(
-                    Frame::Response(marion_proto::Response::err(
+                    Frame::Response(marion_core::proto::Response::err(
                         RequestId::Number(1),
-                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                        marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
                     ))
                     .to_line()
                     .as_bytes(),
@@ -1946,7 +1948,7 @@ mod tests {
                 .write_all(
                     pane_attach_response_with_id(
                         RequestId::Number(2),
-                        marion_proto::result::PaneAttach {
+                        marion_core::proto::result::PaneAttach {
                             cols: 80,
                             rows: 24,
                             writable: true,
@@ -2032,12 +2034,12 @@ mod tests {
             assert!(params.pane_stream.is_some());
             server
                 .write_all(
-                    pane_attach_response(marion_proto::result::PaneAttach {
+                    pane_attach_response(marion_core::proto::result::PaneAttach {
                         cols: 80,
                         rows: 24,
                         writable: true,
                         held_by: None,
-                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
                         }),
@@ -2102,9 +2104,9 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    Frame::Response(marion_proto::Response::err(
+                    Frame::Response(marion_core::proto::Response::err(
                         RequestId::Number(1),
-                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                        marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
                     ))
                     .to_line()
                     .as_bytes(),
@@ -2117,12 +2119,12 @@ mod tests {
                 .write_all(
                     pane_attach_response_with_id(
                         RequestId::Number(2),
-                        marion_proto::result::PaneAttach {
+                        marion_core::proto::result::PaneAttach {
                             cols: 80,
                             rows: 24,
                             writable: false,
                             held_by: Some(7),
-                            pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                            pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                                 token: pane_token(),
                                 cut: 0,
                             }),
@@ -2156,9 +2158,9 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    Frame::Response(marion_proto::Response::err(
+                    Frame::Response(marion_core::proto::Response::err(
                         RequestId::Number(1),
-                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                        marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
                     ))
                     .to_line()
                     .as_bytes(),
@@ -2167,15 +2169,16 @@ mod tests {
             server.flush().unwrap();
             line.clear();
             lines.read_line(&mut line).unwrap();
-            let prefix = Frame::Notification(marion_proto::Notification::new(Event::NodePty {
-                agent_id: AgentId("root".into()),
-                seq: 0,
-                mono_ns: 0,
-                bytes: "legacy-prefix".into(),
-            }));
+            let prefix =
+                Frame::Notification(marion_core::proto::Notification::new(Event::NodePty {
+                    agent_id: AgentId("root".into()),
+                    seq: 0,
+                    mono_ns: 0,
+                    bytes: "legacy-prefix".into(),
+                }));
             let response = pane_attach_response_with_id(
                 RequestId::Number(2),
-                marion_proto::result::PaneAttach {
+                marion_core::proto::result::PaneAttach {
                     cols: 80,
                     rows: 24,
                     writable: false,
@@ -2214,9 +2217,9 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    Frame::Response(marion_proto::Response::err(
+                    Frame::Response(marion_core::proto::Response::err(
                         RequestId::Number(1),
-                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                        marion_core::proto::RpcError::invalid_params("unknown field pane_stream"),
                     ))
                     .to_line()
                     .as_bytes(),
@@ -2227,7 +2230,7 @@ mod tests {
             lines.read_line(&mut line).unwrap();
             server
                 .write_all(
-                    Frame::Notification(marion_proto::Notification::new(pane_event(
+                    Frame::Notification(marion_core::proto::Notification::new(pane_event(
                         0,
                         PaneFrameKindV1::End {},
                     )))
@@ -2367,21 +2370,21 @@ mod tests {
             BufReader::new(server.try_clone().unwrap())
                 .read_line(&mut request)
                 .expect("the attach request");
-            let early = Frame::Notification(marion_proto::Notification::new(Event::NodePaneFrame(
-                marion_proto::PaneFrameV1::new(
+            let early = Frame::Notification(marion_core::proto::Notification::new(
+                Event::NodePaneFrame(marion_core::proto::PaneFrameV1::new(
                     AgentId("root".into()),
                     0,
-                    marion_proto::PaneFrameKindV1::Output {
-                        bytes: marion_proto::OpaquePaneBytesV1::new(b"lost"),
+                    marion_core::proto::PaneFrameKindV1::Output {
+                        bytes: marion_core::proto::OpaquePaneBytesV1::new(b"lost"),
                     },
-                ),
-            )));
-            let response = pane_attach_response(marion_proto::result::PaneAttach {
+                )),
+            ));
+            let response = pane_attach_response(marion_core::proto::result::PaneAttach {
                 cols: 80,
                 rows: 24,
                 writable: false,
                 held_by: Some(9),
-                pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                     token: pane_token(),
                     cut: 1,
                 }),

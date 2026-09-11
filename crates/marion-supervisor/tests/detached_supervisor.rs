@@ -832,14 +832,14 @@ fn a_finished_node(path: &Path, agent: &str) {
 }
 
 /// Ask a running supervisor to quit, and read what it answered.
-fn session_quit(paths: &SocketPaths) -> marion_proto::QuitOutcome {
+fn session_quit(paths: &SocketPaths) -> marion_core::proto::QuitOutcome {
     use std::io::{BufRead, Write};
     let mut c = std::os::unix::net::UnixStream::connect(paths.socket()).expect("dial");
     c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let frame = marion_proto::Frame::Request(marion_proto::Request::new(
-        marion_proto::RequestId::Number(1),
-        marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
-            disposition: marion_proto::QuitDisposition::DetachAll,
+    let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
+        marion_core::proto::RequestId::Number(1),
+        marion_core::proto::Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
+            disposition: marion_core::proto::QuitDisposition::DetachAll,
         }),
     ));
     c.write_all(frame.to_line().as_bytes()).unwrap();
@@ -850,15 +850,15 @@ fn session_quit(paths: &SocketPaths) -> marion_proto::QuitOutcome {
         r.read_line(&mut line).expect("a frame arrives") > 0,
         "closed"
     );
-    let marion_proto::Frame::Response(resp) =
-        marion_proto::Frame::from_line(&line).expect("well-formed")
+    let marion_core::proto::Frame::Response(resp) =
+        marion_core::proto::Frame::from_line(&line).expect("well-formed")
     else {
         panic!("a request is answered by a response")
     };
-    let marion_proto::Outcome::Result(body) = resp.outcome else {
+    let marion_core::proto::Outcome::Result(body) = resp.outcome else {
         panic!("session/quit was refused: {line}")
     };
-    let marion_proto::MethodResult::SessionQuit(r) = marion_proto::Method::SessionQuit
+    let marion_core::proto::MethodResult::SessionQuit(r) = marion_core::proto::Method::SessionQuit
         .decode_result(&body)
         .expect("the result decodes")
     else {
@@ -919,13 +919,13 @@ fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_until_that_node_fini
     let id = published(&bed.paths);
 
     let outcome = session_quit(&bed.paths);
-    let marion_proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
+    let marion_core::proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
         panic!("DetachAll answers Detached")
     };
     assert_eq!(
         supervisor,
-        marion_proto::SupervisorDisposition::Resident(
-            marion_proto::ResidentReason::NonTerminalNode
+        marion_core::proto::SupervisorDisposition::Resident(
+            marion_core::proto::ResidentReason::NonTerminalNode
         ),
         "the supervisor must name the clause of §5.7's exclusion list that holds it, not merely \
          decline"
@@ -1144,7 +1144,7 @@ fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by
     assert!(
         until(|| matches!(
             session_quit(&bed.paths),
-            marion_proto::QuitOutcome::Detached { ref detached, .. }
+            marion_core::proto::QuitOutcome::Detached { ref detached, .. }
                 if detached.as_slice() == [marion_core::contract::AgentId("root".into())]
         )),
         "the running node is folded and detachable before anything is corrupted"
@@ -1162,13 +1162,14 @@ fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by
     // …and then the record that *would* have released the supervisor, which it will never read.
     a_finished_node(&journal, "root");
 
-    let marion_proto::QuitOutcome::Detached { supervisor, .. } = session_quit(&bed.paths) else {
+    let marion_core::proto::QuitOutcome::Detached { supervisor, .. } = session_quit(&bed.paths)
+    else {
         panic!("DetachAll answers Detached")
     };
     assert_eq!(
         supervisor,
-        marion_proto::SupervisorDisposition::Resident(
-            marion_proto::ResidentReason::RegistryStopped
+        marion_core::proto::SupervisorDisposition::Resident(
+            marion_core::proto::ResidentReason::RegistryStopped
         ),
         "the exit record is on disk and the supervisor cannot see it — and the operator is told \
          that, rather than being sent after whichever clause the frozen prefix still satisfies"
@@ -1206,12 +1207,12 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
     let id = published(&bed.paths);
 
     let outcome = session_quit(&bed.paths);
-    let marion_proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
+    let marion_core::proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
         panic!("DetachAll answers Detached")
     };
     assert_eq!(
         supervisor,
-        marion_proto::SupervisorDisposition::Exiting,
+        marion_core::proto::SupervisorDisposition::Exiting,
         "nothing in §5.7's exclusion list holds, so the supervisor may go"
     );
     drop(ensured);

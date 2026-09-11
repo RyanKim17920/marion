@@ -38,7 +38,7 @@
 //!
 //! * **degrade on bad input** — a line that is not a frame is answered, or recorded, and the
 //!   connection reads on. NDJSON is self-synchronizing at `\n`, so one bad line costs one line;
-//! * **a panic in a handler is caught** and answered as [`marion_proto::FailureKind::Internal`]. A
+//! * **a panic in a handler is caught** and answered as [`marion_core::proto::FailureKind::Internal`]. A
 //!   client that can crash the supervisor by sending a request is a client that can kill the fleet;
 //! * **announce your own death** — every connection ends through [`Handle::gone`] carrying both
 //!   §7.3.1's reading *and* the transport-level [`Departure`], so a supervisor never simply stops
@@ -53,7 +53,7 @@
 //!
 //! This module records exactly that evidence and nothing else: a `session/quit` frame that *parses*
 //! sets the connection's stated disposition, and every other departure yields
-//! [`marion_proto::ClientGone::SocketClosed`]. The recording is deliberately independent of what
+//! [`marion_core::proto::ClientGone::SocketClosed`]. The recording is deliberately independent of what
 //! the handler answers — the client said what it wanted whether or not marion could do it. Only a
 //! **successful** quit response closes that connection; a refused stale kill confirmation stays
 //! open so the operator can render and retry. The handler performs dispositions during the call,
@@ -77,8 +77,8 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use marion_proto::notify::Event;
-use marion_proto::{
+use marion_core::proto::notify::Event;
+use marion_core::proto::{
     Call, ClientGone, Frame, MethodResult, Notification, QuitDisposition, Request, RequestId,
     Response, RpcError,
 };
@@ -197,7 +197,7 @@ pub enum Departure {
 ///
 /// This is the *only* identity the transport can establish, and naming what it is not is the whole
 /// point of the type. It answers **which user**. It does not answer **which node** — §5.4's
-/// per-node capability token is what answers that, and [`marion_proto::SpawnCaller`] is where a
+/// per-node capability token is what answers that, and [`marion_core::proto::SpawnCaller`] is where a
 /// caller presents one. The two are not interchangeable and the design records a shipped instance
 /// of confusing them (§11 item 28, open question 3): an unauthenticated local socket whose
 /// authorization keyed on a client-asserted origin field, reachable by any process of the same
@@ -281,7 +281,7 @@ pub trait Handle: Send + Sync + 'static {
     /// resize for a node with a display plane.
     ///
     /// Returns nothing, and that is the whole shape of it. A notification has no `id`, so there is
-    /// no frame in which an answer could be correlated — see [`marion_proto::input`] for why a
+    /// no frame in which an answer could be correlated — see [`marion_core::proto::input`] for why a
     /// keystroke must not be a request, and [`answer_one`]'s `None` for what the transport does
     /// with an id-less line either way. A handler that cannot deliver the bytes says so on the
     /// channel the operator is already watching: the node's own pty stream, or the refusal already
@@ -291,14 +291,14 @@ pub trait Handle: Send + Sync + 'static {
     /// one. That is the same defaulting rule [`Handle::connected`] uses, and it is safe here for the
     /// same reason: a dropped keystroke on a node that has no pty is not a silent wrong answer, it
     /// is the only answer there is.
-    fn input(&self, _conn: ConnId, _input: &marion_proto::Input) {}
+    fn input(&self, _conn: ConnId, _input: &marion_core::proto::Input) {}
 
     /// Deliver an inbound notification with the exact connection's outbound failure channel.
     ///
     /// This additive method preserves implementations of the original [`Self::input`] surface.
     /// Display-plane handlers override it when an id-less notification can fail only by visibly
     /// ending the sender's connection.
-    fn input_with_out(&self, conn: ConnId, input: &marion_proto::Input, _out: &Outbound) {
+    fn input_with_out(&self, conn: ConnId, input: &marion_core::proto::Input, _out: &Outbound) {
         self.input(conn, input);
     }
 
@@ -703,7 +703,7 @@ impl Iterator for CapturedTryIter<'_> {
 ///
 /// **The buffer is the point.** See the module doc: a `read()` may return a fraction of a frame,
 /// several frames, or several frames and a fraction, and the only thing that is always true is that
-/// a frame ends at `\n` — which [`marion_proto::Frame::to_line`] guarantees is the *only* newline it
+/// a frame ends at `\n` — which [`marion_core::proto::Frame::to_line`] guarantees is the *only* newline it
 /// ever emits.
 #[derive(Debug)]
 pub struct Lines<R> {
@@ -1513,7 +1513,7 @@ fn answer_request(
 /// A second, deliberately minimal parse: a malformed request still deserves an answer its sender can
 /// correlate, and the alternative — silence — is the shape §11 item 23 keeps naming, where a caller
 /// cannot tell a refusal from a request that never arrived. Only a string or a number counts, for
-/// the reason [`marion_proto::RequestId`] gives: a `null` id cannot be correlated by anyone.
+/// the reason [`marion_core::proto::RequestId`] gives: a `null` id cannot be correlated by anyone.
 fn recover_id(line: &str) -> Option<RequestId> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     match v.get("id")? {
@@ -1945,8 +1945,8 @@ mod tests {
     use marion_core::encoding::Duration as EncDuration;
     use marion_core::harness::Harness;
     use marion_core::node::{NodeState, ReapState};
-    use marion_proto::result::{NodeGetResult, TreeSubscribeResult};
-    use marion_proto::{Method, NodeSummary, ReplayPoint};
+    use marion_core::proto::result::{NodeGetResult, TreeSubscribeResult};
+    use marion_core::proto::{Method, NodeSummary, ReplayPoint};
     use std::ffi::OsString;
     use std::io::BufRead;
     use std::os::unix::net::UnixStream;
@@ -1961,7 +1961,7 @@ mod tests {
         calls: Mutex<Vec<(ConnId, Method)>>,
         gone: Mutex<Vec<(ConnId, ClientGone, Departure)>>,
         subs: Mutex<Vec<Outbound>>,
-        inputs: Mutex<Vec<(ConnId, marion_proto::Input)>>,
+        inputs: Mutex<Vec<(ConnId, marion_core::proto::Input)>>,
         panic_on: Mutex<Option<Method>>,
         quit_ok: AtomicBool,
         gone_signal: Mutex<Option<SyncSender<Departure>>>,
@@ -2011,16 +2011,16 @@ mod tests {
                     }))
                 }
                 Call::SessionQuit(_) if self.quit_ok.load(Ordering::SeqCst) => Ok(
-                    MethodResult::SessionQuit(marion_proto::result::SessionQuitResult {
-                        outcome: marion_proto::QuitOutcome::Detached {
+                    MethodResult::SessionQuit(marion_core::proto::result::SessionQuitResult {
+                        outcome: marion_core::proto::QuitOutcome::Detached {
                             detached: vec![AgentId("a".into())],
                             gate_exposed: vec![AgentId("a".into())],
-                            guidance: marion_proto::DetachGuidance {
+                            guidance: marion_core::proto::DetachGuidance {
                                 reattach: "call tree/subscribe".into(),
                                 stop_fleet: "call session/quit KillTree".into(),
                             },
-                            supervisor: marion_proto::SupervisorDisposition::Resident(
-                                marion_proto::ResidentReason::NonTerminalNode,
+                            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                                marion_core::proto::ResidentReason::NonTerminalNode,
                             ),
                         },
                     }),
@@ -2033,7 +2033,7 @@ mod tests {
             }
         }
 
-        fn input(&self, conn: ConnId, input: &marion_proto::Input) {
+        fn input(&self, conn: ConnId, input: &marion_core::proto::Input) {
             lock(&self.inputs).push((conn, input.clone()));
         }
 
@@ -2061,7 +2061,7 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         send(
             &mut client,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
@@ -2149,7 +2149,7 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         send(
             &mut client,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
@@ -2205,7 +2205,7 @@ mod tests {
         let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
         send(
             &mut client,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
@@ -2399,7 +2399,7 @@ mod tests {
         assert_eq!(response["id"], 900);
         assert_eq!(
             response["error"]["code"],
-            marion_proto::error::METHOD_NOT_FOUND
+            marion_core::proto::error::METHOD_NOT_FOUND
         );
         assert_eq!(native.capability_lookup_count(), 0);
         assert!(lock(&recorder.calls).is_empty());
@@ -2440,7 +2440,7 @@ mod tests {
             assert_eq!(response["id"], 901);
             assert_eq!(
                 response["error"]["code"],
-                marion_proto::error::METHOD_NOT_FOUND
+                marion_core::proto::error::METHOD_NOT_FOUND
             );
         }
         assert_eq!(native.capability_lookup_count(), 0);
@@ -2583,7 +2583,7 @@ mod tests {
     }
 
     fn node_get(agent: &str) -> Call {
-        Call::NodeGet(marion_proto::params::NodeGetParams {
+        Call::NodeGet(marion_core::proto::params::NodeGetParams {
             agent_id: AgentId(agent.into()),
         })
     }
@@ -2600,17 +2600,17 @@ mod tests {
         let f = Fixture::new("input");
         let mut s = f.dial();
         for input in [
-            marion_proto::Input::NodePtyWrite {
+            marion_core::proto::Input::NodePtyWrite {
                 agent_id: AgentId("a".into()),
                 bytes: "ls\r".into(),
             },
-            marion_proto::Input::NodeResize {
+            marion_core::proto::Input::NodeResize {
                 agent_id: AgentId("a".into()),
                 cols: 140,
                 rows: 40,
             },
         ] {
-            let line = Frame::Input(marion_proto::ClientNotification::new(input)).to_line();
+            let line = Frame::Input(marion_core::proto::ClientNotification::new(input)).to_line();
             s.write_all(line.as_bytes()).unwrap();
         }
         s.flush().unwrap();
@@ -2618,16 +2618,16 @@ mod tests {
             until(|| lock(&f.rec.inputs).len() == 2),
             "the handler never saw them"
         );
-        let got: Vec<marion_proto::Input> =
+        let got: Vec<marion_core::proto::Input> =
             lock(&f.rec.inputs).iter().map(|(_, i)| i.clone()).collect();
         assert_eq!(
             got,
             vec![
-                marion_proto::Input::NodePtyWrite {
+                marion_core::proto::Input::NodePtyWrite {
                     agent_id: AgentId("a".into()),
                     bytes: "ls\r".into()
                 },
-                marion_proto::Input::NodeResize {
+                marion_core::proto::Input::NodeResize {
                     agent_id: AgentId("a".into()),
                     cols: 140,
                     rows: 40
@@ -2650,8 +2650,8 @@ mod tests {
         let rec = Arc::new(Recorder::default());
         let handle = Arc::clone(&rec) as Arc<dyn Handle>;
         let out = sink(ConnId(1));
-        let line = Frame::Input(marion_proto::ClientNotification::new(
-            marion_proto::Input::NodePtyWrite {
+        let line = Frame::Input(marion_core::proto::ClientNotification::new(
+            marion_core::proto::Input::NodePtyWrite {
                 agent_id: AgentId("boom".into()),
                 bytes: "x".into(),
             },
@@ -2672,7 +2672,7 @@ mod tests {
         let out = sink(ConnId(1));
         let request = Frame::Request(Request::new(
             RequestId::Number(1),
-            Call::SessionQuit(marion_proto::params::SessionQuitParams {
+            Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
                 disposition: QuitDisposition::DetachAll,
             }),
         ));
@@ -2689,7 +2689,10 @@ mod tests {
             completed,
             "only a successful quit closes after its response"
         );
-        assert!(matches!(response.outcome, marion_proto::Outcome::Result(_)));
+        assert!(matches!(
+            response.outcome,
+            marion_core::proto::Outcome::Result(_)
+        ));
         assert_eq!(stated, Some(QuitDisposition::DetachAll));
     }
 
@@ -2705,7 +2708,7 @@ mod tests {
             panic!("expected a response")
         };
         assert_eq!(resp.id, RequestId::Number(7));
-        let marion_proto::Outcome::Result(body) = resp.outcome else {
+        let marion_core::proto::Outcome::Result(body) = resp.outcome else {
             panic!("expected a result")
         };
         assert_eq!(
@@ -2759,7 +2762,7 @@ mod tests {
         let mut c = fx.dial();
         send(
             &mut c,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
@@ -2801,7 +2804,7 @@ mod tests {
         let mut quitter = fx.dial();
         send(
             &mut quitter,
-            Call::SessionQuit(marion_proto::params::SessionQuitParams {
+            Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
                 disposition: QuitDisposition::DetachAll,
             }),
             1,
@@ -2810,10 +2813,13 @@ mod tests {
         let Frame::Response(resp) = read_frame(&mut qr) else {
             panic!("expected a response")
         };
-        let marion_proto::Outcome::Error(e) = resp.outcome else {
+        let marion_core::proto::Outcome::Error(e) = resp.outcome else {
             panic!("§7.3.2's dispositions are not built, so this must be a refusal")
         };
-        assert_eq!(e.kind(), Some(marion_proto::FailureKind::Unimplemented));
+        assert_eq!(
+            e.kind(),
+            Some(marion_core::proto::FailureKind::Unimplemented)
+        );
         drop(qr);
         drop(quitter);
 
@@ -2873,7 +2879,7 @@ mod tests {
         let mut qr = std::io::BufReader::new(quitter.try_clone().unwrap());
         send(
             &mut quitter,
-            Call::SessionQuit(marion_proto::params::SessionQuitParams {
+            Call::SessionQuit(marion_core::proto::params::SessionQuitParams {
                 disposition: QuitDisposition::DetachAll,
             }),
             1,
@@ -2881,7 +2887,10 @@ mod tests {
         let Frame::Response(response) = read_frame(&mut qr) else {
             panic!("quit answers before closing")
         };
-        assert!(matches!(response.outcome, marion_proto::Outcome::Result(_)));
+        assert!(matches!(
+            response.outcome,
+            marion_core::proto::Outcome::Result(_)
+        ));
         let mut eof = String::new();
         assert_eq!(qr.read_line(&mut eof).unwrap(), 0, "successful quit closes");
         first.join().unwrap();
@@ -2923,7 +2932,7 @@ mod tests {
         let mut deaf = fx.dial();
         send(
             &mut deaf,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         assert!(until(|| !lock(&fx.rec.subs).is_empty()));
@@ -2984,7 +2993,7 @@ mod tests {
         std::panic::set_hook(Box::new(|_| {}));
         send(
             &mut c,
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
             1,
         );
         let Frame::Response(resp) = read_frame(&mut r) else {
@@ -2992,10 +3001,10 @@ mod tests {
         };
         std::panic::set_hook(hushed);
 
-        let marion_proto::Outcome::Error(e) = resp.outcome else {
+        let marion_core::proto::Outcome::Error(e) = resp.outcome else {
             panic!("a panic must not read as success")
         };
-        assert_eq!(e.kind(), Some(marion_proto::FailureKind::Internal));
+        assert_eq!(e.kind(), Some(marion_core::proto::FailureKind::Internal));
         assert!(!e.is_refusal(), "a malfunction is not a refusal");
 
         send(&mut c, node_get("a"), 2);
@@ -3021,10 +3030,10 @@ mod tests {
             panic!("expected a response")
         };
         assert_eq!(resp.id, RequestId::Number(5), "answered by its own id");
-        let marion_proto::Outcome::Error(e) = resp.outcome else {
+        let marion_core::proto::Outcome::Error(e) = resp.outcome else {
             panic!("expected an error")
         };
-        assert_eq!(e.code, marion_proto::error::METHOD_NOT_FOUND);
+        assert_eq!(e.code, marion_core::proto::error::METHOD_NOT_FOUND);
         assert!(e.message.contains("node/frobnicate"), "{e}");
 
         c.write_all(b"this is not json at all\n").unwrap();

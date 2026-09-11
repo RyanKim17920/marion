@@ -3,7 +3,7 @@
 use std::io::{stdin, stdout};
 use std::os::fd::{AsFd, OwnedFd};
 
-use marion_proto::TerminalGeometryV1;
+use marion_core::proto::TerminalGeometryV1;
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl, fstat};
 use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Pid, getpgid, getpgrp, getsid};
@@ -538,7 +538,7 @@ pub(crate) mod test_support {
         TerminalFingerprint,
     };
     use crate::pty::{PtyMaster, WinSize};
-    use marion_proto::TerminalGeometryV1;
+    use marion_core::proto::TerminalGeometryV1;
 
     /// A relay terminal already in raw mode on a test PTY, plus what a test needs to prove it
     /// was restored: a retained duplicate of stdin and the cooked flags it started with.

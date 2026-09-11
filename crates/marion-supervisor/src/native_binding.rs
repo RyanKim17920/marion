@@ -2,7 +2,7 @@
 //!
 //! ```compile_fail
 //! use marion_core::production_native_facades;
-//! use marion_proto::NativeLaunchContext;
+//! use marion_core::proto::NativeLaunchContext;
 //! use marion_supervisor::native_binding::bind_native_launch;
 //!
 //! let registry = production_native_facades();
@@ -13,12 +13,12 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use marion_core::proto::{
+    NativeLaunchContext, NativeLaunchContextV2, NativeOsValueConversionError, TerminalGeometryV1,
+};
 use marion_core::{AgentType, NativeFacadeDescriptor};
 use marion_harness::{
     NativeInjectionError, NativeProcessBase, NativeTerminalGeometry, validate_native_process_values,
-};
-use marion_proto::{
-    NativeLaunchContext, NativeLaunchContextV2, NativeOsValueConversionError, TerminalGeometryV1,
 };
 
 use crate::native_intent::ReadyNativeFacade;
@@ -216,14 +216,14 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 
+    use marion_core::proto::{
+        NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, NativeLaunchContextV2,
+        OpaqueOsValueV1, TerminalGeometryV1,
+    };
     use marion_core::{
         Lane, LaneReadiness, NativeAdapterId, NativeFacadeDescriptor, NativeFacadeRegistry,
         NativeLane, StructuredAdapterId, StructuredAgentIdentity, StructuredControl,
         StructuredLane, VendorIdentity, production_native_facades,
-    };
-    use marion_proto::{
-        NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, NativeLaunchContextV2,
-        OpaqueOsValueV1, TerminalGeometryV1,
     };
     use marion_testsupport::{Scratch, scratch};
 

@@ -55,11 +55,11 @@
 //!
 //! # What it deliberately does not answer yet
 //!
-//! * **`marion_proto::NodeSummary`.** Two of its fields have no source in the journal at all:
+//! * **`marion_core::proto::NodeSummary`.** Two of its fields have no source in the journal at all:
 //!   `timeout` (§3.1's bound — `SpawnIntent` carries no timeout) and `name` (there is no
 //!   `node/rename`). Building one means fabricating both, which is the thing
 //!   `marion-core`'s `ReplayedNode` refuses by making `intent` an `Option`.
-//! * **`marion_proto::AttachMode`.** Its `ResubscribeFrom` arm asserts that *the supervisor still
+//! * **`marion_core::proto::AttachMode`.** Its `ResubscribeFrom` arm asserts that *the supervisor still
 //!   holds the channel* (§6.2, §7.3.3) — live supervisor state, which no journal can report.
 //!   Deriving it from replay would hand a re-attaching client a live-node verdict for a node whose
 //!   channel nobody holds, which is the one answer §7.3.3 cannot survive being wrong about. The
@@ -78,8 +78,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use marion_core::paths::ProjectDir;
+use marion_core::proto::ReplayPoint;
 use marion_core::registry::{Replay, SeqGap, Truncation};
-use marion_proto::ReplayPoint;
 
 use crate::journal::JournalError;
 

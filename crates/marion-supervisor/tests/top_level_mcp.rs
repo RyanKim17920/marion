@@ -533,8 +533,8 @@ fn the_top_level_server_starts_a_supervisor_when_a_spawn_needs_one_and_not_befor
 /// finished, and there would be no window in which to kill anything.
 #[test]
 fn killing_the_top_level_server_leaves_its_root_running_under_the_supervisor() {
-    use marion_proto::params::TreeSubscribeParams;
-    use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
+    use marion_core::proto::params::TreeSubscribeParams;
+    use marion_core::proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 
     let fx = fixture("mcp-top-owns-nothing");
     let mut s = fx.server();

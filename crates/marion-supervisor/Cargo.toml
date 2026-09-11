@@ -46,7 +46,6 @@ marion-term = { path = "../marion-term" }
 # and `marion-term` take it that way: none of the four shipped backends is wanted, and the one
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false }
-marion-proto = { path = "../marion-proto" }
 rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
 
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the

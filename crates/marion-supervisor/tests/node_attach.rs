@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use marion_core::contract::AgentId;
-use marion_proto::notify::Event as Note;
+use marion_core::proto::notify::Event as Note;
 use marion_provider::{CannedServer, Config, Script, TurnGate};
 use marion_supervisor::socket::{SocketPaths, read_identity};
 use marion_testsupport::{fixture_repo, scratch, sweep, until_within};
@@ -152,8 +152,9 @@ fn until(cond: impl FnMut() -> bool) -> bool {
     until_within(BOUND, Duration::from_millis(5), cond)
 }
 
-fn the_child(nodes: &[marion_proto::NodeSummary]) -> AgentId {
-    let mut kids: Vec<&marion_proto::NodeSummary> = nodes.iter().filter(|n| n.depth == 1).collect();
+fn the_child(nodes: &[marion_core::proto::NodeSummary]) -> AgentId {
+    let mut kids: Vec<&marion_core::proto::NodeSummary> =
+        nodes.iter().filter(|n| n.depth == 1).collect();
     assert_eq!(
         kids.len(),
         1,

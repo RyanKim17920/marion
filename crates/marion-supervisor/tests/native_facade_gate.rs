@@ -12,8 +12,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_proto::params::AgentSpawnParams;
-use marion_proto::{
+use marion_core::proto::params::AgentSpawnParams;
+use marion_core::proto::{
     Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1,
     OpaqueOsValueV1, Outcome, Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
 };

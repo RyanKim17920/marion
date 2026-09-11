@@ -161,7 +161,7 @@ pub enum Undecodable {
 ///
 /// # Why there is no `starts_with("notifications/")` here any more
 ///
-/// There was, and it was wrong in the way [`marion_proto::envelope`]'s own comment describes for
+/// There was, and it was wrong in the way [`marion_core::proto::envelope`]'s own comment describes for
 /// its own protocol: *"a prefix or `starts_with` test would route `node/pty-write` into the
 /// outbound table"*. The same codebase was rigorous on one surface and loose on the other.
 ///
@@ -299,7 +299,7 @@ pub fn tools() -> Value {
             // **Step 5 did not close it, and it is worth saying why not.** The children are the
             // supervisor's now, so the *tree* is in one place for the first time — but a handle is
             // a `task_id`, and none of §2's fifteen methods resolves one to a node.
-            // `marion_proto::Method::ALL` is pinned at fifteen and step 5 deliberately adds none,
+            // `marion_core::proto::Method::ALL` is pinned at fifteen and step 5 deliberately adds none,
             // so the pairing is remembered where the supervisor said it: in this process, in the
             // one answer that carried both (`background::Handed`). Closing the grandchild gap needs
             // that lookup on the wire, which is a proto decision and not this file's.
@@ -818,12 +818,12 @@ pub fn wait_still_running(id: &Value, task_id: &str, agent_type: &str, waited_se
 /// **How a node's state is said to a model**, in one place, so `status` and `list` cannot describe
 /// the same node in two ways.
 ///
-/// [`marion_proto::model::NodeSummary`] is the whole of what §2 carries about a node, and its
+/// [`marion_core::proto::model::NodeSummary`] is the whole of what §2 carries about a node, and its
 /// `state` is a Rust enum whose `Debug` (`Exited(TimedOut)`, `Blocked(Descendants)`) is not a
 /// sentence. What a caller needs from either verb is the same three facts — what it is, where it
 /// got to, and whether it is worth waiting for — so they are rendered here rather than at two call
 /// sites that would drift.
-pub fn node_line(node: &marion_proto::model::NodeSummary) -> String {
+pub fn node_line(node: &marion_core::proto::model::NodeSummary) -> String {
     use marion_core::node::NodeState;
     let doing = match &node.state {
         NodeState::Spawning => "starting up".to_string(),
@@ -848,7 +848,11 @@ pub fn node_line(node: &marion_proto::model::NodeSummary) -> String {
 /// `TaskContract`. Promising one here would be the same false receipt
 /// [`background_result`] avoids one call earlier — worse, in fact, because `status` is the verb a
 /// caller reaches for precisely when it is deciding whether waiting is worth it.
-pub fn status_result(id: &Value, task_id: &str, node: &marion_proto::model::NodeSummary) -> Value {
+pub fn status_result(
+    id: &Value,
+    task_id: &str,
+    node: &marion_core::proto::model::NodeSummary,
+) -> Value {
     let returns = if node.parent_id.is_none() {
         "receive the terminal status marion observed — this is a root, and §9 gives a root no task \
          contract, so its own event stream is the record of what it did"
@@ -895,7 +899,7 @@ pub fn status_unknown(id: &Value, task_id: &str) -> Value {
 /// The empty case is a sentence and not an empty array, deliberately. A model handed `[]` has to
 /// infer what the absence means, and the two readings — *"you delegated nothing"* and *"marion lost
 /// your children"* — call for opposite next actions. So the empty answer says which one it is.
-pub fn list_result(id: &Value, nodes: &[marion_proto::model::NodeSummary]) -> Value {
+pub fn list_result(id: &Value, nodes: &[marion_core::proto::model::NodeSummary]) -> Value {
     if nodes.is_empty() {
         return tool_result(
             id,

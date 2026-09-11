@@ -6,8 +6,10 @@ use std::process::ExitCode;
 #[cfg(test)]
 use marion_core::NativeFacadeDescriptor;
 use marion_core::NativeFacadeRegistry;
+use marion_core::proto::{
+    NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1,
+};
 use marion_harness::validate_native_process_values;
-use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 
 use crate::detach::Launch;
 use crate::native_binding::{NativeBindingError, resolve_declared_executable};
@@ -88,7 +90,7 @@ pub(crate) fn build_native_launch_v2(
                     value: OpaqueOsValueV1::from_os_str(value)?,
                 })
             })
-            .collect::<Result<Vec<_>, marion_proto::NativeOsValueConversionError>>()?,
+            .collect::<Result<Vec<_>, marion_core::proto::NativeOsValueConversionError>>()?,
         geometry,
     ))
 }
@@ -208,8 +210,8 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
 
+    use marion_core::proto::TerminalGeometryV1;
     use marion_core::{Lane, NativeAdapterId, NativeFacadeRegistry, NativeLane, VendorIdentity};
-    use marion_proto::TerminalGeometryV1;
     use marion_testsupport::scratch;
 
     use crate::native_intent::select_test_native;

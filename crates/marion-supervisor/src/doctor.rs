@@ -61,11 +61,11 @@ use std::time::{Duration, Instant};
 
 use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
+use marion_core::proto::{HarnessReport, ProbeMode};
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
     LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, adapter_for_type, static_caps,
 };
-use marion_proto::{HarnessReport, ProbeMode};
 
 /// The micro-contract's prompt. Short, deterministic to check, and cheap: the assertion §8 asks for
 /// is a *response shape*, so the content only has to be something a model will answer at all.

@@ -25,7 +25,7 @@ use marion_core::contract::AgentId;
 use marion_core::encoding::Duration;
 use marion_core::harness::Harness;
 use marion_core::node::{BlockReason, NodeState, ReapState};
-use marion_proto::NodeSummary;
+use marion_core::proto::NodeSummary;
 use marion_supervisor::tree::{build, running};
 use marion_tui::tree::{self, ActionBar, Status, Tree, TreeView};
 use ratatui::Terminal;

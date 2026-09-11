@@ -168,24 +168,27 @@ impl Bed {
     /// The supervisor ends the node (§7.3.2 `KillTree`), and the journal says so.
     fn kill_and_await_exit(&self, agent: &AgentId) -> marion_core::registry::ReplayedNode {
         let mut client = Client::dial(&self.paths);
-        let id = client.send(marion_proto::Call::SessionQuit(
-            marion_proto::params::SessionQuitParams {
-                disposition: marion_proto::QuitDisposition::KillTree {
+        let id = client.send(marion_core::proto::Call::SessionQuit(
+            marion_core::proto::params::SessionQuitParams {
+                disposition: marion_core::proto::QuitDisposition::KillTree {
                     confirmed: vec![agent.clone()],
                 },
             },
         ));
         let (_, outcome) = client.read_to_response(id);
-        let marion_proto::Outcome::Result(body) = outcome else {
+        let marion_core::proto::Outcome::Result(body) = outcome else {
             panic!("session/quit KillTree was refused: {outcome:?}")
         };
-        let Ok(marion_proto::MethodResult::SessionQuit(result)) =
-            marion_proto::Method::SessionQuit.decode_result(&body)
+        let Ok(marion_core::proto::MethodResult::SessionQuit(result)) =
+            marion_core::proto::Method::SessionQuit.decode_result(&body)
         else {
             panic!("session/quit answered with the wrong result: {body:?}")
         };
         assert!(
-            matches!(result.outcome, marion_proto::QuitOutcome::Killed { .. }),
+            matches!(
+                result.outcome,
+                marion_core::proto::QuitOutcome::Killed { .. }
+            ),
             "KillTree did not kill: {:?}",
             result.outcome
         );

@@ -51,7 +51,7 @@ use std::time::Duration;
 use marion_core::contract::AgentId;
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::node::StartId;
-use marion_proto::notify::Event as Note;
+use marion_core::proto::notify::Event as Note;
 use marion_provider::script::classify_root;
 use marion_provider::{
     CannedServer, Config, RequestKind, RootStep, Script, TurnGate, classify_anthropic,
@@ -278,8 +278,8 @@ fn journal_nodes(state: &Path, repo: &Path) -> Vec<marion_core::registry::Replay
     replay.nodes().to_vec()
 }
 
-fn the_root(nodes: &[marion_proto::NodeSummary]) -> AgentId {
-    let mut roots: Vec<&marion_proto::NodeSummary> =
+fn the_root(nodes: &[marion_core::proto::NodeSummary]) -> AgentId {
+    let mut roots: Vec<&marion_core::proto::NodeSummary> =
         nodes.iter().filter(|n| n.depth == 0).collect();
     assert_eq!(roots.len(), 1, "this run has exactly one root: {nodes:?}");
     roots.pop().unwrap().agent_id.clone()
@@ -753,7 +753,7 @@ impl Structure {
     /// composition `AgentSpawnResult::task_id` documents, and the only way a client learns a
     /// contract at all (no method on the fifteen returns one).
     fn from_client(
-        nodes: &[marion_proto::NodeSummary],
+        nodes: &[marion_core::proto::NodeSummary],
         project: &marion_core::paths::ProjectDir,
     ) -> Structure {
         let mut s = Structure::empty();
@@ -1514,7 +1514,7 @@ fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_re
     // loop never asks it.
     let outcome = a.quit();
     assert!(
-        matches!(outcome, marion_proto::QuitOutcome::Detached { .. }),
+        matches!(outcome, marion_core::proto::QuitOutcome::Detached { .. }),
         "**disposition (b), and the supervisor's own answer says so.** (a) answers `Killed` and \
          (c) answers `ReapedAndDetached`; a build that served one of those in place of (b) would \
          leave a differently-shaped tree behind and this is the cheapest place to notice: {outcome:?}"

@@ -378,7 +378,7 @@ fn spawn_identity(
     id: &serde_json::Value,
 ) -> Result<
     (
-        Option<marion_proto::SpawnCaller>,
+        Option<marion_core::proto::SpawnCaller>,
         Option<std::path::PathBuf>,
     ),
     serde_json::Value,
@@ -402,10 +402,10 @@ fn spawn_identity(
 fn spawn_params(
     agent_type: &str,
     args: &serde_json::Value,
-    caller: Option<marion_proto::SpawnCaller>,
+    caller: Option<marion_core::proto::SpawnCaller>,
     repo: Option<std::path::PathBuf>,
-) -> marion_proto::params::AgentSpawnParams {
-    marion_proto::params::AgentSpawnParams {
+) -> marion_core::proto::params::AgentSpawnParams {
+    marion_core::proto::params::AgentSpawnParams {
         agent_type: agent_type.to_string(),
         prompt: args["prompt"].as_str().unwrap_or_default().to_string(),
         native_launch: None,
@@ -463,7 +463,7 @@ fn spawn_handle(
     id: &serde_json::Value,
     agent_type: &str,
     project: &ProjectDir,
-    spawned: &marion_proto::result::AgentSpawnResult,
+    spawned: &marion_core::proto::result::AgentSpawnResult,
 ) -> Result<TaskId, serde_json::Value> {
     match (&spawned.task_id, who) {
         (Some(t), _) => Ok(t.clone()),
@@ -666,7 +666,7 @@ fn list_scope(
 
 /// **§5.4's `list` target set, computed over the one tree edge the wire carries.**
 ///
-/// `NodeSummary::parent_id` is the only relation in [`marion_proto::model::NodeSummary`], so the
+/// `NodeSummary::parent_id` is the only relation in [`marion_core::proto::model::NodeSummary`], so the
 /// subtree is walked here rather than asked for — no method of §2's fifteen takes a root and
 /// answers a subtree, and adding one to save this loop would be a sixteenth method for an
 /// arithmetic that fits in a dozen lines.
@@ -682,8 +682,8 @@ fn list_scope(
 /// authorization boundary for this verb, and a boundary nothing pins is a boundary that drifts.
 fn descendants_of(
     caller: &AgentId,
-    nodes: &[marion_proto::model::NodeSummary],
-) -> Vec<marion_proto::model::NodeSummary> {
+    nodes: &[marion_core::proto::model::NodeSummary],
+) -> Vec<marion_core::proto::model::NodeSummary> {
     // Breadth-first over `parent_id`, so a grandchild is included and no node is visited twice.
     // A cycle cannot arise from a journal marion wrote — a node's parent is fixed at its
     // `SpawnIntent` — but the `visited` set is what makes that a property of this loop rather than
@@ -939,7 +939,7 @@ fn uid() -> u32 {
 /// The token in particular is refused rather than sent empty: `SpawnCaller` has no `default` for
 /// it, so an empty one would be a credential every process on the machine already has, presented as
 /// if it were proof.
-fn node_identity() -> Result<marion_proto::SpawnCaller, String> {
+fn node_identity() -> Result<marion_core::proto::SpawnCaller, String> {
     identity_from(non_empty(AGENT_ID_ENV), non_empty(NODE_TOKEN_ENV))
 }
 
@@ -949,7 +949,7 @@ fn node_identity() -> Result<marion_proto::SpawnCaller, String> {
 fn identity_from(
     agent_id: Option<String>,
     node_token: Option<String>,
-) -> Result<marion_proto::SpawnCaller, String> {
+) -> Result<marion_core::proto::SpawnCaller, String> {
     let agent_id = agent_id.ok_or_else(|| {
         format!(
             "marion: {AGENT_ID_ENV} is not set, so this bridge cannot say which node is asking for \
@@ -969,7 +969,7 @@ fn identity_from(
              made: the token was minted in memory and died with that supervisor."
         )
     })?;
-    Ok(marion_proto::SpawnCaller {
+    Ok(marion_core::proto::SpawnCaller {
         agent_id: AgentId(agent_id),
         node_token,
     })
@@ -1774,7 +1774,7 @@ mod tests {
     fn list_answers_the_callers_own_subtree_and_not_the_fleet() {
         use marion_core::harness::Harness;
         use marion_core::node::{NodeState, ReapState};
-        use marion_proto::model::NodeSummary;
+        use marion_core::proto::model::NodeSummary;
 
         fn node(id: &str, parent: Option<&str>) -> NodeSummary {
             NodeSummary {
@@ -1831,7 +1831,7 @@ mod tests {
     fn a_subtree_walk_terminates_on_a_cycle_rather_than_spinning() {
         use marion_core::harness::Harness;
         use marion_core::node::{NodeState, ReapState};
-        use marion_proto::model::NodeSummary;
+        use marion_core::proto::model::NodeSummary;
 
         let cyclic = |id: &str, parent: &str| NodeSummary {
             agent_id: AgentId(id.into()),

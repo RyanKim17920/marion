@@ -12,7 +12,7 @@
 //!
 //! # Bytes on the wire, not grid cells
 //!
-//! What crosses to a client is [`marion_proto::Event::NodePty`] — the raw byte stream, as text. The
+//! What crosses to a client is [`marion_core::proto::Event::NodePty`] — the raw byte stream, as text. The
 //! grid is a **derived per-viewer object**: two clients on one node may have different window
 //! sizes, different scrollback positions and different ideas of what is on screen, and a supervisor
 //! that shipped cells would have to pick one. §5.3's emulator (`marion-term`) runs on the viewer's
@@ -103,10 +103,10 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_harness::{ControlTransport, PtyWitness};
-use marion_proto::{
+use marion_core::proto::{
     Event, Frame, Notification, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1,
 };
+use marion_harness::{ControlTransport, PtyWitness};
 
 use crate::serve::{ConnId, Outbound};
 
@@ -3108,7 +3108,7 @@ impl PtyHost {
         &self,
         conn: ConnId,
         out: Outbound,
-    ) -> Option<marion_proto::result::PaneReadyDescriptorV1> {
+    ) -> Option<marion_core::proto::result::PaneReadyDescriptorV1> {
         self.reserve_pane_replay(conn, out).ok()
     }
 
@@ -3116,7 +3116,7 @@ impl PtyHost {
         &self,
         conn: ConnId,
         out: Outbound,
-    ) -> Result<marion_proto::result::PaneReadyDescriptorV1, PaneReplayReservationError> {
+    ) -> Result<marion_core::proto::result::PaneReadyDescriptorV1, PaneReplayReservationError> {
         self.shared.prune_expired_pane_replays();
         if self.shared.splice_disabled.load(Ordering::SeqCst) {
             let error = self
@@ -3188,7 +3188,7 @@ impl PtyHost {
                 phase: PanePhase::Pending(replay),
             },
         );
-        Ok(marion_proto::result::PaneReadyDescriptorV1 {
+        Ok(marion_core::proto::result::PaneReadyDescriptorV1 {
             token: PaneReadyTokenV1::new(token),
             cut,
         })
@@ -3381,7 +3381,7 @@ impl PtyHost {
     /// the node cannot disagree, because on this path neither of them gets anything.
     ///
     /// **Nothing legitimate is lost today**, and that is checked rather than hoped: the only
-    /// production caller is `RegistryHandle::deliver_input`, and `marion_proto::Input::NodePtyWrite`
+    /// production caller is `RegistryHandle::deliver_input`, and `marion_core::proto::Input::NodePtyWrite`
     /// carries `bytes` as a **`String`** — the protocol's own doc says so and says the bytes reach
     /// the master unaltered — so every byte that can arrive over the wire is valid UTF-8 by
     /// construction and this refusal is unreachable from a client. It guards the `pub` `&[u8]`

@@ -467,13 +467,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "marion-proto"
-version = "0.1.0"
-dependencies = [
- "marion-core",
-]
-
-[[package]]
 name = "marion-provider"
 version = "0.1.0"
 dependencies = [
@@ -491,7 +484,6 @@ dependencies = [
  "insta",
  "marion-core",
  "marion-harness",
- "marion-proto",
  "marion-provider",
  "marion-term",
  "marion-testsupport",
