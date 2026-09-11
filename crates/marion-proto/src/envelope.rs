@@ -213,96 +213,139 @@ impl Frame {
     ///
     /// Classification is by key presence rather than by trial deserialization — see the module
     /// doc. Each of the four `(method, id)` combinations gets its own sentence.
+    ///
+    /// Three steps, in order, because each one may only run on what the one before established:
+    /// parse the line as JSON, classify it by key presence, then decode it as the frame that
+    /// classification named.
     pub fn from_line(line: &str) -> Result<Frame, RpcError> {
         let line = line.trim_end_matches('\n');
         let value: serde_json::Value =
             serde_json::from_str(line).map_err(|e| RpcError::parse(format!("not JSON: {e}")))?;
-        let obj = value.as_object().ok_or_else(|| {
-            RpcError::invalid_request("a JSON-RPC frame is a JSON object; this line is not")
-        })?;
+        let shape = classify(&value)?;
+        decode(line, value, shape)
+    }
+}
 
-        let method = obj.get("method").map(|m| {
+/// What key presence alone says a line is, before any typed decoding.
+struct Shape {
+    /// `None` when the line carries no `method` key at all — never for one that carries a `method`
+    /// which is not a string, since that is refused during classification.
+    method: Option<String>,
+    has_id: bool,
+}
+
+/// Step 2: classify by key presence. No typed decoding happens here, and none may: which decoder
+/// the line is owed is exactly what this decides.
+fn classify(value: &serde_json::Value) -> Result<Shape, RpcError> {
+    let obj = value.as_object().ok_or_else(|| {
+        RpcError::invalid_request("a JSON-RPC frame is a JSON object; this line is not")
+    })?;
+    // Present-and-null is a different case from absent, and only the first is an error: a
+    // notification legitimately has no `id` at all.
+    if obj.get("id").is_some_and(serde_json::Value::is_null) {
+        return Err(RpcError::invalid_request(
+            "a null `id` cannot be correlated with a request; marion refuses it rather than \
+             discard an answer a caller is still waiting for",
+        ));
+    }
+    let method = obj
+        .get("method")
+        .map(|m| {
             m.as_str().map(str::to_owned).ok_or_else(|| {
                 RpcError::invalid_request("`method` must be a string naming a method")
             })
-        });
-        // Present-and-null is a different case from absent, and only the first is an error: a
-        // notification legitimately has no `id` at all.
-        let id_is_null = obj.get("id").is_some_and(serde_json::Value::is_null);
-        let has_id = obj.contains_key("id") && !id_is_null;
-        if id_is_null {
-            return Err(RpcError::invalid_request(
-                "a null `id` cannot be correlated with a request; marion refuses it rather than \
-                 discard an answer a caller is still waiting for",
-            ));
-        }
+        })
+        .transpose()?;
+    Ok(Shape {
+        method,
+        has_id: obj.contains_key("id"),
+    })
+}
 
-        match (method, has_id) {
-            (Some(method), true) => {
-                let method = method?;
-                if crate::Method::from_wire(&method).is_none() {
-                    return Err(RpcError::method_not_found(format!(
-                        "no such method: {method}"
-                    )));
-                }
-                let request = if method == crate::Method::AgentSpawn.as_str() {
-                    // Native launch dispatch must see duplicate keys at every depth. `Value`
-                    // classification above is only a probe; replay this request from its source.
-                    serde_json::from_str::<Request>(line)
-                } else {
-                    serde_json::from_value::<Request>(value)
-                };
-                request
-                    .map(Frame::Request)
-                    .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
-            }
-            // **Two tables, matched exactly.** A prefix or `starts_with` test would route
-            // `node/pty-write` into the outbound table, where it would parse as nothing and be
-            // reported as a malformed `node/pty`. Which table a name is in is also which
-            // *direction* it travels, so the choice is not cosmetic: it is what stops a client
-            // asserting what a node printed.
-            (Some(method), false) => {
-                let method = method?;
-                if Event::METHODS.contains(&method.as_str()) {
-                    let notification = if method == "node/pane-frame" {
-                        // Pane frames are strict at every depth. `Value` classification above is
-                        // only a probe because it has already collapsed duplicate object keys;
-                        // replay this notification from its original source before accepting it.
-                        serde_json::from_str::<Notification>(line)
-                    } else {
-                        serde_json::from_value::<Notification>(value)
-                    };
-                    notification
-                        .map(Frame::Notification)
-                        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
-                } else if Input::METHODS.contains(&method.as_str()) {
-                    let input = if matches!(method.as_str(), "node/pane-ready" | "node/pane-write")
-                    {
-                        // Pane readiness and opaque input are strict typed state. Preserve
-                        // duplicate-key evidence that classification through `Value` necessarily
-                        // collapsed.
-                        serde_json::from_str::<ClientNotification>(line)
-                    } else {
-                        serde_json::from_value::<ClientNotification>(value)
-                    };
-                    input
-                        .map(Frame::Input)
-                        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
-                } else {
-                    Err(RpcError::method_not_found(format!(
-                        "no such notification: {method}"
-                    )))
-                }
-            }
-            (None, true) => serde_json::from_value::<Response>(value)
-                .map(Frame::Response)
-                .map_err(|e| RpcError::invalid_request(format!("not a valid response: {e}"))),
-            (None, false) => Err(RpcError::invalid_request(
-                "a frame carries a `method` or an `id`; this one carries neither, so it is neither \
-                 a call, an answer, nor an event",
-            )),
-        }
+/// Step 3: decode as the frame classification named. The four `(method, id)` combinations, and
+/// nothing else, because [`Shape`] admits nothing else.
+fn decode(line: &str, value: serde_json::Value, shape: Shape) -> Result<Frame, RpcError> {
+    match (shape.method, shape.has_id) {
+        (Some(method), true) => decode_request(line, value, method),
+        (Some(method), false) => decode_notification(line, value, method),
+        (None, true) => serde_json::from_value::<Response>(value)
+            .map(Frame::Response)
+            .map_err(|e| RpcError::invalid_request(format!("not a valid response: {e}"))),
+        (None, false) => Err(RpcError::invalid_request(
+            "a frame carries a `method` or an `id`; this one carries neither, so it is neither \
+             a call, an answer, nor an event",
+        )),
     }
+}
+
+/// `method` + `id`: a call.
+fn decode_request(line: &str, value: serde_json::Value, method: String) -> Result<Frame, RpcError> {
+    if crate::Method::from_wire(&method).is_none() {
+        return Err(RpcError::method_not_found(format!(
+            "no such method: {method}"
+        )));
+    }
+    let request = if method == crate::Method::AgentSpawn.as_str() {
+        // Native launch dispatch must see duplicate keys at every depth. `Value` classification
+        // above is only a probe; replay this request from its source.
+        serde_json::from_str::<Request>(line)
+    } else {
+        serde_json::from_value::<Request>(value)
+    };
+    request
+        .map(Frame::Request)
+        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
+}
+
+/// `method`, no `id`: an event or a client input.
+///
+/// **Two tables, matched exactly.** A prefix or `starts_with` test would route `node/pty-write`
+/// into the outbound table, where it would parse as nothing and be reported as a malformed
+/// `node/pty`. Which table a name is in is also which *direction* it travels, so the choice is not
+/// cosmetic: it is what stops a client asserting what a node printed.
+fn decode_notification(
+    line: &str,
+    value: serde_json::Value,
+    method: String,
+) -> Result<Frame, RpcError> {
+    if Event::METHODS.contains(&method.as_str()) {
+        return decode_event(line, value, &method);
+    }
+    if Input::METHODS.contains(&method.as_str()) {
+        return decode_input(line, value, &method);
+    }
+    Err(RpcError::method_not_found(format!(
+        "no such notification: {method}"
+    )))
+}
+
+/// The outbound table: what a node printed, said by the one reader of that master.
+fn decode_event(line: &str, value: serde_json::Value, method: &str) -> Result<Frame, RpcError> {
+    let notification = if method == "node/pane-frame" {
+        // Pane frames are strict at every depth. `Value` classification above is only a probe
+        // because it has already collapsed duplicate object keys; replay this notification from
+        // its original source before accepting it.
+        serde_json::from_str::<Notification>(line)
+    } else {
+        serde_json::from_value::<Notification>(value)
+    };
+    notification
+        .map(Frame::Notification)
+        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
+}
+
+/// The inbound table: what a client sent, which is never an assertion about a node.
+fn decode_input(line: &str, value: serde_json::Value, method: &str) -> Result<Frame, RpcError> {
+    let input = if matches!(method, "node/pane-ready" | "node/pane-write") {
+        // Pane readiness and opaque input are strict typed state. Preserve duplicate-key evidence
+        // that classification through `Value` necessarily collapsed.
+        serde_json::from_str::<ClientNotification>(line)
+    } else {
+        serde_json::from_value::<ClientNotification>(value)
+    };
+    input
+        .map(Frame::Input)
+        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
 }
 
 #[cfg(test)]
