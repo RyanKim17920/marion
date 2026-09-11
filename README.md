@@ -96,7 +96,7 @@ marion works end to end and is not finished. `MILESTONES.md` is the ledger — g
 
 Open, honestly:
 
-- **Linux is designed but unmeasured.** `/proc/<pid>/stat` start identity has never been read on a real Linux box; non-macOS returns an explicit refusal that resolves to cannot-tell. Windows is out of scope — the PTY host is POSIX only. No arm-vs-x86 difference has been measured on either OS.
+- **Linux start identity is measured; the rest of Linux is thin.** `/proc/<pid>/stat` field 22 is read and checked against `btime` and the `/proc/<pid>` mtime, including a `comm` containing a space and a `)`; every platform that is neither macOS nor Linux still refuses by name and resolves to cannot-tell. Windows is out of scope — the PTY host is POSIX only. No arm-vs-x86 difference has been measured on either OS, and the Linux native-relay lanes are still red (see MILESTONES).
 - **Gemini is blocked vendor-side.** With gemini 0.53.0 on an individual account, `gemini -p` fails with `IneligibleTierError` and exit 55 before it reaches the model, with no marion involved. Gemini's green cells are all against the canned provider; do not read them as evidence that a live Gemini node works.
 - **Live paid runs are barely on record.** One live ACP run against Copilot, on 2026-09-05. Everything else in the suite is canned, so the request shapes marion sends to paid endpoints are verified far less than the harness plumbing around them.
 - Three native lanes stay disabled by name (`goose`, `cline`, `qwen`) because their interactive surfaces were never measured; `verification` execution is unimplemented, so `evidence` is always empty; and a resumed child's declared scope carries in no record.

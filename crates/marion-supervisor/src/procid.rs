@@ -38,11 +38,20 @@
 //!
 //! # The read is cheap, and that matters for where it can be called
 //!
-//! Measured on this platform: `sysctl(KERN_PROC_PID)` costs **15.2 µs**; `ps -o lstart=` costs
+//! Measured on darwin: `sysctl(KERN_PROC_PID)` costs **15.2 µs**; `ps -o lstart=` costs
 //! **4.35 ms and a fork** — about 285× more. A `ps` fork also sits badly with the boundary
 //! `Cargo.toml` draws around `marion-testsupport` shelling out to `git` and `ps`: that is sanctioned
 //! for a test helper and not for the spawn path. So this reads the kernel directly, through the
-//! same `unsafe extern "C"` device `serve.rs` already uses for `getuid`/`getpeereid`.
+//! same `unsafe extern "C"` device `serve.rs` already uses for `getuid`/`getpeereid`. Linux reads
+//! one line of `/proc/<pid>/stat`, which is the same order of cost and no fork.
+//!
+//! # Which platforms can answer at all
+//!
+//! macOS and Linux, and nowhere else. Both arms are measured — see [`read_impl`] — and every other
+//! platform refuses by name, so a `cannot-tell` there blocks the claim rather than pretending to
+//! satisfy it. The Linux arm was a refusal until it was measured, and the table above was
+//! unreachable on that platform for as long as it was: every node resolved to `cannot tell`
+//! whatever the journal recorded.
 //!
 //! # `marion_testsupport::liveness` is a different question
 //!
@@ -537,28 +546,99 @@ pub(crate) fn controlling_terminal(_pid: i32) -> Result<ControllingTerminal, Str
     Err("this platform has no supported process-table terminal read".into())
 }
 
+/// **Linux: field 22 of `/proc/<pid>/stat`, the start time in clock ticks since boot.**
+///
+/// This arm was a refusal until it was measured, and the refusal was right to stand: everything
+/// this module does with a [`StartId`] is decide whether a process is marion's, and a start-time
+/// read that is subtly wrong turns *"cannot tell"* into a confident wrong answer in both
+/// directions — marion reporting a stranger as its own node, or a survivor as gone. The trap is
+/// the file's own shape: the second field is a `comm` in parentheses that may itself contain
+/// spaces **and** parentheses, so field 22 is not where a naive `split_whitespace().nth(21)` puts
+/// it. Counting begins after the **last** `)`, which is the same rule [`controlling_terminal`]'s
+/// Linux arm already uses, and the field is then the 20th token because that slice starts at
+/// field 3.
+///
+/// # What was measured, and against what
+///
+/// On `rust:1.94` (glibc, `CLK_TCK` 100), with a helper copied to a path containing both a space
+/// and a `)` so its `comm` is the hostile case:
+///
+/// * **It is the start time.** `btime` from `/proc/stat` plus `starttime / CLK_TCK` reproduced
+///   `stat -c %Y /proc/<pid>` — an independent source — to the second, for pid 1 and for two
+///   helpers. Two helpers started a second apart read `32126196` and `32126297`: 101 ticks, which
+///   is that second at 100 Hz. A field that were anything else would not move with the start.
+/// * **It is stable.** The same live pid read twice gave the same value.
+/// * **A reaped pid stops resolving.** `/proc/<pid>/stat` is `ENOENT` once the child is waited
+///   on — which is [`Read::NoSuchProcess`], the one definite answer available with no recorded
+///   identity, and not an `Unavailable`.
+///
+/// A **zombie still answers**, and that is why the value must be captured while marion still holds
+/// the `Child` — the same constraint the macOS arm records, and `run.rs`'s `on_started` hook is
+/// where both are satisfied.
+///
+/// The value is tagged `linux-starttime` because [`StartId`] is compared only for equality and a
+/// journal carried between platforms must never produce a match. It is kept as the decimal string
+/// the kernel printed rather than parsed into a number: parsing would invite ordering, and nothing
+/// here may order two start ids.
+#[cfg(target_os = "linux")]
+fn read_impl(pid: i32) -> Read {
+    /// `starttime` is field 22, and the slice after the last `)` begins at field 3.
+    const STARTTIME_AFTER_COMM: usize = 22 - 3;
+
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        // The pid is not in the process table. Distinguished from every other error because it is
+        // the one definite answer, and folding it into `Unavailable` would lose it.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Read::NoSuchProcess,
+        Err(error) => {
+            return Read::Unavailable(format!(
+                "/proc/{pid}/stat could not be read, so marion cannot tell whether process {pid} \
+                 is still the one its journal names: {error}"
+            ));
+        }
+    };
+    let Some((_, after_comm)) = stat.rsplit_once(')') else {
+        return Read::Unavailable(format!(
+            "/proc/{pid}/stat is not in the documented shape — it has no `)` closing the comm \
+             field, so marion cannot count to the start time and will not guess at an identity it \
+             cannot read"
+        ));
+    };
+    let Some(starttime) = after_comm
+        .split_ascii_whitespace()
+        .nth(STARTTIME_AFTER_COMM)
+    else {
+        return Read::Unavailable(format!(
+            "/proc/{pid}/stat has no field 22, so marion cannot read a start identity for \
+             process {pid}"
+        ));
+    };
+    // Checked rather than parsed: what goes into the id is the kernel's own spelling, and a
+    // non-numeric field means this is not the file this build knows how to read.
+    if starttime.is_empty() || !starttime.bytes().all(|b| b.is_ascii_digit()) {
+        return Read::Unavailable(format!(
+            "/proc/{pid}/stat field 22 is {starttime:?}, which is not a start time in clock ticks \
+             — marion will not guess at an identity it cannot read"
+        ));
+    }
+    Read::Id(StartId(format!("linux-starttime:{starttime}")))
+}
+
 /// **Every other platform: an explicit refusal, not a guess.**
 ///
-/// The intended Linux arm is field 22 of `/proc/<pid>/stat` — the process start time in clock ticks
-/// since boot. It is deliberately **not** implemented here, because nobody has run it. Everything
-/// this module does with a [`StartId`] is decide whether a process is marion's, and a start-time
-/// read that is subtly wrong — `/proc/<pid>/stat`'s second field is a `comm` that may itself
-/// contain spaces and parentheses, so field 22 is not where a naive split puts it — turns
-/// *"cannot tell"* into a confident wrong answer in both directions: marion reporting a stranger as
-/// its own node, or a survivor as gone. Those are the two outcomes `restart.rs` refuses to
-/// fabricate, and shipping an unmeasured parser here would reintroduce both under a different name.
-///
-/// So this refuses, the refusal is tested, and `cannot-tell` correctly blocks the claim on such a
-/// platform. Implementing it is a measurement task, not a typing task: read the file for a known
-/// pid, confirm the field against an independent source, and confirm a reaped pid stops resolving.
-#[cfg(not(target_os = "macos"))]
+/// macOS and Linux are read above. Anywhere else marion has measured nothing, and a start-time
+/// read that is subtly wrong is worse than none: it would answer confidently and sometimes
+/// wrongly, which is exactly what `restart.rs` refuses to fabricate. So this refuses, the refusal
+/// is tested, and `cannot-tell` correctly blocks §9's *"no untracked live process"* rather than
+/// pretending to satisfy it. Adding a platform is a measurement task, not a typing task — the
+/// Linux arm above records the shape one takes.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_impl(pid: i32) -> Read {
     Read::Unavailable(format!(
         "marion cannot read a process start identity on this platform, so it cannot tell whether \
-         process {pid} is still the one its journal names. The Linux reading — field 22 of \
-         /proc/<pid>/stat — is designed but unmeasured, and an unmeasured one would answer \
-         confidently and sometimes wrongly. Until it is measured this is reported as `cannot tell`, \
-         which blocks §9's `no untracked live process` rather than pretending to satisfy it."
+         process {pid} is still the one its journal names. Until a platform's read is measured \
+         this is reported as `cannot tell`, which blocks §9's `no untracked live process` rather \
+         than pretending to satisfy it."
     ))
 }
 
@@ -573,6 +653,13 @@ mod tests {
     fn sid(s: &str) -> StartId {
         StartId(s.into())
     }
+
+    /// The tag this build's [`read_impl`] is documented to produce, so the one kernel-read test
+    /// asserts each platform's own spelling rather than being duplicated per platform.
+    #[cfg(target_os = "macos")]
+    const EXPECTED_TAG: &str = "darwin-p_starttime:";
+    #[cfg(target_os = "linux")]
+    const EXPECTED_TAG: &str = "linux-starttime:";
 
     /// **The whole truth table, as a table** — every row of the module doc, checked.
     ///
@@ -857,12 +944,12 @@ mod tests {
     /// with the kernel — a mock would be a test of the test. Three facts, each measured before it
     /// was relied on: a live process answers, the answer is stable, and two different processes do
     /// not share an identity.
-    /// Darwin only, and that is the claim rather than a convenience: `read` is documented to refuse
-    /// on every other platform, and this test asserts a `darwin-p_starttime:` tag against it. The
-    /// refusal itself is pinned on every platform by
-    /// `a_platform_that_cannot_read_an_identity_cannot_claim_there_is_no_live_process`, so nothing
-    /// here rounds a `CannotTell` up — it declines to assert a reading nobody has measured.
-    #[cfg(target_os = "macos")]
+    /// Both read platforms, against the tag each one is documented to produce. It used to be
+    /// darwin-only, when darwin was the only measured arm; keeping it that way once Linux was
+    /// measured would have left the Linux read asserted nowhere, which is how a `cfg` body reaches
+    /// CI unproven. The refusal on every *other* platform stays pinned by
+    /// `a_platform_that_cannot_read_an_identity_cannot_claim_there_is_no_live_process`.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn the_kernel_read_identifies_a_live_process_and_is_stable() {
         let me = std::process::id() as i32;
@@ -879,7 +966,7 @@ mod tests {
              comparison this module makes would be worthless"
         );
         assert!(
-            first.0.starts_with("darwin-p_starttime:"),
+            first.0.starts_with(EXPECTED_TAG),
             "tagged, so a journal carried to another platform cannot produce a false match: {first}"
         );
 
@@ -908,12 +995,10 @@ mod tests {
     /// treated only a non-zero return as meaningful would report `Unavailable` here and lose the
     /// one definite answer available with no recorded identity — which would make §9's criterion
     /// unprovable for *every* node rather than only for live ones.
-    /// Darwin only, and that is the claim rather than a convenience: `read` is documented to refuse
-    /// on every other platform, and this test asserts a `darwin-p_starttime:` tag against it. The
-    /// refusal itself is pinned on every platform by
-    /// `a_platform_that_cannot_read_an_identity_cannot_claim_there_is_no_live_process`, so nothing
-    /// here rounds a `CannotTell` up — it declines to assert a reading nobody has measured.
-    #[cfg(target_os = "macos")]
+    /// On Linux the same fact arrives by a different route — `/proc/<pid>/stat` becomes `ENOENT`
+    /// once the child is waited on — and it is asserted here rather than in a second copy, because
+    /// what matters to every caller is that the answer is `NoSuchProcess` and not `Unavailable`.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn a_reaped_pid_reads_as_no_such_process() {
         let mut child = std::process::Command::new("/usr/bin/true")
@@ -926,6 +1011,70 @@ mod tests {
             Read::NoSuchProcess,
             "the process is gone and reaped, so nothing wears the pid"
         );
+    }
+
+    /// **The one way the Linux read can be wrong without looking wrong: a `comm` that shifts the
+    /// fields.**
+    ///
+    /// `/proc/<pid>/stat`'s second field is the executable's name in parentheses, and the kernel
+    /// does not escape it — a program called `sl ee) p` prints as `(sl ee) p)`, so
+    /// `split_whitespace().nth(21)` lands three fields early and returns a plausible number.
+    /// That is the failure this whole arm was held back for, so it is measured against a helper
+    /// deliberately named with both a space and a `)`.
+    ///
+    /// **Checked against an independent source**, because "it returned a number" is not the claim.
+    /// `btime` from `/proc/stat` plus `starttime / 100` must land on the `/proc/<pid>` directory's
+    /// own mtime, which the kernel sets to the process start and which this parser does not touch.
+    /// The window is seconds rather than exact: `USER_HZ` is 100 on every Linux this runs on, and
+    /// integer division plus a one-second-granularity mtime can differ by one either way. A field
+    /// that were not the start time would miss by a great deal more than that.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_comm_containing_spaces_and_parentheses_does_not_shift_the_start_time() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = std::env::temp_dir().join(format!("marion-procid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory for the hostile helper");
+        // The name is the point: a space and a `)` inside `comm`.
+        let helper = dir.join("sl ee) p");
+        std::fs::copy("/bin/sleep", &helper).expect("a helper to name badly");
+
+        let mut child = std::process::Command::new(&helper)
+            .arg("30")
+            .spawn()
+            .expect("the hostile helper runs");
+        let pid = child.id() as i32;
+
+        let read = read(pid);
+        let Read::Id(StartId(id)) = &read else {
+            panic!("the helper is running, so the kernel must describe it: {read:?}")
+        };
+        let ticks: u64 = id
+            .strip_prefix("linux-starttime:")
+            .expect("tagged")
+            .parse()
+            .expect("clock ticks");
+
+        let btime: u64 = std::fs::read_to_string("/proc/stat")
+            .expect("/proc/stat")
+            .lines()
+            .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
+            .expect("/proc/stat carries btime");
+        let started = btime + ticks / 100;
+        let independent = std::fs::metadata(format!("/proc/{pid}"))
+            .expect("/proc/<pid> exists while the helper runs")
+            .mtime() as u64;
+
+        assert!(
+            started.abs_diff(independent) <= 2,
+            "field 22 read as {ticks} ticks puts the helper's start at {started}, but the kernel's \
+             own /proc/{pid} mtime says {independent} — the comm shifted the fields, which is the \
+             confident wrong answer this arm exists to avoid"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pid that is not a process id at all is refused rather than asked about.

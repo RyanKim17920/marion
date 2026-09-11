@@ -160,7 +160,7 @@ duplication.
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
 `spawn_pty` facade fixture cannot observe it); a **root** started in a linked
 worktree, whose cwd on resume is still derived rather than recorded; a resumed child's declared
-scope and acceptance criteria, which no record carries; Linux `/proc` start identity unmeasured;
+scope and acceptance criteria, which no record carries;
 `verification` execution still
 not in code (descendant gating §7.6 came off this line 2026-09-10 — see "Not done"); the ACP agent
 identity on `NodeSummary`.
@@ -1000,8 +1000,7 @@ honestly still open. Per milestone:
   with `resume_refuses_a_child_whose_recorded_worktree_is_gone` and
   `resume_refuses_a_child_whose_parent_is_still_live` as its two named refusals, and
   `restart_resume.rs::a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next_turn`
-  end to end on a real codex child. Open, stated: Linux `/proc/<pid>/stat` start
-  identity is written and unmeasured (macOS only is measured); a **root** started in a linked
+  end to end on a real codex child. Open, stated: a **root** started in a linked
   worktree still derives its cwd rather than reading a recorded one, so its resume is the case the
   child's record does not cover; a resumed child's declared scope and acceptance criteria are on no
   record, so its second life runs at its agent type's ceiling with no criteria;
@@ -1140,8 +1139,15 @@ acceptance evidence, so every marker remains unchanged.
     about. `handler::attach_mode` now answers `ReplayResumable` for every non-`Live` reap state;
     `an_orphaned_node_attaches_as_replay_resumable_and_never_as_a_live_channel` is the test, and it
     failed on the old arm with `answered ResubscribeFrom` before the fix.
-    **Linux is not shipped**: `/proc/<pid>/stat` field 22 is designed and unmeasured, so non-macOS
-    returns an explicit refusal that resolves to cannot-tell, and the consequence is tested.
+    **Linux shipped 2026-09-11**: `/proc/<pid>/stat` field 22, counted after the last `)` so a
+    `comm` containing a space and a `)` cannot shift it, measured in `rust:1.94` against `btime`
+    plus the `/proc/<pid>` directory mtime and against two helpers started a second apart (101
+    ticks at `USER_HZ` 100). `the_kernel_read_identifies_a_live_process_and_is_stable` and
+    `a_reaped_pid_reads_as_no_such_process` now run on both platforms rather than darwin only, and
+    `a_comm_containing_spaces_and_parentheses_does_not_shift_the_start_time` is the parse. It was
+    found by CI: `client_run.rs`'s reissued-pid test cannot pass where nothing can read an
+    identity, and ubuntu had never reached that test before. Every platform that is neither macOS
+    nor Linux still refuses by name, and the consequence is tested.
     **This bullet was true of the audit and false of the system until 2026-08-07 (`cf1cd01`), and
     the correction is recorded rather than folded in.** `procid::audit`'s scope is
     `node.pid.is_some()`, so the criterion is only as good as the guarantee that a live node has a
