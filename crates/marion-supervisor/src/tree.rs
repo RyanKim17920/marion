@@ -184,6 +184,19 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
 ///
 /// `None` — a pipe, or a tty the kernel has not sized — leaves the last geometry in place: a frame
 /// sized to what the operator was last known to be looking at beats one sized to a guess.
+/// One non-blocking glance at the operator's keyboard: how many bytes were already there, or
+/// `None` if stdin closed. A timeout or a read error is zero bytes, not the end of the tree.
+fn glance_at_keyboard(
+    stdin: &mut marion_tui::guard::Keyboard,
+    buf: &mut [u8; 256],
+) -> Option<usize> {
+    match stdin.read_within(buf, std::time::Duration::ZERO) {
+        Ok(Some(0)) => None,
+        Ok(Some(n)) => Some(n),
+        Ok(None) | Err(_) => Some(0),
+    }
+}
+
 fn geometry_changed(size: &mut (u16, u16), measured: Option<(u16, u16)>) -> bool {
     match measured {
         Some(now) if now != *size => {
@@ -433,59 +446,81 @@ impl Session {
                 terminal.backend_mut().set_size(size.0, size.1);
             }
             self.paint(&mut terminal);
-            match self.next_frame() {
-                Ok(Some(frame)) => self.absorb(frame),
-                Ok(None) => {}
-                // The supervisor going away closes the tree, and is not a failure of it.
-                Err(_) => {
-                    leave(&terminal);
-                    return Ok(None);
-                }
+            if !self.poll_supervisor() {
+                leave(&terminal);
+                return Ok(None);
             }
             // The socket read above is the pacing; the keyboard is only glanced at, so a key that
             // is not already there waits for the next pass rather than holding up a frame.
-            let n = match stdin.read_within(&mut buf, std::time::Duration::ZERO) {
-                Ok(Some(0)) => {
-                    leave(&terminal);
-                    return Ok(None);
-                }
-                Ok(Some(n)) => n,
-                Ok(None) | Err(_) => 0,
+            let Some(n) = glance_at_keyboard(&mut stdin, &mut buf) else {
+                leave(&terminal);
+                return Ok(None);
             };
             for action in tree::nav(&buf[..n]) {
-                match action {
-                    Nav::Quit => {
-                        leave(&terminal);
-                        return Ok(None);
-                    }
-                    Nav::ToggleFocus => {
-                        self.focus = match self.focus {
-                            Focus::Tree => Focus::Content,
-                            Focus::Content => Focus::Tree,
-                        }
-                    }
-                    Nav::Up if self.focus == Focus::Tree => {
-                        self.notice = None;
-                        self.tree.move_by(-1);
-                    }
-                    Nav::Down if self.focus == Focus::Tree => {
-                        self.notice = None;
-                        self.tree.move_by(1);
-                    }
-                    Nav::Up | Nav::Down => {}
-                    // Decided here, from the summary, before the terminal changes hands: an attach
-                    // would refuse a headless node too, but onto a screen the next frame erases.
-                    Nav::Open => match self.selected_summary().map(open_target) {
-                        Some(Ok(id)) => {
-                            let id = id.to_string();
-                            leave(&terminal);
-                            return Ok(Some(id));
-                        }
-                        Some(Err(refusal)) => self.notice = Some(refusal),
-                        None => {}
-                    },
+                if let Some(chosen) = self.apply_nav(action) {
+                    leave(&terminal);
+                    return Ok(chosen);
                 }
             }
+        }
+    }
+
+    /// One pass over the supervisor's stream. `false` when the supervisor went away, which closes
+    /// the tree and is not a failure of it.
+    fn poll_supervisor(&mut self) -> bool {
+        match self.next_frame() {
+            Ok(Some(frame)) => {
+                self.absorb(frame);
+                true
+            }
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// One navigation key. `Some` ends the pass: `Some(Some(id))` hands the terminal to an attach,
+    /// `Some(None)` closes the tree.
+    fn apply_nav(&mut self, action: Nav) -> Option<Option<String>> {
+        match action {
+            Nav::Quit => Some(None),
+            Nav::ToggleFocus => {
+                self.toggle_focus();
+                None
+            }
+            Nav::Up if self.focus == Focus::Tree => {
+                self.notice = None;
+                self.tree.move_by(-1);
+                None
+            }
+            Nav::Down if self.focus == Focus::Tree => {
+                self.notice = None;
+                self.tree.move_by(1);
+                None
+            }
+            Nav::Up | Nav::Down => None,
+            Nav::Open => self.open_selected().map(Some),
+        }
+    }
+
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::Tree => Focus::Content,
+            Focus::Content => Focus::Tree,
+        };
+    }
+
+    /// The node `Open` chose, if it has one to attach to.
+    ///
+    /// Decided here, from the summary, before the terminal changes hands: an attach would refuse
+    /// a headless node too, but onto a screen the next frame erases.
+    fn open_selected(&mut self) -> Option<String> {
+        match self.selected_summary().map(open_target) {
+            Some(Ok(id)) => Some(id.to_string()),
+            Some(Err(refusal)) => {
+                self.notice = Some(refusal);
+                None
+            }
+            None => None,
         }
     }
 
