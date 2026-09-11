@@ -2328,16 +2328,9 @@ impl Shared {
     #[cfg(not(test))]
     fn observe_pane_guarded_pull(&self) {}
 
-    fn finish_pane_flow(
-        &self,
-        conn: ConnId,
-        generation: u64,
-        subscriber: splice::SubscriberId,
-        ready: splice::ReadySubscription,
-        _invoke_transition_hook: bool,
-    ) -> PaneFlowCompletion {
-        #[cfg(test)]
-        if _invoke_transition_hook
+    #[cfg(test)]
+    fn observe_pane_transition(&self, invoke: bool) {
+        if invoke
             && let Some(hook) = self
                 .pane_transition_hook
                 .lock()
@@ -2346,19 +2339,43 @@ impl Shared {
         {
             hook();
         }
-        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
-        let valid = streams.valid && streams.generation == generation;
-        let Some(slot) = streams.slots.get_mut(&conn) else {
-            return PaneFlowCompletion::Cancelled;
-        };
-        let matching = slot.generation == generation
+    }
+
+    #[cfg(not(test))]
+    fn observe_pane_transition(&self, _invoke: bool) {}
+
+    /// Whether `slot` is still the transition this flow was started for: same generation, and the
+    /// transition it is holding is this subscriber's rather than a later attach's.
+    fn slot_is_this_transition(
+        slot: &PaneSlot,
+        generation: u64,
+        subscriber: splice::SubscriberId,
+    ) -> bool {
+        slot.generation == generation
             && matches!(
                 slot.phase,
                 PanePhase::Transitioning {
                     subscriber: active,
                     ..
                 } if active == subscriber
-            );
+            )
+    }
+
+    fn finish_pane_flow(
+        &self,
+        conn: ConnId,
+        generation: u64,
+        subscriber: splice::SubscriberId,
+        ready: splice::ReadySubscription,
+        invoke_transition_hook: bool,
+    ) -> PaneFlowCompletion {
+        self.observe_pane_transition(invoke_transition_hook);
+        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+        let valid = streams.valid && streams.generation == generation;
+        let Some(slot) = streams.slots.get_mut(&conn) else {
+            return PaneFlowCompletion::Cancelled;
+        };
+        let matching = Self::slot_is_this_transition(slot, generation, subscriber);
         if !valid || !matching || slot.cancellation.is_cancelled() {
             streams.slots.remove(&conn);
             return PaneFlowCompletion::Cancelled;
