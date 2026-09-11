@@ -982,11 +982,32 @@ fn scan_segment(bytes: &[u8]) -> Result<Scan, StreamError> {
         };
     }
     Header::decode(&bytes[..HEADER_LEN])?;
+    let ScannedRecords::Complete { records, offset } = scan_records_to_end(bytes)? else {
+        return Ok(Scan::Prefix);
+    };
+    let counters = validate_records(&records)?;
+    scan_trailer(bytes, offset, counters)
+}
+
+/// What the frame walk found before it ran out of bytes.
+enum ScannedRecords {
+    /// Every record up to and including the legacy End, and where that End left off.
+    Complete { records: Vec<Record>, offset: usize },
+    /// The bytes stop mid-frame, which for a segment being recovered is a torn tail and not a fault.
+    Prefix,
+}
+
+/// Walk frames from the header until the legacy End, or until the bytes run out.
+///
+/// Unlike [`decode_segment_records`], nothing has bound these bytes yet — there may be no trailer at
+/// all — so running out is a prefix rather than a contradiction. A length outside the frame bounds
+/// is still a fault: it cannot be the honest start of any frame a writer would have produced.
+fn scan_records_to_end(bytes: &[u8]) -> Result<ScannedRecords, StreamError> {
     let mut offset = HEADER_LEN;
     let mut records = Vec::new();
     loop {
         if bytes.len() - offset < FRAME_LEN_BYTES {
-            return Ok(Scan::Prefix);
+            return Ok(ScannedRecords::Prefix);
         }
         let body_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         if !(FRAME_FIXED_BYTES..=MAX_RECORD_BYTES).contains(&body_len) {
@@ -994,17 +1015,28 @@ fn scan_segment(bytes: &[u8]) -> Result<Scan, StreamError> {
         }
         let frame_end = offset + FRAME_LEN_BYTES + body_len + CHECKSUM_BYTES;
         if frame_end > bytes.len() {
-            return Ok(Scan::Prefix);
+            return Ok(ScannedRecords::Prefix);
         }
         let record = Record::decode(&bytes[offset..frame_end])?;
         let is_end = matches!(&record.kind, RecordKind::LegacyEnd);
         records.push(record);
         offset = frame_end;
         if is_end {
-            break;
+            return Ok(ScannedRecords::Complete { records, offset });
         }
     }
-    let counters = validate_records(&records)?;
+}
+
+/// What follows a completed record run: nothing, part of a trailer, or a whole segment.
+///
+/// A partial trailer is only a prefix if it is a prefix of *the* trailer these records imply, which
+/// is why the expected bytes are rebuilt here rather than pattern-matched: anything else is a
+/// trailer that was never going to validate.
+fn scan_trailer(
+    bytes: &[u8],
+    offset: usize,
+    counters: TrailerCounters,
+) -> Result<Scan, StreamError> {
     if bytes.len() == offset {
         return Ok(Scan::MissingTrailer);
     }
