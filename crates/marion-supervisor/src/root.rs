@@ -2521,11 +2521,12 @@ mod tests {
     #[test]
     fn terminal_pane_completes_only_after_shutdown_and_replay_proof() {
         let id = AgentId("root-pane-finish".into());
-        let cast = std::env::temp_dir().join(format!(
-            "marion-root-pane-finish-{}-{}.cast",
-            std::process::id(),
-            crate::run::unix_millis()
-        ));
+        // A private scratch directory, like every other pane test here, and not `temp_dir()`:
+        // marion's own replay check refuses a stream whose parent is not private to the effective
+        // user, and on Linux `temp_dir()` is `/tmp` at mode 1777. The refusal was correct; the
+        // fixture was putting the cast somewhere the production code is right to distrust.
+        let dir = marion_testsupport::scratch("root-pane-finish");
+        let cast = dir.join("pty.cast");
         let host = Arc::new(
             crate::pty::PtyHost::start(
                 id.clone(),
