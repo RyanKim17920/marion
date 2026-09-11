@@ -844,40 +844,45 @@ fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskCon
 /// no test. So the seam offers the one instant that matters and the test looks at the journal from
 /// inside it.
 ///
-/// A guard with a mutex rather than a bare `static`, for the reason `handler.rs`'s injected panic
-/// gives: the lib tests share one process and run in parallel, so a hook that outlived its test
-/// would fire inside an unrelated spawn. It clears on drop, including on an unwind.
+/// **Thread-local, not process-wide**, for the reason `handler.rs`'s injected panic gives and one
+/// more: the lib tests share one process and run in parallel, so a hook that outlived its test
+/// would fire inside an unrelated spawn — and a hook installed in a `static` fires inside an
+/// unrelated spawn *while its own test is still running*. That second case is not hypothetical. A
+/// global hook was invoked by every other test's contract write, on that test's thread, against
+/// *this* test's journal; once this test's own terminal record was on disk any such foreign firing
+/// latched the observation `true` and failed the assertion, so the rule's guard flaked under load
+/// precisely because it was watching the whole process instead of its own call. The observer
+/// belongs to the thread that performs the write it is about. It clears on drop, including on an
+/// unwind.
 #[cfg(test)]
 pub(crate) mod at_contract_write {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::cell::RefCell;
 
-    type Hook = Box<dyn Fn() + Send + 'static>;
+    type Hook = Box<dyn Fn() + 'static>;
 
-    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
-    static ONE_AT_A_TIME: OnceLock<Mutex<()>> = OnceLock::new();
-
-    pub(crate) fn fire() {
-        let hook = HOOK.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = hook.as_ref() {
-            f();
-        }
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
-    pub(crate) struct Installed(#[allow(dead_code)] MutexGuard<'static, ()>);
+    pub(crate) fn fire() {
+        HOOK.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f();
+            }
+        });
+    }
+
+    pub(crate) struct Installed(());
 
     impl Drop for Installed {
         fn drop(&mut self) {
-            *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            HOOK.with(|h| *h.borrow_mut() = None);
         }
     }
 
-    pub(crate) fn install(f: impl Fn() + Send + 'static) -> Installed {
-        let g = ONE_AT_A_TIME
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
-        Installed(g)
+    pub(crate) fn install(f: impl Fn() + 'static) -> Installed {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+        Installed(())
     }
 }
 
