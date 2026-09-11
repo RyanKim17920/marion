@@ -55,6 +55,23 @@ static RELAY_SIGNAL_RESTORE_ATTEMPT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
 static AFTER_RELAY_SIGNAL_RESTORE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+#[cfg(test)]
+thread_local! {
+    /// Fires on the keyboard worker's own thread once a keystroke's bytes have gone out, so a test
+    /// can hold the worker in exactly that window and pin what the pump concludes from an EOF
+    /// arriving inside it. Thread-local because the relay's other fixtures run keyboard workers of
+    /// their own in this process, and a process-global slot would be taken by whichever wrote
+    /// first; the fixture arms it from its own `read`, which already runs on that thread.
+    static AFTER_KEYBOARD_INPUT_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce() + Send>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_keyboard_input_write() {
+    if let Some(hook) = AFTER_KEYBOARD_INPUT_WRITE.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
 /// Fires inside `suspend_until_continued` at the stop, while termination handlers are blocked, so
 /// a test can make a termination pending during the stop.
 #[cfg(test)]
@@ -1337,6 +1354,12 @@ impl<W: Write> RawPaneSession<W> {
                                             ),
                                         }),
                                     ));
+                                    // Advance before the bytes go out, the same order a frame is
+                                    // applied in: the supervisor can close on this keystroke
+                                    // before the write even returns here, and the pump reads this
+                                    // flag the instant it sees that EOF. A write that then fails
+                                    // costs nothing — its own message outranks the flag.
+                                    input_sent.store(true, Ordering::SeqCst);
                                     if let Err(error) =
                                         write_serialized(&writer, frame.to_line().as_bytes())
                                     {
@@ -1344,7 +1367,8 @@ impl<W: Write> RawPaneSession<W> {
                                             "sending native pane keyboard input: {error}"
                                         )));
                                     }
-                                    input_sent.store(true, Ordering::SeqCst);
+                                    #[cfg(test)]
+                                    after_keyboard_input_write();
                                 }
                             }
                         }
@@ -1574,7 +1598,7 @@ mod tests {
     use marion_core::proto::{Call, Event, Frame, Input, MethodResult, PaneFrameKindV1, RequestId};
 
     use super::{
-        AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
+        AFTER_KEYBOARD_INPUT_WRITE, AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
         BEFORE_REDELIVERY_WHILE_OWNER_HELD, BorrowedTerminalWriter, FIRST_RELAY_SIGNAL,
         HANDLED_SIGNALS, HUNG_UP, INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession,
         RelaySignalGuard, RelayStop, SIG_BLOCK, SIG_DFL, SIG_IGN, SIGHUP, SIGINT, SIGTERM, SIGTSTP,
@@ -1612,6 +1636,9 @@ mod tests {
     /// Each of the leader's four observed phases: raw entry, stop, raw re-entry, exit.
     const PTY_STOP_PHASE_BOUND: Duration = Duration::from_secs(3);
     const PTY_STOP_INNER_BOUND: Duration = Duration::from_secs(15);
+    /// How long a held keyboard worker waits for the pump to reach its verdict before giving up:
+    /// a broken ordering must fail the assertion, never hang the harness.
+    const PANE_VERDICT_BOUND: Duration = Duration::from_secs(5);
     const SIGTTOU: std::ffi::c_int = 22;
     const SIG_ERR: usize = usize::MAX;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
@@ -3673,10 +3700,16 @@ mod tests {
     struct OneRead {
         bytes: Option<Vec<u8>>,
         hold: Arc<AtomicBool>,
+        /// Armed from this very `read`, which the keyboard worker runs on its own thread, so the
+        /// hook lands in that thread's slot and no other fixture's worker can take it.
+        after_write: Option<Box<dyn FnOnce() + Send>>,
     }
 
     impl Read for OneRead {
         fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(hook) = self.after_write.take() {
+                AFTER_KEYBOARD_INPUT_WRITE.with(|slot| *slot.borrow_mut() = Some(hook));
+            }
             if let Some(bytes) = self.bytes.take() {
                 output[..bytes.len()].copy_from_slice(&bytes);
                 return Ok(bytes.len());
@@ -4209,6 +4242,7 @@ mod tests {
             OneRead {
                 bytes: Some(vec![0xff, 0x00, 0x80, b'X']),
                 hold,
+                after_write: None,
             },
             Sink::default(),
             (80, 24),
@@ -4325,11 +4359,19 @@ mod tests {
     /// *that* — after the terminal is back in cooked mode, as the primary error, not a generic
     /// "closed before End" that reads like a network fault.
     ///
-    /// Mutation: report every pre-End EOF with one message, or let a cleanup error displace the
-    /// primary one.
+    /// The refusal is a race the relay must not lose: the EOF reaches the pump as soon as the
+    /// supervisor closes, and the worker is still on the far side of its own write. So the worker
+    /// is held here between the bytes going out and its next instruction, and the pump reaches its
+    /// verdict inside that window — the flag has to have been advanced before the write, the same
+    /// order `apply_frame` keeps, or a keystroke the supervisor demonstrably received reads back
+    /// as a bare disconnection.
+    ///
+    /// Mutation: report every pre-End EOF with one message, let a cleanup error displace the
+    /// primary one, or advance the flag after the write instead of before it.
     #[test]
     fn a_supervisor_input_refusal_ends_the_relay_visibly_after_terminal_restoration() {
         let (client, mut server) = UnixStream::pair().unwrap();
+        let (pump_reached_its_verdict, worker_waits) = mpsc::channel::<()>();
         let hold = Arc::new(AtomicBool::new(false));
         let release = Arc::clone(&hold);
         let server_thread = std::thread::spawn(move || {
@@ -4356,12 +4398,16 @@ mod tests {
             OneRead {
                 bytes: Some(b"k".to_vec()),
                 hold,
+                after_write: Some(Box::new(move || {
+                    let _ = worker_waits.recv_timeout(PANE_VERDICT_BOUND);
+                })),
             },
             Sink::default(),
             (80, 24),
         )
         .unwrap();
         let refusal = session.pump().unwrap_err();
+        let _ = pump_reached_its_verdict.send(());
         server_thread.join().unwrap();
         assert!(
             refusal.contains("refused") && refusal.contains("keyboard input"),
