@@ -10555,7 +10555,8 @@ mod tests {
                 .expect("an owning handle has a spawn environment");
             let ty = agent_type::builtin("claude").expect("the fixture type exists");
 
-            let asked = root_spec_from_spawn(&root_params(&fx.repo, 300), fx.repo.clone(), env, &ty);
+            let asked =
+                root_spec_from_spawn(&root_params(&fx.repo, 300), fx.repo.clone(), env, &ty);
             assert_eq!(asked.bound_secs, 300);
 
             let mut p = root_params(&fx.repo, 300);

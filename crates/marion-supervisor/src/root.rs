@@ -2993,9 +2993,7 @@ mod tests {
             .lines()
             .filter_map(|l| marion_core::journal::decode(l.as_bytes()))
             .filter_map(|r| match r.kind {
-                marion_core::journal::RecordKind::SpawnIntent(i)
-                    if i.agent_id == node.agent_id =>
-                {
+                marion_core::journal::RecordKind::SpawnIntent(i) if i.agent_id == node.agent_id => {
                     Some(i.timeout_secs.expect("the bound is on the record"))
                 }
                 _ => None,
