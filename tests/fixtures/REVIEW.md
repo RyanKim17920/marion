@@ -141,6 +141,12 @@ table rows.
 - Per-event `uuid` fields in `s1` and `s5` are random per-run identifiers with no host meaning;
   they are kept because the stream shape and event correlation depend on them.
 - `claude-501` in scratch paths is the default macOS uid, not an identity.
+- **`s30` was scrubbed late (2026-09-11).** It was recorded after the four passes above and kept
+  the operator's username inside the path-encoded scratch slug in `env.sh`, `mcp-list*.txt`,
+  `system-settings.json` and `user-settings*.json`. A ninth pass applied `s4`'s convention
+  (`-Users-<name>-Desktop-...` → `-Users-<USER>-Desktop-...`) to all nine occurrences. No test
+  reads `s30`; the directory is evidence for doc comments in `marion-harness/src/gemini.rs` and
+  `marion-core/src/native_facade.rs`, so nothing measured moved.
 - The env-var **name** `ANTHROPIC_API_KEY` appears in `s4/claude-code/stream-*.jsonl` as an
   `apiKeySource` value; **in `s1` that field is `<REDACTED>`**. No values are present anywhere.
   (`GROQ_API_KEY` / `OPENAI_API_KEY` were listed here in an earlier pass and occur nowhere in the

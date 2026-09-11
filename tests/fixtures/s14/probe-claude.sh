@@ -3,7 +3,8 @@
 # tool declarations off the request body the CLI actually sends to a canned local endpoint.
 # No vendor endpoint, no key, no token.
 set -u
-REPO=${REPO:-/Users/ryankim/Desktop/CODING/marion}
+# The workspace root: this file sits at <root>/tests/fixtures/s14/.
+REPO=${REPO:-${0:A:h}/../../..}
 OUT=${OUT:-$REPO/../s14-out}
 mkdir -p "$OUT"
 PORT=${PORT:-8731}

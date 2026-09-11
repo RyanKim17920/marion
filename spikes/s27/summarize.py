@@ -6,10 +6,10 @@
 import json
 import os
 import sys
+import tempfile
 
-OUTROOT = os.getenv("S27_OUTROOT") or (
-    "/private/tmp/claude-501/-Users-ryankim-Desktop-CODING-marion/"
-    "d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/cline")
+OUTROOT = os.getenv("S27_OUTROOT") or os.path.join(
+    tempfile.gettempdir(), "marion-s27")
 run = os.path.join(OUTROOT, sys.argv[1])
 full = "--full" in sys.argv
 

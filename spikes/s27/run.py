@@ -44,12 +44,12 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTROOT = os.getenv("S27_OUTROOT") or os.path.join(
-    "/private/tmp/claude-501/-Users-ryankim-Desktop-CODING-marion/"
-    "d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/cline")
+    tempfile.gettempdir(), "marion-s27")
 PORT = int(os.getenv("S27_PORT", "8127"))
 BASE_URL = "http://127.0.0.1:%d/v1" % PORT
 API_KEY = "marion-canned-credential-27cc"   # minted here; never a real credential

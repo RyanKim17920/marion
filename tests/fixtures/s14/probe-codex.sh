@@ -2,7 +2,8 @@
 # S14 probe, codex half. Enumerates the tool surface codex exec declares under each --sandbox mode,
 # and checks whether an unknown per-tool availability argument is an error.
 set -u
-REPO=${REPO:-/Users/ryankim/Desktop/CODING/marion}
+# The workspace root: this file sits at <root>/tests/fixtures/s14/.
+REPO=${REPO:-${0:A:h}/../../..}
 OUT=${OUT:?}
 mkdir -p "$OUT"
 PORT=${PORT:-8733}

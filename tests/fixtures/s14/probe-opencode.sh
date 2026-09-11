@@ -2,7 +2,8 @@
 # S14 probe, opencode half. Canned OpenAI-compatible provider per S13's measured config; reads the
 # declared tool list off the chat/completions request body under each `permission` setting.
 set -u
-REPO=${REPO:-/Users/ryankim/Desktop/CODING/marion}
+# The workspace root: this file sits at <root>/tests/fixtures/s14/.
+REPO=${REPO:-${0:A:h}/../../..}
 OUT=${OUT:?}
 mkdir -p "$OUT"
 PORT=${PORT:-8737}

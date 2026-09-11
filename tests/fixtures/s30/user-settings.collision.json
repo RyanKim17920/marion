@@ -3,12 +3,12 @@
   "mcpServers": {
     "pencil": {
       "command": "node",
-      "args": ["/private/tmp/claude-501/-Users-ryankim-Desktop-CODING-marion/d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/s30/stdio-mcp.js", "pencil"],
+      "args": ["/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/s30/stdio-mcp.js", "pencil"],
       "trust": true
     },
     "marion": {
       "command": "node",
-      "args": ["/private/tmp/claude-501/-Users-ryankim-Desktop-CODING-marion/d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/s30/stdio-mcp.js", "operator-owned-marion"],
+      "args": ["/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/s30/stdio-mcp.js", "operator-owned-marion"],
       "trust": true
     }
   }

@@ -3,7 +3,8 @@
 # GOOGLE_GEMINI_BASE_URL pointed at the canned server, so no Google endpoint is contacted and the
 # IneligibleTier block on the personal login is never reached.
 set -u
-REPO=${REPO:-/Users/ryankim/Desktop/CODING/marion}
+# The workspace root: this file sits at <root>/tests/fixtures/s14/.
+REPO=${REPO:-${0:A:h}/../../..}
 OUT=${OUT:?}
 mkdir -p "$OUT"
 PORT=${PORT:-8735}
