@@ -986,62 +986,90 @@ pub fn parse_stream(stdout: &str, _exit: ChildExit, reading: impl Into<Reading>)
     // to have the key would attribute another tool's arguments to marion's verb.
     let mut report_ids: Vec<String> = Vec::new();
     for frame in json_frames(stdout) {
-        // A JSON-RPC error frame at the top level: the agent refused something outright, which is
-        // the only shape S20's blocker ever produced.
-        if let Some(e) = frame.get("error").and_then(|e| e.get("message"))
-            && let Some(m) = e.as_str()
-        {
-            out.failure.get_or_insert_with(|| m.to_string());
+        if let Some(m) = frame_failure(&frame) {
+            out.failure.get_or_insert(m);
         }
-        // §5.2: `session/prompt`'s `stopReason` is the turn's own verdict. `end_turn` and
-        // `max_tokens` are endings; `refusal` is a failure the exit code cannot see.
-        if let Some(r) = frame.pointer("/result/stopReason").and_then(Value::as_str)
-            && r == "refusal"
-        {
-            out.failure
-                .get_or_insert_with(|| "the agent ended the turn with stopReason `refusal`".into());
-        }
-        let Some(u) = update(&frame) else { continue };
-        let Some(id) = call_id(u) else { continue };
-        if kind(u) == "tool_call" && reading.verb(u).as_deref() == Some("report") {
-            report_ids.push(id.to_string());
-        }
-        // **Every read below is confined to marion's own calls, and both halves of that are
-        // measured.** The arguments half is S21's: `rawInput` is revised in place on every tool
-        // call the session makes, so a reader taking `narrative` off whichever object had the key
-        // would file another tool's arguments as marion's report.
-        //
-        // The failure half is S22's, and it is the sharper one. `codex-acp`'s **first** frame,
-        // before the session is in use, is a `tool_call` titled `mcp__marion__startup` with
-        // `status: "failed"` — a startup diagnostic, wearing the *claude* shim's prefix on the
-        // *codex* shim, for a verb marion does not have. A blanket "any failed tool call fails the
-        // turn" reads that as marion's verb being refused and reports a refusal for a turn that
-        // went on to end `end_turn` having called `report` successfully. A tool of the agent's own
-        // failing is the agent's business; what this function reports is what became of marion's.
-        if !report_ids.iter().any(|k| k == id) {
-            continue;
-        }
-        if let Some(raw) = u.get("rawInput")
-            && let Some(args) = reading.arguments(raw)
-        {
-            if let Some(n) = args.get("narrative").and_then(Value::as_str) {
-                out.narrative = Some(n.to_string());
-            }
-            let commits = report_commits(args);
-            if !commits.is_empty() {
-                out.result_commits = commits;
-            }
-        }
-        if u.get("status").and_then(Value::as_str) == Some("failed") {
-            let words = text_of(u.get("content"));
-            out.failure.get_or_insert(if words.is_empty() {
-                format!("the agent marked tool call {id} failed")
-            } else {
-                words
-            });
-        }
+        read_update(&frame, reading, &mut report_ids, &mut out);
     }
     out
+}
+
+/// What a top-level frame claims about the turn going wrong, if anything.
+///
+/// A JSON-RPC `error` frame is the agent refusing something outright, which is the only shape
+/// S20's blocker ever produced. §5.2's `stopReason` is the turn's own verdict: `end_turn` and
+/// `max_tokens` are endings, `refusal` is a failure the exit code cannot see. The outright refusal
+/// is the more specific claim, so it is the one reported where a frame somehow carries both.
+fn frame_failure(frame: &Value) -> Option<String> {
+    let rpc = frame
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    rpc.or_else(|| {
+        let stop = frame.pointer("/result/stopReason").and_then(Value::as_str);
+        (stop == Some("refusal"))
+            .then(|| "the agent ended the turn with stopReason `refusal`".to_string())
+    })
+}
+
+/// What one frame's `session/update` says about **marion's own** calls, folded into `out`.
+///
+/// **Every read here is confined to marion's own calls, and both halves of that are measured.**
+/// The arguments half is S21's: `rawInput` is revised in place on every tool call the session
+/// makes, so a reader taking `narrative` off whichever object had the key would file another
+/// tool's arguments as marion's report.
+///
+/// The failure half is S22's, and it is the sharper one. `codex-acp`'s **first** frame, before the
+/// session is in use, is a `tool_call` titled `mcp__marion__startup` with `status: "failed"` — a
+/// startup diagnostic, wearing the *claude* shim's prefix on the *codex* shim, for a verb marion
+/// does not have. A blanket "any failed tool call fails the turn" reads that as marion's verb being
+/// refused and reports a refusal for a turn that went on to end `end_turn` having called `report`
+/// successfully. A tool of the agent's own failing is the agent's business; what this function
+/// reports is what became of marion's.
+fn read_update(
+    frame: &Value,
+    reading: Reading,
+    report_ids: &mut Vec<String>,
+    out: &mut StreamOutcome,
+) {
+    let Some(u) = update(frame) else { return };
+    let Some(id) = call_id(u) else { return };
+    if kind(u) == "tool_call" && reading.verb(u).as_deref() == Some("report") {
+        report_ids.push(id.to_string());
+    }
+    if !report_ids.iter().any(|k| k == id) {
+        return;
+    }
+    read_report_args(u, reading, out);
+    if u.get("status").and_then(Value::as_str) == Some("failed") {
+        out.failure.get_or_insert_with(|| failed_words(u, id));
+    }
+}
+
+/// The narrative and commits marion's `report` carried, read in **this agent's** [`Reading`].
+fn read_report_args(u: &Value, reading: Reading, out: &mut StreamOutcome) {
+    let Some(args) = u.get("rawInput").and_then(|raw| reading.arguments(raw)) else {
+        return;
+    };
+    if let Some(n) = args.get("narrative").and_then(Value::as_str) {
+        out.narrative = Some(n.to_string());
+    }
+    let commits = report_commits(args);
+    if !commits.is_empty() {
+        out.result_commits = commits;
+    }
+}
+
+/// Why a failed call to marion failed, in the agent's own words — or, where it gave none, the
+/// call it marked failed, so the failure is never recorded as an empty string.
+fn failed_words(u: &Value, id: &str) -> String {
+    let words = text_of(u.get("content"));
+    if words.is_empty() {
+        format!("the agent marked tool call {id} failed")
+    } else {
+        words
+    }
 }
 
 #[cfg(test)]
