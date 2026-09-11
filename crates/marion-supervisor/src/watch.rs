@@ -109,21 +109,46 @@ pub struct JournalWatch {
     stopped: bool,
 }
 
+/// **Where a view starts, measured as an event rather than as a side effect of construction.**
+///
+/// A watch built at its own end starts wherever the code that built it happened to run, and that
+/// is not always a fact about the run: a reader which learns its root's id only *after* the root
+/// has been spawned measures an end the run has already written past, and every record in that
+/// gap — corruption included — sits silently behind its cursor. Measuring the end before the
+/// thing that appends exists makes the boundary causal instead: the caller measures, then starts
+/// the run, then hands both to the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalEnd(u64);
+
+impl JournalEnd {
+    /// The journal's length now. A file that does not exist yet ends at zero, which is the same
+    /// thing: everything it will ever hold is news.
+    pub fn measure(path: &Path) -> Self {
+        Self(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+    }
+}
+
 impl JournalWatch {
-    /// Watch `path` from **its current end**, ignoring everything about `root`.
+    /// Watch `path` from an end **already measured**, ignoring everything about `root`.
     ///
-    /// Starting at the end rather than at zero is what keeps one run's view free of every previous
-    /// run against the same project: a project's journal is a forest, and the other trees in it are
-    /// history, not news. A file that does not exist yet starts at zero, which is the same thing.
-    pub fn at_end(path: &Path, root: AgentId) -> Self {
-        let offset = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    /// Starting at an end rather than at zero is what keeps one run's view free of every previous
+    /// run against the same project: a project's journal is a forest, and the other trees in it
+    /// are history, not news.
+    pub fn from_end(path: &Path, end: JournalEnd, root: AgentId) -> Self {
         Self {
             path: path.to_path_buf(),
-            offset,
+            offset: end.0,
             seen: HashMap::new(),
             ignore: root,
             stopped: false,
         }
+    }
+
+    /// Watch `path` from its current end — for a caller with nothing between the measurement and
+    /// the first append. A caller that starts a run in between must measure first, with
+    /// [`JournalEnd::measure`], and build the watch with [`Self::from_end`].
+    pub fn at_end(path: &Path, root: AgentId) -> Self {
+        Self::from_end(path, JournalEnd::measure(path), root)
     }
 
     /// Everything that has happened since the last call, in journal order.
@@ -403,6 +428,45 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(matches!(&events[0], ChildEvent::Started { .. }));
         assert_eq!(watch.poll(), Vec::new(), "and not a second time");
+    }
+
+    /// The window `marion run` really has: the journal's end is measured before the run starts,
+    /// and the watch is only built once the run has told it which root to ignore. Everything
+    /// written in between belongs to this run and must be news — a watch that re-measured its own
+    /// end at construction would start past it and report nothing, which is how a corrupt record
+    /// early in a run went unannounced.
+    #[test]
+    fn a_watch_built_from_a_measured_end_reports_what_arrived_while_it_was_being_built() {
+        let dir = scratch("watch-measured-end");
+        let path = dir.join("journal.jsonl");
+        append(
+            &path,
+            &line(1, intent(child_id(1), Some(root_id()), "codex")),
+        );
+
+        // Before the run exists. Everything after this point is the run's own news.
+        let end = JournalEnd::measure(&path);
+
+        // The run starts and writes, and only then does the watch learn its root.
+        append(
+            &path,
+            &line(2, intent(child_id(2), Some(root_id()), "codex")),
+        );
+        append(&path, b"this is not a journal record at all\n");
+        let mut watch = JournalWatch::from_end(&path, end, root_id());
+
+        let events = watch.poll();
+        assert!(
+            matches!(&events[0], ChildEvent::Started { agent_id, .. } if *agent_id == child_id(2)),
+            "the record written while the watch was being built was skipped: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ChildEvent::Stopped { reason } if reason.contains("not a journal record")
+            )),
+            "the corruption written in the same window went unannounced: {events:?}"
+        );
     }
 
     /// A complete line that is not a record is corruption — `replay` stops there and so does this.

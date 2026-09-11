@@ -2276,13 +2276,20 @@ fn tail_children(
     let terminal = std::sync::Arc::clone(terminal);
     let stop = std::sync::Arc::clone(stop);
     let (id_tx, id_rx) = std::sync::mpsc::channel::<marion_core::contract::AgentId>();
+    // **Measured here, on the caller's thread, before the spawn** — which is what the paragraph
+    // above claims and what a length read inside the reader thread does not deliver. The id
+    // arrives only once `spawn_root` has returned, and by then the supervisor has launched the
+    // harness: a cursor taken at that moment starts *past* whatever the harness has already
+    // appended, so a corrupt record written early in the run sits behind the view and it goes
+    // quiet without saying why. The end is a fact about the moment before the run existed.
+    let end = marion_supervisor::watch::JournalEnd::measure(&journal);
     let handle = std::thread::spawn(move || {
         let root_id = match id_rx.recv() {
             Ok(id) => id,
             // The spawn never got an id, so there is nothing to watch and nothing to report.
             Err(_) => return,
         };
-        let mut watch = JournalWatch::at_end(&journal, root_id);
+        let mut watch = JournalWatch::from_end(&journal, end, root_id);
         follow_journal(
             &mut watch,
             &|| stop.load(Ordering::Relaxed),
