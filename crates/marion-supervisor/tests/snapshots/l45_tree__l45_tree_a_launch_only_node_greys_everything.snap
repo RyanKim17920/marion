@@ -3,7 +3,7 @@ source: crates/marion-supervisor/tests/l45_tree.rs
 expression: "report(&tree, true)"
 ---
 --- 96x12, tree focused ---
- marion · /work/marion · 5 nodes, 4 running
+ marion · 5 nodes, 4 running · /work/marion
 [running] impl root-claude
   └ [idle] impl pane-claude
   └ [blocked:permission] impl codex-146

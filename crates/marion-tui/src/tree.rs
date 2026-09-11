@@ -322,10 +322,32 @@ pub fn split(area: Rect) -> Panes {
     }
 }
 
+/// A path from the end that tells one checkout from another: its last two components, with `…/`
+/// where something was dropped.
+///
+/// The head of a path is the part every checkout on a machine shares —
+/// `/private/tmp/claude-501/…` — so a row that clips from the right showed an operator the shared
+/// prefix and hid the two components that differ. A path already short enough to be its own answer
+/// is returned whole, `…/` and all, rather than being decorated with an ellipsis for nothing.
+pub fn short_path(path: &str) -> String {
+    let parts = path
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [.., a, b] if parts.len() > 2 => format!("…/{a}/{b}"),
+        _ => path.trim_end_matches('/').to_string(),
+    }
+}
+
 /// The status row: which project this tree is, and how big it is.
 ///
 /// The counts are the caller's — `marion-tui` cannot say what "running" means any more than it can
 /// say what a harness is — and the row only lays them out.
+///
+/// **Order is the whole design.** The counts come before the path because `set_stringn` clips from
+/// the right, and the one thing this row must never lose is how many nodes there are: a path is
+/// unbounded and a count is two words.
 pub struct Status<'a> {
     /// The project key the supervisor was dialled on, as the operator would recognise it.
     pub repo: &'a str,
@@ -341,8 +363,10 @@ impl Widget for Status<'_> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let (x, _) = buf.set_stringn(area.x, area.y, " marion", area.width as usize, bold);
         let rest = format!(
-            " · {} · {} nodes, {} running",
-            self.repo, self.nodes, self.running
+            " · {} nodes, {} running · {}",
+            self.nodes,
+            self.running,
+            short_path(self.repo)
         );
         let remaining = area.x.saturating_add(area.width).saturating_sub(x) as usize;
         buf.set_stringn(x, area.y, &rest, remaining, Style::default());
@@ -619,11 +643,49 @@ mod tests {
         let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
         assert_eq!(
             row.trim_end(),
-            " marion · /work/marion · 4 nodes, 3 running"
+            " marion · 4 nodes, 3 running · /work/marion"
         );
         assert!(
             buf[(1, 0)].style().add_modifier.contains(Modifier::BOLD),
             "the program name is the anchor of the row"
+        );
+    }
+
+    /// **The count outlives the path.** A deep scratch path is wider than any terminal, and the row
+    /// that put it before the counts lost *"4 nodes, 3 running"* off the right edge — the two facts
+    /// the row exists to carry. The path is shown from its informative end instead, and the count
+    /// is laid out first so a clip can only ever eat the path.
+    #[test]
+    fn the_counts_survive_a_path_too_long_for_the_row() {
+        assert_eq!(short_path("/work/marion"), "/work/marion");
+        assert_eq!(short_path("marion"), "marion");
+        assert_eq!(
+            short_path("/private/tmp/claude-501/d0851ffa/scratchpad/walkthrough/work/repo"),
+            "…/work/repo",
+            "a long path is shown from the end that tells one checkout from another"
+        );
+        assert_eq!(
+            short_path("/a/b/c/"),
+            "…/b/c",
+            "a trailing slash is not a component"
+        );
+
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        Status {
+            repo: "/private/tmp/claude-501/d0851ffa/scratchpad/walkthrough/work/repo",
+            nodes: 4,
+            running: 3,
+        }
+        .render(area, &mut buf);
+        let row: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            row.contains("4 nodes, 3 running"),
+            "the count was clipped off a narrow row: {row:?}"
+        );
+        assert!(
+            !row.contains("claude-501"),
+            "the head of the path is not the informative end: {row:?}"
         );
     }
 
