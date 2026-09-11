@@ -7086,7 +7086,12 @@ mod tests {
         let (ack_release_tx, ack_release_rx) = std::sync::mpsc::sync_channel(1);
         let blocked_ack = std::thread::spawn(move || {
             ack_waiting_tx.send(()).unwrap();
-            ack_release_rx.recv().unwrap();
+            // **Bounded, because this thread is joined.** The release always arrives on the happy
+            // path, but a panic on the main thread before it — an assertion this test is built to
+            // report — would leave this thread parked forever and `blocked_ack.join()` below
+            // parked behind it, on a fixture that owns two real pty children. A bound turns that
+            // into a failure the harness can print.
+            let _ = ack_release_rx.recv_timeout(Duration::from_secs(10));
             drop(prepared);
         });
         ack_waiting_rx
