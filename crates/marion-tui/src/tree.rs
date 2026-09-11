@@ -68,9 +68,9 @@ impl Action {
 
 /// One node, as a tree row.
 ///
-/// Deliberately stringly-typed. `marion-tui` does not depend on `marion-proto` and must not: the
-/// render path is `ratatui` and a grid, and a widget that knew `NodeState`'s variants would be a
-/// second place the wire vocabulary is interpreted. The supervisor projects; this draws.
+/// Deliberately stringly-typed. `marion-tui` does not depend on `marion_core::proto` and must not:
+/// the render path is `ratatui` and a grid, and a widget that knew `NodeState`'s variants would be
+/// a second place the wire vocabulary is interpreted. The supervisor projects; this draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub id: String,

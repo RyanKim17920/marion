@@ -1,6 +1,6 @@
 //! The fifteen methods' results.
 //!
-//! Tolerant of unknown fields, unlike [`crate::proto::params`] — the crate doc argues why the asymmetry is
+//! Tolerant of unknown fields, unlike [`crate::proto::params`] — the module doc argues why the asymmetry is
 //! deliberate rather than an oversight. The short form: an ignored parameter changes what runs, an
 //! ignored result field only narrows what is shown, and a client that refuses to parse a supervisor
 //! one version newer than itself has turned an additive change into an outage.

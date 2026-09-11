@@ -1006,7 +1006,7 @@ honestly still open. Per milestone:
   live `copilot --acp` child, `#[ignore]`); clause 2 met
   (`doctor.rs::an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake`). Clause 3 —
   the UI greying *their* capabilities — is not met for the one reason the ruling below gives and
-  which is still true at HEAD: `NodeSummary` (`marion-proto/src/model.rs`) carries `harness` and
+  which is still true at HEAD: `NodeSummary` (`marion-core/src/proto/model.rs`) carries `harness` and
   `harness_version` and no field for an ACP agent's own `initialize` identity, so a tree node can
   be greyed only at the protocol's static ceiling, never at the agent's. The greying mechanism
   itself is built and measured (`tree.rs::the_trees_greying_is_doctors_own_answer_at_every_key`).
@@ -2775,8 +2775,13 @@ re-check date, so each line now carries its own.
   holds §2's `UnixListener` in production code, and a detached supervisor serves it.
 - ~~**`events.jsonl` is never written.**~~ **FALSE.** `crates/marion-supervisor/src/events.rs` is
   the writer, and `handler.rs`, `run.rs` and `mcp.rs` all reach it.
-- ~~**No `marion-tui`, `marion-term` or `marion-proto` crate.**~~ **FALSE.** The workspace is eight
-  members, all three among them (`Cargo.toml:3-12`).
+- ~~**No `marion-tui`, `marion-term` or `marion-proto` crate.**~~ **FALSE, and half-superseded
+  2026-09-10.** `marion-tui` and `marion-term` are workspace members with tests. `marion-proto`
+  was one too, and is now `marion_core::proto` — the wire vocabulary kept its whole module tree
+  and every public item path, one segment lower, because it spells core's own model (`NodeSummary`
+  ← `node::NodeState`, `ReplayPoint` ← `ir::SrcSeq`), only `marion-supervisor` ever consumed it,
+  and the merge takes a node out of the workspace's dependency chain. The workspace is **seven**
+  members (`Cargo.toml:3-11`). Design §10 carries the dated correction.
 - ~~**`marion doctor --adapter` does not exist.**~~ **FALSE since `c7cd5b5`**, and this line was
   already false when it was re-checked on 2026-08-08 — it was carried forward unread, which is the
   exact rot the section header complains about. `crates/marion-supervisor/src/doctor.rs` implements

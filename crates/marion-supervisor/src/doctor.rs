@@ -176,9 +176,9 @@ pub fn capabilities_at(
 /// One `(harness, version, surfaces)` row.
 ///
 /// [`HarnessReport`] carries the parts that are already the wire vocabulary; `surfaces` and
-/// `capabilities` sit beside it rather than inside it because `marion-proto` *deliberately* does
-/// not depend on `marion-harness` — see that crate's manifest, which refuses the dependency by
-/// name so a protocol crate does not pull in four adapters to name a boolean.
+/// `capabilities` sit beside it rather than inside it because `marion_core::proto` *deliberately*
+/// does not depend on `marion-harness` — see `marion-core`'s manifest, which refuses the
+/// dependency by name so the wire vocabulary does not pull in four adapters to name a boolean.
 #[derive(Debug, Clone)]
 pub struct Row {
     pub report: HarnessReport,

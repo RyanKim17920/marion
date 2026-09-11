@@ -47,7 +47,7 @@ pub struct NodeSummary {
     /// node still `Spawning`, therefore resolves to the conservative set — which is the direction
     /// §3.3's *degrade visibly* requires an unknown to fall in.
     ///
-    /// `#[serde(default)]` per this crate's rule for every added field: a client one version older
+    /// `#[serde(default)]` per this module's rule for every added field: a client one version older
     /// must keep parsing, and reading `None` is exactly right for one that never knew to ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_version: Option<String>,
@@ -80,7 +80,7 @@ pub struct NodeSummary {
 
 /// Which of §6.3's two verbs a node's state calls for.
 ///
-/// This is a *client-facing* rule and it is not §5.4's. See the crate doc: §5.4 denies an agent's
+/// This is a *client-facing* rule and it is not §5.4's. See the module doc: §5.4 denies an agent's
 /// `send` against `Blocked(Descendants)`, but §7.6's hold is released *by a re-prompt* and §6.3
 /// names the user's `node/prompt` as one of the two callers that reach that path. A held node is
 /// therefore promptable by the operator and not by a child.
@@ -130,7 +130,7 @@ impl Delivery {
 /// §7.3.3 makes the replay-to-subscribe seam the correctness question of re-attach and answers it
 /// by `src_seq`: *"replay to the journal's own read point, then subscribe from there."*
 ///
-/// `src_seq` is an `Option` for the reason §4.2 states and this crate must not paper over: on
+/// `src_seq` is an `Option` for the reason §4.2 states and this module must not paper over: on
 /// Codex app-server and Claude Code `headless` there is no source-side ordering evidence at all,
 /// and *"where it is `None`, marion cannot detect loss and must not imply otherwise."* A
 /// non-optional field would have forced a fabricated `Ordinal(0)` into exactly the case where
@@ -394,7 +394,7 @@ pub enum QuitOutcome {
 /// How a client stopped being there — the §7.3.1 distinction, as a type.
 ///
 /// This is not a wire message. It is the supervisor's own reading of an ended connection, and it
-/// is in this crate because the protocol is what makes the two cases distinguishable at all: the
+/// is in this module because the protocol is what makes the two cases distinguishable at all: the
 /// supervisor sees an identical socket close either way, and the *only* evidence of intent that
 /// ever exists is a `session/quit` that arrived before it. §7.3.1: *"a dropped socket is
 /// therefore **not** a quit"*, and *"guessing intent from a disconnect is how work gets killed by

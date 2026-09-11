@@ -397,7 +397,7 @@ branch code on `ExecutionSurfaces`.
 > 3. **`event.rs:40` says `mono_ns` exists to *align* the two files.** Alignment is a relation
 >    between two things. Merging them would delete the field's stated purpose.
 >
-> The wire consequence is [`marion_proto::Event::NodePty`], a **separate** notification from
+> The wire consequence is [`marion_core::proto::Event::NodePty`], a **separate** notification from
 > `node/event`, carrying `agent_id`, its own dense `seq`, `mono_ns` and the bytes as a JSON string.
 > Pinned by `marion_supervisor::pty::tests::no_pty_byte_reaches_events_jsonl`.
 
@@ -4168,7 +4168,7 @@ marion/
   rust-toolchain.toml
   crates/
     marion-core/            # IR, launch spec, registry model, journal, task contract. No I/O.
-    marion-proto/           # client↔supervisor JSON-RPC types
+                            #   `proto` submodule: client↔supervisor JSON-RPC types
     marion-term/            # pty host + VT grid + ratatui adapter
     marion-harness/         # ControlPlane/DisplayPlane traits + per-harness impls
     marion-provider/        # canned provider; later ModelProxy
@@ -4187,6 +4187,28 @@ marion/
 `marion-core` stays free of process spawning and filesystem side effects so L1 tests are pure.
 `marion-harness` depends on `marion-core` and `marion-term`, never the reverse. The user-facing
 command is **`marion`**.
+
+> **CORRECTION, 2026-09-10 — `marion-proto` is no longer a crate; it is `marion_core::proto`.**
+> The layout above listed eight workspace members; there are now seven. The wire vocabulary keeps
+> its whole module tree (`envelope`, `error`, `input`, `method`, `model`, `native`, `notify`,
+> `pane`, `params`, `result`) and every public item keeps its path, one segment lower:
+> `marion_proto::Frame` is now `marion_core::proto::Frame`.
+>
+> Three reasons, in the order they weigh:
+>
+> 1. **It is a spelling of core's model, not a peer of it.** `NodeSummary` projects
+>    `node::NodeState`, `ReplayPoint` projects `ir::SrcSeq`, `KilledNode` projects
+>    `contract::ExitStatus`. The dependency only ever pointed one way — proto → core — and a
+>    separate crate presented that asymmetry as a relationship between two vocabularies.
+> 2. **Only the supervisor consumed it.** Not `marion-tui` (which is deliberately stringly-typed
+>    at that seam), not `marion-harness`, not `marion-term`. A crate boundary drawn for one
+>    consumer buys a manifest and a compilation unit and enforces nothing.
+> 3. **One layer flatter.** The workspace's dependency chain is the thing §10 is trying to keep
+>    legible, and this removes a node from it without moving a single line of behavior.
+>
+> What is *not* implied: `marion-core` still spawns no process and touches no filesystem, so the
+> L1-tests-stay-pure rule above is intact, and `marion-harness` is still deliberately absent from
+> core's manifest for the reason `proto/model.rs` gives about `ExecutionSurfaces`.
 
 **Who owns the socket, per milestone** — this moves once, and only once:
 
@@ -5474,7 +5496,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     whole bound — which is the unbounded-ancestor failure §7.6's bounded hold exists to prevent,
     reintroduced from the other side. **Closing either properly means (B): `spawn` over the socket
     to the detached `marion-supervisor serve`, which owns the child's lifecycle**;
-    `Method::AgentSpawn` already exists in `marion-proto` and `handler.rs` answers it
+    `Method::AgentSpawn` already exists in `marion_core::proto` and `handler.rs` answers it
     `Unimplemented`. A narrower interim fix exists and is not pretended to be equivalent — carry
     each child's pid and process group in the bridge's table and kill them from a SIGTERM handler
     inside the measured ~450 ms grace, which converts a silent runaway into a recorded abandonment

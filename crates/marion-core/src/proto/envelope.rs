@@ -2,7 +2,7 @@
 //!
 //! Transport-independent means this module knows about **lines**, not sockets: [`Frame::to_line`]
 //! produces one and [`Frame::from_line`] consumes one, and whether that line arrived over a unix
-//! socket (§2), a pipe, or a test fixture is not this crate's business. That is what lets the
+//! socket (§2), a pipe, or a test fixture is not this module's business. That is what lets the
 //! transport change later be small, and what lets every frame in this file be tested without one.
 //!
 //! # Three framing decisions, each of which could have gone the other way
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn the_full_request_response_cycle_types_a_result_by_its_pending_method() {
-        // How a client actually uses this crate: send a call, keep (id -> method), decode the
+        // How a client actually uses this module: send a call, keep (id -> method), decode the
         // answer with it. The seam the envelope deliberately leaves untyped.
         let call = Call::NodeCancel(NodeCancelParams {
             agent_id: AgentId("a".into()),

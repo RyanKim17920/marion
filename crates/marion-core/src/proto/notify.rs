@@ -78,7 +78,7 @@ pub enum Event {
     ///
     /// `payload` is opaque. marion is the courier for a harness's own event body; §4's full `Event`
     /// with its typed `Payload` lands with `events.jsonl`, and inventing a normalization here would
-    /// mean this crate deciding a question §4 has already reserved.
+    /// mean this module deciding a question §4 has already reserved.
     #[serde(rename = "node/event")]
     NodeEvent {
         agent_id: AgentId,

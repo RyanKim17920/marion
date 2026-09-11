@@ -1,4 +1,9 @@
-//! marion-proto — the client↔supervisor JSON-RPC vocabulary (design §10).
+//! `marion_core::proto` — the client↔supervisor JSON-RPC vocabulary (design §10).
+//!
+//! Formerly the `marion-proto` crate; merged here 2026-09-10, module tree and every public item
+//! path intact. It belongs beside the model rather than beside it in a crate of its own because it
+//! *spells* that model: [`NodeSummary`] is a projection of [`crate::node::NodeState`],
+//! [`ReplayPoint`] of [`crate::ir::SrcSeq`]. See design §10's dated correction.
 //!
 //! **Types only.** No socket, no transport, no server, no client. The transport is a separate
 //! change that depends on this one, and it is a small change precisely because the vocabulary and
@@ -10,14 +15,14 @@
 //!
 //! marion has **two** RPC surfaces and confusing them is the easiest mistake in this file:
 //!
-//! | | this crate | §5.4 |
+//! | | `marion_core::proto` | §5.4 |
 //! |---|---|---|
 //! | who calls | the **client** (the TUI, §5.6) over the §2 unix socket | an **agent**, over the per-child MCP bridge |
 //! | transport | NDJSON JSON-RPC 2.0 | MCP tool calls |
 //! | verbs | the fifteen below | `status`, `list`, `wait`, `send`, `cancel`, `report`, `spawn` |
 //! | authorization | none per-verb: the client is the operator | per verb, per target, per target state, against a per-node capability token bound to an `AgentId` |
 //!
-//! §5.4's per-verb table is **not** this crate's authorization model and must not be copied into
+//! §5.4's per-verb table is **not** this module's authorization model and must not be copied into
 //! it. The clearest case is `Blocked(Descendants)`: §5.4 denies an *agent's* `send` against such a
 //! node outright, because that hold belongs to marion — but §7.6's hold is *resolved by a
 //! re-prompt*, and §6.3 names exactly two callers of that path, the user via `node/prompt` and

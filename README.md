@@ -154,7 +154,7 @@ hook callbacks and `request_user_dialog` remain unmeasured.
 
 ## Stack
 
-Rust, eight workspace crates. A hand-rolled `posix_openpt` PTY host in `marion-supervisor::pty` ·
+Rust, seven workspace crates. A hand-rolled `posix_openpt` PTY host in `marion-supervisor::pty` ·
 `alacritty_terminal` 0.26 · `ratatui` 0.30 + `insta` 1 · a hand-rolled ACP driver
 (`marion-supervisor/src/acp_child.rs`) · the canned model provider is the `marion-provider` crate.
 `vt100` 0.16 is a **dev-dependency of `marion-term` alone** — evidence for §11 item 10, never a
