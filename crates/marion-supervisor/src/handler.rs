@@ -2490,6 +2490,21 @@ impl RegistryHandle {
         token
     }
 
+    /// **A native root this supervisor claimed has reached its end**, and its table entry says so.
+    ///
+    /// A managed node's entry is finished by the thread that ran it ([`Self::mark_finished`] from
+    /// `run_spawn`'s return). A native node has no such thread — the supervisor owns its pane, not
+    /// its turn — so its recorder closes the entry instead, at the same two moments the journal
+    /// gets a terminal record. Without this, [`Self::idle_exit_eligible`]'s second guard would read
+    /// a native session that ended hours ago as a running node and no supervisor with a native
+    /// launch in its history could ever leave.
+    ///
+    /// [`NodeOutcome::Root`] because a native node **is** a root: its result is its stream and its
+    /// exit, both on disk (§9).
+    pub(crate) fn finished_native(&self, agent_id: &AgentId, outcome: Result<(), String>) {
+        self.mark_finished(agent_id, NodeOutcome::Root(outcome));
+    }
+
     /// A process exists for a node this supervisor owns. Called from
     /// [`crate::run::SpawnObserver::started`], immediately after `Spawned { pid: Some(_) }` is
     /// journaled.

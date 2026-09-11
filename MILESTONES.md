@@ -97,7 +97,10 @@ gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.
 qwen 0.23.0.
 
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
-relay as a journaled root. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`.
+relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
+mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares
+it beside the node's identity, so `spawn`/`wait`/`status` from the operator's own session are
+authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`.
 Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
@@ -1234,7 +1237,20 @@ acceptance evidence, so every marker remains unchanged.
   the node ran in the canonical project, which is the git common dir
   (`tests/native_bootstrap.rs::the_native_command_runs_in_the_clients_working_directory_not_the_common_dir`;
   `native_facade_smoke.rs` reads the real codex's `pwd -P` through a recording shim over a
-  git-initialised project).
+  git-initialised project). **Since 2026-09-11 a native root can delegate.** Its declaration
+  carried no `MARION_NODE_TOKEN`, and `marion-supervisor mcp` is `Principal::Node`, so every
+  `spawn` from a native root was refused by its own bridge with §5.4's sentence before a frame
+  reached the socket — and a production test pinned the absence, so the two halves agreed and
+  nothing was red. A native root **is** a journaled node (`NativeNodeJournal` writes its
+  `SpawnIntent` and `Spawned`), so `NativeLaunchHandler::authorized` now calls the same
+  `RegistryHandle::claim` every managed node's owner calls, in the same window — intent durable,
+  no side effect taken — and the row-derived adapter declares the minted token beside the identity
+  it already carried. The registry entry the claim opens is closed by the node's own recorder at
+  `Exited`/`SpawnAborted`, so §5.7's second guard does not read a finished session as a running
+  node. Asserted at the far end rather than on the declaration alone
+  (`tests/native_bootstrap.rs::a_native_roots_declaration_carries_a_token_that_authorizes_a_spawn_under_it`):
+  the token the **vendor process** really received is presented on the project socket as the
+  bridge would present it, and the supervisor journals a child under the native root at depth 1.
   *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the

@@ -13,6 +13,8 @@ use marion_supervisor::serve::own_uid;
 use marion_supervisor::socket::{Acquired, acquire, socket_paths};
 use marion_testsupport::scratch;
 
+mod common;
+
 fn request_context(selector: &str, tail: Vec<OsString>) -> DirectNativeRequestContext {
     DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(b"/canonical/project-\xff".to_vec())),
@@ -142,6 +144,9 @@ mod enabled_launch {
     const LEAK_ENV: &str = "MARION_PROBE_MUST_NOT_REACH_THE_VENDOR";
     const PROBE_TAIL: &[&[u8]] = &[b"--", b"", b"\xff\x80x"];
     const INJECTED_PREFIX: &str = "--marion-injected";
+    /// Where the probe adapter echoes the node token marion declared, since a `MARION_*` name may
+    /// not reach the vendor process at all (`assemble_native`).
+    const PROBE_TOKEN_ENV: &str = "PROBE_NODE_TOKEN";
     /// What the vendor shim writes to **its** terminal — the supervisor's pane — and what must
     /// therefore appear on the **operator's** terminal only if the relay carried it there.
     const VENDOR_GREETING: &str = "VENDOR_SAYS_HELLO";
@@ -167,12 +172,24 @@ mod enabled_launch {
                 .find(|(name, _)| name == "MARION_REPO")
                 .map(|(_, value)| OsString::from(value))
                 .expect("the bridge declaration names a repository");
+            // §5.4's capability, echoed under a name of the probe's own: `MARION_*` may not reach
+            // the vendor, and the shim's environment record is the only place outside the
+            // supervisor where a test can read what marion really declared.
+            let mut env_overlay = vec![
+                (OsString::from("PROBE_INJECTED"), OsString::from("1")),
+                (OsString::from("PROBE_REPO"), repo),
+            ];
+            if let Some((_, token)) = context
+                .bridge
+                .pairs()
+                .into_iter()
+                .find(|(name, _)| name == marion_harness::mcp_bridge::NODE_TOKEN_ENV)
+            {
+                env_overlay.push((OsString::from(PROBE_TOKEN_ENV), OsString::from(token)));
+            }
             Ok(NativeInjection {
                 argv_prefix: vec![OsString::from(INJECTED_PREFIX)],
-                env_overlay: vec![
-                    (OsString::from("PROBE_INJECTED"), OsString::from("1")),
-                    (OsString::from("PROBE_REPO"), repo),
-                ],
+                env_overlay,
                 documents: vec![],
             })
         }
@@ -626,6 +643,122 @@ mod enabled_launch {
             "{:?}",
             nodes[0].exit
         );
+
+        bed.server.stop();
+    }
+
+    /// **A native root is a journaled node, so it can delegate** — §5.4's capability, minted for
+    /// the native root at the instant its `SpawnIntent` became durable and carried in the
+    /// declaration marion writes for the operator's own session.
+    ///
+    /// The whole point of putting marion's MCP server in front of the operator's harness is that
+    /// the harness can call `spawn`. Before this, every `spawn` from a native root was refused by
+    /// its own bridge — `MARION_NODE_TOKEN` was never declared, so `mcp::node_identity` refused
+    /// before a frame was sent — and the two halves agreed with each other, which is why nothing
+    /// was red. This asserts the far end instead: the token the vendor really received is
+    /// presented on the project socket as the bridge would present it, and the supervisor journals
+    /// a child under the native root.
+    ///
+    /// Mutation: `native_launch.rs`'s `bridge_for` back to `node_token: None`, or the claim moved
+    /// after the declaration is written. The shim's environment record loses the key and this test
+    /// names it; drop only the `RegistryHandle::claim` and the spawn is refused with §5.4's
+    /// sentence instead.
+    #[test]
+    fn a_native_roots_declaration_carries_a_token_that_authorizes_a_spawn_under_it() {
+        use marion_core::proto::Call;
+        use marion_core::proto::params::AgentSpawnParams;
+
+        let bed = Bed::start("native-launch-delegates", |project| {
+            let status = Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(project)
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git init: {status}");
+        });
+        let run = bed.run_probe(&bed.project);
+        let vendor = bed.assert_relayed(&run);
+
+        let token = vendor
+            .env
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{PROBE_TOKEN_ENV}=")))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the native root's declaration carries no {}, so its bridge can never prove \
+                     which node it serves and every `spawn` from the operator's own session is \
+                     refused by §5.4 before it reaches the socket:\n{}",
+                    marion_harness::mcp_bridge::NODE_TOKEN_ENV,
+                    vendor.env
+                )
+            })
+            .to_string();
+        assert!(
+            !token.trim().is_empty(),
+            "an empty capability is one every process on this machine already has"
+        );
+
+        let replayed = bed.replayed();
+        let nodes = replayed.tree().nodes().to_vec();
+        assert_eq!(nodes.len(), 1, "exactly one node was journaled: {nodes:?}");
+        let root = nodes[0].agent_id.clone();
+
+        // The frame the node's own bridge would send, on the socket the declaration names.
+        let paths = socket_paths(&bed.state, &project_root(&bed.project), own_uid());
+        let mut client = crate::common::client::Client::dial(&paths);
+        client.send(Call::AgentSpawn(AgentSpawnParams {
+            agent_type: "claude".into(),
+            prompt: "a child of the operator's own native session".into(),
+            native_launch: None,
+            caller: Some(marion_core::proto::SpawnCaller {
+                agent_id: root.clone(),
+                node_token: token,
+            }),
+            // Forbidden beside a caller: the supervisor knows which tree this node lives in.
+            repo: None,
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: Some(5),
+            model: None,
+            no_change_record: None,
+            pane: None,
+            isolation: None,
+            allow_concurrent_writes: None,
+        }));
+
+        // `SpawnIntent` is journaled before the spawn's first side effect, so the child is in the
+        // tree from the first instant it exists at all — whatever the harness does afterwards.
+        // The response is deliberately not read: what is asserted is that authorization passed,
+        // not what a child marion could not run on this machine went on to do.
+        let mut child = None;
+        let found = marion_testsupport::until_within(
+            Duration::from_secs(30),
+            Duration::from_millis(25),
+            || {
+                let replayed = Registry::boot(&bed.project_dir).expect("the journal replays");
+                child = replayed
+                    .tree()
+                    .nodes()
+                    .iter()
+                    .find(|node| node.parent_id() == Some(&root))
+                    .map(|node| (node.agent_id.clone(), node.intent.clone()));
+                child.is_some()
+            },
+        );
+        assert!(
+            found,
+            "no child was journaled under the native root {}: the supervisor refused the spawn \
+             the operator's own session asked for",
+            root.0
+        );
+        let (_, intent) = child.expect("a child under the native root");
+        let intent = intent.expect("a SpawnIntent names the child");
+        assert_eq!(
+            intent.parent_id,
+            Some(root),
+            "§7.5: written once, immutable"
+        );
+        assert_eq!(intent.depth, 1, "one level below the native root");
 
         bed.server.stop();
     }

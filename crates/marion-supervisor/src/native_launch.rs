@@ -36,6 +36,22 @@ pub(crate) struct PreparedNativeCommand {
     pub(crate) terminal_profile: OsString,
 }
 
+/// **One native root's identity and its §5.4 capability**, decided together and handed to the
+/// factory as one value.
+///
+/// They travel together because they are minted together and are worthless apart: an `AgentId`
+/// with no token is a bridge that can name a node and prove nothing about it, and a token with no
+/// id names nobody. The pairing is the same one [`crate::handler::RegistryHandle::claim`] returns
+/// for a managed node, arriving here rather than through `SpawnCtx` because a native root has no
+/// `run_spawn` to carry it.
+pub(crate) struct NativeNodeClaim {
+    /// The node this launch is, in the journal, the registry, its agent directory and its bridge.
+    pub(crate) agent_id: AgentId,
+    /// §5.4's per-node capability, or `None` where the supervisor could mint none — a native
+    /// session that runs and cannot delegate, never one with a guessable capability.
+    pub(crate) node_token: Option<String>,
+}
+
 /// Descriptor-specific assembly, injected so this generic executor never guesses vendor flags,
 /// readiness, environment injection, or executable resolution.
 pub(crate) trait NativeCommandFactory: Send + Sync + 'static {
@@ -44,7 +60,7 @@ pub(crate) trait NativeCommandFactory: Send + Sync + 'static {
         selected: &crate::native_intent::SelectedNativeFacade<'_>,
         context: &DirectNativeRequestContext,
         geometry: NativeTerminalGeometry,
-        agent_id: &AgentId,
+        claim: &NativeNodeClaim,
     ) -> Result<PreparedNativeCommand, BootstrapError>;
 }
 
@@ -74,14 +90,21 @@ impl ProductionNativeCommandFactory {
     }
 
     /// The declaration of marion's own MCP server for this node — the same keys a managed node's
-    /// declaration carries (`claude_code::mcp_config_json`), minus the readiness file a native
-    /// session has no use for, and minus a node token no owner has minted yet.
+    /// declaration carries (`claude_code::mcp_config_json`), minus only the readiness file a
+    /// native session has no use for.
+    ///
+    /// **The node token is here for the same reason it is in a managed root's declaration**, and
+    /// its absence was the whole of why `marion codex` could never delegate: `marion-supervisor
+    /// mcp` is [`crate::mcp::Principal::Node`], and a `Node` that cannot present §5.4's capability
+    /// refuses its own `spawn` before a frame reaches the socket. A native root **is** a journaled
+    /// node — `NativeNodeJournal` writes its `SpawnIntent` and `Spawned` — so the owner that
+    /// claimed it mints the same capability it mints for every other node it owns.
     ///
     /// `repo` is the working tree the operator stood in, which is what `marion run` records for a
     /// managed root (`default_repo`) — never §2's key, which is the git common dir.
     fn bridge_for(
         &self,
-        agent_id: &AgentId,
+        claim: &NativeNodeClaim,
         agent_type: &AgentType,
         repo: &std::path::Path,
     ) -> BridgeEnv {
@@ -92,11 +115,11 @@ impl ProductionNativeCommandFactory {
             state: self.env.state.clone(),
             base_url: self.env.base_url.clone(),
             auth: self.env.auth,
-            agent_id: agent_id.clone(),
+            agent_id: claim.agent_id.clone(),
             agent_type: agent_type.name.clone(),
             // A native session is a root.
             depth: 0,
-            node_token: None,
+            node_token: claim.node_token.clone(),
             ready_file: None,
         }
     }
@@ -187,7 +210,7 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
         selected: &crate::native_intent::SelectedNativeFacade<'_>,
         context: &DirectNativeRequestContext,
         geometry: NativeTerminalGeometry,
-        agent_id: &AgentId,
+        claim: &NativeNodeClaim,
     ) -> Result<PreparedNativeCommand, BootstrapError> {
         let lane = selected.native_lane();
         let environment = context.environment();
@@ -206,8 +229,8 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
                 agent_type.harness.as_str()
             ))
         })?;
-        let agent_dir = self.env.project_dir.agent(agent_id);
-        let bridge = self.bridge_for(agent_id, agent_type, &working_tree_root(&cwd));
+        let agent_dir = self.env.project_dir.agent(&claim.agent_id);
+        let bridge = self.bridge_for(claim, agent_type, &working_tree_root(&cwd));
         let injection = adapter
             .prepare_native(&NativeNodeContext {
                 bridge: &bridge,
@@ -290,7 +313,7 @@ impl NativeLaunchHandler {
                 _: &crate::native_intent::SelectedNativeFacade<'_>,
                 _: &DirectNativeRequestContext,
                 _: NativeTerminalGeometry,
-                _: &AgentId,
+                _: &NativeNodeClaim,
             ) -> Result<PreparedNativeCommand, BootstrapError> {
                 unreachable!("claim test bypasses authorization")
             }
@@ -389,9 +412,19 @@ impl NativeNodeRecorder for NativeNodeJournal {
             exit: marion_core::contract::ProcessExit {
                 code,
                 signal,
-                description,
+                description: description.clone(),
             },
         }));
+        // The registry entry the claim opened, closed at the same instant. §5.7's second guard
+        // reads liveness off this table, and nothing else would ever set it for a native node.
+        self.handle.finished_native(
+            &self.agent_id,
+            if code == Some(0) {
+                Ok(())
+            } else {
+                Err(description)
+            },
+        );
     }
 
     fn aborted(&self, reason: &str) {
@@ -399,6 +432,8 @@ impl NativeNodeRecorder for NativeNodeJournal {
             agent_id: self.agent_id.clone(),
             reason: reason.to_string(),
         }));
+        self.handle
+            .finished_native(&self.agent_id, Err(reason.to_string()));
     }
 }
 
@@ -490,6 +525,28 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
         journal
             .intent(agent_type)
             .map_err(|error| BootstrapError::NativeClaim(error.to_string()))?;
+        // **§6.1 step 7's window, and the only instant §5.4's capability can be decided in.** The
+        // intent is durable, so the node exists and the registry can read its depth and agent type
+        // back; nothing irreversible has happened, so the token is decided before the declaration
+        // that carries it is written. This is `run_spawn`'s `observer.identified` hook, arriving on
+        // the one path that has no `run_spawn` — which is why a native root used to be the single
+        // journaled node marion never claimed, and why its bridge refused every `spawn`.
+        //
+        // `working_tree_root` for the same reason the factory calls it for `MARION_REPO`: the tree
+        // this node lives in is the tree its own children branch from, and a native root lives
+        // where the operator stood, never in §2's key.
+        let node_token = self.handle.claim(
+            &agent_id,
+            // A root has no contract (§9).
+            None,
+            working_tree_root(context.client_cwd()),
+        );
+        let claim = NativeNodeClaim {
+            agent_id: agent_id.clone(),
+            // Present or absent, never empty: an empty token is a secret every process on this
+            // machine already has (`mcp_bridge::BridgeEnv`).
+            node_token: (!node_token.is_empty()).then_some(node_token),
+        };
         // Every refusal from here until the launch owns the record resolves the intent.
         let prepared = (|| {
             // Authority exists before the PaneOwner can make a host visible.
@@ -506,7 +563,7 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
                     xpixel: geometry.xpixel,
                     ypixel: geometry.ypixel,
                 },
-                &agent_id,
+                &claim,
             )?;
             deadline.require_remaining()?;
             Ok::<_, BootstrapError>((receipt, prepared))
@@ -719,6 +776,18 @@ mod tests {
     };
     const ATLAS_DESCRIPTORS: &[marion_core::NativeFacadeDescriptor] = &[ATLAS];
 
+    /// Stands in for the 32 hex characters `RegistryHandle::claim` mints. A literal, because what
+    /// these tests assert is that the factory carries **the owner's** value into the declaration
+    /// unchanged, and a value the test could not have predicted proves nothing about that.
+    const FIXTURE_NODE_TOKEN: &str = "MARION-NATIVE-TOKEN-VALUE-9c2f";
+
+    fn fixture_claim(agent_id: &AgentId) -> NativeNodeClaim {
+        NativeNodeClaim {
+            agent_id: agent_id.clone(),
+            node_token: Some(FIXTURE_NODE_TOKEN.to_string()),
+        }
+    }
+
     /// The adapter sees only the semantic node context. It proves that by echoing the bridge
     /// program it was handed into its prefix, which the factory must place before the tail.
     struct FixtureAdapter;
@@ -749,10 +818,17 @@ mod tests {
             assert_eq!(declared("MARION_AUTH"), "canned");
             assert_eq!(declared("MARION_BASE_URL"), "http://127.0.0.1:8099/v1");
             assert!(
-                !pairs
-                    .iter()
-                    .any(|(name, _)| name == "MARION_READY_FILE" || name == "MARION_NODE_TOKEN"),
-                "a native root has no readiness file and no minted node token"
+                !pairs.iter().any(|(name, _)| name == "MARION_READY_FILE"),
+                "a native root has no readiness file: marion never waits on the operator's own \
+                 session to announce itself"
+            );
+            // §5.4, carried exactly as a managed root's declaration carries it: the bridge in
+            // front of the operator's harness is a node's bridge, and a node's bridge must be able
+            // to prove which node it serves or it can never spawn.
+            assert_eq!(
+                declared("MARION_NODE_TOKEN"),
+                OsString::from(FIXTURE_NODE_TOKEN,),
+                "the declaration must carry the token its owner minted"
             );
             Ok(NativeInjection {
                 argv_prefix: vec![
@@ -868,7 +944,7 @@ mod tests {
                     xpixel: 0,
                     ypixel: 0,
                 },
-                &agent_id,
+                &fixture_claim(&agent_id),
             )
             .expect("the fixture facade assembles");
 
@@ -920,7 +996,7 @@ mod tests {
         };
 
         let prepared = ProductionNativeCommandFactory::new(env.clone(), fixture_adapter)
-            .prepare(&selected, &context, geometry, &agent_id)
+            .prepare(&selected, &context, geometry, &fixture_claim(&agent_id))
             .expect("the fixture facade assembles");
 
         let agent_dir = env.project_dir.agent(&agent_id);
@@ -987,7 +1063,7 @@ mod tests {
                 &selected,
                 &unresolvable,
                 geometry,
-                &agent_id
+                &fixture_claim(&agent_id)
             ),
             Err(BootstrapError::NativeCommand(_))
         ));
@@ -1002,7 +1078,7 @@ mod tests {
                 &selected,
                 &resolvable,
                 geometry,
-                &agent_id
+                &fixture_claim(&agent_id)
             ),
             Err(BootstrapError::NativeCommand(_))
         ));
@@ -1089,7 +1165,7 @@ mod tests {
 
         let agent_id = AgentId("019f81eb-36a4-7000-8000-000000000103".into());
         let prepared = ProductionNativeCommandFactory::new(env.clone(), row_document_adapter)
-            .prepare(&selected, &context, geometry, &agent_id)
+            .prepare(&selected, &context, geometry, &fixture_claim(&agent_id))
             .expect("a direct-child document materializes");
         let agent_dir = env.project_dir.agent(&agent_id);
         let document = agent_dir.path().join("mcp.json");
@@ -1112,8 +1188,12 @@ mod tests {
         );
         assert!(
             matches!(
-                ProductionNativeCommandFactory::new(env.clone(), row_document_adapter)
-                    .prepare(&selected, &context, geometry, &agent_id),
+                ProductionNativeCommandFactory::new(env.clone(), row_document_adapter).prepare(
+                    &selected,
+                    &context,
+                    geometry,
+                    &fixture_claim(&agent_id)
+                ),
                 Err(BootstrapError::NativeCommand(_))
             ),
             "a second launch under the same node id must not overwrite the first's declaration"
@@ -1134,8 +1214,12 @@ mod tests {
             let agent_id = AgentId(id.into());
             assert!(
                 matches!(
-                    ProductionNativeCommandFactory::new(env.clone(), table)
-                        .prepare(&selected, &context, geometry, &agent_id),
+                    ProductionNativeCommandFactory::new(env.clone(), table).prepare(
+                        &selected,
+                        &context,
+                        geometry,
+                        &fixture_claim(&agent_id)
+                    ),
                     Err(BootstrapError::NativeCommand(_))
                 ),
                 "{label}: a document outside the node's own directory was accepted"
