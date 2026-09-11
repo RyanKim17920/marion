@@ -40,8 +40,16 @@
 //! cargo test -p marion-supervisor --test client_run
 //! ```
 //!
-//! Needs real `claude` and `codex` on `PATH` and does **not** skip when they are missing, for the
-//! reason `journal_wiring.rs` gives. Every model call is served by the CannedServer: no paid tokens.
+//! The five tests that start a `marion run` need real `claude` and `codex` on `PATH`, and they say
+//! so through `common::script::require_claude_and_codex` — so on every machine a missing or drifted
+//! binary still panics naming the pinned version, and only a runner that has set
+//! `MARION_CI_NO_HARNESSES=1` skips, by name, on the uncaptured stderr. It was the absence of that
+//! line that put this suite on CI's harness-free list: the list is grepped for `on_path`, this file
+//! mentioned neither it nor `PINNED_HARNESSES`, and so all five failed on both runners naming a
+//! journal invariant rather than the missing `claude`. The two tests that launch nothing — the
+//! refused run and the reissued pid — are ungated and still run everywhere.
+//!
+//! Every model call is served by the CannedServer: no paid tokens.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -298,6 +306,9 @@ fn events_len(state: &Path, repo: &Path, node: &AgentId) -> u64 {
 /// **M2 criterion 1: SIGKILL the client, and the agents keep running.**
 #[test]
 fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tree() {
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("client-run-kill");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -517,6 +528,9 @@ fn root_from_journal(state: &Path, repo: &Path) -> AgentId {
 /// `kill(pid, 0)`, which reports a zombie as alive and would let this pass over a corpse.
 #[test]
 fn the_roots_spawned_record_names_a_live_process_while_the_root_is_still_running() {
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("client-run-pid");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -928,6 +942,9 @@ fn node_at_depth(nodes: &[marion_core::registry::ReplayedNode], depth: u32) -> A
 /// snapshot, built under one lock from one read (`handler::subscribe`).
 #[test]
 fn a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no_client_saw() {
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("client-run-crit2");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -1185,6 +1202,9 @@ fn supervisor_pid(state: &Path, repo: &Path) -> i32 {
 /// there is nothing to wait for at the point the claim is made.
 #[test]
 fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("client-run-crit3");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -1437,6 +1457,9 @@ fn start_supervisor(
 /// which is a third party's account, not this test's.
 #[test]
 fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_resubscribes() {
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("client-run-crit4");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
