@@ -1,189 +1,122 @@
 # marion
 
-A meta-harness: run any agent harness, on any model, as a first-class subagent of any other
-harness — with one UI over the whole tree.
+marion runs any agent harness — Claude Code, Codex, Gemini CLI, opencode, Copilot CLI, goose, Cline, Qwen Code, or any ACP agent — as a first-class subagent of any other, and gives you one supervisor and one UI over the whole tree.
+
+![A terminal recording: marion tree showing a codex root whose child is marked blocked:descendants while a grandchild is still live, then a native Claude Code session started by `marion claude` whose /mcp list shows marion connected with 5 tools.](docs/media/marion-teaser.gif)
+
+Full 8-minute demo: (link)
+<!-- FULL_DEMO_URL -->
+
+## What marion does
+
+- Supervises eight harnesses as one tree. Every node is journaled, addressable by id, and shown in the same view regardless of which CLI is behind it.
+- Gives a running agent five tools over MCP — `spawn`, `wait`, `status`, `list`, `report` — so a harness delegates to another harness by calling a tool, not by shelling out.
+- Runs a harness's own TUI as a marion root: `marion claude`, `marion codex`, `marion gemini`, `marion opencode`, `marion copilot`. Same login, same keybindings, plus marion's MCP server injected and the session journaled.
+- Attaches to any live node's terminal (`marion attach`) and shows the fleet as a tree with a detail pane and a per-node capability strip (`marion tree`).
+- Survives its own death. `kill -9` the supervisor and `marion resume <id>` relaunches the lost root under the same id against the same session, recorded as a second generation.
+- Enforces the gates in the topology, not in a prompt: a node cannot exit while a descendant is live, delegation stops at `max_depth 3`, a run past `--timeout` has its process group killed, and a node may address only its own descendants and its parent.
+- Reaches any ACP agent with no adapter code: `acp:<command> [args…]` launches it and speaks the protocol; `marion-supervisor doctor --acp-command "<cmd>"` probes one by its own handshake.
+- Treats harness drift as a first-class problem. Versions are pinned by evidence, an unadmitted version fails by name rather than skipping, and at runtime `doctor --capabilities` measures the installed binary and the TUI dims what it has not measured.
+
+The contract every layer is built around:
 
 ```
 Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status (2026-09-05):** **M1, M2 and M4 [done]**, **M3 and M5 [partial]**. Eight terminal
-harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen` — run as
-children and roots through one spawn path, each a declarative `HarnessSpec` row; any ACP agent
-runs as a child as `acp:<command>`. The delegation hop runs end to end: `spawn` creates a git
-worktree, launches a real harness against the canned provider, the child edits a file and calls
-`report` through marion's own stdio MCP bridge, and marion returns a task contract derived from
-git. `marion <harness>` runs a harness's real TUI through marion's relay for four lanes, and
-`marion resume` relaunches a root lost to a supervisor restart. M3 waits on its recorded 10-minute
-manual session; M5 on the tree naming an ACP agent's own identity. Start at the milestone ledger's
-"Where it actually stands" block for the evidence behind each line.
+Topology is a star, not a mesh: 1→N fan-out, N→1 fan-in, every edge has a parent.
 
-## Running it
+## Quick start
+
+Requires Rust 1.94 (pinned in `rust-toolchain.toml`), macOS or Linux, and at least one harness CLI on `PATH`.
 
 ```sh
-marion run <agent-type> --prompt "…"      # a headless root (claude, codex, gemini, opencode,
-                                           #   copilot, goose, cline, qwen types; --pane for a TUI)
-marion <harness> [its own flags]           # the harness's native TUI as a marion root
-                                           #   (claude, codex, opencode, copilot lanes)
-marion tree · marion attach <agent-id>     # the fleet, and one node's pane
-marion resume <agent-id>                   # relaunch a lost root under its own id
-marion-supervisor doctor --capabilities --harness acp --acp-command "<cmd>"   # probe an ACP agent
+cargo install --path crates/marion-supervisor   # installs both `marion` and `marion-supervisor`
 ```
 
-Child agent types include `acp:<command> [args…]` for any ACP agent with no adapter code.
-
-**Running the E2E suites against a harness that auto-updated.** `cargo test --workspace` drives
-the real `claude`, `codex`, … binaries, gated by `marion_testsupport::PINNED_HARNESSES`: a version
-the table does not admit fails by name, never skips. Since 2026-09-06 the gate also *chooses* the
-binary: `.cargo/config.toml` runs every test through `scripts/cargo-runner.sh`, which puts an empty
-per-process directory first on `PATH`, and the first `on_path(<harness>)` fills it with a symlink to
-the newest admitted release still on disk (claude's `~/.local/share/claude/versions/<ver>`, codex's
-`~/.codex/packages/standalone/releases/<ver>-*/bin/codex`, npm harnesses under
-`~/.local/state/marion/harness-pins/`), so the suite runs the release it was measured on while the
-updater's binary stays where it is. A harness with no admitted release on disk (Homebrew's
-`opencode`, `goose`) falls through to `PATH` and the gate says so. Run the suite from the workspace
-root, through cargo — a test binary started any other way panics at its first gate rather than
-probe `PATH` and call it pinned. When a harness has genuinely moved on, admit it with
-`scripts/admit-harness.sh <harness> <version>`: it widens that entry in the table (entry zero, the
-pin, never moves), re-runs every suite that drives the harness — sequentially, each bounded by
-`MARION_ADMIT_BOUND` seconds — restores the table on any red, and on green writes the dated
-observation beside the entry and prints the MILESTONES paragraph and commit message. It never
-commits; read the diff, re-run the `spikes/` probes the entry's evidence calls for, then commit.
-
----
-
-## Read these, in this order
-
-| file | what it is |
-|---|---|
-| `MILESTONES.md` | Goals, principles, verified harness facts. The *what* and *why*. |
-| `docs/specs/2026-07-31-marion-design.md` | Technical design, **rev 3**. The *how*. §12 lists everything that was retracted or corrected. |
-| `tests/fixtures/s1..s5/` | Recorded streams from the five spikes. The seed of the L2 regression suite. |
-| `info.md` | Raw research notes that preceded the design. Superseded; background only. |
-
-Where the first two disagree: `MILESTONES.md` wins on *what*, the design doc on *how*.
-Operational detail is deliberately **not** duplicated between them — that duplication is what
-caused them to drift apart once already.
-
-## Ground rules that are easy to get wrong
-
-Each was learned the hard way. Full detail in `MILESTONES.md`.
-
-1. **Control is config-time, not runtime.** marion controls harnesses by owning their launch
-   configuration, never by parsing a pty. The pty is a display device.
-2. **Never re-open a session; never stop holding a *running* one.** Every harness's `resume` starts
-   a new process against a single-writer transcript. "Opening" a running subagent is a view switch,
-   never a connection event. (Reaping an *idle* node is the one sanctioned exception.)
-3. **Nothing enforces single-writer but marion.** Neither Codex nor Claude Code locks a session;
-   concurrent opens diverge silently and unrecoverably.
-4. **Agent types are launch specs, not personas** — a record that compiles to argv + env + config.
-   The harness is just a field.
-5. **Direct-MCP spawn is the primary delegation path**, not the Claude Code Agent-tool shim.
-6. **Capabilities are resolved and rendered, never assumed.** Degrade visibly.
-7. **The supervisor outlives the UI.**
-8. **Delegation must be auditable** — every hop produces a task contract, with acceptance criteria
-   authored *before* the run.
-9. **A node is not done while its children run, and a status update is not a delivery.** A
-   non-terminal child never enters the parent's context. This is the bug that makes a subagent
-   waiting on *its* children ping its parent with a non-answer.
-10. **Never hand back something that needs a monitor to interpret.** A task handle plus "go poll"
-    means the supervisor lost ownership — fix it there, don't add a status endpoint.
-
-## Trust the docs, but check the version
-
-Claims are stamped: Claude Code **2.1.220** · opencode **1.17.3** · Gemini CLI **0.53.0** ·
-Codex CLI **0.145.0/0.146.0** (stamped per claim; the local install moved mid-research) ·
-Copilot CLI **1.0.83** · goose **1.49.0** · Cline **3.0.61** · Qwen Code **0.23.0** (all
-2026-09-05). The versions a test will accept are the set `marion_testsupport::PINNED_HARNESSES`,
-which as of 2026-09-05 also admits claude 2.1.222–2.1.226 and 2.1.261 and codex 0.146.1/0.147.0.
-
-These tools auto-update and break things. In one day: Gemini moved thirteen minors, Codex updated
-itself when a scripted Enter hit its startup prompt, and Codex had already removed
-`wire_api = "chat"` entirely.
-
-**Design doc §12 lists forty claims that were retracted or corrected** (fifteen from the
-research itself, twenty-five more from audit rounds 5-19 and spike S6 that read the docs against the fixtures and
-against the installed binaries) — several stated
-confidently before being disproved, and one area (terminals) that was corrected, over-corrected,
-and corrected again. Treat anything marked
-**UNVERIFIED**, and everything in design doc §11 (Open questions), as a hypothesis. Re-verify with
-`claude --version`, `codex --version`, `gemini --version`, `opencode --version`.
-
-## The spikes — S1–S5 resolved 2026-07-31, S6 resolved 2026-08-01
-
-| spike | answer |
-|---|---|
-| **S1** Claude Code from raw Rust | Drivable, interrupt included (`control_response` in 0.5 ms). **No TS sidecar.** The channel is bidirectional — that is how permission prompts arrive. *(Proven over pipes; pty re-confirmation and a real `can_use_tool` round-trip both owed in M1.)* |
-| **S2** Terminals and scrollback | Claude Code uses the **alt screen** for its whole session (so needs no scrollback). Codex uses the main screen, entering alt only for the `/diff` pager. Real hazard is `CSI 3J` on every Codex resize — marion intercepts it. |
-| **S3** Codex app-server lifecycle | Never reaped; the earlier "reaping" was most likely our own tooling. But **unsubscribed threads unload after 30 min.** |
-| **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
-| **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. *(The fan-out and first-answer-wins semantics are read from source, **not measured**: no probe exercises an approval. Owed when the codex adapter lands.)* |
-
-**S6 is resolved** (`tests/fixtures/s6/`), and it answered all three questions with a canned
-provider and a real stdio MCP server — no model call, no API key. **`codex exec` hosts MCP
-servers**, so marion's `report` return path exists and **M1 takes the primary branch**; `exec --json`
-emits `file_change` items with absolute paths; and `--output-schema`/`--output-last-message`
-delivers the document verbatim, with `strict: true` added by codex.
-
-The finding that changed M1 was incidental: **Codex 0.146.0 runs *code mode*** — no top-level
-`tools` field at all, tools reaching the model as JavaScript inside a `custom` `exec` tool, so a
-real model writes `await tools.mcp__marion__report({…})`. Both the flat and namespaced spellings
-are real, at different layers (design §3.1 item 1). marion's canned scripts can still use a plain
-`function_call` with `namespace: "mcp__marion"`, which is proven to execute.
-
-The most consequential finding was incidental: **`CLAUDE_CONFIG_DIR` isolation breaks OAuth**,
-because the Keychain entry is keyed to the real config dir. Config isolation and subscription auth
-are mutually exclusive for Claude Code children.
-
-## Current milestone status
-
-M1's disposable vertical slice is complete: a real `claude` root calls
-`mcp__marion__spawn`, a real `codex` child edits a file in a worktree and reports, and the parent
-receives the structured task contract through marion's `report` tool over MCP. M2's supervisor
-split and M4's fan-in criteria are also complete. M3 and M5 remain partial; their exact remaining
-criteria and evidence live in `MILESTONES.md` and are deliberately not duplicated here.
-
-Three debts fell due in M1, all of them designed on decompilation rather than measurement, and all
-three are now paid: the pty re-confirmation of S1's protocol (**S11**, `tests/fixtures/s11/`), a
-live `SubagentStop` check (**S10**, `tests/fixtures/s10/`), and a real `can_use_tool` round-trip
-(**S9**, `tests/fixtures/s9/`) — the inbound half of Claude Code's control channel, which the whole
-permission path depends on. Each was measured against the canned provider at zero cost. What each
-one *changed* is recorded in design §11 items 1, 2 and 14; item 14 is only partially closed, since
-hook callbacks and `request_user_dialog` remain unmeasured.
-
-## Stack
-
-Rust, seven workspace crates. A hand-rolled `posix_openpt` PTY host in `marion-supervisor::pty` ·
-`alacritty_terminal` 0.26 · `ratatui` 0.30 + `insta` 1 · a hand-rolled ACP driver
-(`marion-supervisor/src/acp_child.rs`) · the canned model provider is the `marion-provider` crate.
-`vt100` 0.16 is a **dev-dependency of `marion-term` alone** — evidence for §11 item 10, never a
-component; marion ships one VT and it is alacritty's.
-Rationale and rejected alternatives in `MILESTONES.md` ("Chosen tooling", with its note on which
-picks are actually linked).
-
-## Install the commit gate — one step, do it on clone
+Both binaries must land in the same directory — `marion` resolves the supervisor next to itself.
 
 ```sh
-git config core.hooksPath .githooks
+# A headless root against marion's canned provider: no credentials, no cost.
+marion run codex --prompt "say hello" --canned
+
+# The same, on the vendor you are already logged in to (this spends real money).
+marion run codex --prompt "say hello"
+
+# Codex's own TUI, as a journaled marion root with marion's MCP server connected.
+marion codex
+
+# The fleet, and one node's terminal.
+marion tree
+marion attach <agent-id>
+
+# Relaunch a root whose supervisor died, under its own id.
+marion resume <agent-id>
+
+# What marion has actually measured about the harnesses on this machine.
+marion-supervisor doctor --capabilities
+marion-supervisor doctor --capabilities --harness codex
 ```
 
-That is the whole install. `.githooks/pre-commit` runs **L4.5** (design §8) — the self-hosted TUI
-driver: `TestBackend` + `insta` + `assert_scrollback_lines` over the committed
-`tests/fixtures/s2` captures, keyed on DECSET 2026 brackets. No processes, no network, no model,
-about a third of a second.
+Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 
-It runs L4.5 **by name** and nothing else. §8 is explicit that **L7 must never gate a commit**, and
-a blanket `cargo test` in a hook is how that happens by accident the day an L7 target exists. The
-hook also reads back its own pass count and refuses to succeed if the target went missing or
-shrank, because a gate that no-ops when its subject is absent is worse than no gate.
+## Harnesses
 
-A snapshot diff means the rendered screen changed. Review it with `cargo insta review` and decide;
-never accept blind. `*.snap.new` is gitignored so a failed run cannot leave a rival snapshot in the
-tree.
+| harness | pinned version | headless | native lane (`marion <harness>`) | ACP |
+|---|---|---|---|---|
+| `claude` (Claude Code) | 2.1.220 | yes, with a pane shape | yes | `claude-acp` |
+| `codex` (Codex CLI) | 0.146.0 | yes, with a pane shape | yes | `codex-acp` |
+| `gemini` (Gemini CLI) | 0.53.0 | yes | yes | `gemini` |
+| `opencode` | 1.17.3 | yes | yes | `opencode` / `acp-opencode` |
+| `copilot` (Copilot CLI) | 1.0.83 | yes | yes | `copilot` |
+| `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
+| `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
+| `qwen` (Qwen Code) | 0.23.0 | yes | no — interactive shape unmeasured | — |
+| `acp:<command>` | n/a | — | — | the generic path |
 
-## Before writing any test fixture
+The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness — `codex-impl` and `claude-impl` grant `read` and `write`, plain `codex` and `claude` grant nothing. `marion run` with no arguments lists all fifteen.
 
-Recorded fixtures contain system prompts, repo contents, and anything secret that appeared in tool
-output. They require a redaction pass and a pre-commit secret scan. Prefer recording against the
-canned provider, never a real one. Design doc §7.1.
+![marion tree: a codex-impl root whose child is marked blocked:descendants because its own grandchild is still spawning; the detail pane shows type, harness, state, surface, depth, timeout and id.](docs/media/tree-descendant-gate.png)
+
+![The Codex TUI running inside a marion pane after `marion attach`, showing the delegated prompt, a Working indicator, and a line typed by the operator through the attachment.](docs/media/attach-pane.png)
+
+![Claude Code's /mcp screen inside a session started by `marion claude`, listing marion among the built-in MCP servers as connected with 5 tools.](docs/media/native-claude-mcp.png)
+
+![Journal queries after killing the supervisor with SIGKILL and running marion resume: three SpawnIntent records, a RootChanged, and the resumed root's Exited status Ok.](docs/media/resume-generation-2.png)
+
+![marion-supervisor doctor --capabilities: one block per harness with the binary path, version, surfaces, and which capabilities were measured on each.](docs/media/doctor-capabilities.png)
+
+## How it is tested
+
+The test suite drives the real harness binaries, not mocks — only inference is canned. `cargo test --workspace` launches actual `claude`, `codex`, `opencode` and the rest against `marion-provider`, marion's own canned model server, which dispatches on request shape rather than arrival order and costs nothing; where a binary is absent the test skips loudly rather than silently. Every test runs through `scripts/cargo-runner.sh`, which puts an empty directory first on `PATH` so a harness is reached only through a shim that execs the admitted release, and `marion_testsupport::PINNED_HARNESSES` fails a version the table does not admit *by name* instead of skipping. When a harness has genuinely moved on, `scripts/admit-harness.sh <harness> <version>` widens the accepted set, picks the affected suites by grep rather than by hand, re-runs them, and restores the table byte-for-byte if anything goes red; it never commits. The shipped binary trusts none of this — `doctor --capabilities` re-measures at runtime. The last full verification (2026-09-11, commit `a2b3ed8`) ran all eight harnesses at their pins through the shim: 1378 lib tests and 40 integration suites, zero failures.
+
+## Status
+
+marion works end to end and is not finished. `MILESTONES.md` is the ledger — goals, principles, and every harness fact with the spike that measured it. `docs/specs/2026-07-31-marion-design.md` is the design, rev 3. Where the two disagree, MILESTONES wins on *what* and the design doc on *how*.
+
+Open, honestly:
+
+- **Linux is designed but unmeasured.** `/proc/<pid>/stat` start identity has never been read on a real Linux box; non-macOS returns an explicit refusal that resolves to cannot-tell. Windows is out of scope — the PTY host is POSIX only. No arm-vs-x86 difference has been measured on either OS.
+- **Gemini is blocked vendor-side.** With gemini 0.53.0 on an individual account, `gemini -p` fails with `IneligibleTierError` and exit 55 before it reaches the model, with no marion involved. Gemini's green cells are all against the canned provider; do not read them as evidence that a live Gemini node works.
+- **Live paid runs are barely on record.** One live ACP run against Copilot, on 2026-09-05. Everything else in the suite is canned, so the request shapes marion sends to paid endpoints are verified far less than the harness plumbing around them.
+- Three native lanes stay disabled by name (`goose`, `cline`, `qwen`) because their interactive surfaces were never measured; `verification` execution is unimplemented, so `evidence` is always empty; and a resumed child's declared scope carries in no record.
+
+## Repository layout
+
+| crate | what it is |
+|---|---|
+| `marion-core` | The IR: launch specs, registry model, journal, task contract, and the client↔supervisor wire vocabulary. No processes, no filesystem. |
+| `marion-harness` | One `HarnessSpec` row per harness — argv, env, tool spelling, resume shape, update policy — each row naming the spike that measured it. |
+| `marion-provider` | The canned model provider. Replays scripted responses across four wire formats, dispatching on request shape. |
+| `marion-supervisor` | The supervisor itself, plus both binaries: the PTY host, registry, socket, spawn path, ACP driver, doctor, and native relay. |
+| `marion-term` | A VT screen model for the display plane — a streaming grid with a ratatui adapter. |
+| `marion-testsupport` | Shared test helpers, the pinned-version table, and the shim that runs an admitted release. |
+| `marion-tui` | The attach pane and the `tree` view. |
+
+## More
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test, and land a change.
+- [MILESTONES.md](MILESTONES.md) — the ledger of what is verified and what is not.
+- [docs/specs/](docs/specs/) — the design doc and the native-facade specs.
+- [docs/research/](docs/research/) — research snapshots behind specific decisions.
