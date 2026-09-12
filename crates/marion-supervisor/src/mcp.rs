@@ -1130,9 +1130,15 @@ fn watch(
         Ok(courier::Delivered::StillRunning) | Err(_) => return None,
     };
     let (body, _) = outcome_text(&target.agent_type, project, &target.agent_id, delivered)?;
+    // A root has no contract (§9), and its handle says so; the body underneath is `root_text`'s.
+    let node = if target.contract.is_some() {
+        "child"
+    } else {
+        "root"
+    };
     let text = format!(
-        "marion: the {agent_type} child you backgrounded as task_id {task_id:?} has ended. This is \
-         the document its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}",
+        "marion: the {agent_type} {node} you backgrounded as task_id {task_id:?} has ended. This \
+         is what its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}",
         agent_type = target.agent_type,
         task_id = target.task_id.0,
     );

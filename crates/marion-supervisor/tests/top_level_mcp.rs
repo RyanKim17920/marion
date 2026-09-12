@@ -252,11 +252,18 @@ impl Server {
         let w = self.stdin.as_mut().expect("stdin is still open");
         writeln!(w, "{frame}").expect("the server is still reading");
         w.flush().expect("flushed");
-        match self.lines.recv_timeout(BOUND) {
-            Ok(Some(line)) => serde_json::from_str(line.trim())
-                .unwrap_or_else(|e| panic!("the reply to {method} is not json: {e}: {line}")),
-            Ok(None) => panic!("the server closed its stdout instead of answering {method}"),
-            Err(_) => panic!("no reply to {method} within {BOUND:?}"),
+        // The reply is the next line **with an `id`**: a backgrounded root's end arrives unasked
+        // as a notification, which a client reads past while waiting for its answer.
+        loop {
+            let reply: Value = match self.lines.recv_timeout(BOUND) {
+                Ok(Some(line)) => serde_json::from_str(line.trim())
+                    .unwrap_or_else(|e| panic!("the reply to {method} is not json: {e}: {line}")),
+                Ok(None) => panic!("the server closed its stdout instead of answering {method}"),
+                Err(_) => panic!("no reply to {method} within {BOUND:?}"),
+            };
+            if reply.get("id").is_some() {
+                return reply;
+            }
         }
     }
 
