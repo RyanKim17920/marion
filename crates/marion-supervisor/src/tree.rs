@@ -750,8 +750,7 @@ const HEADLESS: &str = "headless node: no terminal to show; its events are in th
 
 /// What fills an empty forest. The same command the no-supervisor refusal names, so the two
 /// screens an operator can meet before any node exists give one answer.
-const EMPTY_NEXT_STEP: &str =
-    "start one with `marion run <agent-type> --prompt \"…\"`; this screen follows it live";
+const EMPTY_NEXT_STEP: &str = "start one with `marion run <agent-type> --prompt \"…\"`";
 
 impl Detail<'_> {
     fn lines(node: &NodeSummary, events: &[String], parent: Option<&str>) -> Vec<String> {

@@ -666,14 +666,19 @@ impl Widget for ActionBar<'_> {
         let mut x = area.x;
         for (text, style) in cells {
             let remaining = area.x.saturating_add(area.width).saturating_sub(x) as usize;
-            if remaining == 0 {
-                break;
-            }
             // A cell that does not fit whole is not drawn in part: `set_mod` on a narrow
             // terminal read as a capability called `set_mod`. The row ends in `…` instead,
-            // which says there is more and that nothing shown is a fragment.
+            // which says there is more and that nothing shown is a fragment — over the last
+            // column when the previous cell ended exactly at the edge.
             if text.chars().count() > remaining {
-                buf.set_stringn(x, area.y, "…", remaining, Style::default());
+                let at = if remaining == 0 {
+                    x.saturating_sub(1)
+                } else {
+                    x
+                };
+                if at >= area.x && area.width > 0 {
+                    buf.set_stringn(at, area.y, "…", 1, Style::default());
+                }
                 break;
             }
             let (next, _) = buf.set_stringn(x, area.y, &text, remaining, style);
@@ -976,6 +981,14 @@ mod tests {
             "caps: steer  interrupt …",
             "the cell that does not fit is an ellipsis, not `set_m`"
         );
+
+        // The previous cell ended exactly at the edge: the ellipsis takes the last column
+        // rather than being dropped for want of one.
+        let area = Rect::new(0, 0, 23, 1);
+        let mut buf = Buffer::empty(area);
+        ActionBar { node: Some(&n) }.render(area, &mut buf);
+        let row: String = (0..23).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row, "caps: steer  interrupt…");
     }
 
     /// The status row says which project this is and how big the forest is — the two facts that
