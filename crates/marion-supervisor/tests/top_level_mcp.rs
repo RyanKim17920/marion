@@ -350,7 +350,8 @@ fn a_real_handshake_against_the_top_level_server_lists_exactly_the_tools_marion_
         .clone();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
-    let declared = marion_supervisor::bridge::tools();
+    let declared =
+        marion_supervisor::bridge::tools(&marion_core::agent_type::AgentTypes::builtins_only());
     let expected: Vec<&str> = declared
         .as_array()
         .unwrap()
@@ -408,7 +409,8 @@ fn every_tool_the_top_level_server_declares_is_dispatched_and_report_is_refused_
     let mut s = fx.server();
     s.call("initialize", json!({}));
 
-    let declared = marion_supervisor::bridge::tools();
+    let declared =
+        marion_supervisor::bridge::tools(&marion_core::agent_type::AgentTypes::builtins_only());
     for t in declared.as_array().unwrap() {
         let name = t["name"].as_str().unwrap();
         // `spawn` would start a root; every other verb is a read and costs nothing. What is

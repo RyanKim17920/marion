@@ -882,6 +882,20 @@ fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError
 ///
 /// Both refusals name the key, because the fix is in the node's declaration and not in the call —
 /// the same reason [`report_refusal`] names `MARION_DEPTH`.
+/// The agent types this node's tree defines, for `tools/list`'s `spawn` schema — read per request,
+/// because the file is the operator's and may change under a running node. `MARION_REPO` is the
+/// tree (§2, as [`supervisor_paths`] reads it); a missing key or an unusable file is returned as
+/// the sentence the schema then carries.
+fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
+    let repo = std::env::var_os("MARION_REPO").ok_or_else(|| {
+        format!(
+            "marion: MARION_REPO is not set, so this bridge cannot read its tree's {}.",
+            crate::run::AGENT_TYPES_FILE
+        )
+    })?;
+    crate::run::agent_types(std::path::Path::new(&repo)).map_err(|e| e.to_string())
+}
+
 fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     let repo = std::env::var("MARION_REPO").map_err(|_| {
         "marion: MARION_REPO is not set, so this bridge cannot work out which project's supervisor \
@@ -1319,7 +1333,13 @@ fn answer(
         bridge::Request::ToolsCall { id, .. } if !*initialized => {
             (Some(bridge::not_initialized(&id, "tools/call")), false)
         }
-        bridge::Request::ToolsList { id } => (Some(bridge::tools_list_result(&id)), true),
+        bridge::Request::ToolsList { id } => (
+            Some(bridge::tools_list_result(
+                &id,
+                tree_agent_types().as_ref().map_err(String::as_str),
+            )),
+            true,
+        ),
         bridge::Request::ToolsCall {
             id,
             name,
@@ -1906,7 +1926,7 @@ mod tests {
     #[test]
     fn every_declared_tool_is_dispatched_rather_than_answered_as_unknown() {
         let bg = background::Background::new();
-        let declared = bridge::tools();
+        let declared = bridge::tools(&marion_core::agent_type::AgentTypes::builtins_only());
         let names: Vec<&str> = declared
             .as_array()
             .unwrap()

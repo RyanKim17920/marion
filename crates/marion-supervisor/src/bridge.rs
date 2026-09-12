@@ -11,6 +11,7 @@
 //! **The bridge must be idempotent across repeated startup**: S6 observed codex issuing *two* full
 //! `initialize` + `tools/list` sequences for a single `exec` run.
 
+use marion_core::agent_type::AgentTypes;
 use marion_core::contract::{ExitStatus, TaskContract};
 use marion_harness::spec::Push;
 use serde_json::{Value, json};
@@ -257,7 +258,31 @@ pub fn parse(line: &str) -> Result<Request, Undecodable> {
 /// `main::handle_tool_call`) instead of an absence the root would read as "marion has no `report`".
 /// Until that refusal existed the bridge answered `report recorded`, `isError: false`, to a root —
 /// a receipt for a payload nothing stages, since there is no contract to stage it into.
-pub fn tools() -> Value {
+pub fn tools(types: &AgentTypes) -> Value {
+    tools_describing(&agent_type_description(types))
+}
+
+/// What `spawn`'s `agent_type` may name, as a sentence for the node that reads the schema: every
+/// name [`AgentTypes::names`] lists with its description, so a user-defined row is offered exactly
+/// as a built-in is. A **description and never an `enum`**: `acp:<command>` is a legal value no
+/// finite list could hold.
+pub fn agent_type_description(types: &AgentTypes) -> String {
+    let listed = types
+        .names()
+        .iter()
+        .filter_map(|n| types.resolve(n).map(|t| format!("{n} ({})", t.description)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "One of: {listed}. Or `acp:<command …>` for any ACP agent, named by its command line. The \
+         built-ins plus the rows of this tree's {}.",
+        crate::run::AGENT_TYPES_FILE
+    )
+}
+
+/// The tool list over one already-composed `agent_type` sentence — the seam [`tools_list_result`]
+/// uses to say why a tree's file was refused without inventing a type table to say it with.
+fn tools_describing(agent_type_description: &str) -> Value {
     json!([
         {
             "name": "spawn",
@@ -274,7 +299,7 @@ pub fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent_type": {"type": "string"},
+                    "agent_type": {"type": "string", "description": agent_type_description},
                     // Optional: omitted, the agent type's own default is used (§3.1). Named in
                     // marion's vocabulary — the adapter maps it to the harness's spelling.
                     "model": {"type": "string"},
@@ -506,8 +531,18 @@ pub fn push_frame(push: Push, text: &str, meta: Value) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "method": method, "params": params}))
 }
 
-pub fn tools_list_result(id: &Value) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools()}})
+/// `tools/list`'s answer. `types` is the tree's table, or the sentence saying why the tree's
+/// `.marion/agents.toml` could not be read — carried into the `spawn` schema so a node whose
+/// `reviewer` is missing learns why, and still sees the built-ins.
+pub fn tools_list_result(id: &Value, types: Result<&AgentTypes, &str>) -> Value {
+    let description = match types {
+        Ok(types) => agent_type_description(types),
+        Err(refusal) => format!(
+            "{refusal} Until that file is fixed only the built-ins are offered. {}",
+            agent_type_description(&AgentTypes::builtins_only())
+        ),
+    };
+    json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools_describing(&description)}})
 }
 
 pub fn tool_result(id: &Value, text: &str, is_error: bool) -> Value {
@@ -1270,7 +1305,7 @@ mod tests {
 
     #[test]
     fn tool_declarations_use_bare_names_not_harness_spellings() {
-        let t = tools();
+        let t = tools(&AgentTypes::builtins_only());
         let names: Vec<&str> = t
             .as_array()
             .unwrap()
@@ -1295,7 +1330,7 @@ mod tests {
 
     #[test]
     fn report_says_the_final_message_is_not_the_return_value() {
-        let t = tools();
+        let t = tools(&AgentTypes::builtins_only());
         // Found by name rather than by index: this assertion broke when `wait` was inserted
         // before `report`, and an index is exactly the kind of coupling that turns adding a verb
         // into a false failure about a different verb's wording.
@@ -1624,7 +1659,11 @@ mod tests {
         let a = initialize_result(&json!(0), Some("2025-06-18"), Push::None);
         let b = initialize_result(&json!(0), Some("2025-06-18"), Push::None);
         assert_eq!(a, b);
-        assert_eq!(tools_list_result(&json!(1)), tools_list_result(&json!(1)));
+        let builtins = AgentTypes::builtins_only();
+        assert_eq!(
+            tools_list_result(&json!(1), Ok(&builtins)),
+            tools_list_result(&json!(1), Ok(&builtins))
+        );
     }
 
     // --- the tool seam, measured against the builders above -------------------------------

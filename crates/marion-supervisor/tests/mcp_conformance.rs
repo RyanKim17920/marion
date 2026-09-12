@@ -858,3 +858,82 @@ fn the_frames_a_real_codex_sent_are_all_still_answered() {
         "every request in the capture was answered exactly once"
     );
 }
+
+/// The `agent_type` a `spawn` may name, read off `tools/list` — for the one node that reads it.
+fn spawn_agent_type_description(listed: &Value) -> String {
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list answers with a list: {listed}"));
+    let spawn = tools
+        .iter()
+        .find(|t| t["name"] == "spawn")
+        .unwrap_or_else(|| panic!("spawn is declared: {listed}"));
+    assert!(
+        spawn["inputSchema"]["properties"]["agent_type"]["enum"].is_null(),
+        "no enum: `acp:<command>` must stay legal"
+    );
+    spawn["inputSchema"]["properties"]["agent_type"]["description"]
+        .as_str()
+        .unwrap_or_else(|| panic!("agent_type carries a description: {spawn}"))
+        .to_string()
+}
+
+/// A bridge for a tree whose `.marion/agents.toml` is `file`, asked for `tools/list` once.
+fn tools_list_for_tree(tag: &str, file: &str) -> Value {
+    let dir = Scratch::new(tag);
+    let path = dir.path.join(".marion/agents.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, file).unwrap();
+    let mut b = Bridge::spawn_with(|cmd| {
+        cmd.env("MARION_REPO", &dir.path);
+    });
+    b.initialize("2025-06-18");
+    b.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    b.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}));
+    let listed = b.recv();
+    b.finish();
+    listed
+}
+
+/// **A node reads the tree's own agent types off `tools/list`.** The bridge knows its tree
+/// through `MARION_REPO`, so a `[[agent]]` row in that tree's `.marion/agents.toml` is named — with
+/// its description — in the `spawn` schema, beside every built-in, per request rather than once
+/// at startup: the file is the operator's and may change under a running node.
+#[test]
+fn tools_list_names_the_trees_user_defined_agent_types() {
+    let listed = tools_list_for_tree(
+        "agent-types",
+        "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\n\
+         description = \"Reviews a diff and reports findings; never edits.\"\n",
+    );
+    let description = spawn_agent_type_description(&listed);
+    assert!(
+        description.contains("reviewer (Reviews a diff and reports findings; never edits.)"),
+        "the row and its description are offered to the node: {description}"
+    );
+    assert!(
+        description.contains("codex-impl") && description.contains("claude"),
+        "beside the built-ins: {description}"
+    );
+}
+
+/// A file the bridge cannot use is **said**, in the same place, and the built-ins are still
+/// offered: the node learns why its `reviewer` is missing instead of being told a shorter list.
+#[test]
+fn tools_list_carries_the_agent_types_files_own_refusal() {
+    let listed = tools_list_for_tree(
+        "agent-types-broken",
+        "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+         [[agent]]\nname = \"reviewer\"\nharness = \"gemini\"\ndescription = \"r\"\n",
+    );
+    let description = spawn_agent_type_description(&listed);
+    assert!(
+        description.contains("agents.toml") && description.contains("defined twice"),
+        "the file's own refusal, verbatim: {description}"
+    );
+    assert!(
+        !description.contains("reviewer ("),
+        "a row from a refused file is not offered: {description}"
+    );
+    assert!(description.contains("codex-impl"), "{description}");
+}
