@@ -3019,7 +3019,7 @@ impl RegistryHandle {
         // Minted here rather than by the caller, for §9's reason: the contract id names a run
         // marion performed, and a caller-chosen one would let two runs share a contract file.
         let task_id = crate::run::entropy()
-            .map(|e| marion_core::ids::new_task_id(crate::run::unix_millis(), e))
+            .map(|e| marion_core::contract::new_task_id(crate::run::unix_millis(), e))
             .map_err(|e| {
                 RpcError::internal(format!(
                     "marion could not mint a task id for this spawn, so nothing was started: {e}"

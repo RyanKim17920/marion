@@ -31,10 +31,11 @@ pub use agent_type::{
 pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
     ProcessExit, RepoIdentity, ResultStatus, TaskContract, TaskId, TaskTimestamps, Workspace,
+    new_agent_id, new_task_id,
 };
 pub use event::{Event, EventLog, Lifecycle, Payload, PayloadKind};
 pub use harness::{Harness, UnknownHarness};
-pub use ids::{new_agent_id, new_task_id, uuid_v7};
+pub use ids::uuid_v7;
 pub use ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 pub use journal::{JournalRecord, RecordKind, WriterId};
 pub use native_facade::{

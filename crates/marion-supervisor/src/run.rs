@@ -25,7 +25,6 @@ use marion_core::agent_type::{AgentType, AgentTypes, check_spawn_gates};
 use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, Millis, SystemTime};
-use marion_core::ids::new_agent_id;
 use marion_core::journal::{
     ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned,
 };

@@ -56,9 +56,9 @@ use std::path::PathBuf;
 use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
-use marion_core::contract::{AgentId, Capped, ExitStatus, Oid, ProcessExit};
+use marion_core::contract::{AgentId, Capped, ExitStatus, Oid, ProcessExit, new_agent_id};
 use marion_core::harness::Harness;
-use marion_core::ids::{new_agent_id, uuid_v7};
+use marion_core::ids::uuid_v7;
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::proto::NativeLaunchContext;

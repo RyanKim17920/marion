@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::encoding::{Duration, Millis, SystemTime};
 use crate::harness::Harness;
+use crate::ids::{RAND_BYTES, uuid_v7};
 
 /// A value that may have been shortened by §6.7's cap rules.
 ///
@@ -48,6 +49,17 @@ pub struct AgentId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TaskId(pub String);
+
+/// Mint an [`AgentId`]: a [`uuid_v7`] from the caller's clock reading and entropy, since this crate
+/// performs no I/O. A separate constructor per id, so a caller cannot hand a task's id to an agent.
+pub fn new_agent_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> AgentId {
+    AgentId(uuid_v7(unix_millis, rand))
+}
+
+/// Mint a [`TaskId`]; see [`new_agent_id`].
+pub fn new_task_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> TaskId {
+    TaskId(uuid_v7(unix_millis, rand))
+}
 
 /// 40-character hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

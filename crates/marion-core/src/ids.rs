@@ -24,8 +24,6 @@
 //!  byte 8 high 2 bits  = 0b10    (variant, RFC 4122/9562)
 //! ```
 
-use crate::contract::{AgentId, TaskId};
-
 /// A canonical UUID string is exactly 36 characters: 32 hex + 4 hyphens.
 pub const UUID_LEN: usize = 36;
 
@@ -56,15 +54,6 @@ pub fn uuid_v7(unix_millis: u64, rand: [u8; RAND_BYTES]) -> String {
     b[8] = 0x80 | (rand[2] & 0x3f);
     b[9..16].copy_from_slice(&rand[3..10]);
     hyphenate(&b)
-}
-
-/// Convenience wrappers, so a caller cannot accidentally give a task's id to an agent.
-pub fn new_agent_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> AgentId {
-    AgentId(uuid_v7(unix_millis, rand))
-}
-
-pub fn new_task_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> TaskId {
-    TaskId(uuid_v7(unix_millis, rand))
 }
 
 fn hyphenate(b: &[u8; 16]) -> String {
