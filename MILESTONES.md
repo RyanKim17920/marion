@@ -96,6 +96,18 @@ own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263 and 2
 gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
 qwen 0.23.0.
 
+**User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
+`harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
+read/write vocabulary, `description`, optional `prompt_prefix`) adds types beside the built-ins;
+one table, one resolution path (`AgentTypes::resolve`) at every site — `run_spawn`, `root::prepare`,
+the root preflight, a spawn's caller, both resume arms, `marion run`, the picker, and the bridge's
+`spawn` schema, which lists every name with its description per `tools/list`. Refused as a load
+error, never a default: a row shadowing a built-in or an alias, a duplicate, an invalid name, an
+unknown harness or tool, an unknown key, or a file that cannot be read; a resume whose row has moved
+to another harness is refused by name. `prompt_prefix` is applied once, at resolution, and the
+contract records the prefixed prompt. Witnesses: `agent_type.rs` unit tests, `run.rs`/`handler.rs`
+unit tests, `mcp_conformance.rs`, and `tests/user_agent_types.rs` (a real codex child, $0.00).
+
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
 relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
 mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares

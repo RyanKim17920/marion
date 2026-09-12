@@ -1327,6 +1327,19 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
     })
 }
 
+/// The prompt a node of `ty` is given for `prompt`: the type's `prompt_prefix` in front of it,
+/// once, or the prompt untouched — byte for byte — for a type that states none.
+///
+/// Applied exactly once, at the top of `run_spawn_watched` and of `root::prepare_watched`, right
+/// after the type resolves; every later reader — the launch, the frame, the contract — sees the
+/// prefixed text, so the audit record names the prompt the node actually saw.
+pub fn prefixed_prompt(ty: &AgentType, prompt: &str) -> String {
+    match &ty.prompt_prefix {
+        Some(prefix) => format!("{prefix}{prompt}"),
+        None => prompt.to_string(),
+    }
+}
+
 /// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
 pub fn run_spawn_watched(
     env: &Env,
@@ -1340,6 +1353,12 @@ pub fn run_spawn_watched(
     let agent_type = agent_types(&req.repo)?
         .resolve(&req.agent_type)
         .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
+    // The type's standing instruction, once, here — and `req` is the prefixed request from this
+    // line on, so the four places that read its prompt read one value.
+    let req = &SpawnRequest {
+        prompt: prefixed_prompt(&agent_type, &req.prompt),
+        ..req.clone()
+    };
     // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
     // `config_files`, before `compile`, before any process. That ordering is the whole point: the
     // things this refuses are a real git worktree, a real branch, a real agent-dir and a real OS
@@ -3607,6 +3626,54 @@ mod tests {
             written.is_empty(),
             "nothing journaled, nothing started: {written:?}"
         );
+    }
+
+    /// A type's `prompt_prefix` goes in front of the prompt exactly once, and a type with none
+    /// leaves the prompt untouched — byte for byte, so a built-in's node is launched from the
+    /// bytes it was launched from before the field existed.
+    #[test]
+    fn a_user_types_prompt_prefix_is_prepended_once() {
+        let plain = builtin("codex-impl").unwrap();
+        assert_eq!(prefixed_prompt(&plain, "do the task"), "do the task");
+        let reviewer = marion_core::agent_type::AgentTypes::parse(
+            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+             prompt_prefix = \"Review only.\\n\\n\"\n",
+        )
+        .unwrap()
+        .resolve("reviewer")
+        .unwrap();
+        let once = prefixed_prompt(&reviewer, "do the task");
+        assert_eq!(once, "Review only.\n\ndo the task");
+        assert_eq!(once.matches("Review only.").count(), 1);
+    }
+
+    /// **The contract records the prompt the child actually saw**, prefix included: §6.7's audit
+    /// record names what marion did, and what marion did was hand the node the prefixed text.
+    #[test]
+    fn the_contract_records_the_prefixed_prompt() {
+        if !marion_testsupport::harness_available("codex") {
+            return;
+        }
+        let (_root, _state, repo, env) = spawn_env("prefixed-prompt");
+        let file = repo.join(AGENT_TYPES_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+             prompt_prefix = \"Review only.\\n\\n\"\n",
+        )
+        .unwrap();
+        let mut req = request("reviewer", None);
+        req.repo = repo;
+        req.timeout_secs = 1;
+        let contract = run_spawn(
+            &env,
+            &req,
+            &TaskId("prefixed".into()),
+            &Caller::root("root", builtin("claude").unwrap()),
+        )
+        .expect("a codex child against a dead endpoint still ends in a contract");
+        assert_eq!(contract.instructions.value, "Review only.\n\ndo the task");
     }
 
     fn spawn_env(name: &str) -> (Scratch, PathBuf, PathBuf, Env) {

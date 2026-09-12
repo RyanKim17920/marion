@@ -30,6 +30,7 @@ use marion_testsupport::{
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Reviewed the tree and reported back.";
 const PROMPT: &str = "Review src/keep.txt and report back through marion.";
+const PREFIX: &str = "You are a code reviewer. Do not modify files.\n\n";
 
 const AGENTS_TOML: &str = r#"
 [[agent]]
@@ -171,10 +172,15 @@ fn a_user_defined_reviewer_runs_on_codex_and_is_journaled_under_its_own_name() {
         vec![("reviewer".to_string(), Harness::Codex)],
         "the journal names the row's own name, so a resume re-resolves the same row"
     );
+    let prefixed = format!("{PREFIX}{PROMPT}");
     assert!(
-        requests.iter().any(|r| carries(r, PROMPT)),
-        "the provider saw the prompt the child was given; requests: {}",
+        requests.iter().any(|r| carries(r, &prefixed)),
+        "the provider saw the prompt the child was given, prefix first; requests: {}",
         requests.len()
+    );
+    assert_eq!(
+        contract.instructions.value, prefixed,
+        "and the contract records that prompt, not the request's"
     );
 }
 

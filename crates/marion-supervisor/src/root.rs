@@ -647,6 +647,12 @@ pub fn prepare_watched(
     let agent_type = crate::run::agent_types(&spec.repo)?
         .resolve(&spec.agent_type)
         .ok_or_else(|| RootError::UnknownAgentType(spec.agent_type.clone()))?;
+    // The type's standing instruction, once, exactly where `run_spawn_watched` applies it; `spec`
+    // is the prefixed spec from this line on, so the node and the record read one prompt.
+    let spec = &RootSpec {
+        prompt: crate::run::prefixed_prompt(&agent_type, &spec.prompt),
+        ..spec.clone()
+    };
     let harness = agent_type.harness;
     let adapter = adapter_for(harness)?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
