@@ -955,6 +955,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
             prompt: "Try the verb you were not given.".into(),
             repo: repo.clone(),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec!["src/**".into()],
             timeout_secs: 60,
             model: None,

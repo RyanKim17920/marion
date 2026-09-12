@@ -2973,6 +2973,7 @@ impl RegistryHandle {
             prompt: p.prompt.clone(),
             repo: repo.clone(),
             acceptance_criteria: p.acceptance_criteria.clone(),
+            verification: p.verification.clone(),
             writable_scope: p.writable_scope.clone(),
             // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
             // carries `Option`; this is the one place that turns absence into a number, and
@@ -3570,11 +3571,12 @@ impl RegistryHandle {
     /// and because it would make the case a supervisor SIGKILL actually produces (a whole tree
     /// orphaned at once) the one case resume could not serve.
     ///
-    /// **Two limits, stated rather than hidden.** A child's `writable_scope` and its
-    /// `acceptance_criteria` are not journaled — they live on the contract, which an orphaned child
-    /// never got far enough to write — so the second life runs with the empty scope, which is its
-    /// agent type's ceiling (`run::requested_scope`, still checked against that ceiling) and an
-    /// empty criteria list. Narrowing them again would need a second record, not a guess here.
+    /// **Three limits, stated rather than hidden.** A child's `writable_scope`, its
+    /// `acceptance_criteria` and its `verification` are not journaled — they live on the contract,
+    /// which an orphaned child never got far enough to write — so the second life runs with the
+    /// empty scope, which is its agent type's ceiling (`run::requested_scope`, still checked
+    /// against that ceiling), an empty criteria list and no verification commands. Narrowing them
+    /// again would need a second record, not a guess here.
     fn relaunch_child(
         &self,
         me: Arc<RegistryHandle>,
@@ -3704,6 +3706,7 @@ impl RegistryHandle {
             repo: repo.clone(),
             // Not journaled; see this function's doc for why they are empty rather than invented.
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: agent_type.timeout.0.as_secs(),
             model: node.model.clone(),
@@ -10199,6 +10202,7 @@ mod tests {
                 // is refused by name — see `a_caller_that_states_its_own_repository_is_refused`.
                 repo: None,
                 acceptance_criteria: vec![],
+                verification: vec![],
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(secs),
                 model: None,

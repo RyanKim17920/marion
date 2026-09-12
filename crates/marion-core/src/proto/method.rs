@@ -474,6 +474,7 @@ mod tests {
                     // supervisor knows it. See `AgentSpawnParams::repo`.
                     repo: None,
                     acceptance_criteria: vec!["the suite is green".into()],
+                    verification: vec!["cargo test".into()],
                     writable_scope: vec!["src/**".into()],
                     timeout_secs: Some(900),
                     model: Some("sonnet".into()),

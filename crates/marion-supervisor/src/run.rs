@@ -24,7 +24,7 @@ use std::time::{Duration as StdDuration, Instant};
 use marion_core::agent_type::{AgentType, builtin, check_spawn_gates};
 use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
-use marion_core::encoding::{Duration, SystemTime};
+use marion_core::encoding::{Duration, Millis, SystemTime};
 use marion_core::ids::new_agent_id;
 use marion_core::journal::{
     ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned,
@@ -123,6 +123,9 @@ pub struct SpawnRequest {
     /// it already, so there is no second channel that could disagree with this one.
     pub repo: PathBuf,
     pub acceptance_criteria: Vec<String>,
+    /// §5.4's `verification`: shell lines, each run by `sh -c` in the child's workspace at its
+    /// terminal transition (see [`run_verification`]). Any non-zero exit fails the contract.
+    pub verification: Vec<String>,
     pub writable_scope: Vec<String>,
     pub timeout_secs: u64,
     /// The model to run the child on, in marion's request vocabulary. **Optional, with the agent
@@ -665,6 +668,65 @@ pub fn run_bounded(
     timeout: StdDuration,
 ) -> Result<CommandOutput, SpawnError> {
     run_bounded_with(command, timeout, kill_process_tree, None, None)
+}
+
+/// §6.7's default bound for one verification command: killed on expiry with `timed_out: true`.
+pub const VERIFICATION_TIMEOUT: StdDuration = StdDuration::from_secs(300);
+
+/// §5.4's `verification` lines as the [`Command`]s the contract records: each line is one
+/// `sh -c <line>` in `cwd`, under [`VERIFICATION_TIMEOUT`], in the parent's order.
+///
+/// Built before anything runs, so the contract carries what was *asked for* even where nothing
+/// ran (a timed-out child gets no verification, see `run_spawn`) — "asked for and never run" and
+/// "never asked for" are the two answers the old hardcoded `verification: vec![]` could not tell
+/// apart.
+pub fn verification_commands(lines: &[String], cwd: &Path) -> Vec<Command> {
+    lines
+        .iter()
+        .map(|line| Command {
+            program: "sh".into(),
+            args: vec!["-c".into(), line.clone()],
+            cwd: cwd.to_path_buf(),
+            timeout: Duration::from_secs(VERIFICATION_TIMEOUT.as_secs()),
+        })
+        .collect()
+}
+
+/// Run `commands` one after another, in order, each through [`run_bounded`] so an expired one is
+/// killed with its whole process group. Sequential on purpose: `cargo build` before `cargo test`
+/// is the ordinary shape, and a later line must see what an earlier one wrote.
+///
+/// Every stream is recorded `Capped::whole`: the persisted contract is the uncapped record
+/// (`m1_hop.rs` asserts it) and `cap_for_return` alone shortens the copy handed back. A command
+/// that could not be started at all is an outcome too — `exit_code: None`, the error in `stderr` —
+/// never a gap in the evidence, which would read as "one fewer command was asked for".
+pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
+    commands
+        .iter()
+        .map(|command| {
+            let started = Instant::now();
+            let mut sys = SysCommand::new(&command.program);
+            sys.args(&command.args).current_dir(&command.cwd);
+            let (exit_code, stdout, stderr, timed_out) =
+                match run_bounded(&mut sys, command.timeout.0) {
+                    Ok(out) => (
+                        out.code,
+                        String::from_utf8_lossy(&out.stdout).into_owned(),
+                        String::from_utf8_lossy(&out.stderr).into_owned(),
+                        out.timed_out,
+                    ),
+                    Err(e) => (None, String::new(), e.to_string(), false),
+                };
+            CommandOutcome {
+                command: command.clone(),
+                exit_code,
+                stdout: Capped::whole(stdout),
+                stderr: Capped::whole(stderr),
+                duration: Millis(started.elapsed()),
+                timed_out,
+            }
+        })
+        .collect()
 }
 
 /// [`run_bounded`], plus the pid of the process it started, handed over at the instant it exists,
@@ -1651,6 +1713,18 @@ pub fn run_spawn_watched(
         .as_ref()
         .and_then(|b| diff_text(&wt, b).ok())
         .filter(|d| !d.is_empty());
+    // **After `changed_paths` and the diff, never before.** Verification writes into the worktree
+    // — a `cargo test` leaves a `target/`, a formatter rewrites files — and §6.7's diff is the
+    // child's work, so the measurement is taken first and the commands run over the sealed
+    // result. Skipped for a child that was killed: its workspace is whatever the kill left, and
+    // evidence gathered over it would be judged against work that never finished. The request
+    // itself is still recorded (`verification_commands`), so the contract says what was asked.
+    let verification = verification_commands(&req.verification, &wt);
+    let evidence = if outcome.timed_out || outcome.signal.is_some() {
+        vec![]
+    } else {
+        run_verification(&verification)
+    };
     let mut contract = build_contract(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
@@ -1673,7 +1747,8 @@ pub fn run_spawn_watched(
         &outcome,
         changed,
         diff,
-        vec![],
+        verification,
+        evidence,
     );
     note_capture_truncated(&mut contract, run.capture_truncated);
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
@@ -2162,6 +2237,7 @@ mod tests {
             prompt: "carry on".into(),
             repo: repo.clone(),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: 1,
             model: None,
@@ -2250,6 +2326,7 @@ mod tests {
             },
             Some(vec![]),
             None,
+            vec![],
             vec![],
         );
         assert!(
@@ -2365,6 +2442,7 @@ mod tests {
             },
             Some(vec![]),
             None,
+            vec![],
             vec![],
         );
         assert_eq!(contract.completion.unwrap().status, ExitStatus::TimedOut);
@@ -2753,6 +2831,7 @@ mod tests {
             Some(vec![]),
             None,
             vec![],
+            vec![],
         );
         let returned = persist_then_cap(&agent, &contract).unwrap();
         let persisted: TaskContract =
@@ -2868,6 +2947,7 @@ mod tests {
             prompt: "do the task".into(),
             repo: repo.clone(),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec!["src/**".into()],
             // Short: the base URL below answers nothing, so this bounds the launch to a second —
             // and a regression re-running `codex` for real is a fast failure rather than a wait.
@@ -3001,6 +3081,7 @@ mod tests {
             prompt: "do the task".into(),
             repo: repo.clone(),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec!["src/**".into()],
             timeout_secs: 1,
             model: None,
@@ -3304,6 +3385,7 @@ mod tests {
             // is pure and never reaches a filesystem, so a real tree here would be scenery.
             repo: PathBuf::from("/repo"),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: 1,
             model: model.map(str::to_string),
@@ -3639,5 +3721,170 @@ mod tests {
         let ceiling = vec![Glob("src/**".into())];
         let requested = vec![Glob("docs/**".into())];
         assert!(check_spawn_scope(&ceiling, &requested).is_err());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // §5.4's `verification`: shell lines run in the child's workspace at its terminal transition.
+    // -----------------------------------------------------------------------------------------
+
+    fn one_command(line: &str, cwd: &Path, timeout: StdDuration) -> Command {
+        Command {
+            program: "sh".into(),
+            args: vec!["-c".into(), line.into()],
+            cwd: cwd.to_path_buf(),
+            timeout: Duration::from_secs(timeout.as_secs()),
+        }
+    }
+
+    #[test]
+    fn a_passing_verification_command_records_exit_zero_and_its_stdout() {
+        let scratch = scratch("verif-pass");
+        let cmds = verification_commands(&["echo verified".into()], &scratch);
+        let out = run_verification(&cmds);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].command, cmds[0],
+            "the outcome names the command that produced it"
+        );
+        assert_eq!(out[0].exit_code, Some(0));
+        assert_eq!(out[0].stdout.value, "verified\n");
+        assert_eq!(out[0].stderr.value, "");
+        assert!(!out[0].timed_out);
+    }
+
+    #[test]
+    fn a_failing_verification_command_records_its_exit_code_and_stderr() {
+        let scratch = scratch("verif-fail");
+        let cmds = verification_commands(&["echo broken 1>&2; exit 3".into()], &scratch);
+        let out = run_verification(&cmds);
+        assert_eq!(out[0].exit_code, Some(3));
+        assert_eq!(out[0].stderr.value, "broken\n");
+        assert_eq!(out[0].stdout.value, "");
+        assert!(!out[0].timed_out);
+    }
+
+    /// The bound is the `Command`'s own, and expiry kills the whole group: the `sleep` is `sh`'s
+    /// child, not `sh` itself, so a kill that reached only the direct child would leave it.
+    #[test]
+    fn a_verification_command_over_its_bound_is_killed_and_marked_timed_out() {
+        let scratch = scratch("verif-timeout");
+        // A fractional sleep no other test in this process runs, so the sweep below finds only
+        // this sleeper — `pgrep -f` matches `sh -c`'s argv and the `sleep` it forked alike.
+        let marker = format!("sleep 30.{}", std::process::id());
+        let cmd = one_command(&marker, &scratch, StdDuration::from_secs(1));
+        let started = Instant::now();
+        let out = run_verification(std::slice::from_ref(&cmd));
+        assert!(out[0].timed_out, "the bound expired");
+        assert!(
+            started.elapsed() < StdDuration::from_secs(10),
+            "the bound is the command's 1 s, not §6.7's 300 s default"
+        );
+        let deadline = Instant::now() + StdDuration::from_secs(3);
+        loop {
+            let survivors = SysCommand::new("pgrep")
+                .args(["-f", &marker])
+                .output()
+                .expect("pgrep runs");
+            if survivors.stdout.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the sleeper and its shell survived the kill: pids {}",
+                String::from_utf8_lossy(&survivors.stdout)
+            );
+            thread::sleep(StdDuration::from_millis(50));
+        }
+    }
+
+    /// Sequential and in the parent's order, each in the workspace it was given: a later command
+    /// sees what an earlier one wrote, which is what lets `cargo build` precede `cargo test`.
+    #[test]
+    fn verification_commands_run_in_the_workspace_in_the_parents_order() {
+        let scratch = scratch("verif-order");
+        let lines = vec![
+            "echo first > order.txt".into(),
+            "echo second >> order.txt".into(),
+            "cat order.txt".into(),
+        ];
+        let cmds = verification_commands(&lines, &scratch);
+        assert_eq!(cmds.len(), 3);
+        for (c, line) in cmds.iter().zip(&lines) {
+            assert_eq!(c.program, "sh");
+            assert_eq!(c.args, vec!["-c".to_string(), line.clone()]);
+            assert_eq!(&c.cwd, &*scratch);
+            assert_eq!(
+                c.timeout,
+                Duration::from_secs(VERIFICATION_TIMEOUT.as_secs())
+            );
+        }
+        let out = run_verification(&cmds);
+        let codes: Vec<_> = out.iter().map(|o| o.exit_code).collect();
+        assert_eq!(codes, vec![Some(0), Some(0), Some(0)]);
+        assert_eq!(out[2].stdout.value, "first\nsecond\n");
+        assert_eq!(
+            std::fs::read_to_string(scratch.join("order.txt")).unwrap(),
+            "first\nsecond\n",
+            "the commands ran in the workspace, not in the test's cwd"
+        );
+    }
+
+    /// The runner records `Capped::whole`: the persisted contract is the uncapped record
+    /// (`m1_hop.rs` asserts it), and `cap_for_return` alone shortens the copy handed back.
+    #[test]
+    fn a_large_verification_output_is_persisted_whole_and_capped_only_on_return() {
+        let scratch = scratch("verif-large");
+        let cmds = verification_commands(
+            &["yes 0123456789012345678901234567890123456789 | head -n 2000".into()],
+            &scratch,
+        );
+        let evidence = run_verification(&cmds);
+        let bytes = evidence[0].stdout.value.len();
+        assert!(
+            bytes > marion_core::cap::EVIDENCE_BUDGET,
+            "the fixture must overflow the budget to test anything, got {bytes}"
+        );
+        assert!(!evidence[0].stdout.truncated);
+        assert_eq!(evidence[0].stdout.original_bytes, bytes);
+
+        let contract = build_contract(
+            TaskId("t".into()),
+            AgentId("r".into()),
+            RepoIdentity {
+                git_common_dir: None,
+                head_branch: None,
+            },
+            None,
+            Workspace::Worktree {
+                path: scratch.to_path_buf(),
+                branch: "b".into(),
+            },
+            "do it",
+            &[],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(900),
+            SystemTime(std::time::SystemTime::now()),
+            &ChildOutcome {
+                narrative: Some("done".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            Some(vec![]),
+            None,
+            cmds.clone(),
+            evidence,
+        );
+        let persisted = contract.completion.as_ref().unwrap();
+        assert!(
+            !persisted.evidence[0].stdout.truncated,
+            "the persisted copy is whole"
+        );
+        assert_eq!(persisted.evidence[0].stdout.value.len(), bytes);
+        let returned = cap_for_return(contract.clone());
+        let ev = &returned.completion.unwrap().evidence[0];
+        assert!(ev.stdout.truncated, "the returned copy is capped");
+        assert!(ev.stdout.value.len() < bytes);
+        assert_eq!(ev.stdout.original_bytes, bytes);
     }
 }

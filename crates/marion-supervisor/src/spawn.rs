@@ -213,26 +213,6 @@ pub enum SpawnError {
         cwd = cwd.display()
     )]
     NotAGitRepo { cwd: PathBuf },
-    /// §5.4's `verification`, which is **accepted, dropped, and then contradicted in the artifact**.
-    ///
-    /// The worst of the family, because the lie is durable. `spawn`'s schema declares it, nothing
-    /// reads it, and `build_contract` hardcodes `verification: vec![]` — so the contract, whose
-    /// whole purpose §6.7 states as *"knowing exactly what came back"*, records that no
-    /// verification was requested. A caller that asked for `cargo test` and one that asked for
-    /// nothing get **byte-identical** evidence, and the one that asked has no way to tell its
-    /// commands never ran. `MILESTONES.md` already lists the *execution* gap ("`verification`
-    /// never executes, so every contract's `evidence` is always empty"); what was never written
-    /// down is that marion goes on **accepting the parameter** while that is true.
-    ///
-    /// An empty or absent list is not refused — it asks for nothing, which is what marion does.
-    #[error(
-        "spawn refused: `verification` is declared in marion's tool schema but not implemented — \
-         the commands never run and the contract's `verification` and `evidence` are written empty \
-         (MILESTONES.md), so accepting them would return a contract that reads as \"verified, \
-         nothing to report\" when the truth is \"never ran\". Omit the field and verify the child's \
-         work yourself; §6.7's contract carries its diff and changed paths."
-    )]
-    VerificationUnimplemented,
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
     #[error("compiling the child's launch: {0}")]
@@ -1007,6 +987,10 @@ pub fn build_contract(
     // clean bill of health unreachable without a check having run to issue it.
     changed: Option<Vec<PathBuf>>,
     diff: Option<String>,
+    // What the parent asked to be run, and what running it produced. `evidence` is empty where
+    // nothing ran (a killed child); `verification` still carries the request, so the two cases —
+    // never asked and never run — stay distinguishable on the record.
+    verification: Vec<Command>,
     evidence: Vec<CommandOutcome>,
 ) -> TaskContract {
     // **Both conditions, and neither is redundant.** §6.7's flag records whether the check *ran*,
@@ -1060,6 +1044,25 @@ pub fn build_contract(
     } else {
         let preview: String = stderr.chars().take(512).collect();
         format!("{description}; stderr: {preview}")
+    };
+    // §5.4: any non-zero exit fails the contract. **Only `Ok` is demoted** — a timeout or a
+    // stream-reported failure is the more specific finding, and the evidence over a killed
+    // workspace is empty anyway (`run_spawn` runs no verification there). The count goes into
+    // the description because `bridge::failure_line` prints exactly that field.
+    let failed = evidence
+        .iter()
+        .filter(|e| e.timed_out || e.exit_code != Some(0))
+        .count();
+    let (status, description) = if status == ExitStatus::Ok && failed > 0 {
+        (
+            ExitStatus::Failed,
+            format!(
+                "{description}; verification: {failed} of {} commands did not exit 0",
+                evidence.len()
+            ),
+        )
+    } else {
+        (status, description)
     };
     let completion = Completion {
         status,
@@ -1118,7 +1121,7 @@ pub fn build_contract(
         scope_ceiling: ceiling.to_vec(),
         scope_requested: requested.to_vec(),
         timeout,
-        verification: vec![],
+        verification,
         timestamps: TaskTimestamps {
             spawned,
             first_output: None,
@@ -1293,6 +1296,7 @@ mod tests {
             Some(vec![]),
             None,
             vec![],
+            vec![],
         );
         let comp = c.completion.unwrap();
         assert_eq!(
@@ -1335,6 +1339,7 @@ mod tests {
             },
             Some(vec![]),
             None,
+            vec![],
             vec![],
         );
         assert!(c.completion.unwrap().result_commits.is_empty());
@@ -1392,6 +1397,7 @@ mod tests {
             Some(vec![]),
             None,
             vec![],
+            vec![],
         );
         let comp = c.completion.unwrap();
         assert_eq!(comp.status, ExitStatus::Failed);
@@ -1428,6 +1434,7 @@ mod tests {
             Some(vec![]),
             None,
             vec![],
+            vec![],
         );
         assert_eq!(c.completion.unwrap().status, ExitStatus::TimedOut);
     }
@@ -1460,6 +1467,7 @@ mod tests {
             },
             Some(vec![]),
             None,
+            vec![],
             vec![],
         );
         assert_eq!(c.completion.unwrap().status, ExitStatus::Unreported);
@@ -1496,6 +1504,7 @@ mod tests {
                 PathBuf::from("outside/b.txt"),
             ]),
             None,
+            vec![],
             vec![],
         );
         let comp = c.completion.unwrap();
@@ -1588,5 +1597,161 @@ mod tests {
             ),
             "dropping an empty claim must not release someone else's directory"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // §5.4's `verification` on the status ladder.
+    // -----------------------------------------------------------------------------------------
+
+    fn sh(line: &str) -> Command {
+        Command {
+            program: "sh".into(),
+            args: vec!["-c".into(), line.into()],
+            cwd: "/wt".into(),
+            timeout: Duration::from_secs(300),
+        }
+    }
+
+    fn evidence_for(command: Command, exit_code: Option<i32>, timed_out: bool) -> CommandOutcome {
+        CommandOutcome {
+            command,
+            exit_code,
+            stdout: Capped::whole(""),
+            stderr: Capped::whole(""),
+            duration: marion_core::encoding::Millis(std::time::Duration::from_millis(7)),
+            timed_out,
+        }
+    }
+
+    fn verified_contract(
+        outcome: ChildOutcome,
+        verification: Vec<Command>,
+        evidence: Vec<CommandOutcome>,
+    ) -> TaskContract {
+        build_contract(
+            TaskId("t".into()),
+            AgentId("r".into()),
+            RepoIdentity {
+                git_common_dir: Some("/r/.git".into()),
+                head_branch: None,
+            },
+            Some(Oid("a".repeat(40))),
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
+            "do it",
+            &[],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(900),
+            now(),
+            &outcome,
+            Some(vec![]),
+            None,
+            verification,
+            evidence,
+        )
+    }
+
+    /// A child that reported cleanly and exited 0 is still not `Ok` when a verification command
+    /// it was judged by did not exit 0: the evidence is what the parent asked to be judged on.
+    #[test]
+    fn a_failed_verification_command_demotes_an_ok_child_to_failed() {
+        let cmds = vec![sh("cargo build"), sh("cargo test"), sh("sleep 400")];
+        let c = verified_contract(
+            ChildOutcome {
+                narrative: Some("all green".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            cmds.clone(),
+            vec![
+                evidence_for(cmds[0].clone(), Some(0), false),
+                evidence_for(cmds[1].clone(), Some(101), false),
+                // A timed-out command is a failed one even where no code was read.
+                evidence_for(cmds[2].clone(), None, true),
+            ],
+        );
+        let comp = c.completion.unwrap();
+        assert_eq!(comp.status, ExitStatus::Failed);
+        assert!(
+            comp.exit
+                .description
+                .contains("verification: 2 of 3 commands did not exit 0"),
+            "the description says why, since `failure_line` prints it: {}",
+            comp.exit.description
+        );
+        assert_eq!(
+            comp.evidence.len(),
+            3,
+            "every outcome is kept, passing ones included"
+        );
+        assert_eq!(c.verification, cmds);
+    }
+
+    /// Only `Ok` is demoted. A timeout is the more specific finding and must survive: relabelling
+    /// it `Failed` would hide that the child never finished, and the evidence is empty for a
+    /// timed-out child anyway (`run_spawn` runs no verification over a killed workspace).
+    #[test]
+    fn a_timeout_is_never_relabelled_by_verification() {
+        let cmds = vec![sh("cargo test")];
+        let c = verified_contract(
+            ChildOutcome {
+                timed_out: true,
+                ..ChildOutcome::default()
+            },
+            cmds.clone(),
+            vec![],
+        );
+        let comp = c.completion.unwrap();
+        assert_eq!(comp.status, ExitStatus::TimedOut);
+        assert!(
+            !comp.exit.description.contains("verification"),
+            "nothing ran, so nothing is claimed: {}",
+            comp.exit.description
+        );
+        assert_eq!(
+            c.verification, cmds,
+            "what was asked for is still on the record"
+        );
+        assert!(comp.evidence.is_empty());
+    }
+
+    /// The request survives even where nothing ran, so a reader can tell "asked for and never
+    /// run" from "never asked for" — the distinction the old `verification: vec![]` erased.
+    #[test]
+    fn verification_commands_are_recorded_even_when_none_ran() {
+        let cmds = vec![sh("cargo test")];
+        let c = verified_contract(
+            ChildOutcome {
+                narrative: Some("done".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            cmds.clone(),
+            vec![evidence_for(cmds[0].clone(), Some(0), false)],
+        );
+        let comp = c.completion.as_ref().unwrap();
+        assert_eq!(
+            comp.status,
+            ExitStatus::Ok,
+            "a passing verification leaves Ok alone"
+        );
+        assert!(!comp.exit.description.contains("verification"));
+        assert_eq!(comp.evidence_omitted, 0);
+        assert_eq!(c.verification, cmds);
+
+        let none = verified_contract(
+            ChildOutcome {
+                narrative: Some("done".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        assert!(none.verification.is_empty());
+        assert_eq!(none.completion.unwrap().status, ExitStatus::Ok);
     }
 }

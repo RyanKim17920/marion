@@ -499,6 +499,7 @@ mod tests {
                 }),
                 repo: None,
                 acceptance_criteria: vec![],
+                verification: vec![],
                 writable_scope: vec![],
                 timeout_secs: Some(1),
                 model: None,

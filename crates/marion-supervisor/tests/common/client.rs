@@ -194,6 +194,7 @@ impl Client {
                 caller: None,
                 repo: Some(repo.to_path_buf()),
                 acceptance_criteria: vec![],
+                verification: vec![],
                 writable_scope: vec![],
                 timeout_secs: Some(timeout_secs),
                 model: None,

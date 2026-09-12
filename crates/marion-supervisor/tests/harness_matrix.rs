@@ -185,6 +185,7 @@ fn drive(cell: &Cell) -> Evidence {
         prompt: "Add the matrix marker file under src/ and report back through marion.".into(),
         repo: repo.clone(),
         acceptance_criteria: vec!["a file exists under src/ containing the matrix marker".into()],
+        verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: cell.model.map(str::to_string),

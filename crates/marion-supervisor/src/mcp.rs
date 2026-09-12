@@ -417,6 +417,7 @@ fn spawn_params(
         // own project key rather than obeyed.
         repo,
         acceptance_criteria: string_list(&args["acceptance_criteria"]),
+        verification: string_list(&args["verification"]),
         writable_scope: string_list(&args["writable_scope"]),
         // **Sent as the caller stated it, absent and all.** The wire carries an `Option` so
         // that the supervisor performs the one resolution (`handler`'s own default, then
@@ -798,10 +799,10 @@ fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
 
 /// **A `spawn` parameter marion declares and does not implement, if this request carries one.**
 ///
-/// §5.4's schema has eleven keys. `run::SpawnRequest` carries six, `background` is now the
-/// seventh, and the remaining four split in two — only one half belongs here:
+/// §5.4's schema has eleven keys. `run::SpawnRequest` carries seven, `background` is the
+/// eighth, and the remaining three split in two — only one half belongs here:
 ///
-/// * **A different verb performed quietly** — `isolation`, `verification` and
+/// * **A different verb performed quietly** — `isolation: "remote"` and
 ///   `allow_concurrent_writes: true`. Each makes marion do something other than what was asked
 ///   while answering `isError: false`, which is the §12 accept-and-ignore shape
 ///   (`default_tools_approval_mode`, `trust: true`). Refused, by name, with the value that broke
@@ -812,7 +813,8 @@ fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
 ///
 /// **`background` left this table** when it was implemented, which is the shape §11 item 23 asked
 /// for: *"the natural close is to implement… backgrounding, at which point the three refusals and
-/// this item come out together."* It comes out one at a time, and the item records which.
+/// this item come out together."* It comes out one at a time, and the item records which;
+/// `verification` left it the same way once its commands ran.
 ///
 /// **`allow_concurrent_writes` entered it in the same change, and only in the `true` direction.**
 /// Item 23 called this parameter inverted — `true` honoured accidentally, `false` unhonourable —
@@ -824,10 +826,10 @@ fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
 /// wrong.
 ///
 /// **The permitted values are not refused**, which is the whole point of reading the field rather
-/// than rejecting its presence: `isolation: "worktree"`, an empty `verification` and
-/// `allow_concurrent_writes: false` all describe exactly what marion does, and an absent key asks
-/// for nothing. `background` is now read for its value rather than refused for its presence, by
-/// [`handle_tool_call`].
+/// than rejecting its presence: `isolation: "worktree"` and `allow_concurrent_writes: false`
+/// describe exactly what marion does, and an absent key asks for nothing. `background` and
+/// `verification` are read for their values rather than refused for their presence, by
+/// [`handle_tool_call`] and [`spawn_params`].
 ///
 /// Pure, and separate from [`handle_tool_call`], so the table above is testable as a table.
 fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError> {
@@ -846,12 +848,6 @@ fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError
         return Some(spawn::SpawnError::ConcurrentWritesUnimplemented {
             isolation: isolation.as_wire(),
         });
-    }
-    if args["verification"]
-        .as_array()
-        .is_some_and(|v| !v.is_empty())
-    {
-        return Some(spawn::SpawnError::VerificationUnimplemented);
     }
     None
 }
@@ -1286,11 +1282,6 @@ mod tests {
                 serde_json::json!({"isolation": "remote"}),
                 "remote",
             ),
-            (
-                "verification",
-                serde_json::json!({"verification": ["cargo test -p foo"]}),
-                "verification",
-            ),
         ] {
             let e = unimplemented_parameter(&args).unwrap_or_else(|| {
                 panic!(
@@ -1330,10 +1321,6 @@ mod tests {
             ),
             other => panic!("expected ConcurrentWritesUnimplemented, got {other:?}"),
         }
-        assert!(matches!(
-            unimplemented_parameter(&serde_json::json!({"verification": ["x"]})),
-            Some(VerificationUnimplemented)
-        ));
         match unimplemented_parameter(&serde_json::json!({"isolation": "remote"})) {
             Some(IsolationUnimplemented(v)) => assert_eq!(v, "remote"),
             other => panic!("expected the value to be carried, got {other:?}"),
@@ -1347,7 +1334,7 @@ mod tests {
     ///
     /// * absent keys ask for nothing;
     /// * `background: false` and `isolation: "worktree"` name marion's own behaviour;
-    /// * an **empty** `verification` requests no commands, so no evidence is missing;
+    /// * an **empty** `verification` requests no commands, and a non-empty one is run;
     /// * `name` and `allow_concurrent_writes` are the "merely absent" half of §11 item 23 —
     ///   dropped, but contradicting no answer the caller receives, and deliberately still accepted.
     ///
@@ -1368,6 +1355,13 @@ mod tests {
             (
                 "an empty verification list",
                 serde_json::json!({"verification": []}),
+            ),
+            (
+                // Refused by name until it was built. Its presence in *this* list is the
+                // assertion that the commands now run rather than that the refusal was reworded;
+                // `verification_is_forwarded_to_the_spawn_params` pins the forwarding.
+                "verification, now that it runs",
+                serde_json::json!({"verification": ["cargo test -p foo"]}),
             ),
             (
                 // `background: true` is here rather than in the refusing table because it is now
@@ -1700,11 +1694,34 @@ mod tests {
         }
     }
 
+    /// The lines reach the wire as the caller stated them, in order: `run_spawn` runs each one by
+    /// `sh -c` in the child's workspace, so a dropped or reordered line is a different judgement.
+    #[test]
+    fn verification_is_forwarded_to_the_spawn_params() {
+        let args = serde_json::json!({
+            "prompt": "go",
+            "acceptance_criteria": ["it builds"],
+            "verification": ["cargo build", "cargo test -p foo"],
+        });
+        let p = spawn_params("codex-impl", &args, None, Some("/r".into()));
+        assert_eq!(
+            p.verification,
+            vec!["cargo build".to_string(), "cargo test -p foo".to_string()]
+        );
+        let absent = spawn_params(
+            "codex-impl",
+            &serde_json::json!({"prompt": "go"}),
+            None,
+            None,
+        );
+        assert!(absent.verification.is_empty(), "absent asks for nothing");
+    }
+
     /// **Every tool marion declares is dispatched — none is declared and then answered as if it
     /// did not exist.**
     ///
     /// This repo's standing rule is that a surface marion advertises and does not implement must
-    /// **refuse by name** (`isolation`, `verification`, `allow_concurrent_writes`), never fall
+    /// **refuse by name** (`isolation: "remote"`, `allow_concurrent_writes`), never fall
     /// through to something that reads like a different failure. `handle_tool_call`'s last arm
     /// answers `marion: no tool {name}` — the correct answer for a name marion never declared, and
     /// the wrong one for a name in its own `tools/list`, because a caller reading it would

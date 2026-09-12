@@ -145,6 +145,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         prompt: "Start the long-running command and keep it running.".into(),
         repo: repo.clone(),
         acceptance_criteria: vec!["the command is running".into()],
+        verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         // None, exactly as before this field existed: `codex exec` takes no model argument, so

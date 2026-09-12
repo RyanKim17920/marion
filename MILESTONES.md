@@ -173,10 +173,11 @@ duplication.
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
 `spawn_pty` facade fixture cannot observe it); a **root** started in a linked
 worktree, whose cwd on resume is still derived rather than recorded; a resumed child's declared
-scope and acceptance criteria, which no record carries;
-`verification` execution still
-not in code (descendant gating §7.6 came off this line 2026-09-10 — see "Not done"); the ACP agent
-identity on `NodeSummary`.
+scope, acceptance criteria and verification lines, which no record carries; the ACP agent
+identity on `NodeSummary`. *(`verification` execution came off this line 2026-09-12: `run_spawn`
+runs each line by `sh -c` in the child's worktree after the diff is taken, any non-zero exit
+demotes `Ok` to `Failed` with the count in the description, and `tests/verification.rs` measures
+it against a real codex child. Descendant gating §7.6 came off it 2026-09-10 — see "Not done".)*
 
 ---
 
@@ -2593,7 +2594,8 @@ descendant-gating and `verification` sentences are still true at `b85ea30`:
 `spawn.rs` writes `live_descendants_at_report: vec![]` and a `spawn` carrying `verification` is
 refused by name.)* *(2026-09-10: the descendant-gating sentence is history as well —
 `crates/marion-supervisor/src/descendant_gate.rs` is the gate, and the dated line under "Not done"
-names its tests. `verification` is the one sentence of the three still true.)*
+names its tests.)* *(2026-09-12: the `verification` sentence is history too —
+`run::run_verification` runs the lines and `build_contract` judges by them; `tests/verification.rs`.)*
 
 ### Not started — what a working M1 does *not* imply
 
@@ -2798,10 +2800,16 @@ grouping.
   first against `b5d631e`: the first landed `reported_early: false, live_descendants_at_report: []`
   on a contract whose grandchild was live; the other two saw the child's `Exited` land with no
   `Blocked(Descendants)` ever journaled.
-- **`verification` command execution, so a contract's `evidence` is always empty.** Unchanged, and
-  as of `77557e3` a `spawn` carrying `verification` is now **refused by name** rather than accepted
-  and dropped — the commands still never run, but a caller can no longer be told they did.
-  Design §11 item 23.
+- ~~**`verification` command execution, so a contract's `evidence` is always empty.**~~ **Off this
+  line 2026-09-12.** `run::run_verification` runs each line by `sh -c` in the child's worktree,
+  sequentially, after `changed_paths` and the diff are taken and before the reap, under §6.7's
+  300 s bound with a group kill on expiry; `build_contract` records the commands, keeps every
+  outcome whole in `evidence` (capped only on the returned copy) and demotes `Ok` to `Failed` on any
+  non-zero exit, naming the count in the description. A killed child gets no verification and the
+  request is still recorded. Not journaled, like `acceptance_criteria`: a resumed child runs with
+  none. `tests/verification.rs` measures both directions against a real codex child; unit tests in
+  `run.rs`, `spawn.rs` and `mcp.rs` pin the runner, the ladder and the forwarding. The `77557e3`
+  refusal is gone with it. Design §11 item 23.
 - The `Stop` hook path. Unchanged — no production code references it.
 - ~~`marion doctor --adapter`.~~ **Off this line 2026-08-08**, and it should have come off at
   `c7cd5b5`: `doctor` has not been a stub since, both of §8's modes run against the installed
@@ -2857,9 +2865,9 @@ re-check date, so each line now carries its own.
   `session/new` or `session/load`, and `session/prompt` for a spawned child, answering the agent's
   own requests mid-turn; `run_spawn` reaches it through `LaunchPath::Acp`; `acp-opencode` and every
   `acp:<command>` type name `harness: acp`. Still true, narrowly: ACP nodes are children, not roots.
-- **`verification` execution is unimplemented, so `evidence` is always empty.** *Still true,
-  re-checked 2026-08-08.* Since `77557e3` a `spawn` carrying it is refused rather than accepted and
-  dropped, so a caller can no longer be told it ran.
+- ~~**`verification` execution is unimplemented, so `evidence` is always empty.**~~ **FALSE since
+  2026-09-12.** `run::run_verification` runs the lines and `evidence` carries their outcomes; see
+  the dated line under "Not done".
 - ~~**`pid` capture is unimplemented.**~~ **FALSE.** `run.rs:1472` journals `Spawned { pid:
   Some(pid) }` from the owner that has the child, and `root.rs` does the same for a root. The
   sentence "every production writer sets `None`" no longer describes any writer.
@@ -2888,7 +2896,8 @@ day's, not the tree's.)*
 **No milestone status changed on this date, and that is the finding.** M1 was already **[done]** and
 M2 remains **[open]**: at that date the journal was still not read at runtime (`8a16427` changed
 that on 2026-08-05 without moving M2 — see the bullet above), the registry does not exist,
-descendant gating is still not in code, and `verification` still never executes. Not one of §9's M2
+descendant gating is still not in code, and `verification` still never executes *(both since
+built — 2026-09-10 and 2026-09-12)*. Not one of §9's M2
 acceptance criteria moved. What changed is the **evidence base** — how much of what this file claims
 is now measured rather than asserted, and how much of it is measured *per harness* rather than once.
 

@@ -456,6 +456,7 @@ fn fixture(tag: &str) -> Fixture {
             caller: None,
             repo: Some(repo.clone()),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: Some(SHIM_LIFE.as_secs()),
             model: None,

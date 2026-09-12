@@ -123,6 +123,7 @@ fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: fx.repo.clone(),
         acceptance_criteria: vec!["a file under src/ was edited".into()],
+        verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: None,

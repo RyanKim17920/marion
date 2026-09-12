@@ -289,7 +289,8 @@ pub struct SpawnCaller {
 /// an `Option` — a second method would have duplicated every field below to carry one extra one.
 ///
 /// Everything from here down is the **root** argument, and it is unchanged because it stays true
-/// for `caller: None`. Three parameters are absent and each would have been a wrong answer:
+/// for `caller: None`. Two parameters are absent and each would have been a wrong answer; a third
+/// was absent for the same reason until it was built:
 ///
 /// * **`background`** — §5.4 spells it `"background": false // M1: must be false (§9)`, and
 ///   `77557e3` refuses it by name because a caller asking for a handle instead waits out the
@@ -299,9 +300,9 @@ pub struct SpawnCaller {
 /// * **`isolation`** — `AgentType` has no such field and `make_worktree` is called
 ///   unconditionally, so `shared-cwd` would silently *add* containment the caller did not ask for
 ///   and `remote` would be served by running on the operator's own machine.
-/// * **`verification`** — hardcoded empty at the construction site, so a caller who asked for
-///   `cargo test` and one who asked for nothing receive byte-identical contracts, and an empty
-///   field reads as "verified, nothing to report" when the truth is "never ran".
+/// * ~~**`verification`**~~ — carried since it was built: each line runs by `sh -c` in the
+///   child's workspace at its terminal transition, and the contract records both the commands
+///   and their outcomes, so "asked for and never run" is no longer a shape a caller can be handed.
 ///
 /// `name` is also absent, but for a different and weaker reason: it is *performable* — §2's
 /// `node/rename` sets exactly that field — so declaring it here would duplicate a method rather
@@ -355,6 +356,11 @@ pub struct AgentSpawnParams {
     /// §9's contract terms. Empty is *"none stated"*, which is what a root has.
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
+    /// §5.4's `verification`: each line run by `sh -c` in the child's workspace at its terminal
+    /// transition; any non-zero exit fails the contract and every outcome lands in its evidence.
+    /// Skipped on the wire when empty so the legacy frame stays byte for byte what it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
     /// §5.4's write ceiling for the child, as globs. Empty is not "write nothing": `run_spawn`
     /// reads it as `**`, still clipped by the agent type's own `scope_ceiling`.
     #[serde(default)]
@@ -514,6 +520,7 @@ mod tests {
             caller: None,
             repo: Some("/r".into()),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: None,
             model: None,
@@ -532,6 +539,7 @@ mod tests {
             }),
             repo: None,
             acceptance_criteria: vec!["the suite is green".into()],
+            verification: vec!["cargo test".into()],
             writable_scope: vec!["src/**".into()],
             timeout_secs: Some(120),
             model: Some("sonnet".into()),
@@ -640,6 +648,7 @@ mod tests {
                 caller: None,
                 repo: Some("/r".into()),
                 acceptance_criteria: vec![],
+                verification: vec![],
                 writable_scope: vec![],
                 timeout_secs: None,
                 model: None,
@@ -662,6 +671,7 @@ mod tests {
                 }),
                 repo: None,
                 acceptance_criteria: vec!["c".into()],
+                verification: vec![],
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(60),
                 model: Some("sonnet".into()),
@@ -690,6 +700,7 @@ mod tests {
              pairing is the supervisor's to refuse, by name, and it does"
         );
         assert!(p.acceptance_criteria.is_empty());
+        assert!(p.verification.is_empty());
         assert!(p.writable_scope.is_empty());
         assert_eq!(
             p.timeout_secs, None,
@@ -739,10 +750,6 @@ mod tests {
             (
                 r#"{"agent_type":"codex-impl","prompt":"go","background":true}"#,
                 "background",
-            ),
-            (
-                r#"{"agent_type":"codex-impl","prompt":"go","verification":["cargo test"]}"#,
-                "verification",
             ),
             (
                 // `isolation` used to sit here, as a key the MCP schema declared and the socket did

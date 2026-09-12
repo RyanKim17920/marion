@@ -513,6 +513,7 @@ mod tests {
             None,
             None,
             vec![],
+            vec![],
         )
     }
 

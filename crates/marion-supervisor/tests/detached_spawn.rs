@@ -222,6 +222,7 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
         caller: None,
         repo: repo.map(Path::to_path_buf),
         acceptance_criteria: vec![],
+        verification: vec![],
         writable_scope: vec![],
         timeout_secs: Some(1),
         model: None,

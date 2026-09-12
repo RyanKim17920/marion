@@ -123,6 +123,7 @@ fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: fx.cwd.clone(),
         acceptance_criteria: vec!["a file under src/ was edited".into()],
+        verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: None,

@@ -266,7 +266,12 @@ pub fn tools() -> Value {
                     "model": {"type": "string"},
                     "prompt": {"type": "string"},
                     "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
-                    "verification": {"type": "array", "items": {"type": "string"}},
+                    "verification": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Shell lines run in the child's workspace after it \
+                                        finishes; any non-zero exit fails the contract; outputs \
+                                        land in evidence."
+                    },
                     "writable_scope": {"type": "array", "items": {"type": "string"}},
                     "name": {"type": "string"},
                     "isolation": {"type": "string", "enum": ["worktree", "shared-cwd", "remote"]},
@@ -282,8 +287,8 @@ pub fn tools() -> Value {
             // handle's holder *"must be able to `wait` a node that may already have exited —
             // denying that would make the handle useless."* §7.6's worked example is blunter: a
             // handle with no primitive to resolve it is the anti-pattern marion exists to delete,
-            // and shipping one would be `verification`'s accept-and-ignore wearing a handle's
-            // clothes.
+            // and shipping one would be the accept-and-ignore `verification` once was, wearing a
+            // handle's clothes.
             //
             // It also closes a gap that predates backgrounding: `root::ROOT_VERBS` has
             // permitted `wait` since M1 (§9 records the allowlist being wider than the declared
@@ -1335,6 +1340,7 @@ mod tests {
             &outcome,
             Some(vec![]),
             None,
+            vec![],
             vec![],
         )
     }

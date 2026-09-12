@@ -717,6 +717,7 @@ mod enabled_launch {
             // Forbidden beside a caller: the supervisor knows which tree this node lives in.
             repo: None,
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: Some(5),
             model: None,

@@ -164,6 +164,7 @@ impl Bed {
             caller: None,
             repo: Some(self.repo.clone()),
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             timeout_secs: Some(1),
             model: None,

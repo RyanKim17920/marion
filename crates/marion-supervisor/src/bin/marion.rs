@@ -595,7 +595,7 @@ fn is_loopback_url(url: &str) -> bool {
 ///    adapter's drop, which is now defence in depth behind this gate.
 ///
 /// **Refusing rather than implementing is the deliberate, reversible direction**, exactly as with
-/// `background` and `verification` in `spawn::SpawnError`. Honouring a gateway is a real feature —
+/// `isolation: "remote"` in `spawn::SpawnError`. Honouring a gateway is a real feature —
 /// LiteLLM and corporate proxies are ordinary — and it can land later against this refusal. What
 /// cannot be undone is teaching an operator that marion silently reaches the vendor: the missing
 /// capability is merely absent, while advertising one that does not exist is the bug. The usage
@@ -2325,6 +2325,7 @@ fn spawn_root(
             // A root states none: §9's contract terms belong to a child's `spawn`, and a root
             // has no contract to carry them.
             acceptance_criteria: vec![],
+            verification: vec![],
             writable_scope: vec![],
             // Stated as the operator stated it. The supervisor resolves it, so a number
             // invented here would be a second source of truth for §3.1's own key.
@@ -3473,8 +3474,8 @@ mod tests {
     /// the operator got a run that reached the vendor directly and looked like it had honoured the
     /// gateway, which is the §12 accept-and-ignore shape with marion on the wrong side of it.
     ///
-    /// The refusal is the reversible direction (`spawn::SpawnError`'s `background` and
-    /// `verification` are the precedent): honouring can land later, but an operator taught that
+    /// The refusal is the reversible direction (`spawn::SpawnError`'s `isolation: "remote"` is
+    /// the precedent): honouring can land later, but an operator taught that
     /// marion silently reaches the vendor cannot be un-taught.
     #[test]
     fn a_gateway_base_url_under_real_auth_is_refused_as_unimplemented_not_silently_dropped() {

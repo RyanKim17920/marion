@@ -221,6 +221,7 @@ fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnP
         caller: None,
         repo: repo.map(Path::to_path_buf),
         acceptance_criteria: vec![],
+        verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: Some(timeout_secs),
         model: None,
