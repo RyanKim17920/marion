@@ -1361,6 +1361,8 @@ impl<W: Write> RawPaneSession<W> {
                         for action in keys.feed(&bytes[..count]) {
                             match action {
                                 Action::Detach => return stop(None),
+                                // Reserved: the relay's status overlay answers this in `pump`.
+                                Action::ToggleStatus => {}
                                 // A pane that had already ended when this relay attached has
                                 // no write half for anyone. The supervisor answers an unleased
                                 // keystroke by closing the connection, which would cost the

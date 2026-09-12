@@ -328,6 +328,10 @@ fn forward_key(
             leaving.store(true, Ordering::SeqCst);
             return std::ops::ControlFlow::Break(());
         }
+        // The rendered attach paints its own status row already, so the toggle has nothing to
+        // show here; the keys are consumed rather than forwarded so the two clients agree on what
+        // `^] s` is.
+        Action::ToggleStatus => return std::ops::ControlFlow::Continue(()),
         Action::Forward(bytes) => bytes,
     };
     let input = match encoder.encode(id, bytes) {

@@ -29,8 +29,8 @@
 //!
 //! So one sequence is reserved, and reserving it correctly is this module's entire job:
 //!
-//! * **`^]` is a prefix, not a command.** `^] d` detaches. `^] ^]` sends one literal `^]` to the
-//!   node. `^] x` for any other `x` forwards **both** bytes, so a mistyped prefix loses no
+//! * **`^]` is a prefix, not a command.** `^] d` detaches. `^] s` toggles marion's status line.
+//!   `^] ^]` sends one literal `^]` to the node. `^] x` for any other `x` forwards **both** bytes, so a mistyped prefix loses no
 //!   keystroke — the failure mode of a swallowing prefix is a key that silently does nothing,
 //!   which is indistinguishable from a hung node.
 //! * `^]` (0x1d, `GS`) rather than `^A` or `^B`: `^A` is start-of-line in every readline-ish
@@ -53,6 +53,9 @@ pub const PREFIX: u8 = 0x1d;
 /// The key that, after [`PREFIX`], ends the attach.
 pub const DETACH_KEY: u8 = b'd';
 
+/// The key that, after [`PREFIX`], toggles marion's one-line status overlay in a native relay.
+pub const STATUS_KEY: u8 = b's';
+
 /// What the read loop should do with what the operator typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -61,6 +64,10 @@ pub enum Action {
     /// Stop attaching. **The node is left running** — §7.3.1: a client going away must leave every
     /// node exactly as it was.
     Detach,
+    /// Show or hide marion's status line. Unlike [`Action::Detach`] this is not a way out, so the
+    /// bytes after it in the same chunk are still forwarded: the operator is still typing at the
+    /// node they are looking at.
+    ToggleStatus,
 }
 
 /// The keystroke filter. One per attach.
@@ -107,6 +114,12 @@ impl Keys {
                         out.push(Action::Detach);
                         return out;
                     }
+                    STATUS_KEY => {
+                        if !run.is_empty() {
+                            out.push(Action::Forward(std::mem::take(&mut run)));
+                        }
+                        out.push(Action::ToggleStatus);
+                    }
                     // `^] ^]` is how the operator sends a literal prefix through.
                     PREFIX => run.push(PREFIX),
                     // A mistyped prefix forwards both bytes rather than eating either.
@@ -140,7 +153,7 @@ mod tests {
             .iter()
             .flat_map(|a| match a {
                 Action::Forward(b) => b.clone(),
-                Action::Detach => Vec::new(),
+                Action::Detach | Action::ToggleStatus => Vec::new(),
             })
             .collect()
     }
@@ -217,6 +230,40 @@ mod tests {
         assert_eq!(
             feed(&mut k, &[PREFIX, b'q']),
             vec![Action::Forward(vec![PREFIX, b'q'])]
+        );
+    }
+
+    #[test]
+    fn the_status_key_after_the_prefix_toggles_the_status_line() {
+        let mut k = Keys::new();
+        assert_eq!(
+            feed(&mut k, &[PREFIX, STATUS_KEY]),
+            vec![Action::ToggleStatus]
+        );
+        assert!(!k.armed());
+    }
+
+    /// Unlike a detach, a toggle is not a way out: the operator is still looking at the node, so
+    /// what they typed on either side of it must reach it, in order.
+    #[test]
+    fn text_around_a_status_toggle_is_forwarded_on_both_sides_in_order() {
+        let mut k = Keys::new();
+        assert_eq!(
+            feed(&mut k, b"ab\x1dscd"),
+            vec![
+                Action::Forward(b"ab".to_vec()),
+                Action::ToggleStatus,
+                Action::Forward(b"cd".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plain_status_key_is_just_a_letter_to_the_node() {
+        let mut k = Keys::new();
+        assert_eq!(
+            feed(&mut k, &[STATUS_KEY]),
+            vec![Action::Forward(vec![STATUS_KEY])]
         );
     }
 
