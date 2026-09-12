@@ -566,8 +566,28 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // widen.
         //
         // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
+        // 2.1.268: observed green on Darwin 25.5.0, 2026-09-11, via scripts/admit-harness.sh
+        // (claude 2.1.268 in one run): marion-testsupport (33), acp_child (3), cross_product
+        // (57), depth_gate (4), harness_matrix (8), journal_wiring (18), m1_hop (1), m4_fan_in
+        // (1), native_facade_e2e (2), native_facade_spawn (1), no_git (5), pane_attach (2),
+        // permission_round_trip (8), restart_resume (0), timeout_kill (1), worktree_reap (8).
+        // 2.1.263 is no longer on disk (the versions dir held 2.1.259 and 2.1.266–2.1.268), so
+        // no one-axis A/B was possible. **Two things moved, neither in the harness's flags or
+        // dialogs.** (1) Request shape: every `tool_result.content` list now ends with a
+        // `<system-reminder>` text block carrying the `<total_tokens>` budget, after marion's own
+        // blocks, and the environment/model/date reminders ride as leading `text` blocks of the
+        // first user message rather than as `system` messages (2.1.263's 2026-09-09 shape). All
+        // seven claude-root `cross_product` cells failed with trailing characters until the three
+        // suite readers became `tests/common/mcp_result.rs`. (2) `pane_attach`'s claude cell read
+        // the operator's recording the instant the client exited; 2.1.268's last frame is large
+        // enough that the alt-screen restore had not been drained yet, 3/3, and always was under
+        // the bound. The trust dialog still reads "Quick safety check…" and `DISABLE_AUTOUPDATER`
+        // is still read first, both from the binary's strings.
+        //
+        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
         accepted: &[
             "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
+            "2.1.268",
         ],
     },
     PinnedHarness {
