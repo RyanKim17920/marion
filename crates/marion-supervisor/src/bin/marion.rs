@@ -261,8 +261,10 @@ fn resume_main(argv: &[String]) -> ExitCode {
     }
 }
 
-/// The resume's stages in order: parse, resolve, dial, `node/resume`, announce, attach. Each
-/// refusal has already printed its sentence and carries only the code, as [`run`]'s do.
+/// The resume's stages in order: parse, resolve, dial, `node/resume`, announce, then
+/// [`root_follow`]'s rule — watch a headless node to its exit as `run` does, or say a paned one
+/// started. Each refusal has already printed its sentence and carries only the code, as [`run`]'s
+/// do.
 fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let Some(args) = parse_resume(argv) else {
         usage()
@@ -280,33 +282,92 @@ fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let launch = detach::Launch {
         program: supervisor_binary(),
         state_dir: state.clone(),
-        project_root: project_key,
+        project_root: project_key.clone(),
         idle_grace: RUN_IDLE_GRACE,
         auth,
         base_url,
     };
     let (mut session, started) = connect_supervisor(&sock, &launch)?;
+    let project = marion_core::paths::ProjectDir::new(&state, &project_key);
+    let terminal = std::sync::Arc::new(Terminal::new(io::stderr()));
+    // The same journal tail `run` starts before its spawn, for the same reason: measured before
+    // the relaunch, so the second life's children are the only news it can report.
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
     let resumed = match resume_node(&mut session, &args) {
         Ok(r) => r,
-        Err(e) => return Err(resume_refused(&mut session, started, &e)),
+        Err(e) => {
+            stop.store(true, Ordering::Relaxed);
+            drop(poller_id);
+            let _ = poller.join();
+            return Err(resume_refused(&mut session, started, &e));
+        }
     };
+    let root_id = resumed.agent_id.clone();
+    let _ = poller_id.send(root_id.clone());
     eprintln!(
         "marion: resumed {} (generation {})",
-        resumed.agent_id.0, resumed.spawn_generation
+        root_id.0, resumed.spawn_generation
     );
-    // Hand off to the same live view an attach gives — `attach::Session::pump` — now that the
-    // supervisor is serving the relaunched node. The resume session's `Drop` detaches (§7.3.1
-    // leaves the node untouched), so the supervisor keeps running for the attach to watch.
-    drop(session);
-    Ok(
-        match marion_supervisor::attach::run(&resumed.agent_id.0, &repo, &state) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("marion: {e}");
-                ExitCode::FAILURE
-            }
-        },
-    )
+    // **From here the resume is a run whose root already exists**, and it follows [`root_follow`]'s
+    // one rule rather than a second one of its own. This used to hand every resumed node to
+    // `attach::run`, which is the *paned* answer: on the headless node every resume actually
+    // produces (a pane names no session, so only headless nodes are resumable) the attach was
+    // refused — *"no display plane"* — and the command exited 1 while the node ran on, having
+    // detached from it on the way out. The shape is read off the node's journal, which is the
+    // record the supervisor rebuilt the relaunch from.
+    let shape = resumed_shape(&project.journal(), &root_id);
+    match root_follow(shape.pane) {
+        RootFollow::Started => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = poller.join();
+            eprintln!("{}", pane_started_line(&root_id, &shape.agent_type));
+            Ok(ExitCode::SUCCESS)
+        }
+        RootFollow::Watch => {
+            let watched = watch_the_root(&mut session, &root_id, &terminal);
+            stop.store(true, Ordering::Relaxed);
+            let _ = poller.join();
+            report_watched(watched, &project.journal(), &root_id, shape.bound)
+        }
+    }
+}
+
+/// The two facts about a resumed node the client needs after the relaunch and the supervisor's
+/// answer does not carry: the shape it was relaunched in, and the clock it runs under.
+struct ResumedShape {
+    /// `true` for a pane, `false` headless — [`marion_core::registry::ReplayedNode::harness_pane`],
+    /// the value the supervisor relaunched from. Headless where the journal says nothing, which
+    /// is also what replay says.
+    pane: bool,
+    /// The node's own bound, resolved as `run` resolves it: the recorded one, else the type's.
+    bound: StdDuration,
+    /// For the pane line, which names the type as `run`'s does.
+    agent_type: String,
+}
+
+/// Read a resumed node's [`ResumedShape`] off the project journal.
+///
+/// Best effort by construction, as [`root_denials`] is: a journal that cannot be read yields the
+/// defaults — headless, the type's bound — because the node exists and is being watched either
+/// way, and a viewer's trouble reading a file must not turn a resumed run into a refusal.
+fn resumed_shape(journal: &Path, agent_id: &marion_core::contract::AgentId) -> ResumedShape {
+    let bytes = std::fs::read(journal).unwrap_or_default();
+    let replay = marion_core::registry::replay(&bytes);
+    let node = replay.get(agent_id);
+    let intent = node.and_then(|n| n.intent.as_ref());
+    let agent_type = intent.map(|i| i.agent_type.clone()).unwrap_or_default();
+    let type_secs = marion_core::agent_type::builtin(&agent_type)
+        .map(|t| t.timeout.0.as_secs())
+        .unwrap_or(marion_supervisor::handler::DEFAULT_SPAWN_TIMEOUT_SECS);
+    ResumedShape {
+        pane: node.is_some_and(|n| n.harness_pane),
+        bound: StdDuration::from_secs(blocked_bound_secs(
+            intent.and_then(|i| i.timeout_secs),
+            type_secs,
+        )),
+        agent_type,
+    }
 }
 
 /// The resume's base URL, by [`resolve_base_url`]'s rule; a refusal is its sentence and the code.
@@ -2172,15 +2233,10 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     //
     // So the run returns the moment the node exists, which is exactly what the supervisor owning
     // the node's lifecycle means (§11 item 28 step 6): the node outlives this call.
-    if args.pane {
+    if root_follow(args.pane) == RootFollow::Started {
         stop.store(true, Ordering::Relaxed);
         let _ = poller.join();
-        // One line: what started, and the three commands that matter next.
-        eprintln!(
-            "marion: root {} ({}, pane) started; `marion attach {}` to open, `^] d` to detach, \
-             `marion tree` for the forest",
-            root_id.0, args.agent_type, root_id.0
-        );
+        eprintln!("{}", pane_started_line(&root_id, &args.agent_type));
         return Ok(ExitCode::SUCCESS);
     }
     eprintln!(
@@ -2198,7 +2254,48 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let watched = watch_the_root(&mut supervisor, &root_id, &terminal);
     stop.store(true, Ordering::Relaxed);
     let _ = poller.join();
+    report_watched(watched, &project.journal(), &root_id, blocked_bound)
+}
 
+/// **What a client does once its root exists** — one rule, read by `run` and `resume` both.
+///
+/// A headless root is watched to its exit: the node's stream is the whole of how this client sees
+/// the run, and its terminal bookend is the exit code. A paned root is *started* and left alone —
+/// this process has no terminal and cannot type, so watching it would hold the node's one write
+/// lease (§5.3) against the `marion attach` the operator is about to run. Two verbs deciding this
+/// separately is how `resume` came to hand a headless root to the attach path, which refused it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootFollow {
+    /// Say it started and return; `marion attach` is the view.
+    Started,
+    /// Attach to the node's stream and render it until its terminal bookend.
+    Watch,
+}
+
+fn root_follow(pane: bool) -> RootFollow {
+    if pane {
+        RootFollow::Started
+    } else {
+        RootFollow::Watch
+    }
+}
+
+/// One line for a paned root: what started, and the three commands that matter next.
+fn pane_started_line(root_id: &marion_core::contract::AgentId, agent_type: &str) -> String {
+    format!(
+        "marion: root {} ({}, pane) started; `marion attach {}` to open, `^] d` to detach, \
+         `marion tree` for the forest",
+        root_id.0, agent_type, root_id.0
+    )
+}
+
+/// The end of a watched run: the transcript on stdout, the denials on stderr, and the verdict.
+fn report_watched(
+    watched: Result<Watched, String>,
+    journal: &Path,
+    root_id: &marion_core::contract::AgentId,
+    blocked_bound: StdDuration,
+) -> Result<ExitCode, ExitCode> {
     let watched = match watched {
         Ok(w) => w,
         Err(e) => {
@@ -2213,7 +2310,7 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     // (§9: a root has no contract, so the journal is the only place these live). Best effort by
     // construction: it is a summary of a fact the node was already told, printed in its transcript
     // above, and a journal this reader could not parse must not turn a finished run into a failure.
-    for (tool, _reason) in root_denials(&project.journal(), &root_id) {
+    for (tool, _reason) in root_denials(journal, root_id) {
         // Not "the bound expired": since `duplex::decided_permission` a root's `report` is denied
         // on arrival by §5.4 and no bound is spent, and this line has only the tool name to go on.
         // The reason the *node* was given is in the transcript printed above, which is where a
@@ -4033,6 +4130,79 @@ mod tests {
             RUN_IDLE_GRACE,
             StdDuration::from_secs(300),
             "§5.7's proposed, explicitly unmeasured grace"
+        );
+    }
+
+    /// **One rule for what a client does once its root exists, shared by `run` and `resume`.**
+    ///
+    /// A headless root is watched to its exit — that is the whole of how the client sees the
+    /// run — and a paned root is left to `marion attach`, because this client has no terminal
+    /// and would otherwise hold the node's one write lease. `marion resume` used to hand a
+    /// headless root to the attach path instead, which refused it (*"no display plane"*) and
+    /// exited 1 while the node kept running.
+    #[test]
+    fn a_headless_root_is_watched_and_a_paned_root_is_left_to_attach() {
+        assert_eq!(root_follow(false), RootFollow::Watch);
+        assert_eq!(root_follow(true), RootFollow::Started);
+    }
+
+    /// The shape a resume follows is the shape the journal recorded for the node — the same
+    /// record the supervisor relaunched it from — and the bound is the node's own, as `run`
+    /// resolves it: the recorded one, else the type's.
+    #[test]
+    fn a_resumed_nodes_shape_and_bound_are_read_off_its_journal() {
+        use marion_core::contract::AgentId;
+        use marion_core::journal::{RecordKind, SessionObserved, SpawnIntent};
+        use marion_supervisor::journal::append_at;
+
+        let dir = scratch("marion-resumed-shape");
+        let path = dir.join("journal.jsonl");
+        let id = AgentId("root".into());
+        let intent = |timeout_secs: Option<u64>| {
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id.clone(),
+                parent_id: None,
+                agent_type: "codex-impl".into(),
+                harness: marion_core::harness::Harness::Codex,
+                depth: 0,
+                task_id: None,
+                timeout_secs,
+            })
+        };
+        let session = |pane: bool| {
+            RecordKind::SessionObserved(SessionObserved {
+                agent_id: id.clone(),
+                harness: marion_core::harness::Harness::Codex,
+                session_id: "thread-1".into(),
+                pane,
+                workspace: None,
+            })
+        };
+
+        // Nothing on disk: headless, the type's own bound — never a refusal, the node exists.
+        let absent = resumed_shape(&path, &id);
+        assert!(!absent.pane);
+        assert_eq!(
+            absent.bound,
+            builtin("codex-impl").unwrap().timeout.0,
+            "with no intent the bound is the default, not zero"
+        );
+
+        append_at(&path, intent(Some(300))).unwrap();
+        append_at(&path, session(false)).unwrap();
+        let headless = resumed_shape(&path, &id);
+        assert!(!headless.pane, "the session recorded a headless launch");
+        assert_eq!(
+            headless.bound,
+            StdDuration::from_secs(300),
+            "the recorded bound wins"
+        );
+        assert_eq!(headless.agent_type, "codex-impl");
+
+        append_at(&path, session(true)).unwrap();
+        assert!(
+            resumed_shape(&path, &id).pane,
+            "the last session record decides the shape, as replay folds it"
         );
     }
 }

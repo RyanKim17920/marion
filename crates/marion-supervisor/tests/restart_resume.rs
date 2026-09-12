@@ -18,6 +18,9 @@
 //!   it was `AliveAndOurs`), and a second `Spawned` on the one journal.
 //! * **The journal is contiguous across the restart** — replay reconstructs the node from ordinal 0
 //!   including the records written before the kill, so nothing about the first life was lost.
+//! * **`marion resume` returns on its own, with `run`'s verdict** — a headless node is watched to
+//!   its exit exactly as `marion run` watches a root, never handed to `marion attach`, which has
+//!   no pane to attach to on a headless node and refused (exit 1, node still running).
 //! * **The resumed child takes its next turn and exits clean** — a Responses request that arrives
 //!   *after* the relaunch carries the resume prompt **and** the first life's marker, because codex
 //!   `exec resume` sends the session's earlier transcript back: the proof the resume was a *real*
@@ -204,6 +207,22 @@ fn park_a_live_tree(dir: &Path, repo: &Path, state: &Path) -> Parked {
 
 /// SIGKILL the supervisor this run's journal names, wait for it to be gone, and reap the client
 /// that died with its socket. Returns nothing: everything afterwards is read off the journal.
+/// The resume's own exit, waited for under [`BOUND`] rather than forever: a resume that never
+/// returns is the defect this suite now asserts against, and it must fail by name, not hang. The
+/// process is killed at the bound so the test's scratch can be torn down.
+fn resume_exit(resume: &mut std::process::Child) -> Option<std::process::ExitStatus> {
+    let mut status = None;
+    let exited = until(|| {
+        status = resume.try_wait().expect("polling marion resume");
+        status.is_some()
+    });
+    if !exited {
+        let _ = resume.kill();
+        let _ = resume.wait();
+    }
+    status
+}
+
 fn sigkill_the_supervisor(state: &Path, repo: &Path, run: &mut std::process::Child) {
     let sup = supervisor_pid(state, repo).expect("the journal names its supervisor");
     // SAFETY: `kill` on the pid this test's own supervisor journaled.
@@ -288,8 +307,12 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         .filter_map(|r| r["seq"].as_u64())
         .max()
         .unwrap_or(0);
-    // Backgrounded: `marion resume` hands off to a live attach after the relaunch, so it does not
-    // return on its own. The journal is the oracle, and the process is killed once it has answered.
+    // Backgrounded because it runs for the node's whole second life: a headless resume follows its
+    // node to the exit exactly as `marion run` does, so the process returns on its own once the
+    // journal has the exit — and its status and stderr are asserted below. Its stderr goes to a
+    // file rather than a pipe, because nobody reads a pipe while the journal is being watched and
+    // a live view that filled one would stall the run it was showing.
+    let resume_stderr = dir.join("resume.stderr");
     let mut resume = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "resume",
@@ -306,7 +329,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         ])
         .current_dir(&*dir)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&resume_stderr).expect("a stderr file"))
         .spawn()
         .expect("marion resume starts");
 
@@ -423,9 +446,37 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         root_done.state
     );
 
+    // ---- and the resume itself returns, having watched the node rather than attached to it ----
+    // A headless node has no display plane, so a resume that handed off to `marion attach` was
+    // refused there and exited 1 while the node ran on — after detaching from it, which printed
+    // §7.3.2's "unattended at a permission gate" disclosure on the way out. It now follows `marion
+    // run`'s own rule for a headless root, and its exit code is `run`'s verdict on the node's
+    // terminal status: 0 for `Ok`, 1 otherwise. Here that status is the supervisor's, not this
+    // client's: a resumed root whose second turn is plain text is refused under §6.1 step 8
+    // (`root::bridge_never_reached_exit`) exactly as a first life would be, so the code mirrors
+    // whichever status the journal recorded rather than assuming a clean one.
+    let status = resume_exit(&mut resume);
+    let stderr = std::fs::read_to_string(&resume_stderr).unwrap_or_default();
+    let verdict = match root_done.state {
+        marion_core::node::NodeState::Exited(marion_core::contract::ExitStatus::Ok) => 0,
+        _ => 1,
+    };
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(verdict),
+        "a headless resume exits with `run`'s verdict on {:?}; stderr:\n{stderr}",
+        root_done.state
+    );
+    assert!(
+        !stderr.contains("no display plane") && !stderr.contains("unattended at a permission gate"),
+        "a headless resume must neither try to attach nor detach from a running node:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("frame     turn.completed"),
+        "the resume rendered the second life's stream as `run` would:\n{stderr}"
+    );
+
     // ---- teardown -----------------------------------------------------------------------------
-    let _ = resume.kill();
-    let _ = resume.wait();
     // Best-effort: kill any supervisor the resume started so nothing lingers past the test.
     if let Some(pid) = supervisor_pid(&state, &repo) {
         unsafe { kill(pid, 9) };
@@ -504,8 +555,9 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         .filter_map(|r| r["seq"].as_u64())
         .max()
         .unwrap_or(0);
-    // Backgrounded for the reason the root test's is: `marion resume` hands off to a live attach,
-    // so it does not return on its own and the journal is the oracle.
+    // Backgrounded for the reason the root test's is: a headless resume follows its node to the
+    // exit and returns on its own, with the status asserted at the end.
+    let resume_stderr = dir.join("resume.stderr");
     let mut resume = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "resume",
@@ -522,7 +574,7 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         ])
         .current_dir(&*dir)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&resume_stderr).expect("a stderr file"))
         .spawn()
         .expect("marion resume starts");
 
@@ -641,10 +693,18 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         (Some(0), None),
         "the resumed codex child must finish its turn and exit clean: {exit:?}"
     );
+    let status = resume_exit(&mut resume);
+    let stderr = std::fs::read_to_string(&resume_stderr).unwrap_or_default();
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "a headless child resume exits 0 with the child's clean exit, got {status:?}; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no display plane"),
+        "a headless resume must not hand off to attach:\n{stderr}"
+    );
 
     // ---- teardown -----------------------------------------------------------------------------
-    let _ = resume.kill();
-    let _ = resume.wait();
     if let Some(pid) = supervisor_pid(&state, &repo) {
         unsafe { kill(pid, 9) };
     }
