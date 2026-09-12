@@ -358,12 +358,24 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         root_spawned["pid"].as_i64().is_some_and(|p| p > 0),
         "a root with no recorded pid is not a process this criterion can call real: {root_spawned}"
     );
-    // **The root's `Spawned` records `harness_version: "unknown"`, deliberately** (`root.rs`: a
-    // root has no contract, so nothing on that path ever runs `<program> --version`, and doing it
-    // to fill a journal field would add a process execution to every `marion run`). So the version
-    // gate for the root is `on_path("codex")` above, and *that a real codex spoke* is asserted from
-    // the wire instead: S6 measured code mode's `{name, namespace}` dispatch form, which is codex's
-    // own internal spelling and which no other harness in this workspace emits.
+    // **The root's `Spawned` records the version marion measured**, the same `<program>
+    // --version` a child gets (`root::launch_inner`); it used to record `"unknown"` on the
+    // grounds that a root has no contract to need it, and this suite pinned that absence. The
+    // version alone is not proof a real codex *spoke*, so that is asserted from the wire too: S6
+    // measured code mode's `{name, namespace}` dispatch form, which is codex's own internal
+    // spelling and which no other harness in this workspace emits.
+    // codex prints `codex-cli 0.147.0` — the name first, the number second — and marion keeps the
+    // whole first line (`run::version_line`), so the admitted version is matched per token rather
+    // than at the start of the line as the children's bare `2.1.222 (Claude Code)` shape is below.
+    let root_version = root_spawned["harness_version"].as_str().unwrap_or_default();
+    assert!(
+        root_version
+            .split_whitespace()
+            .any(|token| accepted("codex").iter().any(|v| token.starts_with(v))),
+        "the root reported {root_version:?}, which is not one of the codex versions this suite \
+         admits ({:?})",
+        accepted("codex")
+    );
     let codex_spoke = requests.iter().any(|r| {
         r["wire"] == json!("responses")
             && r.pointer("/body/input")

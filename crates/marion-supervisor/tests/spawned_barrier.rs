@@ -81,6 +81,9 @@ struct Run {
 /// exits 0 itself. The descendant carries `dir` in its own argv so `survivors` can name it; a bare
 /// `sleep` would be invisible to a needle search and the assertion would pass vacuously.
 ///
+/// The root launch probes `--version` first; answered on the stub's first line so the probe forks
+/// no lingering descendant of its own for `survivors` to find.
+///
 /// Under the fix the kill lands at the failed barrier, before or during this script's first line,
 /// so the descendant is either never forked or killed with the group — `kill_process_tree` targets
 /// the group precisely because a child's own descendants are as unnameable as it is. Under the
@@ -99,6 +102,7 @@ fn gemini_stub(dir: &Path, lingers: bool) -> PathBuf {
         &program,
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n\
              {linger}\
              cat <<'EOF'\n\
              {{\"type\":\"tool_use\",\"tool_name\":\"mcp_marion_spawn\",\"tool_id\":\"call-1\",\"args\":{{}}}}\n\

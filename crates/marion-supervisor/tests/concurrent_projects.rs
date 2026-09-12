@@ -207,12 +207,18 @@ impl Drop for Fleet {
     }
 }
 
-/// A `codex` stub with `body` as its whole behaviour, on a `PATH` `dir/bin`.
+/// A `codex` stub with `body` as its whole behaviour, on a `PATH` `dir/bin`. It answers the
+/// root launch's `--version` probe ahead of `body`, so the probe neither announces a start nor
+/// parks on the barrier.
 fn stub(dir: &Path, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).expect("stub bin dir");
     let program = bin.join("codex");
-    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).expect("write stub");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
+    )
+    .expect("write stub");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

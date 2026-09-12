@@ -335,7 +335,13 @@ fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let program = bin.join(program_name);
-    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+    // The root launch asks `--version` once before the run; answered here so the probe never
+    // runs `body`, whose writes are the measurement under test.
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

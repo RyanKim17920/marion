@@ -1157,7 +1157,25 @@ fn launch_inner(
     let spawned = std::cell::Cell::new(false);
     let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
         std::cell::Cell::new(None);
-    let started = |pid: i32| confirm_root_started(node, on_started, &spawned, &unaccountable, pid);
+    // **§6.1 step 3's probe, on the root too**, and it is the same call `run_spawn` makes for a
+    // child rather than a second one: `<program> --version`, bounded, `"unknown"` on silence. It
+    // used to be skipped here on the grounds that a root has no contract to carry the answer —
+    // but the `Spawned` record carries it, and `marion tree` showed `unknown` beside every
+    // headless root while a child of the same binary showed a measured version. Probed before
+    // the launch, where the version of the process about to run can still be asked of the same
+    // resolved program, and at the cost `run.rs` states: [`crate::run::harness_version`]'s bound
+    // sits on the pre-launch path, inside `handler.rs`'s `LAUNCH_BOUND`.
+    let harness_version = crate::run::harness_version(&node.invocation.program);
+    let started = |pid: i32| {
+        confirm_root_started(
+            node,
+            &harness_version,
+            on_started,
+            &spawned,
+            &unaccountable,
+            pid,
+        )
+    };
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
     // complementary reason: the journal says a root existed and how it ended, this says what it
     // said. `None` on an open failure — a viewer may never fail a run (`events::EventSink::open`).
@@ -1229,7 +1247,7 @@ fn launch_inner(
         }),
         None => result,
     };
-    journal_the_roots_outcome(node, &result, spawned.get());
+    journal_the_roots_outcome(node, &result, spawned.get(), &harness_version);
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
     if let Some(es) = &events {
         es.lifecycle(roots_terminal_lifecycle(&result));
@@ -1246,12 +1264,16 @@ fn launch_inner(
 /// process to make it about.
 fn confirm_root_started(
     node: &RootNode,
+    harness_version: &str,
     on_started: Option<&dyn Fn(i32)>,
     spawned: &std::cell::Cell<bool>,
     unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
     pid: i32,
 ) {
-    match crate::journal::confirm_spawned(&node.project, spawned_record(node, Some(pid))) {
+    match crate::journal::confirm_spawned(
+        &node.project,
+        spawned_record(node, harness_version, Some(pid)),
+    ) {
         Ok(_) => {
             spawned.set(true);
             if let Some(hook) = on_started {
@@ -1406,6 +1428,7 @@ fn journal_the_roots_outcome(
     node: &RootNode,
     result: &Result<RootOutcome, RootError>,
     spawned: bool,
+    harness_version: &str,
 ) {
     // A confirmation for a process whose existence this function is only *inferring*, and only when
     // nothing observed it directly. Unreachable through either driver today — both call the hook
@@ -1417,7 +1440,7 @@ fn journal_the_roots_outcome(
         if !spawned {
             crate::journal::record(
                 &node.project,
-                RecordKind::Spawned(spawned_record(node, None)),
+                RecordKind::Spawned(spawned_record(node, harness_version, None)),
             );
         }
     };
@@ -1689,20 +1712,20 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// reached without the launch hook ever firing, i.e. a process whose existence is inferred rather
 /// than observed. See [`journal_the_roots_outcome`].
 ///
-/// **`harness_version` is `"unknown"` on a root, and that is a refusal to invent a side effect.**
-/// A child's version is measured because `run_spawn` already runs `<program> --version` for
-/// §6.7's `TaskContract.child.version`; a root has no contract, so nothing on this path has ever
-/// executed the harness binary a second time. Doing it here to fill a journal field would add a
-/// process execution to every `marion run` — an observable change, and one `launch_only_root`'s
-/// fake-harness tests measure directly, since they assert over the argv their stub was invoked
-/// with and a stub that never exits would turn the extra call into a hang. §4.3 puts the binary's
-/// path and version in `meta.json` — declared and unwritten, and with no accessor to reach for
-/// (`marion_core::paths`). When marion writes that file the value comes from there, measured once,
-/// and this reads it rather than re-deriving it. Until then `"unknown"` is what marion knows.
-fn spawned_record(node: &RootNode, pid: Option<i32>) -> Spawned {
+/// **`harness_version` is what `launch_inner`'s probe of the root's own program answered** —
+/// [`crate::run::harness_version`], the same `<program> --version` a child gets, asked once before
+/// the launch and carried to both call sites so the confirmation and the no-process fallback
+/// cannot name two versions of one node. It used to be `"unknown"` on every root, on the grounds
+/// that a root has no contract to need it and the probe would be an extra process execution per
+/// `marion run`; the tree then said `unknown` beside every headless root for its whole life while
+/// a child of the same binary showed a measured version. The extra execution is real and stated:
+/// a fake harness on `PATH` is invoked once with `--version` before its run, so a stub that
+/// records or parks on every invocation has to answer that argv first (`launch_only_root.rs`'s
+/// `stub_harness` does).
+fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> Spawned {
     Spawned {
         agent_id: node.agent_id.clone(),
-        harness_version: "unknown".into(),
+        harness_version: harness_version.to_string(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
         // was asked for. `None` on codex, whose `exec` surface takes no model argument at all.
         model: node.invocation.model.clone(),

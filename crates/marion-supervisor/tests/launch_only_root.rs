@@ -216,6 +216,14 @@ fn reached_the_bridge(node: &Node) -> String {
 /// argv and env go to two files rather than one stream: an environment value is arbitrary text and
 /// could contain anything a marker in a shared file might use to separate them.
 ///
+/// # `--version` is answered before anything, and that ordering is load-bearing too
+///
+/// A root's launch asks its program `--version` once before the run (`root::launch_inner`, the
+/// same probe a child gets), so every stub here is invoked twice. Answering that argv on the first
+/// line keeps the probe from reaching `prologue` or the recording: a pid written there would be a
+/// second grandchild for the leak test to count, and a body that parks would park the probe for
+/// its whole bound.
+///
 /// # `prologue` runs before the recording, and that ordering is load-bearing
 ///
 /// Everything the stub records is a side effect a *bounded* run may or may not reach: marion's
@@ -237,6 +245,7 @@ fn stub_harness(dir: &Path, node: &Node, prologue: &str, body: &str) -> PathBuf 
         &program,
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n\
              {prologue}\n\
              for a in \"$@\"; do echo \"ARG=$a\"; done > '{argv}'\n\
              env > '{env}'\n\

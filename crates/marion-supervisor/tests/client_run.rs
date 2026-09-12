@@ -418,6 +418,15 @@ fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tre
             .map(|n| (n.agent_id.0.clone(), n.state))
             .collect::<Vec<_>>()
     );
+    for n in b.tree() {
+        assert!(
+            n.harness_version.as_deref().is_some_and(|v| v != "unknown"),
+            "{}'s `Spawned` carries the version `<program> --version` answered, not a \
+             placeholder: {:?}",
+            n.agent_id.0,
+            n.harness_version
+        );
+    }
 
     let closing_turns_at_attach = root_turns_asked(&server, RootStep::Finish);
     let (replay, attached) = b.attach(&root);

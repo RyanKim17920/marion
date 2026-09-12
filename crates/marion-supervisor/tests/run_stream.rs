@@ -59,6 +59,8 @@ fn stub_claude(dir: &Path) -> std::path::PathBuf {
         &program,
         format!(
             r#"#!/bin/sh
+# The root launch's `--version` probe, answered before the protocol below is looked for.
+if [ "$1" = --version ]; then echo 0.0.0-stub; exit 0; fi
 cfg=""
 prev=""
 for a in "$@"; do
