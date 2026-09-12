@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::Isolation;
-use marion_core::contract::{TaskContract, TaskId};
+use marion_core::contract::{ExitStatus, TaskContract, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, EditTurn, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
@@ -263,24 +263,21 @@ fn inherited_fixture(root: &Path) -> (PathBuf, Env) {
 /// Two assertions, and both are on fields the agent cannot fabricate through the report: the
 /// narrative is read out of the ACP transcript by marion's reader (so the generic reading, not the
 /// table, is what found it), and `changed_paths` is git's account of the worktree.
-#[test]
-fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_path() {
-    if !on_path("python3") {
-        eprintln!("skipped: `python3` is not installed");
-        return;
-    }
+/// Run the fake agent as `acp:python3 <path>` through `run_spawn`, with `verification` as the
+/// parent's §5.4 lines, and return the contract. `name` keys the scratch directory and the task id.
+fn spawn_unknown_agent(name: &str, verification: Vec<String>) -> TaskContract {
     let fake = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/acp/fake_acp_agent.py"
     );
-    let root = scratch("acp-unknown");
+    let root = scratch(name);
     let (repo, env) = inherited_fixture(&root);
     let req = SpawnRequest {
         agent_type: format!("acp:python3 {fake}"),
         prompt: "Create a file under src/ and report back through marion.".into(),
         repo: repo.clone(),
         acceptance_criteria: vec!["a file under src/ was created".into()],
-        verification: vec![],
+        verification,
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: None,
@@ -292,8 +289,17 @@ fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_pat
         "root",
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
     );
-    let contract = run_spawn(&env, &req, &TaskId("acp-unknown-1".into()), &caller)
-        .unwrap_or_else(|e| panic!("the unknown ACP agent runs through the generic path: {e}"));
+    run_spawn(&env, &req, &TaskId(format!("{name}-1")), &caller)
+        .unwrap_or_else(|e| panic!("the unknown ACP agent runs through the generic path: {e}"))
+}
+
+#[test]
+fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_path() {
+    if !on_path("python3") {
+        eprintln!("skipped: `python3` is not installed");
+        return;
+    }
+    let contract = spawn_unknown_agent("acp-unknown", vec![]);
     let comp = contract
         .completion
         .as_ref()
@@ -309,4 +315,62 @@ fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_pat
         vec![PathBuf::from(UNKNOWN_AGENT_FILE)],
         "the child's write must reach the contract by git's account: {comp:?}"
     );
+}
+
+/// **§5.4's `verification` runs for an ACP child that finished its turn.**
+///
+/// An ACP agent is a long-lived stdio server that marion itself shuts down after the turn — EOF
+/// on stdin, then SIGINT (`acp_child::finish`) — so its `ChildExit` carries a signal on *every*
+/// ordinary run. `run_spawn` used to skip verification whenever `signal.is_some()`, reading
+/// marion's own shutdown as "the child was killed"; a live opencode child finished `Ok` with
+/// `evidence: []` beside a `verification` of three lines. The commands must run, and their
+/// outcomes must land in the contract.
+#[test]
+fn verification_runs_for_an_acp_child_marion_shut_down_after_its_turn() {
+    if !on_path("python3") {
+        eprintln!("skipped: `python3` is not installed");
+        return;
+    }
+    let contract = spawn_unknown_agent("acp-verified", vec!["echo verified".into()]);
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a child that reported has a completion");
+    assert_eq!(
+        comp.status,
+        ExitStatus::Ok,
+        "a passing verification leaves the child Ok: {}",
+        comp.exit.description
+    );
+    assert_eq!(
+        comp.evidence.len(),
+        1,
+        "one line asked for, one outcome recorded: {comp:?}"
+    );
+    assert_eq!(comp.evidence[0].exit_code, Some(0));
+    assert_eq!(comp.evidence[0].stdout.value, "verified\n");
+}
+
+/// The other half of the same rule: a verification that fails **demotes** the ACP child, exactly
+/// as it demotes a `codex` child (`tests/verification.rs`). Before the fix this child could not be
+/// demoted at all, because the commands that would have failed it never ran.
+#[test]
+fn a_failing_verification_demotes_an_acp_child_to_failed() {
+    if !on_path("python3") {
+        eprintln!("skipped: `python3` is not installed");
+        return;
+    }
+    let contract = spawn_unknown_agent("acp-unverified", vec!["exit 3".into()]);
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a child that reported has a completion");
+    assert_eq!(
+        comp.status,
+        ExitStatus::Failed,
+        "a non-zero verification fails the contract: {}",
+        comp.exit.description
+    );
+    assert_eq!(comp.evidence.len(), 1, "{comp:?}");
+    assert_eq!(comp.evidence[0].exit_code, Some(3));
 }

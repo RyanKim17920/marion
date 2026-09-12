@@ -527,6 +527,31 @@ pub fn run_verification(commands: &[Command]) -> Vec<CommandOutcome> {
         .collect()
 }
 
+/// §5.4's evidence for one child: [`run_verification`] over `commands`, or nothing at all for a
+/// child marion cut short.
+///
+/// **The condition is `timed_out`, and only that.** It is the one field both child drivers set
+/// exactly when marion ended the run for its own reasons: `run_bounded` sets it on the deadline
+/// kill of a pty or headless child, and `acp_child::finish` sets it from `marion_cut_it_short`,
+/// the caller's attributed statement that the turn did not finish. Such a workspace is whatever
+/// the kill left, and evidence gathered over it would be judged against work that never finished.
+///
+/// `signal` is deliberately *not* consulted. This used to skip on `signal.is_some()` as well, and
+/// that silently disabled verification for every ACP child: an ACP agent is a long-lived stdio
+/// server that marion itself shuts down after the turn — stdin EOF, then SIGINT, then the group
+/// kill — so its exit carries a signal on every ordinary run (`AcpRun::exit` documents that the
+/// status describes marion's shutdown, not the turn). A live opencode child finished `Ok` with
+/// `evidence: []` beside three verification lines. For a pty child a signal that is not marion's
+/// timeout is something else's kill; the commands still run over what the child left, and their
+/// outcomes are recorded so the contract judges the work rather than guessing at it.
+pub fn verification_evidence(outcome: &ChildOutcome, commands: &[Command]) -> Vec<CommandOutcome> {
+    if outcome.timed_out {
+        vec![]
+    } else {
+        run_verification(commands)
+    }
+}
+
 /// [`run_bounded`], plus the pid of the process it started, handed over at the instant it exists,
 /// and each stdout line as it lands.
 ///
@@ -1566,15 +1591,10 @@ pub fn run_spawn_watched(
     // **After `changed_paths` and the diff, never before.** Verification writes into the worktree
     // — a `cargo test` leaves a `target/`, a formatter rewrites files — and §6.7's diff is the
     // child's work, so the measurement is taken first and the commands run over the sealed
-    // result. Skipped for a child that was killed: its workspace is whatever the kill left, and
-    // evidence gathered over it would be judged against work that never finished. The request
-    // itself is still recorded (`verification_commands`), so the contract says what was asked.
+    // result. The request itself is always recorded (`verification_commands`), so the contract
+    // says what was asked even where `verification_evidence` decides nothing ran.
     let verification = verification_commands(&req.verification, &wt);
-    let evidence = if outcome.timed_out || outcome.signal.is_some() {
-        vec![]
-    } else {
-        run_verification(&verification)
-    };
+    let evidence = verification_evidence(&outcome, &verification);
     let mut contract = build_contract(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
@@ -2259,6 +2279,38 @@ mod tests {
             out.code,
             Some(0),
             "and the process really ran, and was really reaped"
+        );
+    }
+
+    /// **A signalled exit alone does not skip verification.** Every ACP child ends on marion's own
+    /// SIGINT (`acp_child::finish`), so `signal: Some(2), timed_out: false` is the *normal* end of
+    /// a finished ACP turn; the commands must run. Only marion's own cut — `timed_out` — skips.
+    #[test]
+    fn verification_runs_for_a_signalled_exit_and_skips_only_marions_own_timeout() {
+        let dir = scratch("supervisor-verify-signalled");
+        let cmds = verification_commands(&["echo ok".into()], &dir);
+        let shut_down_by_marion = ChildOutcome {
+            signal: Some(2),
+            timed_out: false,
+            ..ChildOutcome::default()
+        };
+        let evidence = verification_evidence(&shut_down_by_marion, &cmds);
+        assert_eq!(
+            evidence.len(),
+            1,
+            "a signalled, un-timed-out child is verified"
+        );
+        assert_eq!(evidence[0].exit_code, Some(0));
+        assert_eq!(evidence[0].stdout.value, "ok\n");
+
+        let cut_short = ChildOutcome {
+            signal: Some(9),
+            timed_out: true,
+            ..ChildOutcome::default()
+        };
+        assert!(
+            verification_evidence(&cut_short, &cmds).is_empty(),
+            "marion's own timeout kill is the one exit that skips"
         );
     }
 
