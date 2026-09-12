@@ -17,7 +17,9 @@
 //! Each test below names the measurement it preserves. Where a fixture recorded the behaviour, the
 //! fixture is cited.
 
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
@@ -70,6 +72,49 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// A pipe whose two ends are `O_CLOEXEC` from the instant they exist: `(read end, write end)`.
+///
+/// `Stdio::piped()` cannot promise that on macOS. Without `pipe2`, std calls `pipe()` and then
+/// `fcntl(FD_CLOEXEC)` on each end, and a sibling test's `Command::spawn` that lands between the
+/// two inherits the bare descriptor for the whole life of its child — measured at 18 of 1629
+/// spawns under a twelve-thread spawn load on Darwin 25 with Rust 1.94. For a test whose claim is
+/// "this process closed the last reader, so the bridge's write fails", that stray copy is a false
+/// pass turned into a false failure: the write succeeds into a pipe nobody will ever read, and the
+/// marker the test forbids is legitimately written. `open(2)` on a FIFO has no such window, since
+/// `File::open` sets `O_CLOEXEC` in the same syscall as the descriptor is created.
+///
+/// The `O_RDWR` holder exists only so that neither directional open blocks waiting for the other
+/// (POSIX leaves `O_RDWR` on a FIFO undefined; Linux and Darwin both honour it). It is dropped
+/// before return, so each returned end is the sole reference on its side.
+fn cloexec_pipe(scratch: &Scratch, name: &str) -> (File, File) {
+    let path = scratch.path.join(name);
+    // std has no `mkfifo`, and rustix's `mkfifoat` is not built for Apple targets.
+    let made = Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "mkfifo {}: {made}", path.display());
+    let hold = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let reader = File::open(&path).unwrap();
+    let writer = OpenOptions::new().write(true).open(&path).unwrap();
+    drop(hold);
+    (reader, writer)
+}
+
+/// Whether `path` does not exist, as distinct from being unreadable: a negative side-effect test
+/// must not let a permission or I/O error stand in for the absence it asserts.
+fn absent(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(_) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => panic!("{}: {e}", path.display()),
     }
 }
 
@@ -703,11 +748,19 @@ fn readiness_is_written_only_after_the_tools_list_reply_is_flushed() {
 /// before it is sends its first turn into a session where `mcp__marion__spawn` does not exist, and
 /// exits 0 with no error anywhere.
 ///
+/// Two things make the verdict causal rather than timed. The pipes are [`cloexec_pipe`]s, so the
+/// read end this test drops is the last one anywhere and the bridge's write cannot succeed by
+/// accident. And the marker is read only after the bridge has **exited**: `serve_stdio` answers
+/// `tools/list`, decides about the marker, and only then reads the EOF this test sends by closing
+/// stdin — so a reaped bridge has provably passed the point at which it would have written it.
+///
 /// **The mutation this kills: readiness signalled before the `tools/list` flush.**
 #[test]
 fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
     let scratch = Scratch::new("epipe");
     let marker = scratch.marker();
+    let (bridge_stdin, mut stdin) = cloexec_pipe(&scratch, "stdin");
+    let (stdout, bridge_stdout) = cloexec_pipe(&scratch, "stdout");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
         .arg("mcp")
@@ -715,15 +768,14 @@ fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
         .env("MARION_AGENT_TYPE", "codex")
         .env("MARION_DEPTH", "1")
         .env("MARION_READY_FILE", &marker)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdin(bridge_stdin)
+        .stdout(bridge_stdout)
         .stderr(Stdio::null())
         .spawn()
         .expect("marion's own bridge starts");
-    let mut stdin = child.stdin.take().unwrap();
     // Read synchronously and by hand: this test needs to *drop* the read end, which the threaded
     // helper above deliberately never does.
-    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut reader = BufReader::new(stdout);
 
     writeln!(
         stdin,
@@ -739,7 +791,7 @@ fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
         line.contains("protocolVersion"),
         "the bridge is up and initialized: {line}"
     );
-    assert!(!marker.exists(), "initialize is not readiness");
+    assert!(absent(&marker), "initialize is not readiness");
 
     // The harness goes away. Every subsequent write by the bridge fails.
     drop(reader);
@@ -752,15 +804,17 @@ fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
     .unwrap();
     stdin.flush().unwrap();
 
-    // Long enough that a marker written on the way past would have landed.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let claimed_ready = marker.exists();
-
+    // EOF follows the request on the same descriptor, so the bridge cannot see it before it has
+    // answered `tools/list` and taken its decision about the marker. Its exit is the barrier.
     drop(stdin);
-    let _ = child.wait();
+    let status = child.wait().unwrap();
+    assert!(
+        status.success(),
+        "the bridge leaves normally at EOF, with the failed write as an ordinary refusal: {status}"
+    );
 
     assert!(
-        !claimed_ready,
+        absent(&marker),
         "the bridge announced readiness for a tool list the harness never received — a root now \
          starts its first turn against a session where marion's tools do not exist, and exits 0 \
          with no error anywhere"
