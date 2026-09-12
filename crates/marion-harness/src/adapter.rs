@@ -7124,8 +7124,18 @@ mod tests {
                     "{h}: the switch is set exactly once"
                 );
             }
+            // The row's completion-push argv leads the prefix where the row has one (pinned per
+            // row by `every_row_states_its_push_strategy_and_renders_its_argv_only_into_
+            // interactive_shapes`); what follows compares the declaration channel alone.
+            let mut prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
+            let push: Vec<String> = row.push.argv().iter().map(|s| s.to_string()).collect();
+            assert!(
+                prefix.starts_with(&push),
+                "{h}: the push argv leads the native prefix, so the declaration flag closes it"
+            );
+            prefix.drain(..push.len());
             let injected = Injected {
-                prefix: injection.argv_prefix.iter().map(lossy).collect(),
+                prefix,
                 overlay,
                 documents: injection.documents,
             };
@@ -7377,6 +7387,74 @@ mod tests {
                     assert_update_document(h, &launches, native, keys)
                 }
                 UpdatePolicy::None { note } => assert_update_none(h, note),
+            }
+        }
+    }
+
+    /// **Every row states how a backgrounded child's end is pushed to its parent, and the argv
+    /// that enables it reaches only the shapes where it was measured to work.** The one measured
+    /// strategy is Claude Code's `notifications/claude/channel` (2.1.268), and it has three
+    /// conditions: interactive mode, the `--dangerously-load-development-channels server:marion`
+    /// flag, and never `-p` — headless never enqueues the event at all, and the flag is variadic,
+    /// so on a headless launch it would buy nothing and swallow a trailing positional. So the
+    /// flag is row **data** ([`spec::Push`]) rendered by the one renderer into the pane shape and
+    /// the native prefix, **first**, so the row's own next flag closes the variadic; the headless
+    /// shape never carries it; and a row that pushes over the channel names the `clientInfo.name`
+    /// a bridge started by that harness itself will see, or the bridge could not tell.
+    ///
+    /// A row with no measurement says [`spec::Push::McpLog`] — MCP's own `notifications/message`,
+    /// which every client may ignore — and ACP, which has no launch-time channel at all, says
+    /// [`spec::Push::None`]. Silence is the one answer the sweep refuses.
+    #[test]
+    fn every_row_states_its_push_strategy_and_renders_its_argv_only_into_interactive_shapes() {
+        use crate::spec::{MCP_ALIAS, Push};
+
+        assert_eq!(
+            Push::ClaudeChannel.argv(),
+            ["--dangerously-load-development-channels", "server:marion"],
+            "the measured flag, byte for byte"
+        );
+        assert_eq!(
+            Push::ClaudeChannel.argv()[1],
+            format!("server:{MCP_ALIAS}"),
+            "the channel is keyed by the server name every declaration uses"
+        );
+        assert!(Push::McpLog.argv().is_empty() && Push::None.argv().is_empty());
+        assert_eq!(harness_spec(Harness::ClaudeCode).push, Push::ClaudeChannel);
+        assert_eq!(harness_spec(Harness::Acp).push, Push::None);
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let tokens: Vec<String> = row.push.argv().iter().map(|s| s.to_string()).collect();
+            if row.push == Push::ClaudeChannel {
+                assert!(
+                    row.client_name.is_some(),
+                    "{h}: a row that pushes over the channel must name the client it serves"
+                );
+            }
+            for (name, inv, _) in rendered_launches(h, &document_dir) {
+                let carries = !tokens.is_empty() && inv.args.starts_with(&tokens);
+                let interactive = name.ends_with("pane");
+                assert_eq!(
+                    carries,
+                    interactive && !tokens.is_empty(),
+                    "{h} ({name}): the push argv belongs to the interactive shape alone: {:?}",
+                    inv.args
+                );
+                assert!(
+                    !inv.args.iter().any(|a| a.contains("development-channels")) || carries,
+                    "{h} ({name}): the flag reached a shape by another route: {:?}",
+                    inv.args
+                );
+            }
+            if let Some(native) = native_injection(h, &document_dir) {
+                let prefix: Vec<String> = native.argv_prefix.iter().map(lossy).collect();
+                assert_eq!(
+                    prefix.starts_with(&tokens) && !tokens.is_empty(),
+                    !tokens.is_empty(),
+                    "{h}: the native prefix carries the push argv iff the row has one: {prefix:?}"
+                );
             }
         }
     }

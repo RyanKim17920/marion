@@ -46,7 +46,7 @@ use serde_json::{Value, json};
 
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
     Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -177,6 +177,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "0.23.0 bundle: the update check returns on `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE === \
                \"true\"` at every launch",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

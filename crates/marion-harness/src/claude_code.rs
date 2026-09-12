@@ -17,7 +17,7 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
     Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 use crate::surfaces::TypedKind;
@@ -152,6 +152,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `DISABLE_AUTOUPDATER` first among the switches; claude sets `\"1\"` for its own \
                children",
     },
+    // 2.1.268 (probed 2026-09-11): a server's `notifications/claude/channel` becomes a new user
+    // turn in the interactive session when claude is started with the development-channels flag
+    // (one full-screen warning dialog at startup; default accepts). `-p` never enqueues it, so
+    // the headless row above carries no flag. The name is what 2.1.268 sends in `initialize`'s
+    // `clientInfo.name`.
+    push: Push::ClaudeChannel,
+    client_name: Some("claude-code"),
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

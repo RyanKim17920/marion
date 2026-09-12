@@ -50,7 +50,8 @@ use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
 use crate::spec::{
-    Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces, UpdatePolicy,
+    Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Push, Spelling, Surfaces,
+    UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -101,6 +102,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "no single program: the switch is the bound agent's; only the opencode agent's \
                canned recipe carries one (opencode's row)",
     },
+    // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
+    push: Push::None,
+    client_name: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \

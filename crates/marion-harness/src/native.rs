@@ -215,6 +215,12 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                     vec![OsString::from(flag), OsString::from(body(context.bridge))];
             }
         }
+        // The row's completion push is enabled here as on the pane shape, and for the same reason
+        // it leads: the flag is variadic, and the declaration flag behind it is what closes it
+        // before the operator's own tail.
+        injection
+            .argv_prefix
+            .splice(0..0, self.row.push.argv().iter().map(OsString::from));
         // The row's no-self-update switch is the one thing beside marion's declaration a native
         // node carries: a facade session is exactly where an update prompt interrupts the operator.
         if let Some((k, v)) = self.row.updates.env() {

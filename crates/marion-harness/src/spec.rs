@@ -103,9 +103,63 @@ pub struct HarnessSpec {
     /// codex 0.147.0's `Update available` prompt, which an Enter installs; claude's background
     /// updater) changes the program under a running node and interrupts a facade session.
     pub updates: UpdatePolicy,
+    /// How the bridge tells this harness's model that a **backgrounded child has finished,
+    /// without a `wait`** — a notification pushed on the MCP pipe after the handle's own reply.
+    /// Rendered by the one renderer into the pane shape and the native prefix only ([`Push`]
+    /// says why never headless), so no interactive launch can forget the flag that enables it.
+    pub push: Push,
+    /// The `clientInfo.name` this harness sends in MCP `initialize`, where it is measured — so a
+    /// bridge the harness started itself (`marion mcp` in an operator's own MCP configuration,
+    /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
+    /// `None` where it was never observed; such a bridge falls back to [`Push::McpLog`].
+    pub client_name: Option<&'static str>,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
+}
+
+/// **How a backgrounded child's end reaches the parent model without a `wait`** — the
+/// notification the bridge pushes on its stdio pipe, and the launch flag that makes the harness
+/// deliver it.
+///
+/// One measured variant, one unmeasured fallback, one explicit absence. The sweep
+/// `every_row_states_its_push_strategy_and_renders_its_argv_only_into_interactive_shapes` pins
+/// where each row's [`Self::argv`] lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Push {
+    /// Claude Code's `notifications/claude/channel`, **measured on 2.1.268**: the harness injects
+    /// the frame's `content` as a new user turn (`<channel source="marion" k="v">…</channel>`,
+    /// `isMeta: true`) and the model reacts within ~2 s — *only* in interactive mode, and *only*
+    /// when started with `--dangerously-load-development-channels server:marion`. A bare
+    /// `--channels server:marion` is accepted as a flag and refused by the research-preview
+    /// allowlist, dropping the event silently. A full-screen "Loading development channels"
+    /// dialog appears once at startup, default option 1 = accept. In `-p` mode the event is never
+    /// enqueued at all, which is why the headless shape never carries [`Self::argv`]: the flag
+    /// is variadic and would only swallow a trailing positional prompt. The server must declare
+    /// `capabilities.experimental["claude/channel"]`, and every `meta` key must be
+    /// identifier-shaped, since each becomes a tag attribute.
+    ClaudeChannel,
+    /// MCP's own `notifications/message` (logging), under `capabilities.logging`. **Unmeasured**
+    /// on every row that carries it: it is what the protocol lets any server send, and what a
+    /// client may show, log or drop. No launch flag.
+    McpLog,
+    /// Nothing is pushed. ACP: the declaration is a `session/new` request after launch, so
+    /// there is no stdio pipe of marion's to push on.
+    None,
+}
+
+/// [`Push::ClaudeChannel`]'s launch flag; its value names marion's server as every declaration
+/// does (the sweep pins it against [`MCP_ALIAS`], which a `const` string cannot be spliced into).
+const CLAUDE_CHANNEL_ARGV: &[&str] = &["--dangerously-load-development-channels", "server:marion"];
+
+impl Push {
+    /// The argv that enables this push on an **interactive** launch — or nothing.
+    pub const fn argv(self) -> &'static [&'static str] {
+        match self {
+            Push::ClaudeChannel => CLAUDE_CHANNEL_ARGV,
+            Push::McpLog | Push::None => &[],
+        }
+    }
 }
 
 /// The measured switch that keeps a harness from updating itself, or the honest absence of one.
@@ -551,7 +605,12 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.resume.is_some() && !(spec.resume.is_some() && argv.contains(&Arg::Resume)) {
         return Err(Refusal::NoResume);
     }
-    let mut args: Vec<String> = Vec::new();
+    // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
+    // (claude 2.1.268), and appended it would swallow the positional prompt the pane seeds.
+    let mut args: Vec<String> = match shape {
+        Shape::Pane => spec.push.argv().iter().map(|s| s.to_string()).collect(),
+        Shape::Headless => Vec::new(),
+    };
     for arg in argv {
         args.extend(render_arg(*arg, spec, f));
     }

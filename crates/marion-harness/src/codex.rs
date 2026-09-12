@@ -18,7 +18,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
     Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -164,6 +164,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "0.147.0 binary strings (`ConfigToml` field list) and a runtime type check on the \
                key; no `CODEX_*` update variable exists",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

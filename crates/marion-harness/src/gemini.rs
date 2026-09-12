@@ -18,7 +18,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling,
     Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -146,6 +146,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "0.53.0 bundle: `checkForUpdates` reads `general.enableAutoUpdate` and \
                `general.enableAutoUpdateNotification`; no `GEMINI_CLI_*` update variable exists",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",

@@ -38,7 +38,7 @@ use crate::grammar::{Cond, Name, OnRefusedReport, Pairing, StreamGrammar, Verdic
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling,
     Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -149,6 +149,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
                strings, no `GOOSE_*` update variable; `goose update` is explicit only",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \

@@ -39,7 +39,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
     Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -175,6 +175,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "1.0.83 `app.js`: the updater runs unless `COPILOT_AUTO_UPDATE` lower-cases to \
                `false`",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

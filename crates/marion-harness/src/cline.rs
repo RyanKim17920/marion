@@ -49,7 +49,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling,
     Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
@@ -165,6 +165,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `CLINE_NO_AUTO_UPDATE === \"1\"` before fetching npm's latest; no update-notifier, \
                no banner headless",
     },
+    // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    push: Push::McpLog,
+    client_name: None,
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \
