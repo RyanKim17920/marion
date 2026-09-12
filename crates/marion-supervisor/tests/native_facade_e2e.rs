@@ -233,6 +233,9 @@ struct Operator {
     host: PtyHost,
     cast: PathBuf,
     baseline: String,
+    /// The operator's window as last set. `resize_window` is a raw `TIOCSWINSZ`, which the cast
+    /// does not record, so the bottom row of the terminal is known here and nowhere in the cast.
+    size: std::cell::Cell<WinSize>,
 }
 
 impl Operator {
@@ -281,13 +284,14 @@ impl Operator {
             host,
             cast,
             baseline,
+            size: std::cell::Cell::new(OPERATOR_SIZE),
         }
     }
 
-    /// What the operator can read: the recorded bytes put back through a terminal emulator.
-    fn screen(&self) -> String {
+    /// The recorded bytes put back through a terminal emulator of `size`, cast resizes included.
+    fn term_at(&self, size: WinSize) -> marion_term::Term {
         let mut term = marion_term::Term::with_options(
-            marion_term::Size::new(OPERATOR_SIZE.cols as usize, OPERATOR_SIZE.rows as usize),
+            marion_term::Size::new(size.cols as usize, size.rows as usize),
             marion_tui::grid_options(),
         );
         for (code, data) in cast_records(&self.cast) {
@@ -297,9 +301,25 @@ impl Operator {
                 _ => {}
             }
         }
+        term
+    }
+
+    /// What the operator can read: scrollback and viewport together.
+    fn screen(&self) -> String {
+        let term = self.term_at(OPERATOR_SIZE);
         let mut lines = term.scrollback_lines();
         lines.extend(term.viewport_lines());
         lines.join("\n")
+    }
+
+    /// The bottom row of the operator's terminal **at its current size**, where marion's status
+    /// line goes. Replayed at that size from the start: what was painted before a resize lands in
+    /// scrollback, and the bottom row is whatever was addressed there since.
+    fn last_viewport_line(&self) -> String {
+        self.term_at(self.size.get())
+            .viewport_lines()
+            .pop()
+            .unwrap_or_default()
     }
 
     fn type_in(&self, bytes: &[u8]) {
@@ -319,6 +339,7 @@ impl Operator {
             .master()
             .set_size(size)
             .expect("resizing the operator's terminal");
+        self.size.set(size);
     }
 
     fn pid(&self) -> i32 {
@@ -527,6 +548,31 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
             geometries(&node_cast)
         );
 
+        // ---- the status row: marion's one optional line, and neither toggle reaches the node ----
+        //
+        // A native root has no children here, so the row's counts are all zero; what the clause
+        // asserts is that `^] s` paints the row on the bottom line of the *resized* terminal, that
+        // a second `^] s` takes it off, and that both chords stopped at marion: the node's
+        // recording still carries no `i` record.
+        let toggle = [marion_tui::keys::PREFIX, marion_tui::keys::STATUS_KEY];
+        op.type_in(&toggle);
+        assert!(
+            until(|| op.last_viewport_line().contains("marion: 0 children")),
+            "[{harness}] `^] s` put no status row on the bottom line, which reads {:?}",
+            op.last_viewport_line()
+        );
+        op.type_in(&toggle);
+        assert!(
+            until(|| !op.last_viewport_line().contains("marion:")),
+            "[{harness}] a second `^] s` did not take the status row off; the bottom line reads {:?}",
+            op.last_viewport_line()
+        );
+        assert!(
+            cast_text(&node_cast, "i").is_empty(),
+            "[{harness}] a status toggle reached the node as input: {:?}",
+            cast_text(&node_cast, "i")
+        );
+
         // ---- detach: the client leaves, the node stays ----
         op.type_in(&[marion_tui::keys::PREFIX, marion_tui::keys::DETACH_KEY]);
         assert!(
@@ -570,7 +616,9 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
             "[{harness}] the node did not die by the supervisor's kill: {:?}",
             node.exit
         );
-        eprintln!("[{harness}] native facade E2E: first screen, keystroke, resize, detach, kill");
+        eprintln!(
+            "[{harness}] native facade E2E: first screen, keystroke, resize, status row, detach, kill"
+        );
     }
 }
 

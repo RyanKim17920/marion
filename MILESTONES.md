@@ -117,6 +117,11 @@ Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resum
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
+2026-09-12: inside a native session `^] s` toggles marion's one optional status row on the
+terminal's bottom line — the root's direct children as running / blocked / done / failed, from a
+`tree/subscribe` on the claimed connection — painted as a saved-and-restored last row so it sits on
+the main and alternate screens alike and never reaches the node (`native_relay.rs` unit tests;
+`native_facade_e2e.rs` lane loop).
 
 **Parent ping (2026-09-11).** A backgrounded child's end now reaches its parent's model
 without a `wait`: after the handle's reply, the bridge watches the node on its own clock and pushes
