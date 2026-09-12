@@ -815,7 +815,7 @@ impl ratatui::widgets::Widget for Detail<'_> {
             buf.set_stringn(
                 area.x.saturating_add(2),
                 area.y.saturating_add(y),
-                &tree::clip(text, width),
+                tree::clip(text, width),
                 width,
                 style,
             );
@@ -1163,7 +1163,7 @@ mod tests {
             "a parent the snapshot lacks keeps its id rather than an invented name"
         );
         assert_eq!(
-            parent_label(&[parent.clone()], &parent),
+            parent_label(std::slice::from_ref(&parent), &parent),
             None,
             "a root has no parent"
         );
