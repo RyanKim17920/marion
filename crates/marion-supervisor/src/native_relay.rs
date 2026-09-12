@@ -29,6 +29,8 @@ use marion_tui::{Action, Keys};
 type Refusal = String;
 
 const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+/// The attach is request 1; the status row's `tree/subscribe` is the relay's only other request.
+const STATUS_SUBSCRIBE_ID: RequestId = RequestId::Number(2);
 static RESIZED: AtomicBool = AtomicBool::new(false);
 static RELAY_SIGNAL_EVENTS: AtomicU32 = AtomicU32::new(0);
 static FIRST_RELAY_SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -1062,6 +1064,85 @@ struct RawPaneSession<W: Write> {
     /// only if something was sent for it to refuse.
     input_sent: Arc<AtomicBool>,
     keyboard: Option<std::thread::JoinHandle<()>>,
+    status: StatusOverlay,
+}
+
+/// How often the status row is repainted while shown and nothing has changed, so a node's own
+/// paint of that row does not hide it for long. Anything that changes it repaints at the next tick.
+const STATUS_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// marion's one optional row on the operator's terminal, and the `tree/subscribe` behind it.
+///
+/// Never drawn unless the operator asked (`^] s`); while asked for, redrawn when something changed
+/// and otherwise every [`STATUS_REDRAW`]; on toggle-off, cleared once and then left alone. The
+/// subscription outlives the toggle: it is made once, at the first request, and kept for the
+/// relay's lifetime so a later toggle-on has a current snapshot at once.
+struct StatusOverlay {
+    /// Flipped by the keyboard worker on each `^] s`; the pump reads it on its tick.
+    wanted: Arc<AtomicBool>,
+    /// The tree snapshot, once the subscribe was answered; kept current by `fold_tree_event`.
+    nodes: Option<Vec<marion_core::proto::NodeSummary>>,
+    /// Whether the subscribe request has been sent.
+    subscribed: bool,
+    /// The supervisor refused the subscribe, or it could not be sent. The row says so; the relay
+    /// itself is unaffected, because a status line is never worth the node's screen.
+    unavailable: bool,
+    /// Whether the row is currently on the terminal.
+    shown: bool,
+    /// Something to repaint at the next tick: a tree event, the toggle, or a resize.
+    dirty: bool,
+    last_drawn: Option<std::time::Instant>,
+    rows: u16,
+    cols: u16,
+}
+
+impl StatusOverlay {
+    fn new((cols, rows): (u16, u16)) -> Self {
+        Self {
+            wanted: Arc::new(AtomicBool::new(false)),
+            nodes: None,
+            subscribed: false,
+            unavailable: false,
+            shown: false,
+            dirty: false,
+            last_drawn: None,
+            rows,
+            cols,
+        }
+    }
+
+    fn resized(&mut self, cols: u16, rows: u16) {
+        if (self.cols, self.rows) != (cols, rows) {
+            self.cols = cols;
+            self.rows = rows;
+            self.dirty = true;
+        }
+    }
+
+    /// Fold one subscription notification into the snapshot; a change marks the row dirty.
+    fn absorb(&mut self, event: &Event) {
+        if let Some(nodes) = self.nodes.as_mut()
+            && crate::tree::fold_tree_event(nodes, event)
+        {
+            self.dirty = true;
+        }
+    }
+
+    fn line(&self, id: &AgentId) -> String {
+        match &self.nodes {
+            _ if self.unavailable => "marion: tree unavailable".to_string(),
+            None => "marion: tree pending".to_string(),
+            Some(nodes) => status_line(id, nodes),
+        }
+    }
+
+    /// Whether the row needs painting now: a change, or the periodic repaint being due.
+    fn due(&self) -> bool {
+        self.dirty
+            || self
+                .last_drawn
+                .is_none_or(|drawn| drawn.elapsed() >= STATUS_REDRAW)
+    }
 }
 
 /// Why `next_frame` could not produce a frame — kept apart from the operator-facing [`Refusal`]
@@ -1146,6 +1227,7 @@ impl<W: Write> RawPaneSession<W> {
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             input_sent: Arc::new(AtomicBool::new(false)),
             keyboard: None,
+            status: StatusOverlay::new(geometry),
         };
         session.attach(geometry)?;
         session.start_keyboard(input)?;
@@ -1319,6 +1401,7 @@ impl<W: Write> RawPaneSession<W> {
         let writer = Arc::clone(&self.writer);
         let id = self.id.clone();
         let writable = self.writable;
+        let status_wanted = Arc::clone(&self.status.wanted);
         // The pump blocks in `stream.read` for up to `POLL`. Shutting the read side from here
         // returns that read at once, so a worker that stops — for any reason — ends the relay now
         // rather than at the next timeout; `pump` reads the failure slot before the EOF it caused.
@@ -1361,8 +1444,11 @@ impl<W: Write> RawPaneSession<W> {
                         for action in keys.feed(&bytes[..count]) {
                             match action {
                                 Action::Detach => return stop(None),
-                                // Reserved: the relay's status overlay answers this in `pump`.
-                                Action::ToggleStatus => {}
+                                // The pump paints or clears the row on its next tick; the key
+                                // is marion's and never the node's.
+                                Action::ToggleStatus => {
+                                    status_wanted.fetch_xor(true, Ordering::SeqCst);
+                                }
                                 // A pane that had already ended when this relay attached has
                                 // no write half for anyone. The supervisor answers an unleased
                                 // keystroke by closing the connection, which would cost the
@@ -1498,6 +1584,7 @@ impl<W: Write> RawPaneSession<W> {
                 return Ok(stop);
             }
             self.forward_resize()?;
+            self.refresh_status()?;
             let frame = match self.next_frame() {
                 Ok(frame) => frame,
                 Err(FrameError::Closed { unfinished }) => {
@@ -1540,6 +1627,10 @@ impl<W: Write> RawPaneSession<W> {
     fn apply_frame(&mut self, frame: Option<Frame>) -> Result<Option<RelayStop>, Refusal> {
         let note = match frame {
             Some(Frame::Notification(note)) => note,
+            Some(Frame::Response(response)) if response.id == STATUS_SUBSCRIBE_ID => {
+                self.absorb_status_subscription(response);
+                return Ok(None);
+            }
             Some(other) => {
                 return Err(format!(
                     "the supervisor sent an unexpected frame during native relay: {other:?}"
@@ -1547,6 +1638,7 @@ impl<W: Write> RawPaneSession<W> {
             }
             None => return Ok(None),
         };
+        self.status.absorb(&note.event);
         let decoded = crate::pane_client::decode_pane_v1_event(
             &self.id,
             self.next_seq,
@@ -1580,7 +1672,75 @@ impl<W: Write> RawPaneSession<W> {
         let Some((cols, rows)) = marion_tui::guard::window_size(input_fd) else {
             return Ok(());
         };
+        self.status.resized(cols, rows);
         self.send_size(cols, rows)
+    }
+
+    /// The status row, on the pump's tick: subscribe at the first request, paint when due, clear
+    /// once on toggle-off. A terminal write failure is the relay's, as it is for a pane frame; a
+    /// refused or unsendable subscribe is only the row's.
+    fn refresh_status(&mut self) -> Result<(), Refusal> {
+        let wanted = self.status.wanted.load(Ordering::SeqCst);
+        if wanted != self.status.shown {
+            self.status.dirty = true;
+        }
+        if !wanted {
+            if self.status.shown {
+                self.status.shown = false;
+                self.status.dirty = false;
+                self.status.last_drawn = None;
+                self.write_status(&status_clear_bytes(self.status.rows))?;
+            }
+            return Ok(());
+        }
+        if !self.status.subscribed {
+            self.status.subscribed = true;
+            let sent = self.write_frame(
+                &Frame::Request(marion_core::proto::Request::new(
+                    STATUS_SUBSCRIBE_ID,
+                    Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
+                )),
+                "sending native tree/subscribe",
+            );
+            if sent.is_err() {
+                self.status.unavailable = true;
+            }
+        }
+        if !self.status.due() {
+            return Ok(());
+        }
+        let line = self.status.line(&self.id);
+        self.status.shown = true;
+        self.status.dirty = false;
+        self.status.last_drawn = Some(std::time::Instant::now());
+        self.write_status(&status_overlay_bytes(
+            self.status.rows,
+            self.status.cols,
+            &line,
+        ))
+    }
+
+    fn write_status(&mut self, bytes: &[u8]) -> Result<(), Refusal> {
+        self.output
+            .write_all(bytes)
+            .and_then(|()| self.output.flush())
+            .map_err(|error| format!("writing the marion status row to the terminal: {error}"))
+    }
+
+    /// The subscribe answer. A refusal makes the row say so and changes nothing else.
+    fn absorb_status_subscription(&mut self, response: marion_core::proto::Response) {
+        self.status.dirty = true;
+        let body = match response.outcome {
+            marion_core::proto::Outcome::Result(body) => body,
+            marion_core::proto::Outcome::Error(_) => {
+                self.status.unavailable = true;
+                return;
+            }
+        };
+        match marion_core::proto::Method::TreeSubscribe.decode_result(&body) {
+            Ok(MethodResult::TreeSubscribe(snapshot)) => self.status.nodes = Some(snapshot.nodes),
+            _ => self.status.unavailable = true,
+        }
     }
 
     fn send_size(&self, cols: u16, rows: u16) -> Result<(), Refusal> {
@@ -1598,6 +1758,56 @@ impl<W: Write> RawPaneSession<W> {
         write_serialized(&self.writer, frame.to_line().as_bytes())
             .map_err(|error| format!("{action}: {error}"))
     }
+}
+
+/// The status line's text: the native node's **direct** children, counted by state. Live is
+/// [`crate::tree::running`]'s rule, so this line and `marion tree`'s status row never disagree
+/// about which nodes are still marion's processes; of those, a `NodeState::Blocked` child is shown
+/// in its own column rather than as running, because a blocked child is the one an operator has
+/// to act on. Done is `Exited(Ok)`; every other exit is failed. The columns are disjoint.
+fn status_line(id: &AgentId, nodes: &[marion_core::proto::NodeSummary]) -> String {
+    use marion_core::contract::ExitStatus;
+    use marion_core::node::NodeState;
+    let children: Vec<marion_core::proto::NodeSummary> = nodes
+        .iter()
+        .filter(|node| node.parent_id.as_ref() == Some(id))
+        .cloned()
+        .collect();
+    let (mut blocked, mut done, mut failed) = (0usize, 0usize, 0usize);
+    for child in &children {
+        match child.state {
+            NodeState::Blocked(_) => blocked += 1,
+            NodeState::Exited(ExitStatus::Ok) => done += 1,
+            NodeState::Exited(_) => failed += 1,
+            _ => {}
+        }
+    }
+    // A blocked node is not exited, so `running` counts it; it is moved to its own column here.
+    let running = crate::tree::running(&children).saturating_sub(blocked);
+    format!(
+        "marion: {} children · running {running} · blocked {blocked} · done {done} · failed {failed}",
+        children.len()
+    )
+}
+
+/// One row, restored around: `ESC 7` saves the cursor, `CSI rows;1H` goes to the last row,
+/// `CSI 2K` clears it, the text is painted in reverse video and reset, and `ESC 8` puts the cursor
+/// back. Nothing here touches `?1049`, so the overlay is the same bytes on the main and alternate
+/// screens alike, and the node's next paint of that row simply replaces it.
+fn status_overlay_bytes(rows: u16, cols: u16, line: &str) -> Vec<u8> {
+    let shown: String = line.chars().take(usize::from(cols)).collect();
+    let mut bytes = Vec::with_capacity(shown.len() + 32);
+    bytes.extend_from_slice(b"\x1b7");
+    bytes.extend_from_slice(format!("\x1b[{rows};1H").as_bytes());
+    bytes.extend_from_slice(b"\x1b[2K\x1b[7m");
+    bytes.extend_from_slice(shown.as_bytes());
+    bytes.extend_from_slice(b"\x1b[0m\x1b8");
+    bytes
+}
+
+/// The overlay's row, cleared, with the cursor restored: what toggling the line off leaves.
+fn status_clear_bytes(rows: u16) -> Vec<u8> {
+    format!("\x1b7\x1b[{rows};1H\x1b[2K\x1b8").into_bytes()
 }
 
 impl<W: Write> Drop for RawPaneSession<W> {
@@ -1631,7 +1841,8 @@ mod tests {
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
         on_relay_signal, owned_stop_pending, pthread_sigmask, raise, redeliver_signal,
         relay_claimed, resolve_relay_finish, setup_after_signal_acquire, sigaction, signal,
-        signal_in_set, signal_set, suspend_until_continued, write_passive_terminal_cleanup_to,
+        signal_in_set, signal_set, status_clear_bytes, status_line, status_overlay_bytes,
+        suspend_until_continued, write_passive_terminal_cleanup_to,
     };
     use crate::native_tty::test_support::{
         RawRelayTerminal, fail_next_stdin_flag_restore, queue_status_flag_results,
@@ -3687,6 +3898,78 @@ mod tests {
         );
     }
 
+    fn summary(
+        id: &str,
+        parent: Option<&str>,
+        state: marion_core::node::NodeState,
+    ) -> marion_core::proto::NodeSummary {
+        marion_core::proto::NodeSummary {
+            agent_id: AgentId(id.into()),
+            parent_id: parent.map(|p| AgentId(p.into())),
+            name: None,
+            agent_type: "synthetic".into(),
+            harness: marion_core::harness::Harness::Codex,
+            harness_version: None,
+            depth: u8::from(parent.is_some()),
+            state,
+            reap_state: marion_core::node::ReapState::Live,
+            timeout: marion_core::encoding::Duration::from_secs(900),
+            pane: false,
+        }
+    }
+
+    /// The status line counts the native node's **direct children** by the same rule the tree
+    /// screen's status row uses for running, and puts a blocked child in its own column rather
+    /// than the running one. An unrelated root and the node itself are not children.
+    #[test]
+    fn the_status_line_counts_direct_children_by_state() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::{BlockReason, NodeState};
+        let id = AgentId("native".into());
+        let nodes = vec![
+            summary("native", None, NodeState::Running),
+            summary("c1", Some("native"), NodeState::Running),
+            summary(
+                "c2",
+                Some("native"),
+                NodeState::Blocked(BlockReason::Permission),
+            ),
+            summary("c3", Some("native"), NodeState::Exited(ExitStatus::Ok)),
+            summary("c4", Some("native"), NodeState::Exited(ExitStatus::Failed)),
+            summary("c5", Some("native"), NodeState::Idle),
+            summary("other-root", None, NodeState::Running),
+            summary("grandchild", Some("c1"), NodeState::Running),
+        ];
+        assert_eq!(
+            status_line(&id, &nodes),
+            "marion: 5 children · running 2 · blocked 1 · done 1 · failed 1"
+        );
+        assert_eq!(
+            status_line(&id, &[]),
+            "marion: 0 children · running 0 · blocked 0 · done 0 · failed 0"
+        );
+    }
+
+    /// The overlay is one row, restored around: save the cursor, go to the last row, clear it,
+    /// paint reverse video, restore. It never touches the alternate screen, so it is the same
+    /// sequence on either.
+    #[test]
+    fn the_status_overlay_is_one_saved_and_restored_last_row() {
+        assert_eq!(
+            status_overlay_bytes(24, 80, "marion: tree pending"),
+            b"\x1b7\x1b[24;1H\x1b[2K\x1b[7mmarion: tree pending\x1b[0m\x1b8".to_vec()
+        );
+        // Truncated to the terminal's width, on a character boundary.
+        assert_eq!(
+            status_overlay_bytes(10, 9, "marion: 0 children · running 0"),
+            b"\x1b7\x1b[10;1H\x1b[2K\x1b[7mmarion: 0\x1b[0m\x1b8".to_vec()
+        );
+        assert_eq!(
+            status_clear_bytes(24),
+            b"\x1b7\x1b[24;1H\x1b[2K\x1b8".to_vec()
+        );
+    }
+
     #[derive(Clone, Default)]
     struct Sink(Arc<Mutex<Vec<u8>>>);
 
@@ -3907,6 +4190,181 @@ mod tests {
             "the operator could not leave a read-only relay"
         );
         drop(session);
+        server_thread.join().unwrap();
+    }
+
+    /// Operator input fed from a channel: what arrives is returned as one read, silence is
+    /// `WouldBlock` so the keyboard worker keeps polling, and a dropped sender is EOF.
+    struct ChannelInput(mpsc::Receiver<Vec<u8>>);
+
+    impl Read for ChannelInput {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.recv_timeout(Duration::from_millis(5)) {
+                Ok(bytes) => {
+                    output[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(bytes.len())
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(std::io::ErrorKind::WouldBlock.into()),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
+            }
+        }
+    }
+
+    fn sink_text(sink: &Sink) -> String {
+        String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned()
+    }
+
+    fn until_sink(sink: &Sink, what: &str, cond: impl Fn(&str) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cond(&sink_text(sink)) {
+            assert!(
+                Instant::now() < deadline,
+                "{what} never reached the operator's terminal; what it holds: {:?}",
+                sink_text(sink)
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `^] s` puts marion's one status row on the operator's terminal and `^] s` takes it off
+    /// again. The row is a `tree/subscribe` on the claimed connection, counted from the native
+    /// node's direct children and kept current by the same notifications the tree screen folds:
+    /// a subscribe answer with two children paints their counts, a `node/state` that fails one
+    /// repaints them, and the toggle-off is one clear of that row after which marion writes
+    /// nothing more to the terminal. The node's own bytes are never touched, and neither `^] s`
+    /// ever reaches the node.
+    #[test]
+    fn the_status_toggle_paints_the_last_row_from_the_tree_and_clears_it_again() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::NodeState;
+
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (flip_tx, flip_rx) = mpsc::channel::<()>();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let subscribe = read_frame(&mut lines);
+            let Frame::Request(request) = subscribe else {
+                panic!("the toggle did not subscribe to the tree: {subscribe:?}");
+            };
+            assert_eq!(request.id, RequestId::Number(2));
+            assert!(matches!(request.call, Call::TreeSubscribe(_)));
+            let snapshot = marion_core::proto::result::TreeSubscribeResult {
+                nodes: vec![
+                    summary("native", None, NodeState::Running),
+                    summary("c1", Some("native"), NodeState::Running),
+                    summary("c2", Some("native"), NodeState::Exited(ExitStatus::Ok)),
+                    summary("other-root", None, NodeState::Running),
+                ],
+                read_point: marion_core::proto::model::ReplayPoint {
+                    records: 0,
+                    src_seq: None,
+                },
+            };
+            server
+                .write_all(
+                    Frame::Response(marion_core::proto::Response::ok(
+                        RequestId::Number(2),
+                        &MethodResult::TreeSubscribe(snapshot),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            flip_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test's cue to fail a child");
+            server
+                .write_all(
+                    Frame::Notification(marion_core::proto::Notification::new(Event::NodeState {
+                        agent_id: AgentId("c1".into()),
+                        state: NodeState::Exited(ExitStatus::Failed),
+                        reap_state: marion_core::node::ReapState::Live,
+                        ts: marion_core::encoding::SystemTime::from_unix_millis(0),
+                    }))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            // The detach is the barrier: nothing after the subscribe was sent for the node.
+            let mut after = String::new();
+            lines.read_line(&mut after).unwrap();
+            assert_eq!(after, "", "a status toggle reached the node as input");
+        });
+
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            drop(session);
+            stop_tx.send(outcome).unwrap();
+        });
+
+        assert_eq!(
+            sink_text(&sink),
+            "",
+            "marion painted before it was asked to"
+        );
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        let first = String::from_utf8(status_overlay_bytes(
+            24,
+            80,
+            "marion: 2 children · running 1 · blocked 0 · done 1 · failed 0",
+        ))
+        .unwrap();
+        until_sink(&sink, "the first status row", |text| text.contains(&first));
+        let text = sink_text(&sink);
+        let pending = text
+            .find("marion: tree pending")
+            .expect("the row is painted before the subscribe is answered");
+        assert!(pending < text.find(&first).unwrap());
+
+        flip_tx.send(()).unwrap();
+        let failed = String::from_utf8(status_overlay_bytes(
+            24,
+            80,
+            "marion: 2 children · running 0 · blocked 0 · done 1 · failed 1",
+        ))
+        .unwrap();
+        until_sink(&sink, "the repainted status row", |text| {
+            text.contains(&failed)
+        });
+
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        let clear = String::from_utf8(status_clear_bytes(24)).unwrap();
+        until_sink(&sink, "the cleared status row", |text| {
+            text.ends_with(&clear)
+        });
+        // Long enough for several throttled redraws, had the toggle-off not been honoured.
+        std::thread::sleep(Duration::from_millis(600));
+        let text = sink_text(&sink);
+        assert!(
+            text.ends_with(&clear),
+            "marion kept painting after the status row was toggled off: {text:?}"
+        );
+        assert!(
+            !text[..text.len() - clear.len()].ends_with(&clear),
+            "the toggle-off cleared the row more than once"
+        );
+
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        let outcome = stop_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the relay did not end on the detach");
+        assert!(matches!(outcome, Ok(RelayStop::Complete)), "{outcome:?}");
+        pump.join().unwrap();
         server_thread.join().unwrap();
     }
 
