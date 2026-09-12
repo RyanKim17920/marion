@@ -97,6 +97,8 @@ pub struct Tree {
     order: Vec<usize>,
     /// Indentation depth per entry of [`Self::order`], parallel to it.
     depth: Vec<u16>,
+    /// The connector prefix per entry of [`Self::order`], parallel to it — see [`prefixes`].
+    prefix: Vec<String>,
     /// An index into [`Self::order`], not into [`Self::nodes`]: the cursor moves by *rows*.
     cursor: usize,
 }
@@ -148,10 +150,12 @@ impl Tree {
         }
         debug_assert_eq!(order.len(), nodes.len(), "a node was dropped from the tree");
 
+        let prefix = prefixes(&depth);
         Self {
             nodes,
             order,
             depth,
+            prefix,
             cursor: 0,
         }
     }
@@ -196,17 +200,49 @@ impl Tree {
     pub fn lines(&self) -> Vec<String> {
         self.order
             .iter()
-            .zip(&self.depth)
-            .map(|(&i, &d)| {
+            .zip(&self.prefix)
+            .map(|(&i, prefix)| {
                 let n = &self.nodes[i];
-                let indent = "  ".repeat(d as usize);
-                let edge = if d == 0 { "" } else { "└ " };
                 // State first. It is the fact an operator scans the column for, and a label that
                 // runs past the column edge must clip itself rather than the state.
-                format!("{indent}{edge}[{}] {}", n.state, n.label)
+                format!("{prefix}[{}] {}", n.state, n.label)
             })
             .collect()
     }
+}
+
+/// The connector prefix of every row, from the depths of a pre-order walk.
+///
+/// A child with a later sibling is `├`, the last child is `└`, and each shallower level shows `│`
+/// while its own branch continues and blank once it has ended. Every child used to carry `└`, so
+/// a row under `└ b` followed by another `└ c` could not be told from a row under `c` without
+/// counting spaces — which is the one thing a tree drawing exists to spare an operator.
+///
+/// One pass from the bottom: a row at depth `d` has a later sibling iff a row at depth `d` was
+/// seen below it before any row shallower than `d`, which is exactly what `open[d]` holds, and
+/// `open[l]` for `l < d` answers the same question for the row's ancestor at level `l`.
+fn prefixes(depth: &[u16]) -> Vec<String> {
+    let deepest = depth.iter().copied().max().unwrap_or(0) as usize;
+    let mut open = vec![false; deepest + 1];
+    let mut out = vec![String::new(); depth.len()];
+    for (row, &d) in depth.iter().enumerate().rev() {
+        let d = d as usize;
+        let mut prefix = String::with_capacity(d * 2);
+        for (level, &continues) in open.iter().enumerate().take(d + 1).skip(1) {
+            prefix.push_str(match (level == d, continues) {
+                (true, true) => "├ ",
+                (true, false) => "└ ",
+                (false, true) => "│ ",
+                (false, false) => "  ",
+            });
+        }
+        out[row] = prefix;
+        open[d] = true;
+        for o in &mut open[d + 1..] {
+            *o = false;
+        }
+    }
+    out
 }
 
 /// Where the keyboard goes.
@@ -275,7 +311,7 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// Fixed rather than proportional. A tree pane that grew with the window would resize the *content*
 /// pane on every drag, and the content pane is a node's pty — §5.3 gives it one `TIOCSWINSZ` per
 /// change and a harness repaints its whole screen for each.
-/// 44, which is what `    └ [blocked:permission] claude-impl 5b04` needs at depth 2 — marion's
+/// 44, which is what `│ └ [blocked:permission] claude-impl 5b04` needs at depth 2 — marion's
 /// longest state word, a typical agent type and the short id, at the deepest row §6.1's default
 /// `max_depth` of 3 can produce. An `AgentId` is a UUID and does not fit at any width worth
 /// spending on a sidebar; the tree is navigated with the cursor, not by reading ids back, and
@@ -591,7 +627,36 @@ mod tests {
     #[test]
     fn a_row_leads_with_its_state_so_the_column_clip_cannot_hide_it() {
         let t = Tree::new(vec![node("a", None), node("kid", Some("a"))]);
-        assert_eq!(t.lines(), ["[Idle] a", "  └ [Idle] kid"]);
+        assert_eq!(t.lines(), ["[Idle] a", "└ [Idle] kid"]);
+    }
+
+    /// **A grandchild must be attributable to its parent by the connectors alone.** Every child
+    /// used to carry `└`, so a row under `└ b` followed by `└ c` could not be told from a row
+    /// under `c` — the operator had to count spaces. A child that has a later sibling is `├`,
+    /// the last one is `└`, and a `│` runs down every level whose branch continues.
+    #[test]
+    fn connectors_say_which_parent_a_row_hangs_from() {
+        let t = Tree::new(vec![
+            node("r", None),
+            node("a", Some("r")),
+            node("a1", Some("a")),
+            node("b", Some("r")),
+            node("b1", Some("b")),
+            node("b2", Some("b")),
+            node("s", None),
+        ]);
+        assert_eq!(
+            t.lines(),
+            [
+                "[Idle] r",
+                "├ [Idle] a",
+                "│ └ [Idle] a1",
+                "└ [Idle] b",
+                "  ├ [Idle] b1",
+                "  └ [Idle] b2",
+                "[Idle] s",
+            ]
+        );
     }
 
     #[test]
