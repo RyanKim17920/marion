@@ -93,6 +93,7 @@ fn request(repo: &std::path::Path) -> SpawnRequest {
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
+        verification: vec![],
     }
 }
 

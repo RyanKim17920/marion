@@ -1856,7 +1856,7 @@ mod tests {
     /// a handle whose holder does not know an announcement is coming will poll for it.
     #[test]
     fn the_spawn_description_announces_the_push_and_the_flag_that_enables_it() {
-        let spawn = tools()
+        let spawn = tools(&AgentTypes::builtins_only())
             .as_array()
             .unwrap()
             .iter()
