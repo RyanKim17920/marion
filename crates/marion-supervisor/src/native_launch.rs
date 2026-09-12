@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
-use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
+use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned, StateChanged};
+use marion_core::node::NodeState;
 use marion_core::{NativeFacadeDescriptor, contract::AgentId};
 use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
@@ -334,8 +335,9 @@ impl NativeLaunchHandler {
     }
 }
 
-/// A native node's three journal records, written through the supervisor's own handle so the
-/// live tree sees each before the next connection can ask about it.
+/// A native node's journal records — intent, `Spawned` and the `Running` beside it, and the
+/// exit or abort — written through the supervisor's own handle so the live tree sees each before
+/// the next connection can ask about it.
 ///
 /// `harness_version` is `"unknown"`: a native launch runs whatever the operator's `PATH`
 /// resolves and marion does not probe it (a `--version` on the operator's binary before their
@@ -390,6 +392,15 @@ impl NativeNodeRecorder for NativeNodeJournal {
                 crate::procid::Read::Id(id) => Some(id),
                 crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
             },
+        }));
+        // **`Running` from the instant the process holds its pane.** A managed node's turn has
+        // boundaries marion can see on its stream; a native session has none — its pty session
+        // *is* its turn, open from `spawn()` until the pane ends — so the only honest reading
+        // between `Spawned` and `Exited` is `Running`. Without this record the node replayed as
+        // `Spawning` for its whole life, and `marion tree` said so to the operator sitting in it.
+        self.record(RecordKind::StateChanged(StateChanged {
+            agent_id: self.agent_id.clone(),
+            state: NodeState::Running,
         }));
     }
 
@@ -1337,5 +1348,47 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("aborting the blocked ACK joins the gated worker");
         assert_eq!(handle.panes(), 0, "ACK failure leaked the real child pane");
+    }
+
+    /// **A native root is `Running` while its pty session is up** — the fact `marion tree`
+    /// showed as `spawning` for the node's whole life.
+    ///
+    /// Mutation: drop the `StateChanged(Running)` from `NativeNodeJournal::spawned` and the
+    /// summary reads `Spawning` until the exit.
+    #[test]
+    fn a_native_root_replays_running_once_spawned() {
+        let work = marion_testsupport::scratch("native-launch-running-summary");
+        let journal_path = work.join("journal.jsonl");
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot_path(&journal_path).unwrap(),
+            Duration::from_millis(2),
+        ));
+        let handle = crate::handler::RegistryHandle::new(live);
+        let agent_id = AgentId("019f81eb-36a4-7000-8000-0000000000a1".into());
+        let journal = NativeNodeJournal {
+            handle: Arc::clone(&handle),
+            agent_id: agent_id.clone(),
+        };
+        let agent_type = marion_core::agent_type::builtin("claude-impl").unwrap();
+        journal.intent(&agent_type).unwrap();
+        journal.spawned(std::process::id() as i32);
+
+        let replayed = Registry::boot_path(&journal_path).unwrap();
+        let node = replayed.tree().get(&agent_id).expect("the node replays");
+        let summary = crate::handler::summarize(node, true).expect("a native root projects");
+        assert_eq!(
+            summary.state,
+            NodeState::Running,
+            "a native root whose pty session is up is running, not still spawning"
+        );
+
+        journal.exited(None);
+        let replayed = Registry::boot_path(&journal_path).unwrap();
+        let node = replayed.tree().get(&agent_id).expect("the node replays");
+        assert!(
+            node.state.is_exited(),
+            "the exit still lands on the running node: {:?}",
+            node.state
+        );
     }
 }
