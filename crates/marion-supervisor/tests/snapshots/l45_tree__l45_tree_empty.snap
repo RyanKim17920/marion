@@ -1,5 +1,6 @@
 ---
 source: crates/marion-supervisor/tests/l45_tree.rs
+assertion_line: 267
 expression: "report(&tree, true)"
 ---
 --- 96x12, tree focused ---
@@ -14,7 +15,7 @@ expression: "report(&tree, true)"
 
 
 
-no nodes
+caps: none (no nodes)
 --- tree column, one line per row, styled ---
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
@@ -26,4 +27,4 @@ Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 --- action strip, one line per style run ---
-Style::new().fg(Color::Reset).bg(Color::Reset)  "no nodes                                                                                        "
+Style::new().fg(Color::Reset).bg(Color::Reset)  "caps: none (no nodes)                                                                           "

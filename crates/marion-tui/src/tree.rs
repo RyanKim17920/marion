@@ -642,10 +642,12 @@ impl ActionBar<'_> {
 impl Widget for ActionBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let Some(node) = self.node else {
+            // Labelled like every other strip, so the bottom row does not change shape between
+            // an empty forest and a full one.
             buf.set_stringn(
                 area.x,
                 area.y,
-                "no nodes",
+                "caps: none (no nodes)",
                 area.width as usize,
                 Style::default(),
             );
@@ -1128,6 +1130,16 @@ mod tests {
             offered().add_modifier.contains(Modifier::BOLD),
             "the present caps are the figure"
         );
+    }
+
+    /// The strip on an empty forest keeps its label, so the bottom row has one shape.
+    #[test]
+    fn the_strip_on_an_empty_forest_is_still_a_labelled_strip() {
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        ActionBar { node: None }.render(area, &mut buf);
+        let row: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row.trim_end(), "caps: none (no nodes)");
     }
 
     /// A caveat about the key the actions were decided at — the version marion never read — is

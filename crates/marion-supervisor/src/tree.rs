@@ -636,6 +636,7 @@ impl Session {
         };
         let notice = self.notice.as_deref();
         let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
+        let parent = selected.and_then(|n| parent_label(&self.nodes, n));
         // A key that did nothing says why, on the row that lists the keys.
         let keys = match self.hint {
             Some(hint) => format!("{}  ·  {hint}", keys_for(selected)),
@@ -663,6 +664,7 @@ impl Session {
                     node: selected,
                     notice,
                     events,
+                    parent,
                 },
                 panes.content,
             );
@@ -698,6 +700,23 @@ struct Detail<'a> {
     /// The state changes this screen has watched the node make, oldest first. Empty until it makes
     /// one — an empty section would read as one more thing that failed to draw.
     events: &'a [String],
+    /// The parent as the operator sees it in the tree — its row's label — or its raw id when the
+    /// parent is not in this snapshot. See [`parent_label`].
+    parent: Option<String>,
+}
+
+/// **The parent, named the way its own row is.** The pane used to print the parent's whole UUID
+/// beside a tree of short ids, so placing a node under its parent meant comparing the second
+/// group of one against the sidebar. A parent the snapshot does not contain (§4.2's compaction)
+/// keeps its id: a name marion cannot look up is not one it should invent.
+fn parent_label(nodes: &[NodeSummary], node: &NodeSummary) -> Option<String> {
+    let parent = node.parent_id.as_ref()?;
+    Some(
+        nodes
+            .iter()
+            .find(|n| n.agent_id == *parent)
+            .map_or_else(|| parent.0.clone(), label_of),
+    )
 }
 
 /// The screen's bottom-left row: every key this screen answers to, and what `Enter` will and will
@@ -729,18 +748,20 @@ fn keys_for(selected: Option<&NodeSummary>) -> String {
 /// selection the pane is correct and looks broken. Said in the pane rather than left to be inferred.
 const HEADLESS: &str = "headless node: no terminal to show; its events are in the journal";
 
+/// What fills an empty forest. The same command the no-supervisor refusal names, so the two
+/// screens an operator can meet before any node exists give one answer.
+const EMPTY_NEXT_STEP: &str =
+    "start one with `marion run <agent-type> --prompt \"…\"`; this screen follows it live";
+
 impl Detail<'_> {
-    fn lines(node: &NodeSummary, events: &[String]) -> Vec<String> {
+    fn lines(node: &NodeSummary, events: &[String], parent: Option<&str>) -> Vec<String> {
         let version = node.harness_version.as_deref().unwrap_or("version unknown");
         let surface = if node.pane {
             "pane (Enter attaches)"
         } else {
             "headless (no display plane)"
         };
-        let parent = node
-            .parent_id
-            .as_ref()
-            .map_or("none (root)", |p| p.0.as_str());
+        let parent = parent.unwrap_or("none (root)");
         let mut out = Vec::with_capacity(9);
         // The pane's title, and **the same string the tree row carries** — see [`label_of`]. It is
         // the line that says the short id in the sidebar and the whole id below name one node.
@@ -748,11 +769,15 @@ impl Detail<'_> {
         out.push(String::new());
         out.push(format!("type     {}", node.agent_type));
         out.push(format!("harness  {} {version}", node.harness));
-        out.push(format!(
-            "state    {}  (reap: {})",
-            state_label(node.state, node.reap_state),
-            format!("{:?}", node.reap_state).to_lowercase()
-        ));
+        // The reap state only where it adds a fact: `(reap: live)` on every live node was noise,
+        // and `orphaned  (reap: orphaned)` said one thing twice.
+        let state = state_label(node.state, node.reap_state);
+        let reap = format!("{:?}", node.reap_state).to_lowercase();
+        if node.reap_state == ReapState::Live || reap == state {
+            out.push(format!("state    {state}"));
+        } else {
+            out.push(format!("state    {state}  (reap: {reap})"));
+        }
         out.push(format!("surface  {surface}"));
         out.push(format!("depth    {}   parent  {parent}", node.depth));
         out.push(format!("timeout  {}s", node.timeout.0.as_secs()));
@@ -797,8 +822,14 @@ impl ratatui::widgets::Widget for Detail<'_> {
             );
         };
         let mut lines = match self.node {
-            Some(n) => Self::lines(n, self.events),
-            None => vec!["no nodes in this forest".into()],
+            Some(n) => Self::lines(n, self.events, self.parent.as_deref()),
+            // An empty forest is a real state, and the one a first-time operator meets first:
+            // say what fills it, rather than leave a screen of hints for keys with nothing to act on.
+            None => vec![
+                "no nodes in this forest".into(),
+                String::new(),
+                EMPTY_NEXT_STEP.into(),
+            ],
         };
         if let Some(notice) = self.notice {
             lines.push(String::new());
@@ -1057,6 +1088,7 @@ mod tests {
                 node: Some(&n),
                 notice: None,
                 events: &[],
+                parent: None,
             },
         );
         for (i, row) in rows.iter().enumerate() {
@@ -1093,12 +1125,19 @@ mod tests {
         n.depth = 1;
         n.agent_type = "claude-impl".into();
         let area = ratatui::layout::Rect::new(0, 0, 76, 12);
+        let parent = summary(
+            "01a07275-5b04-78d7-8f77-ad154316f985",
+            Harness::Codex,
+            false,
+            None,
+        );
         let rows = painted(
             area,
             Detail {
                 node: Some(&n),
                 notice: None,
                 events: &[],
+                parent: parent_label(&[parent.clone(), n.clone()], &n),
             },
         );
         let text = rows.join("\n");
@@ -1108,12 +1147,27 @@ mod tests {
             "idle",
             "headless",
             "depth    1",
-            "01a07275-5b04-78d7-8f77-ad154316f985",
+            "parent  codex-impl 5b04",
             "900s",
             "01a07275-5c4a-73ac-88f8-7df80dc5095c",
         ] {
             assert!(text.contains(fact), "`{fact}` is not in the pane:\n{text}");
         }
+        assert!(
+            !text.contains("(reap: live)"),
+            "a live node's reap state is not a fact, it is the absence of one:\n{text}"
+        );
+        // The parent is named the way its row is, and only its id when it is not in the snapshot.
+        assert_eq!(
+            parent_label(&[n.clone()], &n).as_deref(),
+            Some("01a07275-5b04-78d7-8f77-ad154316f985"),
+            "a parent the snapshot lacks keeps its id rather than an invented name"
+        );
+        assert_eq!(
+            parent_label(&[parent.clone()], &parent),
+            None,
+            "a root has no parent"
+        );
         assert!(
             !text.contains("j/k move"),
             "the key hints are the screen's row, not a fact about this node:\n{text}"
@@ -1128,6 +1182,7 @@ mod tests {
                 node: Some(&n),
                 notice: None,
                 events: &[],
+                parent: None,
             },
         )
         .join("\n");
@@ -1141,9 +1196,14 @@ mod tests {
                 node: None,
                 notice: None,
                 events: &[],
+                parent: None,
             },
         );
         assert!(rows[0].contains("no nodes"), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("marion run")),
+            "an empty forest says what fills it: {rows:?}"
+        );
     }
 
     /// **The row and the pane name the same node in the same words.**
@@ -1169,6 +1229,7 @@ mod tests {
                     node: Some(n),
                     notice: None,
                     events: &[],
+                    parent: None,
                 },
             )[0]
             .trim_start_matches('│')
@@ -1211,6 +1272,7 @@ mod tests {
                     node: Some(n),
                     notice: None,
                     events: &[],
+                    parent: None,
                 },
             )
             .join("\n")
@@ -1277,6 +1339,7 @@ mod tests {
                 node: Some(&live[0]),
                 notice: None,
                 events: events.tail("h"),
+                parent: None,
             },
         );
         let text = rows.join("\n");
@@ -1375,6 +1438,7 @@ mod tests {
                 node: Some(&headless),
                 notice: Some(&refusal),
                 events: &[],
+                parent: None,
             },
             area,
             &mut buf,
@@ -1385,6 +1449,7 @@ mod tests {
                 node: Some(&headless),
                 notice: Some(&refusal),
                 events: &[],
+                parent: None,
             },
         );
         let (y, _) = rows
