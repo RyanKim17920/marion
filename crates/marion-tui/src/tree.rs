@@ -576,13 +576,18 @@ impl Widget for TreeView<'_> {
                     buf[(area.x + x, area.y + y)].set_style(style);
                 }
             }
-            let tone = self.tree.nodes[self.tree.order[row]].tone.style();
+            // The state in its tone, the connectors and label plain — except on a focused
+            // cursor row, where a tone's foreground would reverse into a block of its own colour
+            // and the bar would read as two bars. The glyph still says which state it is.
+            let tone = if on_cursor && self.focused {
+                Style::default()
+            } else {
+                self.tree.nodes[self.tree.order[row]].tone.style()
+            };
             let mut x = area.x;
             let end = area.x.saturating_add(area.width);
-            // Connectors dim, the state in its tone, the label plain — and the cursor's
-            // modifier over all three, so the bar stays one bar.
             for (text, s) in [
-                (prefix, Style::default().add_modifier(Modifier::DIM)),
+                (prefix, Style::default()),
                 (state.as_str(), tone),
                 (label.as_str(), Style::default()),
             ] {
@@ -1226,6 +1231,31 @@ mod tests {
             "the label is plain: the colour is the state's, not the row's"
         );
         assert_eq!(fg(0, 1), Some(Color::Green));
+
+        // On the focused cursor row the tone's colour is dropped: reversed, a red foreground
+        // becomes a red block beside a white one, and the bar reads as two bars.
+        let mut buf = Buffer::empty(area);
+        TreeView {
+            tree: &t,
+            focused: true,
+        }
+        .render(area, &mut buf);
+        assert_eq!(
+            buf[(2, 0)].style().fg,
+            Some(Color::Reset),
+            "the selected row is one bar"
+        );
+        assert!(
+            buf[(2, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(
+            buf[(0, 1)].style().fg,
+            Some(Color::Green),
+            "the others keep theirs"
+        );
     }
 
     /// The cursor bar spans the column, and only when the tree has the keyboard is it reversed —

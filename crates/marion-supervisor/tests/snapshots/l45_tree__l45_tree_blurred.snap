@@ -18,9 +18,9 @@ expression: "report(&tree, false)"
 caps: steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas …
 --- tree column, one line per row, styled ---
 Style::new().green().bg(Color::Reset).bold()  "● running impl root-claude"
-Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "├ ● idle impl pane-claude"
-Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "└ ◐ blocked:permission impl codex-146"
-Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "  └ ● spawning impl codex-unversioned"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "├ ● idle impl pane-claude"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "└ ◐ blocked:permission impl codex-146"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ ● spawning impl codex-unversioned"
 Style::new().fg(Color::Reset).bg(Color::Reset)  "✓ exited:ok impl orphan-gemini"
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
