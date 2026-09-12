@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
-use marion_core::agent_type::{builtin, builtin_names};
+use marion_core::agent_type::{AgentTypes, builtin_names};
 use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir;
 use marion_core::production_native_facades;
@@ -40,7 +40,7 @@ fn usage_text() -> String {
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \n\
-         agent types: {}\n\
+         agent types: {}, plus any in the repository's .marion/agents.toml\n\
          \n\
          marion tree shows this project's node tree beside a content pane, with each node's\n\
          capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
@@ -814,13 +814,20 @@ fn ask(
 
 /// The interactive picker, over any reader and writer so its logic is testable without a terminal.
 ///
-/// The harness list comes from `builtin_names()` rather than a literal, so a fifth built-in is
-/// offered the day it is added and cannot be forgotten here. `Ok(None)` is EOF at any question.
-fn pick(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<Option<Chosen>> {
-    let names = builtin_names();
+/// The list is `types.names()` rather than a literal — the built-ins, then the repository's own
+/// `.marion/agents.toml` rows — so a fifth built-in or a new row is offered the day it exists and
+/// cannot be forgotten here. `Ok(None)` is EOF at any question.
+fn pick(
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+    types: &AgentTypes,
+) -> io::Result<Option<Chosen>> {
+    let names = types.names();
     writeln!(out, "marion — pick a harness:")?;
     for (i, name) in names.iter().enumerate() {
-        let desc = builtin(name).map_or(String::new(), |t| format!("  {}", t.description));
+        let desc = types
+            .resolve(name)
+            .map_or(String::new(), |t| format!("  {}", t.description));
         writeln!(out, "  {}) {name}{desc}", i + 1)?;
     }
     let agent_type = loop {
@@ -845,7 +852,7 @@ fn pick(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<Option<Cho
         writeln!(out, "  not one of 1..={}, nor a listed name.", names.len())?;
     };
 
-    let default_model = builtin(&agent_type).and_then(|t| t.model);
+    let default_model = types.resolve(&agent_type).and_then(|t| t.model);
     let model_hint = default_model
         .clone()
         .unwrap_or_else(|| "the harness's own default".into());
@@ -1900,10 +1907,20 @@ fn pick_args() -> Result<Args, ExitCode> {
     if !io::stdin().is_terminal() {
         usage()
     }
+    // The picker has no `--repo`, so its table is the one `run` will resolve without one: the
+    // repository of the current directory. Its file's refusal is the same sentence `run` prints.
+    let repo = default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let types = match marion_supervisor::run::agent_types(&repo) {
+        Ok(types) => types,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut out = io::stderr();
-    match pick(&mut input, &mut out) {
+    match pick(&mut input, &mut out, &types) {
         Ok(Some(chosen)) => Ok(Args {
             agent_type: chosen.agent_type,
             prompt: chosen.prompt,
@@ -1937,15 +1954,6 @@ struct RunTarget {
 /// Resolve [`RunTarget`] from the arguments and the environment. Each refusal prints its own
 /// sentence and answers the exit code.
 fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
-    let Some(agent_type) = builtin(&args.agent_type) else {
-        eprintln!(
-            "marion: unknown agent type {:?}; known: {}",
-            args.agent_type,
-            builtin_names().join(", ")
-        );
-        return Err(ExitCode::FAILURE);
-    };
-
     let repo = args.repo.clone().unwrap_or_else(|| {
         default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     });
@@ -1955,6 +1963,23 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
             eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
             return Err(ExitCode::FAILURE);
         }
+    };
+    // After the repository, because the table is the repository's: the built-ins plus its
+    // `.marion/agents.toml`. `root::prepare` resolves the same table again one layer down.
+    let types = match marion_supervisor::run::agent_types(&repo) {
+        Ok(types) => types,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let Some(agent_type) = types.resolve(&args.agent_type) else {
+        eprintln!(
+            "marion: unknown agent type {:?}; known: {}",
+            args.agent_type,
+            types.names().join(", ")
+        );
+        return Err(ExitCode::FAILURE);
     };
     let Some(state) = state_dir(
         args.state_dir.as_deref(),
@@ -2713,6 +2738,7 @@ mod tests {
         );
     }
     use super::*;
+    use marion_core::agent_type::builtin;
 
     // The shared self-removing scratch dir, rather than the tenth hand-rolled copy of one.
     //
@@ -3641,10 +3667,42 @@ mod tests {
     }
 
     fn run_picker(input: &str) -> (Option<Chosen>, String) {
+        run_picker_over(input, &AgentTypes::builtins_only())
+    }
+
+    fn run_picker_over(input: &str, types: &AgentTypes) -> (Option<Chosen>, String) {
         let mut reader = io::Cursor::new(input.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        let chosen = pick(&mut reader, &mut out).expect("a Cursor cannot fail to read");
+        let chosen = pick(&mut reader, &mut out, types).expect("a Cursor cannot fail to read");
         (chosen, String::from_utf8(out).expect("prompts are utf-8"))
+    }
+
+    /// A `.marion/agents.toml` row is offered after the built-ins, by number and by name, with
+    /// its description beside it and its own `model` as the model default — the picker reads the
+    /// same table `marion run <type>` resolves, so the two can never offer different lists.
+    #[test]
+    fn the_picker_offers_a_user_defined_type_after_the_builtins() {
+        let types = AgentTypes::parse(
+            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\nmodel = \"gpt-5-codex\"\n\
+             description = \"Reviews a diff.\"\n",
+        )
+        .unwrap();
+        let n = builtin_names().len() + 1;
+        let (chosen, shown) = run_picker_over(&format!("{n}\n\nreview it\n"), &types);
+        assert!(
+            shown.contains(&format!("{n}) reviewer  Reviews a diff.")),
+            "{shown}"
+        );
+        assert_eq!(
+            chosen,
+            Some(Chosen {
+                agent_type: "reviewer".into(),
+                model: Some("gpt-5-codex".into()),
+                prompt: "review it".into(),
+            })
+        );
+        let (chosen, _) = run_picker_over("reviewer\n\nreview it\n", &types);
+        assert_eq!(chosen.unwrap().agent_type, "reviewer");
     }
 
     #[test]
