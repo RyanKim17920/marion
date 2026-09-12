@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
-use marion_core::agent_type::{AgentType, builtin, check_spawn_gates};
+use marion_core::agent_type::{AgentType, AgentTypes, check_spawn_gates};
 use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, Millis, SystemTime};
@@ -1297,6 +1297,36 @@ pub fn run_spawn(
     run_spawn_watched(env, req, task_id, caller, &Unwatched)
 }
 
+/// Where a working tree declares its own agent types, relative to the tree's root.
+pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
+
+/// The agent types a working tree can spawn: the built-ins plus [`AGENT_TYPES_FILE`]'s rows.
+///
+/// Keyed on the **tree**, not on [`Env::project_root`] — that is the git common dir, which a
+/// linked worktree shares with the main repository, and the file is a tracked file of the tree
+/// the node runs in. No file is the built-in table; any other failure to read it, or to parse it,
+/// is [`SpawnError::AgentTypesFile`] naming the path, so a mistyped row refuses every spawn
+/// against that tree rather than silently spawning the built-ins.
+pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
+    let path = tree.join(AGENT_TYPES_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AgentTypes::builtins_only());
+        }
+        Err(e) => {
+            return Err(SpawnError::AgentTypesFile {
+                path,
+                error: e.to_string(),
+            });
+        }
+    };
+    AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
+        path,
+        error: e.to_string(),
+    })
+}
+
 /// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
 pub fn run_spawn_watched(
     env: &Env,
@@ -1305,7 +1335,10 @@ pub fn run_spawn_watched(
     caller: &Caller,
     observer: &dyn SpawnObserver,
 ) -> Result<TaskContract, SpawnError> {
-    let agent_type = builtin(&req.agent_type)
+    // The tree's own table, read now: the file is the operator's and may have changed since the
+    // last spawn, and a type it no longer defines is refused here, before the intent is journaled.
+    let agent_type = agent_types(&req.repo)?
+        .resolve(&req.agent_type)
         .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
     // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
     // `config_files`, before `compile`, before any process. That ordering is the whole point: the
@@ -2202,6 +2235,7 @@ fn cleanup(repo: &Path, wt: &Path) {
 mod tests {
     use super::*;
     use crate::spawn::ChildOutcome;
+    use marion_core::agent_type::builtin;
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
     use marion_testsupport::{Scratch, scratch};
@@ -3500,6 +3534,81 @@ mod tests {
     ///
     /// The repo is returned separately because it is no longer part of the environment: it is a
     /// per-spawn input, so each of these tests states it on its own request.
+    /// **The file is read from the working tree the spawn is against, at every spawn.** No file is
+    /// the built-in table; a file that cannot be parsed is a refusal that names the file and the
+    /// reason, distinct from an unknown type — the operator's fix is in the file, not the request.
+    #[test]
+    fn agent_types_reads_the_trees_file_or_refuses_by_name() {
+        let root = scratch("supervisor-agent-types");
+        let repo = fixture_repo(&root);
+        assert_eq!(
+            agent_types(&repo).unwrap(),
+            marion_core::agent_type::AgentTypes::builtins_only(),
+            "no file: the built-ins"
+        );
+        let file = repo.join(AGENT_TYPES_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"Reviews.\"\n",
+        )
+        .unwrap();
+        let types = agent_types(&repo).unwrap();
+        assert_eq!(
+            types.resolve("reviewer").unwrap().harness,
+            marion_core::harness::Harness::Codex
+        );
+        std::fs::write(
+            &file,
+            "[[agent]]\nname = \"codex\"\nharness = \"codex\"\ndescription = \"x\"\n",
+        )
+        .unwrap();
+        let e = agent_types(&repo).unwrap_err();
+        match &e {
+            SpawnError::AgentTypesFile { path, .. } => assert_eq!(path, &file),
+            other => panic!("a broken file is its own refusal, got {other:?}"),
+        }
+        let msg = e.to_string();
+        assert!(msg.contains(&file.display().to_string()), "{msg}");
+        assert!(
+            msg.contains("shadow"),
+            "the parser's reason survives: {msg}"
+        );
+        // A directory where the file should be is an io error, not "no file".
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert!(
+            matches!(agent_types(&repo), Err(SpawnError::AgentTypesFile { .. })),
+            "only NotFound means the built-ins"
+        );
+    }
+
+    /// A type the tree's file does not define is refused before any side effect, exactly as an
+    /// unknown built-in is — and the refusal is the same variant, so callers keep one arm.
+    #[test]
+    fn a_type_the_file_no_longer_defines_is_refused_before_anything_is_journaled() {
+        let (_root, state, repo, env) = spawn_env("agent-types-unknown");
+        let mut req = request("reviewer", None);
+        req.repo = repo;
+        let err = run_spawn(
+            &env,
+            &req,
+            &TaskId("unknown".into()),
+            &Caller::root("root", builtin("claude").unwrap()),
+        )
+        .expect_err("no file defines `reviewer`");
+        assert!(
+            matches!(&err, SpawnError::UnknownAgentType(t) if t == "reviewer"),
+            "{err:?}"
+        );
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        assert!(
+            written.is_empty(),
+            "nothing journaled, nothing started: {written:?}"
+        );
+    }
+
     fn spawn_env(name: &str) -> (Scratch, PathBuf, PathBuf, Env) {
         let root = scratch(&format!("supervisor-{name}"));
         let repo = fixture_repo(&root);

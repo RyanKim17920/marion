@@ -40,6 +40,13 @@ pub enum SpawnError {
     Json(#[from] serde_json::Error),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The tree's `.marion/agents.toml` exists and cannot be used — unreadable, or refused by
+    /// `marion_core::agent_type::AgentTypes::parse`. Its own variant rather than
+    /// [`Self::UnknownAgentType`], because the fix is in the file rather than the request, and
+    /// every spawn against that tree is refused until the file is fixed (§3.1: a load error, never
+    /// a default).
+    #[error("{path}: {error}")]
+    AgentTypesFile { path: PathBuf, error: String },
     /// §6.1 step 2's depth and concurrency gates, refused.
     ///
     /// **A refusal, never a clamp and never a queue**, and the wrapped error names the bound *and*
