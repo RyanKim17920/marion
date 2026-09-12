@@ -585,9 +585,24 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // is still read first, both from the binary's strings.
         //
         // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
+        // 2.1.269: observed green on Darwin 25.5.0, 2026-09-12, via scripts/admit-harness.sh
+        // (claude 2.1.269 in one run): marion-testsupport (33), acp_child (5), cross_product
+        // (57), depth_gate (4), harness_matrix (8), journal_wiring (18), m1_hop (1), m4_fan_in
+        // (1), native_facade_e2e (2), native_facade_spawn (1), no_git (5), pane_attach (2),
+        // permission_round_trip (8), restart_resume (0), timeout_kill (1), worktree_reap (8).
+        // The gate had not gone red: 2.1.268 was still on disk, so the shim held every suite
+        // there until this entry was widened; the run's user-agent reads `claude-cli/2.1.269`.
+        // acp_child's 5 is two tests landed at f8e7f71, not drift. **Nothing moved.** A same-day
+        // A/B against 2.1.268 shows one request shape on both: the reminders lead the first
+        // `user` message, a `system`-role message rides as a block list then as a string, and
+        // `tool_result.content` is marion's block alone — no `<total_tokens>` block anywhere,
+        // so the 2026-09-11 trailing block was a remote switch, not 2.1.268's. The trust dialog
+        // and `DISABLE_AUTOUPDATER` strings are unchanged.
+        //
+        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
         accepted: &[
             "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
-            "2.1.268",
+            "2.1.268", "2.1.269",
         ],
     },
     PinnedHarness {

@@ -92,7 +92,7 @@ one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `c
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
-own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263 and 2.1.268; codex 0.146.0/0.146.1/0.147.0;
+own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268 and 2.1.269; codex 0.146.0/0.146.1/0.147.0;
 gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
 qwen 0.23.0.
 
@@ -417,6 +417,27 @@ the runner shim, every other harness at its pin): `marion-testsupport` (33), `ac
 "Transcript saving is off — inherited `CLAUDE_CODE_CHILD_SESSION`" status line is not new (it is in
 the L4.5 snapshots) and comes from running under a Claude Code parent. The s10/s11/s14/s16 probes
 were not re-run.
+
+**claude 2.1.269, admitted 2026-09-12 via `scripts/admit-harness.sh`.** The binary first on PATH
+moved from 2.1.268 to 2.1.269 overnight, and this time the gate did *not* go red: 2.1.268 is still
+on disk and admitted, and the runner shim prefers the newest admitted release it can find, so every
+suite was quietly pinned to 2.1.268 while `claude --version` said 2.1.269. The ritual is what makes
+the shim move — once the entry is widened the shim picks 2.1.269, confirmed by
+`process_shim().resolve("claude")` and by `claude-cli/2.1.269` in the recorded user-agent. One run,
+green on the first pass with only the table entry widened (codex held at 0.147.0 by the shim, every
+other harness at its pin): `marion-testsupport` (33), `acp_child` (5; two tests landed at
+`f8e7f71`, not drift), `cross_product` (57), `depth_gate` (4), `harness_matrix` (8),
+`journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `native_facade_e2e` (2),
+`native_facade_spawn` (1), `no_git` (5), `pane_attach` (2), `permission_round_trip` (8),
+`timeout_kill` (1), `worktree_reap` (8); `restart_resume` is `--ignored` and was not run. No
+test-side change was needed. With 2.1.268 still on disk a same-day one-axis A/B was possible for
+the request shape, and it says the 2026-09-11 drift was remote, not the binary: on 2026-09-12 both
+2.1.268 and 2.1.269 send the same shape — the reminders as leading `text` blocks of the first
+`user` message, a `system`-role message (a block list on one request, a plain string on the next),
+and a `tool_result.content` list holding only marion's block, with **no** `<total_tokens>` block
+anywhere. `tests/common/mcp_result.rs` reads both. The trust dialog still reads "Quick safety
+check…" and `DISABLE_AUTOUPDATER` is still in the binary's strings, both counts identical to
+2.1.268's. The s10/s11/s14/s16 probes were not re-run.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
