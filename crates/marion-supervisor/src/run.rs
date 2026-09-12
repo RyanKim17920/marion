@@ -1167,12 +1167,22 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
 /// The prompt a node of `ty` is given for `prompt`: the type's `prompt_prefix` in front of it,
 /// once, or the prompt untouched — byte for byte — for a type that states none.
 ///
+/// **One newline between the two, unless the author already put whitespace there.** A prefix is
+/// a standing instruction and the prompt is a task; joined byte-to-byte they read as one run-on
+/// sentence (`"…do not edit.DEMO-1: review …"`), which is what a node was handed before this
+/// rule. A prefix that ends in whitespace — an author's own `"\n\n"`, a trailing space — is
+/// joined exactly as written, so the separator is the author's whenever they chose one and
+/// marion's only when they chose none.
+///
 /// Applied exactly once, at the top of `run_spawn_watched` and of `root::prepare_watched`, right
 /// after the type resolves; every later reader — the launch, the frame, the contract — sees the
 /// prefixed text, so the audit record names the prompt the node actually saw.
 pub fn prefixed_prompt(ty: &AgentType, prompt: &str) -> String {
     match &ty.prompt_prefix {
-        Some(prefix) => format!("{prefix}{prompt}"),
+        Some(prefix) if prefix.is_empty() || prefix.ends_with(char::is_whitespace) => {
+            format!("{prefix}{prompt}")
+        }
+        Some(prefix) => format!("{prefix}\n{prompt}"),
         None => prompt.to_string(),
     }
 }
@@ -3453,6 +3463,37 @@ mod tests {
         let once = prefixed_prompt(&reviewer, "do the task");
         assert_eq!(once, "Review only.\n\ndo the task");
         assert_eq!(once.matches("Review only.").count(), 1);
+    }
+
+    /// **A prefix and a prompt are two sentences, and marion keeps them apart.** A row that ends
+    /// its prefix on a letter gets one newline between it and the prompt; a row whose author
+    /// already ended it in whitespace (`"\n\n"`) is joined exactly as written, because that
+    /// whitespace is the author's own separator and marion must not add a third line to it.
+    #[test]
+    fn a_prefix_without_trailing_whitespace_is_separated_from_the_prompt_by_one_newline() {
+        let ty = |prefix: &str| {
+            marion_core::agent_type::AgentTypes::parse(&format!(
+                "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+                 prompt_prefix = {prefix:?}\n",
+            ))
+            .unwrap()
+            .resolve("reviewer")
+            .unwrap()
+        };
+        assert_eq!(
+            prefixed_prompt(&ty("You are a reviewer."), "DEMO: review"),
+            "You are a reviewer.\nDEMO: review"
+        );
+        assert_eq!(
+            prefixed_prompt(&ty("You are a reviewer.\n\n"), "DEMO: review"),
+            "You are a reviewer.\n\nDEMO: review"
+        );
+        assert_eq!(
+            prefixed_prompt(&ty("You are a reviewer. "), "DEMO: review"),
+            "You are a reviewer. DEMO: review"
+        );
+        let plain = builtin("codex-impl").unwrap();
+        assert_eq!(prefixed_prompt(&plain, "DEMO: review"), "DEMO: review");
     }
 
     /// **The contract records the prompt the child actually saw**, prefix included: §6.7's audit

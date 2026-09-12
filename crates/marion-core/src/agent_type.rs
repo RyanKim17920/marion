@@ -218,6 +218,10 @@ pub struct AgentType {
     /// `prompt_prefix`). `None` on every built-in: the built-ins describe a harness and a grant,
     /// and marion does not put words in an operator's prompt on its own initiative. The contract
     /// records the prompt the node actually saw, prefix included.
+    ///
+    /// The supervisor joins it to the prompt with a single newline unless it already ends in
+    /// whitespace, in which case it is joined exactly as written: end it in `"\n\n"` for a blank
+    /// line, end it on a letter and marion supplies the line break.
     pub prompt_prefix: Option<String>,
 }
 
