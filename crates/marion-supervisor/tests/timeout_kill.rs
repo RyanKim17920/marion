@@ -10,7 +10,7 @@
 //! built rather than against the harness's actual behaviour.
 //!
 //! The assertion is over the descendant set **marion enumerated in step 1** of its two-step group
-//! kill, read back through [`marion_supervisor::run::last_kill_sweep`]: `kill(pid, 0)` must return
+//! kill, read back through [`marion_supervisor::kill::last_kill_sweep`]: `kill(pid, 0)` must return
 //! `ESRCH` for every pid in it, and the set must be non-empty — an empty one would make the
 //! `ESRCH` check vacuous. Asserting only that the child's own process died is *not* this
 //! criterion and does not imply it: a naive `killpg` satisfies that while every `setsid`-ed
@@ -34,7 +34,8 @@ use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Caller, Env, SpawnRequest, last_kill_sweep, run_spawn};
+use marion_supervisor::kill::last_kill_sweep;
+use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{alive, fixture_repo, kill_hard, on_path, pinned_version, scratch};
 
 /// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call

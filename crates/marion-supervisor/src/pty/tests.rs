@@ -540,7 +540,7 @@ fn a_piped_stdin_node_still_gets_the_pty_as_its_controlling_terminal() {
          alone does not claim it — the ioctl must name the descriptor the slave is actually on.",
         unsafe { tcgetsid(master_fd) }
     );
-    crate::run::kill_process_tree(pid);
+    crate::kill::kill_process_tree(pid);
     let _ = child.wait();
 }
 

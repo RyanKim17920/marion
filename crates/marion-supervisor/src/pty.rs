@@ -565,7 +565,7 @@ impl PtyChild {
         // The group, not the pid: `setsid` made this child a group leader and a harness starts
         // tool-call descendants of its own, which reparent to pid 1 the moment the leader dies
         // (S7, §11 item 18) and can then never be found by an ancestry walk.
-        crate::run::kill_process_tree(self.pid);
+        crate::kill::kill_process_tree(self.pid);
         self.wait()
     }
 }
@@ -3814,7 +3814,7 @@ impl PtyHost {
             #[cfg(test)]
             self.observe_reader_drain_hook();
             self.reader_completion
-                .wait_until(Instant::now() + crate::run::DRAIN_GRACE)
+                .wait_until(Instant::now() + crate::kill::DRAIN_GRACE)
         } else {
             false
         };

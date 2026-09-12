@@ -24,7 +24,7 @@
 //! - a child **has a `TaskContract`** and may `report`; a root has neither (§9). That is an
 //!   allowlist and a contract-assembly difference, both of which live at the call sites.
 //! - a child is bounded by its own `timeout_secs` — a **wall clock**, enforced here by
-//!   [`DuplexSpec::wall_clock`] and [`crate::run::kill_process_tree`], the one kill in the
+//!   [`DuplexSpec::wall_clock`] and [`crate::kill::kill_process_tree`], the one kill in the
 //!   workspace measured to leave no survivors (S7). A root is offered no wall clock at all, so it
 //!   passes `None` and no process group is created for it.
 //! - the `Blocked` budget a permission ask consumes before it is denied differs, so it is a field
@@ -41,7 +41,8 @@ use std::time::{Duration as StdDuration, Instant};
 use marion_harness::{ControlTransport, ExecutionSurfaces, surfaces::TypedKind};
 use serde_json::{Value, json};
 
-use crate::run::{DRAIN_GRACE, Drain, kill_process_tree};
+use crate::kill::{DRAIN_GRACE, kill_process_tree};
+use crate::run::Drain;
 
 /// Which launch path a node takes, derived from its adapter's [`ExecutionSurfaces`].
 ///

@@ -59,7 +59,8 @@ use serde_json::{Value, json};
 
 use marion_harness::{AgentHandshake, ChildExit, Invocation, acp};
 
-use crate::run::{DRAIN_GRACE, Drain, kill_process_tree};
+use crate::kill::{DRAIN_GRACE, kill_process_tree};
+use crate::run::Drain;
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;

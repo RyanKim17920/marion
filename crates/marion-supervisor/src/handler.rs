@@ -1295,7 +1295,7 @@ struct SystemQuitRuntime;
 
 impl QuitRuntime for SystemQuitRuntime {
     fn kill_process_tree_and_wait(&self, pid: i32) -> bool {
-        crate::run::kill_process_tree_and_wait(pid)
+        crate::kill::kill_process_tree_and_wait(pid)
     }
 }
 
@@ -12080,7 +12080,7 @@ mod tests {
             );
 
             if let Some(pid) = fx.handle.owned_pid(&agent_id) {
-                crate::run::kill_process_tree_and_wait(pid);
+                crate::kill::kill_process_tree_and_wait(pid);
             }
             settle(&fx, &agent_id);
         }
@@ -12150,7 +12150,7 @@ mod tests {
 
             // Ended deliberately rather than left to the 30 s bound, so the file leaves no
             // survivor and no scratch directory behind. This is cleanup, not an assertion.
-            crate::run::kill_process_tree_and_wait(pid);
+            crate::kill::kill_process_tree_and_wait(pid);
             settle(&fx, &agent_id);
         }
 

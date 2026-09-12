@@ -1262,7 +1262,7 @@ fn confirm_root_started(
             // The whole tree, not the pid alone: a root is a group leader and may already have
             // descendants, and they are as unnameable as it is. Not `_and_wait` — the driver in
             // `launch_inner` is already waiting on this exact child.
-            crate::run::kill_process_tree(pid);
+            crate::kill::kill_process_tree(pid);
             unaccountable.set(Some(e));
         }
     }

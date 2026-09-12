@@ -47,6 +47,9 @@ pub mod handler;
 /// §4.3's append-only registry journal, writer side. The records and the replay are
 /// `marion-core`'s — this crate is where I/O is allowed.
 pub mod journal;
+/// The kill a bound sends at expiry: the `ps` walk that finds every descendant group first, and
+/// the observed-dead confirmation §6.7 asks for after it.
+pub mod kill;
 /// **marion's MCP surface**, shared by `marion-supervisor mcp` (the per-child bridge) and
 /// `marion mcp` (the top-level entry point). One dispatch, so there is one spawn path, and it
 /// goes over the socket.
