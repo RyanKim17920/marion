@@ -479,6 +479,22 @@ impl Widget for Hints<'_> {
     }
 }
 
+/// `text` if it fits in `width` columns, else its first `width - 1` characters and `…`.
+///
+/// A row that runs off the pane's edge used to end mid-word — `(reap: liv`, an id cut at its
+/// third group — and looked like a rendering fault rather than a wider fact. Measured in
+/// characters, which is what `set_stringn` clips by.
+pub fn clip(text: &str, width: usize) -> std::borrow::Cow<'_, str> {
+    if text.chars().count() <= width {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width > 0 {
+        out.push('…');
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// A path from the end that tells one checkout from another: its last two components, with `…/`
 /// where something was dropped.
 ///
@@ -649,6 +665,13 @@ impl Widget for ActionBar<'_> {
         for (text, style) in cells {
             let remaining = area.x.saturating_add(area.width).saturating_sub(x) as usize;
             if remaining == 0 {
+                break;
+            }
+            // A cell that does not fit whole is not drawn in part: `set_mod` on a narrow
+            // terminal read as a capability called `set_mod`. The row ends in `…` instead,
+            // which says there is more and that nothing shown is a fragment.
+            if text.chars().count() > remaining {
+                buf.set_stringn(x, area.y, "…", remaining, Style::default());
                 break;
             }
             let (next, _) = buf.set_stringn(x, area.y, &text, remaining, style);
@@ -914,6 +937,42 @@ mod tests {
         assert!(
             dim(25) && !bold(25),
             "`no pane to focus` is a note, not a key"
+        );
+    }
+
+    /// **A clipped row says it was clipped.** `set_stringn` cuts mid-word, and a detail line or
+    /// a capability cut mid-word reads as a rendering fault — or, worse, as a shorter word.
+    #[test]
+    fn a_row_that_does_not_fit_ends_in_an_ellipsis_rather_than_mid_word() {
+        assert_eq!(
+            clip("state    exited:ok  (reap: live)", 40),
+            "state    exited:ok  (reap: live)"
+        );
+        assert_eq!(
+            clip("state    exited:ok  (reap: live)", 20),
+            "state    exited:ok …"
+        );
+        assert_eq!(clip("abc", 3), "abc");
+        assert_eq!(clip("abcd", 3), "ab…");
+        assert_eq!(clip("abcd", 1), "…");
+        assert_eq!(clip("abcd", 0), "");
+
+        let n = Node {
+            actions: vec![
+                Action::new("steer", true),
+                Action::new("interrupt", true),
+                Action::new("set_model", false),
+            ],
+            ..node("a", None)
+        };
+        let area = Rect::new(0, 0, 24, 1);
+        let mut buf = Buffer::empty(area);
+        ActionBar { node: Some(&n) }.render(area, &mut buf);
+        let row: String = (0..24).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(
+            row.trim_end(),
+            "caps: steer  interrupt …",
+            "the cell that does not fit is an ellipsis, not `set_m`"
         );
     }
 

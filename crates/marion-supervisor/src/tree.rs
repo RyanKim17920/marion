@@ -774,12 +774,25 @@ impl ratatui::widgets::Widget for Detail<'_> {
             return;
         }
         let style = ratatui::style::Style::default;
+        // The pane's left edge, every row: without it the only thing separating the tree from
+        // its detail was the cursor bar's right end, on the one row that had one.
+        let edge = style().add_modifier(ratatui::style::Modifier::DIM);
+        for y in 0..area.height {
+            buf.set_stringn(
+                area.x,
+                area.y.saturating_add(y),
+                "│",
+                area.width as usize,
+                edge,
+            );
+        }
+        let width = area.width.saturating_sub(2) as usize;
         let put = |buf: &mut ratatui::buffer::Buffer, y: u16, text: &str, style| {
             buf.set_stringn(
                 area.x.saturating_add(2),
                 area.y.saturating_add(y),
-                text,
-                area.width.saturating_sub(2) as usize,
+                &tree::clip(text, width),
+                width,
                 style,
             );
         };
@@ -1026,6 +1039,43 @@ mod tests {
             .collect()
     }
 
+    /// **The pane has an edge, and a line that does not fit says so.** At 80 columns the detail
+    /// pane is 36 wide, and `state    exited:failed  (reap: live)` was cut to `(reap: liv` with
+    /// nothing to say it had been; the tree's right end was marked only by the cursor bar.
+    #[test]
+    fn the_detail_pane_is_edged_and_clips_with_an_ellipsis() {
+        let n = summary(
+            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
+            Harness::ClaudeCode,
+            false,
+            None,
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 30, 12);
+        let rows = painted(
+            area,
+            Detail {
+                node: Some(&n),
+                notice: None,
+                events: &[],
+            },
+        );
+        for (i, row) in rows.iter().enumerate() {
+            assert!(row.starts_with('│'), "row {i} has no edge: {row:?}");
+            assert!(
+                row.chars().count() <= 30,
+                "row {i} runs past the pane: {row:?}"
+            );
+        }
+        let id = rows.iter().find(|r| r.contains("id ")).expect("the id row");
+        assert!(id.ends_with('…'), "a clipped id says so: {id:?}");
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.ends_with("5c4a-73ac-88f8-7df80dc5095c")),
+            "the whole id cannot fit in 28 columns"
+        );
+    }
+
     /// **The content pane carries every fact the row cannot.** A row is a state and a short label;
     /// the harness, its version, the surface, the depth, the parent, the bound and the whole id —
     /// which is what `marion attach` wants typed — are all in `NodeSummary` and were shown nowhere.
@@ -1121,6 +1171,7 @@ mod tests {
                     events: &[],
                 },
             )[0]
+            .trim_start_matches('│')
             .trim()
             .to_string()
         };
