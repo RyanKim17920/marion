@@ -42,6 +42,7 @@ use serde_json::{Value, json};
 mod common;
 use common::cast::cast_text;
 use common::client::Client;
+use common::mcp_result::tool_result_text;
 
 /// Every wait here is bounded by this and none is a verdict: a real claude turn, a real codex turn
 /// and a `git worktree add` all happen inside it.
@@ -215,36 +216,6 @@ impl Operator {
             .shutdown()
             .expect("shutting the operator's pty down")
     }
-}
-
-/// The text of the `tool_result` the root sent back for `tool_use_id`, from a recorded request.
-/// `m1_hop.rs`'s reader, which is where the shape of a Claude Code MCP tool result is documented.
-fn tool_result_text(request: &Value, tool_use_id: &str) -> Option<String> {
-    for message in request.pointer("/body/messages")?.as_array()? {
-        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
-            continue;
-        };
-        for block in blocks {
-            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-                continue;
-            }
-            if block.get("tool_use_id").and_then(Value::as_str) != Some(tool_use_id) {
-                continue;
-            }
-            return match block.get("content") {
-                Some(Value::String(s)) => Some(s.clone()),
-                Some(Value::Array(parts)) => Some(
-                    parts
-                        .iter()
-                        .filter_map(|p| p.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join(""),
-                ),
-                _ => None,
-            };
-        }
-    }
-    None
 }
 
 fn calls_spawn(request: &Value) -> bool {

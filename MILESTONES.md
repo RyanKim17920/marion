@@ -159,6 +159,18 @@ passed `m1_hop` on 2026-09-06 failed it 3/3 on 2026-09-09: the request body now 
 non-array content. Same binary, different shape on different days, so the switch is remote. The
 helper now skips string-content messages; the fact lives here because no version gate detects it.
 
+**Request-shape drift, again (2026-09-11).** Claude Code 2.1.268, the day it was admitted, moved
+the budget once more: every `tool_result.content` list now ends with one extra `text` block,
+`<system-reminder>\n<total_tokens>…</total_tokens>\n</system-reminder>`, *after* marion's own
+blocks, and the environment, model, date and memory reminders ride as leading `text` blocks of the
+first `user` message instead of as `system` messages. Every claude-root cell of `cross_product`
+failed at once — the contract JSON had trailing characters — and `m1_hop` and
+`native_facade_spawn` carried the same joined-blocks reader and would have failed next. The three
+copies are now one, `tests/common/mcp_result.rs`, which drops a `text` block that *starts* with
+`<system-reminder>` wherever it sits and keeps a result that merely mentions the tag; both shapes
+are documented on the module. The `DISABLE_AUTOUPDATER` read and the trust-dialog text are
+byte-identical in the 2.1.268 binary.
+
 **Structure.** `sentrux` 0.5.7 quality signal 6542 at `24f4821` (cycles 0, redundancy 9168,
 modularity 5100, equality 5452, depth 4706 at raw 9); the day started at 4856 with three import
 cycles and depth 10. The remaining depth is a real client path, `bin/marion` → `facade_cli` →

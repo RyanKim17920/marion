@@ -44,6 +44,7 @@ use serde_json::Value;
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
+use common::mcp_result::tool_result_text;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite, not to
 /// measure anything. The measured run is a couple of seconds.
@@ -54,38 +55,6 @@ const RUN_BOUND: Duration = Duration::from_secs(300);
 /// request and not by the ceiling, which is the case §9's criterion is about.
 const OUT_OF_SCOPE: &str = "out_of_scope/marion_m1.txt";
 const IN_SCOPE: &str = "src/marion_m1.txt";
-
-/// The text of the `tool_result` the root sent back for `tool_use_id`, from a recorded request.
-fn tool_result_text(request: &Value, tool_use_id: &str) -> Option<String> {
-    for message in request.pointer("/body/messages")?.as_array()? {
-        // Claude Code 2.1.263 also sends `role: "system"` messages whose `content` is a plain
-        // string (the environment block, the token budget); they carry no tool result.
-        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
-            continue;
-        };
-        for block in blocks {
-            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-                continue;
-            }
-            if block.get("tool_use_id").and_then(Value::as_str) != Some(tool_use_id) {
-                continue;
-            }
-            return match block.get("content") {
-                // Claude Code 2.1.220 sends an MCP tool result as a block list.
-                Some(Value::Array(blocks)) => Some(
-                    blocks
-                        .iter()
-                        .filter_map(|b| b.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join(""),
-                ),
-                Some(Value::String(s)) => Some(s.clone()),
-                _ => None,
-            };
-        }
-    }
-    None
-}
 
 fn calls_spawn(request: &Value) -> bool {
     request

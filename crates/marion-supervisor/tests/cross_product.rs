@@ -135,6 +135,7 @@ use serde_json::{Value, json};
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
+use common::mcp_result::mcp_blocks_text;
 
 /// The outermost safety net. Every cell has its own `--timeout` below; this only exists so a wedged
 /// `marion` fails loudly instead of wedging the suite.
@@ -918,22 +919,6 @@ fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
             }
         }
         w => panic!("no reader for wire {w:?}; a fifth wire needs its own frame here"),
-    }
-}
-
-/// An MCP `content` payload — a block list, or the bare string a harness may flatten it to — as
-/// text. Shared by the two wires that hand the block list through unflattened.
-fn mcp_blocks_text(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(blocks) => Some(
-            blocks
-                .iter()
-                .filter_map(|b| b["text"].as_str())
-                .collect::<Vec<_>>()
-                .join(""),
-        ),
-        _ => None,
     }
 }
 

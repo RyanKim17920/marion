@@ -15,6 +15,7 @@
 pub mod cap_rules;
 pub mod cast;
 pub mod client;
+pub mod mcp_result;
 pub mod run;
 pub mod script;
 
