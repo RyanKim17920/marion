@@ -315,6 +315,37 @@ fn a_native_root_delegates_a_child_through_marions_own_mcp_server() {
     // Read through `tree/subscribe` on the project socket — what any client sees — rather than off
     // the journal, because the claim is about the fleet a client can observe.
     let mut client = Client::dial(&bed.paths);
+
+    // ---- while the TUI is up, the root is running and its harness has a version ---------------
+    //
+    // `marion tree` used to show a native root as `spawning` with `harness claude-code unknown`
+    // for its whole life: its recorder wrote no `Running` and no probed version. Read through the
+    // same `tree/subscribe` a tree pane reads, while the operator's session is still on screen.
+    let mut summary = None;
+    assert!(
+        until(|| {
+            summary = client.tree().into_iter().find(|n| n.agent_id == root);
+            summary
+                .as_ref()
+                .is_some_and(|n| n.state == marion_core::node::NodeState::Running)
+                || op.exited()
+        }),
+        "the native root never projected as Running: {summary:?}"
+    );
+    let summary = summary.expect("the native root is in the tree");
+    assert_eq!(
+        summary.state,
+        marion_core::node::NodeState::Running,
+        "a native root whose pty session is up is running, not spawning"
+    );
+    assert!(
+        summary
+            .harness_version
+            .as_deref()
+            .is_some_and(|v| v != "unknown" && !v.is_empty()),
+        "the native root's version is the one marion probed on the operator's binary, not a \
+         placeholder: {summary:?}"
+    );
     let mut child = None;
     let delegated = until(|| {
         child = client
