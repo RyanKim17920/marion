@@ -714,8 +714,14 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
          C1 is about and the assertion below no longer proves anything. §5.3 measured `?1049l` only \
          on a clean exit; if that has changed, the measurement moved"
     );
+    //
+    // `op.exited()` observed the client's death; the recording observes what the client wrote, and
+    // the pty host drains the master into it on its own thread. The two are unordered, so the
+    // restore is waited for under the bound rather than read once: against claude 2.1.268 the
+    // final frame is large enough that a single read landed before the tail was drained, 3/3, and
+    // the same read a moment later held the restore every time.
     assert!(
-        op.seen().contains("\u{1b}[?1049l"),
+        until(|| op.seen().contains("\u{1b}[?1049l")),
         "`marion attach` exited leaving the operator's terminal on the alternate screen. The node \
          never sent a `?1049l`, which is the ordinary case, so marion's own restore is the only \
          thing that can put the shell back. Last bytes marion wrote:\n{}",
@@ -724,7 +730,7 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     // And the mirror it opened is closed too, or the operator's shell keeps emitting mouse reports
     // as text for ever. `leave_bytes` sends all four unconditionally for the same reason.
     assert!(
-        op.seen().contains("\u{1b}[?1006l") && op.seen().contains("\u{1b}[?1000l"),
+        until(|| op.seen().contains("\u{1b}[?1006l") && op.seen().contains("\u{1b}[?1000l")),
         "marion turned the operator's mouse tracking on and left it on:\n{}",
         tail(&op.seen())
     );
