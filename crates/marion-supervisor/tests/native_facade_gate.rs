@@ -369,7 +369,7 @@ fn native_launch_frames_are_refused_at_the_real_socket_before_every_launch_artif
     assert!(
         legacy
             .message
-            .contains("the agent type is not one this build has"),
+            .contains("the agent type is not a built-in and not a row"),
         "legacy `native_launch: None` retains its prior root path: {}",
         legacy.message
     );

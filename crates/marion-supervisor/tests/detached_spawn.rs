@@ -284,7 +284,7 @@ fn a_detached_supervisor_serves_root_creation_rather_than_naming_a_step_that_wou
     assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
     assert!(
         e.message
-            .contains("the agent type is not one this build has"),
+            .contains("the agent type is not a built-in and not a row"),
         "the frame reached the root launcher and was refused on its own merits: {}",
         e.message
     );
@@ -457,7 +457,7 @@ fn a_root_for_another_repository_is_refused_on_the_socket_that_does_not_serve_it
     .expect_err("no build has that agent type");
     assert!(
         e.message
-            .contains("the agent type is not one this build has"),
+            .contains("the agent type is not a built-in and not a row"),
         "a linked worktree root must reach its own merits — a repository refusal here is the \
          check written on the path instead of the key, which would undo W1: {}",
         e.message
