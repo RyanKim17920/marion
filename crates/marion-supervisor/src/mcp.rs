@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::paths::{ProjectDir, state_dir};
+use marion_harness::AGENT_TYPE_ENV;
 use marion_harness::claude_code::NODE_TOKEN_ENV;
+use marion_harness::spec::Push;
 
 use crate::root::{AGENT_ID_ENV, DEPTH_ENV, READY_FILE_ENV};
 use crate::socket::SocketPaths;
@@ -212,12 +214,23 @@ fn deliver(
     agent_id: &AgentId,
     delivered: Result<courier::Delivered, SpawnError>,
 ) -> Option<serde_json::Value> {
+    outcome_text(agent_type, project, agent_id, delivered)
+        .map(|(text, is_error)| bridge::tool_result(id, &text, is_error))
+}
+
+/// [`deliver`] without the request id: the text and verdict of a node's end, shared with the
+/// push a watcher sends ([`watch`]) so an announcement and a `wait` read the same.
+fn outcome_text(
+    agent_type: &str,
+    project: &ProjectDir,
+    agent_id: &AgentId,
+    delivered: Result<courier::Delivered, SpawnError>,
+) -> Option<(String, bool)> {
     Some(match delivered {
-        Ok(courier::Delivered::Contract(c)) => bridge::spawn_result(id, agent_type, Ok(*c)),
+        Ok(courier::Delivered::Contract(c)) => bridge::spawn_text(agent_type, Ok(*c)),
         // §9's root, ending. See [`bridge::root_result`] for why this is not `spawn_result`'s
         // fourth shape.
-        Ok(courier::Delivered::Ended { status, exit }) => bridge::root_result(
-            id,
+        Ok(courier::Delivered::Ended { status, exit }) => bridge::root_text(
             agent_type,
             agent_id,
             status,
@@ -225,7 +238,7 @@ fn deliver(
             &project.agent(agent_id).events(),
         ),
         Ok(courier::Delivered::StillRunning) => return None,
-        Err(e) => bridge::spawn_result(id, agent_type, Err(e)),
+        Err(e) => bridge::spawn_text(agent_type, Err(e)),
     })
 }
 
@@ -1015,6 +1028,133 @@ fn string_list(v: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// **How a backgrounded child's end is announced to this client** — read off the row of the
+/// harness this bridge serves, never guessed from the pipe.
+///
+/// A node's bridge knows its harness: the declaration marion wrote carries the node's agent type
+/// (`MARION_AGENT_TYPE`), whose row states its [`Push`]. A top-level bridge (`marion mcp`, in a
+/// client's own configuration) serves no node and knows only what the client called itself in
+/// `initialize`; a row that measured its client's name is matched on it, and any other client
+/// gets the protocol's own logging notification, which every client is entitled to drop.
+fn push_for(who: &Principal, client_name: Option<&str>) -> Push {
+    match who {
+        Principal::Node => push_for_node(non_empty(AGENT_TYPE_ENV).as_deref()),
+        Principal::TopLevel(_) => push_for_client(client_name),
+    }
+}
+
+/// The pure half of [`push_for`] for a node: the row of the declared agent type, or nothing for
+/// a bridge whose declaration names no type marion knows — announcing on a guess would push a
+/// frame the harness never offered to read.
+fn push_for_node(agent_type: Option<&str>) -> Push {
+    agent_type
+        .filter(|s| !s.is_empty())
+        .and_then(marion_core::agent_type::builtin)
+        .map_or(Push::None, |t| {
+            marion_harness::adapter::harness_spec(t.harness).push
+        })
+}
+
+/// The pure half of [`push_for`] for a top-level client: the row whose measured
+/// `clientInfo.name` this is, else the protocol's own notification.
+fn push_for_client(client_name: Option<&str>) -> Push {
+    marion_core::Harness::ALL
+        .into_iter()
+        .map(marion_harness::adapter::harness_spec)
+        .find(|row| client_name.is_some() && row.client_name == client_name)
+        .map_or(Push::McpLog, |row| row.push)
+}
+
+/// **Start one watcher per handle nobody is watching yet.** Called after every reply has been
+/// written, so a handle's reply is on the pipe before its announcement can be.
+///
+/// Each watcher is a detached thread doing what a `wait` does — `courier::await_contract` on the
+/// node's own clock — and then writing one frame through [`emit`]. It owns nothing: the child is
+/// the supervisor's, and a bridge that leaves takes its watchers with it and loses nothing a
+/// later `wait` cannot recover. A thread that could not start announces nothing, for the same
+/// reason a `StillRunning` does not: `wait` still resolves the handle.
+fn start_watchers(who: &Principal, bg: &background::Background, push: Push) {
+    if push == Push::None {
+        return;
+    }
+    let Ok((sock, project)) = who.paths() else {
+        return;
+    };
+    for target in bg.unwatched() {
+        let (sock, project) = (sock.clone(), project.clone());
+        let _ = std::thread::Builder::new()
+            .name(format!("marion-push-{}", target.task_id.0))
+            .spawn(move || {
+                let frame = watch(push, &target, &project, || {
+                    courier::await_contract(
+                        sock.socket(),
+                        &project,
+                        &target.agent_id,
+                        target.contract.as_ref(),
+                        target.bound,
+                    )
+                });
+                if let Some(frame) = frame {
+                    emit(&std::io::stdout(), &frame);
+                }
+            });
+    }
+}
+
+/// **The frame one watcher pushes when the node it watched ends**, or `None` when there is
+/// nothing to say: the bound expired (the child is still running, and a `wait` will find it) or
+/// nothing was learnt about the node (a dial that failed is not news about the child) — the same
+/// line [`collect_if_terminal`] draws. `awaiting` is the blocking read, injected so the frame can
+/// be tested without a supervisor.
+///
+/// The push **announces and does not deliver**: the handle stays uncollected, so the parent's
+/// `wait` returns this same document rather than "you already have this" about a document it was
+/// only told about. The text says so, and its body is [`outcome_text`]'s, byte for byte.
+fn watch(
+    push: Push,
+    target: &background::WatchTarget,
+    project: &ProjectDir,
+    awaiting: impl FnOnce() -> Result<courier::Delivered, SpawnError>,
+) -> Option<serde_json::Value> {
+    if push == Push::None {
+        return None;
+    }
+    let delivered = awaiting();
+    let status = match &delivered {
+        Ok(courier::Delivered::Contract(c)) => c
+            .completion
+            .as_ref()
+            .map_or_else(|| "failed".to_string(), |comp| status_word(comp.status)),
+        Ok(courier::Delivered::Ended { status, .. }) => status_word(*status),
+        Err(SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }) => "failed".to_string(),
+        Ok(courier::Delivered::StillRunning) | Err(_) => return None,
+    };
+    let (body, _) = outcome_text(&target.agent_type, project, &target.agent_id, delivered)?;
+    let text = format!(
+        "marion: the {agent_type} child you backgrounded as task_id {task_id:?} has ended. This is \
+         the document its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}",
+        agent_type = target.agent_type,
+        task_id = target.task_id.0,
+    );
+    bridge::push_frame(
+        push,
+        &text,
+        serde_json::json!({
+            "task_id": target.task_id.0,
+            "agent_type": target.agent_type,
+            "status": status,
+        }),
+    )
+}
+
+/// A terminal status as one identifier-shaped word — on the channel it becomes a tag attribute.
+fn status_word(status: marion_core::contract::ExitStatus) -> String {
+    match status {
+        marion_core::contract::ExitStatus::Ok => "completed".to_string(),
+        other => format!("{other:?}").to_ascii_lowercase(),
+    }
+}
+
 /// Tell marion the harness now has our tool list.
 ///
 /// The harness connects `--mcp-config` servers **asynchronously and non-blockingly** (measured on
@@ -1033,8 +1173,20 @@ fn signal_ready() {
 /// tool list* — so a marker written after a write that failed is a false statement, and one
 /// written **before** the write is a statement that is not yet true. Returning the result makes
 /// the second impossible to express: there is nothing to gate on until the flush has happened.
-fn emit(stdout: &mut std::io::Stdout, frame: &serde_json::Value) -> bool {
-    writeln!(stdout, "{frame}").is_ok() && stdout.flush().is_ok()
+///
+/// **The lock is held across the write and the flush**, and that is not an optimisation: since
+/// the push, a watcher thread writes to the same pipe, and a client reads it line by line. Two
+/// unlocked writers could interleave inside one line, and a reply spliced with a push is two
+/// frames a client cannot parse. Each caller takes `std::io::stdout()` itself; there is no shared
+/// handle to hand around and no order between threads to keep beyond "one frame at a time".
+fn emit(stdout: &std::io::Stdout, frame: &serde_json::Value) -> bool {
+    write_frame(&mut stdout.lock(), frame)
+}
+
+/// [`emit`]'s two statements against any writer, so a test can capture what a frame looks like
+/// on the pipe without a pipe.
+fn write_frame(out: &mut impl Write, frame: &serde_json::Value) -> bool {
+    writeln!(out, "{frame}").is_ok() && out.flush().is_ok()
 }
 
 /// Serve MCP over stdio until the harness closes our stdin, **and then leave**.
@@ -1063,7 +1215,11 @@ fn emit(stdout: &mut std::io::Stdout, frame: &serde_json::Value) -> bool {
 pub fn serve_stdio(who: Principal) {
     let bg = background::Background::new();
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdout = std::io::stdout();
+    // How a backgrounded child's end is announced to this client, resolved at each `initialize`
+    // from who the client is ([`push_for`]) and `None` until one has happened: nothing is pushed
+    // to a client that has not been told what this server can send.
+    let mut push = Push::None;
     // **The whole of the initialization state, and it only ever moves one way.**
     //
     // MCP requires `initialize` before any other request, and marion used to answer `tools/call`
@@ -1086,12 +1242,12 @@ pub fn serve_stdio(who: Principal) {
         let req = match bridge::parse(line) {
             Ok(req) => req,
             Err(undecodable) => {
-                reject(&mut stdout, undecodable);
+                reject(&stdout, undecodable);
                 continue;
             }
         };
-        let (reply, answered_tools_list) = answer(&who, &bg, &mut initialized, req);
-        let delivered = reply.is_some_and(|r| emit(&mut stdout, &r));
+        let (reply, answered_tools_list) = answer(&who, &bg, &mut initialized, &mut push, req);
+        let delivered = reply.is_some_and(|r| emit(&stdout, &r));
         // **After the flush, and only if the flush worked.** The marker means "the harness has
         // been sent the list", so it is gated on `delivered` rather than merely sequenced after
         // the call: sequencing alone is invisible to a test, while a marker that cannot appear
@@ -1099,6 +1255,9 @@ pub fn serve_stdio(who: Principal) {
         if answered_tools_list && delivered {
             signal_ready();
         }
+        // **After the reply, never inside `spawn`**: the handle's own reply must be on the pipe
+        // before anything announces the end of the child it names.
+        start_watchers(&who, &bg, push);
     }
     // EOF, and nothing to wait for. The children of this node belong to the supervisor; this
     // process was the courier, and the courier is leaving.
@@ -1106,7 +1265,7 @@ pub fn serve_stdio(who: Principal) {
 
 /// Each undecodable line is *answered*. The one exception is a stray response, which is silent by
 /// rule rather than by omission — see [`bridge::Undecodable`].
-fn reject(stdout: &mut std::io::Stdout, undecodable: bridge::Undecodable) {
+fn reject(stdout: &std::io::Stdout, undecodable: bridge::Undecodable) {
     match undecodable {
         bridge::Undecodable::NotJson => {
             emit(stdout, &bridge::parse_error("not valid JSON"));
@@ -1122,21 +1281,29 @@ fn reject(stdout: &mut std::io::Stdout, undecodable: bridge::Undecodable) {
 /// [`signal_ready`] hangs on. `None` is a notification, which has no reply by protocol.
 ///
 /// `initialized` is the gate on the two verbs it applies to; `initialize` is above it by
-/// construction and is answered exactly like the first every time — see [`serve_stdio`].
+/// construction and is answered exactly like the first every time — see [`serve_stdio`]. `push`
+/// is resolved on the same frame, from the same offer, for the same reason.
 fn answer(
     who: &Principal,
     bg: &background::Background,
     initialized: &mut bool,
+    push: &mut Push,
     req: bridge::Request,
 ) -> (Option<serde_json::Value>, bool) {
     match req {
         bridge::Request::Initialize {
             id,
             offered_version,
+            client_name,
         } => {
             *initialized = true;
+            *push = push_for(who, client_name.as_deref());
             (
-                Some(bridge::initialize_result(&id, offered_version.as_deref())),
+                Some(bridge::initialize_result(
+                    &id,
+                    offered_version.as_deref(),
+                    *push,
+                )),
                 false,
             )
         }
@@ -1885,5 +2052,140 @@ mod tests {
             project.path().file_name().unwrap().to_string_lossy().len(),
             12
         );
+    }
+
+    // ---- the parent ping ----------------------------------------------------------------------
+
+    fn target(task: &str) -> background::WatchTarget {
+        background::WatchTarget {
+            task_id: TaskId(task.into()),
+            agent_id: AgentId("019f-child".into()),
+            agent_type: "codex-impl".into(),
+            bound: Duration::from_secs(30),
+            contract: Some(TaskId(task.into())),
+        }
+    }
+
+    fn project() -> ProjectDir {
+        ProjectDir::new(
+            std::path::Path::new("/state"),
+            std::path::Path::new("/repo"),
+        )
+    }
+
+    /// **A backgrounded child's end is pushed as one well-formed notification** — one line, no
+    /// `id`, the method the row names, the same text a `wait` returns, and the three meta facts
+    /// the model reads without parsing the document.
+    #[test]
+    fn a_backgrounded_childs_completion_is_pushed_as_one_well_formed_channel_frame() {
+        use marion_harness::spec::Push;
+        let contract = bridge::contract_that_ran(crate::spawn::ChildOutcome {
+            narrative: Some("did the work".into()),
+            exit_code: Some(0),
+            ..Default::default()
+        });
+        let (wait_text, _) = bridge::spawn_text("codex-impl", Ok(contract.clone()));
+        let frame = watch(Push::ClaudeChannel, &target("t-1"), &project(), || {
+            Ok(courier::Delivered::Contract(Box::new(contract)))
+        })
+        .expect("a terminal outcome is pushed");
+
+        let mut out: Vec<u8> = Vec::new();
+        assert!(write_frame(&mut out, &frame));
+        let written = String::from_utf8(out).unwrap();
+        assert_eq!(
+            written.trim_end_matches('\n').lines().count(),
+            1,
+            "one frame is one line, or a line-framed client splits it: {written:?}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(written.trim()).unwrap();
+        assert_eq!(parsed, frame);
+        assert!(
+            frame.get("id").is_none(),
+            "a notification answers nothing: {frame}"
+        );
+        assert_eq!(frame["method"], "notifications/claude/channel");
+        let content = frame["params"]["content"].as_str().unwrap();
+        assert!(
+            content.ends_with(&wait_text),
+            "the pushed document is the one `wait` returns"
+        );
+        assert!(
+            content.contains("\"t-1\"") && content.contains("`wait`"),
+            "and the push names the handle and says a `wait` still resolves it: {content}"
+        );
+        let meta = &frame["params"]["meta"];
+        assert_eq!(meta["task_id"], "t-1");
+        assert_eq!(meta["agent_type"], "codex-impl");
+        assert_eq!(meta["status"], "completed");
+    }
+
+    /// A child that ran and did not finish `Ok` is pushed with its status word, not "completed".
+    #[test]
+    fn a_failed_childs_push_says_so_in_its_meta() {
+        use marion_harness::spec::Push;
+        let contract = bridge::contract_that_ran(crate::spawn::ChildOutcome {
+            exit_code: Some(1),
+            ..Default::default()
+        });
+        let frame = watch(Push::McpLog, &target("t-2"), &project(), || {
+            Ok(courier::Delivered::Contract(Box::new(contract)))
+        })
+        .unwrap();
+        assert_eq!(frame["method"], "notifications/message");
+        assert_ne!(frame["params"]["data"]["meta"]["status"], "completed");
+        let aborted = watch(Push::McpLog, &target("t-3"), &project(), || {
+            Err(SpawnError::NodeAborted("gone".into()))
+        })
+        .unwrap();
+        assert_eq!(aborted["params"]["data"]["meta"]["status"], "failed");
+    }
+
+    /// **An expired watch pushes nothing**, and neither does one that learnt nothing about the
+    /// node: a child still running will be found by `wait`, and a supervisor that could not be
+    /// reached is not news about the child.
+    #[test]
+    fn an_expired_watch_pushes_nothing() {
+        use marion_harness::spec::Push;
+        assert!(
+            watch(Push::ClaudeChannel, &target("t-1"), &project(), || Ok(
+                courier::Delivered::StillRunning
+            ))
+            .is_none()
+        );
+        assert!(
+            watch(Push::ClaudeChannel, &target("t-1"), &project(), || Err(
+                SpawnError::SupervisorUnreachable {
+                    socket: "/nowhere".into(),
+                    why: "refused".into(),
+                }
+            ))
+            .is_none()
+        );
+        assert!(
+            watch(Push::None, &target("t-1"), &project(), || panic!(
+                "a bridge that pushes nothing does not even ask"
+            ))
+            .is_none(),
+            "Push::None never dials"
+        );
+    }
+
+    /// **The push strategy is read off the declared agent type, never guessed from the client.**
+    /// A node's bridge knows its harness from the declaration marion wrote; a top-level bridge
+    /// knows only what the client called itself in `initialize`, and an unknown client gets the
+    /// protocol's own logging notification rather than a channel it never offered to read.
+    #[test]
+    fn a_push_strategy_is_read_off_the_declared_agent_type_and_not_guessed() {
+        use marion_harness::spec::Push;
+        assert_eq!(push_for_node(Some("claude")), Push::ClaudeChannel);
+        assert_eq!(push_for_node(Some("codex-impl")), Push::McpLog);
+        assert_eq!(push_for_node(Some("acp:opencode")), Push::None);
+        assert_eq!(push_for_node(Some("no-such-type")), Push::None);
+        assert_eq!(push_for_node(Some("")), Push::None);
+        assert_eq!(push_for_node(None), Push::None);
+        assert_eq!(push_for_client(Some("claude-code")), Push::ClaudeChannel);
+        assert_eq!(push_for_client(Some("codex-mcp-client")), Push::McpLog);
+        assert_eq!(push_for_client(None), Push::McpLog);
     }
 }

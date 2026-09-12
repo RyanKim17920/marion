@@ -74,6 +74,10 @@ struct Handed {
     /// at `wait` time because a `wait` frame carries no request and must not invent a bound of its
     /// own — this is the node's own clock, kept.
     wait_bound: Duration,
+    /// Whether a watcher is already announcing this node's end to the parent ([`crate::mcp`]'s
+    /// push). Set by [`Background::unwatched`], exactly once per handle, so two replies cannot
+    /// start two watchers and two announcements for one child.
+    watched: bool,
     /// What the `wait` that collected this child actually got, once one has.
     ///
     /// Recorded rather than recomputed because the answer to a *second* `wait` depends on it: a
@@ -119,6 +123,18 @@ pub struct Started {
     /// promises a "completed task contract" for a node that can never produce one is the
     /// false-receipt shape, one call earlier than usual.
     pub has_contract: bool,
+}
+
+/// One handle a watcher announces the end of: the same pairing a `wait` reads, so the watcher
+/// blocks on [`crate::courier::await_contract`] exactly as a `wait` would, on the node's own clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchTarget {
+    pub task_id: TaskId,
+    pub agent_id: AgentId,
+    pub agent_type: String,
+    pub bound: Duration,
+    /// See [`Handed::contract`]: `None` is a root, whose end is its own bookend.
+    pub contract: Option<TaskId>,
 }
 
 /// What a `wait` found in this table. The blocking is [`crate::courier::await_contract`]'s.
@@ -178,9 +194,32 @@ impl Background {
             agent_id,
             agent_type,
             wait_bound,
+            watched: false,
             collected: None,
         });
         started
+    }
+
+    /// **Every handle no watcher is announcing yet — and from now on, each of them is.**
+    ///
+    /// The sweep is called after each reply has been written, so the handle's own reply always
+    /// precedes its announcement on the pipe. A collected handle is skipped: its parent already
+    /// holds the outcome, and an announcement after a delivery is the same news twice.
+    pub fn unwatched(&self) -> Vec<WatchTarget> {
+        self.lock()
+            .iter_mut()
+            .filter(|h| !h.watched && h.collected.is_none())
+            .map(|h| {
+                h.watched = true;
+                WatchTarget {
+                    task_id: h.task_id.clone(),
+                    agent_id: h.agent_id.clone(),
+                    agent_type: h.agent_type.clone(),
+                    bound: h.wait_bound,
+                    contract: h.contract.clone(),
+                }
+            })
+            .collect()
     }
 
     /// Which node a handle is about, or why it cannot be resolved here.
@@ -339,6 +378,50 @@ mod tests {
             "a spawn that failed has nothing on disk, and the second wait must be able to say so"
         );
         assert!(matches!(bg.resolve("task-3"), Wait::Unknown));
+    }
+
+    /// **A handle is handed to a watcher exactly once, and a `wait` after the watcher's push
+    /// still finds it collectable.** The push is an announcement, not a delivery: it marks
+    /// nothing collected, so the parent's `wait` returns the same contract the push carried
+    /// rather than "you already have this" about a document it was only told about.
+    #[test]
+    fn a_handle_is_watched_once_and_a_wait_after_the_push_still_collects() {
+        let bg = Background::new();
+        hand(&bg, "task-1");
+        hand(&bg, "task-2");
+        let first: Vec<String> = bg.unwatched().into_iter().map(|t| t.task_id.0).collect();
+        assert_eq!(first, ["task-1", "task-2"]);
+        assert!(
+            bg.unwatched().is_empty(),
+            "a second sweep hands out nothing: one watcher per handle"
+        );
+        hand(&bg, "task-3");
+        let later: Vec<String> = bg.unwatched().into_iter().map(|t| t.task_id.0).collect();
+        assert_eq!(
+            later,
+            ["task-3"],
+            "and a handle handed out later is watched from then on"
+        );
+        // What the watcher does to the table on a push: nothing.
+        assert!(matches!(bg.resolve("task-1"), Wait::Pending { .. }));
+        bg.collected("task-1", Collected::Contract);
+        assert!(
+            bg.unwatched().is_empty(),
+            "a collected handle is never handed to a watcher"
+        );
+    }
+
+    /// The target carries everything `courier::await_contract` needs, read off the row rather
+    /// than re-derived: the node, its own clock, and whether there is a contract file to read.
+    #[test]
+    fn a_watch_target_is_the_rows_own_pairing() {
+        let bg = Background::new();
+        hand(&bg, "task-1");
+        let t = bg.unwatched().pop().unwrap();
+        assert_eq!(t.agent_id, AgentId("node-for-task-1".into()));
+        assert_eq!(t.agent_type, "codex-impl");
+        assert_eq!(t.bound, Duration::from_secs(30));
+        assert_eq!(t.contract, Some(TaskId("task-1".into())));
     }
 
     /// **An expired `wait` leaves the handle exactly as collectable as it found it.**

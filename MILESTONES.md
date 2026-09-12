@@ -106,6 +106,17 @@ row carries a resume flag and a session was journaled (claude, codex, opencode, 
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
 
+**Parent ping (2026-09-11).** A backgrounded child's end now reaches its parent's model
+without a `wait`: after the handle's reply, the bridge watches the node on its own clock and pushes
+one notification carrying the same document `wait` returns (`background_spawn.rs`,
+`a_backgrounded_childs_end_reaches_the_parent_as_a_push_before_any_wait`). The strategy is row data
+(`spec::Push`). Measured: Claude Code 2.1.268 interactive, started with
+`--dangerously-load-development-channels server:marion` (a one-time warning dialog; `marion claude`
+and the pane shape add the flag), injects `notifications/claude/channel` as a user turn within ~2 s.
+Not measured: `-p` never enqueues the event, so the headless shape carries no flag and a headless
+parent still calls `wait`; every other row pushes MCP's `notifications/message`, which no harness has
+been observed to show the model. Claude Code auto-backgrounds a blocking `spawn` past ~2 min itself.
+
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:

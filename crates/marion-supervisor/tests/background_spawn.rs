@@ -289,12 +289,25 @@ impl Bridge {
         self.call("tools/call", json!({"name": name, "arguments": arguments}))
     }
 
-    /// The bridge answers one frame per line and answers every frame it is sent, so a reply is
-    /// exactly the next line — **or [`DEADLOCK_BOUND`] elapses and this panics naming the frame it
-    /// was waiting for.** That panic is the negative control for backgrounding: with a synchronous
-    /// `spawn` the reply cannot arrive until the child exits, and the child cannot exit until a
-    /// gate this test has not reached yet.
+    /// The bridge answers every frame it is sent, so a reply is the next line **that carries an
+    /// `id`** — a notification (the push a backgrounded child's end arrives as) is what a client
+    /// reads past while it waits for its answer, and this reads past it the same way — **or
+    /// [`DEADLOCK_BOUND`] elapses and this panics naming the frame it was waiting for.** That
+    /// panic is the negative control for backgrounding: with a synchronous `spawn` the reply
+    /// cannot arrive until the child exits, and the child cannot exit until a gate this test has
+    /// not reached yet.
     fn read_reply(&mut self, what: &str) -> Value {
+        loop {
+            let frame = self.next_frame(what);
+            if frame.get("id").is_some() {
+                return frame;
+            }
+        }
+    }
+
+    /// The next frame on the pipe, whatever it is — how the push tests read the one line the
+    /// bridge sends unasked.
+    fn next_frame(&mut self, what: &str) -> Value {
         match self.lines.recv_timeout(DEADLOCK_BOUND) {
             Ok(Some(line)) => serde_json::from_str(line.trim()).unwrap_or_else(|e| {
                 panic!("the bridge's reply to {what} is not json: {e}: {line}")
@@ -543,6 +556,13 @@ impl Fixture {
                 ),
             )],
         )
+    }
+
+    /// A bridge whose declaration names a different harness for the node it serves — what the
+    /// bridge in front of a claude node sees — so the push strategy the row states is the one
+    /// under test, on the same supervisor and the same shim child.
+    fn bridge_typed(&self, agent_type: &str) -> Bridge {
+        Bridge::start(&self.declaration, &[("MARION_AGENT_TYPE", agent_type)])
     }
 
     /// A bridge whose declaration carries a token the supervisor never minted.
@@ -1712,5 +1732,84 @@ fn list_shows_this_callers_children_and_not_the_node_doing_the_asking() {
     );
 
     fx.open_gate();
+    assert!(bridge.close().success());
+}
+
+// ---------------------------------------------------------------------------------------------
+// The parent ping: a backgrounded child's end reaches the parent without a `wait`.
+// ---------------------------------------------------------------------------------------------
+
+/// Drive one bridge through the push: initialize as the named harness's bridge, background a
+/// child, open its gate, and return the first frame the bridge sends **unasked**, plus the handle.
+fn push_after_background(
+    fx: &Fixture,
+    agent_type: &str,
+    capability: &str,
+) -> (Value, String, Bridge) {
+    let mut bridge = fx.bridge_typed(agent_type);
+    let init = bridge.call(
+        "initialize",
+        json!({"protocolVersion": "2025-11-25", "clientInfo": {"name": "test", "version": "0"}}),
+    );
+    assert!(
+        init["result"]["capabilities"].pointer(capability).is_some(),
+        "a bridge in front of a {agent_type} node declares {capability}: {init}"
+    );
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    fx.await_children(1);
+    fx.open_gate();
+    // Nothing was sent, so the next line is a frame the bridge chose to send. The reader thread
+    // and `DEADLOCK_BOUND` bound it: a bridge that pushes nothing fails here, by name.
+    let push = bridge.next_frame("the backgrounded child's own announcement");
+    (push, task_id, bridge)
+}
+
+/// **A backgrounded child's end reaches the parent as a push, before any `wait`** — the frame a
+/// Claude Code parent (2.1.268, interactive, dev-channels flag) injects as a new user turn.
+///
+/// The ordering is the claim: the handle's reply was read first, nothing else was sent, and the
+/// next line on the pipe is a notification (no `id`) naming that handle. The `wait` afterwards
+/// still returns the contract, because the push announced it and did not deliver it.
+#[test]
+fn a_backgrounded_childs_end_reaches_the_parent_as_a_push_before_any_wait() {
+    let fx = fixture("bg-push-channel");
+    let (push, task_id, mut bridge) =
+        push_after_background(&fx, "claude", "/experimental/claude~1channel");
+    assert!(
+        push.get("id").is_none(),
+        "a notification, not an answer: {push}"
+    );
+    assert_eq!(push["method"], "notifications/claude/channel", "{push}");
+    assert_eq!(push["params"]["meta"]["task_id"], task_id, "{push}");
+    assert_eq!(push["params"]["meta"]["agent_type"], "codex-impl");
+    let content = push["params"]["content"].as_str().unwrap();
+    assert!(
+        content.contains("\"completion\"") && content.contains(&task_id),
+        "the push carries the child's contract: {content}"
+    );
+
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "a wait after the push still delivers the contract: {collected}"
+    );
+    assert!(bridge.close().success());
+}
+
+/// The same child under a parent whose row is unmeasured (codex) is announced over MCP's own
+/// logging notification — the protocol's shape, declared under `capabilities.logging`.
+#[test]
+fn a_backgrounded_childs_end_reaches_an_unmeasured_parent_as_a_log_notification() {
+    let fx = fixture("bg-push-log");
+    let (push, task_id, mut bridge) = push_after_background(&fx, "codex-impl", "/logging");
+    assert!(push.get("id").is_none(), "{push}");
+    assert_eq!(push["method"], "notifications/message", "{push}");
+    assert_eq!(push["params"]["logger"], "marion");
+    assert_eq!(push["params"]["data"]["meta"]["task_id"], task_id, "{push}");
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "{collected}"
+    );
     assert!(bridge.close().success());
 }

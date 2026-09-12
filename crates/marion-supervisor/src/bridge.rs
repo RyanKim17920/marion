@@ -12,6 +12,7 @@
 //! `initialize` + `tools/list` sequences for a single `exec` run.
 
 use marion_core::contract::{ExitStatus, TaskContract};
+use marion_harness::spec::Push;
 use serde_json::{Value, json};
 
 use crate::spawn::SpawnError;
@@ -120,6 +121,10 @@ pub enum Request {
         /// [`negotiate_protocol_version`] is the only thing that interprets it, so the two cases it
         /// cannot tell apart are the two cases it answers identically.
         offered_version: Option<String>,
+        /// `params.clientInfo.name`, as the client spelled it — `None` when it sent none. The one
+        /// fact that lets a bridge the harness started itself find its row's [`Push`]; see
+        /// `mcp::push_for`.
+        client_name: Option<String>,
     },
     ToolsList {
         id: Value,
@@ -193,6 +198,10 @@ pub fn parse(line: &str) -> Result<Request, Undecodable> {
                 .pointer("/params/protocolVersion")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            client_name: v
+                .pointer("/params/clientInfo/name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         },
         ("tools/list", Some(id)) => Request::ToolsList { id },
         ("tools/call", Some(id)) => Request::ToolsCall {
@@ -256,7 +265,12 @@ pub fn tools() -> Value {
                             child reaches a terminal state and returns its completed task \
                             contract. With `background: true` it returns immediately with a \
                             handle and the child runs while you keep working; call `wait` with \
-                            that handle's task_id to collect the contract.",
+                            that handle's task_id to collect the contract. A backgrounded \
+                            child's end is also announced to you where your client supports it \
+                            (Claude Code: start it with the dev-channels flag — `marion claude` \
+                            does this for you), and `wait` returns the same document either way. \
+                            Some clients background a long blocking call on their own and hand \
+                            you its result later; that needs nothing from you.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -451,11 +465,45 @@ pub fn authorization_refusal(depth: u32, verb: &str) -> Option<&'static str> {
 /// `offered` is the client's `params.protocolVersion`. It is a parameter and not a default because
 /// the defect this replaced was exactly that: the reply was a constant, and the offer was never
 /// read. See [`negotiate_protocol_version`] for the rule.
-pub fn initialize_result(id: &Value, offered: Option<&str>) -> Value {
+///
+/// `push` is how this bridge will announce a backgrounded child's end, and the capability that
+/// carries it is declared here or the client never delivers it: Claude Code (2.1.268) drops a
+/// `notifications/claude/channel` from a server that did not offer
+/// `experimental["claude/channel"]`, and MCP's logging notification is declared under `logging`.
+pub fn initialize_result(id: &Value, offered: Option<&str>, push: Push) -> Value {
+    let mut capabilities = json!({"tools": {}});
+    match push {
+        Push::ClaudeChannel => capabilities["experimental"] = json!({"claude/channel": {}}),
+        Push::McpLog => capabilities["logging"] = json!({}),
+        Push::None => {}
+    }
     json!({"jsonrpc": "2.0", "id": id, "result": {
         "protocolVersion": negotiate_protocol_version(offered),
-        "capabilities": {"tools": {}},
+        "capabilities": capabilities,
         "serverInfo": {"name": "marion", "version": env!("CARGO_PKG_VERSION")}}})
+}
+
+/// **The notification that tells a parent its backgrounded child has ended**, in the shape the
+/// parent's harness delivers ([`Push`]), or `None` where nothing is delivered.
+///
+/// A notification and not a response: it carries no `id`, because it answers no request. `text`
+/// is what the same child's `wait` would return ([`spawn_text`]) and `meta` is the same three
+/// facts under each shape — `task_id`, `agent_type`, `status` — so what the model reads does not
+/// depend on which harness it is running in. On the channel each meta key becomes an attribute
+/// of the `<channel>` tag, so keys are identifier-shaped.
+pub fn push_frame(push: Push, text: &str, meta: Value) -> Option<Value> {
+    let (method, params) = match push {
+        Push::ClaudeChannel => (
+            "notifications/claude/channel",
+            json!({"content": text, "meta": meta}),
+        ),
+        Push::McpLog => (
+            "notifications/message",
+            json!({"level": "info", "logger": "marion", "data": {"text": text, "meta": meta}}),
+        ),
+        Push::None => return None,
+    };
+    Some(json!({"jsonrpc": "2.0", "method": method, "params": params}))
 }
 
 pub fn tools_list_result(id: &Value) -> Value {
@@ -583,13 +631,22 @@ pub fn spawn_result(
     agent_type: &str,
     outcome: Result<TaskContract, SpawnError>,
 ) -> Value {
+    let (text, is_error) = spawn_text(agent_type, outcome);
+    tool_result(id, &text, is_error)
+}
+
+/// [`spawn_result`]'s text and verdict without the request id — **the one renderer** of a
+/// child's outcome, shared by the reply to a `spawn` or `wait` and by the notification that
+/// announces a backgrounded child's end ([`push_frame`]), so the two can never say different
+/// things about the same child.
+pub fn spawn_text(agent_type: &str, outcome: Result<TaskContract, SpawnError>) -> (String, bool) {
     match outcome {
         Ok(contract) => {
             let json = serde_json::to_string_pretty(&contract)
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
             match failure_line(&contract) {
-                None => tool_result(id, &json, false),
-                Some(line) => tool_result(id, &format!("{line}\n\n{json}"), true),
+                None => (json, false),
+                Some(line) => (format!("{line}\n\n{json}"), true),
             }
         }
         // **The verb comes from the error, not from this line.** Every refusal that predates §11
@@ -598,9 +655,8 @@ pub fn spawn_result(
         // ran, and whose contract marion could then not deliver, did real work — and telling a
         // parent its child never started would be the same class of false report as the rest of
         // this module deletes. See [`SpawnError::verb`].
-        Err(e) => tool_result(
-            id,
-            &bounded(&format!(
+        Err(e) => (
+            bounded(&format!(
                 "marion: the {agent_type} child {} — {e}",
                 e.verb()
             )),
@@ -639,6 +695,18 @@ pub fn root_result(
     exit: &marion_core::contract::ProcessExit,
     events: &std::path::Path,
 ) -> Value {
+    let (text, is_error) = root_text(agent_type, agent_id, status, exit, events);
+    tool_result(id, &text, is_error)
+}
+
+/// [`root_result`]'s text and verdict without the request id, for the reason [`spawn_text`] is.
+pub fn root_text(
+    agent_type: &str,
+    agent_id: &marion_core::contract::AgentId,
+    status: ExitStatus,
+    exit: &marion_core::contract::ProcessExit,
+    events: &std::path::Path,
+) -> (String, bool) {
     let head = match status {
         ExitStatus::Ok => format!("marion: the {agent_type} root finished"),
         ExitStatus::Unreported => {
@@ -649,9 +717,8 @@ pub fn root_result(
         ExitStatus::Killed => format!("marion: the {agent_type} root was killed"),
         ExitStatus::Failed => format!("marion: the {agent_type} root failed"),
     };
-    tool_result(
-        id,
-        &bounded(&format!(
+    (
+        bounded(&format!(
             "{head} — {desc}. It is node {node}, and it is a **root**: §9 gives a root no task \
              contract, so there is no result document to return and marion is not withholding one. \
              What it did is its own event stream, at {events}.",
@@ -969,6 +1036,38 @@ pub fn not_initialized(id: &Value, method: &str) -> Value {
                "marion has not been initialized: send `initialize` before `{method}`")}})
 }
 
+/// A contract built the way the real path builds it (`spawn::build_contract`), for the tests of
+/// this module and of [`crate::mcp`], so both read the *actual* layered description.
+#[cfg(test)]
+pub(crate) fn contract_that_ran(outcome: crate::spawn::ChildOutcome) -> TaskContract {
+    use marion_core::contract::*;
+    use marion_core::encoding::{Duration, SystemTime};
+    crate::spawn::build_contract(
+        TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
+        AgentId("019fbf94-0000-7000-8000-000000000001".into()),
+        RepoIdentity {
+            git_common_dir: Some("/repo/.git".into()),
+            head_branch: Some("main".into()),
+        },
+        Some(Oid("a".repeat(40))),
+        Workspace::Worktree {
+            path: "/tmp/wt".into(),
+            branch: "marion/t1".into(),
+        },
+        "add a flag",
+        &["tests pass".to_string()],
+        &[Glob("**".into())],
+        &[Glob("src/**".into())],
+        Duration::from_secs(900),
+        SystemTime::from_unix_millis(1_785_625_628_619),
+        &outcome,
+        Some(vec![]),
+        None,
+        vec![],
+        vec![],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1270,7 +1369,7 @@ mod tests {
             ),
         ];
         for (offered, expected, why) in table {
-            let v = initialize_result(&json!(0), offered);
+            let v = initialize_result(&json!(0), offered, Push::None);
             assert_eq!(
                 v["result"]["protocolVersion"], expected,
                 "offered {offered:?}: {why}"
@@ -1282,7 +1381,7 @@ mod tests {
             );
         }
         assert_eq!(
-            initialize_result(&json!(0), None)["result"]["serverInfo"]["name"],
+            initialize_result(&json!(0), None, Push::None)["result"]["serverInfo"]["name"],
             "marion"
         );
     }
@@ -1317,32 +1416,7 @@ mod tests {
     /// A contract built the way the real path builds it, so the tests below read the *actual*
     /// layered description (`spawn::build_contract`), not a hand-written imitation of it.
     fn ran(outcome: crate::spawn::ChildOutcome) -> TaskContract {
-        use marion_core::contract::*;
-        use marion_core::encoding::{Duration, SystemTime};
-        crate::spawn::build_contract(
-            TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
-            AgentId("019fbf94-0000-7000-8000-000000000001".into()),
-            RepoIdentity {
-                git_common_dir: Some("/repo/.git".into()),
-                head_branch: Some("main".into()),
-            },
-            Some(Oid("a".repeat(40))),
-            Workspace::Worktree {
-                path: "/tmp/wt".into(),
-                branch: "marion/t1".into(),
-            },
-            "add a flag",
-            &["tests pass".to_string()],
-            &[Glob("**".into())],
-            &[Glob("src/**".into())],
-            Duration::from_secs(900),
-            SystemTime::from_unix_millis(1_785_625_628_619),
-            &outcome,
-            Some(vec![]),
-            None,
-            vec![],
-            vec![],
-        )
+        contract_that_ran(outcome)
     }
 
     fn text(v: &Value) -> String {
@@ -1547,8 +1621,8 @@ mod tests {
     #[test]
     fn handling_is_idempotent_across_repeated_startup() {
         // S6: codex issues two full initialize + tools/list sequences per exec run.
-        let a = initialize_result(&json!(0), Some("2025-06-18"));
-        let b = initialize_result(&json!(0), Some("2025-06-18"));
+        let a = initialize_result(&json!(0), Some("2025-06-18"), Push::None);
+        let b = initialize_result(&json!(0), Some("2025-06-18"), Push::None);
         assert_eq!(a, b);
         assert_eq!(tools_list_result(&json!(1)), tools_list_result(&json!(1)));
     }
@@ -1631,6 +1705,130 @@ mod tests {
             assert!(
                 frame["result"].get("isError").is_some(),
                 "{name}: the verdict is written explicitly, never left to the client's default"
+            );
+        }
+    }
+
+    // ---- the parent ping: a backgrounded child's end, pushed rather than waited for ---------
+
+    /// **The capability a push rides on is declared exactly when the row it serves says so.**
+    /// Claude Code (2.1.268) delivers `notifications/claude/channel` only from a server whose
+    /// `initialize` result carried `capabilities.experimental["claude/channel"]`; MCP's logging
+    /// notification is declared under `capabilities.logging`; and a row that pushes nothing
+    /// declares nothing beyond tools, so a client cannot be promised a frame that never comes.
+    #[test]
+    fn initialize_declares_the_channel_capability_only_when_the_row_says_so() {
+        use marion_harness::spec::Push;
+        let caps =
+            |push| initialize_result(&json!(0), None, push)["result"]["capabilities"].clone();
+        let channel = caps(Push::ClaudeChannel);
+        assert_eq!(channel["experimental"]["claude/channel"], json!({}));
+        assert!(channel.get("logging").is_none(), "{channel}");
+        let log = caps(Push::McpLog);
+        assert_eq!(log["logging"], json!({}));
+        assert!(log.get("experimental").is_none(), "{log}");
+        assert_eq!(caps(Push::None), json!({"tools": {}}));
+        for push in [Push::ClaudeChannel, Push::McpLog, Push::None] {
+            assert_eq!(
+                caps(push)["tools"],
+                json!({}),
+                "{push:?}: tools are always offered"
+            );
+        }
+    }
+
+    /// **`initialize` names its client**, verbatim from 2.1.268's own request, so a bridge the
+    /// harness started itself — `marion mcp`, with no `MARION_AGENT_TYPE` to read — can find the
+    /// row whose push strategy it should use. A request with no `clientInfo` names nobody.
+    #[test]
+    fn initialize_carries_the_clients_name_so_a_bridge_the_harness_started_can_find_its_row() {
+        let init = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.268"}}}"#;
+        match parse(init) {
+            Ok(Request::Initialize { client_name, .. }) => {
+                assert_eq!(client_name.as_deref(), Some("claude-code"));
+            }
+            other => panic!("a real initialize parses as one: {other:?}"),
+        }
+        let anonymous = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#;
+        match parse(anonymous) {
+            Ok(Request::Initialize { client_name, .. }) => assert_eq!(client_name, None),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **A push is a notification in the shape the row names — never a response.** A frame with
+    /// an `id` would be an answer to a request nobody sent, which a client is entitled to drop or
+    /// to log as a protocol error; and the two shapes carry the same text and the same meta, so
+    /// what the model reads does not depend on which harness it is.
+    #[test]
+    fn a_push_frame_is_a_notification_in_the_shape_the_row_names() {
+        use marion_harness::spec::Push;
+        let meta = json!({"task_id": "t-1", "agent_type": "codex-impl", "status": "completed"});
+        let channel = push_frame(Push::ClaudeChannel, "the text", meta.clone()).unwrap();
+        assert!(channel.get("id").is_none(), "{channel}");
+        assert_eq!(channel["jsonrpc"], "2.0");
+        assert_eq!(channel["method"], "notifications/claude/channel");
+        assert_eq!(channel["params"]["content"], "the text");
+        assert_eq!(channel["params"]["meta"], meta);
+        for key in meta.as_object().unwrap().keys() {
+            assert!(
+                key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{key}: every meta key becomes a tag attribute on 2.1.268 and must be an identifier"
+            );
+        }
+        let log = push_frame(Push::McpLog, "the text", meta.clone()).unwrap();
+        assert!(log.get("id").is_none(), "{log}");
+        assert_eq!(log["method"], "notifications/message");
+        assert_eq!(log["params"]["level"], "info");
+        assert_eq!(log["params"]["logger"], "marion");
+        assert_eq!(log["params"]["data"]["text"], "the text");
+        assert_eq!(log["params"]["data"]["meta"], meta);
+        assert_eq!(push_frame(Push::None, "the text", meta), None);
+    }
+
+    /// **The pushed text is the text a `wait` would return** — one renderer, so the two can never
+    /// disagree about whether a child failed or what it said.
+    #[test]
+    fn the_pushed_text_is_the_text_a_wait_would_return() {
+        let contract = ran(crate::spawn::ChildOutcome {
+            narrative: Some("did the work".into()),
+            exit_code: Some(0),
+            ..Default::default()
+        });
+        let (text, is_error) = spawn_text("codex-impl", Ok(contract.clone()));
+        assert!(!is_error);
+        assert_eq!(
+            spawn_result(&json!(7), "codex-impl", Ok(contract)),
+            tool_result(&json!(7), &text, is_error)
+        );
+        let (text, is_error) = spawn_text("codex-impl", Err(SpawnError::NodeAborted("x".into())));
+        assert!(is_error);
+        assert_eq!(
+            spawn_result(
+                &json!(8),
+                "codex-impl",
+                Err(SpawnError::NodeAborted("x".into()))
+            ),
+            tool_result(&json!(8), &text, is_error)
+        );
+    }
+
+    /// The `spawn` description tells the model the push exists and how a client gets it, because
+    /// a handle whose holder does not know an announcement is coming will poll for it.
+    #[test]
+    fn the_spawn_description_announces_the_push_and_the_flag_that_enables_it() {
+        let spawn = tools()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "spawn")
+            .cloned()
+            .unwrap();
+        let d = spawn["description"].as_str().unwrap();
+        for needle in ["announced", "dev-channels", "marion claude", "`wait`"] {
+            assert!(
+                d.contains(needle),
+                "the spawn description lost {needle:?}: {d}"
             );
         }
     }
