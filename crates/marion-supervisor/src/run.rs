@@ -819,7 +819,7 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
 /// A timed-out or failed probe is `"unknown"`, never an error: the version is a field in an audit
 /// record, and losing a whole node's contract because a version string did not arrive would trade a
 /// large truth for a small one.
-fn harness_version(program: &str) -> String {
+pub(crate) fn harness_version(program: &str) -> String {
     let mut cmd = SysCommand::new(program);
     cmd.arg("--version");
     run_bounded(&mut cmd, HARNESS_VERSION_TIMEOUT)

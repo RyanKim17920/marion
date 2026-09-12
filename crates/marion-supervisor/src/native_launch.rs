@@ -35,6 +35,9 @@ pub(crate) struct PreparedNativeCommand {
     pub(crate) invocation: NativeInvocation,
     pub(crate) cast_path: PathBuf,
     pub(crate) terminal_profile: OsString,
+    /// What the resolved executable answered to `--version`, or `"unknown"` — the same probe,
+    /// on the same pre-launch path, that `run_spawn` gives a child (§6.1 step 3).
+    pub(crate) harness_version: String,
 }
 
 /// **One native root's identity and its §5.4 capability**, decided together and handed to the
@@ -223,6 +226,11 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
         // `claude` they get, exactly as it would without marion in front.
         let program = resolve_declared_executable(lane.executable(), &cwd, environment)
             .map_err(native_command_error)?;
+        // **Probed here, where the binary was just resolved on the operator's own PATH**, so the
+        // version on the node's `Spawned` is the version of the process about to run and not of
+        // whatever this detached supervisor's PATH would have found. Bounded and never a refusal,
+        // exactly as for a child: `"unknown"` is what a silent or hanging binary records.
+        let harness_version = crate::run::harness_version(&program.to_string_lossy());
         let agent_type = lane.agent_type();
         let adapter = (self.adapter_for)(agent_type.harness).ok_or_else(|| {
             native_command_error(format!(
@@ -258,6 +266,7 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
             invocation: prepared.invocation,
             cast_path: agent_dir.pty_cast(),
             terminal_profile: context.terminal_profile().to_owned(),
+            harness_version,
         })
     }
 }
@@ -339,13 +348,14 @@ impl NativeLaunchHandler {
 /// exit or abort — written through the supervisor's own handle so the live tree sees each before
 /// the next connection can ask about it.
 ///
-/// `harness_version` is `"unknown"`: a native launch runs whatever the operator's `PATH`
-/// resolves and marion does not probe it (a `--version` on the operator's binary before their
-/// own session starts would be marion's process, not theirs). `model` is `None` for the same
-/// reason a codex `exec` records none — marion placed no model on this argv.
+/// `harness_version` is what the factory's probe of the operator's own binary answered
+/// ([`PreparedNativeCommand::harness_version`]), and `"unknown"` before the factory has run — an
+/// abort ahead of `prepare` names no version because none was measured. `model` is `None` for the
+/// same reason a codex `exec` records none — marion placed no model on this argv.
 struct NativeNodeJournal {
     handle: Arc<crate::handler::RegistryHandle>,
     agent_id: AgentId,
+    harness_version: String,
 }
 
 impl NativeNodeJournal {
@@ -384,7 +394,7 @@ impl NativeNodeRecorder for NativeNodeJournal {
     fn spawned(&self, pid: i32) {
         self.record(RecordKind::Spawned(Spawned {
             agent_id: self.agent_id.clone(),
-            harness_version: "unknown".into(),
+            harness_version: self.harness_version.clone(),
             model: None,
             pid: Some(pid),
             // Read here, while marion holds the child, or not at all (`run.rs`'s reasoning).
@@ -529,9 +539,10 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
         // §6.1 step 7, first half, at the first instant the node has an identity and before any
         // side effect: a native node is a root in this project's tree, and `node/attach` — which
         // the relay is about to send — resolves it from the journal before it looks for a pane.
-        let journal = NativeNodeJournal {
+        let mut journal = NativeNodeJournal {
             handle: Arc::clone(&self.handle),
             agent_id: agent_id.clone(),
+            harness_version: "unknown".into(),
         };
         journal
             .intent(agent_type)
@@ -586,6 +597,9 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
                 return Err(error);
             }
         };
+        // Known only now: the factory resolved and probed the binary. Set before the launcher
+        // owns the recorder, so the `Spawned` it writes at `spawn()` carries it.
+        journal.harness_version = prepared.harness_version.clone();
         let owner: Arc<dyn crate::root::PaneOwner> =
             Arc::new(NativePaneOwner(Arc::clone(&self.handle)));
         let launch = match NativeCommandLauncher::launch(
@@ -605,6 +619,7 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
                 NativeNodeJournal {
                     handle: Arc::clone(&self.handle),
                     agent_id: agent_id.clone(),
+                    harness_version: prepared.harness_version.clone(),
                 }
                 .aborted(&format!("the native process could not be started: {error}"));
                 return Err(BootstrapError::NativeTransportIo(error));
@@ -1290,6 +1305,7 @@ mod tests {
             Arc::new(NativeNodeJournal {
                 handle: Arc::clone(&handle),
                 agent_id: agent_id.clone(),
+                harness_version: "unknown".into(),
             }),
         )
         .unwrap();
@@ -1350,13 +1366,69 @@ mod tests {
         assert_eq!(handle.panes(), 0, "ACK failure leaked the real child pane");
     }
 
-    /// **A native root is `Running` while its pty session is up** — the fact `marion tree`
-    /// showed as `spawning` for the node's whole life.
+    /// **The factory probes the executable it resolved, on the pre-launch path** — the same
+    /// `<program> --version` `run_spawn` asks a child, so a native root's `Spawned` carries a
+    /// measured version rather than `"unknown"`. A binary that answers nothing is still
+    /// `"unknown"`, never a refusal: the version is an audit field, not a launch gate.
     ///
-    /// Mutation: drop the `StateChanged(Running)` from `NativeNodeJournal::spawned` and the
-    /// summary reads `Spawning` until the exit.
+    /// Mutation: skip the probe in `ProductionNativeCommandFactory::prepare` and the first
+    /// assertion reads `"unknown"`.
     #[test]
-    fn a_native_root_replays_running_once_spawned() {
+    fn production_factory_probes_the_resolved_executables_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let work = marion_testsupport::scratch("native-factory-version");
+        let (bin, executable) = fixture_executable(&work);
+        std::fs::write(
+            &executable,
+            b"#!/bin/sh\nif [ \"$1\" = --version ]; then echo 4.2.0; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let env = factory_env(&work);
+        let project = work.join("project");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        let agent_id = AgentId("native-version".into());
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let context = DirectNativeRequestContext::new(
+            project.join(".git"),
+            project.clone(),
+            OsString::from("atlas"),
+            vec![],
+            OsString::from("xterm"),
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+        )
+        .with_environment(vec![(OsString::from("PATH"), bin.as_os_str().to_owned())]);
+        let geometry = NativeTerminalGeometry {
+            cols: 80,
+            rows: 24,
+            xpixel: 0,
+            ypixel: 0,
+        };
+        let factory = ProductionNativeCommandFactory::new(env, fixture_adapter);
+
+        let prepared = factory
+            .prepare(&selected, &context, geometry, &fixture_claim(&agent_id))
+            .expect("the fixture facade assembles");
+        assert_eq!(prepared.harness_version, "4.2.0");
+
+        // The same binary, now silent on `--version`: the honest placeholder, and still a launch.
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        let prepared = factory
+            .prepare(&selected, &context, geometry, &fixture_claim(&agent_id))
+            .expect("a binary that names no version still assembles");
+        assert_eq!(prepared.harness_version, "unknown");
+    }
+
+    /// **A native root is `Running` while its pty session is up, and its `Spawned` names the
+    /// harness version the launch probed** — the two facts `marion tree` showed as `spawning`
+    /// and `unknown` for the node's whole life.
+    ///
+    /// Mutations: drop the `StateChanged(Running)` from `NativeNodeJournal::spawned` and the
+    /// summary reads `Spawning` until the exit; write `"unknown"` for the version and the
+    /// summary shows no version.
+    #[test]
+    fn a_native_root_replays_running_with_its_probed_version_once_spawned() {
         let work = marion_testsupport::scratch("native-launch-running-summary");
         let journal_path = work.join("journal.jsonl");
         let live = Arc::new(LiveRegistry::follow(
@@ -1368,6 +1440,7 @@ mod tests {
         let journal = NativeNodeJournal {
             handle: Arc::clone(&handle),
             agent_id: agent_id.clone(),
+            harness_version: "9.9.9-probed".into(),
         };
         let agent_type = marion_core::agent_type::builtin("claude-impl").unwrap();
         journal.intent(&agent_type).unwrap();
@@ -1380,6 +1453,11 @@ mod tests {
             summary.state,
             NodeState::Running,
             "a native root whose pty session is up is running, not still spawning"
+        );
+        assert_eq!(
+            summary.harness_version.as_deref(),
+            Some("9.9.9-probed"),
+            "the summary carries the version the launch probed, not a placeholder"
         );
 
         journal.exited(None);
