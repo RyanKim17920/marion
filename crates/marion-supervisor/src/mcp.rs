@@ -929,18 +929,9 @@ fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     // a supervisor for a project of its own. `marion run` and `root::prepare` make the same one.
     let key = socket::project_root(&repo);
     Ok((
-        socket::socket_paths(&state, &key, uid()),
+        socket::socket_paths(&state, &key, socket::own_uid()),
         ProjectDir::new(&state, &key),
     ))
-}
-
-/// This process's own uid, which §2's `/tmp` fallback path is keyed on.
-fn uid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    unsafe { getuid() }
 }
 
 /// **Who this bridge is serving, and its proof** — §5.4's *"per-node capability token bound to its

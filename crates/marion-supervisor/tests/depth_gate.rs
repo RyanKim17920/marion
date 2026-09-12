@@ -396,18 +396,14 @@ done
 exit 0
 "#,
         marker = DELEGATOR_MARKER,
-        real = shell_quote(real),
-        gate = shell_quote(gate),
+        real = common::shell_quote(real),
+        gate = common::shell_quote(gate),
     );
     std::fs::write(&bin, script).expect("the shim is written");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
         .expect("the shim is executable");
     bin
-}
-
-fn shell_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
 }
 
 /// Where `program` really lives, so the shim can hand its one real invocation on.

@@ -1094,7 +1094,7 @@ impl crate::run::SpawnObserver for NodeOwner {
 /// *An unreadable peer is a refusal.* [`Peer::Unknown`] means `getpeereid` failed, and a check that
 /// cannot be made is not a check that passed.
 fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
-    let own = crate::serve::own_uid();
+    let own = crate::socket::own_uid();
     match peer {
         Peer::Uid(uid) if uid == own => Ok(()),
         Peer::Uid(uid) => Err(RpcError::refused(
@@ -11138,7 +11138,7 @@ mod tests {
         /// `matches!(peer, Peer::Uid(u) if u != own)` would accept every unreadable peer.
         #[test]
         fn root_creation_is_refused_to_a_peer_that_is_not_this_supervisors_own_user() {
-            let own = crate::serve::own_uid();
+            let own = crate::socket::own_uid();
             assert!(
                 root_spawn_authorized(Peer::Uid(own)).is_ok(),
                 "the supervisor's own user is who marion serves"

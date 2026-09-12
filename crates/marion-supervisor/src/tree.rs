@@ -315,7 +315,7 @@ type Refusal = String;
 /// looking where you think".
 pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
     let key = crate::socket::project_root(repo);
-    let paths = crate::socket::socket_paths(state_dir, &key, crate::attach::uid());
+    let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
         // One line. Why marion will not start a supervisor here is this function's doc comment.
         return Err(format!(

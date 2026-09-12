@@ -148,19 +148,15 @@ exit 0
 "#,
         delegator = DELEGATOR_MARKER,
         root = ROOT_MARKER,
-        real = shell_quote(real),
-        root_gate = shell_quote(root_gate),
-        grandchild_gate = shell_quote(grandchild_gate),
+        real = common::shell_quote(real),
+        root_gate = common::shell_quote(root_gate),
+        grandchild_gate = common::shell_quote(grandchild_gate),
     );
     std::fs::write(&bin, script).expect("the shim is written");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
         .expect("the shim is executable");
     bin
-}
-
-fn shell_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
 }
 
 fn which(program: &str) -> PathBuf {

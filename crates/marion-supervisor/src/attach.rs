@@ -128,18 +128,6 @@ fn announce_read_only(
         .map_err(|e| format!("showing the pane's read-only status: {e}"))
 }
 
-/// This user's real uid, which §2's `/tmp` fallback keys on. The same three lines `marion run`
-/// uses, and deliberately not shared with it: the binary's copy is in a `main` this module must
-/// not depend on, and moving it into `socket.rs` would put a `getuid` in a module whose whole
-/// subject is paths.
-pub(crate) fn uid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    unsafe { getuid() }
-}
-
 /// Everything that can stop an attach before it starts, each as a sentence naming what to do.
 ///
 /// A single `String` rather than a typed error: every one of these ends the process with the same
@@ -153,7 +141,7 @@ type Refusal = String;
 /// this is the same resolution `marion run` performs and not a second one.
 pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
     let key = crate::socket::project_root(repo);
-    let paths = crate::socket::socket_paths(state_dir, &key, uid());
+    let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
         return Err(format!(
             "no supervisor is serving `{}`, so there is no node `{agent}` to attach to. Attaching \

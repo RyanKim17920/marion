@@ -276,7 +276,7 @@ fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
         marion_harness::Auth::Inherited
     };
     let project_key = socket::project_root(&repo);
-    let sock = socket::socket_paths(&state, &project_key, uid());
+    let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
     let launch = detach::Launch {
         program: supervisor_binary(),
         state_dir: state.clone(),
@@ -757,7 +757,7 @@ fn run_mcp(args: McpArgs) -> ExitCode {
     // §2's key — the git common dir — for the socket and for §4.3's tree both, which is the pairing
     // the run path documents at length. One `project_root`, spent twice.
     let project_key = socket::project_root(&repo);
-    let sock = socket::socket_paths(&state, &project_key, uid());
+    let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
     let project = marion_core::paths::ProjectDir::new(&state, &project_key);
     let auth = if args.canned {
         marion_harness::Auth::Canned
@@ -1802,15 +1802,6 @@ impl SupervisorSession {
     }
 }
 
-/// This user's real uid, which §2's `/tmp` fallback keys on.
-fn uid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    unsafe { getuid() }
-}
-
 fn main() -> ExitCode {
     let native_facades = production_native_facades();
     dispatch_native_facade_or_legacy(
@@ -2081,7 +2072,7 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     // `caller: None` requires it, because one supervisor serves every linked worktree of one
     // repository and only the client knows which of them the operator meant.
     let project_key = socket::project_root(&repo);
-    let sock = socket::socket_paths(&state, &project_key, uid());
+    let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
     // **Resolved once and spent twice**, on the supervisor this run may start and on the root it
     // prepares. Two literals here would let a `--canned` run start an `Inherited` supervisor, whose
     // children would then reach the vendor directly while the root talked to the canned endpoint —

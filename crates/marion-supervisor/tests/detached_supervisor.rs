@@ -17,11 +17,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_within};
-use marion_supervisor::socket::{SocketPaths, SupervisorIdentity, read_identity, socket_paths};
+use marion_supervisor::socket::{
+    SocketPaths, SupervisorIdentity, own_uid, read_identity, socket_paths,
+};
 use marion_testsupport::until_within;
 
 unsafe extern "C" {
-    fn getuid() -> u32;
     fn getsid(pid: i32) -> i32;
     fn getpgid(pid: i32) -> i32;
     fn kill(pid: i32, sig: i32) -> i32;
@@ -51,7 +52,7 @@ impl Bed {
         let root = state.join("proj");
         std::fs::create_dir_all(&root).expect("project root");
         // SAFETY: reads the calling process's real uid and cannot fail.
-        let paths = socket_paths(&state, &root, unsafe { getuid() });
+        let paths = socket_paths(&state, &root, own_uid());
         assert!(
             paths.socket().as_os_str().len() <= 103,
             "this test's own socket path must fit the limit socket.rs is about"
@@ -1030,8 +1031,8 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
          differ"
     );
     assert_eq!(
-        socket_paths(&bed.state, &key_wt, unsafe { getuid() }).socket(),
-        socket_paths(&bed.state, &key_main, unsafe { getuid() }).socket(),
+        socket_paths(&bed.state, &key_wt, own_uid()).socket(),
+        socket_paths(&bed.state, &key_main, own_uid()).socket(),
         "one project, one socket"
     );
 

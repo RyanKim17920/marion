@@ -34,7 +34,8 @@ use marion_core::paths::ProjectDir;
 use marion_supervisor::handler::RegistryHandle;
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
 use marion_supervisor::registry::{LiveRegistry, Registry};
-use marion_supervisor::serve::{NativeLaunchConfig, Server, own_uid};
+use marion_supervisor::serve::{NativeLaunchConfig, Server};
+use marion_supervisor::socket::own_uid;
 use marion_supervisor::socket::{Acquired, SocketPaths, acquire, project_root, socket_paths};
 use marion_testsupport::{on_path, scratch, until_within};
 

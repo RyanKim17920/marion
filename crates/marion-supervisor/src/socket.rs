@@ -227,6 +227,13 @@ impl SocketPaths {
 /// `<project-hash>` is the same 12 hex characters in both branches — deliberately, so the fallback
 /// keys on the same project the primary path does and two projects cannot collide in `/tmp` any
 /// more easily than they can under `<state>`.
+/// This process's own real uid: what §2's `/tmp` fallback path is keyed on, and what a peer's
+/// uid is compared against.
+pub fn own_uid() -> u32 {
+    // SAFETY: reads the calling process's real uid and cannot fail.
+    unsafe { getuid() }
+}
+
 pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPaths {
     let project = ProjectDir::new(state, canonical_root);
     let primary = project.supervisor_sock();

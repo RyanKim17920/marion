@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use marion_supervisor::native_bootstrap::{DirectNativeRequestContext, context_hash};
-use marion_supervisor::serve::own_uid;
+use marion_supervisor::socket::own_uid;
 use marion_supervisor::socket::{Acquired, acquire, socket_paths};
 use marion_testsupport::scratch;
 
@@ -124,7 +124,8 @@ mod enabled_launch {
     use marion_supervisor::native_bootstrap::NativeBootstrapClient;
     use marion_supervisor::pty::{PtyMaster, WinSize};
     use marion_supervisor::registry::{LiveRegistry, Registry};
-    use marion_supervisor::serve::{NativeLaunchConfig, Server, own_uid};
+    use marion_supervisor::serve::{NativeLaunchConfig, Server};
+    use marion_supervisor::socket::own_uid;
     use marion_supervisor::socket::{Acquired, acquire, project_root, socket_paths};
     use marion_testsupport::scratch;
 
@@ -201,10 +202,6 @@ mod enabled_launch {
         (harness == Harness::ClaudeCode).then_some(&PROBE_ADAPTER)
     }
 
-    fn shell_quote(path: &Path) -> String {
-        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
-    }
-
     fn write_shim(bin: &Path, marker: &Path) {
         std::fs::create_dir_all(bin).unwrap();
         let shim = bin.join("claude");
@@ -221,7 +218,7 @@ mod enabled_launch {
                  : > {marker}\n\
                  printf '{greeting}\\n'\n\
                  exit 37\n",
-                marker = shell_quote(marker),
+                marker = crate::common::shell_quote(marker),
                 greeting = VENDOR_GREETING,
             ),
         )

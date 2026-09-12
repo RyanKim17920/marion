@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use marion_core::paths::ProjectDir;
 use marion_supervisor::pty::{PtyMaster, WinSize};
 use marion_supervisor::registry::Registry;
-use marion_supervisor::serve::own_uid;
+use marion_supervisor::socket::own_uid;
 use marion_supervisor::socket::{
     SocketPaths, nobody_is_serving, project_root, read_identity, socket_paths,
 };

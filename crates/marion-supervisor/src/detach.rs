@@ -169,8 +169,7 @@ impl Launch {
         crate::socket::socket_paths(
             &self.state_dir,
             &self.project_root,
-            // SAFETY: reads the calling process's real uid and cannot fail.
-            unsafe { uid() },
+            crate::socket::own_uid(),
         )
     }
 
@@ -504,11 +503,6 @@ pub fn log_path(launch: &Launch) -> PathBuf {
     launch.paths().log().to_path_buf()
 }
 
-unsafe extern "C" {
-    #[link_name = "getuid"]
-    fn uid() -> u32;
-}
-
 /// Which of the three stages an argv names. See the module doc's table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -623,8 +617,11 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         program: launch.program.clone(),
         source: std::io::Error::other(source.to_string()),
     })?;
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    let paths = socket_paths(&launch.state_dir, &launch.project_root, unsafe { uid() });
+    let paths = socket_paths(
+        &launch.state_dir,
+        &launch.project_root,
+        crate::socket::own_uid(),
+    );
     let Acquired::Serving(serving) = acquire(&paths)? else {
         return Ok(());
     };

@@ -38,10 +38,9 @@ use marion_core::proto::{
     Call, FailureKind, Frame, Outcome, Request, RequestId, RpcError, SpawnCaller,
 };
 use marion_supervisor::detach::{Launch, ensure_supervisor};
-use marion_supervisor::socket::{SocketPaths, socket_paths};
+use marion_supervisor::socket::{SocketPaths, own_uid, socket_paths};
 
 unsafe extern "C" {
-    fn getuid() -> u32;
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
@@ -93,7 +92,7 @@ impl Bed {
         // first would key the supervisor on something no client could name.
         let key = marion_supervisor::socket::project_root(&root);
         // SAFETY: reads the calling process's real uid and cannot fail.
-        let paths = socket_paths(&state, &key, unsafe { getuid() });
+        let paths = socket_paths(&state, &key, own_uid());
         assert!(paths.socket().as_os_str().len() <= 103);
         Bed {
             state,

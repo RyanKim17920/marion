@@ -33,10 +33,6 @@ const PROBE_POLL: Duration = Duration::from_millis(10);
 const SHIM_LIFE_TICKS: u32 = 200;
 const CLEANUP_ACK_BOUND: Duration = Duration::from_secs(3);
 
-fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
-}
-
 fn executable(path: &Path, body: &str) {
     std::fs::write(path, body).expect("the marker program is written");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
@@ -87,10 +83,10 @@ impl Bed {
                  done\n\
                  : > {done}\n\
                  exit 0\n",
-                started = shell_quote(&native_marker),
-                release = shell_quote(&release),
+                started = common::shell_quote(&native_marker),
+                release = common::shell_quote(&release),
                 life = SHIM_LIFE_TICKS,
-                done = shell_quote(&native_done),
+                done = common::shell_quote(&native_done),
             ),
         );
         executable(
@@ -106,10 +102,10 @@ impl Bed {
                  done\n\
                  : > {done}\n\
                  exit 0\n",
-                started = shell_quote(&managed_marker),
-                release = shell_quote(&release),
+                started = common::shell_quote(&managed_marker),
+                release = common::shell_quote(&release),
                 life = SHIM_LIFE_TICKS,
-                done = shell_quote(&managed_done),
+                done = common::shell_quote(&managed_done),
             ),
         );
 

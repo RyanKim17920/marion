@@ -173,12 +173,12 @@ case "$*" in
 esac
 exit 0
 "#,
-        started = shell_quote(started_dir),
-        done = shell_quote(done_dir),
-        gate = shell_quote(gate),
-        root_gate = shell_quote(root_gate),
+        started = common::shell_quote(started_dir),
+        done = common::shell_quote(done_dir),
+        gate = common::shell_quote(gate),
+        root_gate = common::shell_quote(root_gate),
         root_marker = ROOT_MARKER,
-        slow_version = shell_quote(slow_version),
+        slow_version = common::shell_quote(slow_version),
         life_ticks = SHIM_LIFE.as_millis() / 50,
         life_secs = SHIM_LIFE.as_secs(),
     );
@@ -190,10 +190,6 @@ exit 0
             .expect("the shim is executable");
     }
     bin
-}
-
-fn shell_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -894,10 +894,6 @@ impl TreeSnapshot {
         git_env(repo, &self.env(), &["diff", "--no-renames", &a.0, &b.0])
     }
 
-    pub fn objects_dir(&self) -> &Path {
-        &self.objects
-    }
-
     /// Drop the copied index once both snapshots are taken.
     ///
     /// Explicit rather than a `Drop` impl: this outlives a `prepare` and is used again at exit, so

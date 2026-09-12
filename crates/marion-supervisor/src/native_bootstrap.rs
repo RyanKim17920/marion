@@ -95,8 +95,9 @@ use crate::native_intent::{
     select_consumed_native,
 };
 use crate::native_tty::{ClientTtyWitness, ControllingTtyWitness, verify_bootstrap_tty};
-use crate::serve::{ConnId, own_uid};
+use crate::serve::ConnId;
 use crate::socket;
+use crate::socket::own_uid;
 
 const CONTEXT_DOMAIN: &[u8] = b"marion/direct-native-context/v1\0";
 const DESCRIPTOR_MESSAGE: &[u8] = b"MNB1";

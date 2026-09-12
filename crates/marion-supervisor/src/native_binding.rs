@@ -17,9 +17,7 @@ use marion_core::proto::{
     NativeLaunchContext, NativeLaunchContextV2, NativeOsValueConversionError, TerminalGeometryV1,
 };
 use marion_core::{AgentType, NativeFacadeDescriptor};
-use marion_harness::{
-    NativeInjectionError, NativeProcessBase, NativeTerminalGeometry, validate_native_process_values,
-};
+use marion_harness::{NativeInjectionError, validate_native_process_values};
 
 use crate::native_intent::ReadyNativeFacade;
 
@@ -33,34 +31,6 @@ pub struct BoundNativeLaunch<'a> {
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub geometry: TerminalGeometryV1,
-}
-
-impl BoundNativeLaunch<'_> {
-    /// Consume this binding by moving its exact process values into harness-neutral state,
-    /// intentionally discarding the validated descriptor identity without revalidation.
-    pub fn into_process_base(self) -> NativeProcessBase {
-        let Self {
-            descriptor: _,
-            agent_type: _,
-            program,
-            argv,
-            env,
-            cwd,
-            geometry,
-        } = self;
-        NativeProcessBase {
-            program,
-            user_argv: argv,
-            env,
-            cwd,
-            geometry: NativeTerminalGeometry {
-                cols: geometry.cols,
-                rows: geometry.rows,
-                xpixel: geometry.xpixel,
-                ypixel: geometry.ypixel,
-            },
-        }
-    }
 }
 
 /// Why byte-exact native launch state could not be bound to a declared facade.

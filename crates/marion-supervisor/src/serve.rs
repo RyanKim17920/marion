@@ -216,15 +216,6 @@ pub enum Peer {
     Unknown,
 }
 
-/// This process's own real uid — what a peer's uid is compared against.
-pub fn own_uid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    unsafe { getuid() }
-}
-
 /// [`Peer`] for one accepted connection.
 ///
 /// Read from the socket rather than from the frame, and read **once**: a peer cannot change its uid
@@ -241,7 +232,7 @@ fn peer_of(stream: &std::os::unix::net::UnixStream) -> Peer {
 /// socket a `cargo test` can make, so the only half of this function a test can distinguish is the
 /// one where the kernel says no — and a descriptor that is not a socket is exactly that answer,
 /// for a real reason (`ENOTSOCK`). Without this seam, a build that ignored the failure and
-/// returned `Peer::Uid(own_uid())` unconditionally would pass every test in this workspace while
+/// returned `Peer::Uid(crate::socket::own_uid())` unconditionally would pass every test in this workspace while
 /// granting root creation to a peer nobody had identified.
 ///
 /// # Why there are two of these
@@ -668,7 +659,7 @@ pub(crate) fn sink(conn: ConnId) -> Outbound {
     let (tx, _rx) = sync_channel(OUTBOUND_CAPACITY);
     Outbound {
         conn,
-        peer: Peer::Uid(own_uid()),
+        peer: Peer::Uid(crate::socket::own_uid()),
         tx,
         departed: Arc::new(Mutex::new(None)),
         shutdown: None,
@@ -687,7 +678,7 @@ pub(crate) fn capture(conn: ConnId) -> (Outbound, Captured) {
     let (tx, rx) = sync_channel(OUTBOUND_CAPACITY);
     let out = Outbound {
         conn,
-        peer: Peer::Uid(own_uid()),
+        peer: Peer::Uid(crate::socket::own_uid()),
         tx,
         departed: Arc::new(Mutex::new(None)),
         shutdown: None,
@@ -1685,7 +1676,7 @@ mod tests {
     /// pinned separately over the whole three-way predicate. A descriptor that is **not a socket**
     /// makes the peer-credential read fail for a real kernel reason (`ENOTSOCK`), and that is the
     /// row a build
-    /// which ignored the return code could not survive: `Peer::Uid(own_uid())` returned
+    /// which ignored the return code could not survive: `Peer::Uid(crate::socket::own_uid())` returned
     /// unconditionally would look right on every socket in this workspace while handing root
     /// creation to a peer nobody identified.
     #[test]
@@ -1694,7 +1685,7 @@ mod tests {
         let (a, _b) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
         assert_eq!(
             peer_of(&a),
-            Peer::Uid(own_uid()),
+            Peer::Uid(crate::socket::own_uid()),
             "a connected socket has a peer, and it is this test's own user"
         );
 

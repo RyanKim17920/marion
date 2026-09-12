@@ -36,7 +36,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use marion_supervisor::socket::{project_root, socket_paths};
+use marion_supervisor::socket::{own_uid, project_root, socket_paths};
+
+mod common;
 use marion_testsupport::{Scratch, fixture_repo, scratch, survivors, sweep, until_within};
 use serde_json::{Value, json};
 
@@ -58,10 +60,6 @@ const QUIET_SAMPLE: Duration = Duration::from_secs(2);
 // ---------------------------------------------------------------------------------------------
 // The bed
 // ---------------------------------------------------------------------------------------------
-
-fn shell_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
-}
 
 /// A `codex` that answers `--version` instantly and then blocks until the test opens the gate.
 ///
@@ -85,8 +83,8 @@ while [ ! -e {gate} ]; do
 done
 exit 0
 "#,
-        started = shell_quote(started),
-        gate = shell_quote(gate),
+        started = common::shell_quote(started),
+        gate = common::shell_quote(gate),
         ticks = SHIM_LIFE.as_millis() / 50,
     );
     std::fs::write(&bin, script).expect("the shim is written");
@@ -157,9 +155,7 @@ impl Fixture {
     /// §2's socket for this fixture's project — derived the way a client derives it, so the test
     /// and `marion mcp` cannot disagree about which supervisor "listening" means.
     fn socket(&self) -> PathBuf {
-        // SAFETY: reads the calling process's real uid and cannot fail.
-        let uid = unsafe { getuid() };
-        socket_paths(&self.state, &project_root(&self.repo), uid)
+        socket_paths(&self.state, &project_root(&self.repo), own_uid())
             .socket()
             .to_path_buf()
     }
@@ -178,10 +174,6 @@ impl Fixture {
     fn server(&self) -> Server {
         Server::start(self, &[])
     }
-}
-
-unsafe extern "C" {
-    fn getuid() -> u32;
 }
 
 // ---------------------------------------------------------------------------------------------

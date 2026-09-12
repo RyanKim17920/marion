@@ -27,12 +27,8 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_core::proto::{Call, Frame, Outcome, Request, RequestId};
-use marion_supervisor::socket::{SocketPaths, socket_paths};
+use marion_supervisor::socket::{SocketPaths, own_uid, socket_paths};
 use serde_json::Value;
-
-unsafe extern "C" {
-    fn getuid() -> u32;
-}
 
 /// A bound that exists only to fail: nothing here waits on work a test has not already caused.
 const BOUND: Duration = Duration::from_secs(60);
@@ -60,8 +56,7 @@ impl Supervisor {
         base_url: &str,
         idle_grace: Duration,
     ) -> Self {
-        // SAFETY: reads the calling process's real uid and cannot fail.
-        let paths = socket_paths(state, key, unsafe { getuid() });
+        let paths = socket_paths(state, key, own_uid());
         assert!(
             paths.overflow().is_none(),
             "this bed's socket must live under <state> beside its journal, and {:?} pushed it to \
@@ -150,6 +145,11 @@ impl Supervisor {
 /// key/value pair takes across them (`K = "v"` and `"K": "v"`) and nothing else. Parsed by hand
 /// rather than with a TOML *and* a JSON dependency, and narrowly: only keys marion itself defines,
 /// only double-quoted values.
+/// `path` as one POSIX shell word, for the shims these beds write.
+pub fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
 pub fn declaration_of(state: &Path, agent_id: &AgentId) -> BTreeMap<String, String> {
     let mut candidates = Vec::new();
     walk(state, &mut |p| {

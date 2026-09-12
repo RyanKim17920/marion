@@ -12,9 +12,7 @@ use std::time::Duration;
 use marion_core::contract::AgentId;
 use marion_core::proto::notify::Event as Note;
 use marion_core::proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
-use marion_supervisor::socket::{SocketPaths, socket_paths};
-
-use super::getuid;
+use marion_supervisor::socket::{SocketPaths, own_uid, socket_paths};
 
 /// How long a single socket read may block before it is a failure. Never a verdict: the suites
 /// that dial through this assert over identities, ordinals, counts, payloads and liveness
@@ -28,7 +26,7 @@ pub fn paths_for(state: &Path, repo: &Path) -> SocketPaths {
     socket_paths(
         state,
         &marion_supervisor::socket::project_root(repo),
-        unsafe { getuid() },
+        own_uid(),
     )
 }
 
