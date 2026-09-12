@@ -128,6 +128,19 @@ left at generation 1 so the relaunch is the child's own and not the tree's). Liv
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 
+**Published and CI green (2026-09-12, `c1c1a6d`).** `main` and `harness-generality` are pushed;
+release v0.1.0 carries the 8-minute demo; `.github/workflows/ci.yml` passes fmt, clippy and the
+harness-free suites on ubuntu and macOS (run 34661). Making CI green surfaced and fixed real
+defects, not just gates: `getpeereid` was macOS-only (Linux now reads `SO_PEERCRED`); a Linux
+`/proc` start identity is implemented and measured; a native root could never delegate (its
+bridge ran token-less; the supervisor now mints the root's token, `native_facade_spawn.rs`);
+a pane that ended between reservation and snapshot read as a stolen lease; the run's journal
+cursor was taken after the run could write; `PtyHost::drop` stopped the reader before reaping
+a session-leader child; a bare `Condvar::wait` on the resize path; `sa_restorer` and the mask
+tail belong to glibc; forked children inherit a stream writer's `flock`. Test-side fixes made
+five load-sensitive tests causal. Video and README refreshed; the TUI status row, detail-pane
+title, hints, caps contrast and headless explanation were reworked from a live critique.
+
 **Verified at `a2b3ed8` (2026-09-11).** Full matrix in an isolated worktree through the shim
 runner, eight harnesses at their pins (claude 2.1.263, codex 0.147.0, opencode 1.18.30, goose
 1.50.0, copilot 1.0.83, gemini 0.53.0, cline 3.0.61, qwen 0.23.0): build, clippy `-D warnings`,
