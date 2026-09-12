@@ -400,6 +400,24 @@ fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tre
         root,
         "and the root is the one still running"
     );
+    // **…and both nodes read as `Running`, with a measured version each.** Both processes are
+    // alive and parked mid-turn, so a tree that says `spawning` about either is the tree that
+    // said it for a managed node's whole life; `Spawning` is what `SpawnIntent` alone means.
+    // Polled to the registry's own barrier rather than read once: the records land right after
+    // `command.spawn()`, long before the gate parks anything, but the registry follows the
+    // journal on a poll and two nodes present is not proof it has read past their `Spawned`.
+    assert!(
+        until(|| b
+            .tree()
+            .iter()
+            .all(|n| n.state == marion_core::node::NodeState::Running)),
+        "a managed root and child whose processes marion holds are running, not still spawning: \
+         {:?}",
+        b.tree()
+            .iter()
+            .map(|n| (n.agent_id.0.clone(), n.state))
+            .collect::<Vec<_>>()
+    );
 
     let closing_turns_at_attach = root_turns_asked(&server, RootStep::Finish);
     let (replay, attached) = b.attach(&root);

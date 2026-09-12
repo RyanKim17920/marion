@@ -3278,8 +3278,10 @@ impl RegistryHandle {
     /// launch path, differing only in the spec (`agent/spawn` builds a fresh one, `node/resume`
     /// reconstructs a node's own with an id and a session on it). The thread owns the node for its
     /// whole life through [`NodeOwner`]; `repo` is the tree its children branch from. Returns once
-    /// the process exists, with the node's `Spawning` state — the same instant `agent/spawn` and
-    /// `node/resume` both answer at.
+    /// the process exists, with the node's state as the registry has it at that instant —
+    /// `Running` once `journal::confirm_spawned`'s records have been followed, `Spawning` if the
+    /// tail has not caught up yet — the same instant `agent/spawn` and `node/resume` both answer
+    /// at.
     fn launch_root(
         &self,
         me: Arc<RegistryHandle>,
@@ -3398,8 +3400,8 @@ impl RegistryHandle {
 
     /// **The state a launch answers with, read back off the registry rather than asserted.** The
     /// state this returns is the state the journal says, which is the point of answering at
-    /// `Spawned` rather than before it: a client that renders `Spawning` here is rendering a record
-    /// it could have read itself.
+    /// `Spawned` rather than before it: a client that renders `Running` — or a `Spawning` the
+    /// registry's tail has not yet moved past — is rendering a record it could have read itself.
     fn spawned_state(&self, agent_id: &AgentId) -> NodeState {
         self.live
             .read(|r| r.tree().get(agent_id).map(|n| n.state))
@@ -3971,6 +3973,10 @@ impl RegistryHandle {
         {
             Some(ResidentReason::BlockedNode)
         } else if holding.iter().any(|n| n.state == NodeState::Spawning) {
+            // An intent whose confirmation has not landed. A managed node's `Spawned` is followed
+            // by `StateChanged(Running)` (`journal::confirm_spawned`), so a node marion holds a
+            // process for reads as `NonTerminalNode` below, not here; both keep the supervisor
+            // resident, and the word names which of the two the operator is looking at.
             Some(ResidentReason::SpawnOutstanding)
         } else if holding.iter().any(|n| !n.state.is_exited()) {
             Some(ResidentReason::NonTerminalNode)

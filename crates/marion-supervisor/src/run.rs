@@ -1487,7 +1487,7 @@ pub fn run_spawn_watched(
     let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
         std::cell::Cell::new(None);
     let announce_started = |pid: i32| {
-        let appended = crate::journal::append(
+        let appended = crate::journal::confirm_spawned(
             &env.project_dir,
             child_spawned_record(&agent_id, &version, inv.model.as_deref(), pid),
         );
@@ -1993,8 +1993,8 @@ fn child_spawned_record(
     version: &str,
     model: Option<&str>,
     pid: i32,
-) -> RecordKind {
-    RecordKind::Spawned(Spawned {
+) -> Spawned {
+    Spawned {
         agent_id: agent_id.clone(),
         harness_version: version.to_string(),
         // The **compiled** value, for §6.7's reason: what went on the wire, never what was asked
@@ -2009,7 +2009,7 @@ fn child_spawned_record(
             // and a wrong identity would be far worse than a missing one.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         },
-    })
+    }
 }
 
 /// **The `LaunchOnly` half of §7.3.3's wiring, and the asymmetry is the harness's, not marion's.**

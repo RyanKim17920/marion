@@ -66,8 +66,10 @@ use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
 use marion_core::ir::Provenance;
 use marion_core::journal::{
-    EncodeError, JournalRecord, PermissionDenied, RecordKind, WriterId, encode,
+    EncodeError, JournalRecord, PermissionDenied, RecordKind, Spawned, StateChanged, WriterId,
+    encode,
 };
+use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
 use marion_core::registry::{Replay, replay};
 
@@ -343,6 +345,45 @@ pub fn record(project: &ProjectDir, kind: RecordKind) {
     }
 }
 
+/// **§6.1 step 7's confirmation for a managed node, and the `Running` beside it** — one rule for
+/// a headless root (`root::confirm_root_started`) and a child (`run::run_spawn_watched`'s
+/// `announce_started`), in the shape `native_launch::NativeNodeJournal::spawned` already writes
+/// for a native root through the supervisor's own handle.
+///
+/// **`Running` from the instant the process is held.** Before this record a managed node replayed
+/// as `Spawning` for its whole life — `run.rs` and `root.rs` write nothing between `Spawned` and
+/// `Exited` — and `marion tree` said `spawning` about a node whose process had been running for
+/// minutes. `Spawning` means what `SpawnIntent` alone means: *no process exists*. At this instant
+/// one does, marion holds its `Child`, its reader is already draining it (`root.rs`: *"the master,
+/// then the recorder, then the child"*; `run.rs`'s driver reads from the first byte), and its pid
+/// is §6.7's kill target. The only honest reading of that node is `Running`, and the harness's
+/// own turn boundaries — `Blocked`, `Idle` — overwrite it as they are observed. The exit still
+/// lands on it: `fold_exited` overrides any live state.
+///
+/// Two records, two failure policies, stated once. `Spawned` goes through the fallible [`append`]
+/// because its loss is not survivable (see [`record`]); the `Running` after it goes through
+/// [`record`], because losing it leaves a node marion can still name — stale, not invisible — and
+/// killing a live process over a full disk buys nothing against that.
+pub fn confirm_spawned(
+    project: &ProjectDir,
+    spawned: Spawned,
+) -> Result<JournalRecord, JournalError> {
+    let agent_id = spawned.agent_id.clone();
+    let confirmed = append(project, RecordKind::Spawned(spawned))?;
+    record(project, running(&agent_id));
+    Ok(confirmed)
+}
+
+/// The `StateChanged(Running)` a node's confirmation is followed by — see [`confirm_spawned`].
+/// One constructor rather than three spellings, so the managed and native lanes cannot drift into
+/// different records for the same fact.
+pub fn running(agent_id: &AgentId) -> RecordKind {
+    RecordKind::StateChanged(StateChanged {
+        agent_id: agent_id.clone(),
+        state: NodeState::Running,
+    })
+}
+
 /// **Every permission marion refused on one node, journaled.** Written for a root
 /// (`root::launch_and_journal`) and for a child (`run::run_spawn`) by the *same* function, for the
 /// reason [`record`] gives about its own failure policy: a record whose shape or destination
@@ -553,6 +594,67 @@ mod tests {
         assert!(
             r.gaps.is_empty(),
             "gapless by construction, which is what makes a gap mean loss"
+        );
+    }
+
+    /// **A managed node is `Running` from the instant its process is held, and its `Spawned`
+    /// carries the version the launch probed** — the two facts `marion tree` showed as `spawning`
+    /// and `unknown` for a headless root's whole life, in the shape `native_launch.rs` already
+    /// writes for a native root: `Spawned`, then `StateChanged(Running)` beside it.
+    ///
+    /// Mutations: drop the `Running` from `confirm_spawned` and the summary reads `Spawning` until
+    /// the exit; write the version as `"unknown"` and the summary carries no version.
+    #[test]
+    fn a_confirmed_spawn_replays_running_with_its_probed_version() {
+        let dir = scratch("journal-confirm-spawned");
+        let project = ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.journal().parent().unwrap()).unwrap();
+        let agent_id = AgentId("root".into());
+        record(&project, intent("root", None));
+        confirm_spawned(
+            &project,
+            Spawned {
+                agent_id: agent_id.clone(),
+                harness_version: "9.9.9-probed".into(),
+                model: None,
+                pid: Some(std::process::id() as i32),
+                start_id: None,
+            },
+        )
+        .expect("the confirmation lands");
+
+        let replayed = crate::registry::Registry::boot_path(&project.journal()).unwrap();
+        let node = replayed.tree().get(&agent_id).expect("the node replays");
+        let summary = crate::handler::summarize(node, false).expect("a managed root projects");
+        assert_eq!(
+            summary.state,
+            NodeState::Running,
+            "a managed node whose process marion holds is running, not still spawning"
+        );
+        assert_eq!(
+            summary.harness_version.as_deref(),
+            Some("9.9.9-probed"),
+            "the summary carries the version the launch probed, not a placeholder"
+        );
+
+        record(
+            &project,
+            RecordKind::Exited(Exited {
+                agent_id: agent_id.clone(),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "clean exit".into(),
+                },
+            }),
+        );
+        let replayed = crate::registry::Registry::boot_path(&project.journal()).unwrap();
+        let node = replayed.tree().get(&agent_id).expect("the node replays");
+        assert!(
+            node.state.is_exited(),
+            "the exit still lands on the running node: {:?}",
+            node.state
         );
     }
 

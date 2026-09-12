@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
-use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned, StateChanged};
-use marion_core::node::NodeState;
+use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::{NativeFacadeDescriptor, contract::AgentId};
 use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
@@ -403,15 +402,14 @@ impl NativeNodeRecorder for NativeNodeJournal {
                 crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
             },
         }));
-        // **`Running` from the instant the process holds its pane.** A managed node's turn has
-        // boundaries marion can see on its stream; a native session has none — its pty session
-        // *is* its turn, open from `spawn()` until the pane ends — so the only honest reading
-        // between `Spawned` and `Exited` is `Running`. Without this record the node replayed as
-        // `Spawning` for its whole life, and `marion tree` said so to the operator sitting in it.
-        self.record(RecordKind::StateChanged(StateChanged {
-            agent_id: self.agent_id.clone(),
-            state: NodeState::Running,
-        }));
+        // **`Running` from the instant the process holds its pane** — the same record, for the
+        // same reason, that `journal::confirm_spawned` writes beside a managed node's `Spawned`:
+        // a process marion holds is running, and `Spawning` is what `SpawnIntent` alone means.
+        // A native session has no turn boundary marion could observe to overwrite it — its pty
+        // session *is* its turn, open from `spawn()` until the pane ends. Without this record the
+        // node replayed as `Spawning` for its whole life, and `marion tree` said so to the
+        // operator sitting in it.
+        self.record(crate::journal::running(&self.agent_id));
     }
 
     fn exited(&self, status: Option<std::process::ExitStatus>) {
@@ -691,6 +689,7 @@ mod tests {
     use std::time::Duration;
 
     use marion_core::contract::AgentId;
+    use marion_core::node::NodeState;
     use marion_harness::{
         NativeInjection, NativeProcessBase, NativeTerminalGeometry, assemble_native,
     };

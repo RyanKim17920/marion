@@ -172,8 +172,10 @@ pub struct ReplyResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpawnResult {
     pub agent_id: AgentId,
-    /// Typically `Spawning` — §6.1 step 7 journals the intent, starts the process, journals the
-    /// confirmation, and this returns once the node exists in the registry.
+    /// `Running` once the confirmation has been followed — §6.1 step 7 journals the intent, starts
+    /// the process, journals `Spawned` and the `Running` beside it, and this returns once the
+    /// node exists in the registry — or `Spawning` when the registry's tail has not yet reached
+    /// those records. Never a state the journal does not say.
     pub state: NodeState,
     /// **The name of the file this run's contract will be written to**, for a child; `None` for a
     /// root, which has none (§9).
@@ -204,8 +206,8 @@ pub struct DoctorRunResult {
 /// `tree/subscribe` knows the same node it lost is the one that came back — a resume that minted a
 /// new id would be a spawn, and the whole point is that it is not. `spawn_generation` is the
 /// lifetime count from replay: `2` on the first resume, more on later ones, and the field a caller
-/// reads to tell "relaunched" from "was never lost". `state` is typically `Spawning`, the same
-/// instant `agent/spawn` returns at.
+/// reads to tell "relaunched" from "was never lost". `state` is what the registry holds at the
+/// same instant `agent/spawn` returns at — see [`AgentSpawnResult::state`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeResumeResult {
     pub agent_id: AgentId,

@@ -1251,7 +1251,7 @@ fn confirm_root_started(
     unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
     pid: i32,
 ) {
-    match crate::journal::append(&node.project, spawned_record(node, Some(pid))) {
+    match crate::journal::confirm_spawned(&node.project, spawned_record(node, Some(pid))) {
         Ok(_) => {
             spawned.set(true);
             if let Some(hook) = on_started {
@@ -1415,7 +1415,10 @@ fn journal_the_roots_outcome(
     // intent was never resolved (§7.2), which is the reading reserved for a node marion *lost*.
     let confirm = |node: &RootNode| {
         if !spawned {
-            crate::journal::record(&node.project, spawned_record(node, None));
+            crate::journal::record(
+                &node.project,
+                RecordKind::Spawned(spawned_record(node, None)),
+            );
         }
     };
     // **First, and before the match on `result`** — §9's change record is written on every path
@@ -1696,8 +1699,8 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// path and version in `meta.json` — declared and unwritten, and with no accessor to reach for
 /// (`marion_core::paths`). When marion writes that file the value comes from there, measured once,
 /// and this reads it rather than re-deriving it. Until then `"unknown"` is what marion knows.
-fn spawned_record(node: &RootNode, pid: Option<i32>) -> RecordKind {
-    RecordKind::Spawned(Spawned {
+fn spawned_record(node: &RootNode, pid: Option<i32>) -> Spawned {
+    Spawned {
         agent_id: node.agent_id.clone(),
         harness_version: "unknown".into(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
@@ -1722,7 +1725,7 @@ fn spawned_record(node: &RootNode, pid: Option<i32>) -> RecordKind {
             // resolves to an honest `cannot-tell`.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         }),
-    })
+    }
 }
 
 /// The `LaunchOnly` root: spawn with the prompt already in argv, read the stream, assert post hoc
