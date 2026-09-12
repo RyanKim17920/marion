@@ -82,11 +82,61 @@ pub struct Node {
     pub label: String,
     /// The node's state, already rendered. One short word.
     pub state: String,
+    /// What kind of state that word is, decided by whoever rendered it. See [`Tone`].
+    pub tone: Tone,
     pub actions: Vec<Action>,
     /// One caveat about the key the actions were decided at, appended to the strip — *"harness
     /// version unknown"*, for a node whose version marion never read. A `String` for the same
     /// reason [`Action::name`] is one: the words are the supervisor's.
     pub note: Option<String>,
+}
+
+/// The kind of state a row is in, for the glyph and colour it is drawn with.
+///
+/// Five kinds and no more, and **decided by the caller** with the state word: this crate cannot
+/// read a state word any more than it can read a capability name (see the module doc), so the
+/// supervisor says *which* of these a state is and this only says how each looks. The glyph is
+/// the load-bearing half — an operator on a monochrome terminal, or one who cannot tell red from
+/// green, scans the column for it — and the colour is the same fact again where there is colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// The process is there and doing something, or about to: spawning, ready, running, idle.
+    Live,
+    /// Waiting on somebody — a permission, an answer, its own descendants.
+    Blocked,
+    /// Finished, and well.
+    Done,
+    /// Finished badly: failed, timed out, killed.
+    Failed,
+    /// marion does not claim to know: orphaned, reaped, cancelled, unreported.
+    Unknown,
+}
+
+impl Tone {
+    /// One column wide, and distinct per tone: see [`Tone`] for why the glyph is not decoration.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Tone::Live => "●",
+            Tone::Blocked => "◐",
+            Tone::Done => "✓",
+            Tone::Failed => "✗",
+            Tone::Unknown => "?",
+        }
+    }
+
+    /// The colour, where the terminal has one. [`Tone::Done`] is deliberately the default
+    /// foreground: a forest of finished nodes should recede so the live and the failed stand out.
+    /// [`Tone::Unknown`] is [`greyed`]'s grey, because the two mean the same thing — marion has
+    /// not measured this — and one grey is a vocabulary where two would be a puzzle.
+    pub fn style(self) -> Style {
+        match self {
+            Tone::Live => Style::default().fg(Color::Green),
+            Tone::Blocked => Style::default().fg(Color::Yellow),
+            Tone::Done => Style::default(),
+            Tone::Failed => Style::default().fg(Color::Red),
+            Tone::Unknown => greyed(),
+        }
+    }
 }
 
 /// The flattened tree, plus the cursor.
@@ -205,9 +255,20 @@ impl Tree {
                 let n = &self.nodes[i];
                 // State first. It is the fact an operator scans the column for, and a label that
                 // runs past the column edge must clip itself rather than the state.
-                format!("{prefix}[{}] {}", n.state, n.label)
+                format!("{prefix}{} {} {}", n.tone.glyph(), n.state, n.label)
             })
             .collect()
+    }
+
+    /// One row as its three spans — connectors, `glyph state`, ` label` — for a renderer that
+    /// styles them differently. [`Self::lines`] is their concatenation, by construction.
+    fn spans(&self, row: usize) -> Option<(&str, String, String)> {
+        let n = &self.nodes[*self.order.get(row)?];
+        Some((
+            self.prefix[row].as_str(),
+            format!("{} {}", n.tone.glyph(), n.state),
+            format!(" {}", n.label),
+        ))
     }
 }
 
@@ -311,7 +372,7 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// Fixed rather than proportional. A tree pane that grew with the window would resize the *content*
 /// pane on every drag, and the content pane is a node's pty — §5.3 gives it one `TIOCSWINSZ` per
 /// change and a harness repaints its whole screen for each.
-/// 44, which is what `│ └ [blocked:permission] claude-impl 5b04` needs at depth 2 — marion's
+/// 44, which is what `│ └ ◐ blocked:permission claude-impl 5b04` needs at depth 2 — marion's
 /// longest state word, a typical agent type and the short id, at the deepest row §6.1's default
 /// `max_depth` of 3 can produce. An `AgentId` is a UUID and does not fit at any width worth
 /// spending on a sidebar; the tree is navigated with the cursor, not by reading ids back, and
@@ -452,12 +513,15 @@ pub struct TreeView<'a> {
 
 impl Widget for TreeView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        for (row, line) in self.tree.lines().iter().enumerate() {
-            let Ok(row) = u16::try_from(row) else { break };
-            if row >= area.height {
+        for row in 0..self.tree.rows() {
+            let Ok(y) = u16::try_from(row) else { break };
+            if y >= area.height {
                 break;
             }
-            let on_cursor = row as usize == self.tree.cursor;
+            let Some((prefix, state, label)) = self.tree.spans(row) else {
+                break;
+            };
+            let on_cursor = row == self.tree.cursor;
             let style = match (on_cursor, self.focused) {
                 (true, true) => Style::default().add_modifier(Modifier::REVERSED),
                 (true, false) => Style::default().add_modifier(Modifier::BOLD),
@@ -467,10 +531,28 @@ impl Widget for TreeView<'_> {
             // reversed selection reads as a bar rather than as a ragged highlight.
             if on_cursor {
                 for x in 0..area.width {
-                    buf[(area.x + x, area.y + row)].set_style(style);
+                    buf[(area.x + x, area.y + y)].set_style(style);
                 }
             }
-            buf.set_stringn(area.x, area.y + row, line, area.width as usize, style);
+            let tone = self.tree.nodes[self.tree.order[row]].tone.style();
+            let mut x = area.x;
+            let end = area.x.saturating_add(area.width);
+            // Connectors dim, the state in its tone, the label plain — and the cursor's
+            // modifier over all three, so the bar stays one bar.
+            for (text, s) in [
+                (prefix, Style::default().add_modifier(Modifier::DIM)),
+                (state.as_str(), tone),
+                (label.as_str(), Style::default()),
+            ] {
+                let (next, _) = buf.set_stringn(
+                    x,
+                    area.y + y,
+                    text,
+                    end.saturating_sub(x) as usize,
+                    s.patch(style),
+                );
+                x = next;
+            }
         }
     }
 }
@@ -559,6 +641,7 @@ mod tests {
             parent: parent.map(str::to_string),
             label: id.into(),
             state: "Idle".into(),
+            tone: Tone::Live,
             actions: Vec::new(),
             note: None,
         }
@@ -627,7 +710,7 @@ mod tests {
     #[test]
     fn a_row_leads_with_its_state_so_the_column_clip_cannot_hide_it() {
         let t = Tree::new(vec![node("a", None), node("kid", Some("a"))]);
-        assert_eq!(t.lines(), ["[Idle] a", "└ [Idle] kid"]);
+        assert_eq!(t.lines(), ["● Idle a", "└ ● Idle kid"]);
     }
 
     /// **A grandchild must be attributable to its parent by the connectors alone.** Every child
@@ -648,13 +731,13 @@ mod tests {
         assert_eq!(
             t.lines(),
             [
-                "[Idle] r",
-                "├ [Idle] a",
-                "│ └ [Idle] a1",
-                "└ [Idle] b",
-                "  ├ [Idle] b1",
-                "  └ [Idle] b2",
-                "[Idle] s",
+                "● Idle r",
+                "├ ● Idle a",
+                "│ └ ● Idle a1",
+                "└ ● Idle b",
+                "  ├ ● Idle b1",
+                "  └ ● Idle b2",
+                "● Idle s",
             ]
         );
     }
@@ -951,6 +1034,62 @@ mod tests {
         ActionBar { node: Some(&n) }.render(area, &mut buf);
         let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
         assert_eq!(row.trim_end(), "caps: steer  · harness version unknown");
+    }
+
+    /// **A failed node must not look like a finished one.** Every state was one bracketed word in
+    /// the terminal's default colour, so `exited:failed`, `exited:timedout` and `orphaned` read
+    /// exactly like `exited:ok` until each word was read. The state now carries a tone the
+    /// supervisor decided — a glyph an operator can scan the column for in monochrome, and a
+    /// colour where there is one — and the label stays plain so the tone is the state's alone.
+    #[test]
+    fn a_state_is_drawn_with_its_tones_glyph_and_colour() {
+        let tones = [
+            Tone::Live,
+            Tone::Blocked,
+            Tone::Done,
+            Tone::Failed,
+            Tone::Unknown,
+        ];
+        let glyphs = tones.map(Tone::glyph);
+        for (i, g) in glyphs.iter().enumerate() {
+            assert_eq!(g.chars().count(), 1, "one column: {g:?}");
+            assert!(
+                !glyphs[..i].contains(g),
+                "two tones share the glyph {g:?}; in monochrome they are the same state"
+            );
+        }
+        assert_eq!(Tone::Failed.style().fg, Some(Color::Red));
+        assert_eq!(Tone::Live.style().fg, Some(Color::Green));
+        assert_eq!(Tone::Blocked.style().fg, Some(Color::Yellow));
+        assert_eq!(
+            Tone::Unknown.style().fg,
+            greyed().fg,
+            "unknown is the same grey as an unmeasured capability: not a fault, not a fact"
+        );
+        assert_eq!(Tone::Done.style().fg, None, "finished-well recedes");
+
+        let mut failed = node("f", None);
+        failed.state = "exited:failed".into();
+        failed.tone = Tone::Failed;
+        let t = Tree::new(vec![failed, node("live", None)]);
+        assert_eq!(t.lines(), ["✗ exited:failed f", "● Idle live"]);
+
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        TreeView {
+            tree: &t,
+            focused: false,
+        }
+        .render(area, &mut buf);
+        let fg = |x: u16, y: u16| buf[(x, y)].style().fg;
+        assert_eq!(fg(0, 0), Some(Color::Red), "the glyph carries the tone");
+        assert_eq!(fg(2, 0), Some(Color::Red), "so does the state word");
+        assert_eq!(
+            fg(16, 0),
+            Some(Color::Reset),
+            "the label is plain: the colour is the state's, not the row's"
+        );
+        assert_eq!(fg(0, 1), Some(Color::Green));
     }
 
     /// The cursor bar spans the column, and only when the tree has the keyboard is it reversed —

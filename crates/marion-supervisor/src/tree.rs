@@ -53,7 +53,7 @@ use marion_core::harness::Harness;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
 use marion_harness::{Capabilities, ExecutionSurfaces};
-use marion_tui::tree::{self, Action, Focus, Nav, Tree};
+use marion_tui::tree::{self, Action, Focus, Nav, Tone, Tree};
 use marion_tui::{Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
 
@@ -119,6 +119,7 @@ pub fn row(node: &NodeSummary) -> tree::Node {
         parent: node.parent_id.as_ref().map(|p| p.0.clone()),
         label: label_of(node),
         state: state_label(node.state, node.reap_state),
+        tone: tone_of(node.state, node.reap_state),
         actions: actions_for(node),
         // The conservative key is the right answer for an unread version (§3.3), and the strip
         // should say that is why, rather than let ten greyed words read as "this harness cannot".
@@ -168,6 +169,26 @@ fn state_label(state: NodeState, reap: ReapState) -> String {
         (_, ReapState::ReapedIdle) => "reaped".into(),
         (NodeState::Blocked(r), _) => format!("blocked:{r:?}").to_lowercase(),
         (s, ReapState::Live) => format!("{s:?}").to_lowercase(),
+    }
+}
+
+/// The [`Tone`] of a node's state, decided from the same two fields as [`state_label`] and by
+/// the same precedence: an exit outranks a reap state, which outranks the live state.
+///
+/// `Cancelled` and `Unreported` are not failures — the first is a decision and the second an
+/// absence — and `Orphaned` is §7.2's *"no record of deciding"*, so all three take the grey the
+/// strip uses for *unmeasured*: not a fault, and not a fact either.
+fn tone_of(state: NodeState, reap: ReapState) -> Tone {
+    use marion_core::contract::ExitStatus;
+    match (state, reap) {
+        (NodeState::Exited(ExitStatus::Ok), _) => Tone::Done,
+        (NodeState::Exited(ExitStatus::Failed | ExitStatus::TimedOut | ExitStatus::Killed), _) => {
+            Tone::Failed
+        }
+        (NodeState::Exited(ExitStatus::Cancelled | ExitStatus::Unreported), _) => Tone::Unknown,
+        (_, ReapState::Orphaned | ReapState::ReapedIdle) => Tone::Unknown,
+        (NodeState::Blocked(_), ReapState::Live) => Tone::Blocked,
+        (_, ReapState::Live) => Tone::Live,
     }
 }
 
@@ -1446,5 +1467,55 @@ mod tests {
             )
             .contains("permission")
         );
+    }
+
+    /// **The tone is decided here, with the label, from the same two fields.** A failed exit, a
+    /// timeout and a kill are all trouble; a clean exit is done; a cancel, an unreported exit,
+    /// an orphan and a reap are things marion does not claim to know the outcome of; anything
+    /// blocked is waiting on someone; and everything else is alive.
+    #[test]
+    fn the_tone_partitions_every_state_the_label_can_say() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::BlockReason;
+        use marion_tui::tree::Tone;
+        let live = ReapState::Live;
+        for s in [
+            NodeState::Spawning,
+            NodeState::Ready,
+            NodeState::Running,
+            NodeState::Idle,
+        ] {
+            assert_eq!(tone_of(s, live), Tone::Live, "{s:?}");
+        }
+        for r in [
+            BlockReason::Descendants,
+            BlockReason::Permission,
+            BlockReason::Elicitation,
+        ] {
+            assert_eq!(tone_of(NodeState::Blocked(r), live), Tone::Blocked, "{r:?}");
+        }
+        assert_eq!(tone_of(NodeState::Exited(ExitStatus::Ok), live), Tone::Done);
+        for e in [ExitStatus::Failed, ExitStatus::TimedOut, ExitStatus::Killed] {
+            assert_eq!(tone_of(NodeState::Exited(e), live), Tone::Failed, "{e:?}");
+        }
+        for e in [ExitStatus::Cancelled, ExitStatus::Unreported] {
+            assert_eq!(tone_of(NodeState::Exited(e), live), Tone::Unknown, "{e:?}");
+        }
+        assert_eq!(
+            tone_of(NodeState::Running, ReapState::Orphaned),
+            Tone::Unknown,
+            "§7.2: orphaned claims nothing about the process, so it is neither live nor failed"
+        );
+        assert_eq!(
+            tone_of(NodeState::Idle, ReapState::ReapedIdle),
+            Tone::Unknown
+        );
+        assert_eq!(
+            tone_of(NodeState::Exited(ExitStatus::Failed), ReapState::Orphaned),
+            Tone::Failed,
+            "the exit is the more specific fact, for the tone as for the label"
+        );
+        let n = summary("x", Harness::Codex, false, None);
+        assert_eq!(row(&n).tone, Tone::Live, "the row carries the tone");
     }
 }
