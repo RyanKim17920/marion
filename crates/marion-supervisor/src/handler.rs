@@ -1191,40 +1191,52 @@ fn recorded_type(
     Ok(ty)
 }
 
-fn spawn_failed_before_the_process_existed(agent_id: &AgentId) -> RpcError {
+/// A **child**'s launch failed between its intent and its process, and this is why.
+///
+/// `why` is the sentence `run_spawn`'s thread filed as its outcome — a worktree git refused, a
+/// configuration document that would not write, an adapter that would not compile the launch
+/// because the row promised a tool the harness has none of. It is quoted rather than summarised:
+/// the parent reading this `spawn` result is the one who can change the row, and "a worktree, a
+/// configuration document, or the harness `--version` probe" told it nothing it could act on. The
+/// journal's `SpawnAborted` beside the intent carries the same sentence (`run::AbortOnDrop`).
+///
+/// [`launch_failed_reason`] supplies the fallback for a thread that filed no reason.
+fn spawn_failed_before_the_process_existed(agent_id: &AgentId, why: Option<&str>) -> RpcError {
     RpcError::of(
         FailureKind::Internal,
         Some(&agent_id.0),
         format!(
-            "node `{}` was journaled and its launch failed before any process existed — a \
-             worktree, a configuration document, or the harness `--version` probe. Its \
+            "node `{}` was journaled and its launch failed before any process existed: {}. Its \
              `SpawnIntent` is resolved by a `SpawnAborted` beside it, which after §11 item 28 step \
              1 is evidence that **no process exists**, not merely consistent with it (§7.2). A \
              worktree may be left behind; a process is not.",
-            agent_id.0
+            agent_id.0,
+            launch_failed_reason(why)
         ),
         "§7.2",
     )
 }
 
-/// [`spawn_failed_before_the_process_existed`], for a **root**, carrying marion's own sentence.
-///
-/// Separate from the child's because the two have different evidence to offer. A child's launch
-/// failure is `run_spawn`'s, and the journal's `SpawnAborted` beside the intent is where its reason
-/// lives; the caller of a child's spawn is another *agent*, and the paragraph above is written for
-/// it. A root's caller is a **person at `marion run`**, and the failures they hit are marion's own
-/// refusals — an unrecordable working tree, a `<state>` inside the repository, a harness with no
-/// root surface — each of which already names the directory and the remedy. Dropping that on the
-/// floor and answering "the launch failed" is a refusal an operator cannot act on.
-///
-/// `None` is the honest fallback for a thread that filed no reason, and it says so rather than
-/// inventing one.
-fn root_launch_failed(agent_id: &AgentId, why: Option<&str>) -> RpcError {
-    let why = match why {
+/// The sentence a launch failure is reported with: the thread's own, or an honest statement that
+/// it filed none — which is itself the fault to report, never a reason invented in its place.
+fn launch_failed_reason(why: Option<&str>) -> String {
+    match why {
         Some(w) => w.to_string(),
         None => "marion's own thread for it filed no reason, which is itself the fault to report"
             .to_string(),
-    };
+    }
+}
+
+/// [`spawn_failed_before_the_process_existed`], for a **root**.
+///
+/// The same shape, kept separate because the two have different evidence to offer and different
+/// readers. A root's caller is a **person at `marion run`**, and the failures they hit are
+/// marion's own refusals — an unrecordable working tree, a `<state>` inside the repository, a
+/// harness with no root surface — each of which already names the directory and the remedy.
+/// Dropping that on the floor and answering "the launch failed" is a refusal an operator cannot
+/// act on.
+fn root_launch_failed(agent_id: &AgentId, why: Option<&str>) -> RpcError {
+    let why = launch_failed_reason(why);
     RpcError::of(
         FailureKind::Internal,
         Some(&agent_id.0),
@@ -3147,8 +3159,14 @@ impl RegistryHandle {
         match recv(deadline) {
             Ok(Progress::Started) => {}
             // The launch failed between the intent and the process: no worktree, a config that
-            // would not compile, a `--version` probe that expired.
-            Ok(_) => return Err(spawn_failed_before_the_process_existed(&agent_id)),
+            // would not compile, a row promising a tool the harness lacks. The thread filed its
+            // reason through `mark_finished` before it sent `Finished`, so it is there to quote.
+            Ok(_) => {
+                return Err(spawn_failed_before_the_process_existed(
+                    &agent_id,
+                    self.owned_failure(&agent_id).as_deref(),
+                ));
+            }
             Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
         }
         self.live.refresh();
@@ -4654,6 +4672,25 @@ mod tests {
 
     fn id(s: &str) -> AgentId {
         AgentId(s.into())
+    }
+
+    /// **The child's launch refusal carries the thread's own sentence, as the root's does.** A
+    /// codex row granting `read` is refused at `compile` with a sentence naming the tool and the
+    /// harness; the answer to `agent/spawn` must quote it, not replace it with "a worktree, a
+    /// configuration document, or the harness `--version` probe".
+    #[test]
+    fn a_child_launch_failure_quotes_the_reason_the_thread_filed() {
+        let why = "compiling the child's launch: codex: no mapping for marion tool `read`; this \
+                   harness's adapter provides none";
+        let err = spawn_failed_before_the_process_existed(&id("a1"), Some(why));
+        let msg = err.to_string();
+        assert!(msg.contains(why), "the sentence survives: {msg}");
+        assert!(msg.contains("a1"), "and the node is named: {msg}");
+        let none = spawn_failed_before_the_process_existed(&id("a1"), None).to_string();
+        assert!(
+            none.contains("filed no reason"),
+            "a thread that filed nothing is reported as such: {none}"
+        );
     }
 
     fn line(seq: u64, ms: u64, kind: RecordKind) -> Vec<u8> {

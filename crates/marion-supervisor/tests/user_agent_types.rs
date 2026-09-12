@@ -6,14 +6,16 @@
 //! surface carries the prompt on argv — so the provider's request log is a direct witness of the
 //! prompt the child was actually given, prefix included.
 //!
-//! Two cases, one file:
+//! Three cases, one file:
 //! 1. the row resolves: the contract names the harness the row declared, the journal's
 //!    `SpawnIntent` names the row's own name, and the provider saw the prompt;
-//! 2. the file is gone: the same name is an unknown type, refused before anything is journaled.
+//! 2. the file is gone: the same name is an unknown type, refused before anything is journaled;
+//! 3. the row grants a tool its harness has none of: the launch is refused by name, before any
+//!    process, and both the error and the journal's `SpawnAborted` say which tool on which harness.
 //!
 //! The first case drives a REAL `codex` and skips loudly by name on a runner that declared it has
-//! no harness binaries ([`marion_testsupport::harness_available`]); the second needs no binary and
-//! never skips.
+//! no harness binaries ([`marion_testsupport::harness_available`]); the other two need no binary
+//! and never skip — the third is refused at `compile`, which runs before the `--version` probe.
 
 use std::path::PathBuf;
 
@@ -209,5 +211,62 @@ fn a_reviewer_whose_file_is_gone_is_an_unknown_type_and_nothing_is_journaled() {
     assert!(
         !env.project_dir.journal().exists(),
         "nothing was journaled: the refusal precedes the intent"
+    );
+}
+
+/// **A row that promises a tool its harness cannot provide is refused by name, and the name
+/// survives to every reader.** codex has no `read` tool
+/// (`CodexAdapter::compile` refuses `tools = ["read"]` with a typed `UnsupportedTool`), and a
+/// spawn on such a row must fail *before any process exists* with a sentence that names the tool
+/// and the harness — in the error the parent's `spawn` reads, and in the journal's `SpawnAborted`
+/// beside the intent. Before this, the journal carried only the generic "marion left the spawn
+/// path" reason, and the supervisor's `agent/spawn` answer carried nothing at all.
+#[test]
+fn a_row_granting_a_tool_codex_lacks_is_refused_by_name_before_any_process() {
+    let root = scratch("user-types-no-read-tool");
+    let repo = repo_with_reviewer(&root);
+    std::fs::write(
+        repo.join(AGENT_TYPES_FILE),
+        "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+         tools = [\"read\"]\n",
+    )
+    .unwrap();
+    let state = root.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let env = env_for(&state, &repo, Some("http://127.0.0.1:9/v1".into()));
+
+    let err = run_spawn(
+        &env,
+        &request(&repo),
+        &TaskId("no-read".into()),
+        &root_caller(),
+    )
+    .expect_err("codex has no `read` tool, so the launch is refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("`read`") && msg.contains("codex"),
+        "the refusal names the tool and the harness: {msg}"
+    );
+
+    let bytes = std::fs::read(env.project_dir.journal()).expect("the intent was journaled");
+    let replay = marion_core::registry::replay(&bytes);
+    let nodes = replay.nodes();
+    assert_eq!(nodes.len(), 1, "one node, the refused one: {nodes:?}");
+    let node = &nodes[0];
+    assert_eq!(
+        node.intent.as_ref().map(|i| i.agent_type.as_str()),
+        Some("reviewer")
+    );
+    assert!(
+        !node.spawn_confirmed && node.pid.is_none(),
+        "nothing was journaled as Spawned: {node:?}"
+    );
+    let reason = node
+        .spawn_aborted
+        .as_deref()
+        .expect("the intent is resolved by a SpawnAborted beside it");
+    assert!(
+        reason.contains("`read`") && reason.contains("codex"),
+        "the journal's refusal carries the adapter's own sentence: {reason}"
     );
 }

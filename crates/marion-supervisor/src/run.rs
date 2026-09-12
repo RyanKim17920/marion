@@ -1026,27 +1026,51 @@ fn duplex_child(
 /// *looks* like a node marion lost, when in fact marion decided its fate and simply never said so.
 /// `Drop` catches every one of those exits, plus a panic, which no explicit call site can.
 ///
-/// The reason is generic because the error is gone by the time `Drop` runs — a `?` has already
-/// moved it into the caller's `Err`. That is the honest trade: the journal records *that* marion
-/// abandoned the spawn (which is what replay needs, and what keeps the node out of `unresolved()`),
-/// and the error itself reaches the caller, who is the one who can act on it.
+/// The reason is generic by default because the error is gone by the time `Drop` runs — a `?` has
+/// already moved it into the caller's `Err`. That is the honest trade: the journal records *that*
+/// marion abandoned the spawn (which is what replay needs, and what keeps the node out of
+/// `unresolved()`), and the error itself reaches the caller, who is the one who can act on it.
+///
+/// **Except where the refusal is marion's own sentence**, which is worth more than "marion left".
+/// An adapter that refuses to compile a launch — codex asked for a `read` tool it has none of —
+/// says which tool on which harness, and a `?` routed through [`Self::filed`] keeps that sentence
+/// for the record while still returning the error untouched. The root path already journals its
+/// refusals this way (`root.rs` writes `e.to_string()` into its `SpawnAborted`); this is the child
+/// path catching up at the one site whose sentence a reader most needs.
 struct AbortOnDrop<'a> {
     project: &'a ProjectDir,
     agent_id: AgentId,
     armed: bool,
+    /// The refusal's own words, when a `?` passed through [`Self::filed`]; `None` is the generic
+    /// reason above.
+    reason: Option<String>,
+}
+
+impl AbortOnDrop<'_> {
+    /// Pass a fallible step's result through, remembering its error's sentence for the abort
+    /// record. The error itself is returned exactly as it was: this files a copy, not a diversion.
+    fn filed<T>(&mut self, result: Result<T, SpawnError>) -> Result<T, SpawnError> {
+        if let Err(e) = &result {
+            self.reason = Some(e.to_string());
+        }
+        result
+    }
 }
 
 impl Drop for AbortOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
+            let reason = self.reason.take().unwrap_or_else(|| {
+                "marion left the spawn path before the child reached a terminal record; the error \
+                 was returned to the caller (§7.2: a node marion decided the fate of is never one \
+                 marion lost)"
+                    .into()
+            });
             crate::journal::record(
                 self.project,
                 RecordKind::SpawnAborted(SpawnAborted {
                     agent_id: self.agent_id.clone(),
-                    reason: "marion left the spawn path before the child reached a terminal \
-                             record; the error was returned to the caller (§7.2: a node marion \
-                             decided the fate of is never one marion lost)"
-                        .into(),
+                    reason,
                 }),
             );
         }
@@ -1289,6 +1313,7 @@ pub fn run_spawn_watched(
         project: &env.project_dir,
         agent_id: agent_id.clone(),
         armed: true,
+        reason: None,
     };
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
@@ -1367,7 +1392,10 @@ pub fn run_spawn_watched(
         bridge_args: vec!["mcp".into()],
     };
     write_config_documents(adapter.config_files(&launch, &ctx)?)?;
-    let inv = adapter.compile(&launch, &ctx)?;
+    // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the one
+    // sentence on this path a reader of the journal needs verbatim, so it is filed for the abort
+    // record on the way out rather than replaced by the guard's generic reason.
+    let inv = resolution.filed(adapter.compile(&launch, &ctx).map_err(SpawnError::from))?;
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it
@@ -3494,6 +3522,45 @@ mod tests {
         );
         let plain = builtin("codex-impl").unwrap();
         assert_eq!(prefixed_prompt(&plain, "DEMO: review"), "DEMO: review");
+    }
+
+    /// **A `SpawnAborted` written for a refusal marion can name carries that name.** The guard's
+    /// generic reason is for the exits it cannot see; a `?` that passed through [`AbortOnDrop::filed`]
+    /// leaves the error's own sentence in the journal, so a reader of the record learns which tool
+    /// on which harness rather than only that marion left.
+    #[test]
+    fn an_abort_files_the_refusals_own_sentence_when_it_has_one() {
+        let (_root, _state, _repo, env) = spawn_env("abort-reason");
+        let agent_id = AgentId("abort-1".into());
+        let refused: Result<(), SpawnError> = Err(SpawnError::Harness(
+            marion_harness::HarnessError::UnsupportedTool {
+                harness: Harness::Codex,
+                tool: "read".into(),
+            },
+        ));
+        {
+            let mut resolution = AbortOnDrop {
+                project: &env.project_dir,
+                agent_id: agent_id.clone(),
+                armed: true,
+                reason: None,
+            };
+            let err = resolution.filed(refused).unwrap_err();
+            assert!(
+                matches!(err, SpawnError::Harness(_)),
+                "the error is returned untouched"
+            );
+        }
+        let bytes = std::fs::read(env.project_dir.journal()).unwrap();
+        let replay = marion_core::registry::replay(&bytes);
+        let reason = replay
+            .get(&agent_id)
+            .and_then(|n| n.spawn_aborted.clone())
+            .expect("the guard journaled the abort");
+        assert!(
+            reason.contains("`read`") && reason.contains("codex"),
+            "the journal carries the adapter's sentence: {reason}"
+        );
     }
 
     /// **The contract records the prompt the child actually saw**, prefix included: §6.7's audit
