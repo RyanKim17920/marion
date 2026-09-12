@@ -347,6 +347,40 @@ pub fn running(nodes: &[NodeSummary]) -> usize {
         .count()
 }
 
+/// Fold one subscription notification into a `tree/subscribe` snapshot. Returns whether `nodes`
+/// changed.
+///
+/// **Unknown events are ignored and known ones are never inferred**: a `node/state` for a node the
+/// snapshot has not been told about is dropped rather than used to invent a summary, because a
+/// summary invented here would have a fabricated harness and would then be greyed from the wrong
+/// row of doctor's table. Shared by the tree screen and the native relay's status line, so the
+/// two never disagree about what a snapshot plus its notifications adds up to.
+pub(crate) fn fold_tree_event(nodes: &mut Vec<NodeSummary>, event: &Event) -> bool {
+    match event {
+        Event::NodeAdded { node, .. } => {
+            match nodes.iter_mut().find(|n| n.agent_id == node.agent_id) {
+                Some(existing) => *existing = node.clone(),
+                None => nodes.push(node.clone()),
+            }
+            true
+        }
+        Event::NodeState {
+            agent_id,
+            state,
+            reap_state,
+            ..
+        } => match nodes.iter_mut().find(|n| n.agent_id == *agent_id) {
+            Some(n) => {
+                n.state = *state;
+                n.reap_state = *reap_state;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// One `marion tree` screen.
 struct Session {
     stream: UnixStream,
@@ -437,30 +471,20 @@ impl Session {
         let Frame::Notification(n) = frame else {
             return;
         };
-        match n.event {
-            Event::NodeAdded { node, .. } => {
-                match self.nodes.iter_mut().find(|n| n.agent_id == node.agent_id) {
-                    Some(existing) => *existing = node,
-                    None => self.nodes.push(node),
-                }
-                self.rebuild();
-            }
-            Event::NodeState {
-                agent_id,
-                state,
-                reap_state,
-                ..
-            } => {
-                if let Some(n) = self.nodes.iter_mut().find(|n| n.agent_id == agent_id) {
-                    n.state = state;
-                    n.reap_state = reap_state;
-                    let label = state_label(state, reap_state);
-                    self.events.record(&agent_id.0, &label);
-                    self.rebuild();
-                }
-            }
-            _ => {}
+        if !fold_tree_event(&mut self.nodes, &n.event) {
+            return;
         }
+        if let Event::NodeState {
+            agent_id,
+            state,
+            reap_state,
+            ..
+        } = &n.event
+        {
+            let label = state_label(*state, *reap_state);
+            self.events.record(&agent_id.0, &label);
+        }
+        self.rebuild();
     }
 
     fn rebuild(&mut self) {
@@ -874,6 +898,51 @@ mod tests {
             timeout: marion_core::encoding::Duration::from_secs(900),
             pane,
         }
+    }
+
+    /// The snapshot is kept current by folding, and the fold is shared with the native relay's
+    /// status line, so its rules are asserted once here: a known node is updated in place, an
+    /// unknown node's state is dropped rather than invented, and only a change reports `true`.
+    #[test]
+    fn fold_tree_event_updates_known_nodes_and_never_invents_one() {
+        let mut nodes = vec![summary("a", Harness::Codex, false, None)];
+        let ts = marion_core::encoding::SystemTime::from_unix_millis(0);
+        let a_exits = Event::NodeState {
+            agent_id: AgentId("a".into()),
+            state: NodeState::Exited(marion_core::contract::ExitStatus::Ok),
+            reap_state: ReapState::Live,
+            ts,
+        };
+        assert!(fold_tree_event(&mut nodes, &a_exits));
+        assert!(nodes[0].state.is_exited());
+
+        let stranger = Event::NodeState {
+            agent_id: AgentId("nobody".into()),
+            state: NodeState::Running,
+            reap_state: ReapState::Live,
+            ts,
+        };
+        assert!(!fold_tree_event(&mut nodes, &stranger));
+        assert_eq!(
+            nodes.len(),
+            1,
+            "a state for an unknown node invented a summary"
+        );
+
+        let added = Event::NodeAdded {
+            node: summary("b", Harness::Codex, false, None),
+            ts,
+        };
+        assert!(fold_tree_event(&mut nodes, &added));
+        assert_eq!(nodes.len(), 2);
+        assert!(
+            fold_tree_event(&mut nodes, &added),
+            "a re-add replaces in place"
+        );
+        assert_eq!(nodes.len(), 2);
+
+        let unrelated = Event::SupervisorExiting { ts, held_by: None };
+        assert!(!fold_tree_event(&mut nodes, &unrelated));
     }
 
     fn offered(node: &NodeSummary) -> Vec<String> {
