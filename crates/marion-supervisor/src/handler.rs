@@ -65,14 +65,14 @@
 //! open until the vocabulary has a field for it.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type;
 use marion_core::contract::{AgentId, Isolation, ProcessExit, TaskContract, TaskId};
 use marion_core::journal::{
-    KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SupervisorExited,
+    KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SpawnIntent, SupervisorExited,
 };
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::notify::Event;
@@ -223,8 +223,14 @@ impl Unprojectable {
 /// pty map from quietly defaulting one.
 pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unprojectable> {
     let intent = node.intent.as_ref().ok_or(Unprojectable::NoIntent)?;
-    let ty = agent_type::builtin(&intent.agent_type)
-        .ok_or_else(|| Unprojectable::UnknownAgentType(intent.agent_type.clone()))?;
+    // A built-in resolves here; a `.marion/agents.toml` row does not, because this runs under
+    // the shared registry lock and reads no file. The type was only ever needed for the bound,
+    // and every production writer journals the bound — so a recorded bound projects a node of
+    // any type, and only an unresolvable type *with no recorded bound* is unprojectable.
+    let ty = agent_type::builtin(&intent.agent_type);
+    if ty.is_none() && intent.timeout_secs.is_none() {
+        return Err(Unprojectable::UnknownAgentType(intent.agent_type.clone()));
+    }
     let depth =
         u8::try_from(intent.depth).map_err(|_| Unprojectable::DepthOutOfRange(intent.depth))?;
     Ok(NodeSummary {
@@ -247,9 +253,11 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
         // a node running under a different clock is telling an operator the wrong number in the one
         // place they look to decide whether a run has time left. `None` is an older journal or a
         // launch marion put no bound of its own on, and the type is the honest answer for both.
-        timeout: intent
-            .timeout_secs
-            .map_or(ty.timeout, marion_core::encoding::Duration::from_secs),
+        timeout: match (intent.timeout_secs, ty) {
+            (Some(secs), _) => marion_core::encoding::Duration::from_secs(secs),
+            (None, Some(ty)) => ty.timeout,
+            (None, None) => unreachable!("refused above"),
+        },
         pane,
     })
 }
@@ -1133,11 +1141,54 @@ fn gate_refusal(e: marion_core::agent_type::SpawnGateError) -> RpcError {
 fn spawn_refused_before_the_node_existed() -> RpcError {
     RpcError::refused(
         "agent_type",
-        "marion refused this spawn before it minted a node: the agent type is not one this build \
-         has, or the requested writable scope is outside that type's ceiling. Nothing was \
-         journaled and nothing was started, so there is no node to look up. (§3.1, §5.4)",
+        "marion refused this spawn before it minted a node: the agent type is not a built-in and \
+         not a row of the tree's .marion/agents.toml, or the requested writable scope is outside \
+         that type's ceiling. Nothing was journaled and nothing was started, so there is no node \
+         to look up. (§3.1, §5.4)",
         "§3.1",
     )
+}
+
+/// The agent types the tree at `repo` can spawn, or the file's own refusal as a frame's error.
+///
+/// [`crate::run::agent_types`]'s one non-`Ok` arm is a `.marion/agents.toml` that exists and cannot
+/// be used; that is the operator's file, so the refusal carries its path and reason verbatim.
+fn tree_types(repo: &Path) -> Result<marion_core::agent_type::AgentTypes, RpcError> {
+    crate::run::agent_types(repo)
+        .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))
+}
+
+/// A journaled node's type, re-resolved from today's table for the tree it runs in — and refused
+/// if the type has since moved to another harness.
+///
+/// The journal records the name and the harness the node launched under. A `.marion/agents.toml`
+/// row is the operator's and may have been edited since; a row that now names another harness
+/// would relaunch a session that harness has never seen, under a node claiming to be the same
+/// one. The built-ins cannot move, so this only ever fires on a user row.
+fn recorded_type(
+    repo: &Path,
+    intent: &SpawnIntent,
+) -> Result<marion_core::agent_type::AgentType, RpcError> {
+    let ty = tree_types(repo)?
+        .resolve(&intent.agent_type)
+        .ok_or_else(|| {
+            Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(&intent.agent_id)
+        })?;
+    if ty.harness != intent.harness {
+        return Err(RpcError::refused(
+            "agent_type",
+            format!(
+                "`{}` was journaled as {} and {} now says {}; marion will not resume a node under \
+                 a different harness than it recorded",
+                intent.agent_type,
+                intent.harness,
+                crate::run::AGENT_TYPES_FILE,
+                ty.harness
+            ),
+            "§3.1, §8",
+        ));
+    }
+    Ok(ty)
 }
 
 fn spawn_failed_before_the_process_existed(agent_id: &AgentId) -> RpcError {
@@ -2696,19 +2747,25 @@ impl RegistryHandle {
     ) -> Result<crate::run::Caller, RpcError> {
         // **The token is checked before anything else is said about the node**, so a caller who
         // guesses an `AgentId` learns nothing from the shape of the refusal beyond "no".
-        let known = {
+        // The caller's repository rides out with the answer: it is the tree whose
+        // `.marion/agents.toml` defines the caller's own type, read below, outside the registry lock.
+        let repo = {
             let nodes = lock(&self.nodes);
             // **A node this supervisor does not own is still compared**, against a decoy of the
             // same shape, so "no such node" and "wrong token" take the same path and cost the same.
             // Returning early on the absent case would turn the *existence* of a node into an
             // oracle a caller could probe with ids alone.
-            let (stored, owned) = match nodes.get(&c.agent_id) {
-                Some(n) => (n.token.clone(), true),
-                None => (decoy_token().to_string(), false),
+            let (stored, repo) = match nodes.get(&c.agent_id) {
+                Some(n) => (n.token.clone(), Some(n.repo.clone())),
+                None => (decoy_token().to_string(), None),
             };
-            tokens_match(&stored, &c.node_token) & owned
+            if tokens_match(&stored, &c.node_token) & repo.is_some() {
+                repo
+            } else {
+                None
+            }
         };
-        if !known {
+        let Some(repo) = repo else {
             return Err(RpcError::refused(
                 &c.agent_id.0,
                 "this supervisor did not mint that node token, so it cannot tell the caller it \
@@ -2719,8 +2776,8 @@ impl RegistryHandle {
                  — its parent is `Orphaned` (§7.2) and needs an operator, not a retry.",
                 "§5.4, §6.1",
             ));
-        }
-        let (agent_type, depth) = self.live.read(|r| {
+        };
+        let (type_name, depth) = self.live.read(|r| {
             let node = r.tree().get(&c.agent_id).ok_or_else(|| {
                 RpcError::internal(format!(
                     "this supervisor owns node `{}` and its journal has no `SpawnIntent` for it, \
@@ -2734,10 +2791,10 @@ impl RegistryHandle {
                 .intent
                 .as_ref()
                 .ok_or_else(|| Unprojectable::NoIntent.as_error(&c.agent_id))?;
-            let ty = agent_type::builtin(&intent.agent_type).ok_or_else(|| {
-                Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(&c.agent_id)
-            })?;
-            Ok::<_, RpcError>((ty, intent.depth))
+            Ok::<_, RpcError>((intent.agent_type.clone(), intent.depth))
+        })?;
+        let agent_type = tree_types(&repo)?.resolve(&type_name).ok_or_else(|| {
+            Unprojectable::UnknownAgentType(type_name.clone()).as_error(&c.agent_id)
         })?;
         Ok(crate::run::Caller {
             agent_id: c.agent_id.0.clone(),
@@ -3182,8 +3239,9 @@ impl RegistryHandle {
         // Resolved here so an unknown type is refused **in the frame that asked for it** rather
         // than arriving as a node that was never going to start. `root::prepare` refuses it again
         // one layer down; two call sites of one lookup, never two rules.
-        let agent_type =
-            agent_type::builtin(&p.agent_type).ok_or_else(spawn_refused_before_the_node_existed)?;
+        let agent_type = tree_types(&repo)?
+            .resolve(&p.agent_type)
+            .ok_or_else(spawn_refused_before_the_node_existed)?;
         // §9's node-level bound is resolved inside the spec — see [`root_spec_from_spawn`] — so
         // the value the launch enforces is the value `prepare` journals.
         let spec = root_spec_from_spawn(p, repo.clone(), &env, &agent_type);
@@ -3513,8 +3571,10 @@ impl RegistryHandle {
         // §6.1 step 5's type resolution, for the wall clock the relaunch runs under — the same
         // number `marion run` and `agent/spawn` resolve, from the node's own recorded type.
         let agent_type = node
-            .agent_type()
-            .and_then(agent_type::builtin)
+            .intent
+            .as_ref()
+            .map(|i| recorded_type(&repo, i))
+            .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let spec = crate::root::RootSpec {
             agent_type: node.agent_type().unwrap_or_default().to_string(),
@@ -3665,12 +3725,16 @@ impl RegistryHandle {
             ));
         }
         let parent_type = parent
-            .agent_type()
-            .and_then(agent_type::builtin)
+            .intent
+            .as_ref()
+            .map(|i| recorded_type(&repo, i))
+            .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let agent_type = node
-            .agent_type()
-            .and_then(agent_type::builtin)
+            .intent
+            .as_ref()
+            .map(|i| recorded_type(&repo, i))
+            .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         // **The task this run is still under**, from the node's own intent (§9: one contract per
         // run of one task). A fresh id here would file the second life's audit record under a task
@@ -4748,6 +4812,90 @@ mod tests {
             .is_ok(),
             "255 fits, so the boundary is the type's and not an arbitrary cap"
         );
+    }
+
+    /// **A user-defined type is projected from its recorded bound.** `summarize` runs under the
+    /// shared registry lock and reads no file, so it cannot resolve a `.marion/agents.toml` row —
+    /// but every production writer journals the bound the node launched under, and that is the
+    /// one thing the type was needed for. Only a journal that names no built-in *and* records no
+    /// bound is unprojectable: an intent written before the field existed, for a type this build
+    /// cannot look up.
+    #[test]
+    fn an_unknown_type_projects_from_its_recorded_bound_and_not_otherwise() {
+        let intent_with = |bound: Option<u64>| {
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id("r"),
+                parent_id: None,
+                agent_type: "reviewer".into(),
+                harness: Harness::Codex,
+                depth: 1,
+                task_id: None,
+                timeout_secs: bound,
+            })
+        };
+        let bounded = node_of(&[line(0, 1, intent_with(Some(120)))], "r");
+        let s = summarize(&bounded, false).expect("the recorded bound is enough");
+        assert_eq!(s.agent_type, "reviewer");
+        assert_eq!(s.harness, Harness::Codex);
+        assert_eq!(s.timeout, marion_core::encoding::Duration::from_secs(120));
+        let unbounded = node_of(&[line(0, 1, intent_with(None))], "r");
+        assert_eq!(
+            summarize(&unbounded, false),
+            Err(Unprojectable::UnknownAgentType("reviewer".into()))
+        );
+    }
+
+    /// **A resume re-resolves the recorded type from today's file, and refuses if the harness
+    /// moved.** The journal records the name and the harness; the file is the operator's and may
+    /// have been edited since. A row that now names another harness would relaunch a session that
+    /// harness has never seen under a node that claims to be the same one.
+    #[test]
+    fn a_recorded_type_is_resumed_only_under_the_harness_it_was_journaled_with() {
+        let root = scratch("handler-recorded-type");
+        let repo = marion_testsupport::fixture_repo(&root);
+        let file = repo.join(crate::run::AGENT_TYPES_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let row = |harness: &str| {
+            format!(
+                "[[agent]]\nname = \"reviewer\"\nharness = \"{harness}\"\ndescription = \"r\"\n"
+            )
+        };
+        let intent = SpawnIntent {
+            agent_id: id("r"),
+            parent_id: None,
+            agent_type: "reviewer".into(),
+            harness: Harness::Codex,
+            depth: 1,
+            task_id: None,
+            timeout_secs: Some(60),
+        };
+        std::fs::write(&file, row("codex")).unwrap();
+        assert_eq!(
+            recorded_type(&repo, &intent).unwrap().harness,
+            Harness::Codex
+        );
+        std::fs::write(&file, row("gemini")).unwrap();
+        let e = recorded_type(&repo, &intent).unwrap_err();
+        assert!(
+            e.message.contains("journaled as codex") && e.message.contains("now says gemini"),
+            "{e}"
+        );
+        std::fs::remove_file(&file).unwrap();
+        let e = recorded_type(&repo, &intent).unwrap_err();
+        assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
+        // A built-in is resolved regardless of the file, and the file's own refusal is its own.
+        let builtin = SpawnIntent {
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            ..intent.clone()
+        };
+        assert_eq!(
+            recorded_type(&repo, &builtin).unwrap().harness,
+            Harness::ClaudeCode
+        );
+        std::fs::write(&file, "[[agent]\n").unwrap();
+        let e = recorded_type(&repo, &builtin).unwrap_err();
+        assert!(e.message.contains("agents.toml"), "{e}");
     }
 
     /// Build a handle over a journal file, plus the recording sink a subscriber would be.
@@ -10762,7 +10910,7 @@ mod tests {
             assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
             assert!(
                 e.message
-                    .contains("the agent type is not one this build has"),
+                    .contains("the agent type is not a built-in and not a row"),
                 "the frame reached the root launcher: {}",
                 e.message
             );

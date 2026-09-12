@@ -56,7 +56,6 @@ use std::path::PathBuf;
 use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
-use marion_core::agent_type::builtin;
 use marion_core::contract::{AgentId, Capped, ExitStatus, Oid, ProcessExit};
 use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
@@ -642,7 +641,11 @@ pub fn prepare_watched(
     // §6.1 step 5, through the seam, **dispatched on the root's own agent type** — the root used to
     // be `Harness::ClaudeCode` by constant, which is why `marion run codex` compiled a Claude Code
     // launch and then failed somewhere else entirely.
-    let agent_type = builtin(&spec.agent_type)
+    //
+    // Through the tree's own table (`run::agent_types`), so a `.marion/agents.toml` row runs as a
+    // root exactly as a built-in does; the file's own refusal arrives as `RootError::Run`.
+    let agent_type = crate::run::agent_types(&spec.repo)?
+        .resolve(&spec.agent_type)
         .ok_or_else(|| RootError::UnknownAgentType(spec.agent_type.clone()))?;
     let harness = agent_type.harness;
     let adapter = adapter_for(harness)?;
@@ -2211,6 +2214,7 @@ fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_core::agent_type::builtin;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
