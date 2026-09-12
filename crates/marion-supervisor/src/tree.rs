@@ -704,7 +704,10 @@ struct Detail<'a> {
 /// not open. Rendered into [`marion_tui::tree::Panes::hints`], which is full width and starts at
 /// the left margin — inside the content pane it began at `TREE_COLUMN + 2` and read as the selected
 /// node's business rather than the screen's.
-const KEYS: &str = "j/k move  tab focus  q quit  ^] d detach";
+///
+/// No `^] d detach`: that is the pane's chord, and on this screen `^]` quits and `d` does nothing,
+/// so listing it here taught a first-time operator a key that did not exist yet.
+const KEYS: &str = "j/k move  tab focus  q quit";
 
 /// The hint row for one selection.
 ///
@@ -714,7 +717,7 @@ const KEYS: &str = "j/k move  tab focus  q quit  ^] d detach";
 /// keeps the pane-node wording: there is nothing selected to call headless.
 fn keys_for(selected: Option<&NodeSummary>) -> String {
     let enter = match selected {
-        Some(n) if !n.pane => "enter (headless)",
+        Some(n) if !n.pane => "enter (headless: no pane)",
         _ => "enter attach",
     };
     format!("{enter}  {KEYS}")
@@ -1235,7 +1238,7 @@ mod tests {
     /// `enter open pane nodes only` is a rule the operator has to apply themselves: it does not say
     /// whether *this* selection is one of those nodes, so the only way to find out was to press
     /// Enter and read the refusal. The affordance moves with the cursor instead — `enter attach` on
-    /// a node that has a pane, `enter (headless)` on one that does not — so a first-time viewer can
+    /// a node that has a pane, `enter (headless: no pane)` on one that does not — so a first-time viewer can
     /// see what the key will do before pressing it.
     #[test]
     fn the_hint_row_says_what_enter_will_do_to_this_selection() {
@@ -1243,7 +1246,7 @@ mod tests {
         let headless = summary("h", Harness::ClaudeCode, false, None);
 
         assert!(keys_for(Some(&paned)).starts_with("enter attach"));
-        assert!(keys_for(Some(&headless)).starts_with("enter (headless)"));
+        assert!(keys_for(Some(&headless)).starts_with("enter (headless: no pane)"));
         assert!(
             !keys_for(Some(&headless)).contains("enter attach"),
             "a headless node must not be offered an attach"
@@ -1253,9 +1256,13 @@ mod tests {
             keys_for(Some(&headless)),
             keys_for(None),
         ] {
-            for rest in ["j/k move", "tab focus", "q quit", "^] d detach"] {
+            for rest in ["j/k move", "tab focus", "q quit"] {
                 assert!(keys.contains(rest), "`{rest}` left the hint row: {keys}");
             }
+            assert!(
+                !keys.contains("detach"),
+                "`^] d` is the pane's chord and does nothing on this screen: {keys}"
+            );
         }
     }
 
@@ -1291,7 +1298,7 @@ mod tests {
             .map(|x| buf[(x, panes.hints.y)].symbol())
             .collect();
         assert!(row.starts_with("enter"), "{row:?}");
-        assert!(row.contains("^] d detach"), "{row:?}");
+        assert!(row.contains("q quit"), "{row:?}");
     }
 
     /// **`Enter` on a headless node is refused on the screen, not on stderr.** The old path ran

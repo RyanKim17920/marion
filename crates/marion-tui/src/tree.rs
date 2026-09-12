@@ -439,17 +439,43 @@ pub struct Hints<'a> {
 }
 
 impl Widget for Hints<'_> {
+    /// `keys` is `key verb` pairs separated by two spaces, with an optional ` · note` after them.
+    /// The key of each pair is bold and the rest dim, so an operator can find the four keys in
+    /// a row of words without reading it; the note is dim throughout, since none of it is a key.
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 {
             return;
         }
-        buf.set_stringn(
-            area.x,
-            area.y,
-            self.keys,
-            area.width as usize,
-            Style::default().add_modifier(Modifier::DIM),
-        );
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let key = Style::default().add_modifier(Modifier::BOLD);
+        let end = area.x.saturating_add(area.width);
+        let mut x = area.x;
+        let mut put = |x: &mut u16, text: &str, style: Style| {
+            let (next, _) =
+                buf.set_stringn(*x, area.y, text, end.saturating_sub(*x) as usize, style);
+            *x = next;
+        };
+        let (pairs, note) = match self.keys.split_once("  ·  ") {
+            Some((pairs, note)) => (pairs, Some(note)),
+            None => (self.keys, None),
+        };
+        for (i, pair) in pairs.split("  ").enumerate() {
+            if i > 0 {
+                put(&mut x, "  ", dim);
+            }
+            match pair.split_once(' ') {
+                Some((k, verb)) => {
+                    put(&mut x, k, key);
+                    put(&mut x, " ", dim);
+                    put(&mut x, verb, dim);
+                }
+                None => put(&mut x, pair, key),
+            }
+        }
+        if let Some(note) = note {
+            put(&mut x, "  ·  ", dim);
+            put(&mut x, note, dim);
+        }
     }
 }
 
@@ -863,6 +889,32 @@ mod tests {
         .render(area, &mut buf);
         let row: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(row.starts_with("enter attach"), "{row:?}");
+    }
+
+    /// **A first-time operator has to be able to find the keys in the hint row.** Drawn as one
+    /// dim string, `enter attach  j/k move  tab focus  q quit` was eight words with nothing to
+    /// say which four were keys; the key of each pair is now bold and its verb dim, and a note
+    /// after ` · ` — why the last key did nothing — is dim throughout, since none of it is a key.
+    #[test]
+    fn a_hint_is_a_bold_key_and_a_dim_verb() {
+        let area = Rect::new(0, 0, 50, 1);
+        let mut buf = Buffer::empty(area);
+        Hints {
+            keys: "enter attach  q quit  ·  no pane to focus",
+        }
+        .render(area, &mut buf);
+        let row: String = (0..50).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row.trim_end(), "enter attach  q quit  ·  no pane to focus");
+        let bold = |x: u16| buf[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
+        let dim = |x: u16| buf[(x, 0)].style().add_modifier.contains(Modifier::DIM);
+        assert!(bold(0) && !dim(0), "`enter` is a key");
+        assert!(dim(6) && !bold(6), "`attach` is what it does");
+        assert!(bold(14) && !dim(14), "`q` is a key");
+        assert!(dim(22) && !bold(22), "the separator is neither");
+        assert!(
+            dim(25) && !bold(25),
+            "`no pane to focus` is a note, not a key"
+        );
     }
 
     /// The status row says which project this is and how big the forest is — the two facts that
