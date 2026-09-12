@@ -825,9 +825,23 @@ fn harness_version(program: &str) -> String {
     run_bounded(&mut cmd, HARNESS_VERSION_TIMEOUT)
         .ok()
         .filter(|o| !o.timed_out && o.code == Some(0))
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|o| version_line(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_else(|| "unknown".into())
+}
+
+/// The line of a `--version` output that names the version: the first non-blank one, trimmed.
+///
+/// Generic across every harness rather than a per-harness branch — the version is the first thing
+/// each of them prints, and anything after it is advice (`copilot` follows
+/// `GitHub Copilot CLI 1.0.83.` with `Run 'copilot update' to check for updates.`). Before this the
+/// contract's `child.version` carried the whole output, so a copilot child's audit record named
+/// its version in two lines. `None` where nothing was printed at all.
+fn version_line(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
 }
 
 /// What one child run produced, in the two terms `build_contract` needs: what the harness wrote,
@@ -2280,6 +2294,24 @@ mod tests {
             Some(0),
             "and the process really ran, and was really reaped"
         );
+    }
+
+    #[test]
+    fn a_harness_version_is_its_first_non_blank_line() {
+        assert_eq!(
+            version_line(
+                "GitHub Copilot CLI 1.0.83.\nRun 'copilot update' to check for updates.\n"
+            )
+            .as_deref(),
+            Some("GitHub Copilot CLI 1.0.83.")
+        );
+        assert_eq!(
+            version_line("2.1.223 (Claude Code)\n").as_deref(),
+            Some("2.1.223 (Claude Code)")
+        );
+        assert_eq!(version_line("\n  0.147.0  \n").as_deref(), Some("0.147.0"));
+        assert_eq!(version_line(""), None, "nothing printed is not a version");
+        assert_eq!(version_line("\n\n"), None);
     }
 
     /// **A signalled exit alone does not skip verification.** Every ACP child ends on marion's own

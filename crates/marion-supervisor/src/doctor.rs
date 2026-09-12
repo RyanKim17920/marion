@@ -1423,12 +1423,18 @@ fn keyed_version(read: Option<&str>) -> &str {
 
 /// The first `major.minor.patch` in a `--version` line.
 ///
-/// A scan rather than "the whole first line", because the four binaries do not agree on the shape:
+/// A scan rather than "the whole first line", because the binaries do not agree on the shape:
 /// some print a bare `0.147.0` and some prefix it with their own name. `advertised` compares this
 /// numerically, so a value it cannot parse must not reach it.
+///
+/// One trailing full stop is stripped from each token before its shape is judged, generically:
+/// copilot prints its version as a sentence (`GitHub Copilot CLI 1.0.83.`), and until this strip
+/// the doctor read that as `version undetermined`. A single stop, not every trailing stop, so a
+/// truncated `1.2.` still reads as the truncation it is.
 pub fn version_token(out: &str) -> Option<String> {
     out.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',')
         .map(|t| t.trim_start_matches('v'))
+        .map(|t| t.strip_suffix('.').unwrap_or(t))
         .find(|t| {
             let mut parts = t.split('.');
             let ok = |maybe: Option<&str>| {
@@ -1650,6 +1656,15 @@ mod tests {
             Some("2.1.223")
         );
         assert_eq!(version_token("v1.17.3").as_deref(), Some("1.17.3"));
+        // copilot 1.0.83 ends its sentence with a full stop and adds a second line: the token is
+        // `1.0.83.` before the strip, and the doctor said `version undetermined` for it.
+        assert_eq!(
+            version_token(
+                "GitHub Copilot CLI 1.0.83.\nRun 'copilot update' to check for updates.\n"
+            )
+            .as_deref(),
+            Some("1.0.83")
+        );
         // And nothing that is not one, because `advertised` compares it numerically and a token it
         // cannot parse must never reach it as though it could.
         for none in ["", "unknown", "0.146", "1.2.3.4", "abc.def.ghi", "1.2.x"] {
