@@ -729,7 +729,28 @@ fn a_roots_wait_returns_the_terminal_status_it_has_rather_than_a_contract_it_can
     );
 
     // And `status` still resolves the collected handle, with the state the supervisor holds *now*.
-    let late = s.tool("status", json!({"task_id": task_id}));
+    //
+    // **Polled to the supervisor's own barrier rather than read once.** `wait` and `status` are two
+    // observers of one death and nothing orders them: `wait` returns the moment the node's own
+    // event stream carries its closing `Lifecycle::Exited`, while `status` reads the registry the
+    // supervisor projects out of the journal it is *tailing* — so the registry is behind by however
+    // long that tail takes to notice. On a loaded runner it was behind by enough to still be
+    // reporting the `Spawning` sentence the handle was minted at, which reads exactly like the
+    // staleness this assertion exists to rule out.
+    //
+    // Waiting for the answer to move weakens nothing, because the two candidate explanations
+    // diverge rather than converge: a `status` served from the handle would repeat `early_text`
+    // **for ever**, so no amount of polling can turn a cached answer into a different one. [`BOUND`]
+    // is therefore still a deadlock bound and not a timing assertion — reaching it means the
+    // registry never learnt, and `assert_ne!` below then fails on the answer it really gave.
+    let deadline = Instant::now() + BOUND;
+    let late = loop {
+        let reply = s.tool("status", json!({"task_id": task_id}));
+        if Server::text(&reply) != early_text || Instant::now() >= deadline {
+            break reply;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
         late["result"]["isError"],
         json!(false),
