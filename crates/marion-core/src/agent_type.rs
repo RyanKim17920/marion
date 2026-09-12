@@ -6,7 +6,10 @@
 //! (§6.1 step 2). So this is a plain lookup over two built-in types, not a loader — a loader with
 //! no file format behind it would be scaffolding pretending to be a feature.
 //!
-//! Everything here is pure data plus one predicate; nothing reads a file.
+//! Everything here is pure data plus one predicate; nothing reads a file. [`AgentTypes::parse`] is
+//! the one loader, and it takes the file's **text**: the supervisor opens `.marion/agents.toml`
+//! and hands the bytes down, so this crate stays free of I/O and the format stays testable as a
+//! string.
 
 use crate::contract::Glob;
 use crate::encoding::Duration;
@@ -210,6 +213,12 @@ pub struct AgentType {
     pub timeout: Duration,
     pub max_depth: u32,
     pub max_concurrent_children: u32,
+    /// Text the supervisor puts in front of every prompt a node of this type is given, once, at
+    /// spawn — the operator's standing instruction for the type (`.marion/agents.toml`'s
+    /// `prompt_prefix`). `None` on every built-in: the built-ins describe a harness and a grant,
+    /// and marion does not put words in an operator's prompt on its own initiative. The contract
+    /// records the prompt the node actually saw, prefix included.
+    pub prompt_prefix: Option<String>,
 }
 
 impl AgentType {
@@ -261,6 +270,7 @@ impl AgentType {
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             max_depth: DEFAULT_MAX_DEPTH,
             max_concurrent_children: DEFAULT_MAX_CONCURRENT_CHILDREN,
+            prompt_prefix: None,
         }
     }
 }
@@ -569,6 +579,179 @@ pub fn builtin_names() -> &'static [&'static str] {
         "qwen",
         "qwen-impl",
     ]
+}
+
+/// The agent types one working tree can spawn: the built-ins, plus the rows of that tree's
+/// `.marion/agents.toml`, resolved through **one table and one path**.
+///
+/// §3.1 describes agent types as a file format; the built-ins above were the M1 stand-in for it,
+/// and this is the format arriving without displacing them. A user row is an [`AgentType`] like any
+/// other — same fields, same defaults, same adapters — and is refused where it would collide with
+/// one, so `resolve("codex")` means the same thing in every tree. The supervisor loads one of these
+/// per spawn from the tree the spawn is against (`marion_supervisor::run::agent_types`), so a
+/// changed file is read at the next spawn and never cached across one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentTypes {
+    user: Vec<AgentType>,
+}
+
+/// Why `.marion/agents.toml` was refused. **Every one is a load error and never a default** (§3.1):
+/// a tree whose file is wrong spawns nothing until it is fixed, rather than spawning the built-ins
+/// while silently ignoring the row the operator wrote.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentTypesError {
+    /// TOML the parser refused, or a key no row has — `deny_unknown_fields`, so a misspelt
+    /// `prompt_prefix` is an error and not a row that silently lost its prefix.
+    #[error("{0}")]
+    Syntax(String),
+    #[error(
+        "agent type name {0:?} is not a name: §3.1 names match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$"
+    )]
+    InvalidName(String),
+    #[error(
+        "agent type {0:?} would shadow the built-in of that name (or its alias); pick another name"
+    )]
+    ShadowsBuiltin(String),
+    #[error("agent type {0:?} is defined twice in the file")]
+    Duplicate(String),
+    #[error(
+        "agent type {name:?} names harness {harness:?}; known harnesses are {known}, or \
+         `acp:<command>` for any ACP agent",
+        known = known_harnesses()
+    )]
+    UnknownHarness { name: String, harness: String },
+    #[error(
+        "agent type {name:?} declares tool {tool:?}; marion's tool vocabulary is {TOOL_READ}, {TOOL_WRITE}"
+    )]
+    UnknownTool { name: String, tool: String },
+}
+
+/// `Harness::ALL`'s wire spellings, joined for [`AgentTypesError::UnknownHarness`].
+fn known_harnesses() -> String {
+    Harness::ALL
+        .iter()
+        .map(|h| h.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One `[[agent]]` row as written. Every optional key is optional here and nowhere else: the row
+/// becomes an [`AgentType`] over [`AgentType::defaults`], so a key the file omits is §3.1's default
+/// and never this struct's.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileRow {
+    name: String,
+    harness: String,
+    description: String,
+    model: Option<String>,
+    tools: Option<Vec<String>>,
+    prompt_prefix: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct File {
+    #[serde(default)]
+    agent: Vec<FileRow>,
+}
+
+impl AgentTypes {
+    /// The table a tree with no `.marion/agents.toml` has.
+    pub fn builtins_only() -> Self {
+        Self::default()
+    }
+
+    /// The table a tree's `.marion/agents.toml` describes, or the first reason it cannot.
+    pub fn parse(text: &str) -> Result<Self, AgentTypesError> {
+        let file: File =
+            toml::from_str(text).map_err(|e| AgentTypesError::Syntax(e.to_string()))?;
+        let mut user: Vec<AgentType> = Vec::with_capacity(file.agent.len());
+        for row in file.agent {
+            let ty = row.into_type()?;
+            if user.iter().any(|u| u.name == ty.name) {
+                return Err(AgentTypesError::Duplicate(ty.name));
+            }
+            user.push(ty);
+        }
+        Ok(Self { user })
+    }
+
+    /// A type by name: the file's row, else a built-in, else the `acp:<command>` family.
+    ///
+    /// The file cannot shadow a built-in ([`AgentTypesError::ShadowsBuiltin`]), so the order here
+    /// is a convenience and not a precedence rule.
+    pub fn resolve(&self, name: &str) -> Option<AgentType> {
+        self.user
+            .iter()
+            .find(|t| t.name == name)
+            .cloned()
+            .or_else(|| builtin(name))
+    }
+
+    /// Every name that resolves, for a picker or a refusal: the built-ins, then the file's rows in
+    /// the order the operator wrote them.
+    pub fn names(&self) -> Vec<&str> {
+        builtin_names()
+            .iter()
+            .copied()
+            .chain(self.user.iter().map(|t| t.name.as_str()))
+            .collect()
+    }
+
+    /// The file's rows alone, in file order.
+    pub fn user(&self) -> &[AgentType] {
+        &self.user
+    }
+}
+
+impl FileRow {
+    fn into_type(self) -> Result<AgentType, AgentTypesError> {
+        if !is_valid_name(&self.name) {
+            return Err(AgentTypesError::InvalidName(self.name));
+        }
+        if builtin(&self.name).is_some() {
+            return Err(AgentTypesError::ShadowsBuiltin(self.name));
+        }
+        // `acp:<command>` is the one harness spelling that is also a program: the same rule the
+        // type selector uses, so a row's `harness = "acp:goose acp"` and a spawn of
+        // `acp:goose acp` bind the same agent.
+        let (harness, acp_agent) = if self.harness.starts_with(ACP_COMMAND_PREFIX) {
+            match acp_command(&self.harness) {
+                Some(t) => (Harness::Acp, t.acp_agent),
+                None => {
+                    return Err(AgentTypesError::UnknownHarness {
+                        name: self.name,
+                        harness: self.harness,
+                    });
+                }
+            }
+        } else {
+            match self.harness.parse::<Harness>() {
+                Ok(h) => (h, None),
+                Err(_) => {
+                    return Err(AgentTypesError::UnknownHarness {
+                        name: self.name,
+                        harness: self.harness,
+                    });
+                }
+            }
+        };
+        let tools = self.tools.unwrap_or_default();
+        if let Some(tool) = tools.iter().find(|t| *t != TOOL_READ && *t != TOOL_WRITE) {
+            return Err(AgentTypesError::UnknownTool {
+                name: self.name,
+                tool: tool.clone(),
+            });
+        }
+        Ok(AgentType {
+            model: self.model,
+            acp_agent,
+            tools,
+            prompt_prefix: self.prompt_prefix,
+            ..AgentType::defaults(&self.name, &self.description, harness)
+        })
+    }
 }
 
 /// §6.1 step 2's refusals. Both gates **refuse rather than clamp or queue**: a clamped depth would
@@ -989,5 +1172,195 @@ mod tests {
         ] {
             assert!(!is_valid_name(bad), "{bad}");
         }
+    }
+
+    const REVIEWER: &str = r#"
+[[agent]]
+name = "reviewer"
+harness = "codex"
+model = "gpt-5-codex"
+tools = ["read"]
+description = "Reviews a diff and reports findings; never edits."
+prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
+"#;
+
+    /// **A user row is an agent type.** Every field the file states lands on the resolved type,
+    /// and every field it leaves unstated takes §3.1's default, exactly as a built-in does.
+    #[test]
+    fn parse_round_trips_a_reviewer_row() {
+        let types = AgentTypes::parse(REVIEWER).expect("a well-formed row parses");
+        let t = types.resolve("reviewer").expect("the row resolves by name");
+        assert_eq!(t.name, "reviewer");
+        assert_eq!(t.harness, Harness::Codex);
+        assert_eq!(t.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(t.tools, vec![TOOL_READ.to_string()]);
+        assert_eq!(
+            t.description,
+            "Reviews a diff and reports findings; never edits."
+        );
+        assert_eq!(
+            t.prompt_prefix.as_deref(),
+            Some("You are a code reviewer. Do not modify files.\n\n")
+        );
+        assert_eq!(t.acp_agent, None);
+        assert_eq!(t.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+        assert_eq!(t.max_depth, DEFAULT_MAX_DEPTH);
+        assert_eq!(t.max_concurrent_children, DEFAULT_MAX_CONCURRENT_CHILDREN);
+        assert_eq!(t.scope_ceiling, default_scope_ceiling());
+        assert_eq!(types.user(), std::slice::from_ref(&t));
+        // A row states only what it changes: the minimum is a name, a harness and a description.
+        let minimal = AgentTypes::parse(
+            "[[agent]]\nname = \"triager\"\nharness = \"claude-code\"\ndescription = \"Triages.\"\n",
+        )
+        .unwrap();
+        let m = minimal.resolve("triager").unwrap();
+        assert_eq!(m.model, None);
+        assert_eq!(m.tools, Vec::<String>::new());
+        assert_eq!(m.prompt_prefix, None);
+        // Built-ins still resolve through the same table, unchanged.
+        assert_eq!(types.resolve("codex-impl"), builtin("codex-impl"));
+        assert_eq!(types.resolve("acp:goose acp"), builtin("acp:goose acp"));
+        assert_eq!(types.resolve("nope"), None);
+    }
+
+    /// No file and an empty file are the same table: the built-ins, and nothing else.
+    #[test]
+    fn an_absent_or_empty_file_is_the_built_in_table() {
+        let none = AgentTypes::builtins_only();
+        let empty = AgentTypes::parse("").expect("an empty document is a file with no rows");
+        let bare = AgentTypes::parse("agent = []\n").unwrap();
+        for types in [&none, &empty, &bare] {
+            assert!(types.user().is_empty());
+            assert_eq!(types.names(), builtin_names().to_vec());
+            for name in builtin_names() {
+                assert_eq!(types.resolve(name), builtin(name), "{name}");
+            }
+        }
+        // Every built-in has a prompt prefix of none: the field is the user file's alone.
+        for name in builtin_names() {
+            assert_eq!(builtin(name).unwrap().prompt_prefix, None, "{name}");
+        }
+    }
+
+    /// A user row may not take a built-in's name **or one of its aliases**: `codex` is an alias of
+    /// `codex-impl`, and a row named `codex` would silently rebind every spawn that spells it.
+    #[test]
+    fn a_row_named_after_a_builtin_or_alias_is_refused() {
+        for name in ["codex-impl", "codex", "claude", "acp-opencode"] {
+            let text = format!(
+                "[[agent]]\nname = \"{name}\"\nharness = \"gemini\"\ndescription = \"x\"\n"
+            );
+            assert_eq!(
+                AgentTypes::parse(&text),
+                Err(AgentTypesError::ShadowsBuiltin(name.to_string())),
+                "{name}"
+            );
+        }
+    }
+
+    /// `harness` is §3.1's enum, or an ACP command. Anything else is refused naming what is known;
+    /// `acp:` over nothing names no program and is refused too; `acp:<command>` lands on the ACP
+    /// row with the command as its agent, exactly as the `acp:` type selector does.
+    #[test]
+    fn an_unknown_harness_is_refused_naming_the_known_ones() {
+        let row = |harness: &str| {
+            format!("[[agent]]\nname = \"r\"\nharness = \"{harness}\"\ndescription = \"x\"\n")
+        };
+        let e = AgentTypes::parse(&row("claude")).unwrap_err();
+        assert_eq!(
+            e,
+            AgentTypesError::UnknownHarness {
+                name: "r".into(),
+                harness: "claude".into()
+            }
+        );
+        let msg = e.to_string();
+        for h in Harness::ALL {
+            assert!(msg.contains(h.as_str()), "{msg} must name {h}");
+        }
+        assert!(msg.contains("acp:<command>"), "{msg}");
+        assert!(
+            matches!(
+                AgentTypes::parse(&row("acp:")),
+                Err(AgentTypesError::UnknownHarness { .. })
+            ),
+            "a prefix over nothing is not a command"
+        );
+        let t = AgentTypes::parse(&row("acp:opencode acp")).unwrap();
+        let t = t.resolve("r").unwrap();
+        assert_eq!(t.harness, Harness::Acp);
+        assert_eq!(t.acp_agent.as_deref(), Some("opencode acp"));
+    }
+
+    /// `tools` is §3.1's allowlist in marion's two-word vocabulary; a word outside it is refused by
+    /// name rather than passed to an adapter that would refuse it at launch, or — worse — to a
+    /// harness that ignores it. An unknown key is a load error, never a silent default (§3.1).
+    #[test]
+    fn an_unknown_tool_or_field_is_refused() {
+        let e = AgentTypes::parse(
+            "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\ntools = [\"bash\"]\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            AgentTypesError::UnknownTool {
+                name: "r".into(),
+                tool: "bash".into()
+            }
+        );
+        let msg = e.to_string();
+        assert!(msg.contains(TOOL_READ) && msg.contains(TOOL_WRITE), "{msg}");
+        let e = AgentTypes::parse(
+            "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\ntimeout_secs = 5\n",
+        )
+        .unwrap_err();
+        assert!(matches!(e, AgentTypesError::Syntax(_)), "{e:?}");
+        assert!(e.to_string().contains("timeout_secs"), "{e}");
+        assert!(matches!(
+            AgentTypes::parse("[[agent]\n"),
+            Err(AgentTypesError::Syntax(_))
+        ));
+    }
+
+    /// One name, one definition — within the file as much as against the built-ins. And a name
+    /// is §3.1's name: a row that spells a path or a flag is refused before it can become one.
+    #[test]
+    fn a_duplicate_name_within_the_file_is_refused() {
+        let twice = "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\n\
+                     [[agent]]\nname = \"r\"\nharness = \"gemini\"\ndescription = \"y\"\n";
+        assert_eq!(
+            AgentTypes::parse(twice),
+            Err(AgentTypesError::Duplicate("r".into()))
+        );
+        for bad in ["", "-r", "a/b", "acp:goose acp", "r r"] {
+            let text =
+                format!("[[agent]]\nname = \"{bad}\"\nharness = \"codex\"\ndescription = \"x\"\n");
+            assert_eq!(
+                AgentTypes::parse(&text),
+                Err(AgentTypesError::InvalidName(bad.to_string())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// `names()` is what a picker and an error message list: the built-ins in their documented
+    /// order, then the file's rows in the order the operator wrote them.
+    #[test]
+    fn names_lists_builtins_then_user_rows() {
+        let text = format!(
+            "{REVIEWER}\n[[agent]]\nname = \"triager\"\nharness = \"gemini\"\ndescription = \"t\"\n"
+        );
+        let types = AgentTypes::parse(&text).unwrap();
+        let mut expected: Vec<&str> = builtin_names().to_vec();
+        expected.extend(["reviewer", "triager"]);
+        assert_eq!(types.names(), expected);
+        assert_eq!(
+            types
+                .user()
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reviewer", "triager"]
+        );
     }
 }

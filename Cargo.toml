@@ -25,3 +25,6 @@ base64 = "=0.22.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# The one file format marion reads for itself: `.marion/agents.toml` (`marion_core::agent_type`).
+# Parse only; nothing writes TOML.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
