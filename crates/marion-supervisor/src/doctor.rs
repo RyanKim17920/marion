@@ -78,6 +78,9 @@ const TURN_BUDGET: Duration = Duration::from_secs(90);
 /// S16 measured the supervisor's own ladder at SIGINT → SIGTERM 100 ms → SIGKILL ~450 ms; this is
 /// deliberately far looser, because a slow-but-clean shutdown is a *finding*, not a failure.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+/// How long stderr is waited on once the child has terminated. Only a descendant that inherited the
+/// pipe can hold it open past the child, and the probe does not wait on one.
+const STDERR_GRACE: Duration = Duration::from_secs(1);
 /// `<program> --version` is a local read; anything slower than this is itself the finding.
 const VERSION_BUDGET: Duration = Duration::from_secs(20);
 
@@ -712,6 +715,10 @@ fn argv_live_turn_step(
 fn record_turn(turn: TurnOutcome, notes: &mut Vec<String>) -> bool {
     let mut ok = turn.spawned;
     notes.push(turn.spawn_line);
+    if let Some(line) = turn.auth_line {
+        ok = false;
+        notes.push(format!("authentication: FAILED — {line}"));
+    }
     if let Some(l) = turn.shape_line {
         ok &= turn.shape_ok;
         notes.push(l);
@@ -725,6 +732,9 @@ fn record_turn(turn: TurnOutcome, notes: &mut Vec<String>) -> bool {
 struct TurnOutcome {
     spawned: bool,
     spawn_line: String,
+    /// The harness's own stderr line saying it could not authenticate, when it printed one. The
+    /// cause of everything after it, so [`record_turn`] reports it ahead of the shape finding.
+    auth_line: Option<String>,
     shape_ok: bool,
     shape_line: Option<String>,
     trailing: Vec<String>,
@@ -760,17 +770,23 @@ fn live_turn(
         Err(e) => return not_spawned(&e),
     };
     let pid = child.id() as i32;
+    // Drained from the start: a pipe nobody reads blocks the child once it fills, and stderr is
+    // where a harness that could not authenticate puts its whole diagnosis.
+    let stderr = drain(child.stderr.take());
 
     let (out, timed_out) = read_bounded(&mut child, TURN_BUDGET);
     let mut trailing = Vec::new();
     let interrupted = interrupt_if_alive(&mut child, pid, timed_out, &mut trailing);
     let exit = terminate(&mut child, interrupted, &mut trailing);
     let (no_leak, leak_line) = leak_check(&mut child, pid, exit.is_some());
+    // The child is gone by now; a descendant still holding the pipe is not waited on past the bound.
+    let stderr = stderr.recv_timeout(STDERR_GRACE).unwrap_or_default();
 
     let shape = shape_finding(adapter, &out, exit, interrupted, timed_out);
     TurnOutcome {
         spawned: true,
         spawn_line: format!("spawn: ok — pid {pid}"),
+        auth_line: marion_harness::auth_failure_line(&stderr),
         shape_ok: shape.0,
         shape_line: Some(shape.1),
         trailing,
@@ -785,6 +801,7 @@ fn not_spawned(e: &std::io::Error) -> TurnOutcome {
     TurnOutcome {
         spawned: false,
         spawn_line: format!("spawn: FAILED — {e}"),
+        auth_line: None,
         shape_ok: false,
         shape_line: None,
         trailing: vec![],
@@ -1160,6 +1177,8 @@ fn acp_live_turn(
     TurnOutcome {
         spawned: true,
         spawn_line: format!("spawn: ok — pid {pid}"),
+        // The ACP agent's stderr is not captured: an ACP agent reports a failed login in-protocol.
+        auth_line: None,
         shape_ok: shape.0,
         shape_line: Some(shape.1),
         trailing,
@@ -1331,6 +1350,20 @@ fn acp_shape_finding(reading: acp::Reading, stdout: &str, timed_out: bool) -> (b
 }
 
 /// Read a child's stdout to EOF, or until `budget`. `true` means the budget elapsed first.
+/// Read a pipe to its end on a detached thread, so the child never blocks on it; the answer arrives
+/// on the receiver. An absent pipe answers empty at once.
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_string(&mut s);
+        }
+        let _ = tx.send(s);
+    });
+    rx
+}
+
 fn read_bounded(child: &mut std::process::Child, budget: Duration) -> (String, bool) {
     use std::io::Read;
     let Some(mut out) = child.stdout.take() else {
@@ -1593,6 +1626,46 @@ pub fn render(rows: &[Row]) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// **A live turn that could not authenticate says so, in the harness's own words.** Measured:
+    /// gemini on a personal login writes nothing to stdout, exits 55, and puts the whole diagnosis
+    /// on stderr — which this probe piped and never read, so the report said only "the binary wrote
+    /// nothing to stdout". The stand-in is `sh`, so this spends nothing and needs no harness.
+    #[test]
+    fn a_live_turn_that_could_not_authenticate_reports_the_auth_line_plainly() {
+        let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
+                    for Gemini Code Assist for individuals.";
+        let inv = Invocation {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("echo 'Loaded cached credentials.' >&2; echo '{line}' >&2; exit 55"),
+            ],
+            env: vec![],
+            cwd: std::env::temp_dir(),
+            model: None,
+        };
+        let mut notes = Vec::new();
+        let turn = live_turn(
+            &marion_harness::GeminiAdapter,
+            Path::new("/bin/sh"),
+            &inv,
+            &mut notes,
+        );
+        assert!(
+            !record_turn(turn, &mut notes),
+            "the turn failed: {notes:#?}"
+        );
+        let auth = notes
+            .iter()
+            .position(|n| n == &format!("authentication: FAILED — {line}"))
+            .unwrap_or_else(|| panic!("the auth line, plainly: {notes:#?}"));
+        let shape = notes
+            .iter()
+            .position(|n| n.starts_with("response shape:"))
+            .expect("the shape line is still reported");
+        assert!(auth < shape, "the cause comes first: {notes:#?}");
+    }
 
     #[test]
     fn a_mode_is_required_and_both_of_section_8s_modes_parse() {
