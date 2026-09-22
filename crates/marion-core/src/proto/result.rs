@@ -125,6 +125,18 @@ pub struct DeliveryResult {
     /// True iff the node was terminal and §6.3's atomic `continue_()` + `prompt()` ran.
     #[serde(default)]
     pub resumed: bool,
+    /// Marion's name for the message this call handed over — the `message_id` its journal records
+    /// carry — so a caller can match a later delivery or drop to this call. `None` where the call
+    /// named none.
+    ///
+    /// **Additive**: `#[serde(default)]` so an older supervisor's result decodes, and absent from
+    /// the wire when `None` so a result without one is byte-identical to what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// True iff the message was accepted for the node's next turn rather than delivered now. False
+    /// (and absent from the wire) is the immediate delivery every earlier build performed.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub queued: bool,
 }
 
 /// `node/cancel`. §6.7 requires a cancel to reach a process that exists; where it does, the node's
@@ -244,12 +256,16 @@ mod tests {
         rt!(DeliveryResult {
             delivered_as: Delivery::Steer,
             state: NodeState::Running,
-            resumed: false
+            resumed: false,
+            message_id: None,
+            queued: false
         });
         rt!(DeliveryResult {
             delivered_as: Delivery::Prompt,
             state: NodeState::Running,
-            resumed: true
+            resumed: true,
+            message_id: None,
+            queued: false
         });
         rt!(NodeCancelResult {
             state: NodeState::Exited(ExitStatus::Cancelled)
@@ -401,7 +417,9 @@ mod tests {
             serde_json::to_string(&DeliveryResult {
                 delivered_as: Delivery::Prompt,
                 state: NodeState::Running,
-                resumed: true
+                resumed: true,
+                message_id: None,
+                queued: false
             })
             .unwrap(),
             r#"{"delivered_as":"Prompt","state":"Running","resumed":true}"#
@@ -425,6 +443,35 @@ mod tests {
         );
     }
 
+    /// **`message_id` and `queued` are additive in both directions.** A result from a supervisor
+    /// that predates them decodes as an immediate, unnamed delivery, and a result that has neither
+    /// writes the line earlier builds wrote; a queued one carries both, and round-trips.
+    #[test]
+    fn a_delivery_result_names_a_queued_message_and_omits_what_it_lacks() {
+        let old = r#"{"delivered_as":"Steer","state":"Running","resumed":false}"#;
+        let r: DeliveryResult = serde_json::from_str(old).expect("an older result must decode");
+        assert_eq!(r.message_id, None);
+        assert!(!r.queued);
+        assert_eq!(serde_json::to_string(&r).unwrap(), old);
+        let older = r#"{"delivered_as":"Steer","state":"Running"}"#;
+        assert_eq!(serde_json::from_str::<DeliveryResult>(older).unwrap(), r);
+
+        let queued = DeliveryResult {
+            message_id: Some("m-1".into()),
+            queued: true,
+            ..r
+        };
+        let line = serde_json::to_string(&queued).unwrap();
+        assert_eq!(
+            line,
+            r#"{"delivered_as":"Steer","state":"Running","resumed":false,"message_id":"m-1","queued":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<DeliveryResult>(&line).unwrap(),
+            queued
+        );
+    }
+
     #[test]
     fn a_resumed_prompt_says_so() {
         // §6.3's resume is invisible in the state alone: the node is Running either way. A client
@@ -433,9 +480,13 @@ mod tests {
             delivered_as: Delivery::Prompt,
             state: NodeState::Running,
             resumed: false,
+            message_id: None,
+            queued: false,
         };
         let resumed = DeliveryResult {
             resumed: true,
+            message_id: None,
+            queued: false,
             ..fresh.clone()
         };
         assert_ne!(fresh, resumed);

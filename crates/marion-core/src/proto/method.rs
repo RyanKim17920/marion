@@ -381,6 +381,8 @@ mod tests {
                     delivered_as: Delivery::Prompt,
                     state: NodeState::Running,
                     resumed: false,
+                    message_id: None,
+                    queued: false,
                 }),
             ),
             (
@@ -393,6 +395,8 @@ mod tests {
                     delivered_as: Delivery::Steer,
                     state: NodeState::Running,
                     resumed: false,
+                    message_id: None,
+                    queued: false,
                 }),
             ),
             (
@@ -673,6 +677,8 @@ mod tests {
             delivered_as: Delivery::Steer,
             state: NodeState::Blocked(BlockReason::Permission),
             resumed: false,
+            message_id: None,
+            queued: false,
         });
         let back = Method::NodePrompt.decode_result(&steer.to_body()).unwrap();
         assert_ne!(back, steer, "the method, not the payload, is the identity");
