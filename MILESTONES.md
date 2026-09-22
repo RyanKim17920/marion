@@ -169,7 +169,9 @@ claude and codex child do the work and pass its verification yet end `Unreported
 marion's verdicts rather than papered over: an `Unreported` child whose declared verification all
 ran and passed stays `Unreported` in its contract, but its parent's `spawn`/`wait` result is no
 longer `isError` and opens "did not call report; verification passed (N/N)" (`bridge.rs` unit
-tests); with no declared check, or any check failing, it stays an error. Every child's prompt now
+tests); with no declared check, or any check failing, it stays an error — and a failing check now
+leads the first line ("verification failed: `<command>` exit N (k of n checks failed)"), ahead of
+`Unreported` and `Failed`. Every child's prompt now
 ends with one marion-owned sentence (`bridge::REPORT_INSTRUCTION`, appended by `run::child_prompt`
 after any `prompt_prefix`) telling it to call the marion MCP server's `report` once; roots do not
 get it, and the contract's `instructions` record it as the prompt the child saw. codex 0.155.1

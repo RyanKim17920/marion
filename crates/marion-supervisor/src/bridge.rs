@@ -657,6 +657,23 @@ fn bounded(s: &str) -> String {
 fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
     let comp = c.completion.as_ref()?;
     let harness = c.child.harness;
+    // **A failed check leads**, ahead of `Unreported` and `Failed`: it is the one finding marion
+    // made itself about the work, and measured live (2026-09-22) a parent told only "never called
+    // report" reported a child whose `grep -q` exited 1 as finished. A kill outranks it, as it
+    // outranks everything in `build_contract`: marion's own attributed stop comes first.
+    if let (Some(failed), ExitStatus::Unreported | ExitStatus::Failed | ExitStatus::Ok) =
+        (verification_failed(c), comp.status)
+    {
+        let also = match comp.status {
+            ExitStatus::Unreported => "; it also never called report",
+            _ => "",
+        };
+        let line = format!(
+            "marion: the {harness} child's verification failed: {failed}{also} — {}",
+            comp.exit.description
+        );
+        return Some((bounded(&line), true));
+    }
     let head = match comp.status {
         ExitStatus::Ok => return None,
         ExitStatus::Unreported => match verification_passed(c) {
@@ -681,6 +698,44 @@ fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
         bounded(&format!("{head} — {}", comp.exit.description)),
         true,
     ))
+}
+
+/// The first failed verification command and its outcome, with how many failed — `None` when
+/// every recorded check exited 0.
+fn verification_failed(c: &TaskContract) -> Option<String> {
+    let comp = c.completion.as_ref()?;
+    let failed: Vec<_> = comp
+        .evidence
+        .iter()
+        .filter(|e| e.timed_out || e.exit_code != Some(0))
+        .collect();
+    let first = failed.first()?;
+    let how = if first.timed_out {
+        "timed out".to_string()
+    } else {
+        match first.exit_code {
+            Some(code) => format!("exit {code}"),
+            None => "was killed by a signal".to_string(),
+        }
+    };
+    Some(format!(
+        "`{}` {how} ({} of {} checks failed)",
+        command_line(&first.command),
+        failed.len(),
+        comp.evidence.len() + comp.evidence_omitted
+    ))
+}
+
+/// A verification command as the parent wrote it: the script of marion's `sh -c` wrapper, or the
+/// program and its arguments.
+fn command_line(cmd: &marion_core::contract::Command) -> String {
+    match (cmd.program.as_str(), cmd.args.as_slice()) {
+        ("sh", [flag, script]) if flag == "-c" => script.clone(),
+        _ => std::iter::once(cmd.program.as_str())
+            .chain(cmd.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 /// How many declared verification commands ran and passed, **when every one of them did** — or
@@ -1712,6 +1767,46 @@ mod tests {
             assert_eq!(v["result"]["isError"], true, "{why}: {v}");
             assert!(first_line(&v).contains("never called report"), "{why}");
         }
+    }
+
+    /// **A failed verification line is the headline, never masked by `Unreported`.** Measured
+    /// live (2026-09-22): a child wrote `divide` where the parent's `grep -q 'def safe_divide'`
+    /// wanted `safe_divide`; the parent was told "never called report", the exit 1 sat in
+    /// `evidence`, and it reported "finished ✓". The first line names the first failing command
+    /// and its exit, and how many failed.
+    #[test]
+    fn a_failed_verification_line_leads_the_first_line() {
+        let unreported = || {
+            ran(crate::spawn::ChildOutcome {
+                exit_code: Some(0),
+                ..Default::default()
+            })
+        };
+        let v = spawn_result(
+            &json!(2),
+            "codex-impl",
+            Ok(verified(unreported(), &[Some(0), Some(1)])),
+        );
+        assert_eq!(v["result"]["isError"], true);
+        let line = first_line(&v);
+        assert!(
+            line.starts_with(
+                "marion: the codex child's verification failed: `check 1` exit 1 (1 of 2 checks \
+                 failed); it also never called report — "
+            ),
+            "{line}"
+        );
+        let signalled = spawn_result(
+            &json!(2),
+            "codex-impl",
+            Ok(verified(unreported(), &[None, Some(2)])),
+        );
+        assert!(
+            first_line(&signalled)
+                .contains("verification failed: `check 0` was killed by a signal (2 of 2"),
+            "{}",
+            first_line(&signalled)
+        );
     }
 
     /// The success path is not merely similar — it is the same bytes it was before, so a
