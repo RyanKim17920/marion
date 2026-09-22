@@ -622,6 +622,30 @@ fn shape(v: &Value) -> Value {
     v
 }
 
+/// Keys a later `claude` added to the `can_use_tool` request that the 2.1.220 recording does not
+/// carry, each with where it was first seen. marion reads the ask by pointer
+/// (`duplex::can_use_tool_request`: `request_id`, `request.subtype`, `request.tool_name`), so an
+/// added key cannot change what it answers; naming it here keeps the recording the contract
+/// without re-basing it off the pin, and any key *not* named still fails the comparison.
+///
+/// * `mcp_server` — `{"name": "marion", "source": "dynamic"}`, set when the asked-about tool is an
+///   MCP tool. Absent through 2.1.269; present in 2.1.276, 2.1.278 and 2.1.280 (the binary's
+///   `...s.mcpInfo&&{mcp_server:…}` spread); found at the 2.1.280 admission, 2026-09-22.
+const REQUEST_KEYS_ADDED_SINCE_THE_PIN: &[&str] = &["mcp_server"];
+
+/// Removes each [`REQUEST_KEYS_ADDED_SINCE_THE_PIN`] from `live`'s `request`, but only where the
+/// committed frame lacks it, so a recording that later carries the key compares it again.
+fn drop_keys_added_since_the_pin(live: &mut Value, committed: &Value) {
+    let Some(request) = live.get_mut("request").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in REQUEST_KEYS_ADDED_SINCE_THE_PIN {
+        if committed.pointer(&format!("/request/{key}")).is_none() {
+            request.remove(*key);
+        }
+    }
+}
+
 /// The committed recording is the contract. If `claude` changes the ask, this fails — which is the
 /// whole point of committing it, since marion's permission path is keyed on the shape and a silent
 /// change to it would have no other symptom.
@@ -632,8 +656,9 @@ fn assert_committed_recording_still_matches(fx: &Fixture, cap: &Capture, stdout_
         .expect("the committed recording holds the ask");
     // Redacted the same way the recording was, or the per-run scratch path in `blocked_path` would
     // read as a protocol change.
-    let live: Value =
+    let mut live: Value =
         serde_json::from_str(&Redactor::new(fx).line(&cap.ask().to_string())).unwrap();
+    drop_keys_added_since_the_pin(&mut live, &committed);
     assert_eq!(
         shape(&live),
         shape(&committed),
@@ -1137,4 +1162,26 @@ fn the_ask_carries_the_fields_the_permission_path_reads_and_the_ones_it_may_not_
         assert!(ask["request_id"].is_string());
         assert!(ask["request"]["request_id"].is_null());
     }
+}
+
+/// The drift allowance is narrow: a named key goes only when the recording lacks it, and an
+/// unnamed key stays, so the comparison above still fails on it. No harness needed.
+#[test]
+fn only_a_named_key_the_recording_lacks_is_dropped_from_the_live_ask() {
+    let committed = serde_json::json!({"request": {"subtype": "can_use_tool", "tool_name": "t"}});
+    let mut live = serde_json::json!({"request": {
+        "subtype": "can_use_tool", "tool_name": "t",
+        "mcp_server": {"name": "marion", "source": "dynamic"}, "unnamed_new_key": 1,
+    }});
+    drop_keys_added_since_the_pin(&mut live, &committed);
+    assert_eq!(live.pointer("/request/mcp_server"), None);
+    assert_eq!(
+        live.pointer("/request/unnamed_new_key"),
+        Some(&serde_json::json!(1))
+    );
+
+    let recorded_with_it = serde_json::json!({"request": {"mcp_server": {"name": "marion"}}});
+    let mut live = serde_json::json!({"request": {"mcp_server": {"name": "marion"}}});
+    drop_keys_added_since_the_pin(&mut live, &recorded_with_it);
+    assert!(live.pointer("/request/mcp_server").is_some());
 }
