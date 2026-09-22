@@ -1043,18 +1043,25 @@ fn string_list(v: &serde_json::Value) -> Vec<String> {
 /// gets the protocol's own logging notification, which every client is entitled to drop.
 fn push_for(who: &Principal, client_name: Option<&str>) -> Push {
     match who {
-        Principal::Node => push_for_node(non_empty(AGENT_TYPE_ENV).as_deref()),
+        Principal::Node => {
+            // A tree whose file cannot be read now still knows its built-ins; only a row of that
+            // file goes unresolved, and an unresolved type announces nothing.
+            let types = tree_agent_types()
+                .unwrap_or_else(|_| marion_core::agent_type::AgentTypes::builtins_only());
+            push_for_node(&types, non_empty(AGENT_TYPE_ENV).as_deref())
+        }
         Principal::TopLevel(_) => push_for_client(client_name),
     }
 }
 
-/// The pure half of [`push_for`] for a node: the row of the declared agent type, or nothing for
-/// a bridge whose declaration names no type marion knows — announcing on a guess would push a
-/// frame the harness never offered to read.
-fn push_for_node(agent_type: Option<&str>) -> Push {
+/// The pure half of [`push_for`] for a node: the row of the declared agent type, resolved through
+/// the tree's own table (the one `spawn` resolved it through, so a `.marion/agents.toml` row pushes
+/// as the harness it names), or nothing for a bridge whose declaration names no type the tree
+/// knows — announcing on a guess would push a frame the harness never offered to read.
+fn push_for_node(types: &marion_core::agent_type::AgentTypes, agent_type: Option<&str>) -> Push {
     agent_type
         .filter(|s| !s.is_empty())
-        .and_then(marion_core::agent_type::builtin)
+        .and_then(|name| types.resolve(name))
         .map_or(Push::None, |t| {
             marion_harness::adapter::harness_spec(t.harness).push
         })
@@ -2195,14 +2202,44 @@ mod tests {
     #[test]
     fn a_push_strategy_is_read_off_the_declared_agent_type_and_not_guessed() {
         use marion_harness::spec::Push;
-        assert_eq!(push_for_node(Some("claude")), Push::ClaudeChannel);
-        assert_eq!(push_for_node(Some("codex-impl")), Push::McpLog);
-        assert_eq!(push_for_node(Some("acp:opencode")), Push::None);
-        assert_eq!(push_for_node(Some("no-such-type")), Push::None);
-        assert_eq!(push_for_node(Some("")), Push::None);
-        assert_eq!(push_for_node(None), Push::None);
+        let builtins = marion_core::agent_type::AgentTypes::builtins_only();
+        assert_eq!(
+            push_for_node(&builtins, Some("claude")),
+            Push::ClaudeChannel
+        );
+        assert_eq!(push_for_node(&builtins, Some("codex-impl")), Push::McpLog);
+        assert_eq!(push_for_node(&builtins, Some("acp:opencode")), Push::None);
+        assert_eq!(push_for_node(&builtins, Some("no-such-type")), Push::None);
+        assert_eq!(push_for_node(&builtins, Some("")), Push::None);
+        assert_eq!(push_for_node(&builtins, None), Push::None);
         assert_eq!(push_for_client(Some("claude-code")), Push::ClaudeChannel);
         assert_eq!(push_for_client(Some("codex-mcp-client")), Push::McpLog);
         assert_eq!(push_for_client(None), Push::McpLog);
+    }
+
+    /// **A `.marion/agents.toml` row pushes as the harness row it is backed by.** The bridge
+    /// resolves a node's declared type through the same table `spawn` and `tools/list` do; a user
+    /// type resolved against the built-ins alone would read as unknown and its parent would never
+    /// hear that the child ended.
+    #[test]
+    fn a_user_agent_type_pushes_as_the_harness_row_it_names() {
+        use marion_harness::spec::Push;
+        let types = marion_core::agent_type::AgentTypes::parse(
+            "[[agent]]\nname = \"reviewer\"\nharness = \"claude-code\"\ndescription = \"reviews\"\n",
+        )
+        .expect("a well-formed row parses");
+        assert_eq!(
+            push_for_node(&types, Some("reviewer")),
+            push_for_node(&types, Some("claude")),
+        );
+        assert_eq!(push_for_node(&types, Some("reviewer")), Push::ClaudeChannel);
+        assert_eq!(
+            push_for_node(
+                &marion_core::agent_type::AgentTypes::builtins_only(),
+                Some("reviewer")
+            ),
+            Push::None,
+            "a tree without the row does not know the type"
+        );
     }
 }
