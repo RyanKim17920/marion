@@ -1063,7 +1063,20 @@ login with the cheapest model the harness offered.
   AI credits. Names a model lacks are dropped without error. 1.0.83 under BYOK was offered `create`
   (s24). 1.0.87's `app.js` files `edit`, `create` and `apply_patch` under the `edit` category alone
   (`str_replace_editor` is `read`+`edit`). The row maps `write` to all three, so a `copilot-impl`
-  child has its edit tool under either model family; the matrix's children had only `view`.
+  child has an edit tool whichever of the three its model is offered (only `auto` was runnable
+  here); the matrix's children had only `view`.
+- **copilot 1.0.87: `--model` refusals are the account's entitlement, not marion's spelling.**
+  marion passes `--model <id>` verbatim. `gpt-5-mini`, `claude-haiku-4.5` and a made-up
+  `bogus-model-xyz` all fail the same way, `Error: Model "<id>" from --model flag is not
+  available.`, exit 1, before any request. The `--log-level all` log's `CAPI /models` fetch lists
+  53 ids (the real ones include `gpt-5-mini` and `claude-haiku-4.5`, spelled as marion passed them)
+  with `model_picker_enabled: false` on every one, and the resolver falls back to the default for
+  anything named. Only `auto` runs on this login. The user's `~/.copilot/settings.json` model
+  `gemini-3-pro-preview` is logged as `unsupported or unknown` and falls back as well.
+- **opencode 1.18.32: the configured default model needs a paid plan.** The operator's default
+  `opencode-go/kimi-k2.6` refuses with `An active OpenCode Go subscription is required to use Go
+  models.` marion inherits the operator's default by design, so this is the operator's
+  configuration and not a marion defect. The matrix passed `opencode/big-pickle` (free) explicitly.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
