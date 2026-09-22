@@ -1025,7 +1025,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
              the bound on it stalls a root for as long as the operator's budget says ({elapsed:?} \
              of {PROBE_BOUND:?})"
         );
-        for needle in ["§5.4", "contract", "root"] {
+        for needle in ["self only", "contract", "root"] {
             assert!(
                 message.contains(needle),
                 "the denial must give §5.4's reason ({needle:?} missing), not blame a missing \

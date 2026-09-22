@@ -924,7 +924,7 @@ fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_r
         "§5.4 rejects `report` on a root, and a refusal is an error result: {tr}"
     );
     assert!(
-        tr.to_string().contains("§5.4"),
+        tr.to_string().contains("self only"),
         "the tool really ran: this sentence is marion's own bridge's, so the allow answer reached \
          the MCP server and not merely the CLI: {tr}"
     );
@@ -1042,7 +1042,7 @@ fn a_roots_report_is_denied_at_once_in_5_4s_terms_rather_than_costing_the_blocke
     // sentence the root was actually given is readable off its own transcript.
     let said = serde_json::to_string(&outcome.transcript).unwrap();
     assert!(
-        said.contains("§5.4") && said.contains("no contract"),
+        said.contains("self only") && said.contains("no contract"),
         "the root must be told which rule refused it, not that marion had nobody to ask: {said}"
     );
     assert!(

@@ -40,7 +40,7 @@ use crate::{background, bridge, courier, run, socket, spawn};
 /// Declared and refused rather than withheld, on `bridge::tools`' own grounds: an absent verb
 /// carries no sentence, so a client would read the absence as "marion has no `report`" and never
 /// learn that what it wanted is a *child's* report, which arrives on its own `spawn`.
-const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path (§5.4) and this is not a \
+const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path and this is not a \
      node — it is an MCP client marion did not start and holds no contract for, so there is nothing \
      a report could be recorded against. Nothing was staged. What you are probably after is the \
      other direction: `spawn` a child and its own `report` comes back to you as that call's result.";
@@ -183,8 +183,8 @@ impl Principal {
         let ensured = crate::detach::ensure_supervisor(&t.sock, &t.launch).map_err(|e| {
             format!(
                 "marion: no supervisor is listening on {} for this project and marion could not \
-                 start one ({e}). Refusing rather than running the node here: since §11 item 28 the \
-                 supervisor owns every process, and a root started by this server would be a node \
+                 start one ({e}). Refusing rather than running the node here: the supervisor \
+                 owns every process, and a root started by this server would be a node \
                  no client could attach to, kill or quit.",
                 t.sock.socket().display()
             )
@@ -776,7 +776,7 @@ fn report_refusal(depth: Option<String>) -> Option<String> {
         Ok(depth) => bridge::authorization_refusal(depth, bridge::REPORT).map(str::to_string),
         Err(e) => Some(format!(
             "marion: {e}, so this bridge cannot establish the depth of the node calling it and \
-             cannot decide whether §5.4 permits this `report`. Refusing rather than answering that \
+             cannot decide whether this node may `report`. Refusing rather than answering that \
              a result was recorded — marion does not know what this node is, and nothing stages a \
              report it cannot attribute. This is a broken launch, not a rule: the key belongs in \
              the node's marion server declaration."
@@ -919,7 +919,7 @@ fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
 fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     let repo = std::env::var("MARION_REPO").map_err(|_| {
         "marion: MARION_REPO is not set, so this bridge cannot work out which project's supervisor \
-         to ask for a child (§2 keys a supervisor on the tree's git common directory). Refusing \
+         to ask for a child (a supervisor is keyed on the tree's git common directory). Refusing \
          rather than guessing: a spawn sent to another project's supervisor would run, and would be \
          journaled somewhere nobody watching this node will look. This is a broken launch, not a \
          rule — the key belongs in the node's marion server declaration."
@@ -928,7 +928,7 @@ fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     let repo = std::path::PathBuf::from(repo).canonicalize().map_err(|e| {
         format!(
             "marion: MARION_REPO does not resolve to a directory marion can read ({e}), so this \
-             bridge cannot derive its project's socket path (§2). Refusing rather than guessing."
+             bridge cannot derive its project's socket path. Refusing rather than guessing."
         )
     })?;
     let legacy = std::env::var("MARION_STATE").ok();
@@ -941,7 +941,7 @@ fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
     .ok_or_else(|| {
         "marion: this bridge cannot resolve a state directory (MARION_STATE_DIR, else \
          XDG_STATE_HOME, else HOME), so it can derive neither its project's socket path nor where \
-         a child's contract would be written (§4.3). Refusing rather than guessing."
+         a child's contract would be written. Refusing rather than guessing."
             .to_string()
     })?;
     // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
@@ -987,7 +987,7 @@ fn identity_from(
     let agent_id = agent_id.ok_or_else(|| {
         format!(
             "marion: {AGENT_ID_ENV} is not set, so this bridge cannot say which node is asking for \
-             a child. §6.1 step 2's gates are evaluated against the caller's own place in the tree, \
+             a child. marion's spawn limits are evaluated against the caller's own place in the tree, \
              and a spawn from nobody cannot be gated at all — the supervisor would have no depth \
              and no child count to read. Refusing rather than spawning unattributed. This is a \
              broken launch, not a rule: the key belongs in the node's marion server declaration."
@@ -996,7 +996,7 @@ fn identity_from(
     let node_token = node_token.ok_or_else(|| {
         format!(
             "marion: {NODE_TOKEN_ENV} is not set, so this bridge holds no proof that it serves \
-             node {agent_id}. §5.4 binds a capability token to an `AgentId` and the supervisor \
+             node {agent_id}. marion binds a capability token to each node and the supervisor \
              checks it, so an unproven claim would be refused on the socket anyway — and sending an \
              empty one would present a secret every process on this machine already has. A node \
              whose supervisor has restarted is in this case and it is not a mistake the caller \
@@ -1640,11 +1640,65 @@ mod tests {
             );
         }
         // The refusal a caller receives has to be actionable, not a code.
-        for needle in ["§5.4", "contract", "root", "spawn"] {
+        for needle in ["self only", "contract", "root", "spawn"] {
             assert!(
                 bridge::REPORT_ON_A_ROOT.contains(needle),
                 "the refusal must name the rule and the way out ({needle:?} missing)"
             );
+        }
+    }
+
+    /// **What a model is told carries no design-document section numbers.** Measured live
+    /// (2026-09-22): refusals quoting "§5.4", "§9" and "§11 item 28" reached codex, copilot and
+    /// haiku parents, which cannot look them up; the sentence itself has to carry the reason.
+    #[test]
+    fn model_facing_sentences_cite_no_spec_sections() {
+        use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
+        let id = serde_json::json!(1);
+        let exit = ProcessExit {
+            code: Some(0),
+            signal: None,
+            description: "root exited with code 0".into(),
+        };
+        let started = |has_contract| background::Started {
+            task_id: TaskId("t-1".into()),
+            agent_type: "codex-impl".into(),
+            has_contract,
+        };
+        let text = |v: serde_json::Value| {
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let mut said = vec![
+            bridge::REPORT_ON_A_ROOT.to_string(),
+            TOP_LEVEL_REPORT.to_string(),
+            report_refusal(None).unwrap(),
+            identity_from(None, None).unwrap_err(),
+            identity_from(Some("019f".into()), None).unwrap_err(),
+            text(bridge::wait_unknown(&id, "t-1")),
+            text(bridge::status_unknown(&id, "t-1")),
+            text(bridge::background_result(&id, &started(true))),
+            text(bridge::background_result(&id, &started(false))),
+            bridge::root_text(
+                "codex",
+                &AgentId("019f".into()),
+                ExitStatus::Ok,
+                &exit,
+                std::path::Path::new("/e"),
+            )
+            .0,
+        ];
+        for what in [
+            background::Collected::Contract,
+            background::Collected::Ended,
+            background::Collected::NoContract,
+        ] {
+            said.push(text(bridge::wait_already_collected(&id, "t-1", what)));
+        }
+        for sentence in said {
+            assert!(!sentence.contains('§'), "{sentence}");
         }
     }
 

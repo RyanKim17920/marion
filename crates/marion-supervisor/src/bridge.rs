@@ -480,9 +480,9 @@ pub const REPORT_INSTRUCTION: &str = "When you have finished, call the `report` 
 /// root, and a root has no contract — §9), and what the verb it wanted actually is (a *child's*
 /// `report`, reached by delegating).
 pub const REPORT_ON_A_ROOT: &str = "marion: `report` is self only, and only on a node that has a \
-     contract (§5.4). This node is the root: it has no contract, so there is nothing a report could \
-     be recorded against — a root's result is its own stream and its exit (§9). Delegate the work \
-     with `spawn`; the child's `report` is what returns a result to you.";
+     task contract. This node is the root: it has no contract, so there is nothing a report could \
+     be recorded against — a root's result is its own output and its exit. Delegate the work with \
+     `spawn`; the child's `report` is what returns a result to you.";
 
 /// **The one row of §5.4's authorization table marion can decide from the caller's identity alone**,
 /// stated once so the two places that enforce it cannot answer differently.
@@ -959,7 +959,7 @@ pub fn root_text(
     };
     (
         bounded(&format!(
-            "{head} — {desc}. It is node {node}, and it is a **root**: §9 gives a root no task \
+            "{head} — {desc}. It is node {node}, and it is a **root**: a root has no task \
              contract, so there is no result document to return and marion is not withholding one. \
              What it did is its own event stream, at {events}.",
             desc = exit.description,
@@ -997,7 +997,7 @@ pub fn background_result(id: &Value, started: &crate::background::Started) -> Va
     let returns = if started.has_contract {
         "marion will return its completed task contract"
     } else {
-        "marion will return the terminal status it observed — a root has no task contract (§9), so \
+        "marion will return the terminal status it observed — a root has no task contract, so \
          there is no result document to wait for and its event stream is the record"
     };
     tool_result(
@@ -1039,7 +1039,7 @@ pub fn wait_unknown(id: &Value, task_id: &str) -> Value {
         &bounded(&format!(
             "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
              children it started itself, in this process — that is the whole of the lookup, and it \
-             is narrower than what §5.4 permits: a handle for a *grandchild* or for another node's \
+             is narrower than what marion permits: a handle for a *grandchild* or for another node's \
              child is not resolvable here even though waiting on it would be legitimate, and a \
              handle marion issued before this supervisor was restarted is gone with the table. So \
              this may be your mistake or it may be marion's, and marion cannot tell which. If the \
@@ -1074,7 +1074,7 @@ pub fn wait_already_collected(
              is on disk under that child's agent directory."
         }
         crate::background::Collected::Ended => {
-            "That node is a **root**, and §9 gives a root no task contract, so there was never a \
+            "That node is a **root**, and a root has no task contract, so there was never a \
              document to keep — the terminal status you were given the first time is the whole of \
              the answer. Its own event stream is still on disk under that node's agent directory, \
              and that is the record of what it did."
@@ -1201,7 +1201,7 @@ pub fn status_unknown(id: &Value, task_id: &str) -> Value {
         &bounded(&format!(
             "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
              children it started itself, in this process — that is the whole of the lookup, and it \
-             is narrower than what §5.4 permits: a grandchild's handle, or one issued before this \
+             is narrower than what marion permits: a grandchild's handle, or one issued before this \
              supervisor was restarted, is not resolvable here even though reading its state would \
              be legitimate. So this may be your mistake or it may be marion's, and marion cannot \
              tell which. Nothing was read and nothing was changed; `list` shows every child of \

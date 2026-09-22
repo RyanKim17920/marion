@@ -160,7 +160,7 @@ fn a_roots_report_is_refused_rather_than_answered_report_recorded() {
         !text.contains("report recorded"),
         "the false receipt is what this refusal replaces: {text}"
     );
-    for needle in ["§5.4", "contract", "root"] {
+    for needle in ["self only", "contract", "root"] {
         assert!(
             text.contains(needle),
             "the refusal must name the rule it is enforcing ({needle:?} missing): {text}"

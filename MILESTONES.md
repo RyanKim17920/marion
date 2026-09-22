@@ -197,7 +197,11 @@ the contract rather than "no record of task_id" (`background_spawn.rs`). Every c
 <checks> · <changed paths, five shown> · <branch>` — and carries the contract beneath as compact
 JSON (the success path was bare pretty JSON); `tests/common/mcp_result.rs::contract_json` is how
 the end-to-end suites read it. The push no longer opens `marion:`, which the client's own server
-label doubled; `status` words its next step by the node's state.
+label doubled; `status` words its next step by the node's state. The bridge's model-facing
+refusals and handles (`REPORT_ON_A_ROOT`, the top-level `report` refusal, `wait`/`status` unknown
+and already-collected, identity refusals) no longer cite design sections — a model cannot look up
+"§5.4" (`mcp::tests::model_facing_sentences_cite_no_spec_sections`); `SpawnError`'s own texts in
+`spawn.rs` still do.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
