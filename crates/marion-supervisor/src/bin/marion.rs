@@ -44,7 +44,8 @@ fn usage_text() -> String {
          \n\
          marion tree shows this project's node tree beside a content pane, with each node's\n\
          capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
-         out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, enter attaches to the\n\
+         out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, ! jumps to the next\n\
+         node that needs attention (blocked, failed, or orphaned), enter attaches to the\n\
          selected node, q leaves. It starts no supervisor: with none running there is nothing to\n\
          show, and an empty forest would read as \"no agents\" rather than as \"wrong project\".\n\
          \n\

@@ -233,6 +233,27 @@ impl Tree {
         self.cursor = self.cursor.saturating_add_signed(delta).min(last);
     }
 
+    /// Move the cursor to the next row, **as drawn**, whose id `wanted` accepts: starting after
+    /// the cursor, wrapping past the last row, and ending on the cursor's own row. `false`, with
+    /// the cursor unmoved, when no row is wanted.
+    ///
+    /// This one does wrap, unlike [`Self::move_by`]: a jump to the next match is a search, and a
+    /// search that stopped at the bottom would hide the matches above the cursor. The predicate
+    /// takes an id because the caller holds the facts about a node and this crate holds none.
+    pub fn cycle_to(&mut self, wanted: impl Fn(&str) -> bool) -> bool {
+        let rows = self.order.len();
+        let hit = (1..=rows)
+            .map(|step| (self.cursor + step) % rows)
+            .find(|&row| wanted(&self.nodes[self.order[row]].id));
+        match hit {
+            Some(row) => {
+                self.cursor = row;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Re-point the cursor at `id`, if the tree has it. Used after a refresh, so that a snapshot
     /// arriving while the operator is deciding does not move the selection under them.
     pub fn select(&mut self, id: &str) -> bool {
@@ -335,6 +356,9 @@ pub enum Nav {
     /// `q`, or `^]` — the same escape the pane reserves, so an operator who has learned one way out
     /// of marion has learned both.
     Quit,
+    /// `!`: move the cursor to the next node that needs the operator. Which nodes those are is the
+    /// caller's to decide — see [`Tree::cycle_to`] — because this crate cannot read a node's state.
+    NextAttention,
 }
 
 /// Decode a chunk of stdin into navigation. Bytes with no meaning here are dropped, not forwarded:
@@ -360,6 +384,7 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
             b'\r' | b'\n' => out.push(Nav::Open),
             b'\t' => out.push(Nav::ToggleFocus),
             b'q' | 0x1d => out.push(Nav::Quit),
+            b'!' => out.push(Nav::NextAttention),
             _ => {}
         }
         i += 1;
@@ -853,6 +878,58 @@ mod tests {
             [],
             "an unmapped key is dropped, never forwarded"
         );
+    }
+
+    /// `!` is the attention key: it is not a letter a pane forwards on this screen, and the tree
+    /// forwards nothing, so it cannot shadow anything.
+    #[test]
+    fn a_bang_asks_for_the_next_node_that_needs_attention() {
+        assert_eq!(nav(b"!"), [Nav::NextAttention]);
+        assert_eq!(nav(b"j!k"), [Nav::Down, Nav::NextAttention, Nav::Up]);
+    }
+
+    /// **`cycle_to` walks the rows as drawn, from the one after the cursor, and wraps.**
+    ///
+    /// Display order, not input order: `c` is listed last but drawn under `a`, and the operator
+    /// reads the screen. A cursor already on the only match stays there and says so; no match, or
+    /// no rows, leaves the cursor where it was and answers `false`, so the caller can say why the
+    /// key did nothing.
+    #[test]
+    fn cycling_to_a_wanted_row_follows_the_screen_and_wraps() {
+        let mut t = Tree::new(vec![
+            node("a", None),
+            node("b", None),
+            node("c", Some("a")),
+            node("d", None),
+        ]);
+        assert_eq!(ids(&t), ["a", "c", "b", "d"]);
+        let wanted = |id: &str| id == "c" || id == "d";
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            assert!(t.cycle_to(wanted));
+            seen.push(t.selected().unwrap().id.clone());
+        }
+        assert_eq!(seen, ["c", "d", "c"], "forward from the cursor, then round");
+
+        assert!(
+            t.cycle_to(|id| id == "c"),
+            "the only match is the cursor's own row"
+        );
+        assert_eq!(t.selected().unwrap().id, "c");
+
+        assert!(!t.cycle_to(|_| false), "nothing wanted");
+        assert_eq!(
+            t.selected().unwrap().id,
+            "c",
+            "a miss does not move the cursor"
+        );
+
+        let mut empty = Tree::new(Vec::new());
+        assert!(
+            !empty.cycle_to(|_| true),
+            "an empty tree has nothing to cycle to"
+        );
+        assert_eq!(empty.selected(), None);
     }
 
     #[test]

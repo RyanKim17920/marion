@@ -117,6 +117,9 @@ Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resum
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
+2026-09-22: an attention queue — one rule, `tree::attention_of`, names a node blocked, exited
+failed / timed out / killed / unreported, or orphaned; `!` in `marion tree` jumps to the next such
+node in drawn order, wrapping (`marion-tui` and `tree.rs` unit tests).
 2026-09-12: inside a native session `^] s` toggles marion's one optional status row on the
 terminal's bottom line — the root's direct children as running / blocked / done / failed, from a
 `tree/subscribe` on the claimed connection — painted as a saved-and-restored last row so it sits on

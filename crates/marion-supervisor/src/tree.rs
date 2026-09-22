@@ -237,6 +237,24 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
     }
 }
 
+/// Why `!` did not move. Shown on the hint row, for [`NO_PANE`]'s reason.
+const CALM: &str = "nothing needs attention";
+
+/// **`!`: the cursor to the next node that needs the operator**, by [`attention_of`] and in the
+/// order the tree draws, wrapping. The refusal is the hint-row sentence when there is none.
+fn next_attention(tree: &mut Tree, nodes: &[NodeSummary]) -> Result<(), &'static str> {
+    let wanted = |id: &str| {
+        nodes
+            .iter()
+            .any(|n| n.agent_id.0 == id && attention_of(n).is_some())
+    };
+    if tree.cycle_to(wanted) {
+        Ok(())
+    } else {
+        Err(CALM)
+    }
+}
+
 /// Why `Tab` did not move. Shown on the hint row, because a key that silently does nothing is
 /// indistinguishable from a key that is broken.
 const NO_PANE: &str = "no pane to focus";
@@ -647,7 +665,12 @@ impl Session {
                 self.tree.move_by(1);
                 None
             }
-            Nav::Up | Nav::Down => None,
+            Nav::NextAttention if self.focus == Focus::Tree => {
+                self.notice = None;
+                self.hint = next_attention(&mut self.tree, &self.nodes).err();
+                None
+            }
+            Nav::Up | Nav::Down | Nav::NextAttention => None,
             Nav::Open => self.open_selected().map(Some),
         }
     }
@@ -778,7 +801,7 @@ fn parent_label(nodes: &[NodeSummary], node: &NodeSummary) -> Option<String> {
 ///
 /// No `^] d detach`: that is the pane's chord, and on this screen `^]` quits and `d` does nothing,
 /// so listing it here taught a first-time operator a key that did not exist yet.
-const KEYS: &str = "j/k move  tab focus  q quit";
+const KEYS: &str = "j/k move  tab focus  ! next attention  q quit";
 
 /// The hint row for one selection.
 ///
@@ -1466,7 +1489,7 @@ mod tests {
             keys_for(Some(&headless)),
             keys_for(None),
         ] {
-            for rest in ["j/k move", "tab focus", "q quit"] {
+            for rest in ["j/k move", "tab focus", "! next attention", "q quit"] {
                 assert!(keys.contains(rest), "`{rest}` left the hint row: {keys}");
             }
             assert!(
@@ -1474,6 +1497,53 @@ mod tests {
                 "`^] d` is the pane's chord and does nothing on this screen: {keys}"
             );
         }
+    }
+
+    /// **`!` jumps to the next node that needs the operator**, by [`attention_of`]'s rule and in
+    /// the order the tree draws, wrapping; with nothing to jump to it leaves the cursor where it
+    /// was and says why on the hint row, because a key that silently does nothing looks broken.
+    #[test]
+    fn bang_cycles_through_the_nodes_that_need_attention() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::BlockReason;
+        let with = |id: &str, state: NodeState, reap: ReapState| NodeSummary {
+            state,
+            reap_state: reap,
+            ..summary(id, Harness::Codex, false, None)
+        };
+        let nodes = vec![
+            with("fine", NodeState::Running, ReapState::Live),
+            with(
+                "failed",
+                NodeState::Exited(ExitStatus::Failed),
+                ReapState::Live,
+            ),
+            with("done", NodeState::Exited(ExitStatus::Ok), ReapState::Live),
+            with(
+                "asking",
+                NodeState::Blocked(BlockReason::Permission),
+                ReapState::Live,
+            ),
+            with("lost", NodeState::Idle, ReapState::Orphaned),
+        ];
+        let mut t = build(&nodes, None);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            assert_eq!(next_attention(&mut t, &nodes), Ok(()));
+            seen.push(t.selected().unwrap().id.clone());
+        }
+        assert_eq!(seen, ["failed", "asking", "lost", "failed"]);
+
+        let calm = vec![
+            with("fine", NodeState::Running, ReapState::Live),
+            with("done", NodeState::Exited(ExitStatus::Ok), ReapState::Live),
+        ];
+        let mut t = build(&calm, Some("done"));
+        assert_eq!(
+            next_attention(&mut t, &calm),
+            Err("nothing needs attention")
+        );
+        assert_eq!(t.selected().unwrap().id, "done", "the cursor stays put");
     }
 
     /// **The hints belong to the screen, at the bottom left, above the caps strip.**
