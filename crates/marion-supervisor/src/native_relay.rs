@@ -1078,14 +1078,16 @@ struct RawPaneSession<W: Write> {
     status: StatusOverlay,
 }
 
-/// How often the status row is repainted while shown and nothing has changed, so a node's own
-/// paint of that row does not hide it for long. Anything that changes it repaints at the next tick.
+/// The shortest gap between two repaints of the status row that node output asked for: the node
+/// may have cleared the screen or switched screens under it. A change to the row's own text
+/// repaints at the next tick, and an idle node gets no repaint at all.
 const STATUS_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// marion's one optional row on the operator's terminal, and the `tree/subscribe` behind it.
 ///
-/// Never drawn unless the operator asked (`^] s`); while asked for, redrawn when something changed
-/// and otherwise every [`STATUS_REDRAW`]; on toggle-off, cleared once and then left alone. The
+/// Never drawn unless the operator asked (`^] s`); while asked for, redrawn when its text changed
+/// and after node output at most every [`STATUS_REDRAW`]; on toggle-off, cleared once and then
+/// left alone. The
 /// subscription outlives the toggle: it is made once, at the first request, and kept for the
 /// relay's lifetime so a later toggle-on has a current snapshot at once.
 struct StatusOverlay {
@@ -1105,6 +1107,8 @@ struct StatusOverlay {
     reserved: bool,
     /// Something to repaint at the next tick: a tree event, the toggle, or a resize.
     dirty: bool,
+    /// Node output reached the terminal since the last paint, and could have erased the row.
+    touched: bool,
     last_drawn: Option<std::time::Instant>,
     rows: u16,
     cols: u16,
@@ -1122,6 +1126,7 @@ impl StatusOverlay {
             shown: false,
             reserved: false,
             dirty: false,
+            touched: false,
             last_drawn: None,
             rows,
             cols,
@@ -1195,12 +1200,14 @@ impl StatusOverlay {
         }
     }
 
-    /// Whether the row needs painting now: a change, or the periodic repaint being due.
+    /// Whether the row needs painting now: a change, or node output since a paint long enough ago.
     fn due(&self) -> bool {
         self.dirty
-            || self
-                .last_drawn
-                .is_none_or(|drawn| drawn.elapsed() >= STATUS_REDRAW)
+            || self.last_drawn.is_none()
+            || (self.touched
+                && self
+                    .last_drawn
+                    .is_some_and(|drawn| drawn.elapsed() >= STATUS_REDRAW))
     }
 }
 
@@ -1708,6 +1715,7 @@ impl<W: Write> RawPaneSession<W> {
         match decoded.action {
             crate::pane_client::PaneV1Action::Output(bytes) => {
                 let bytes = bytes.as_bytes();
+                self.status.touched = true;
                 let marks = self.status.stream.advance(bytes);
                 let repairs = self.status.margin_repairs(&marks);
                 let mut from = 0;
@@ -1783,6 +1791,7 @@ impl<W: Write> RawPaneSession<W> {
         let line = self.status.line(&self.id);
         self.status.shown = true;
         self.status.dirty = false;
+        self.status.touched = false;
         self.status.last_drawn = Some(std::time::Instant::now());
         self.write_status(&status_overlay_bytes(
             self.status.rows,
@@ -4665,6 +4674,60 @@ mod tests {
             "the node was not told its window lost, then regained, the status row: {frames:?}"
         );
         assert_eq!(pane_writes(&frames), 0, "a status toggle reached the node");
+    }
+
+    /// The row is repainted only because something could have disturbed it: a change to its
+    /// text, or node output since the last paint (a clear screen, a screen switch). An idle node
+    /// with the row shown gets no bytes from marion at all.
+    #[test]
+    fn an_idle_node_gets_no_repaints_and_node_output_gets_one() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (cue_tx, cue_rx) = mpsc::channel::<()>();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            cue_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the test's cue to write");
+            server
+                .write_all(&output_frame(0, b"\x1b[2Jcleared"))
+                .unwrap();
+            frames_until_eof(&mut BufReader::new(server))
+        });
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            drop(session);
+            outcome
+        });
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        until_sink(&sink, "the status row", |text| text.contains("marion:"));
+        let painted = sink_text(&sink);
+        std::thread::sleep(super::STATUS_REDRAW * 3);
+        assert_eq!(
+            sink_text(&sink),
+            painted,
+            "marion repainted the row of an idle node"
+        );
+        cue_tx.send(()).unwrap();
+        until_sink(&sink, "the row repainted after the clear", |text| {
+            text.rfind("cleared")
+                .is_some_and(|at| text[at..].contains("marion:"))
+        });
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        assert!(matches!(pump.join().unwrap(), Ok(RelayStop::Complete)));
+        server_thread.join().unwrap();
     }
 
     /// A relay that leaves while the row is shown — here a detach — gives the operator's shell the
