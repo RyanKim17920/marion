@@ -135,7 +135,7 @@ use serde_json::{Value, json};
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
-use common::mcp_result::mcp_blocks_text;
+use common::mcp_result::{codex_call_output_text, mcp_blocks_text};
 
 /// The outermost safety net. Every cell has its own `--timeout` below; this only exists so a wedged
 /// `marion` fails loudly instead of wedging the suite.
@@ -854,27 +854,10 @@ fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
                 .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == ROOT_TOOL_USE_ID)?;
             mcp_blocks_text(&block["content"])
         }
-        // Responses: a `function_call_output` item quoting our `call_id`. Its `output` is **not**
-        // the MCP result — codex 0.146.0 frames it as `Wall time: <n> seconds\nOutput:\n<blocks>`,
-        // where `<blocks>` is the MCP content list. Unwrapped structurally rather than by hunting
-        // for a `{`: the contract itself is full of braces.
-        "responses" => {
-            let output =
-                body["input"].as_array()?.iter().find(|i| {
-                    i["type"] == "function_call_output" && i["call_id"] == ROOT_CALL_ID
-                })?["output"]
-                    .as_str()?;
-            let blocks = output.split_once("\nOutput:\n").unwrap_or_else(|| {
-                panic!(
-                    "codex framed its mcp result as something other than `…\\nOutput:\\n<blocks>`, \
-                     so this cell cannot read what the root was handed:\n{output}"
-                )
-            });
-            let parsed: Value = serde_json::from_str(blocks.1).unwrap_or_else(|e| {
-                panic!("codex's `Output:` section is not JSON: {e}\n{}", blocks.1)
-            });
-            mcp_blocks_text(&parsed)
-        }
+        // Responses: a `function_call_output` item quoting our `call_id`, whose `output` is codex's
+        // wrapper around the MCP result, a string before 0.155.1 and a block list from it. Both
+        // are unwrapped structurally in `common::mcp_result`, not by hunting for a `{`.
+        "responses" => codex_call_output_text(body, ROOT_CALL_ID),
         // Gemini: a `functionResponse` part. The CLI mints its own call id, so the match is on the
         // tool name; and it wraps every MCP result in `<untrusted_context>` before showing it to
         // the model, which is stripped here rather than tolerated by a substring assertion.

@@ -5,7 +5,7 @@
 //! times over in every admission's per-suite tallies.
 
 mod common;
-use common::mcp_result::tool_result_text;
+use common::mcp_result::{codex_call_output_text, tool_result_text};
 use serde_json::{Value, json};
 
 fn request_with(content: Value) -> Value {
@@ -64,4 +64,59 @@ fn another_call_id_and_a_bare_first_turn_find_nothing() {
     assert_eq!(tool_result_text(&r, "toolu_2"), None);
     let first_turn = json!({ "body": { "messages": [{ "role": "user", "content": "hi" }] } });
     assert_eq!(tool_result_text(&first_turn, "toolu_1"), None);
+}
+
+fn codex_body(output: Value) -> Value {
+    json!({ "input": [
+        { "type": "function_call", "call_id": "call_1", "name": "spawn", "namespace": "mcp__marion" },
+        { "type": "function_call_output", "call_id": "call_1", "output": output }
+    ] })
+}
+
+/// codex 0.146.0 – 0.147.0: one string, the block list as JSON after the label.
+#[test]
+fn codex_string_output_is_unwrapped_and_its_blocks_joined() {
+    let blocks = json!([{ "type": "text", "text": "{\"a\":" }, { "type": "text", "text": "1}" }]);
+    let body = codex_body(json!(format!("Wall time: 0.9 seconds\nOutput:\n{blocks}")));
+    assert_eq!(
+        codex_call_output_text(&body, "call_1").as_deref(),
+        Some("{\"a\":1}")
+    );
+}
+
+/// codex 0.155.1: the wrapper is its own leading block and marion's blocks follow verbatim.
+#[test]
+fn codex_block_list_output_drops_the_wrapper_block_and_joins_the_rest() {
+    let body = codex_body(json!([
+        { "type": "input_text", "text": "Wall time: 0.9356 seconds\nOutput:" },
+        { "type": "input_text", "text": "{\"a\":" },
+        { "type": "input_text", "text": "1}" }
+    ]));
+    assert_eq!(
+        codex_call_output_text(&body, "call_1").as_deref(),
+        Some("{\"a\":1}")
+    );
+}
+
+#[test]
+fn codex_output_for_another_call_or_none_at_all_finds_nothing() {
+    let body = codex_body(json!("Wall time: 1 seconds\nOutput:\n[]"));
+    assert_eq!(codex_call_output_text(&body, "call_2"), None);
+    assert_eq!(
+        codex_call_output_text(&json!({ "input": [] }), "call_1"),
+        None
+    );
+}
+
+#[test]
+#[should_panic(expected = "does not open with its `Wall time")]
+fn a_codex_block_list_without_the_wrapper_is_refused_loudly() {
+    let body = codex_body(json!([{ "type": "input_text", "text": "{\"a\":1}" }]));
+    codex_call_output_text(&body, "call_1");
+}
+
+#[test]
+#[should_panic(expected = "something other than")]
+fn a_codex_string_without_the_label_is_refused_loudly() {
+    codex_call_output_text(&codex_body(json!("{\"a\":1}")), "call_1");
 }

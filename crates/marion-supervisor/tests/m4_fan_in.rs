@@ -55,6 +55,7 @@ use serde_json::{Value, json};
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
+use common::mcp_result::codex_call_output_text;
 
 /// Generous. The bound exists so a hung harness fails loudly instead of wedging the suite; nothing
 /// is measured against it.
@@ -167,34 +168,11 @@ fn accepted(program: &str) -> &'static [&'static str] {
 /// The text codex recorded as the result of the call it made under `call_id`.
 ///
 /// **Asserted on the request side**, as §9 requires: this is what the *harness* sent back up to the
-/// model on its next turn, not what marion says it replied. codex wraps an MCP result as
-/// `"Wall time: … seconds\nOutput:\n<block list>"`; the wrapper is peeled here rather than matched
-/// on, so a change in its shape fails naming the string that was found.
+/// model on its next turn, not what marion says it replied. codex's wrapper around the MCP result
+/// (a string before 0.155.1, a block list from it) is peeled in `common::mcp_result`, which fails
+/// naming the value when the shape is neither.
 fn codex_tool_output(request: &Value, call_id: &str) -> Option<String> {
-    const MARKER: &str = "Output:\n";
-    let raw = request
-        .pointer("/body/input")?
-        .as_array()?
-        .iter()
-        .find(|it| {
-            it.get("type").and_then(Value::as_str) == Some("function_call_output")
-                && it.get("call_id").and_then(Value::as_str) == Some(call_id)
-        })?
-        .get("output")?
-        .as_str()?;
-    let at = raw.find(MARKER).unwrap_or_else(|| {
-        panic!("codex's tool-output wrapper no longer carries {MARKER:?}:\n{raw}")
-    });
-    let blocks: Value = serde_json::from_str(&raw[at + MARKER.len()..])
-        .unwrap_or_else(|e| panic!("the block list after {MARKER:?} is not JSON: {e}\n{raw}"));
-    Some(
-        blocks
-            .as_array()?
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join(""),
-    )
+    codex_call_output_text(request.get("body")?, call_id)
 }
 
 /// Every `journal.jsonl` under `state`, as lines, in file order.
