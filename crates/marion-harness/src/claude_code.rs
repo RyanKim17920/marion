@@ -62,10 +62,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // Only the MCP servers marion declared; never the user's.
         Arg::Lit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
-        // No user settings, plugins or hooks leak into a node. This does NOT suppress the
-        // session-title request (§5.5).
-        Arg::Lit("--setting-sources"),
-        Arg::Lit(""),
+        // No user settings, plugins or hooks leak into a canned node. This does NOT suppress the
+        // session-title request (§5.5). **Canned only**: a settings file is a credential source
+        // (`apiKeyHelper`, `awsAuthRefresh`, an `env` block naming a key, Bedrock or a gateway),
+        // and 2.1.280 measured the flag hiding it — a config dir whose `settings.json` alone held
+        // the credential answered `Not logged in` with the flag and took the settings' route with
+        // `--setting-sources=user`. A live node runs on the operator's settings as they wrote them.
+        Arg::CannedLit("--setting-sources"),
+        Arg::CannedLit(""),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
     ],
@@ -77,8 +81,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Joined("--allowedTools", Field::Allowed),
         Arg::Lit("--strict-mcp-config"),
         Arg::Flag("--mcp-config", Field::McpConfig),
-        Arg::Lit("--setting-sources"),
-        Arg::Lit(""),
+        Arg::CannedLit("--setting-sources"),
+        Arg::CannedLit(""),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
         Arg::PosIfNonEmpty(Field::Prompt),

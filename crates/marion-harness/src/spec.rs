@@ -442,6 +442,11 @@ pub enum Arg {
     /// daemon), and which a live node must not carry: pointing them at marion's directory is what
     /// hides the operator's own configuration.
     Isolation(&'static str, &'static str),
+    /// A literal token **under [`When::Canned`] only** — a switch that keeps the operator's own
+    /// configuration out of the node. A live node must not carry one: its premise is the
+    /// operator's harness as they configured it, and that configuration is where a credential can
+    /// live (claude's `--setting-sources ""` drops a settings `apiKeyHelper` or `env` block).
+    CannedLit(&'static str),
 }
 
 /// How a harness names a session to resume on argv, as `<harness> --help` spells it.
@@ -715,6 +720,10 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
             .collect(),
         Arg::Items(field) => items(spec, f, field),
         Arg::Isolation(flag, child) => arg_isolation(flag, child, f),
+        Arg::CannedLit(s) => match f.auth {
+            Auth::Canned => vec![s.to_string()],
+            Auth::Inherited => Vec::new(),
+        },
         Arg::Resume => arg_resume(spec, f),
     }
 }

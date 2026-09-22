@@ -3825,22 +3825,30 @@ mod tests {
     }
 
     /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration
-    /// and still excludes the user's settings — those are what keep §6.4's MUST true when the
-    /// credential is real, so a "live means don't isolate anything" reading would be the exact
-    /// mistake this pins shut.
+    /// and still runs only marion's MCP servers; the one argv difference from canned is the
+    /// settings exclusion, which a live node must not carry (the test below).
     #[test]
-    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one() {
+    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one_but_the_settings_exclusion() {
         let live = LaunchSpec {
             auth: Auth::Inherited,
             base_url: None,
             api_key: None,
             ..claude_spec()
         };
-        let canned = claude_spec();
+        let canned = ClaudeCodeAdapter
+            .compile(&claude_spec(), &ctx())
+            .unwrap()
+            .args;
+        let i = canned
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .unwrap();
+        let mut without_exclusion = canned.clone();
+        without_exclusion.drain(i..i + 2);
         assert_eq!(
             ClaudeCodeAdapter.compile(&live, &ctx()).unwrap().args,
-            ClaudeCodeAdapter.compile(&canned, &ctx()).unwrap().args,
-            "live differs from canned in env only; argv is the measured 2.1.220 launch either way"
+            without_exclusion,
+            "live differs from canned in env and the settings exclusion only"
         );
         let inv = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
         assert!(inv.args.iter().any(|a| a == "--strict-mcp-config"));
@@ -3850,16 +3858,50 @@ mod tests {
             ClaudeCodeAdapter.config_files(&live, &ctx()).unwrap()[0].0,
             "the declaration a live node reads is still the one marion wrote in its agent dir"
         );
-        let i = inv
-            .args
-            .iter()
-            .position(|a| a == "--setting-sources")
-            .unwrap();
-        assert_eq!(
-            inv.args[i + 1],
-            "",
-            "the user's settings, plugins and hooks stay out under --live too"
-        );
+    }
+
+    /// **A live claude node reads the operator's own settings, because a settings file can be
+    /// where their credential lives.** `apiKeyHelper`, `awsAuthRefresh` and the `env` block
+    /// (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, a gateway's `ANTHROPIC_BASE_URL`) are all
+    /// settings keys, and `--setting-sources ""` drops every one of them — measured on 2.1.280:
+    /// a config dir whose `settings.json` alone carries the credential answers `Not logged in` with
+    /// the flag and takes the settings' route with `--setting-sources=user`. Canned keeps the flag:
+    /// there marion supplies the credential and the operator's settings have nothing to add.
+    #[test]
+    fn a_live_claude_node_loads_the_operators_own_settings_so_a_settings_credential_reaches_it() {
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..claude_spec()
+        };
+        let headless = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
+        let pane = ClaudeCodeAdapter.compile_pane(&live, &ctx()).unwrap();
+        for (shape, inv) in [("headless", &headless), ("pane", &pane)] {
+            assert!(
+                !inv.args.iter().any(|a| a == "--setting-sources"),
+                "{shape}: a live node must not drop the operator's settings: {:?}",
+                inv.args
+            );
+            assert!(
+                inv.args.iter().any(|a| a == "--strict-mcp-config"),
+                "{shape}: MCP isolation is not a credential source and stays: {:?}",
+                inv.args
+            );
+        }
+        for inv in [
+            ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap(),
+            ClaudeCodeAdapter
+                .compile_pane(&claude_spec(), &ctx())
+                .unwrap(),
+        ] {
+            let i = inv
+                .args
+                .iter()
+                .position(|a| a == "--setting-sources")
+                .expect("canned keeps the operator's settings out");
+            assert_eq!(inv.args[i + 1], "");
+        }
     }
 
     /// **Canned mode is byte-identical to what it produced before the auth axis existed**, on all

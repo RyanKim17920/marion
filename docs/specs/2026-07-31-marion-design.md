@@ -3968,6 +3968,15 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     §7.6 — put a user `Stop` hook alongside marion's, so the one-fire budget and the meaning of
     `stop_hook_active` would not be marion's to guarantee on the one node where M1 implements that
     path. With the flag: the table above — and MCP tools unaffected either way.
+
+    **The flag is canned-only (2026-09-22).** A settings file is a credential source —
+    `apiKeyHelper`, `awsAuthRefresh`, an `env` block naming a key, Bedrock/Vertex or a gateway —
+    and the flag hides it: on 2.1.280 a config dir whose `settings.json` alone carried the
+    credential answered `Not logged in` with `--setting-sources ""` and took the settings' route
+    with `--setting-sources=user`. An `Auth::Inherited` node runs on the operator's own
+    credential, wherever they configured it, so it omits the flag and loads their settings —
+    plugins and hooks included, the price of never hiding a login. `--strict-mcp-config` stays in
+    both modes: MCP servers carry no credential of the node's own.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
     `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not
