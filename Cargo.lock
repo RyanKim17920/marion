@@ -472,6 +472,7 @@ name = "marion-harness"
 version = "0.1.0"
 dependencies = [
  "marion-core",
+ "marion-testsupport",
  "serde",
  "serde_json",
  "thiserror",

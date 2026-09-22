@@ -12,3 +12,8 @@ marion-core = { path = "../marion-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Test-only: the version gate's table, read by `tests/pinned_probe_env.rs` so the env its probe runs
+# with cannot drift from the no-self-update env these rows give every node.
+marion-testsupport = { path = "../marion-testsupport" }

@@ -311,7 +311,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "claude",
         store: ReleaseStore::ClaudeVersions,
-        probe_env: &[],
+        probe_env: &[("DISABLE_AUTOUPDATER", "1")],
         // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
         // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
         //
@@ -752,7 +752,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "opencode",
         store: ReleaseStore::PathOnly,
-        probe_env: &[],
+        probe_env: &[("OPENCODE_DISABLE_AUTOUPDATE", "1")],
         // 1.17.3 is the pin: the version that never exits on a provider hang, and the one S13's
         // `tests/fixtures/s13/` captures and the `/mcp` dialog reading were taken from.
         //
@@ -787,7 +787,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "copilot",
         store: ReleaseStore::Npm("@github/copilot"),
-        probe_env: &[],
+        probe_env: &[("COPILOT_AUTO_UPDATE", "false")],
         // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
         // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
         // installed has none of the three, so nothing about copilot was measurable before it.
@@ -835,7 +835,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "cline",
         store: ReleaseStore::Npm("cline"),
-        probe_env: &[],
+        probe_env: &[("CLINE_NO_AUTO_UPDATE", "1")],
         // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
         // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
         // every S27 probe ran against — each against a canned local provider at $0.00
@@ -855,7 +855,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "qwen",
         store: ReleaseStore::Npm("@qwen-code/qwen-code"),
-        probe_env: &[],
+        probe_env: &[("QWEN_CODE_SKIP_UPDATE_CHECK_ONCE", "true")],
         // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
         // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
         // version every S25 probe ran against — each against a canned local provider at $0.00
