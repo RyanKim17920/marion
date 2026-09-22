@@ -1033,17 +1033,17 @@ impl HarnessAdapter for GeminiAdapter {
         // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
         // `GEMINI_API_KEY` and so selects `gemini-api-key`; under `Inherited` it supplies no
         // credential at all, and this document is the *system settings* layer, which outranks the
-        // operator's own — so a hardcoded selection here would override a real `oauth-personal`
-        // profile with a type that has no credential behind it and fail with S12's code 41.
+        // operator's own — so any selection here would pin every operator to one route. The live
+        // document selects nothing and leaves gemini's own `user || env` resolution to run.
         let document = match (spec.auth, bridge.as_ref()) {
             (Auth::Canned, bridge) => serde_json::to_string_pretty(&gemini::settings_json(bridge))
                 .expect("a Value always serialises"),
             // The row's live declaration, byte for byte: a native root gets exactly this file.
             (Auth::Inherited, Some(bridge)) => gemini::live_settings_document(bridge),
-            (Auth::Inherited, None) => serde_json::to_string_pretty(
-                &gemini::settings_json_with_auth(None, &gemini::live_auth_type()),
-            )
-            .expect("a Value always serialises"),
+            (Auth::Inherited, None) => {
+                serde_json::to_string_pretty(&gemini::live_settings_json(None))
+                    .expect("a Value always serialises")
+            }
         };
         Ok(vec![(Self::settings_path(spec), document)])
     }
@@ -4064,24 +4064,28 @@ mod tests {
         );
     }
 
-    /// The auth selection a live node declares is the operator's own, read from their settings —
-    /// and never the canned `gemini-api-key`, which under `--live` has no key behind it and fails
-    /// with S12's code 41.
+    /// A live node declares **no** auth selection, with or without a bridge: this document is the
+    /// system-settings layer, and any `selectedType` in it pins every operator to one route —
+    /// `oauth-personal` pinned an operator whose only credential is `GEMINI_API_KEY` to a login
+    /// Google now refuses to individuals. Silent, gemini runs its own `user || env` resolution, and
+    /// the operator's own `settings.json` still wins because the layers merge leaf by leaf (S30).
     #[test]
-    fn a_live_gemini_node_declares_an_auth_type_it_could_actually_authenticate_with() {
-        let live = LaunchSpec {
-            auth: Auth::Inherited,
-            base_url: None,
-            api_key: None,
-            ..gemini_spec()
-        };
-        let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-        assert_eq!(
-            v["security"]["auth"]["selectedType"],
-            serde_json::json!(gemini::live_auth_type()),
-            "the operator's real selection, or the oauth-personal fallback — not marion's"
-        );
+    fn a_live_gemini_node_leaves_the_auth_selection_to_gemini() {
+        for mcp in [McpDeclaration::Marion, McpDeclaration::None] {
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                base_url: None,
+                api_key: None,
+                mcp,
+                ..gemini_spec()
+            };
+            let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+            assert!(
+                v.pointer("/security/auth/selectedType").is_none(),
+                "{mcp:?}: a live document must not pin an auth route: {v}"
+            );
+        }
         // Canned is untouched and still selects the type marion supplies a key for.
         let canned: serde_json::Value =
             serde_json::from_str(&GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap()[0].1)

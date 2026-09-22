@@ -901,7 +901,11 @@ file measures about Gemini against the **canned** provider is unaffected — the
 S12, the `trust: true` trap — because those never authenticate to Google. **Do not read a green
 Gemini cell as evidence that a live Gemini child works.** Unblocking needs Vertex or a
 `gemini-api-key`, which marion cannot choose for the operator without writing
-`~/.gemini/settings.json` — design §6.4 forbids it. Antigravity shares `~/.gemini/` and owns the
+`~/.gemini/settings.json` — design §6.4 forbids it. marion's live system-settings document now
+states **no** `security.auth.selectedType` (it used to fall back to `oauth-personal`, which pinned
+an operator holding only `GEMINI_API_KEY` to the refused login), so gemini's own `user || env`
+resolution runs: an operator who exports `GEMINI_API_KEY` or `GOOGLE_GENAI_USE_VERTEXAI` gets that
+route with no settings file written. Antigravity shares `~/.gemini/` and owns the
 `service=gemini` Keychain item S12 found, so S12 is a starting point, but the CLI surface must be
 measured rather than assumed to carry over.
 
