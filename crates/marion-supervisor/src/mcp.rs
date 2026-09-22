@@ -775,6 +775,17 @@ fn report_refusal(depth: Option<String>) -> Option<String> {
     }
 }
 
+/// Whether this bridge lists `report` ([`bridge::report_is_offered`]). A top-level client is not
+/// a node and keeps the declared-and-refused shape it has always had.
+fn report_offered(who: &Principal) -> bool {
+    match who {
+        Principal::TopLevel(_) => true,
+        Principal::Node => {
+            bridge::report_is_offered(caller_depth(std::env::var(DEPTH_ENV).ok()).ok())
+        }
+    }
+}
+
 /// **Why `MARION_DEPTH` could not be read**, stated once for both gates that read it.
 ///
 /// One caller today ([`report_refusal`]) and two when it was written: the `spawn` gate read the same
@@ -1331,6 +1342,7 @@ fn answer(
             Some(bridge::tools_list_result(
                 &id,
                 tree_agent_types().as_ref().map_err(String::as_str),
+                report_offered(who),
             )),
             true,
         ),

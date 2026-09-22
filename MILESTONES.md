@@ -175,7 +175,11 @@ after any `prompt_prefix`) telling it to call the marion MCP server's `report` o
 get it, and the contract's `instructions` record it as the prompt the child saw. codex 0.155.1
 defers MCP tools behind `tool_search` (no feature flag disables it); a live codex node's overlay now
 carries `mcp_servers.marion.omit_tools_from = ["deferred"]`, measured to turn `report` from
-"absent" to directly callable (parsed by 0.147.0+, ignored by 0.146.0).
+"absent" to directly callable (parsed by 0.147.0+, ignored by 0.146.0). A node's bridge no longer
+lists `report` in `tools/list` when its declared depth is 0 (`bridge::report_is_offered`;
+`report_on_a_root.rs`): only claude's allowlist hid it before, and codex and opencode roots called
+it. The §5.4 refusal still answers a root that calls it anyway; a top-level client's list is
+unchanged.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

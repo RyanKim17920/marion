@@ -252,12 +252,15 @@ pub fn parse(line: &str) -> Result<Request, Undecodable> {
 ///    wider than the declared surface is "not a bug". A uniform declaration plus a per-call gate is
 ///    a shape the design states, not a gap in it.
 ///
-/// **`report` on a root is declared and refused**, which is grounds 1 applied to `report` rather
-/// than an exception to it. §7.6 and §5.4 both say a root has no contract and may not `report`; the
-/// verb stays in this list so the refusal can be a *sentence* ([`REPORT_ON_A_ROOT`], answered by
-/// `main::handle_tool_call`) instead of an absence the root would read as "marion has no `report`".
-/// Until that refusal existed the bridge answered `report recorded`, `isError: false`, to a root —
-/// a receipt for a payload nothing stages, since there is no contract to stage it into.
+/// **`report` on a root is refused, and since 2026-09-22 no longer listed to a node known to be
+/// one** ([`tools_list_result`]). §7.6 and §5.4 both say a root has no contract and may not
+/// `report`. It used to stay in the root's list so the refusal could be a *sentence*
+/// ([`REPORT_ON_A_ROOT`], answered by `main::handle_tool_call`); measured live, the listing was an
+/// invitation that codex and opencode roots accepted, so the verb is withheld and the sentence
+/// remains for a root that calls it anyway. This function still returns the whole surface — the
+/// one the dispatcher answers and a top-level client lists. Before that refusal existed the bridge
+/// answered `report recorded`, `isError: false`, to a root — a receipt for a payload nothing
+/// stages, since there is no contract to stage it into.
 pub fn tools(types: &AgentTypes) -> Value {
     tools_describing(&agent_type_description(types))
 }
@@ -545,7 +548,17 @@ pub fn push_frame(push: Push, text: &str, meta: Value) -> Option<Value> {
 /// `tools/list`'s answer. `types` is the tree's table, or the sentence saying why the tree's
 /// `.marion/agents.toml` could not be read — carried into the `spawn` schema so a node whose
 /// `reviewer` is missing learns why, and still sees the built-ins.
-pub fn tools_list_result(id: &Value, types: Result<&AgentTypes, &str>) -> Value {
+///
+/// `offers_report` is false for a node marion **knows** is a root ([`report_is_offered`]). The
+/// declared-and-refused argument in [`tools`] held for a sentence the root would read; measured
+/// live (2026-09-22) it is an invitation instead — codex and opencode roots called `report`
+/// because it was listed, and an opencode root's refusal was then read off its stream as the run
+/// failing. The refusal stays at the execution point for a root that calls it anyway.
+pub fn tools_list_result(
+    id: &Value,
+    types: Result<&AgentTypes, &str>,
+    offers_report: bool,
+) -> Value {
     let description = match types {
         Ok(types) => agent_type_description(types),
         Err(refusal) => format!(
@@ -553,7 +566,20 @@ pub fn tools_list_result(id: &Value, types: Result<&AgentTypes, &str>) -> Value 
             agent_type_description(&AgentTypes::builtins_only())
         ),
     };
-    json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools_describing(&description)}})
+    let mut tools = tools_describing(&description);
+    if !offers_report {
+        if let Some(list) = tools.as_array_mut() {
+            list.retain(|t| t["name"] != REPORT);
+        }
+    }
+    json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools}})
+}
+
+/// Whether a node at `depth` is offered `report` in `tools/list`: every node but one §5.4 would
+/// refuse it to by depth alone — the root. A node whose depth is unknown keeps it, so its call
+/// reaches the refusal that names the broken declaration.
+pub fn report_is_offered(depth: Option<u32>) -> bool {
+    depth.is_none_or(|d| authorization_refusal(d, REPORT).is_none())
 }
 
 pub fn tool_result(id: &Value, text: &str, is_error: bool) -> Value {
@@ -1795,8 +1821,8 @@ mod tests {
         assert_eq!(a, b);
         let builtins = AgentTypes::builtins_only();
         assert_eq!(
-            tools_list_result(&json!(1), Ok(&builtins)),
-            tools_list_result(&json!(1), Ok(&builtins))
+            tools_list_result(&json!(1), Ok(&builtins), true),
+            tools_list_result(&json!(1), Ok(&builtins), true)
         );
     }
 

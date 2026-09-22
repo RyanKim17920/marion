@@ -1550,17 +1550,19 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
         .unwrap_or_else(|| panic!("tools/list answers with a list: {listed}"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
+    // This bridge serves the fixture's **root**, which is not offered `report` (§5.4 rejects it on
+    // a root, and listing it invited live roots to call it — `bridge::tools_list_result`).
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list", "report"],
-        "the declared surface, over a real handshake"
+        vec!["spawn", "wait", "status", "list"],
+        "the declared surface of a root, over a real handshake"
     );
     // Stated as a number as well as a list, because `ntools` is what the harness logs and what a
     // reader diagnoses from — and because a count is the one thing a careless merge of two
     // declarations gets wrong while keeping every name.
     assert_eq!(
         names.len(),
-        5,
+        4,
         "§9's ntools, as a real client would count it"
     );
 
@@ -1590,10 +1592,9 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     }
     for name in &names {
         assert!(
-            allowed.contains(&name.to_string()) || *name == "report",
+            allowed.contains(&name.to_string()),
             "`{name}` is declared but not permitted to a root, so a root's call is offered and \
-             then denied — spending its bound. `report` is the one deliberate exception (§5.4 \
-             rejects it on a root, and `REPORT_ON_A_ROOT` is the sentence that says so)."
+             then denied — spending its bound."
         );
     }
     assert!(bridge.close().success());

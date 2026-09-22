@@ -5,8 +5,10 @@
 //! rejected on a root."* Until this file existed nothing enforced that sentence anywhere a root
 //! could reach:
 //!
-//! * `bridge::tools()` declares `report` to **every** node, root included, and says so in its own
-//!   doc comment (deliberately — a merely-absent verb carries no bound and no sentence);
+//! * `bridge::tools()` declared `report` to **every** node, root included (deliberately — a
+//!   merely-absent verb carries no bound and no sentence). Since 2026-09-22 a node known to be a
+//!   root is not offered it in `tools/list` at all ([`a_root_is_not_offered_report_and_a_child_is`]),
+//!   and the refusal below stays for a root that calls it anyway;
 //! * `root::ROOT_VERBS` omits it, but that is the **permission** axis, and only the Claude
 //!   Code adapter compiles a per-tool permission list at all (`run.rs`'s note on `check_spawn_gates`
 //!   — codex, gemini and opencode compile none);
@@ -53,6 +55,32 @@ fn call_report(depth: u32) -> Value {
 /// The same call against a declaration that may be missing the depth entirely, which is the state
 /// a hand-written or half-migrated MCP server block leaves the bridge in.
 fn call_report_declared(depth: Option<&str>) -> Value {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "report",
+            "arguments": {"narrative": "the root reports instead of delegating"},
+        },
+    });
+    ask_declared(depth, &request)
+}
+
+/// The names `tools/list` offers a node at `depth`, or with no declared depth at all.
+fn listed_tools(depth: Option<&str>) -> Vec<String> {
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    let reply = ask_declared(depth, &request);
+    reply["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list answers with a tool array: {reply}"))
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// One request after `initialize`, against a bridge declared at `depth`, answered.
+fn ask_declared(depth: Option<&str>, request: &Value) -> Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"));
     cmd.arg("mcp")
         // The declaration marion writes for every node, in the three keys this answer reads.
@@ -89,21 +117,12 @@ fn call_report_declared(depth: Option<&str>) -> Value {
         .expect("the bridge answers initialize")
         .expect("the answer is a line");
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "report",
-            "arguments": {"narrative": "the root reports instead of delegating"},
-        },
-    });
     writeln!(stdin, "{request}").unwrap();
     stdin.flush().unwrap();
 
     let reply = lines
         .next()
-        .expect("the bridge answers every tools/call")
+        .expect("the bridge answers every request")
         .expect("the answer is a line");
     // Closing stdin is what ends a stdio MCP session.
     drop(stdin);
@@ -193,4 +212,22 @@ fn a_bridge_that_cannot_read_its_depth_refuses_the_report_rather_than_recording_
         !text.contains("This node is the root"),
         "marion does not know what this node is, and must not claim it does: {text}"
     );
+}
+
+/// **A root is not offered `report` at all.** Measured live (2026-09-22): every non-claude root saw
+/// `report` in `tools/list` — only claude's `--allowedTools` filtered it — so codex and opencode
+/// roots called it, were refused, and an opencode root's refusal was read off its stream as the
+/// run failing although its child had finished `Ok`. The refusal above still stands for a root
+/// that calls it anyway; what changes is that marion stops inviting the call.
+#[test]
+fn a_root_is_not_offered_report_and_a_child_is() {
+    let root = listed_tools(Some(&ROOT_DEPTH.to_string()));
+    assert!(root.iter().any(|t| t == "spawn"), "{root:?}");
+    assert!(!root.iter().any(|t| t == "report"), "{root:?}");
+    let child = listed_tools(Some(&(ROOT_DEPTH + 1).to_string()));
+    assert!(child.iter().any(|t| t == "report"), "{child:?}");
+    // A node whose depth marion cannot read is not known to be a root: it keeps `report`, and its
+    // call is answered with the refusal that names the broken declaration.
+    let unknown = listed_tools(None);
+    assert!(unknown.iter().any(|t| t == "report"), "{unknown:?}");
 }
