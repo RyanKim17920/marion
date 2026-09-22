@@ -4404,7 +4404,7 @@ mod tests {
         let failed = String::from_utf8(status_overlay_bytes(
             24,
             80,
-            "marion: 2 children · running 0 · blocked 0 · done 1 · failed 1",
+            "marion: 2 children · running 0 · blocked 0 · done 1 · failed 1 · attention 1",
         ))
         .unwrap();
         until_sink(&sink, "the repainted status row", |text| {
