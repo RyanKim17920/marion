@@ -19,8 +19,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -170,6 +171,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // On marion's own `[mcp_servers.marion]` block, in the document and on the live `-c` pairs
+    // alike: without it every marion call is cancelled silently (S6).
+    approval: Approval::DeclarationKey {
+        key: "default_tools_approval_mode",
+        note: "S6 on 0.146.0: without `default_tools_approval_mode = \"approve\"` every marion \
+               tool call is cancelled and the run ends Unreported",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {

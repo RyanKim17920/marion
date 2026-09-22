@@ -18,8 +18,9 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
+    Val, When,
 };
 use crate::surfaces::TypedKind;
 
@@ -178,6 +179,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the headless row above carries no flag. The name is what 2.1.268 sends in `initialize`'s
     // `clientInfo.name`.
     push: Push::ClaudeChannel,
+    // `--allowedTools` is the list 2.1.220 checks a call against; marion's verbs are on it, and a
+    // call to anything off it asks over `--permission-prompt-tool stdio` (S9).
+    approval: Approval::AllowedToolsArg {
+        flag: "--allowedTools",
+        note: "S9 on 2.1.220: an allowlisted marion verb runs, an unlisted tool asks over \
+               can_use_tool; s14 for --allowedTools as the permission axis",
+    },
     client_name: Some("claude-code"),
     delivery: Deliveries {
         // S31 `p0a/b3`, `p0a/b`, `p0a/b2` (2.1.280, repeated on 2.1.276).

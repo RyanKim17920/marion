@@ -110,6 +110,13 @@ pub struct HarnessSpec {
     /// Rendered by the one renderer into the pane shape and the native prefix only ([`Push`]
     /// says why never headless), so no interactive launch can forget the flag that enables it.
     pub push: Push,
+    /// How a **headless** node is let call marion's tools with no operator there to answer a
+    /// prompt — the grant, as one of a few measured shapes. Every harness was measured denying,
+    /// cancelling or classifier-declining an unapproved marion call at exit 0, so a row that
+    /// forgot its grant would launch nodes that report nothing and say nothing. Rendered by the
+    /// row's own argv, env and documents where marion compiles it; reported by `marion doctor`
+    /// where the operator must ([`Approval::OperatorAllowlist`]).
+    pub approval: Approval,
     /// The `clientInfo.name` this harness sends in MCP `initialize`, where it is measured — so a
     /// bridge the harness started itself (`marion mcp` in an operator's own MCP configuration,
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
@@ -284,6 +291,95 @@ pub fn delivery_for(row: &HarnessSpec, shape: NodeShape) -> TurnDelivery {
     match shape {
         NodeShape::Headless => row.delivery.headless,
         NodeShape::Interactive => row.delivery.interactive,
+    }
+}
+
+/// **How a headless node is let call marion's tools** — the grant a launch needs where no operator
+/// is there to answer a prompt, as one of a small closed set of measured shapes.
+///
+/// A statement about the launch, not a second copy of it: where marion compiles the grant, the
+/// row's own [`Arg`]s, [`Env`]s and declaration documents render it and the sweep
+/// `every_row_states_how_its_headless_node_is_approved_to_call_marions_tools` holds them to this
+/// value; where the operator must grant it, marion writes nothing and `marion doctor` reports
+/// whether the grant is there. Every variant carries the `note` naming the measurement, and the
+/// launch-wide switches carry a `scope` saying how much **more** than marion's tools they approve,
+/// because that is the reach an operator is agreeing to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// A per-tool allow list on argv naming marion's tools — claude's `--allowedTools`,
+    /// copilot's `--allow-tool=marion(report)`. The narrowest shape: nothing else is approved.
+    AllowedToolsArg {
+        flag: &'static str,
+        note: &'static str,
+    },
+    /// A key on marion's **own** server declaration approves that server's tools and nothing
+    /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
+    DeclarationKey {
+        key: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide flag on argv — qwen's `--yolo`, cline's `--auto-approve`.
+    CliFlag {
+        flag: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide environment variable — goose's `GOOSE_MODE=auto`.
+    EnvVar {
+        key: &'static str,
+        value: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A protocol's own permission surface, answered by marion's client — ACP's
+    /// `session/request_permission`, which the ACP driver answers itself. `mode_ids` are the
+    /// session modes (`session/set_mode`, or a mode config option) an agent was measured
+    /// approving in, in preference order; empty where none was measured and the requests are the
+    /// whole of it. The driver owns choosing one; the row only states them.
+    SessionMode {
+        mode_ids: &'static [&'static str],
+        note: &'static str,
+    },
+    /// Only the **operator's own settings** can grant it, and marion never edits them: `rule`
+    /// in the JSON array at `pointer` of `file`, a path under the operator's `HOME`. No flag,
+    /// environment variable or marion-owned document was measured approving marion's tools
+    /// without also approving everything else, so the grant is the operator's to add, once, and
+    /// `marion doctor` names the line when it is missing.
+    OperatorAllowlist {
+        file: &'static str,
+        pointer: &'static str,
+        rule: &'static str,
+        note: &'static str,
+    },
+    /// The harness asks nothing headless for an MCP tool: its default is allow.
+    None { note: &'static str },
+}
+
+impl Approval {
+    /// The measurement behind the row's grant.
+    pub const fn note(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { note, .. }
+            | Approval::DeclarationKey { note, .. }
+            | Approval::CliFlag { note, .. }
+            | Approval::EnvVar { note, .. }
+            | Approval::SessionMode { note, .. }
+            | Approval::OperatorAllowlist { note, .. }
+            | Approval::None { note } => note,
+        }
+    }
+
+    /// The shape's stable name, for `marion doctor` and for the sweep that pins each row's.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { .. } => "allowed-tools-arg",
+            Approval::DeclarationKey { .. } => "declaration-key",
+            Approval::CliFlag { .. } => "cli-flag",
+            Approval::EnvVar { .. } => "env-var",
+            Approval::SessionMode { .. } => "session-mode",
+            Approval::OperatorAllowlist { .. } => "operator-allowlist",
+            Approval::None { .. } => "none",
+        }
     }
 }
 

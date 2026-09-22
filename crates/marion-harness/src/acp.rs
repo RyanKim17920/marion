@@ -51,8 +51,8 @@ use marion_core::harness::Harness;
 use crate::caps::Capabilities;
 use crate::grammar::{Cond, UsageFold, UsageRule, Where};
 use crate::spec::{
-    Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push, Spelling,
-    Surfaces, TurnDelivery, UpdatePolicy,
+    Approval, Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push,
+    Spelling, Surfaces, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -105,6 +105,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
     push: Push::None,
+    // The protocol's own permission surface: the ACP driver answers `session/request_permission`
+    // itself, selecting an offered allow option (S21). No session mode was measured approving.
+    approval: Approval::SessionMode {
+        mode_ids: &[],
+        note: "S21: marion's client answers session/request_permission with the agent's own \
+               allow option; no session/set_mode value is measured",
+    },
     client_name: None,
     delivery: Deliveries {
         // Protocol-generic: any agent takes a second `session/prompt` after the first resolved.

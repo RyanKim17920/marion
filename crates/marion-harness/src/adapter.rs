@@ -8432,6 +8432,111 @@ mod tests {
         assert_eq!(mid(&generic), MidTurn::Queue);
     }
 
+    /// **Every row states how a headless node is let call marion's tools, and the launch carries
+    /// exactly that grant.** A headless node has no operator to answer a prompt, and each harness
+    /// was measured denying, cancelling or classifier-declining an unapproved marion call at exit 0
+    /// — the silent success §6.1 step 8 exists to refuse. The grant is one of a few shapes
+    /// ([`spec::Approval`]): a per-tool allow list on argv, a key on marion's own server
+    /// declaration, a launch-wide switch whose reach the row states, a protocol answer, or the
+    /// operator's own allow list — which marion never writes, so the sweep checks the rule appears
+    /// in nothing a launch carries, and `marion doctor` reports whether the operator granted it.
+    #[test]
+    fn every_row_states_how_its_headless_node_is_approved_to_call_marions_tools() {
+        use crate::spec::{Approval, MCP_ALIAS};
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        for h in Harness::ALL {
+            let approval = harness_spec(h).approval;
+            assert!(
+                !approval.note().trim().is_empty(),
+                "{h}: an approval without the measurement behind it"
+            );
+            for (name, inv, files) in rendered_launches(h, &document_dir) {
+                if !name.ends_with("headless") {
+                    continue;
+                }
+                let in_documents = |needle: &str| files.iter().any(|(_, c)| c.contains(needle));
+                let on_argv = |needle: &str| inv.args.iter().any(|a| a.contains(needle));
+                let in_env = |needle: &str| inv.env.iter().any(|(_, v)| v.contains(needle));
+                match approval {
+                    Approval::AllowedToolsArg { flag, .. } => {
+                        let at = inv
+                            .args
+                            .iter()
+                            .position(|a| a == flag || a.starts_with(&format!("{flag}=")))
+                            .unwrap_or_else(|| panic!("{h} ({name}): no `{flag}`: {:?}", inv.args));
+                        let granted = if inv.args[at] == flag {
+                            inv.args.get(at + 1)
+                        } else {
+                            inv.args.get(at)
+                        };
+                        assert!(
+                            granted.is_some_and(|g| g.contains(MCP_ALIAS)),
+                            "{h} ({name}): `{flag}` must name marion's server: {:?}",
+                            inv.args
+                        );
+                    }
+                    Approval::DeclarationKey { key, .. } => assert!(
+                        in_documents(key) || on_argv(key) || in_env(key),
+                        "{h} ({name}): marion's declaration must carry `{key}`"
+                    ),
+                    Approval::CliFlag { flag, .. } => assert!(
+                        inv.args.iter().any(|a| a == flag),
+                        "{h} ({name}): no `{flag}`: {:?}",
+                        inv.args
+                    ),
+                    Approval::EnvVar { key, value, .. } => assert!(
+                        inv.env.iter().any(|(k, v)| k == key && v == value),
+                        "{h} ({name}): no `{key}={value}`: {:?}",
+                        inv.env
+                    ),
+                    Approval::SessionMode { .. } => {
+                        assert_eq!(h, Harness::Acp, "a session mode is a protocol's answer")
+                    }
+                    Approval::OperatorAllowlist {
+                        file,
+                        pointer,
+                        rule,
+                        ..
+                    } => {
+                        assert!(
+                            !file.starts_with('/') && pointer.starts_with('/'),
+                            "{h}: the file is under the operator's HOME and the pointer is JSON"
+                        );
+                        assert!(
+                            rule.contains(MCP_ALIAS),
+                            "{h}: the rule must name marion's server"
+                        );
+                        assert!(
+                            !in_documents(rule) && !on_argv(rule) && !in_env(rule),
+                            "{h} ({name}): marion must never grant the operator's rule itself"
+                        );
+                    }
+                    Approval::None { .. } => {}
+                }
+            }
+        }
+        let kinds: Vec<(&str, &str)> = Harness::ALL
+            .iter()
+            .map(|h| (h.as_str(), harness_spec(*h).approval.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("claude-code", "allowed-tools-arg"),
+                ("codex", "declaration-key"),
+                ("gemini", "declaration-key"),
+                ("opencode", "none"),
+                ("copilot", "allowed-tools-arg"),
+                ("goose", "env-var"),
+                ("cline", "cli-flag"),
+                ("qwen", "cli-flag"),
+                ("acp", "session-mode"),
+            ],
+            "each row's measured grant, named one at a time so a new row cannot copy a neighbour"
+        );
+    }
+
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to
     /// answer in six hand-written impls, stated as data and checked once.
     ///

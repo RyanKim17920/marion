@@ -41,8 +41,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -154,6 +154,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // `approve` aborts a headless run and `chat` withholds every call, so `auto` is stated (S26).
+    approval: Approval::EnvVar {
+        key: MODE_ENV,
+        value: AUTO_MODE,
+        scope: "every tool the node is offered, which under --no-profile is marion's and the \
+                declared builtins",
+        note: "S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest; chat \
+               withholds every call; auto runs them",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::None {

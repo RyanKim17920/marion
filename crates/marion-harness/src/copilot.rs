@@ -40,8 +40,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -187,6 +188,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // `--allow-tool=marion(report)`, the pattern `-p` checks a call against (s24).
+    approval: Approval::AllowedToolsArg {
+        flag: "--allow-tool",
+        note: "s24 on 1.0.83: `--allow-tool=marion(report)` grants the call and \
+               `--allow-tool=marion-report` grants nothing",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
