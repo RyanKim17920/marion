@@ -26,6 +26,8 @@ use marion_core::proto::{
 };
 use marion_tui::{Action, Keys};
 
+mod sequence;
+
 type Refusal = String;
 
 const POLL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -1094,6 +1096,8 @@ struct StatusOverlay {
     last_drawn: Option<std::time::Instant>,
     rows: u16,
     cols: u16,
+    /// Where the node's own byte stream stands: the row is written only at a boundary of it.
+    stream: sequence::StreamPosition,
 }
 
 impl StatusOverlay {
@@ -1108,6 +1112,7 @@ impl StatusOverlay {
             last_drawn: None,
             rows,
             cols,
+            stream: sequence::StreamPosition::default(),
         }
     }
 
@@ -1648,6 +1653,7 @@ impl<W: Write> RawPaneSession<W> {
         self.next_seq = decoded.next_seq;
         match decoded.action {
             crate::pane_client::PaneV1Action::Output(bytes) => {
+                self.status.stream.advance(bytes.as_bytes());
                 self.output
                     .write_all(bytes.as_bytes())
                     .and_then(|()| self.output.flush())
@@ -1684,6 +1690,15 @@ impl<W: Write> RawPaneSession<W> {
         if wanted != self.status.shown {
             self.status.dirty = true;
         }
+        if wanted {
+            self.subscribe_for_status();
+        }
+        // A pane frame is one pty read and can stop inside the node's escape sequence; marion's
+        // bytes there would end it early and print the rest as text. Paint or clear the row once
+        // the node's next frame has finished what it started.
+        if !self.status.stream.at_boundary() {
+            return Ok(());
+        }
         if !wanted {
             if self.status.shown {
                 self.status.shown = false;
@@ -1692,19 +1707,6 @@ impl<W: Write> RawPaneSession<W> {
                 self.write_status(&status_clear_bytes(self.status.rows))?;
             }
             return Ok(());
-        }
-        if !self.status.subscribed {
-            self.status.subscribed = true;
-            let sent = self.write_frame(
-                &Frame::Request(marion_core::proto::Request::new(
-                    STATUS_SUBSCRIBE_ID,
-                    Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
-                )),
-                "sending native tree/subscribe",
-            );
-            if sent.is_err() {
-                self.status.unavailable = true;
-            }
         }
         if !self.status.due() {
             return Ok(());
@@ -1718,6 +1720,24 @@ impl<W: Write> RawPaneSession<W> {
             self.status.cols,
             &line,
         ))
+    }
+
+    /// The row's `tree/subscribe`, made once at the first request. A refused or unsendable
+    /// subscribe is only the row's.
+    fn subscribe_for_status(&mut self) {
+        if !self.status.subscribed {
+            self.status.subscribed = true;
+            let sent = self.write_frame(
+                &Frame::Request(marion_core::proto::Request::new(
+                    STATUS_SUBSCRIBE_ID,
+                    Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
+                )),
+                "sending native tree/subscribe",
+            );
+            if sent.is_err() {
+                self.status.unavailable = true;
+            }
+        }
     }
 
     fn write_status(&mut self, bytes: &[u8]) -> Result<(), Refusal> {
@@ -4434,6 +4454,88 @@ mod tests {
             .expect("the relay did not end on the detach");
         assert!(matches!(outcome, Ok(RelayStop::Complete)), "{outcome:?}");
         pump.join().unwrap();
+        server_thread.join().unwrap();
+    }
+
+    /// Every frame the fake supervisor reads after the attach, until the relay hangs up.
+    fn frames_until_eof(lines: &mut BufReader<UnixStream>) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        loop {
+            let mut line = String::new();
+            if lines.read_line(&mut line).unwrap() == 0 {
+                return frames;
+            }
+            frames.push(Frame::from_line(&line).unwrap());
+        }
+    }
+
+    fn output_frame(seq: u64, bytes: &[u8]) -> Vec<u8> {
+        pane_frame(
+            seq,
+            PaneFrameKindV1::Output {
+                bytes: marion_core::proto::OpaquePaneBytesV1::new(bytes),
+            },
+        )
+        .to_line()
+        .into_bytes()
+    }
+
+    /// A pane frame is whatever one pty read returned, so it can end inside an escape sequence:
+    /// opencode's `CSI 30;6H` arrived as `CSI 30;` and `6H…`, and a row painted between them
+    /// ended the CSI early and printed `30;6H` into the composer. The row waits for the sequence
+    /// to finish, and is then painted after it, never inside it.
+    #[test]
+    fn the_status_row_is_never_painted_inside_a_sequence_a_pane_frame_split() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (rest_tx, rest_rx) = mpsc::channel::<()>();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            server.write_all(&output_frame(0, b"\x1b[30;")).unwrap();
+            rest_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the test's cue to finish the sequence");
+            server.write_all(&output_frame(1, b"6HPassed.")).unwrap();
+            frames_until_eof(&mut BufReader::new(server))
+        });
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            drop(session);
+            outcome
+        });
+
+        until_sink(&sink, "the first half of the node's CSI", |text| {
+            text == "\x1b[30;"
+        });
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        // Several redraw periods: a row that did not wait would have been painted by now.
+        std::thread::sleep(super::STATUS_REDRAW * 3);
+        assert_eq!(
+            sink_text(&sink),
+            "\x1b[30;",
+            "marion wrote into the middle of the node's escape sequence"
+        );
+        rest_tx.send(()).unwrap();
+        until_sink(&sink, "the status row", |text| text.contains("marion:"));
+        let text = sink_text(&sink);
+        assert!(
+            text.starts_with("\x1b[30;6HPassed.\x1b7"),
+            "the row was not painted after the completed sequence: {text:?}"
+        );
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        assert!(matches!(pump.join().unwrap(), Ok(RelayStop::Complete)));
         server_thread.join().unwrap();
     }
 

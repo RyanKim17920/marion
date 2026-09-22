@@ -131,7 +131,10 @@ terminal's bottom line — the root's direct children as running / blocked / don
 since 2026-09-22, `attention N` over the root's whole subtree when N > 0), from a
 `tree/subscribe` on the claimed connection — painted as a saved-and-restored last row so it sits on
 the main and alternate screens alike and never reaches the node (`native_relay.rs` unit tests;
-`native_facade_e2e.rs` lane loop).
+`native_facade_e2e.rs` lane loop). 2026-09-22: the row is written only where the node's byte
+stream is at a boundary — never inside a CSI, OSC/DCS string, UTF-8 scalar, open `?2026`
+frame or unrestored `ESC 7` — because a pane frame is one pty read and can end mid-sequence
+(`native_relay/sequence.rs`; `the_status_row_is_never_painted_inside_a_sequence_a_pane_frame_split`).
 
 **Parent ping (2026-09-11).** A backgrounded child's end now reaches its parent's model
 without a `wait`: after the handle's reply, the bridge watches the node on its own clock and pushes
