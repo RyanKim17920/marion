@@ -1143,16 +1143,12 @@ fn watch(
     };
     let (body, _) = outcome_text(&target.agent_type, project, &target.agent_id, delivered)?;
     // A root has no contract (§9), and its handle says so; the body underneath is `root_text`'s.
-    let node = if target.contract.is_some() {
-        "child"
-    } else {
-        "root"
-    };
-    let text = format!(
-        "marion: the {agent_type} {node} you backgrounded as task_id {task_id:?} has ended. This \
-         is what its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}",
-        agent_type = target.agent_type,
-        task_id = target.task_id.0,
+    // The wording is the inbox's own, so this push and a queued child-ended message read alike.
+    let text = crate::inbox::child_ended_text(
+        &target.agent_type,
+        target.contract.is_none(),
+        &target.task_id.0,
+        &body,
     );
     bridge::push_frame(
         push,
@@ -2130,6 +2126,11 @@ mod tests {
         );
         assert_eq!(frame["method"], "notifications/claude/channel");
         let content = frame["params"]["content"].as_str().unwrap();
+        assert_eq!(
+            content,
+            crate::inbox::child_ended_text("codex-impl", false, "t-1", &wait_text),
+            "the push is worded by the inbox's one renderer, as a queued child-ended message is"
+        );
         assert!(
             content.ends_with(&wait_text),
             "the pushed document is the one `wait` returns"
