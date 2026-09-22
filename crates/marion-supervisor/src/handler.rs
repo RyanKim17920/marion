@@ -3651,12 +3651,16 @@ impl RegistryHandle {
     /// and because it would make the case a supervisor SIGKILL actually produces (a whole tree
     /// orphaned at once) the one case resume could not serve.
     ///
-    /// **Three limits, stated rather than hidden.** A child's `writable_scope`, its
-    /// `acceptance_criteria` and its `verification` are not journaled — they live on the contract,
-    /// which an orphaned child never got far enough to write — so the second life runs with the
-    /// empty scope, which is its agent type's ceiling (`run::requested_scope`, still checked
-    /// against that ceiling), an empty criteria list and no verification commands. Narrowing them
-    /// again would need a second record, not a guess here.
+    /// **Its `verification` comes back from the intent**, where `run_spawn` journals the lines the
+    /// spawn asked for, so the second life re-runs them and its contract records their outcome as
+    /// evidence. An intent written before the field replays as no lines, and that child resumes
+    /// with none, as every child did before.
+    ///
+    /// **Two limits, stated rather than hidden.** A child's `writable_scope` and its
+    /// `acceptance_criteria` are not journaled — they live on the contract, which an orphaned child
+    /// never got far enough to write — so the second life runs with the empty scope, which is its
+    /// agent type's ceiling (`run::requested_scope`, still checked against that ceiling), and an
+    /// empty criteria list. Narrowing them again would need a second record, not a guess here.
     fn relaunch_child(
         &self,
         me: Arc<RegistryHandle>,
@@ -3788,9 +3792,14 @@ impl RegistryHandle {
             agent_type: agent_type.name.clone(),
             prompt: prompt.to_string(),
             repo: repo.clone(),
-            // Not journaled; see this function's doc for why they are empty rather than invented.
+            // Not journaled; see this function's doc for why it is empty rather than invented.
             acceptance_criteria: vec![],
-            verification: vec![],
+            // Journaled on the intent, so the second life re-runs what its spawn asked for.
+            verification: node
+                .intent
+                .as_ref()
+                .map(|i| i.verification.clone())
+                .unwrap_or_default(),
             writable_scope: vec![],
             timeout_secs: agent_type.timeout.0.as_secs(),
             model: node.model.clone(),

@@ -213,8 +213,14 @@ duplication.
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
 `spawn_pty` facade fixture cannot observe it); a **root** started in a linked
 worktree, whose cwd on resume is still derived rather than recorded; a resumed child's declared
-scope, acceptance criteria and verification lines, which no record carries; the ACP agent
-identity on `NodeSummary`. *(`verification` execution came off this line 2026-09-12: `run_spawn`
+scope and acceptance criteria, which no record carries; the ACP agent identity on `NodeSummary`.
+*(A resumed child's `verification` lines came off this line 2026-09-22: `run_spawn` journals them
+on the child's `SpawnIntent`, refusing by name (`SpawnError::VerificationTooLarge`) a set over
+`run::MAX_VERIFICATION_BYTES` = 8 KiB encoded so the intent always fits under the journal's 16 KiB
+record cap, and `relaunch_child` reads them back, so the second life re-runs them —
+`restart_resume.rs::a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next_turn`
+asserts the resumed contract's evidence on a real codex child. `verification` execution came off
+this line 2026-09-12: `run_spawn`
 runs each line by `sh -c` in the child's worktree after the diff is taken, any non-zero exit
 demotes `Ok` to `Failed` with the count in the description, and `tests/verification.rs` measures
 it against a real codex child. Descendant gating §7.6 came off it 2026-09-10 — see "Not done".)*
@@ -2891,8 +2897,8 @@ grouping.
   300 s bound with a group kill on expiry; `build_contract` records the commands, keeps every
   outcome whole in `evidence` (capped only on the returned copy) and demotes `Ok` to `Failed` on any
   non-zero exit, naming the count in the description. A killed child gets no verification and the
-  request is still recorded. Not journaled, like `acceptance_criteria`: a resumed child runs with
-  none. `tests/verification.rs` measures both directions against a real codex child; unit tests in
+  request is still recorded. Journaled on the child's `SpawnIntent` since 2026-09-22, so a
+  resumed child re-runs them (`acceptance_criteria` is still not journaled). `tests/verification.rs` measures both directions against a real codex child; unit tests in
   `run.rs`, `spawn.rs` and `mcp.rs` pin the runner, the ladder and the forwarding. The `77557e3`
   refusal is gone with it. Design §11 item 23.
 - The `Stop` hook path. Unchanged — no production code references it.

@@ -63,6 +63,9 @@ const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
 /// The resume's own prompt: on argv only after the relaunch, so a provider request that carries it
 /// was made by the second life.
 const RESUME_PROMPT: &str = "Continue: confirm the marker and report.";
+/// The child's one verification line. The spawn journals it on the child's intent, so a resumed
+/// child re-runs it and its second life's contract carries the outcome as evidence.
+const VERIFICATION: &str = "touch VERIFIED";
 /// The root's wall clock (codex is a LaunchOnly surface, so `--timeout` is a wall-clock bound).
 const ROOT_TIMEOUT: &str = "150";
 const BOUND: Duration = Duration::from_secs(120);
@@ -126,6 +129,7 @@ fn codex_script() -> Script {
                     "prompt": "Add the marker file under src/ and report back.",
                     "acceptance_criteria": ["a file exists under src/ containing the marker"],
                     "writable_scope": ["src/**"],
+                    "verification": [VERIFICATION],
                     "timeout_secs": 60,
                 }),
                 final_text: "The child completed the task and reported back.".into(),
@@ -692,6 +696,35 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         (exit.code, exit.signal),
         (Some(0), None),
         "the resumed codex child must finish its turn and exit clean: {exit:?}"
+    );
+
+    // ---- and it re-ran the verification its spawn asked for ----------------------------------
+    // The lines are on the child's intent, not on a contract the first life never wrote, so the
+    // second life's contract is the only place their outcome can be — and a resume that relaunched
+    // with none would record an empty `evidence` and a clean status that verified nothing.
+    let task = child_after
+        .intent
+        .as_ref()
+        .and_then(|i| i.task_id.clone())
+        .expect("a child runs under a task");
+    let contracts = marion_testsupport::persisted_contracts(&state).expect("contracts enumerate");
+    let wanted = format!("{}.json", task.0);
+    let found: Vec<&serde_json::Value> = marion_testsupport::judge(&contracts)
+        .into_iter()
+        .filter(|(p, _)| p.file_name().is_some_and(|f| f == wanted.as_str()))
+        .map(|(_, v)| v)
+        .collect();
+    let [contract] = found.as_slice() else {
+        panic!("exactly one persisted contract for {}: {found:?}", task.0);
+    };
+    let evidence = contract["completion"]["evidence"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the second life completed with evidence: {contract}"));
+    assert!(
+        evidence.iter().any(|e| {
+            e["command"]["args"] == json!(["-c", VERIFICATION]) && e["exit_code"] == json!(0)
+        }),
+        "the resumed child re-ran its spawn's verification and it passed: {evidence:?}"
     );
     let status = resume_exit(&mut resume);
     let stderr = std::fs::read_to_string(&resume_stderr).unwrap_or_default();
