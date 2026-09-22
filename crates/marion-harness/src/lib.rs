@@ -34,7 +34,7 @@ pub use adapter::{
     GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
     McpRoute, OpenCodeAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
 };
-pub use auth::Auth;
+pub use auth::{Auth, auth_failure_line};
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{anthropic_base_url, mcp_config_json};
 pub use codex::config_toml;

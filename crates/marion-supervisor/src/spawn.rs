@@ -1048,6 +1048,13 @@ pub fn build_contract(
         let preview: String = stderr.chars().take(512).collect();
         format!("{description}; stderr: {preview}")
     };
+    // **An authentication failure is the cause, so it leads.** Found in the whole of stderr rather
+    // than the preview above, which is a prefix: an auth line behind a banner was cut off there
+    // and the description said only how the child exited.
+    let description = match marion_harness::auth_failure_line(&outcome.stderr) {
+        Some(line) => format!("{line}; {description}"),
+        None => description,
+    };
     // §5.4: any non-zero exit fails the contract. **Only `Ok` is demoted** — a timeout or a
     // stream-reported failure is the more specific finding, and the evidence over a killed
     // workspace is empty anyway (`run_spawn` runs no verification there). The count goes into
@@ -1605,6 +1612,28 @@ mod tests {
     // -----------------------------------------------------------------------------------------
     // §5.4's `verification` on the status ladder.
     // -----------------------------------------------------------------------------------------
+
+    /// **A child that could not authenticate says so first.** The stderr preview is the first 512
+    /// characters, so an auth line behind a banner or a stack trace used to be cut off entirely and
+    /// the description read "child exited with code 55" and nothing an operator could act on.
+    #[test]
+    fn a_child_that_could_not_authenticate_leads_its_description_with_the_auth_line() {
+        let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
+                    for Gemini Code Assist for individuals.";
+        let banner = "x".repeat(600);
+        let c = verified_contract(
+            ChildOutcome {
+                exit_code: Some(55),
+                stderr: format!("{banner}\n{line}\n"),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        let d = c.completion.unwrap().exit.description;
+        assert!(d.starts_with(line), "the cause leads: {d}");
+        assert!(d.contains("child exited with code 55"), "{d}");
+    }
 
     fn sh(line: &str) -> Command {
         Command {

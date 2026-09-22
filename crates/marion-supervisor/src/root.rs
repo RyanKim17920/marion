@@ -495,7 +495,7 @@ pub enum RootError {
     /// is a run whose turn went out without marion's tools, ended as plain text, and exited 0 with
     /// nothing anywhere reporting it (§12).
     #[error(
-        "{harness}: the root never reached marion's bridge — not one marion tool call appears in \
+        "{harness}: {cause}the root never reached marion's bridge — not one marion tool call appears in \
          the {frames} frame(s) it emitted, so its turn went out without marion's tools and it \
          cannot have delegated anything. Refused rather than reported as a success, which is what \
          a plain-text run that exits 0 is indistinguishable from. child exit \
@@ -503,6 +503,11 @@ pub enum RootError {
     )]
     BridgeNeverReached {
         harness: Harness,
+        /// The harness's own authentication failure, quoted off stderr, when it printed one — or
+        /// empty. Pre-formatted and **first**, because it is the cause: a root that could not log
+        /// in never took a turn, and opening with "never reached marion's bridge … 0 frame(s)"
+        /// sends the operator to re-check a bridge declaration that was never the problem.
+        cause: String,
         frames: usize,
         exit: Option<i32>,
         /// The harness's own words about the failure, taken from its stream. Pre-formatted, like
@@ -2133,8 +2138,13 @@ fn assert_a_verb_was_answered(harness: Harness, outcome: &RootOutcome) -> Result
         s => format!("; stderr: {}", s.chars().take(512).collect::<String>()),
     };
     if outcome.marion_calls.is_empty() {
+        let cause = match marion_harness::auth_failure_line(&outcome.stderr) {
+            Some(line) => format!("{line} — the harness could not authenticate, so "),
+            None => String::new(),
+        };
         return Err(RootError::BridgeNeverReached {
             harness,
+            cause,
             frames: outcome.transcript.len(),
             exit: outcome.exit_code,
             failure,
@@ -3973,6 +3983,39 @@ mod tests {
         assert!(
             !quiet.contains("stream reported"),
             "a stream that claimed nothing must not be quoted as claiming nothing: {quiet}"
+        );
+    }
+
+    /// **An authentication failure on stderr is the cause, and the refusal leads with it.**
+    /// Measured live: a gemini root on a personal login emitted 0 frames and exited 55 with this
+    /// stderr, and the refusal opened with "the root never reached marion's bridge … 0 frame(s)",
+    /// which sends the operator to re-check a bridge declaration that was never the problem.
+    #[test]
+    fn a_root_that_could_not_authenticate_is_refused_leading_with_the_harnesss_own_words() {
+        let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
+                    for Gemini Code Assist for individuals. To continue using Gemini, please \
+                    migrate to the Antigravity suite of products";
+        let stderr =
+            format!("Loaded cached credentials.\n{line}\n    at async main (gemini.js:1:1)");
+        let msg = assert_a_verb_was_answered(Harness::Gemini, &ran(&[], 0, Some(55), &stderr))
+            .expect_err("a root that never authenticated delegated nothing")
+            .to_string();
+        let cause = msg.find(line).expect("the auth line must be quoted");
+        let bridge = msg
+            .find("never reached marion's bridge")
+            .expect("and the bridge sentence kept, after it");
+        assert!(
+            cause < bridge,
+            "the authentication failure is the cause and must come first: {msg}"
+        );
+        assert!(msg.starts_with("gemini: "), "{msg}");
+        // Without an auth line the refusal is unchanged: the bridge sentence leads.
+        let plain = assert_a_verb_was_answered(Harness::Gemini, &ran(&[], 0, Some(1), "boom"))
+            .expect_err("still a refusal")
+            .to_string();
+        assert!(
+            plain.starts_with("gemini: the root never reached marion's bridge"),
+            "{plain}"
         );
     }
 

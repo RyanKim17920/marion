@@ -47,3 +47,104 @@ impl Auth {
         }
     }
 }
+
+/// Phrases a harness prints when it could not authenticate, lowercased.
+///
+/// **One shared list, not a per-row field, and that is a choice.** The phrases are the vendors'
+/// and SDKs' generic auth vocabulary — Google's `Error authenticating`, an HTTP `401`, `Invalid API
+/// key` — and the same one recurs across harnesses that share an SDK (gemini and qwen, every
+/// OpenAI-compatible client). A field on each row would duplicate them into a dozen rows and still
+/// cover nothing for an ACP agent or a user-defined type, which have no row. A false positive costs
+/// little: the line is only moved to the front of a refusal that quotes stderr anyway.
+const AUTH_FAILURE_MARKERS: &[&str] = &[
+    // gemini 0.53.0 on a personal login Google no longer serves (measured, exit 55).
+    "error authenticating",
+    "ineligibletiererror",
+    // gemini with no route at all: "Please set an Auth method in your …/settings.json or specify
+    // one of the following environment variables" (measured).
+    "please set an auth method",
+    "api key not valid",
+    "invalid api key",
+    "not logged in",
+    "please run /login",
+    "authentication failed",
+    "authentication error",
+    "authentication required",
+    "unauthorized",
+];
+
+/// The first stderr line that says the harness could not authenticate, trimmed and capped.
+///
+/// Scans the **whole** of `stderr`, not a preview: the line that matters is often behind a banner
+/// or ahead of a stack trace, and a fixed-length prefix is where it got lost.
+pub fn auth_failure_line(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| is_auth_failure_line(l))
+        .map(|l| l.chars().take(512).collect())
+}
+
+fn is_auth_failure_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    AUTH_FAILURE_MARKERS.iter().any(|m| lower.contains(m)) || has_status_401(&lower)
+}
+
+/// `401` as a token of its own — not the tail of a port, a pid or an id such as `14010`.
+fn has_status_401(lower: &str) -> bool {
+    lower.match_indices("401").any(|(i, _)| {
+        let before = lower[..i].chars().next_back();
+        let after = lower[i + 3..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_auth_failure_line_is_found_behind_a_banner_and_ahead_of_a_trace() {
+        let line = "Error authenticating: IneligibleTierError: This client is no longer supported \
+                    for Gemini Code Assist for individuals.";
+        let stderr =
+            format!("Loaded cached credentials.\n  {line}\n    at async main (x.js:1:1)\n");
+        assert_eq!(auth_failure_line(&stderr).as_deref(), Some(line));
+    }
+
+    #[test]
+    fn each_harnesss_spelling_of_an_auth_failure_is_recognised() {
+        for line in [
+            "Please set an Auth method in your /h/.gemini/settings.json or specify one of the \
+             following environment variables before running: GEMINI_API_KEY",
+            "API key not valid. Please pass a valid API key.",
+            "Invalid API key · Please run /login",
+            "Not logged in",
+            "unexpected status 401 Unauthorized: Missing bearer",
+            "HTTP 401",
+            "error: (401) bad credentials",
+        ] {
+            assert_eq!(auth_failure_line(line).as_deref(), Some(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn ordinary_stderr_carries_no_auth_failure() {
+        for stderr in [
+            "",
+            "Loaded cached credentials.",
+            "listening on 127.0.0.1:14010",
+            "pid 4012 exited",
+            "model gemini-2.5-flash-lite is no longer available",
+        ] {
+            assert_eq!(auth_failure_line(stderr), None, "{stderr}");
+        }
+    }
+
+    #[test]
+    fn a_very_long_auth_line_is_capped() {
+        let long = format!("Error authenticating: {}", "x".repeat(2000));
+        assert_eq!(auth_failure_line(&long).unwrap().chars().count(), 512);
+    }
+}
