@@ -117,4 +117,17 @@ fn an_acp_root_delegates_to_a_child_and_is_watched_live() {
             .any(|l| l.contains("\"stopReason\":\"end_turn\"")),
         "the transcript reaches stdout whole:\n{stdout}"
     );
+    // And stderr is what the operator saw: the chunks as one run of prose, the tool call by name.
+    assert!(
+        stderr.contains("Delegating to a child."),
+        "the two message chunks render as one run of text:\n{stderr}"
+    );
+    assert!(
+        stderr.lines().any(|l| l.contains("marion/spawn")),
+        "the tool call renders by its title:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no `type` field"),
+        "an ACP frame is rendered by its shape, not reported as an unknown one:\n{stderr}"
+    );
 }

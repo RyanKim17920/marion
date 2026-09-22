@@ -1270,8 +1270,185 @@ fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
     }
 }
 
-/// One parsed frame, by its `type`; each kind has a renderer of its own.
+/// The live view's state across frames: the one renderer that needs any.
+///
+/// ACP streams a message as many `agent_message_chunk` updates — often a word each — and a line per
+/// chunk would bury the run. So a chunk is held and extended by the next chunk of the same kind,
+/// and written by whatever comes next: another frame, a raw line, or the run's end ([`Self::flush`]).
+/// Keyed on the frame's shape, so it applies to any stream that has chunks and none that does not.
+#[derive(Default)]
+struct LiveView {
+    pending: Option<(AcpChunk, String)>,
+}
+
+impl LiveView {
+    fn event(&mut self, event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
+        if let StreamEvent::Frame(frame) = event
+            && frame["method"] == "session/update"
+            && let Some((kind, text)) = acp_chunk(&frame["params"]["update"])
+        {
+            match &mut self.pending {
+                Some((held, so_far)) if *held == kind => so_far.push_str(text),
+                _ => {
+                    self.flush(out)?;
+                    self.pending = Some((kind, text.to_string()));
+                }
+            }
+            return Ok(());
+        }
+        self.flush(out)?;
+        render_event(event, out)
+    }
+
+    fn flush(&mut self, out: &mut dyn Write) -> io::Result<()> {
+        match self.pending.take() {
+            Some((kind, text)) => render_acp_chunk(kind, &text, out),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The two kinds of ACP text chunk, kept apart so a thought never runs into a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpChunk {
+    Message,
+    Thought,
+}
+
+/// The kind and text of an ACP `session/update` body that is a text chunk, else `None`.
+fn acp_chunk(update: &Value) -> Option<(AcpChunk, &str)> {
+    let kind = match update["sessionUpdate"].as_str()? {
+        "agent_message_chunk" => AcpChunk::Message,
+        "agent_thought_chunk" => AcpChunk::Thought,
+        _ => return None,
+    };
+    Some((kind, update["content"]["text"].as_str().unwrap_or_default()))
+}
+
+/// A run of chunk text. A thought is summarised, never shown, as `render_assistant` treats
+/// `thinking`: it is long, and it is not what a watcher is here for.
+fn render_acp_chunk(kind: AcpChunk, text: &str, out: &mut dyn Write) -> io::Result<()> {
+    match kind {
+        AcpChunk::Message => say(out, "root", text),
+        AcpChunk::Thought => say(
+            out,
+            "think",
+            &format!("({} characters of reasoning)", text.chars().count()),
+        ),
+    }
+}
+
+/// A JSON-RPC 2.0 frame — ACP's shape, whichever agent wrote it.
+fn render_json_rpc(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if frame["method"] == "session/update" {
+        return render_acp_update(&frame["params"]["update"], out);
+    }
+    // A request or notification the agent sent marion: the driver answers it; this names it.
+    if let Some(method) = frame["method"].as_str() {
+        return say(out, "acp", method);
+    }
+    if let Some(error) = frame.get("error") {
+        return say(
+            out,
+            "FAILED",
+            error["message"]
+                .as_str()
+                .unwrap_or("an error with no message"),
+        );
+    }
+    let result = &frame["result"];
+    if let Some(reason) = result["stopReason"].as_str() {
+        // `refusal` is the one ending that is a failure (`acp::parse_stream` reads it the same way).
+        return say(
+            out,
+            if reason == "refusal" {
+                "FAILED"
+            } else {
+                "done"
+            },
+            reason,
+        );
+    }
+    if let Some(name) = result["agentInfo"]["name"].as_str() {
+        let version = result["agentInfo"]["version"].as_str().unwrap_or("?");
+        let wire = result["protocolVersion"].as_u64().unwrap_or_default();
+        return say(out, "session", &format!("{name} {version}, ACP v{wire}"));
+    }
+    if let Some(session) = result["sessionId"].as_str() {
+        return say(out, "session", &format!("session {session}"));
+    }
+    say(
+        out,
+        "acp",
+        &format!("the answer to request {}", frame["id"]),
+    )
+}
+
+/// One ACP `session/update`, by its `sessionUpdate` kind.
+fn render_acp_update(update: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if let Some((chunk, text)) = acp_chunk(update) {
+        return render_acp_chunk(chunk, text, out);
+    }
+    match update["sessionUpdate"].as_str().unwrap_or_default() {
+        "tool_call" => {
+            let title = update["title"]
+                .as_str()
+                .unwrap_or("<a tool call with no title>");
+            say(
+                out,
+                "tool",
+                format!("{title}  {}", call_args(&update["rawInput"])).trim_end(),
+            )
+        }
+        "tool_call_update" => render_acp_tool_update(update, out),
+        "" => say(out, "acp", "a `session/update` with no `sessionUpdate`"),
+        other => say(out, "acp", &format!("a `{other}` update")),
+    }
+}
+
+/// A `tool_call_update`, by its status. A finished `spawn` answers with a whole contract, which
+/// reads as the same sentence the stream-json view gives it ([`contract_summary`]).
+fn render_acp_tool_update(update: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let status = update["status"].as_str().unwrap_or("(no status)");
+    let text: String = update["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["content"]["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Some agents mirror the MCP result whole (`{"content":[{"text":…}]}`); the contract is inside.
+    let text = mcp_result_text(&text).unwrap_or(text);
+    let failed = status == "failed";
+    match (contract_summary(&text), status) {
+        (Some(summary), _) => say(out, if failed { "FAILED" } else { "CHILD" }, &summary),
+        (None, "failed") => say(out, "FAILED", text.trim()),
+        (None, "completed") => say(out, "ok", &brief(text.trim(), LINE_CHARS)),
+        (None, other) => say(
+            out,
+            "tool",
+            &format!("{} {other}", update["toolCallId"].as_str().unwrap_or("?")),
+        ),
+    }
+}
+
+/// The text blocks of an MCP `tools/call` result carried as a string, or `None` if it is not one.
+fn mcp_result_text(text: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(text.trim()).ok()?;
+    let blocks: Vec<&str> = v["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|b| b["text"].as_str())
+        .collect();
+    (!blocks.is_empty()).then(|| blocks.join("\n"))
+}
+
+/// One parsed frame, by its `type`; each kind has a renderer of its own. A JSON-RPC frame is
+/// ACP's and has no `type`, so its shape is read first.
 fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if frame["jsonrpc"] == "2.0" {
+        return render_json_rpc(frame, out);
+    }
     let subtype = frame["subtype"].as_str().unwrap_or_default();
     match frame["type"].as_str().unwrap_or_default() {
         "assistant" => render_assistant(frame, out),
@@ -2629,9 +2806,34 @@ fn watch_the_root(
         terminal: &'a Terminal<io::Stderr>,
         transcript: Vec<Value>,
         ended: Option<Terminal_>,
+        view: LiveView,
     }
 
     impl Rendering<'_> {
+        /// One event through the live view, then to the terminal in one write. Rendered into a
+        /// buffer first because the view holds state across frames and `Terminal::show` takes a
+        /// `Fn`.
+        fn show(&mut self, event: StreamEvent<'_>) {
+            let mut buf: Vec<u8> = Vec::new();
+            let _ = self.view.event(event, &mut buf);
+            self.write(&buf);
+        }
+
+        /// The held chunk text, written: the run's end is the last frame it will get.
+        fn flush(&mut self) {
+            let mut buf: Vec<u8> = Vec::new();
+            let _ = self.view.flush(&mut buf);
+            self.write(&buf);
+        }
+
+        fn write(&self, buf: &[u8]) {
+            if !buf.is_empty() {
+                self.terminal.show(&|w| {
+                    let _ = w.write_all(buf);
+                });
+            }
+        }
+
         fn note(&mut self, event: marion_core::proto::notify::Event) {
             use marion_core::event::{Lifecycle, Payload};
             let marion_core::proto::notify::Event::NodeEvent {
@@ -2648,17 +2850,12 @@ fn watch_the_root(
             let Ok(payload) = serde_json::from_value::<Payload>(payload.clone()) else {
                 return;
             };
-            let terminal = self.terminal;
             match payload {
                 Payload::Vendor { json, .. } => {
-                    terminal.show(&|w| {
-                        let _ = render_event(StreamEvent::Frame(&json), w);
-                    });
+                    self.show(StreamEvent::Frame(&json));
                     self.transcript.push(json);
                 }
-                Payload::Raw(line) => terminal.show(&|w| {
-                    let _ = render_event(StreamEvent::Unparsed(&line), w);
-                }),
+                Payload::Raw(line) => self.show(StreamEvent::Unparsed(&line)),
                 // **Said, not skipped.** These are frames marion read and did not keep whole — a
                 // §5.2 withholding, or a payload past `MAX_EVENT_BYTES`. Rendering them as silence
                 // would make a shortened stream indistinguishable from a quiet one, which is the
@@ -2668,22 +2865,12 @@ fn watch_the_root(
                 // holds every rendered line inside one terminal width (`run_stream.rs` asserts the
                 // bound). It is not lost: `events.jsonl` carries it on the record, which is where a
                 // reader who wants to know *which* rule looks.
-                Payload::Withheld { key, bytes, .. } => terminal.show(&|w| {
-                    let _ = render_event(
-                        StreamEvent::Unparsed(&format!(
-                            "[withheld: a `{key}` frame of {bytes} bytes, body not kept (§5.2)]"
-                        )),
-                        w,
-                    );
-                }),
-                Payload::Oversized { was, bytes } => terminal.show(&|w| {
-                    let _ = render_event(
-                        StreamEvent::Unparsed(&format!(
-                            "[marion shortened a {was:?} frame of {bytes} bytes]"
-                        )),
-                        w,
-                    );
-                }),
+                Payload::Withheld { key, bytes, .. } => self.show(StreamEvent::Unparsed(&format!(
+                    "[withheld: a `{key}` frame of {bytes} bytes, body not kept (§5.2)]"
+                ))),
+                Payload::Oversized { was, bytes } => self.show(StreamEvent::Unparsed(&format!(
+                    "[marion shortened a {was:?} frame of {bytes} bytes]"
+                ))),
                 // Uninhabited (`marion_core::event::Normalization`), so this arm cannot be reached
                 // and is here so that adding the first normalized payload is a compile error in
                 // every renderer rather than a frame that silently disappears from one.
@@ -2692,9 +2879,11 @@ fn watch_the_root(
                 // started, so it adds nothing a person reads.
                 Payload::Lifecycle(Lifecycle::Opened) => {}
                 Payload::Lifecycle(Lifecycle::Exited { status, exit }) => {
+                    self.flush();
                     self.ended = Some(Terminal_::Exited { status, exit });
                 }
                 Payload::Lifecycle(Lifecycle::Aborted { reason }) => {
+                    self.flush();
                     self.ended = Some(Terminal_::Aborted(reason));
                 }
             }
@@ -2706,6 +2895,7 @@ fn watch_the_root(
         terminal,
         transcript: Vec::new(),
         ended: None,
+        view: LiveView::default(),
     };
 
     let id = supervisor.send(marion_core::proto::Call::NodeAttach(
@@ -3598,6 +3788,141 @@ mod tests {
         assert!(
             shown.contains("thread 'main' panicked at src/x.rs:1:1"),
             "{shown:?}"
+        );
+    }
+
+    /// A stream of frames through the live view, flushed at the end as the run's bookend flushes
+    /// it, as the lines a person would see.
+    fn shown_stream(frames: &[&str]) -> Vec<String> {
+        let mut view = LiveView::default();
+        let mut buf: Vec<u8> = Vec::new();
+        for f in frames {
+            let v: Value = serde_json::from_str(f).expect("the fixture frame parses");
+            view.event(StreamEvent::Frame(&v), &mut buf).unwrap();
+        }
+        view.flush(&mut buf).unwrap();
+        String::from_utf8(buf)
+            .unwrap()
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    fn acp_update(update: &str) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{update}}}}}"#
+        )
+    }
+
+    /// **An ACP root's stream reads as prose, not as a column of unknown frames.** Dispatched on
+    /// the frame's JSON-RPC shape, never on the harness: message chunks coalesce into one line
+    /// until the next non-chunk frame, a thought is summarised rather than shown, a tool call
+    /// renders by its title and its update by its status, and `stopReason` is the run's `done`.
+    #[test]
+    fn acp_chunks_coalesce_and_a_tool_call_renders_by_its_title() {
+        let chunk = |kind: &str, text: &str| {
+            acp_update(&format!(
+                r#"{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}"#
+            ))
+        };
+        let frames = [
+            r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-acp","version":"0.1"}}}"#.to_string(),
+            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}"#.to_string(),
+            chunk("agent_thought_chunk", "planning "),
+            chunk("agent_thought_chunk", "it"),
+            chunk("agent_message_chunk", "Delegating to "),
+            chunk("agent_message_chunk", "a child."),
+            acp_update(
+                r#"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"marion/spawn","status":"pending","rawInput":{"agent_type":"codex"}}"#,
+            ),
+            acp_update(
+                r#"{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"failed","content":[{"type":"content","content":{"type":"text","text":"no such agent type"}}]}"#,
+            ),
+            chunk("agent_message_chunk", "Done."),
+            r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#.to_string(),
+        ];
+        let frames: Vec<&str> = frames.iter().map(String::as_str).collect();
+        let lines = shown_stream(&frames);
+        assert!(
+            lines.iter().all(|l| !l.contains("no `type` field")),
+            "every ACP frame has a renderer: {lines:#?}"
+        );
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no line with {needle:?}: {lines:#?}"))
+        };
+        assert!(lines[at("fake-acp")].starts_with("session"), "{lines:#?}");
+        assert!(
+            lines[at("(11 characters of reasoning)")].starts_with("think"),
+            "two thought chunks are one summary: {lines:#?}"
+        );
+        let said = at("Delegating to a child.");
+        assert!(lines[said].starts_with("root"), "{lines:#?}");
+        let called = at("marion/spawn");
+        assert!(
+            said < called,
+            "the text is flushed before the call: {lines:#?}"
+        );
+        assert!(
+            lines[called].contains(r#"agent_type="codex""#),
+            "{lines:#?}"
+        );
+        let failed = at("no such agent type");
+        assert!(lines[failed].starts_with("FAILED"), "{lines:#?}");
+        let last = at("Done.");
+        let done = at("end_turn");
+        assert!(lines[done].starts_with("done"), "{lines:#?}");
+        assert!(
+            last < done,
+            "the trailing text is flushed by the stop: {lines:#?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("Delegating")).count(),
+            1,
+            "{lines:#?}"
+        );
+    }
+
+    /// A finished `spawn` reads as the child's verdict, whether the agent mirrored the contract as
+    /// text or the whole MCP result around it.
+    #[test]
+    fn a_finished_acp_spawn_renders_the_childs_verdict() {
+        let contract = serde_json::json!({
+            "child": {"harness": "acp"},
+            "completion": {"status": "Ok", "narrative": {"value": "wrote the file"}},
+        })
+        .to_string();
+        let wrapped =
+            serde_json::json!({"content": [{"type": "text", "text": contract}]}).to_string();
+        for text in [contract, wrapped] {
+            let update = serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": text}}],
+            });
+            let frame = acp_update(&update.to_string());
+            let lines = shown_stream(&[&frame]);
+            assert_eq!(lines.len(), 1, "{lines:#?}");
+            assert!(lines[0].starts_with("CHILD"), "{lines:#?}");
+            assert!(
+                lines[0].contains("the acp child returned Ok: wrote the file"),
+                "{lines:#?}"
+            );
+        }
+    }
+
+    /// A chunk the stream ends on is not lost: the run's closing bookend flushes it.
+    #[test]
+    fn a_trailing_acp_chunk_is_flushed_at_the_end() {
+        let frame = acp_update(
+            r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"last words"}}"#,
+        );
+        let lines = shown_stream(&[&frame]);
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert!(
+            lines[0].starts_with("root") && lines[0].contains("last words"),
+            "{lines:#?}"
         );
     }
 
