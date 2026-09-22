@@ -129,14 +129,23 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
-    // `read` → `view`, `write` → `create`, measured on 1.0.83 (`tests/fixtures/s24/`):
-    // `--available-tools=marion-report,create` put exactly those in the request body, `create` with
-    // `--allow-tool=write` landed a file under `-C`, and `view` ran with no grant at all. `edit` is
-    // copilot's other write tool and `bash` can write too; marion's vocabulary has no verb for
-    // either, so neither is named.
+    // `read` → `view`, measured on 1.0.83 (`tests/fixtures/s24/`): `view` ran with no grant at all.
+    //
+    // `write` → **every file-editing tool copilot may expose, because which one it exposes depends
+    // on the model.** 1.0.83 under BYOK offered `create` (`--available-tools=marion-report,create`
+    // put exactly those in the request body, and `create` with `--allow-tool=write` landed a file
+    // under `-C`); 1.0.87 with `--model auto` (gpt-5.6-luna, 2026-09-22) offered only `view` and
+    // `apply_patch` out of `view,create,edit,apply_patch,str_replace,str_replace_editor`, and its
+    // `apply_patch` under `--allow-tool=write` added the file. `--available-tools` is a filter —
+    // names the model lacks are dropped without error — so listing all three costs nothing and
+    // leaves no model without its edit tool. The three are the tools 1.0.87's own `app.js` files
+    // under the `edit` category alone (`str_replace_editor` also reads, and is not named). `bash`
+    // can write too; marion's vocabulary has no verb for it, so it is not named.
     tool_names: &[
         (agent_type::TOOL_READ, "view"),
         (agent_type::TOOL_WRITE, "create"),
+        (agent_type::TOOL_WRITE, "edit"),
+        (agent_type::TOOL_WRITE, "apply_patch"),
     ],
     // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
     // `toolName` alike). The permission pattern for the same tool is a *different* string
@@ -321,12 +330,13 @@ pub const WRITE_PERMISSION: &str = "write";
 
 /// Is this copilot-native tool name one [`WRITE_PERMISSION`] is required for?
 ///
-/// The two built-ins whose calls the permission help files under `write(path?)`. `bash` can write
-/// too, through redirection, and is deliberately **not** here: marion's vocabulary has no verb
-/// that means it, and the help says shell redirections need `--allow-all-tools`, which marion
-/// never compiles.
+/// The built-ins whose calls the permission help files under `write(path?)`: `create` and `edit`,
+/// and `apply_patch`, which the live `auto` model is offered in their place (1.0.87) and which
+/// `--allow-tool=write` was measured to grant. `bash` can write too, through redirection, and is
+/// deliberately **not** here: marion's vocabulary has no verb that means it, and the help says
+/// shell redirections need `--allow-all-tools`, which marion never compiles.
 pub fn is_write_tool(native: &str) -> bool {
-    matches!(native, "create" | "edit")
+    matches!(native, "create" | "edit" | "apply_patch")
 }
 
 /// The model-facing spelling of one of marion's tools: `<alias>-<tool>`. Measured in the request
@@ -649,6 +659,7 @@ mod tests {
         assert_eq!(permission_pattern(MCP_ALIAS, "report"), "marion(report)");
         assert!(is_write_tool("create"));
         assert!(is_write_tool("edit"));
+        assert!(is_write_tool("apply_patch"));
         assert!(!is_write_tool("view"));
         assert!(
             !is_write_tool("bash"),

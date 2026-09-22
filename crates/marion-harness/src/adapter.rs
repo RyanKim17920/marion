@@ -562,18 +562,27 @@ pub trait HarnessAdapter {
     /// conditional there would *narrow* what those two harnesses have always been able to do,
     /// which is a behaviour change wearing a feature's clothes.
     ///
+    /// **Every** native name the verb maps to, in row order: a harness whose tool for one grant
+    /// depends on the model (copilot's `create` vs `apply_patch`) lists each, and the launch offers
+    /// all of them so whichever the model has is there.
+    ///
     /// The default is the row's [`spec::HarnessSpec::tool_names`], and a verb it does not list is
     /// the refusal.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        self.spec()
+    fn tool_names(&self, tool: &str) -> Result<Vec<String>, HarnessError> {
+        let names: Vec<String> = self
+            .spec()
             .tool_names
             .iter()
-            .find(|(verb, _)| *verb == tool)
+            .filter(|(verb, _)| *verb == tool)
             .map(|(_, native)| native.to_string())
-            .ok_or_else(|| HarnessError::UnsupportedTool {
+            .collect();
+        if names.is_empty() {
+            return Err(HarnessError::UnsupportedTool {
                 harness: self.harness(),
                 tool: tool.to_string(),
-            })
+            });
+        }
+        Ok(names)
     }
 
     /// Every tool [`LaunchSpec::tools`] declares, in this harness's own spelling, or the first
@@ -584,7 +593,11 @@ pub trait HarnessAdapter {
     /// the two harnesses that do nothing with the result — because the refusal is the part that is
     /// owed to a declaration on all four.
     fn native_tools(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        spec.tools.iter().map(|t| self.tool_name(t)).collect()
+        let mut out = Vec::new();
+        for t in &spec.tools {
+            out.extend(self.tool_names(t)?);
+        }
+        Ok(out)
     }
 
     /// §6.7's `TaskContract.allowed_tools`: **the constraint this launch actually compiled**, in
@@ -2689,8 +2702,8 @@ mod tests {
     #[test]
     fn a_declared_read_reaches_claude_codes_two_axes_together() {
         assert_eq!(
-            ClaudeCodeAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
-            "Read",
+            ClaudeCodeAdapter.tool_names(agent_type::TOOL_READ).unwrap(),
+            ["Read"],
             "marion's word is `read` and the harness's is `Read`; passing marion's through \
              declares nothing at all and says so nowhere (s14)"
         );
@@ -2733,16 +2746,16 @@ mod tests {
     #[test]
     fn a_declared_read_on_the_two_harnesses_that_already_have_one_changes_nothing() {
         assert_eq!(
-            GeminiAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
-            "read_file"
+            GeminiAdapter.tool_names(agent_type::TOOL_READ).unwrap(),
+            ["read_file"]
         );
         assert!(
             !gemini::is_edit_tool("read_file"),
             "read is not an edit tool, or declaring it would compile auto_edit and grant writes"
         );
         assert_eq!(
-            OpenCodeAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
-            "read",
+            OpenCodeAdapter.tool_names(agent_type::TOOL_READ).unwrap(),
+            ["read"],
             "a spelling collision with marion's own word, written out rather than defaulted"
         );
         for (name, adapter, spec) in adapters_and_specs() {
@@ -2804,7 +2817,7 @@ mod tests {
             let t = agent_type::builtin(name).unwrap();
             let adapter = launch_adapter(t.harness).unwrap();
             for tool in &t.tools {
-                adapter.tool_name(tool).unwrap_or_else(|e| {
+                adapter.tool_names(tool).unwrap_or_else(|e| {
                     panic!("built-in `{name}` declares a tool its harness cannot provide: {e}")
                 });
             }
@@ -2855,8 +2868,8 @@ mod tests {
     #[test]
     fn a_declared_write_puts_gemini_in_the_approval_mode_that_declares_one() {
         assert_eq!(
-            GeminiAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
-            "write_file"
+            GeminiAdapter.tool_names(agent_type::TOOL_WRITE).unwrap(),
+            ["write_file"]
         );
         assert!(gemini::is_edit_tool("write_file"));
         let with = GeminiAdapter
@@ -2894,13 +2907,13 @@ mod tests {
     #[test]
     fn a_declared_write_on_the_two_already_write_capable_harnesses_changes_nothing() {
         assert_eq!(
-            CodexAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
-            format!("sandbox:{}", codex::SANDBOX_MODE),
+            CodexAdapter.tool_names(agent_type::TOOL_WRITE).unwrap(),
+            [format!("sandbox:{}", codex::SANDBOX_MODE)],
             "§3.1 names this exact string for this exact harness"
         );
         assert_eq!(
-            OpenCodeAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
-            "write"
+            OpenCodeAdapter.tool_names(agent_type::TOOL_WRITE).unwrap(),
+            ["write"]
         );
         for (name, adapter, spec) in adapters_and_specs() {
             if name != "codex" && name != "opencode" {
@@ -4388,6 +4401,44 @@ mod tests {
         }
     }
 
+    /// **A grant is every tool the harness may expose for it, not the one a canned run happened to
+    /// see.** copilot's file-editing tool depends on the model: the canned BYOK run (1.0.83) was
+    /// offered `create`, and the live `auto` model (1.0.87, gpt-5.6-luna) is offered only
+    /// `apply_patch` out of `view,create,edit,apply_patch,str_replace,str_replace_editor` — so a
+    /// `write` that compiled to `create` alone left the live matrix's copilot-impl children with no
+    /// edit tool (D5). `--available-tools` names what may be offered and copilot drops the names a
+    /// model does not have; `--allow-tool=write` is the one kind granting all of them.
+    #[test]
+    fn a_copilot_write_grant_offers_every_file_editing_tool_copilot_may_expose() {
+        let spec = LaunchSpec {
+            tools: vec![agent_type::TOOL_READ.into(), agent_type::TOOL_WRITE.into()],
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: Some("auto".into()),
+            ..copilot_spec()
+        };
+        let inv = CopilotAdapter.compile(&spec, &ctx()).unwrap();
+        let offered = inv
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("--available-tools="))
+            .unwrap_or_else(|| panic!("no --available-tools in {:?}", inv.args));
+        let offered: Vec<&str> = offered.split(',').collect();
+        for tool in ["view", "create", "edit", "apply_patch"] {
+            assert!(offered.contains(&tool), "`{tool}` missing from {offered:?}");
+        }
+        assert_eq!(
+            inv.args
+                .iter()
+                .filter(|a| *a == "--allow-tool=write")
+                .count(),
+            1,
+            "one kind grants every file tool: {:?}",
+            inv.args
+        );
+    }
+
     /// A live node reaches a real vendor, so the model is the operator's to choose and `-m` carries
     /// it — verified present on the installed 0.146.0's `codex exec --help`.
     #[test]
@@ -5828,7 +5879,7 @@ mod tests {
     #[test]
     fn acp_refuses_every_marion_verb_by_name_because_the_protocol_has_no_such_axis() {
         for tool in [agent_type::TOOL_READ, agent_type::TOOL_WRITE, "invented"] {
-            let e = acp_adapter().tool_name(tool).unwrap_err();
+            let e = acp_adapter().tool_names(tool).unwrap_err();
             assert_eq!(
                 e,
                 HarnessError::UnsupportedTool {
@@ -7729,10 +7780,13 @@ mod tests {
                     [agent_type::TOOL_READ, agent_type::TOOL_WRITE].contains(verb),
                     "{h}: `{verb}` is not marion's vocabulary"
                 );
-                assert_eq!(a.tool_name(verb).as_deref(), Ok(*native), "{h}");
+                assert!(
+                    a.tool_names(verb).unwrap().iter().any(|n| n == native),
+                    "{h}: `{verb}` does not reach `{native}`"
+                );
             }
             assert!(matches!(
-                a.tool_name("bash"),
+                a.tool_names("bash"),
                 Err(HarnessError::UnsupportedTool { harness, .. }) if harness == h
             ));
             match row.spelling {

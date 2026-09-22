@@ -1055,6 +1055,15 @@ login with the cheapest model the harness offered.
   `gpt-5.6-luna` turn, ~22k input tokens mostly cached). `-c`, `-s/--sandbox` and `-m` are unchanged
   from 0.147.0 on `codex exec --help`. The row now compiles `codex::live_sandbox_override` onto
   every live node, bridge or not; a native facade session keeps the operator's sandbox.
+- **copilot 1.0.87: the file-editing tool depends on the model, so `write` maps to three names.**
+  `copilot -p … --model auto --available-tools=view,create,edit,apply_patch,str_replace,str_replace_editor
+  --allow-tool=write` resolved `auto` to `gpt-5.6-luna`, which was offered only `view` and
+  `apply_patch` (its own answer: `functions.view, functions.apply_patch`); its `apply_patch` call
+  (`*** Add File: probe.txt`) succeeded under `--allow-tool=write` and the file landed, rc 0, 0.4
+  AI credits. Names a model lacks are dropped without error. 1.0.83 under BYOK was offered `create`
+  (s24). 1.0.87's `app.js` files `edit`, `create` and `apply_patch` under the `edit` category alone
+  (`str_replace_editor` is `read`+`edit`). The row maps `write` to all three, so a `copilot-impl`
+  child has its edit tool under either model family; the matrix's children had only `view`.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

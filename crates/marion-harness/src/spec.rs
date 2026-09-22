@@ -67,7 +67,9 @@ pub struct HarnessSpec {
     /// §3.1's **availability** axis: marion's vocabulary (`marion_core::agent_type::TOOL_READ`,
     /// …) to this harness's own name for it. **A verb not in this list is refused by name**, never
     /// dropped — a launch that quietly loses a tool is §11 item 24's silent failure. Empty is the
-    /// honest row for a harness with no availability axis at all (ACP).
+    /// honest row for a harness with no availability axis at all (ACP). **A verb may appear more
+    /// than once**, where the harness's tool for it depends on the model (copilot's `write`): the
+    /// launch then offers every one of them.
     ///
     /// Answering does not imply compiling: on codex and opencode a declared `write` names a tool
     /// the harness already grants unconditionally, and the row's argv carries nothing for it.
