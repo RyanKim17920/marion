@@ -626,6 +626,15 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         return Ok(());
     };
     let project = ProjectDir::new(&launch.state_dir, &launch.project_root);
+    // Before the boot, while this supervisor has no queue of its own: every message still queued
+    // on the journal died with the supervisor that held it (`restart`'s module docs). An audit
+    // record, so a failure to write one is reported and does not keep the supervisor down.
+    if let Err(e) = crate::restart::drop_undelivered(&project.journal()) {
+        eprintln!(
+            "marion-supervisor: could not journal the messages the previous supervisor left \
+             queued: {e}"
+        );
+    }
     let registry = Registry::boot(&project).map_err(|source| DetachError::Spawn {
         program: launch.program.clone(),
         source: std::io::Error::other(format!(

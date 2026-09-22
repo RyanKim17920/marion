@@ -79,8 +79,17 @@
 //!   process** — §11 item 28's bridge, §11 item 30's backgrounded child — which can still write a
 //!   truthful `Exited` afterwards. A derived marking is superseded the moment that record lands. A
 //!   journaled one would contradict it forever.
+//!
+//! # The one thing restart does journal: messages the lost supervisor had queued
+//!
+//! A turn-delivery queue (`crate::inbox`) lives in the supervisor's memory and nowhere else, so a
+//! `MessageQueued` with no `MessageDelivered` or `MessageDropped` after it names a message that
+//! died with that process. That is a **fact**, not a judgement — no later writer can deliver it,
+//! because only the supervisor that queued it held it — so none of the three reasons above applies,
+//! and [`drop_undelivered`] records it as `MessageDropped { reason: "supervisor restarted" }`.
 
 use marion_core::contract::AgentId;
+use marion_core::journal::{MessageDelivered, MessageDropped, RecordKind};
 use marion_core::node::ReapState;
 use marion_core::registry::{Replay, ReplayedNode};
 
@@ -216,6 +225,63 @@ pub fn resumable(tree: &Replay) -> Vec<&ReplayedNode> {
         .iter()
         .filter(|n| n.reap_state == ReapState::ReapedIdle && !n.state.is_exited())
         .collect()
+}
+
+/// [`MessageDropped`]'s reason for a message a lost supervisor had queued.
+pub const SUPERVISOR_RESTARTED: &str = "supervisor restarted";
+
+/// **Every message a lost supervisor queued and never resolved**, as the `MessageDropped` that
+/// resolves it — in queue order, one per unresolved `MessageQueued`.
+///
+/// Pure over the records so the rule is asserted without a file; [`drop_undelivered`] is its one
+/// caller that writes.
+pub fn undelivered(kinds: &[RecordKind]) -> Vec<RecordKind> {
+    let mut open: Vec<(AgentId, String)> = Vec::new();
+    for kind in kinds {
+        match kind {
+            RecordKind::MessageQueued(q) => open.push((q.agent_id.clone(), q.message_id.clone())),
+            RecordKind::MessageDelivered(MessageDelivered { message_id, .. })
+            | RecordKind::MessageDropped(MessageDropped { message_id, .. }) => {
+                open.retain(|(_, m)| m != message_id)
+            }
+            _ => {}
+        }
+    }
+    open.into_iter()
+        .map(|(agent_id, message_id)| {
+            RecordKind::MessageDropped(MessageDropped {
+                agent_id,
+                message_id,
+                reason: SUPERVISOR_RESTARTED.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// **Journal the drop of every message the previous supervisor left queued**, answering how many.
+///
+/// Called by a supervisor that has just won its project's socket, before it boots its registry —
+/// so no queue of its own exists yet and every `MessageQueued` without a resolution is one whose
+/// queue died with another process. A missing journal is a project that never ran: nothing to
+/// drop. Lines that do not decode are skipped here; the registry's boot reports them.
+pub fn drop_undelivered(journal: &std::path::Path) -> Result<usize, crate::journal::JournalError> {
+    let bytes = match std::fs::read(journal) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let kinds: Vec<RecordKind> = bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(marion_core::journal::decode)
+        .map(|r| r.kind)
+        .collect();
+    let drops = undelivered(&kinds);
+    let n = drops.len();
+    for kind in drops {
+        crate::journal::append_at(journal, kind)?;
+    }
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -881,6 +947,92 @@ mod tests {
             "`apply` records that marion did *not* decide these fates; an audit that read that as \
              a decision would call every orphan a leak, and would do so only in the order the \
              criterion is actually evaluated in"
+        );
+    }
+
+    fn queued(agent: &str, m: &str) -> RecordKind {
+        RecordKind::MessageQueued(marion_core::journal::MessageQueued {
+            agent_id: id(agent),
+            message_id: m.into(),
+            source: marion_core::journal::MessageSource::Operator,
+            len: 1,
+            sha256: "00".repeat(32),
+        })
+    }
+
+    fn dropped_ids(kinds: &[RecordKind]) -> Vec<(String, String, String)> {
+        kinds
+            .iter()
+            .map(|k| match k {
+                RecordKind::MessageDropped(d) => {
+                    (d.agent_id.0.clone(), d.message_id.clone(), d.reason.clone())
+                }
+                other => panic!("only drops are written: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// **A message queued by a supervisor that died is dropped, by name, on the next boot.** The
+    /// queue lived in that supervisor's memory, so its loss is a fact rather than a judgement —
+    /// unlike §7.2's marking — and it is journaled: one `MessageDropped` per `MessageQueued` that
+    /// has neither resolution, in queue order, and nothing for one already delivered or dropped.
+    #[test]
+    fn every_message_left_queued_by_a_lost_supervisor_is_dropped_in_order() {
+        let mut log = Log::default();
+        log.started("a", Some(1))
+            .push(queued("a", "m-1"))
+            .push(RecordKind::MessageDelivered(
+                marion_core::journal::MessageDelivered {
+                    agent_id: id("a"),
+                    message_id: "m-1".into(),
+                    via: "typed-turn".into(),
+                },
+            ))
+            .push(queued("a", "m-2"))
+            .push(RecordKind::MessageDropped(
+                marion_core::journal::MessageDropped {
+                    agent_id: id("a"),
+                    message_id: "m-2".into(),
+                    reason: "the node ended".into(),
+                },
+            ))
+            .push(queued("a", "m-3"))
+            .push(queued("b", "m-4"));
+        let kinds: Vec<RecordKind> = log.0.iter().map(|r| r.kind.clone()).collect();
+        assert_eq!(
+            dropped_ids(&undelivered(&kinds)),
+            vec![
+                ("a".into(), "m-3".into(), SUPERVISOR_RESTARTED.into()),
+                ("b".into(), "m-4".into(), SUPERVISOR_RESTARTED.into()),
+            ]
+        );
+        assert_eq!(SUPERVISOR_RESTARTED, "supervisor restarted");
+    }
+
+    /// The boot pass appends those drops to the journal itself, once: a second boot over the same
+    /// journal finds nothing left to drop.
+    #[test]
+    fn the_boot_pass_journals_the_drops_once() {
+        let dir = marion_testsupport::scratch("restart-drops");
+        let path = dir.join("journal.jsonl");
+        let mut log = Log::default();
+        log.started("a", Some(1)).push(queued("a", "m-1"));
+        let bytes: Vec<u8> = log.0.iter().flat_map(|r| encode(r).unwrap()).collect();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(drop_undelivered(&path).unwrap(), 1);
+        let after = crate::journal::read_path(&path).unwrap();
+        assert_eq!(after.records, log.0.len() + 1, "one drop was appended");
+        assert_eq!(
+            drop_undelivered(&path).unwrap(),
+            0,
+            "and it resolves the message"
+        );
+        let missing = dir.join("absent.jsonl");
+        assert_eq!(
+            drop_undelivered(&missing).unwrap(),
+            0,
+            "no journal, nothing queued"
         );
     }
 }
