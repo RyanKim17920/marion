@@ -27,8 +27,8 @@
 //!
 //! # Navigation, and why attaching is not reimplemented here
 //!
-//! `↑`/`↓`/`j`/`k` move the cursor, `Tab` moves focus between the tree and the content pane, `q`
-//! (or the pane's own `^]`) leaves. **`Enter` runs [`crate::attach::run`]** — the same function
+//! `↑`/`↓`/`j`/`k` move the cursor, `!` jumps it to the next node [`attention_of`] names, `Tab`
+//! moves focus between the tree and the content pane, `q` (or the pane's own `^]`) leaves. **`Enter` runs [`crate::attach::run`]** — the same function
 //! `marion attach <agent-id>` calls, reached by leaving this screen first and re-entering it when
 //! the attach returns. A tree that spoke `node/attach` itself would be a second attach client with
 //! a second write-lease story and a second `SIGWINCH` handler, and §5.3's one-writer rule is
