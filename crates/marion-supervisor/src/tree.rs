@@ -192,6 +192,34 @@ fn tone_of(state: NodeState, reap: ReapState) -> Tone {
     }
 }
 
+/// **Why `node` needs an operator, or `None` when it does not** — the attention queue's one rule.
+///
+/// Three classes, and the reason is the row's own [`state_label`] word so the queue and the tree
+/// can never name one node two ways:
+///
+/// * **blocked** — waiting on somebody: a permission, an elicitation, its own descendants;
+/// * **an exit that went wrong or went unreported** — `Failed`, `TimedOut`, `Killed`,
+///   `Unreported`. A failed verification is already `Exited(Failed)` (§5.4), so it is here with
+///   no field of its own;
+/// * **orphaned** — §7.2's *no record of deciding*: marion cannot say what became of it.
+///
+/// Not a clean exit, not a cancel (a decision somebody already made), not a reap, not a live
+/// state. The precedence is [`state_label`]'s: an exit outranks a reap state, which outranks the
+/// live state. Decided from the summary's two state fields only — never from a pane's screen.
+pub fn attention_of(node: &NodeSummary) -> Option<String> {
+    use marion_core::contract::ExitStatus;
+    let (state, reap) = (node.state, node.reap_state);
+    let needs = match (state, reap) {
+        (NodeState::Exited(ExitStatus::Ok | ExitStatus::Cancelled), _) => false,
+        (NodeState::Exited(_), _) => true,
+        (_, ReapState::Orphaned) => true,
+        (_, ReapState::ReapedIdle) => false,
+        (NodeState::Blocked(_), ReapState::Live) => true,
+        (_, ReapState::Live) => false,
+    };
+    needs.then(|| state_label(state, reap))
+}
+
 /// What `Enter` does to `node`: the id to attach to, or the sentence saying why not.
 ///
 /// [`NodeSummary::pane`] is the whole test. `attach::run` would reach the same refusal from the
@@ -1708,5 +1736,78 @@ mod tests {
         );
         let n = summary("x", Harness::Codex, false, None);
         assert_eq!(row(&n).tone, Tone::Live, "the row carries the tone");
+    }
+    /// **Which nodes need an operator, over every `(NodeState, ReapState)` pair there is.**
+    ///
+    /// Each class the attention queue names is here by literal, with the word it is reported by:
+    /// a node waiting on somebody, an exit that went wrong or went unreported, and an orphan. A
+    /// clean exit, a cancel (a decision somebody already made), a reap and every live state are
+    /// not. The precedence is the label's — an exit outranks a reap state, which outranks the live
+    /// state — so an orphan that exited cleanly is done, and a reaped node that was blocked is not
+    /// still blocked. Every pair is listed, so a new state is a compile-visible hole in this table
+    /// rather than a silent `None`.
+    #[test]
+    fn attention_is_blocked_failed_unreported_or_orphaned_and_nothing_else() {
+        use NodeState::{Blocked, Exited, Idle, Ready, Running, Spawning};
+        use ReapState::{Live, Orphaned, ReapedIdle};
+        use marion_core::contract::ExitStatus::*;
+        use marion_core::node::BlockReason::*;
+        let table: &[(NodeState, ReapState, Option<&str>)] = &[
+            (Spawning, Live, None),
+            (Ready, Live, None),
+            (Running, Live, None),
+            (Idle, Live, None),
+            (Blocked(Permission), Live, Some("blocked:permission")),
+            (Blocked(Elicitation), Live, Some("blocked:elicitation")),
+            (Blocked(Descendants), Live, Some("blocked:descendants")),
+            (Exited(Ok), Live, None),
+            (Exited(Cancelled), Live, None),
+            (Exited(Failed), Live, Some("exited:failed")),
+            (Exited(TimedOut), Live, Some("exited:timedout")),
+            (Exited(Killed), Live, Some("exited:killed")),
+            (Exited(Unreported), Live, Some("exited:unreported")),
+            (Spawning, Orphaned, Some("orphaned")),
+            (Ready, Orphaned, Some("orphaned")),
+            (Running, Orphaned, Some("orphaned")),
+            (Idle, Orphaned, Some("orphaned")),
+            (Blocked(Permission), Orphaned, Some("orphaned")),
+            (Blocked(Elicitation), Orphaned, Some("orphaned")),
+            (Blocked(Descendants), Orphaned, Some("orphaned")),
+            (Exited(Ok), Orphaned, None),
+            (Exited(Cancelled), Orphaned, None),
+            (Exited(Failed), Orphaned, Some("exited:failed")),
+            (Exited(TimedOut), Orphaned, Some("exited:timedout")),
+            (Exited(Killed), Orphaned, Some("exited:killed")),
+            (Exited(Unreported), Orphaned, Some("exited:unreported")),
+            (Spawning, ReapedIdle, None),
+            (Ready, ReapedIdle, None),
+            (Running, ReapedIdle, None),
+            (Idle, ReapedIdle, None),
+            (Blocked(Permission), ReapedIdle, None),
+            (Blocked(Elicitation), ReapedIdle, None),
+            (Blocked(Descendants), ReapedIdle, None),
+            (Exited(Ok), ReapedIdle, None),
+            (Exited(Cancelled), ReapedIdle, None),
+            (Exited(Failed), ReapedIdle, Some("exited:failed")),
+            (Exited(TimedOut), ReapedIdle, Some("exited:timedout")),
+            (Exited(Killed), ReapedIdle, Some("exited:killed")),
+            (Exited(Unreported), ReapedIdle, Some("exited:unreported")),
+        ];
+        assert_eq!(table.len(), 13 * 3, "every state under every reap state");
+        for &(state, reap, want) in table {
+            let n = NodeSummary {
+                state,
+                reap_state: reap,
+                ..summary("x", Harness::Codex, false, None)
+            };
+            assert_eq!(attention_of(&n).as_deref(), want, "({state:?}, {reap:?})");
+            if let Some(word) = want {
+                assert_eq!(
+                    word,
+                    state_label(state, reap),
+                    "the reason is the row's own state word, so the queue and the tree agree"
+                );
+            }
+        }
     }
 }
