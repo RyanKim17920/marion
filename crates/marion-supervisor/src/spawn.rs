@@ -222,6 +222,21 @@ pub enum SpawnError {
     NotAGitRepo { cwd: PathBuf },
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
+    /// The spawn's `verification` lines are larger than the node's intent record may carry.
+    ///
+    /// The lines are journaled on the `SpawnIntent` so a resumed child re-runs them, and a record
+    /// over `MAX_RECORD_BYTES` is dropped whole — which would lose the node's identity record, not
+    /// just its verification. So this is refused before the intent is written, naming the measured
+    /// size and the cap ([`crate::run::MAX_VERIFICATION_BYTES`]), rather than served with a node
+    /// the journal never heard of.
+    #[error(
+        "spawn refused: `verification` is {bytes} bytes as the journal encodes it, over marion's \
+         {cap}-byte cap (MAX_VERIFICATION_BYTES). The lines are recorded on the child's spawn \
+         intent so a resumed child re-runs them, and a record that large could not be journaled. \
+         Nothing was started. Move long checks into a script in the repository and pass the \
+         command that runs it."
+    )]
+    VerificationTooLarge { bytes: usize, cap: usize },
     #[error("compiling the child's launch: {0}")]
     Harness(#[from] marion_harness::HarnessError),
     /// §6.1 step 8's gate, failed on a **child**. Carried through rather than flattened so the

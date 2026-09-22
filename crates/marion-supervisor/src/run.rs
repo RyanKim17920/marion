@@ -75,6 +75,36 @@ const CHILD_MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 /// this whole design keeps free of surprises.
 pub const MAX_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 
+/// **The most a spawn's `verification` lines may cost on the node's `SpawnIntent`**, measured as
+/// the journal encodes them (JSON, escapes included).
+///
+/// The lines are journaled so a resumed child re-runs them, and a record over
+/// [`marion_core::journal::MAX_RECORD_BYTES`] is refused by the codec and dropped — for an intent,
+/// that loses the node's identity record, not merely its verification. Half the record cap leaves
+/// the intent's other fields and the record envelope room to spare, and 8 KiB of shell is far
+/// beyond a list of check commands; a longer check belongs in a script the child's tree carries.
+/// Refused, not truncated: a truncated line would run a different command.
+pub const MAX_VERIFICATION_BYTES: usize = 8 * 1024;
+const _: () = assert!(MAX_VERIFICATION_BYTES * 2 <= marion_core::journal::MAX_RECORD_BYTES);
+
+/// Refuses `verification` whose encoded size exceeds [`MAX_VERIFICATION_BYTES`].
+///
+/// The encoded size rather than the raw one, because the record carries the escaped bytes: a NUL
+/// is one byte raw and six on disk, so a raw-length guard would pass an intent the journal drops.
+pub(crate) fn check_verification_size(verification: &[String]) -> Result<(), SpawnError> {
+    if verification.is_empty() {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec(verification)?.len();
+    if bytes > MAX_VERIFICATION_BYTES {
+        return Err(SpawnError::VerificationTooLarge {
+            bytes,
+            cap: MAX_VERIFICATION_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// The wall clock a request of `secs` actually gets: **its own, or [`MAX_TIMEOUT_SECS`]**.
 ///
 /// One function rather than a `min` at each use, so the bound the child runs under and the bound
@@ -1254,6 +1284,9 @@ pub fn run_spawn_watched(
     check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)?;
     let requested = requested_scope(req);
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
+    // The verification lines ride on the intent below, so a set too large to journal is refused
+    // here, with the other refusals and before the node has an identity at all.
+    check_verification_size(&req.verification)?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
     // **A resume reuses the node's own id; a fresh spawn mints one** — `root::prepare_watched`'s
@@ -2136,6 +2169,46 @@ mod tests {
     use marion_harness::adapter_for;
     use marion_testsupport::{Scratch, scratch};
     use std::sync::Mutex;
+
+    /// **The cap is on the lines as the journal encodes them, at its exact boundary.** `["…"]`
+    /// costs four bytes of framing around one line, so a line of `cap - 4` bytes is exactly the
+    /// cap and is served, and one byte more is refused naming both numbers.
+    #[test]
+    fn verification_is_capped_at_its_encoded_size_on_the_boundary() {
+        let line = |n: usize| vec!["a".repeat(n)];
+        assert!(check_verification_size(&[]).is_ok(), "no lines, no cost");
+        assert!(check_verification_size(&line(MAX_VERIFICATION_BYTES - 4)).is_ok());
+        match check_verification_size(&line(MAX_VERIFICATION_BYTES - 3)) {
+            Err(SpawnError::VerificationTooLarge { bytes, cap }) => {
+                assert_eq!(
+                    (bytes, cap),
+                    (MAX_VERIFICATION_BYTES + 1, MAX_VERIFICATION_BYTES)
+                );
+            }
+            other => panic!("one byte over is refused by name, got {other:?}"),
+        }
+    }
+
+    /// **Escaping is counted, because the record carries the escaped bytes.** A NUL encodes as
+    /// six (`\u0000`), so 2000 of them are well under the cap raw and far over it on disk — and a
+    /// raw-length guard would let through an intent the journal then drops whole.
+    #[test]
+    fn verification_escaping_and_many_lines_count_against_the_cap() {
+        match check_verification_size(&["\0".repeat(2000)]) {
+            Err(SpawnError::VerificationTooLarge { bytes, .. }) => {
+                assert_eq!(bytes, 2000 * 6 + 4)
+            }
+            other => panic!("the encoded size is what is capped, got {other:?}"),
+        }
+        let many = vec!["x".to_string(); MAX_VERIFICATION_BYTES / 4];
+        assert!(
+            matches!(
+                check_verification_size(&many),
+                Err(SpawnError::VerificationTooLarge { .. })
+            ),
+            "the cap is on the total, not per line"
+        );
+    }
 
     /// **A resume takes the tree its session was created in, and cuts none.**
     ///

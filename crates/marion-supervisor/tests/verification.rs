@@ -29,7 +29,9 @@ use std::path::{Path, PathBuf};
 use marion_core::contract::{ExitStatus, Isolation, TaskContract, TaskId, Workspace};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::journal::read_path;
+use marion_supervisor::run::{Caller, Env, MAX_VERIFICATION_BYTES, SpawnRequest, run_spawn};
+use marion_supervisor::spawn::SpawnError;
 use marion_testsupport::{fixture_repo, harness_available, judge, persisted_contracts, scratch};
 use serde_json::Value;
 
@@ -82,8 +84,8 @@ fn fixture(root: &Path) -> Fixture {
     }
 }
 
-fn spawn_one(fx: &Fixture, task_id: &str, verification: &[&str]) -> TaskContract {
-    let req = SpawnRequest {
+fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
+    SpawnRequest {
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: fx.repo.clone(),
@@ -95,7 +97,11 @@ fn spawn_one(fx: &Fixture, task_id: &str, verification: &[&str]) -> TaskContract
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
-    };
+    }
+}
+
+fn spawn_one(fx: &Fixture, task_id: &str, verification: &[&str]) -> TaskContract {
+    let req = request(fx, verification);
     let caller = Caller::root(
         "root",
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
@@ -211,4 +217,45 @@ fn a_passing_verification_leaves_an_ok_child_ok_with_its_evidence_recorded() {
     assert_eq!(comp.evidence[0].exit_code, Some(0));
     assert!(comp.evidence[0].stdout.value.contains(EDIT));
     assert_eq!(comp.changed_paths, vec![PathBuf::from("src/keep.txt")]);
+}
+
+/// **Verification that would not fit in the journal is refused before the node exists.**
+///
+/// The lines ride on the node's `SpawnIntent`, and a record over the journal's cap is dropped
+/// whole — which would lose the node's identity record, not merely its verification. So the spawn
+/// is refused by name before the intent is written: no node in the journal, and a sentence the
+/// caller can act on. Needs no harness, because nothing is launched.
+#[test]
+fn oversized_verification_is_refused_by_name_and_writes_no_intent() {
+    let _root = scratch("verif-oversized");
+    let fx = fixture(&_root);
+    let req = SpawnRequest {
+        verification: vec!["x".repeat(MAX_VERIFICATION_BYTES)],
+        ..request(&fx, &[])
+    };
+    let caller = Caller::root(
+        "root",
+        marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+    );
+    let e = run_spawn(&fx.env, &req, &TaskId("verif-oversized".into()), &caller)
+        .expect_err("an intent that cannot be journaled is refused");
+    assert!(
+        matches!(
+            e,
+            SpawnError::VerificationTooLarge { bytes, cap }
+                if bytes == MAX_VERIFICATION_BYTES + 4 && cap == MAX_VERIFICATION_BYTES
+        ),
+        "{e:?}"
+    );
+    let said = e.to_string();
+    assert!(
+        said.contains(&MAX_VERIFICATION_BYTES.to_string()) && said.contains("verification"),
+        "the sentence names the field and the cap: {said}"
+    );
+    let replay = read_path(&fx.env.project_dir.journal()).expect("the journal replays");
+    assert!(
+        replay.nodes().is_empty(),
+        "a refused spawn creates no node: {:?}",
+        replay.nodes()
+    );
 }
