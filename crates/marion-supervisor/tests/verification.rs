@@ -259,3 +259,30 @@ fn oversized_verification_is_refused_by_name_and_writes_no_intent() {
         replay.nodes()
     );
 }
+
+/// **The spawn's verification lines are on the node's intent**, which is what a restart reads to
+/// relaunch a lost child — so a resumed child re-runs what its spawn asked for.
+#[test]
+fn a_spawns_verification_is_journaled_on_its_intent() {
+    if !harness_available("codex") {
+        return;
+    }
+    let _root = scratch("verif-journaled");
+    let fx = fixture(&_root);
+    spawn_one(&fx, "verif-journaled", &["true"]);
+    let replay = read_path(&fx.env.project_dir.journal()).expect("the journal replays");
+    let intents: Vec<_> = replay
+        .nodes()
+        .iter()
+        .filter_map(|n| n.intent.as_ref())
+        .filter(|i| i.task_id == Some(TaskId("verif-journaled".into())))
+        .collect();
+    let [intent] = intents.as_slice() else {
+        panic!("exactly one intent for the child: {:?}", replay.nodes());
+    };
+    assert_eq!(
+        intent.verification,
+        vec!["true".to_string()],
+        "the lines a restart must re-run are on the record"
+    );
+}

@@ -1321,7 +1321,8 @@ pub fn run_spawn_watched(
             // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the
             // clock the node is running under rather than its agent type's default.
             timeout_secs: Some(bound.as_secs()),
-            verification: vec![],
+            // The lines a restart re-runs when it resumes this child, sized by the check above.
+            verification: req.verification.clone(),
             // §7.5: immutable, written once. The caller is the parent by construction.
             parent_id: Some(AgentId(caller.agent_id.clone())),
             // The canonical name off the resolved type, not the alias `req.agent_type` used —
