@@ -1087,17 +1087,23 @@ pub fn status_result(
     node: &marion_core::proto::model::NodeSummary,
 ) -> Value {
     let returns = if node.parent_id.is_none() {
-        "receive the terminal status marion observed — this is a root, and §9 gives a root no task \
-         contract, so its own event stream is the record of what it did"
+        "the terminal status marion observed — this is a root, and a root has no task contract, so \
+         its own event stream is the record of what it did"
     } else {
-        "receive its task contract"
+        "its task contract"
+    };
+    // **Worded by state**: a finished node's `wait` returns at once, and telling the caller it
+    // would "block until it finishes" contradicted the line before it (measured live, 2026-09-22).
+    let next = if node.state.is_exited() {
+        format!("It has finished: call `wait` with this task_id to receive {returns}.")
+    } else {
+        format!("Call `wait` with this task_id to block until it finishes and receive {returns}.")
     };
     tool_result(
         id,
         &bounded(&format!(
             "marion: task_id {task_id:?} is {}. This is the state marion's supervisor holds right \
-             now, not a cached one. Call `wait` with this task_id to block until it finishes and \
-             {returns}.",
+             now, not a cached one. {next}",
             node_line(node)
         )),
         false,
@@ -1807,6 +1813,42 @@ mod tests {
             "{}",
             first_line(&signalled)
         );
+    }
+
+    /// **`status` says what a `wait` will do for a node in this state.** Measured live
+    /// (2026-09-22): a finished child's `status` read "finished (Unreported) … Call `wait` … to
+    /// block until it finishes", which contradicts itself.
+    #[test]
+    fn status_wording_follows_the_nodes_state() {
+        use marion_core::contract::AgentId;
+        use marion_core::harness::Harness;
+        use marion_core::node::{NodeState, ReapState};
+        use marion_core::proto::model::NodeSummary;
+        let node = |state| NodeSummary {
+            agent_id: AgentId("019f-child".into()),
+            parent_id: Some(AgentId("019f-root".into())),
+            name: None,
+            agent_type: "codex-impl".into(),
+            harness: Harness::Codex,
+            harness_version: None,
+            depth: 1,
+            state,
+            reap_state: ReapState::Live,
+            timeout: marion_core::encoding::Duration::from_secs(60),
+            pane: false,
+        };
+        let done = text(&status_result(
+            &json!(1),
+            "t-1",
+            &node(NodeState::Exited(ExitStatus::Unreported)),
+        ));
+        assert!(!done.contains("block until it finishes"), "{done}");
+        assert!(
+            done.contains("has finished") && done.contains("`wait`"),
+            "{done}"
+        );
+        let live = text(&status_result(&json!(1), "t-1", &node(NodeState::Running)));
+        assert!(live.contains("block until it finishes"), "{live}");
     }
 
     /// The success path is not merely similar — it is the same bytes it was before, so a
