@@ -118,16 +118,26 @@ fn fixture(root: &Path, patch: &str) -> Fixture {
 }
 
 fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
+    spawn_in(fx, task_id, &fx.repo, Isolation::Worktree)
+}
+
+/// [`spawn_one`] with the directory and the isolation chosen by the caller.
+fn spawn_in(
+    fx: &Fixture,
+    task_id: &str,
+    repo: &Path,
+    isolation: Isolation,
+) -> Result<TaskContract, String> {
     let req = SpawnRequest {
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
-        repo: fx.repo.clone(),
+        repo: repo.to_path_buf(),
         acceptance_criteria: vec!["a file under src/ was edited".into()],
         verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: None,
-        isolation: Isolation::Worktree,
+        isolation,
         allow_concurrent_writes: false,
         resume: None,
     };
@@ -305,6 +315,36 @@ fn a_finished_childs_worktree_is_removed_from_disk_and_deregistered() {
         listed.lines().skip(1).count(),
         0,
         "and git no longer lists it as a linked worktree:\n{listed}"
+    );
+}
+
+/// **The reap removes only a worktree marion created.** A `shared-cwd` child runs in the caller's
+/// own directory, and when that directory is itself a *linked* worktree — a root started in a
+/// feature worktree — `git worktree remove --force` on it succeeds: git refuses only the main
+/// working tree. So the cleanup that follows every spawn deleted the operator's own checkout, with
+/// whatever was uncommitted in it, after a child that was told to leave it alone.
+#[test]
+fn a_shared_cwd_child_leaves_the_linked_worktree_it_ran_in() {
+    require_codex();
+    let _root = scratch("reap-shared-linked");
+    let fx = fixture(&_root, CREATE);
+    let linked = _root.join("linked");
+    git(
+        &fx.repo,
+        &["worktree", "add", "-q", "-b", "feature", &linked.to_string_lossy()],
+    );
+    std::fs::write(linked.join("operator-notes.txt"), "the operator's own work\n").unwrap();
+
+    spawn_in(&fx, "reap-shared-linked", &linked, Isolation::SharedCwd).expect("the child runs");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join("operator-notes.txt")).ok().as_deref(),
+        Some("the operator's own work\n"),
+        "the caller's linked worktree, and the uncommitted file in it, survive a shared-cwd spawn"
+    );
+    assert!(
+        git(&fx.repo, &["worktree", "list"]).contains("[feature]"),
+        "and git still lists it as a worktree"
     );
 }
 

@@ -218,6 +218,12 @@ sub-scores, depth = 1/(1+n/8)) put the ceiling for this architecture near 7100 e
 Do not chase the number past that; every structural commit today also removed a real defect or
 duplication.
 
+**The reap removes only what marion made (2026-09-22).** `run::cleanup` ran `git worktree remove
+--force` on every child's workspace, `shared-cwd` included; git refuses that only on a *main*
+working tree, so a `shared-cwd` child of a caller in a linked worktree deleted the caller's
+checkout, uncommitted files and all. The cleanup now runs only for `Workspace::Worktree`
+(`worktree_reap.rs::a_shared_cwd_child_leaves_the_linked_worktree_it_ran_in`, real codex).
+
 **Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` from the
 *shipped* binary (a real kernel stop and continue through the relay is observed by
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the

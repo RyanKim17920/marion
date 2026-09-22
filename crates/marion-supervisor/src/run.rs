@@ -1767,7 +1767,12 @@ pub fn run_spawn_watched(
     // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this
     // guard would otherwise write would contradict them.
     resolution.armed = false;
-    cleanup(&req.repo, &wt);
+    // Only a tree marion made is marion's to remove. A `shared-cwd` child ran in the caller's own
+    // directory, and git refuses `worktree remove` only on the *main* working tree — so a caller in
+    // a linked worktree would have its checkout deleted by the cleanup of a child it lent it to.
+    if let Workspace::Worktree { path, .. } = &contract.workspace {
+        cleanup(&req.repo, path);
+    }
     Ok(returned)
 }
 
