@@ -1570,6 +1570,7 @@ pub fn run_spawn_watched(
             prompt: &req.prompt,
             bound,
             on_started: &announce_started,
+            on_line: None,
         })
         .map(|r| ChildRun {
             stdout: r.stdout,

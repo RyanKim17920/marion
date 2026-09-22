@@ -164,6 +164,11 @@ pub struct AcpChildSpec<'a> {
     /// after the handshake means the window in which a process exists and no durable record names
     /// it is one append and one fsync wide, instead of the node's whole first turn.
     pub on_started: &'a dyn Fn(i32),
+    /// Called with every line the agent writes, verbatim and in arrival order, **while the turn
+    /// runs** — the live seam a watched node needs, since the transcript arrives only at the end.
+    /// Each line is delivered exactly once, and the concatenation is [`AcpRun::stdout`]. `None` for
+    /// a node nobody watches live.
+    pub on_line: Option<&'a dyn Fn(&str)>,
 }
 
 impl std::fmt::Debug for AcpChildSpec<'_> {
@@ -284,7 +289,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         .checked_add(spec.bound)
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
 
-    let mut agent = Driver::spawn(spec.inv)?;
+    let mut agent = Driver::spawn(spec.inv, spec.on_line)?;
     (spec.on_started)(agent.pid);
 
     let handshake = handshake_with(&mut agent, deadline)?;
@@ -318,7 +323,10 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
 /// Parsed, not merely received. The handshake is what narrows this agent's capabilities, and an
 /// agent that answers with a wire version marion does not speak has to be refused here rather than
 /// prompted anyway and read with a v1 reader.
-fn handshake_with(agent: &mut Driver, deadline: Instant) -> Result<AgentHandshake, AcpChildError> {
+fn handshake_with(
+    agent: &mut Driver<'_>,
+    deadline: Instant,
+) -> Result<AgentHandshake, AcpChildError> {
     agent.send(&acp::initialize_request(INITIALIZE_ID), "initialize")?;
     let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, HANDSHAKE_BUDGET)) {
         Some(f) => f,
@@ -344,7 +352,7 @@ fn handshake_with(agent: &mut Driver, deadline: Instant) -> Result<AgentHandshak
 /// A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
 /// answer only says whether the agent took it (ACP's `session/load` result carries no id).
 fn open_session(
-    agent: &mut Driver,
+    agent: &mut Driver<'_>,
     session_new: &Value,
     opening: &Opening,
     deadline: Instant,
@@ -380,7 +388,7 @@ fn open_session(
 /// `stopReason: "cancelled"`, which is a frame in the transcript, where a SIGKILL is a hole in it.
 /// Written best-effort — an agent whose stdin has already closed is one the caller's kill handles.
 fn prompt_session(
-    agent: &mut Driver,
+    agent: &mut Driver<'_>,
     session: &str,
     prompt: &str,
     deadline: Instant,
@@ -502,7 +510,7 @@ struct Finish {
 /// shape — and the agent's own children (marion's MCP bridge among them) inherit its pipes.
 /// [`Drop`] is what makes that true on the paths that return an error; [`Driver::finish`] is the
 /// one that also reports what the kill took.
-struct Driver {
+struct Driver<'a> {
     child: Child,
     pid: i32,
     stdin: Option<ChildStdin>,
@@ -520,10 +528,13 @@ struct Driver {
     /// belong to — so "the next line" is not the answer to anything, and an answer that arrives
     /// while marion is waiting on an earlier id must still be there when marion asks for it.
     responses: Vec<(u64, String)>,
+    /// [`AcpChildSpec::on_line`]. Fed from [`Self::classify`], whose cursor already guarantees each
+    /// line is read once, and topped up with the tail in [`Self::finish`].
+    on_line: Option<&'a dyn Fn(&str)>,
 }
 
-impl Driver {
-    fn spawn(inv: &Invocation) -> Result<Self, AcpChildError> {
+impl<'a> Driver<'a> {
+    fn spawn(inv: &Invocation, on_line: Option<&'a dyn Fn(&str)>) -> Result<Self, AcpChildError> {
         let mut cmd = Command::new(&inv.program);
         cmd.args(&inv.args)
             .current_dir(&inv.cwd)
@@ -573,6 +584,7 @@ impl Driver {
             stderr: Some(stderr),
             cursor: 0,
             responses: Vec::new(),
+            on_line,
         })
     }
 
@@ -646,6 +658,10 @@ impl Driver {
             seen[from..].to_vec()
         };
         for line in new {
+            // Before the parse: a watcher sees what the agent wrote, banners included.
+            if let Some(sink) = self.on_line {
+                sink(&line);
+            }
             // A line that is not JSON is kept in the transcript verbatim and classified as nothing.
             // Agents write banners and warnings to stdout, and `acp::json_frames` already skips
             // them; inventing a reply to one would be worse than ignoring it.
@@ -766,6 +782,12 @@ impl Driver {
         }
         let stdout_complete = self.stdout_eof.load(Ordering::Relaxed);
         let collected = self.frames.lock().expect("frame sink").clone();
+        // The lines no wait loop classified — whatever arrived after the last answer marion waited
+        // for — so a watcher's view ends where the transcript does.
+        if let Some(sink) = self.on_line {
+            collected.iter().skip(self.cursor).for_each(|l| sink(l));
+        }
+        self.cursor = collected.len();
         let (stderr, stderr_complete) = match self.stderr.take() {
             Some(d) => d.finish(drain_deadline),
             None => (Vec::new(), true),
@@ -810,7 +832,7 @@ impl Driver {
     }
 }
 
-impl Drop for Driver {
+impl Drop for Driver<'_> {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
             unsafe { kill(self.pid, SIGKILL) };
@@ -904,6 +926,7 @@ mod tests {
             prompt: "call marion's report tool",
             bound,
             on_started,
+            on_line: None,
         }
     }
 
@@ -993,6 +1016,61 @@ sleep 15"#,
             !run.capture_truncated,
             "a pipe was still held open: the group sweep did not reach the agent's children"
         );
+    }
+
+    /// **A live sink sees each line while the turn is still running, and every line exactly once.**
+    ///
+    /// Causal rather than timed: the agent will not answer the prompt until the sink has seen its
+    /// `agent_message_chunk` (the sink drops a marker file the script polls for), so a driver that
+    /// only forwarded at the end would never be answered and the turn would expire. A non-JSON
+    /// banner and a line written after the prompt's answer prove the sink is raw and complete.
+    #[test]
+    fn a_live_sink_sees_every_agent_line_in_order_before_the_turn_returns() {
+        let dir = scratch("acp-live");
+        let marker = dir.join("sink-saw-chunk");
+        let script = format!(
+            r#"read init
+echo 'fake-acp banner, not JSON'
+printf '%s\n' '{HELLO}'
+read new
+printf '%s\n' '{OPENED}'
+read prompt
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_fake","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"live"}}}}}}}}'
+while [ ! -f '{marker}' ]; do sleep 0.05; done
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+echo 'after the answer'
+sleep 15"#,
+            marker = marker.display(),
+        );
+        let inv = agent(&dir, &script);
+        let seen = Mutex::new(Vec::<String>::new());
+        let on_line = |line: &str| {
+            if line.contains("agent_message_chunk") {
+                std::fs::write(&marker, "").unwrap();
+            }
+            seen.lock().unwrap().push(line.to_string());
+        };
+        let run = run_acp_child(AcpChildSpec {
+            on_line: Some(&on_line),
+            ..spec(&inv, Duration::from_secs(10), &|_| {})
+        })
+        .expect("a turn");
+
+        assert!(
+            !run.exit.timed_out,
+            "the prompt was never answered: the sink did not see the chunk while the turn ran"
+        );
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen,
+            run.stdout.lines().map(str::to_string).collect::<Vec<_>>(),
+            "the sink sees exactly the transcript's lines, in order, once each"
+        );
+        assert_eq!(
+            seen.first().map(String::as_str),
+            Some("fake-acp banner, not JSON")
+        );
+        assert!(seen.iter().any(|l| l == "after the answer"), "{seen:?}");
     }
 
     /// The `initialize` result of an agent that does **not** advertise `loadSession` — S20's
@@ -1246,6 +1324,7 @@ sleep 15"#,
                 prompt: "hi",
                 bound: Duration::from_secs(5),
                 on_started: &|_| panic!("nothing may be spawned"),
+                on_line: None,
             })
             .expect_err("refused")
         };
