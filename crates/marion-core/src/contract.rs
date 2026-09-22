@@ -281,6 +281,32 @@ pub struct Completion {
     pub evidence: Vec<CommandOutcome>,
     pub evidence_omitted: usize,
     pub exit: ProcessExit,
+    /// **Where the child's work landed**: its `marion/<task_id>` branch, set only when that branch
+    /// holds work beyond `base_commit`. marion commits a worktree child's changes onto it before
+    /// the worktree is removed, and keeps the branch; it never merges it into the operator's.
+    ///
+    /// marion-owned and bounded by the task id, so the cap keeps it on every rule, the stub
+    /// included. `None` on the wire is an absent key, so a completion with nothing landed is
+    /// byte-identical to one an earlier build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The tip of [`Self::branch`] once the work was committed. Unlike `result_commits`, which the
+    /// child fills and marion does not check, this is the commit marion itself read back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Oid>,
+}
+
+impl Completion {
+    /// The line a parent shows the human about where the work is and how to take it, or `None`
+    /// when there is nothing to merge. The sha is shortened to 12 characters for reading; the
+    /// full one is [`Self::commit`].
+    pub fn landed_line(&self) -> Option<String> {
+        let (branch, commit) = (self.branch.as_deref()?, self.commit.as_ref()?);
+        let short = commit.0.get(..12).unwrap_or(&commit.0);
+        Some(format!(
+            "changes on branch {branch} ({short}); merge with: git merge {branch}"
+        ))
+    }
 }
 
 /// The tokens one node's run spent, as its harness's own stream reported them.

@@ -1116,6 +1116,10 @@ pub fn build_contract(
             signal: outcome.signal,
             description,
         },
+        // Set by `run_spawn` once the work is committed onto the child's branch, which happens
+        // after the contract's measurements and before the worktree is reaped.
+        branch: None,
+        commit: None,
     };
     TaskContract {
         task_id,

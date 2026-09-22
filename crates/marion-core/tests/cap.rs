@@ -91,6 +91,8 @@ fn completion() -> Completion {
             signal: None,
             description: "clean exit".into(),
         },
+        branch: None,
+        commit: None,
     }
 }
 
@@ -173,6 +175,74 @@ fn the_terminal_stub_clears_the_child_s_commits_and_says_how_many() {
         got.result_commits_omitted, 10_000,
         "and it says how many it dropped, or a reader cannot tell an elided list from an empty one \
          — the distinction changed_paths_omitted exists for"
+    );
+}
+
+/// **Where a child's work landed survives every rule, the terminal stub included.** The branch and
+/// commit are marion's own, bounded by the task id, and they are the one thing a parent needs to
+/// reach the work once the worktree is gone — a stub that dropped them would leave the reader a
+/// `<persisted-output>` pointer and nothing to merge.
+#[test]
+fn the_terminal_stub_keeps_the_branch_and_commit_the_work_landed_on() {
+    let mut comp = completion();
+    comp.branch = Some("marion/t1".into());
+    comp.commit = Some(Oid("a".repeat(40)));
+    let mut c = contract(comp);
+    c.acceptance_criteria = (0..64).map(|_| Capped::whole("c".repeat(8192))).collect();
+
+    let out = cap_for_return(c);
+    let got = out.completion.as_ref().unwrap();
+    assert!(
+        got.narrative
+            .as_ref()
+            .is_some_and(|n| n.value.is_empty() && n.truncated),
+        "the premise: this input reaches rule 6"
+    );
+    assert_eq!(got.branch.as_deref(), Some("marion/t1"));
+    assert_eq!(got.commit, Some(Oid("a".repeat(40))));
+}
+
+/// **Additive on the wire.** A completion with no landed work serializes with neither key, byte-
+/// identical to what earlier builds wrote, and a contract persisted before the fields existed reads
+/// back as `None`.
+#[test]
+fn a_completion_with_no_landed_work_carries_no_branch_or_commit_on_the_wire() {
+    let plain = serde_json::to_value(completion()).unwrap();
+    assert!(
+        plain.get("branch").is_none() && plain.get("commit").is_none(),
+        "{plain}"
+    );
+    let back: Completion = serde_json::from_value(plain).unwrap();
+    assert_eq!((back.branch, back.commit), (None, None));
+
+    let mut landed = completion();
+    landed.branch = Some("marion/t1".into());
+    landed.commit = Some(Oid("b".repeat(40)));
+    let v = serde_json::to_value(&landed).unwrap();
+    assert_eq!(v["branch"], "marion/t1");
+    assert_eq!(v["commit"], "b".repeat(40));
+    assert_eq!(serde_json::from_value::<Completion>(v).unwrap(), landed);
+}
+
+/// **The one line a parent shows the human**: the branch, a short sha, and the merge command —
+/// and nothing at all when there is nothing to merge.
+#[test]
+fn the_landed_line_names_the_branch_the_short_sha_and_how_to_merge() {
+    let mut comp = completion();
+    assert_eq!(comp.landed_line(), None);
+    comp.branch = Some("marion/01a0ca90".into());
+    assert_eq!(
+        comp.landed_line(),
+        None,
+        "a branch with no commit holds nothing to merge"
+    );
+    comp.commit = Some(Oid("52dff3a0123456789abcdef0123456789abcdef0".into()));
+    assert_eq!(
+        comp.landed_line().as_deref(),
+        Some(
+            "changes on branch marion/01a0ca90 (52dff3a01234); merge with: git merge \
+             marion/01a0ca90"
+        )
     );
 }
 
