@@ -44,6 +44,9 @@ pub mod facade_cli;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
+/// Turn delivery's queue: one inbox per node, the renderer every message arrives through, and the
+/// journal records that audit it.
+pub mod inbox;
 /// §4.3's append-only registry journal, writer side. The records and the replay are
 /// `marion-core`'s — this crate is where I/O is allowed.
 pub mod journal;
