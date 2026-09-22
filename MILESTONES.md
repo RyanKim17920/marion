@@ -188,7 +188,9 @@ refused (`root::assert_the_root_delegated`; `launch_only_root.rs` drives a stub 
 through the real bridge to a real unreported child). A root refused after its `Spawned` landed —
 `NoVerbAnswered` included — is journalled `Exited(Failed)` with marion's sentence, never
 `SpawnAborted` (`root::refused_after_running`), so replay no longer holds it non-terminal, the
-supervisor exits, and the run no longer names it "unattended at a permission gate".
+supervisor exits, and the run no longer names it "unattended at a permission gate". `wait` and
+`status` resolve a **blocking** spawn's `task_id` too (`Background::delivered_inline`), returning
+the contract rather than "no record of task_id" (`background_spawn.rs`).
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

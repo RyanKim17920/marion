@@ -1177,6 +1177,46 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
     assert!(bridge.close().success());
 }
 
+/// The `task_id` a **contract** in a tool result carries — what a blocking spawn hands back.
+fn contract_task_id(reply: &Value) -> String {
+    let text = text_of(reply);
+    let at = text
+        .find("\"task_id\": \"")
+        .unwrap_or_else(|| panic!("a contract names its task_id: {text}"));
+    let rest = &text[at + "\"task_id\": \"".len()..];
+    rest[..rest.find('"').expect("the id is quoted")].to_string()
+}
+
+/// **`wait` and `status` resolve a blocking spawn's `task_id`.** Measured live (2026-09-22): a
+/// parent handed a blocking child's contract called `wait` with its `task_id` and was told "this
+/// supervisor has no record of task_id", with the contract on disk.
+#[test]
+fn a_blocking_spawns_task_id_resolves_for_wait_and_status() {
+    let fx = fixture("bg-blocking-wait");
+    fx.open_gate();
+    let mut bridge = fx.bridge();
+    let spawned = bridge.tool("spawn", spawn_args(false));
+    assert!(
+        text_of(&spawned).contains("\"completion\""),
+        "a blocking spawn returns the contract: {spawned}"
+    );
+    let task_id = contract_task_id(&spawned);
+
+    let waited = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        !text_of(&waited).contains("no record"),
+        "the handle resolves: {waited}"
+    );
+    assert!(
+        text_of(&waited).contains("\"completion\"") && text_of(&waited).contains(&task_id),
+        "and `wait` returns the same contract: {waited}"
+    );
+    let status = bridge.tool("status", json!({"task_id": &task_id}));
+    assert!(!is_error(&status), "{status}");
+    assert!(text_of(&status).contains("finished"), "{status}");
+    assert!(bridge.close().success());
+}
+
 /// **A second `wait` on the same handle says so, rather than blocking forever.**
 ///
 /// The other half of the handle's contract. The mistake this guards has changed shape with the

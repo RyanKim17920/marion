@@ -200,6 +200,29 @@ impl Background {
         started
     }
 
+    /// Record the pairing for a **blocking** `spawn`, whose outcome is about to be delivered in
+    /// its own reply: `wait` and `status` then resolve its `task_id` like any handle's, and it is
+    /// born watched so no push ever announces an end the caller was already handed. Measured live
+    /// (2026-09-22): without the row, `wait` on a blocking child's `task_id` answered "no record".
+    pub fn delivered_inline(
+        &self,
+        task_id: TaskId,
+        contract: Option<TaskId>,
+        agent_id: AgentId,
+        agent_type: String,
+        wait_bound: Duration,
+    ) {
+        self.lock().push(Handed {
+            task_id,
+            contract,
+            agent_id,
+            agent_type,
+            wait_bound,
+            watched: true,
+            collected: None,
+        });
+    }
+
     /// **Every handle no watcher is announcing yet — and from now on, each of them is.**
     ///
     /// The sweep is called after each reply has been written, so the handle's own reply always
@@ -302,6 +325,29 @@ mod tests {
             agent_type, "codex-impl",
             "a `wait` frame carries no agent type, so the answer's name comes from here"
         );
+    }
+
+    /// **A blocking spawn's `task_id` resolves too.** Measured live (2026-09-22): a parent that got
+    /// a blocking child's contract called `wait` with that contract's `task_id` and was told "this
+    /// supervisor has no record of task_id", though the contract was on disk. The row exists for
+    /// `wait` and `status`; it is born watched, because its outcome was already delivered inline
+    /// and a push announcing it would be the same news twice.
+    #[test]
+    fn a_blocking_spawns_task_id_resolves_and_is_never_announced() {
+        let bg = Background::new();
+        bg.delivered_inline(
+            TaskId("task-b".into()),
+            Some(TaskId("task-b".into())),
+            AgentId("node-b".into()),
+            "codex-impl".into(),
+            Duration::from_secs(30),
+        );
+        assert!(matches!(bg.resolve("task-b"), Wait::Pending { .. }));
+        assert_eq!(
+            bg.node_of("task-b").map(|(a, _)| a),
+            Some(AgentId("node-b".into()))
+        );
+        assert!(bg.unwatched().is_empty(), "delivered inline, never pushed");
     }
 
     /// **A root's handle resolves to its node and says there is no contract file** — the one thing

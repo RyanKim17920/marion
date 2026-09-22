@@ -357,6 +357,15 @@ fn tool_spawn(
         let started = bg.hand_out(handle, contract, spawned.agent_id, agent_type, bound);
         return Ok(bridge::background_result(id, &started));
     }
+    // Recorded for the blocking half too, so a later `wait` or `status` on the `task_id` this
+    // reply carries resolves rather than answering "no record" (`Background::delivered_inline`).
+    bg.delivered_inline(
+        handle,
+        contract.clone(),
+        spawned.agent_id.clone(),
+        agent_type.clone(),
+        bound,
+    );
     // The blocking half: read the node's own stream until it ends, then read the contract
     // the supervisor wrote before that bookend — or, for a root, stop at the bookend,
     // because there is no contract to read. A child that ran and failed and a spawn that

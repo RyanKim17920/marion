@@ -912,8 +912,7 @@ pub fn wait_unknown(id: &Value, task_id: &str) -> Value {
              this may be your mistake or it may be marion's, and marion cannot tell which. If the \
              handle came from your own `spawn {{ background: true }}` in this session, it should \
              have \
-             been found; treat the child as no longer observable rather than as finished. A \
-             synchronous `spawn` returns its contract directly and has no handle to wait on."
+             been found; treat the child as no longer observable rather than as finished."
         )),
         true,
     )
