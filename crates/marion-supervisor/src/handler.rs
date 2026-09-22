@@ -1311,6 +1311,9 @@ impl QuitRuntime for SystemQuitRuntime {
     }
 }
 
+/// `node/steer`: authority, the node's delivery strategy, and the inbox. See its module docs.
+mod steer;
+
 /// A [`Handle`](crate::serve::Handle) backed by a running registry.
 ///
 /// Descriptions still come only from the journal. Quit is the deliberately different half: it
@@ -1333,6 +1336,11 @@ pub struct RegistryHandle {
     /// launch. Folding them together would put a spawning node's `getpgid` inside the lock a
     /// client's `tree/subscribe` waits on.
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
+    /// **Turn delivery's queue, one inbox per node this supervisor owns** — beside [`Self::nodes`]
+    /// and with the same lifetime: opened at [`Self::claim`], closed at [`Self::mark_finished`].
+    /// `node/steer` enqueues here (`handler/steer.rs`); no delivery port is attached yet, so a
+    /// queued message waits and is dropped, journaled, when its node ends.
+    inboxes: crate::inbox::Inboxes,
     /// §3.4's display plane, per node. See [`Panes`] for why this is not in `shared`.
     panes: Mutex<Panes>,
     /// Completion-based monotonic time for the bounded pane replay cache. Cloned before invoking
@@ -1487,9 +1495,18 @@ impl RegistryHandle {
         // `new_cyclic` rather than a `Mutex<Option<Weak<_>>>` filled in afterwards: a node's thread
         // outlives the call that started it and has to hold the handle it reports to, so the
         // reference is a property of the value and not a step a construction site could forget.
+        // The inbox's records go through the supervisor's one journal handle, as every other
+        // record this handle writes does ([`Self::journal_append`]).
+        let journal = live.read(|r| r.path().to_path_buf());
+        let inboxes = crate::inbox::Inboxes::new(Box::new(move |kind| {
+            crate::journal::append_at(&journal, kind)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }));
         Arc::new_cyclic(|me| RegistryHandle {
             me: me.clone(),
             live,
+            inboxes,
             shared: Mutex::new(Shared::default()),
             runtime,
             nodes: Mutex::new(HashMap::new()),
@@ -2592,6 +2609,7 @@ impl RegistryHandle {
                 outcome: None,
             },
         );
+        self.inboxes.open(agent_id);
         token
     }
 
@@ -2631,6 +2649,12 @@ impl RegistryHandle {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.outcome = Some(outcome);
         }
+        // Sealed with the node, and every message still waiting is dropped by name: no later turn
+        // of this process will take it.
+        self.inboxes.close(
+            agent_id,
+            "the node ended before its next turn took the message",
+        );
     }
 
     /// **Why a node this supervisor owns did not finish cleanly**, in one sentence.
@@ -2753,6 +2777,26 @@ impl RegistryHandle {
     /// advisory. Here the caller states only *which node it is*, proves it with the secret marion
     /// wrote into that node's own declaration, and every gated fact is read back out of the
     /// registry marion itself wrote.
+    /// **The token check alone**: the caller's repository if this supervisor minted `c`'s token
+    /// for the node it names, `None` otherwise. Shared by every call a node makes as itself, so
+    /// `agent/spawn` and `node/steer` cannot come to check a claim two ways.
+    fn authenticate(&self, c: &marion_core::proto::SpawnCaller) -> Option<PathBuf> {
+        let nodes = lock(&self.nodes);
+        // **A node this supervisor does not own is still compared**, against a decoy of the
+        // same shape, so "no such node" and "wrong token" take the same path and cost the same.
+        // Returning early on the absent case would turn the *existence* of a node into an
+        // oracle a caller could probe with ids alone.
+        let (stored, repo) = match nodes.get(&c.agent_id) {
+            Some(n) => (n.token.clone(), Some(n.repo.clone())),
+            None => (decoy_token().to_string(), None),
+        };
+        if tokens_match(&stored, &c.node_token) & repo.is_some() {
+            repo
+        } else {
+            None
+        }
+    }
+
     fn resolve_caller(
         &self,
         c: &marion_core::proto::SpawnCaller,
@@ -2761,22 +2805,7 @@ impl RegistryHandle {
         // guesses an `AgentId` learns nothing from the shape of the refusal beyond "no".
         // The caller's repository rides out with the answer: it is the tree whose
         // `.marion/agents.toml` defines the caller's own type, read below, outside the registry lock.
-        let repo = {
-            let nodes = lock(&self.nodes);
-            // **A node this supervisor does not own is still compared**, against a decoy of the
-            // same shape, so "no such node" and "wrong token" take the same path and cost the same.
-            // Returning early on the absent case would turn the *existence* of a node into an
-            // oracle a caller could probe with ids alone.
-            let (stored, repo) = match nodes.get(&c.agent_id) {
-                Some(n) => (n.token.clone(), Some(n.repo.clone())),
-                None => (decoy_token().to_string(), None),
-            };
-            if tokens_match(&stored, &c.node_token) & repo.is_some() {
-                repo
-            } else {
-                None
-            }
-        };
+        let repo = self.authenticate(c);
         let Some(repo) = repo else {
             return Err(RpcError::refused(
                 &c.agent_id.0,
@@ -4344,6 +4373,15 @@ impl Handle for RegistryHandle {
             Call::NodeResume(p) => self
                 .node_resume(p, out.peer())
                 .map(MethodResult::NodeResume),
+            Call::NodeSteer(p) => self.node_steer(p, out.peer()).map(MethodResult::NodeSteer),
+            Call::NodePrompt(_) => Err(RpcError::unimplemented(
+                "node/prompt",
+                "`node/prompt` is not built. A message for a node's next turn is `node/steer`, which \
+                 queues it for the node's next turn boundary whatever the node is doing; a \
+                 separate prompt verb for an idle node lands with the delivery lanes that take \
+                 turns (§6.3).",
+                "§2, §6.3",
+            )),
             // Everything else is specified and not built. `Unimplemented` and not `Unsupported`,
             // per `error.rs`: the gap is marion's, not the harness's, and the operator's next move
             // is to check the milestone rather than the node.
@@ -4351,8 +4389,9 @@ impl Handle for RegistryHandle {
                 other.method().as_str(),
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
-                     `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit` and \
-                     `node/resume`; the remaining methods land with the milestone that needs them.",
+                     `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit`, \
+                     `node/resume` and `node/steer`; the remaining methods land with the \
+                     milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",

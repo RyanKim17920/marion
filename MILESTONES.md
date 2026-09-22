@@ -144,6 +144,26 @@ Not measured: `-p` never enqueues the event, so the headless shape carries no fl
 parent still calls `wait`; every other row pushes MCP's `notifications/message`, which no harness has
 been observed to show the model. Claude Code auto-backgrounds a blocking `spawn` past ~2 min itself.
 
+**Turn delivery — `node/steer` queues; nothing delivers yet (2026-09-22).** Push and steer are one
+mechanism: a message for a node's next turn. The supervisor keeps one inbox per node it owns
+(`inbox.rs`: opened at claim, sealed with every waiting message dropped when the node ends;
+`take_or_seal` closes the late-steer race under one lock), and `node/steer` is answered
+(`handler/steer.rs`): `caller: None` is a same-uid top-level peer with project scope, as
+`agent/spawn`'s root path; `caller: Some` must prove its token and be a **strict ancestor** of the
+target — self, sibling, ancestor, unknown node and wrong token get one identical §5.4 refusal. An
+ended node is refused pointing at `node/resume`, a spawning one says retry, and a row whose
+`TurnDelivery` is `None` for the node's shape is `Unsupported`, quoting the row. The result is
+`queued: true` with a `message_id`; the journal gets `MessageQueued`/`Delivered`/`Dropped` with the
+length and SHA-256 only, and a restarted supervisor drops what its predecessor left queued
+(`restart::drop_undelivered`, reason `supervisor restarted`). **No delivery port is wired** — the
+duplex, ACP, continuation, pty and bridge lanes are later phases — so today an accepted steer waits
+and is dropped, journaled, when its node ends; a node this supervisor's `agent/spawn` did not launch
+(a native session, or one an earlier supervisor launched) has no inbox and is refused
+`Unimplemented`. `node/prompt` stays `Unimplemented` and points at `node/steer`.
+Witnesses: `inbox::tests` (FIFO, sealed/None/not-ready refusals, the barrier race, text never
+journaled), `handler::steer::tests` (the auth matrix, digest-only journal, state refusals, drop on
+end), `restart::tests::every_message_left_queued_by_a_lost_supervisor_is_dropped_in_order`.
+
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
