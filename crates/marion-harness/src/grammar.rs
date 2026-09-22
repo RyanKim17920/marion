@@ -24,6 +24,7 @@
 
 use std::collections::BTreeMap;
 
+use marion_core::TokenUsage;
 use serde_json::Value;
 
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
@@ -195,6 +196,67 @@ pub struct PathList {
     pub at: Where,
     pub list: &'static str,
     pub path: &'static str,
+}
+
+/// Where a harness states the tokens a run spent, and how its units add up to the run.
+///
+/// Pointers into each unit of `at`, read as unsigned integers; a counter the rule does not name,
+/// or a unit does not carry, reads as zero. The reading is normalised to [`TokenUsage`]'s
+/// convention — `input` is uncached input — so a consumer sums runs of different harnesses
+/// without knowing which harness counted how.
+#[derive(Debug)]
+pub struct UsageRule {
+    /// The units that carry usage counters.
+    pub at: Where,
+    pub input: &'static str,
+    pub output: &'static str,
+    pub cache_read: Option<&'static str>,
+    pub cache_write: Option<&'static str>,
+    /// The harness's `input` already counts its cache reads (codex's `input_tokens` does), so the
+    /// reader subtracts `cache_read` from it. Cache *writes* are not subtracted: no harness was
+    /// measured folding them into input with a non-zero write count to prove it.
+    pub input_includes_cache: bool,
+    pub fold: UsageFold,
+}
+
+/// How a stream's usage units make up the run's usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFold {
+    /// The final unit is already the whole run (a terminal `result` frame).
+    Last,
+    /// Each unit is one turn's or step's spend, and the run is their sum.
+    Sum,
+}
+
+/// A counter at `ptr` as an unsigned integer, zero when absent or not one.
+fn counter(unit: &Value, ptr: Option<&str>) -> u64 {
+    ptr.and_then(|p| text(unit, p))
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The tokens `frames` say the run spent under `rule`. `None` when **no unit matched** — a stream
+/// that never reached its usage frame made no claim about spend, and zero would be one. A unit of
+/// zeros is `Some` of zero: a run that reported spending nothing did report.
+pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
+    let per_unit = units(frames, &rule.at).into_iter().map(|unit| {
+        let cache_read = counter(unit, rule.cache_read);
+        let input = counter(unit, Some(rule.input));
+        TokenUsage {
+            input: if rule.input_includes_cache {
+                input.saturating_sub(cache_read)
+            } else {
+                input
+            },
+            output: counter(unit, Some(rule.output)),
+            cache_read,
+            cache_write: counter(unit, rule.cache_write),
+        }
+    });
+    match rule.fold {
+        UsageFold::Last => per_unit.last(),
+        UsageFold::Sum => per_unit.reduce(|a, b| a + b),
+    }
 }
 
 /// One call as the grammar read it: the verb, its verdict, and the arguments it carried.
@@ -533,6 +595,94 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rule over a codex-shaped frame: a `done` frame's `usage`, input counted with its cache.
+    const RULE: UsageRule = UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "done")],
+            each: None,
+            unit: &[],
+        },
+        input: "/usage/in",
+        output: "/usage/out",
+        cache_read: Some("/usage/cached"),
+        cache_write: None,
+        input_includes_cache: false,
+        fold: UsageFold::Last,
+    };
+
+    fn done(input: u64, output: u64, cached: u64) -> Value {
+        serde_json::json!({"type": "done", "usage": {"in": input, "out": output, "cached": cached}})
+    }
+
+    fn tokens(input: u64, output: u64, cache_read: u64) -> TokenUsage {
+        TokenUsage {
+            input,
+            output,
+            cache_read,
+            cache_write: 0,
+        }
+    }
+
+    #[test]
+    fn a_last_rule_takes_the_final_unit_and_a_sum_rule_adds_every_unit() {
+        let frames = [
+            done(10, 1, 2),
+            serde_json::json!({"type": "other", "usage": {"in": 999}}),
+            done(30, 3, 4),
+        ];
+        // Last: the harness's terminal frame is already a whole-run total.
+        assert_eq!(usage(&RULE, &frames), Some(tokens(30, 3, 4)));
+        // Sum: each unit is one step's spend, and the run is all of them.
+        let sum = UsageRule {
+            fold: UsageFold::Sum,
+            ..RULE
+        };
+        assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
+    }
+
+    #[test]
+    fn input_that_counts_its_cache_is_normalised_to_uncached_input() {
+        let rule = UsageRule {
+            input_includes_cache: true,
+            ..RULE
+        };
+        // codex's measured shape: 14997 prompt tokens of which 11008 were cache reads.
+        assert_eq!(
+            usage(&rule, &[done(14997, 5, 11008)]),
+            Some(tokens(3989, 5, 11008))
+        );
+        // A cache count larger than the input it is said to be part of is a harness's bad
+        // arithmetic, not a negative number of tokens.
+        assert_eq!(usage(&rule, &[done(3, 1, 7)]), Some(tokens(0, 1, 7)));
+    }
+
+    #[test]
+    fn no_matching_unit_is_no_usage_but_a_zero_unit_is_a_zero_usage() {
+        // A stream that never reached its usage frame said nothing about spend; zero would be a
+        // claim it did not make.
+        assert_eq!(usage(&RULE, &[]), None);
+        assert_eq!(usage(&RULE, &[serde_json::json!({"type": "other"})]), None);
+        // A canned provider that reports zeros did report: the run spent nothing.
+        assert_eq!(usage(&RULE, &[done(0, 0, 0)]), Some(TokenUsage::default()));
+    }
+
+    #[test]
+    fn a_counter_that_is_absent_or_unmeasured_reads_as_zero() {
+        // No cache counters in the rule, none in the frame, and a numeric string where a number
+        // was expected: each reads as what the harness can be said to have reported.
+        let rule = UsageRule {
+            cache_read: None,
+            ..RULE
+        };
+        let frame = serde_json::json!({"type": "done", "usage": {"in": "12", "cached": 5}});
+        assert_eq!(usage(&rule, &[frame.clone()]), Some(tokens(12, 0, 0)));
+        let write = UsageRule {
+            cache_write: Some("/usage/written"),
+            ..RULE
+        };
+        assert_eq!(usage(&write, &[frame]), Some(tokens(12, 0, 5)));
+    }
 
     #[test]
     fn an_error_message_is_read_from_whichever_shape_carries_it() {
