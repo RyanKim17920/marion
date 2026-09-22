@@ -65,9 +65,14 @@ pub(super) struct StreamPosition {
     /// Inside `CSI ? 2026 h … CSI ? 2026 l`. The terminal holds the frame, so a row painted now
     /// would be applied with the node's half-finished frame.
     synchronized: bool,
-    /// The node saved the cursor (`ESC 7`, `CSI s`) and has not restored it. The row's own save
-    /// and restore would overwrite the node's saved position, so it waits for the node's restore.
-    cursor_saved: bool,
+    /// Per screen, main then alternate: the node saved the cursor (`ESC 7`, `CSI s`) there and
+    /// has not restored it. The row's own save and restore would overwrite the node's saved
+    /// position, so it waits for the node's restore. Per screen because a terminal keeps one saved
+    /// cursor for each: opencode saves on the main screen, switches to the alternate one and
+    /// restores only on exit, and the row painted on the alternate screen costs it nothing.
+    cursor_saved: [bool; 2],
+    /// On the alternate screen (`?1049`, `?1047`, `?47`).
+    alternate: bool,
 }
 
 impl StreamPosition {
@@ -77,7 +82,11 @@ impl StreamPosition {
         self.state == State::Ground
             && self.utf8_owed == 0
             && !self.synchronized
-            && !self.cursor_saved
+            && !self.cursor_saved[usize::from(self.alternate)]
+    }
+
+    fn set_cursor_saved(&mut self, saved: bool) {
+        self.cursor_saved[usize::from(self.alternate)] = saved;
     }
 
     /// Read `bytes` — the next pane frame — and return the scroll-region changes in it.
@@ -155,10 +164,11 @@ impl StreamPosition {
             b']' => self.state = State::String { bel: true },
             b'P' | b'X' | b'^' | b'_' => self.state = State::String { bel: false },
             0x20..=0x2f => self.state = State::EscapeIntermediate,
-            b'7' => self.cursor_saved = true,
-            b'8' => self.cursor_saved = false,
+            b'7' => self.set_cursor_saved(true),
+            b'8' => self.set_cursor_saved(false),
             b'c' => {
-                self.cursor_saved = false;
+                self.cursor_saved = [false; 2];
+                self.alternate = false;
                 self.synchronized = false;
                 return Some(Mark::HardReset { end });
             }
@@ -205,8 +215,21 @@ impl StreamPosition {
         }
         match (last, self.private, self.intermediates.as_slice()) {
             (b'h' | b'l', Some(b'?'), []) => {
-                if self.numbers().any(|n| n == Some(2026)) {
-                    self.synchronized = last == b'h';
+                let set = last == b'h';
+                let modes: Vec<Option<u16>> = self.numbers().collect();
+                if modes.contains(&Some(2026)) {
+                    self.synchronized = set;
+                }
+                if modes
+                    .iter()
+                    .any(|mode| matches!(mode, Some(47 | 1047 | 1049)))
+                    && self.alternate != set
+                {
+                    self.alternate = set;
+                    if set {
+                        // A fresh alternate screen: nothing of the node's is saved on it yet.
+                        self.cursor_saved[1] = false;
+                    }
                 }
                 None
             }
@@ -217,15 +240,15 @@ impl StreamPosition {
                 Some(Mark::ScrollRegion { end, top, bottom })
             }
             (b's', None, []) if self.params.is_empty() => {
-                self.cursor_saved = true;
+                self.set_cursor_saved(true);
                 None
             }
             (b'u', None, []) if self.params.is_empty() => {
-                self.cursor_saved = false;
+                self.set_cursor_saved(false);
                 None
             }
             (b'p', None, [b'!']) => {
-                self.cursor_saved = false;
+                self.set_cursor_saved(false);
                 self.synchronized = false;
                 Some(Mark::SoftReset { end })
             }
@@ -310,6 +333,34 @@ mod tests {
         assert!(after(&[b"\x1b[s", b"\x1b[u"]).at_boundary());
         // Kitty's keyboard protocol and DECSLRM share the final bytes, not the meaning.
         assert!(after(&[b"\x1b[?u\x1b[>1u\x1b[<u\x1b[1;80s"]).at_boundary());
+    }
+
+    /// A terminal keeps one saved cursor per screen. opencode's opening is `CSI s`, then the
+    /// alternate screen for the whole session, and `CSI u` only on the way out; its main-screen
+    /// save must not keep the row off the alternate screen, and it holds again once back.
+    #[test]
+    fn a_cursor_saved_on_the_other_screen_does_not_hold_the_row() {
+        let mut position = after(&[b"\x1b[s\x1b[6n\x1b[u\x1b[s"]);
+        assert!(!position.at_boundary());
+        position.advance(b"\x1b[?1049h\x1b[1;1Hdraw");
+        assert!(position.at_boundary());
+        position.advance(b"\x1b7");
+        assert!(
+            !position.at_boundary(),
+            "a save on the alternate screen holds there"
+        );
+        position.advance(b"\x1b[?1049l");
+        assert!(
+            !position.at_boundary(),
+            "the main screen's save is still unrestored"
+        );
+        position.advance(b"\x1b[u");
+        assert!(position.at_boundary());
+        position.advance(b"\x1b[?1049h");
+        assert!(
+            position.at_boundary(),
+            "a fresh alternate screen has nothing saved"
+        );
     }
 
     #[test]
