@@ -174,6 +174,21 @@ pub enum RecordKind {
     /// §5.7's ordinary exit record. It deliberately carries no node id: the supervisor serves a
     /// forest, and choosing one node would fabricate ownership of a process-wide event.
     SupervisorExited(SupervisorExited),
+    /// A message was accepted for delivery to this node's next turn — the intent half of turn
+    /// delivery, resolved by [`Self::MessageDelivered`] or [`Self::MessageDropped`] under the same
+    /// `message_id`.
+    ///
+    /// **The message's length and digest, never its text.** Raw input is not persisted by
+    /// default; the digest lets an audit match a delivery to what a sender says it sent without the
+    /// journal becoming a second copy of every operator's and every parent's words.
+    ///
+    /// **Not a barrier**, nor are its two resolutions: losing one on the ~50 ms timer costs a stale
+    /// delivery audit, not an untracked process, and §4.3 pays for a barrier only for the latter.
+    MessageQueued(MessageQueued),
+    /// A queued message reached the node, and by which verb (`via`).
+    MessageDelivered(MessageDelivered),
+    /// A queued message will never reach the node, and why.
+    MessageDropped(MessageDropped),
 }
 
 impl RecordKind {
@@ -222,6 +237,9 @@ impl RecordKind {
             RecordKind::RootChanged(r) => Some(&r.agent_id),
             RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
             RecordKind::SessionObserved(r) => Some(&r.agent_id),
+            RecordKind::MessageQueued(r) => Some(&r.agent_id),
+            RecordKind::MessageDelivered(r) => Some(&r.agent_id),
+            RecordKind::MessageDropped(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_) => None,
         }
     }
@@ -419,6 +437,55 @@ pub struct PermissionDenied {
     pub reason: String,
 }
 
+/// See [`RecordKind::MessageQueued`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageQueued {
+    /// The node the message is **for** — the recipient, not the sender (see [`Self::source`]).
+    pub agent_id: AgentId,
+    /// Marion's own name for this message, shared with the record that resolves it.
+    pub message_id: String,
+    pub source: MessageSource,
+    /// The message's length in bytes. A `u32` because a message is bounded far below it at the
+    /// protocol boundary (`proto::params::MAX_STEER_BYTES`).
+    pub len: u32,
+    /// The lowercase hex SHA-256 of the message's bytes.
+    pub sha256: String,
+}
+
+/// Who a queued message is from. Externally tagged, as [`RecordKind`] is: `"Operator"`,
+/// `{"Ancestor":"<agent id>"}`, `{"ChildEnded":{…}}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageSource {
+    /// A client speaking for the operator.
+    Operator,
+    /// A node above the recipient in the tree, named.
+    Ancestor(AgentId),
+    /// Marion itself, announcing that one of the recipient's children ended. `status` is the
+    /// terminal as the child's contract spells it.
+    ChildEnded {
+        child: AgentId,
+        task_id: TaskId,
+        status: String,
+    },
+}
+
+/// See [`RecordKind::MessageDelivered`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDelivered {
+    pub agent_id: AgentId,
+    pub message_id: String,
+    /// The verb that carried it — the harness-facing operation, spelled by the writer.
+    pub via: String,
+}
+
+/// See [`RecordKind::MessageDropped`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDropped {
+    pub agent_id: AgentId,
+    pub message_id: String,
+    pub reason: String,
+}
+
 /// Encoding refused a record. Both variants are refusals rather than repairs, for the same reason:
 /// a shortened record is a *different* record, and one that parses.
 #[derive(Debug, thiserror::Error)]
@@ -600,6 +667,7 @@ mod tests {
             }),
             RecordKind::SupervisorExited(SupervisorExited {}),
         ];
+        let kinds = kinds.into_iter().chain(message_records());
         for kind in kinds {
             let r = rec(kind);
             let line = encode(&r).unwrap();
@@ -840,6 +908,107 @@ mod tests {
             "one raw newline, the terminator"
         );
         assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+    }
+
+    /// One of each turn-delivery record, and a queued message from each [`MessageSource`].
+    fn message_records() -> Vec<RecordKind> {
+        let queued = |message_id: &str, source| {
+            RecordKind::MessageQueued(MessageQueued {
+                agent_id: AgentId("a-1".into()),
+                message_id: message_id.into(),
+                source,
+                len: 12,
+                sha256: "ab".repeat(32),
+            })
+        };
+        vec![
+            queued("m-1", MessageSource::Operator),
+            queued("m-2", MessageSource::Ancestor(AgentId("root".into()))),
+            queued(
+                "m-3",
+                MessageSource::ChildEnded {
+                    child: AgentId("c-1".into()),
+                    task_id: TaskId("t-1".into()),
+                    status: "ok".into(),
+                },
+            ),
+            RecordKind::MessageDelivered(MessageDelivered {
+                agent_id: AgentId("a-1".into()),
+                message_id: "m-1".into(),
+                via: "steer".into(),
+            }),
+            RecordKind::MessageDropped(MessageDropped {
+                agent_id: AgentId("a-1".into()),
+                message_id: "m-2".into(),
+                reason: "the node ended before its next turn".into(),
+            }),
+        ]
+    }
+
+    /// **A queued message is journaled as its length and digest, never its text.** Every field a
+    /// turn-delivery record carries is pinned here, so a `text` added later moves this line.
+    #[test]
+    fn a_message_record_pins_its_wire_shape_and_carries_no_text() {
+        let [operator, ancestor, child_ended, delivered, dropped]: [RecordKind; 5] =
+            message_records().try_into().unwrap();
+        let sha = "ab".repeat(32);
+        assert_eq!(
+            serde_json::to_value(&operator).unwrap(),
+            serde_json::json!({"MessageQueued": {
+                "agent_id": "a-1", "message_id": "m-1", "source": "Operator",
+                "len": 12, "sha256": sha,
+            }})
+        );
+        assert_eq!(
+            serde_json::to_value(&ancestor).unwrap()["MessageQueued"]["source"],
+            serde_json::json!({"Ancestor": "root"})
+        );
+        assert_eq!(
+            serde_json::to_value(&child_ended).unwrap()["MessageQueued"]["source"],
+            serde_json::json!({"ChildEnded": {"child": "c-1", "task_id": "t-1", "status": "ok"}})
+        );
+        assert_eq!(
+            serde_json::to_value(&delivered).unwrap(),
+            serde_json::json!({"MessageDelivered": {
+                "agent_id": "a-1", "message_id": "m-1", "via": "steer",
+            }})
+        );
+        assert_eq!(
+            serde_json::to_value(&dropped).unwrap(),
+            serde_json::json!({"MessageDropped": {
+                "agent_id": "a-1", "message_id": "m-2",
+                "reason": "the node ended before its next turn",
+            }})
+        );
+    }
+
+    /// **Not barriers**, and each is about the node it names. Losing one on the group-commit timer
+    /// costs a stale delivery audit, not an untracked process (§4.3).
+    #[test]
+    fn a_message_record_is_not_a_barrier_and_names_its_node() {
+        for kind in message_records() {
+            assert!(!kind.is_barrier(), "{kind:?}");
+            assert_eq!(kind.agent_id(), Some(&AgentId("a-1".into())), "{kind:?}");
+        }
+    }
+
+    /// **Required fields are required, and an unknown source is not guessed into a known one.**
+    /// Unknown *keys* are tolerated, as on every neighbouring record: an older build must still
+    /// replay the record a newer build extended additively, and a refusal here would read to it
+    /// as the end of the journal's intact prefix.
+    #[test]
+    fn a_message_record_refuses_missing_fields_and_unknown_sources() {
+        for bad in [
+            r#"{"MessageQueued":{"agent_id":"a","message_id":"m","source":"Stranger","len":1,"sha256":"x"}}"#,
+            r#"{"MessageQueued":{"agent_id":"a","message_id":"m","source":"Operator","len":-1,"sha256":"x"}}"#,
+            r#"{"MessageDelivered":{"agent_id":"a","message_id":"m"}}"#,
+            r#"{"MessageDropped":{"agent_id":"a","reason":"r"}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<RecordKind>(bad).is_err(),
+                "accepted {bad}"
+            );
+        }
     }
 
     #[test]

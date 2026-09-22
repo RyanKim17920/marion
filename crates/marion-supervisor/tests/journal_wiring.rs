@@ -330,6 +330,9 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",
+            RecordKind::MessageQueued(_) => "MessageQueued",
+            RecordKind::MessageDelivered(_) => "MessageDelivered",
+            RecordKind::MessageDropped(_) => "MessageDropped",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()
@@ -880,6 +883,9 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",
+            RecordKind::MessageQueued(_) => "MessageQueued",
+            RecordKind::MessageDelivered(_) => "MessageDelivered",
+            RecordKind::MessageDropped(_) => "MessageDropped",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect();

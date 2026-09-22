@@ -322,6 +322,12 @@ impl ReplayedNode {
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => self.root_grant = Some(g),
             RecordKind::SessionObserved(s) => self.fold_session_observed(s),
+            // Turn delivery is an audit of messages, not a fact about the node's lifecycle: the
+            // records are accepted and counted as mentions, and move nothing. Whether a turn ran
+            // is `StateChanged`'s to say.
+            RecordKind::MessageQueued(_)
+            | RecordKind::MessageDelivered(_)
+            | RecordKind::MessageDropped(_) => {}
             RecordKind::SupervisorExited(_) => {
                 unreachable!("the process-wide record returned before selecting a node")
             }
@@ -795,6 +801,88 @@ mod tests {
                 },
             })),
         ]
+    }
+
+    /// **Turn-delivery records replay without moving a node.** Interleaved through the M1 journal —
+    /// before and after each node's terminal — they are accepted as records, and every node reads
+    /// back exactly as the journal without them does, down to when its state last moved.
+    #[test]
+    fn turn_delivery_records_replay_without_changing_any_node() {
+        use crate::journal::{MessageDelivered, MessageDropped, MessageQueued, MessageSource};
+        let queued = |to: &str, m: &str, source| {
+            RecordKind::MessageQueued(MessageQueued {
+                agent_id: id(to),
+                message_id: m.into(),
+                source,
+                len: 5,
+                sha256: "00".repeat(32),
+            })
+        };
+        let plain = m1_journal();
+        let mut kinds: Vec<RecordKind> = plain.iter().map(|r| r.kind.clone()).collect();
+        // After the child's `StateChanged`, before its `Exited`.
+        kinds.splice(
+            5..5,
+            [
+                queued("child", "m-1", MessageSource::Ancestor(id("root"))),
+                RecordKind::MessageDelivered(MessageDelivered {
+                    agent_id: id("child"),
+                    message_id: "m-1".into(),
+                    via: "steer".into(),
+                }),
+                queued("root", "m-2", MessageSource::Operator),
+            ],
+        );
+        // After the root's `Exited`: a child-ended notice for a node that has already ended.
+        kinds.extend([
+            queued(
+                "root",
+                "m-3",
+                MessageSource::ChildEnded {
+                    child: id("child"),
+                    task_id: TaskId("t-1".into()),
+                    status: "ok".into(),
+                },
+            ),
+            RecordKind::MessageDropped(MessageDropped {
+                agent_id: id("root"),
+                message_id: "m-3".into(),
+                reason: "the node ended".into(),
+            }),
+        ]);
+        let with: Vec<JournalRecord> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(seq, k)| record(seq as u64, k))
+            .collect();
+
+        let (a, b) = (replay(&bytes(&plain)), replay(&bytes(&with)));
+        assert_eq!(b.records, a.records + 5, "every record is accepted");
+        assert_eq!(b.truncation, None);
+        assert!(b.gaps.is_empty());
+        assert_eq!(a.nodes().len(), b.nodes().len(), "no node is invented");
+        for (x, y) in a.nodes().iter().zip(b.nodes()) {
+            let extra = match y.agent_id.0.as_str() {
+                "root" => 3,
+                "child" => 2,
+                other => panic!("{other}"),
+            };
+            assert_eq!(
+                y.records,
+                x.records + extra,
+                "{}: counted as mentions",
+                y.agent_id.0
+            );
+            assert_eq!(
+                &ReplayedNode {
+                    records: x.records,
+                    ..y.clone()
+                },
+                x,
+                "{}: nothing else moved",
+                y.agent_id.0
+            );
+        }
     }
 
     #[test]
