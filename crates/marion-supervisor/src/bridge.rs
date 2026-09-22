@@ -567,10 +567,8 @@ pub fn tools_list_result(
         ),
     };
     let mut tools = tools_describing(&description);
-    if !offers_report {
-        if let Some(list) = tools.as_array_mut() {
-            list.retain(|t| t["name"] != REPORT);
-        }
+    if !offers_report && let Some(list) = tools.as_array_mut() {
+        list.retain(|t| t["name"] != REPORT);
     }
     json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools}})
 }
