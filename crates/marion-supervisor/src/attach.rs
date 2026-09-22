@@ -85,6 +85,24 @@ use ratatui::Terminal;
 /// resize and unable to be left, which is the failure a reader would report as "attach hangs".
 const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// How long the supervisor may stay silent before answering `node/attach`. No keyboard runs before the answer — it says which
+/// pane protocol keys are encoded in — so an unbounded wait here is a terminal nothing can leave.
+const ATTACH_ANSWER_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(test)]
+thread_local! {
+    static ATTACH_ANSWER_BOUND_FOR_TEST: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn attach_answer_bound() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(bound) = ATTACH_ANSWER_BOUND_FOR_TEST.with(std::cell::Cell::get) {
+        return bound;
+    }
+    ATTACH_ANSWER_BOUND
+}
+
 /// Set by the `SIGWINCH` handler and read by the loop.
 ///
 /// A `static` and an `AtomicBool` because a signal handler may do essentially nothing: a store to a
@@ -821,6 +839,10 @@ impl Session {
         expected: RequestId,
         pane_v1: bool,
     ) -> Result<marion_core::proto::Response, Refusal> {
+        // A silence bound, not a total one: durable replay may precede the answer at any length,
+        // and each notification of it is the supervisor still answering.
+        let bound = attach_answer_bound();
+        let mut deadline = std::time::Instant::now() + bound;
         loop {
             match self.next_frame()? {
                 Some(Frame::Response(response)) if response.id == expected => return Ok(response),
@@ -830,11 +852,22 @@ impl Session {
                         response.id
                     ));
                 }
-                Some(Frame::Notification(note)) => self.absorb_pre_response(note, pane_v1)?,
+                Some(Frame::Notification(note)) => {
+                    self.absorb_pre_response(note, pane_v1)?;
+                    deadline = std::time::Instant::now() + bound;
+                }
                 Some(other) => {
                     return Err(format!(
                         "the supervisor sent an unexpected frame while answering node/attach: \
                          {other:?}"
+                    ));
+                }
+                None if std::time::Instant::now() >= deadline => {
+                    return Err(format!(
+                        "the supervisor went {}s without answering node/attach for `{}`; the \
+                         node was left as it was",
+                        bound.as_secs_f32(),
+                        self.id.0
                     ));
                 }
                 None => continue,
@@ -1492,6 +1525,43 @@ mod tests {
         let error = session.pump().unwrap_err();
         assert!(error.contains("keyboard"), "{error}");
         server_thread.join().unwrap();
+    }
+
+    /// A supervisor that takes the attach request and never answers must not hold the operator:
+    /// no keyboard can run before the answer says which pane protocol to encode, so the wait for
+    /// it is bounded and ends in a refusal the tree shows as its notice.
+    #[test]
+    fn an_attach_the_supervisor_never_answers_is_refused_within_its_bound() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server);
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            // Holds the connection open, answering nothing, until the test is done.
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+        });
+        ATTACH_ANSWER_BOUND_FOR_TEST
+            .with(|bound| bound.set(Some(std::time::Duration::from_millis(300))));
+        let started = std::time::Instant::now();
+        let opened = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        );
+        let waited = started.elapsed();
+        let _ = release_tx.send(());
+        server_thread.join().unwrap();
+        let Err(error) = opened else {
+            panic!("an unanswered attach opened a session")
+        };
+        assert!(error.contains("without answering node/attach"), "{error}");
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "the refusal took {waited:?}"
+        );
     }
 
     /// **A read-only attach can still be left.** `marion tree` → Enter on a native root attaches
