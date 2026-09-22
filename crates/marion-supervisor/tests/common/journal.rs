@@ -55,6 +55,7 @@ pub fn a_finished_node(
         depth: u32::from(parent.is_some()),
         task_id: None,
         timeout_secs: None,
+        verification: vec![],
     }));
     next(RecordKind::Spawned(Spawned {
         agent_id: id.clone(),
