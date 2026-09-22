@@ -22,6 +22,9 @@ use marion_supervisor::socket::{
 };
 use marion_testsupport::until_within;
 
+mod common;
+use common::journal::seed;
+
 unsafe extern "C" {
     fn getsid(pid: i32) -> i32;
     fn getpgid(pid: i32) -> i32;
@@ -729,30 +732,6 @@ fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
 /// would fail the test anyway, so a wrong reading cannot become a silent pass.
 fn alive(pid: i32) -> bool {
     marion_testsupport::alive(pid)
-}
-
-/// Write one journal record, as a real writer would: through `marion_core`'s encoder, so a change
-/// to the record format breaks this file rather than letting it seed a journal no supervisor reads.
-fn seed(path: &Path, seq: u64, kind: marion_core::journal::RecordKind) {
-    use std::io::Write;
-    let bytes = marion_core::journal::encode(&marion_core::journal::JournalRecord {
-        writer: marion_core::journal::WriterId("test".into()),
-        seq,
-        ts: marion_core::encoding::SystemTime::from_unix_millis(1_000 + seq),
-        mono_ns: seq,
-        provenance: marion_core::ir::Provenance::marion(),
-        src_seq: None,
-        kind,
-    })
-    .expect("a record encodes");
-    std::fs::create_dir_all(path.parent().expect("a journal has a directory")).expect("dir");
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .expect("journal")
-        .write_all(&bytes)
-        .expect("append");
 }
 
 /// A node the journal describes as **running**: intent, confirmation, and a state that is not
