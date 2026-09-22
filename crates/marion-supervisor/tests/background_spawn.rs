@@ -1217,6 +1217,35 @@ fn a_blocking_spawns_task_id_resolves_for_wait_and_status() {
     assert!(bridge.close().success());
 }
 
+/// **An unreported child whose declared verification passed is not an error to its parent** —
+/// the live matrix's commonest cell (2026-09-22), end to end: the shim child exits without calling
+/// `report`, marion runs the parent's one check in its worktree, and the parent's `spawn` result
+/// says both halves without `isError`.
+#[test]
+fn an_unreported_child_whose_verification_passed_is_not_an_error_to_its_parent() {
+    let fx = fixture("bg-unreported-verified");
+    fx.open_gate();
+    let mut bridge = fx.bridge();
+    let mut args = spawn_args(false);
+    args["verification"] = json!(["true"]);
+    let reply = bridge.tool("spawn", args);
+    assert!(!is_error(&reply), "{reply}");
+    let first = text_of(&reply)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        first.contains("did not call report; verification passed (1/1)"),
+        "{first}"
+    );
+    assert!(
+        text_of(&reply).contains("\"status\": \"Unreported\""),
+        "the contract still says no report arrived: {reply}"
+    );
+    assert!(bridge.close().success());
+}
+
 /// **A second `wait` on the same handle says so, rather than blocking forever.**
 ///
 /// The other half of the handle's contract. The mistake this guards has changed shape with the
