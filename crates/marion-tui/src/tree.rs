@@ -551,6 +551,9 @@ pub struct Status<'a> {
     pub repo: &'a str,
     pub nodes: usize,
     pub running: usize,
+    /// How many nodes need the operator. The caller's rule, like `running`; shown only when
+    /// non-zero.
+    pub attention: usize,
 }
 
 impl Widget for Status<'_> {
@@ -560,8 +563,13 @@ impl Widget for Status<'_> {
         }
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let (x, _) = buf.set_stringn(area.x, area.y, " marion", area.width as usize, bold);
+        let attention = match self.attention {
+            0 => String::new(),
+            1 => ", 1 needs attention".to_string(),
+            n => format!(", {n} need attention"),
+        };
         let rest = format!(
-            " · {} nodes, {} running · {}",
+            " · {} nodes, {} running{attention} · {}",
             self.nodes,
             self.running,
             short_path(self.repo)
@@ -1083,6 +1091,7 @@ mod tests {
             repo: "/work/marion",
             nodes: 4,
             running: 3,
+            attention: 0,
         }
         .render(area, &mut buf);
         let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
@@ -1094,6 +1103,35 @@ mod tests {
             buf[(1, 0)].style().add_modifier.contains(Modifier::BOLD),
             "the program name is the anchor of the row"
         );
+    }
+
+    /// **The attention count is on the row only when there is something to attend to**, in the
+    /// count's own clause, before the path so a clip can only ever eat the path. A standing
+    /// ", 0 need attention" would be one more word an operator learns to stop reading.
+    #[test]
+    fn the_status_row_counts_what_needs_attention_only_when_something_does() {
+        let row = |attention: usize| {
+            let area = Rect::new(0, 0, 80, 1);
+            let mut buf = Buffer::empty(area);
+            Status {
+                repo: "/work/marion",
+                nodes: 4,
+                running: 3,
+                attention,
+            }
+            .render(area, &mut buf);
+            let row: String = (0..80).map(|x| buf[(x, 0)].symbol()).collect();
+            row.trim_end().to_string()
+        };
+        assert_eq!(
+            row(1),
+            " marion · 4 nodes, 3 running, 1 needs attention · /work/marion"
+        );
+        assert_eq!(
+            row(2),
+            " marion · 4 nodes, 3 running, 2 need attention · /work/marion"
+        );
+        assert_eq!(row(0), " marion · 4 nodes, 3 running · /work/marion");
     }
 
     /// **The count outlives the path.** A deep scratch path is wider than any terminal, and the row
@@ -1121,6 +1159,7 @@ mod tests {
             repo: "/private/tmp/claude-501/d0851ffa/scratchpad/walkthrough/work/repo",
             nodes: 4,
             running: 3,
+            attention: 0,
         }
         .render(area, &mut buf);
         let row: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();

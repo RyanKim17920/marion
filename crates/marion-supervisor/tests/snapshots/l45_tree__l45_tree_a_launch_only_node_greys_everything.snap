@@ -1,10 +1,10 @@
 ---
 source: crates/marion-supervisor/tests/l45_tree.rs
-assertion_line: 250
+assertion_line: 255
 expression: "report(&tree, true)"
 ---
 --- 96x12, tree focused ---
- marion · 5 nodes, 4 running · /work/marion
+ marion · 5 nodes, 4 running, 1 needs attention · /work/marion
 ● running impl root-claude
 ├ ● idle impl pane-claude
 └ ◐ blocked:permission impl codex-146

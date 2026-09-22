@@ -26,7 +26,7 @@ use marion_core::encoding::Duration;
 use marion_core::harness::Harness;
 use marion_core::node::{BlockReason, NodeState, ReapState};
 use marion_core::proto::NodeSummary;
-use marion_supervisor::tree::{build, running};
+use marion_supervisor::tree::{attention_count, build, running};
 use marion_tui::tree::{self, ActionBar, Status, Tree, TreeView};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -127,6 +127,11 @@ fn draw(tree: &Tree, focused: bool) -> Buffer {
                     repo: "/work/marion",
                     nodes: if tree.is_empty() { 0 } else { nodes.len() },
                     running: if tree.is_empty() { 0 } else { running(&nodes) },
+                    attention: if tree.is_empty() {
+                        0
+                    } else {
+                        attention_count(&nodes)
+                    },
                 },
                 panes.status,
             );

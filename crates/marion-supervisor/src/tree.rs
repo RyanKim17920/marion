@@ -393,6 +393,12 @@ pub fn running(nodes: &[NodeSummary]) -> usize {
         .count()
 }
 
+/// How many of `nodes` need the operator, by [`attention_of`]. The status row's count, and the
+/// native status line's over a subtree, so the two cannot count by different rules.
+pub fn attention_count(nodes: &[NodeSummary]) -> usize {
+    nodes.iter().filter(|n| attention_of(n).is_some()).count()
+}
+
 /// Fold one subscription notification into a `tree/subscribe` snapshot. Returns whether `nodes`
 /// changed.
 ///
@@ -708,6 +714,7 @@ impl Session {
             repo: &self.repo,
             nodes: self.nodes.len(),
             running: running(&self.nodes),
+            attention: attention_count(&self.nodes),
         };
         let notice = self.notice.as_deref();
         let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
