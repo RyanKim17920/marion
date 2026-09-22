@@ -94,7 +94,7 @@ with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — a
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0;
-gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
+gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0 and 1.51.0; cline 3.0.61;
 qwen 0.23.0.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
@@ -492,6 +492,10 @@ MCP call timeout fired first. An npm-installed 1.18.30 driven through the same s
 same load failed the same two cells. All eight opencode-child cells passed 8/8 serially on
 1.18.32, and the admitting run used `RUST_TEST_THREADS=4`. Those two cells are the tightest bounds
 in the matrix, so read a red there under load as the machine first.
+
+**goose 1.51.0, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the same run with the
+same suite counts. Homebrew replaced 1.50.0 in place. No test-side change was needed. Its only
+red cell, goose root with an opencode child, is the load finding under opencode 1.18.32 above.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in

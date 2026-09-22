@@ -782,7 +782,14 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
         // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
         // native_facade_e2e (2).
-        accepted: &["1.49.0", "1.50.0"],
+        // 1.51.0: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
+        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
+        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
+        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
+        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
+        // restart_resume (0), timeout_kill (1), worktree_reap (8). No test-side change; its one
+        // red cell under load was goose-root with an opencode child (see opencode 1.18.32).
+        accepted: &["1.49.0", "1.50.0", "1.51.0"],
     },
     PinnedHarness {
         program: "cline",
