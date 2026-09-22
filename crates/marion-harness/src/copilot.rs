@@ -39,8 +39,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
-    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -178,6 +178,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S31 p0b/copilot (1.0.83): `-p … --resume=<sessionId>` continues the session",
+        },
+        interactive: TurnDelivery::bracketed_paste(
+            "S31 p0b/tui/copilot (1.0.83): bracketed paste + CR submits at 0 ms; busy repaints \
+             ≤ 336 ms; OSC 9;4;0 also marks the turn end",
+        ),
+    },
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

@@ -18,8 +18,8 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
-    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 use crate::surfaces::TypedKind;
 
@@ -160,6 +160,23 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `clientInfo.name`.
     push: Push::ClaudeChannel,
     client_name: Some("claude-code"),
+    delivery: Deliveries {
+        // S31 `p0a/b3`, `p0a/b`, `p0a/b2` (2.1.280, repeated on 2.1.276).
+        headless: TurnDelivery::TypedTurn {
+            note: "S31 p0a/b3,b,b2 (2.1.280/2.1.276): a stream-json user frame after `result` \
+                   starts turn 2 in the same process and session; a frame written mid-turn is \
+                   folded into the running turn with no `result` of its own, so marion holds it \
+                   and writes it at the turn boundary",
+        },
+        // S31 `p0a/ch2`. The fallback a later phase may take is measured (`p0b/tui/claude`).
+        interactive: TurnDelivery::McpChannel {
+            note: "S31 p0a/ch2 (2.1.280/2.1.276): notifications/claude/channel folds or queues \
+                   like a typed frame. Channels need a claude.ai login: under API-key or token \
+                   auth claude refuses them (\"Channels are not currently available\") and the \
+                   message is not delivered; bracketed paste into the TUI is measured to work \
+                   (p0b/tui/claude) and is the fallback a later phase may add",
+        },
+    },
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

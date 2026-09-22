@@ -23,8 +23,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
-    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -219,6 +219,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the \
+                   store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found",
+        },
+        interactive: TurnDelivery::bracketed_paste(
+            "S31 p0b/tui/opencode (1.18.32): bracketed paste + CR submits at 0 ms; busy repaints \
+             ≤ 361 ms; no structured turn-end signal",
+        ),
+    },
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",

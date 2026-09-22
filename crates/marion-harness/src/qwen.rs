@@ -46,8 +46,8 @@ use serde_json::{Value, json};
 
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
-    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -180,6 +180,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S31 p0b/qwen (0.23.0): `--resume <session_id> -p …` continues the session",
+        },
+        interactive: TurnDelivery::None {
+            note: "qwen's TUI was not measured (S31 probed codex, opencode, copilot and claude), \
+                   and its native lane ships disabled",
+        },
+    },
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

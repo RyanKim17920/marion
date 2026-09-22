@@ -50,8 +50,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling,
-    Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -169,6 +169,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::None {
+            note: "S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, \
+                   so there is no headless second turn; not re-measured in S31",
+        },
+        interactive: TurnDelivery::None {
+            note: "cline is not installed for S31 and its native lane ships disabled",
+        },
+    },
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

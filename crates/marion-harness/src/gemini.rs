@@ -17,8 +17,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling,
-    Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -146,6 +146,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::None {
+            note: "gemini's --resume takes `latest` or an index, not a session id, and S31 did not \
+                   probe it; gemini 0.53 --acp refuses session/new (S31 p0a)",
+        },
+        interactive: TurnDelivery::None {
+            note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
+        },
+    },
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",

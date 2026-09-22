@@ -19,8 +19,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume,
-    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
+    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -168,6 +168,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
     client_name: None,
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the \
+                   -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read \
+                   once before the first request, never mid-run",
+        },
+        interactive: TurnDelivery::bracketed_paste(
+            "S31 p0b/tui/codex (0.147.0): bracketed paste + CR submits at 0 ms; unbracketed text \
+             + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
+        ),
+    },
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

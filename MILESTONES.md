@@ -325,7 +325,17 @@ than a refusal in disguise. **TUIs:** codex, opencode, copilot and claude all en
 `\e[200~…\e[201~` then `\r` submits at 0 ms, byte-exact up to 3 KB, while unbracketed text + `\r`
 fails on codex; busy spinners repaint at ≤ 454 ms and idle output is ~0, so 1500 ms of output
 quiet is a reliable idle signal; Enter while busy is never dropped and never interrupts
-(`p0b/tui/`).
+(`p0b/tui/`). **Carried as row data (2026-09-22):** `HarnessSpec::delivery` states a
+`TurnDelivery` per shape, read by one resolver `spec::delivery_for(row, NodeShape)` — headless
+claude and ACP `TypedTurn`; codex, opencode, copilot and qwen `Continuation`; gemini, goose and
+cline `None` (goose's resume needs `--no-session` dropped); interactive claude `McpChannel` (its
+note records that API-key/token auth refuses channels — no fallback yet); codex, opencode and
+copilot `TerminalPaste` (bracketed, `\r` after 50 ms, `OutputQuiet{1500}`). Every strategy
+delivers at a turn boundary — there is no mid-turn variant, because every typed surface above
+folds or loses a mid-turn write. Pinned by
+`adapter::tests::every_row_resolves_one_turn_delivery_per_shape_as_s31_measured` and the sweep
+`every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). **Row
+data only**: nothing delivers through it yet.
 
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3

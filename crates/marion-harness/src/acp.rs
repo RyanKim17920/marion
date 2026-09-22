@@ -51,8 +51,8 @@ use marion_core::harness::Harness;
 use crate::caps::Capabilities;
 use crate::grammar::{Cond, UsageFold, UsageRule, Where};
 use crate::spec::{
-    Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Push, Spelling, Surfaces,
-    UpdatePolicy,
+    Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, Push, Spelling, Surfaces,
+    TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -106,6 +106,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
     push: Push::None,
     client_name: None,
+    delivery: Deliveries {
+        // Protocol-generic: any agent takes a second `session/prompt` after the first resolved.
+        headless: TurnDelivery::TypedTurn {
+            note: "S31 p0a/acp-*: a second session/prompt after the first resolved is a new turn \
+                   on every agent probed; one written while a prompt is in flight is folded \
+                   (opencode, claude-agent-acp), orphans the first (codex-acp) or supersedes it \
+                   (copilot), so marion sends the next prompt only at the turn boundary",
+        },
+        interactive: TurnDelivery::None {
+            note: "ACP has no interactive shape: no pane row and no native lane",
+        },
+    },
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \

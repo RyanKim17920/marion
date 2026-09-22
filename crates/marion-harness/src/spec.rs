@@ -113,6 +113,11 @@ pub struct HarnessSpec {
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
     /// `None` where it was never observed; such a bridge falls back to [`Push::McpLog`].
     pub client_name: Option<&'static str>,
+    /// **How a message reaches this node's next turn**, per shape — the one mechanism behind both
+    /// a child's end pushed to its parent and a parent's or operator's steer into a child.
+    /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
+    /// surfaces_can_carry` checks each strategy against the rest of the row.
+    pub delivery: Deliveries,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
@@ -159,6 +164,104 @@ impl Push {
             Push::ClaudeChannel => CLAUDE_CHANNEL_ARGV,
             Push::McpLog | Push::None => &[],
         }
+    }
+}
+
+/// A row's [`TurnDelivery`] for each of the two shapes a node can run in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deliveries {
+    /// The node marion drives over pipes: a typed control channel, or a launch-only relaunch.
+    pub headless: TurnDelivery,
+    /// The node a person can watch: a pane marion hosts, or a native `marion <harness>` session.
+    pub interactive: TurnDelivery,
+}
+
+/// Which of a node's two shapes a delivery is for. Not [`Shape`]: that names an argv, and an
+/// interactive node is a pane **or** a native session, which render differently and take a
+/// message the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeShape {
+    Headless,
+    Interactive,
+}
+
+/// **How marion hands a message to a node's next turn** — measured per harness and per shape
+/// (S31, `tests/fixtures/s31-turn-delivery/`).
+///
+/// **Every strategy delivers at a turn boundary; marion queues on its own side until then.** There
+/// is deliberately no mid-turn variant. S31 measured every typed surface misbehaving under a write
+/// made while a turn is in flight: Claude Code's stream-json and both folding ACP agents (opencode,
+/// claude-agent-acp) fold it into the running turn and emit **one** completion for two messages,
+/// which breaks marion's one-result-per-turn pairing; codex-acp never answers the first prompt;
+/// copilot's ACP supersedes it with an empty `end_turn`. A mid-turn write is a later, per-row
+/// refinement with its own measurement, never a default.
+///
+/// Every variant carries a `note` naming the measurement, `None` included — an absence says what
+/// was searched, as [`UpdatePolicy::None`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnDelivery {
+    /// A new user turn on the node's typed control channel, written when the previous one has
+    /// ended: a stream-json `user` frame after `result`, an ACP `session/prompt` after the last
+    /// one resolved.
+    TypedTurn { note: &'static str },
+    /// The next turn is a **relaunch of the same session**: the row's [`HarnessSpec::resume`]
+    /// grammar with the message as the prompt, after the previous process exited.
+    Continuation { note: &'static str },
+    /// Claude Code's `notifications/claude/channel`, pushed on the MCP pipe marion's bridge holds
+    /// ([`Push::ClaudeChannel`]); the harness folds or queues it itself.
+    McpChannel { note: &'static str },
+    /// Typed into the node's terminal: `ESC[200~` + text + `ESC[201~` (always bracketed — codex
+    /// turns an unbracketed burst's CR into a newline), then `submit` after `submit_delay_ms`,
+    /// once `idle` says the TUI is waiting for input.
+    TerminalPaste {
+        idle: IdleSignal,
+        submit: &'static [u8],
+        submit_delay_ms: u16,
+        note: &'static str,
+    },
+    /// No measured way. A message for such a node is refused by name, quoting `note`.
+    None { note: &'static str },
+}
+
+impl TurnDelivery {
+    /// The measurement behind this strategy, or behind its absence.
+    pub const fn note(self) -> &'static str {
+        match self {
+            TurnDelivery::TypedTurn { note }
+            | TurnDelivery::Continuation { note }
+            | TurnDelivery::McpChannel { note }
+            | TurnDelivery::TerminalPaste { note, .. }
+            | TurnDelivery::None { note } => note,
+        }
+    }
+
+    /// The paste S31 measured on codex, opencode, copilot and claude's TUIs: bracketed, then `\r`
+    /// 50 ms later (0 ms submitted on all four; 50 is margin), once the terminal has been quiet
+    /// for 1500 ms (busy spinners repaint at ≤ 454 ms, idle output is ~0). One constructor so the
+    /// four rows cannot drift apart on values nobody measured separately.
+    pub const fn bracketed_paste(note: &'static str) -> TurnDelivery {
+        TurnDelivery::TerminalPaste {
+            idle: IdleSignal::OutputQuiet { ms: 1500 },
+            submit: b"\r",
+            submit_delay_ms: 50,
+            note,
+        }
+    }
+}
+
+/// How marion tells an interactive node is waiting for input. One measured variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleSignal {
+    /// No output for `ms` milliseconds.
+    OutputQuiet { ms: u32 },
+}
+
+/// **The one resolver**: the row's strategy for a node of this shape. No harness is named here —
+/// the answer is the row's data, so a new harness is a new row and nothing else.
+pub fn delivery_for(row: &HarnessSpec, shape: NodeShape) -> TurnDelivery {
+    match shape {
+        NodeShape::Headless => row.delivery.headless,
+        NodeShape::Interactive => row.delivery.interactive,
     }
 }
 

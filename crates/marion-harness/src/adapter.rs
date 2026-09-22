@@ -7478,6 +7478,142 @@ mod tests {
         }
     }
 
+    /// A [`spec::TurnDelivery`]'s variant, as a word, so a truth table reads as one.
+    fn delivery_kind(d: crate::spec::TurnDelivery) -> &'static str {
+        use crate::spec::TurnDelivery;
+        match d {
+            TurnDelivery::TypedTurn { .. } => "typed",
+            TurnDelivery::Continuation { .. } => "continuation",
+            TurnDelivery::McpChannel { .. } => "channel",
+            TurnDelivery::TerminalPaste { .. } => "paste",
+            TurnDelivery::None { .. } => "none",
+        }
+    }
+
+    /// **How a message reaches each harness's next turn, per shape — the S31 truth table.**
+    ///
+    /// One resolver (`spec::delivery_for`) reads the row; this pins what every row says, so a row
+    /// that changes its strategy has to change this table too, beside the fixture that justifies
+    /// it (`tests/fixtures/s31-turn-delivery/`). The paste rows are pinned to the measured values:
+    /// bracketed paste, then `\r` after 50 ms (0 ms measured on all four TUIs, 50 for margin), with
+    /// 1500 ms of output quiet as the idle signal (busy spinners repaint at ≤ 454 ms).
+    #[test]
+    fn every_row_resolves_one_turn_delivery_per_shape_as_s31_measured() {
+        use crate::spec::{IdleSignal, NodeShape, TurnDelivery, delivery_for};
+        let table = [
+            (Harness::ClaudeCode, "typed", "channel"),
+            (Harness::Codex, "continuation", "paste"),
+            (Harness::Gemini, "none", "none"),
+            (Harness::OpenCode, "continuation", "paste"),
+            (Harness::Copilot, "continuation", "paste"),
+            (Harness::Goose, "none", "none"),
+            (Harness::Cline, "none", "none"),
+            (Harness::Qwen, "continuation", "none"),
+            (Harness::Acp, "typed", "none"),
+        ];
+        assert_eq!(
+            table.len(),
+            Harness::ALL.len(),
+            "every harness has a row here"
+        );
+        for (h, headless, interactive) in table {
+            let row = harness_spec(h);
+            assert_eq!(
+                delivery_kind(delivery_for(row, NodeShape::Headless)),
+                headless,
+                "{h} headless"
+            );
+            assert_eq!(
+                delivery_kind(delivery_for(row, NodeShape::Interactive)),
+                interactive,
+                "{h} interactive"
+            );
+            assert_eq!(
+                delivery_for(row, NodeShape::Headless),
+                row.delivery.headless
+            );
+            assert_eq!(
+                delivery_for(row, NodeShape::Interactive),
+                row.delivery.interactive
+            );
+            if let TurnDelivery::TerminalPaste {
+                idle,
+                submit,
+                submit_delay_ms,
+                ..
+            } = row.delivery.interactive
+            {
+                assert_eq!(idle, IdleSignal::OutputQuiet { ms: 1500 }, "{h}");
+                assert_eq!(submit, b"\r", "{h}: CR after the bracketed paste");
+                assert_eq!(submit_delay_ms, 50, "{h}");
+            }
+        }
+        let TurnDelivery::McpChannel { note } =
+            harness_spec(Harness::ClaudeCode).delivery.interactive
+        else {
+            unreachable!("pinned above")
+        };
+        assert!(
+            note.contains("claude.ai") && note.contains("API"),
+            "the channel's auth limit is stated where the strategy is: {note}"
+        );
+    }
+
+    /// **Every row's turn delivery is one its surfaces can carry, and says what measured it.**
+    ///
+    /// The same shape of sweep as the push one above: a strategy is row data, and each variant has
+    /// exactly one precondition on the rest of the row, so a row cannot claim a channel it has no
+    /// way to take:
+    ///
+    /// * `TypedTurn` needs a typed control channel (`Surfaces::Headless(_)`), and is headless only.
+    /// * `Continuation` needs a launch-only row with a resume grammar in its headless argv — the
+    ///   next turn is a relaunch of the same session.
+    /// * `McpChannel` needs the row to push over Claude Code's channel, and is interactive only
+    ///   (headless `-p` never enqueues a channel event).
+    /// * `TerminalPaste` needs a terminal marion can type into — a pane shape or a native lane —
+    ///   and is interactive only, with a non-empty submit sequence.
+    /// * Every note is non-empty, `None` included: an absence says what was searched.
+    #[test]
+    fn every_row_states_a_turn_delivery_its_surfaces_can_carry() {
+        use crate::spec::{Arg, NodeShape, Push, Surfaces, TurnDelivery, delivery_for};
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            for shape in [NodeShape::Headless, NodeShape::Interactive] {
+                let d = delivery_for(row, shape);
+                assert!(
+                    !d.note().trim().is_empty(),
+                    "{h} {shape:?}: a turn delivery without the measurement behind it"
+                );
+                let headless = shape == NodeShape::Headless;
+                match d {
+                    TurnDelivery::TypedTurn { .. } => assert!(
+                        headless && matches!(row.surfaces, Surfaces::Headless(_)),
+                        "{h} {shape:?}: a typed turn needs a typed control channel"
+                    ),
+                    TurnDelivery::Continuation { .. } => assert!(
+                        headless
+                            && row.surfaces == Surfaces::LaunchOnly
+                            && row.resume.is_some()
+                            && row.argv.contains(&Arg::Resume),
+                        "{h} {shape:?}: a continuation is a headless relaunch by resume"
+                    ),
+                    TurnDelivery::McpChannel { .. } => assert!(
+                        !headless && row.push == Push::ClaudeChannel,
+                        "{h} {shape:?}: the channel is Claude Code's, and interactive only"
+                    ),
+                    TurnDelivery::TerminalPaste { submit, .. } => {
+                        assert!(
+                            !headless && (row.pane.is_some() || row.live_declaration.is_some()),
+                            "{h} {shape:?}: a paste needs a terminal marion can type into"
+                        );
+                        assert!(!submit.is_empty(), "{h}: a paste that never submits");
+                    }
+                    TurnDelivery::None { .. } => {}
+                }
+            }
+        }
+    }
+
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to
     /// answer in six hand-written impls, stated as data and checked once.
     ///
