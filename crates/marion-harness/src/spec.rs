@@ -445,7 +445,8 @@ pub enum Arg {
     /// A literal token **under [`When::Canned`] only** — a switch that keeps the operator's own
     /// configuration out of the node. A live node must not carry one: its premise is the
     /// operator's harness as they configured it, and that configuration is where a credential can
-    /// live (claude's `--setting-sources ""` drops a settings `apiKeyHelper` or `env` block).
+    /// live (claude's `--setting-sources ""` drops a settings `apiKeyHelper` or `env` block;
+    /// opencode's `--pure` drops an auth plugin).
     CannedLit(&'static str),
 }
 

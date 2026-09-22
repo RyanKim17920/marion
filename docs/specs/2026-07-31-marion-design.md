@@ -2165,6 +2165,12 @@ marion **never mutates the user's real harness config.**
     `@opencode-ai/plugin` npm install, so a first run **makes a network call on a run specified to
     make none** — the same violated expectation as the codex plugin clone above, though this one
     runs in-process and leaves no orphan.
+  - **`--pure` and `OPENCODE_DISABLE_PROJECT_CONFIG` are canned-only (2026-09-22).** Both hide a
+    credential source from an `Auth::Inherited` node: 1.18.32 skips the operator's whole plugin
+    list under `--pure` (`Q.pure ? [] : plugin_origins`; internal plugins load either way), and an
+    auth plugin is how some providers log in; a project `opencode.json` / `.opencode/` can hold
+    the provider block, its key reference and such a plugin. A live node runs on the operator's
+    opencode as configured, so it carries neither.
   - **No allowlist is required for marion's MCP tools**, and this is a *negative* result worth
     keeping: opencode's `permission` default for MCP tools is **allow**, so there is no
     silent-omission trap of the `default_tools_approval_mode` / `trust: true` family here (§12).

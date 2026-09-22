@@ -4633,6 +4633,39 @@ mod tests {
         }
     }
 
+    /// **A live opencode node loads the operator's plugins and project config**, because both can
+    /// be where their credential comes from. 1.18.32 gates the user's plugin list on `--pure`
+    /// (`Q.pure ? [] : plugin_origins`, internal plugins untouched), and an auth plugin supplies
+    /// the provider's `auth` hook; a project `opencode.json` / `.opencode/` can carry the provider
+    /// block and its key reference. Canned keeps both switches: there marion owns the provider.
+    #[test]
+    fn a_live_opencode_node_loads_the_operators_plugins_and_project_config() {
+        let live = OpenCodeAdapter
+            .compile(&opencode_live_spec(), &ctx())
+            .unwrap();
+        assert!(
+            !live.args.iter().any(|a| a == "--pure"),
+            "a live node must not skip the operator's plugins: {:?}",
+            live.args
+        );
+        assert!(
+            !live
+                .env
+                .iter()
+                .any(|(k, _)| k == "OPENCODE_DISABLE_PROJECT_CONFIG"),
+            "a live node must not skip the project config: {:?}",
+            live.env
+        );
+        let canned = OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap();
+        assert!(canned.args.iter().any(|a| a == "--pure"));
+        assert!(
+            canned
+                .env
+                .iter()
+                .any(|(k, v)| k == "OPENCODE_DISABLE_PROJECT_CONFIG" && v == "1")
+        );
+    }
+
     /// The live route, end to end at the seam: **no file at all**, the declaration in
     /// `OPENCODE_CONFIG_CONTENT`, and the adapter saying so rather than the supervisor guessing.
     #[test]

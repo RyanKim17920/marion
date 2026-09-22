@@ -48,8 +48,10 @@ const SESSION_DB: &str = "opencode.db";
 /// the credential.** Auth lives in `$XDG_DATA_HOME/opencode/auth.json` and config in
 /// `$XDG_CONFIG_HOME/opencode/`, resolved through **different variables**, with `HOME`
 /// independently driving the `~/.claude`, `~/.agents` and `~/.opencode` lookups. Relocating any of
-/// them hides the login a live node is meant to present, so the five relocations are `Canned`;
-/// the `OPENCODE_DISABLE_*` set and `OPENCODE_DB` are kept under both modes because they
+/// them hides the login a live node is meant to present, so the five relocations are `Canned` —
+/// and so are `OPENCODE_DISABLE_PROJECT_CONFIG` and `--pure`, because a project config and the
+/// operator's plugins can each carry the provider and its credential. The rest of the
+/// `OPENCODE_DISABLE_*` set and `OPENCODE_DB` are kept under both modes because they
 /// were never the isolation — and two of them matter *more* live, not less:
 /// `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no `XDG_*`
 /// var ever closed (`~/.claude/CLAUDE.md` and `~/.claude/skills/**` are found via `HOME`, and
@@ -76,8 +78,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Resume,
         // Skips loading external plugins. It does *not* gate the forkDetach'ed
         // `@opencode-ai/plugin` npm install or the ripgrep auto-download (S13) — those are bounded
-        // by the throwaway HOME below, not by a flag.
-        Arg::Lit("--pure"),
+        // by the throwaway HOME below, not by a flag. **Canned only**: the plugins it skips are
+        // the operator's own list, and an auth plugin is how some of them log in (1.18.32:
+        // `Q.pure ? [] : plugin_origins`, the internal plugins loaded either way).
+        Arg::CannedLit("--pure"),
         Arg::Lit("--format"),
         Arg::Lit("json"),
         // **Required.** Without `--title` opencode issues an extra `You are a title generator`
@@ -127,10 +131,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Lit("1"),
             when: When::Always,
         },
+        // Canned only: a project `opencode.json` / `.opencode/` can hold the provider block, its
+        // key reference and an auth plugin, which a live node runs on as the operator set them up.
         Env {
             key: "OPENCODE_DISABLE_PROJECT_CONFIG",
             val: Val::Lit("1"),
-            when: When::Always,
+            when: When::Canned,
         },
         Env {
             key: "OPENCODE_DISABLE_MODELS_FETCH",
@@ -780,16 +786,17 @@ mod tests {
                 inv.env
             );
         }
-        let strip_model = |inv: &Invocation| -> Vec<String> {
+        let strip_model_and_pure = |inv: &Invocation| -> Vec<String> {
             let m = inv.args.iter().position(|a| a == "-m").unwrap();
             let mut args = inv.args.clone();
             args.remove(m + 1);
+            args.retain(|a| a != "--pure");
             args
         };
         assert_eq!(
-            strip_model(&inv),
-            strip_model(&compile_run(&spec())),
-            "live differs from canned in env and in whose provider the model names"
+            strip_model_and_pure(&inv),
+            strip_model_and_pure(&compile_run(&spec())),
+            "live differs from canned in env, in `--pure`, and in whose provider the model names"
         );
     }
 
@@ -836,7 +843,6 @@ mod tests {
         for (k, v) in [
             ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
             ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
-            ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
             ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
             ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
             ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
