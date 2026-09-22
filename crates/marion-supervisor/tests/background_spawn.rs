@@ -1181,9 +1181,9 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
 fn contract_task_id(reply: &Value) -> String {
     let text = text_of(reply);
     let at = text
-        .find("\"task_id\": \"")
+        .find("\"task_id\":\"")
         .unwrap_or_else(|| panic!("a contract names its task_id: {text}"));
-    let rest = &text[at + "\"task_id\": \"".len()..];
+    let rest = &text[at + "\"task_id\":\"".len()..];
     rest[..rest.find('"').expect("the id is quoted")].to_string()
 }
 
@@ -1240,7 +1240,7 @@ fn an_unreported_child_whose_verification_passed_is_not_an_error_to_its_parent()
         "{first}"
     );
     assert!(
-        text_of(&reply).contains("\"status\": \"Unreported\""),
+        text_of(&reply).contains("\"status\":\"Unreported\""),
         "the contract still says no report arrived: {reply}"
     );
     assert!(bridge.close().success());
@@ -1574,7 +1574,7 @@ fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
          version probe did: {text}"
     );
     assert!(
-        text.contains("\"version\": \"unknown\""),
+        text.contains("\"version\":\"unknown\""),
         "a probe that expired is recorded as an absence, never guessed: {text}"
     );
 

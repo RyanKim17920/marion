@@ -700,6 +700,71 @@ fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
     ))
 }
 
+/// `s` on one line: a harness's multi-line stderr quoted in a description would otherwise split
+/// the summary, and a reader taking everything after the first blank line as the contract would
+/// read the rest of the stderr instead.
+fn one_line(s: &str) -> String {
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// **The facts a parent acts on, in one line**: the agent type, the status, how the declared
+/// checks went, what changed, and where the change lives. Measured live (2026-09-22): parents were
+/// handed ~3 KB of JSON and misreported all five. Paths are bounded to five with a count, so the
+/// line stays a line.
+fn summary_facts(agent_type: &str, c: &TaskContract) -> String {
+    let Some(comp) = c.completion.as_ref() else {
+        return format!("{agent_type} · still running");
+    };
+    let total = c.verification.len();
+    let checks = if total == 0 {
+        "no verification declared".to_string()
+    } else {
+        let passed = comp
+            .evidence
+            .iter()
+            .filter(|e| e.exit_code == Some(0) && !e.timed_out)
+            .count();
+        format!("verification {passed}/{total} passed")
+    };
+    const SHOWN: usize = 5;
+    let changed = if comp.changed_paths.is_empty() {
+        "changed nothing".to_string()
+    } else {
+        let more = comp.changed_paths.len().saturating_sub(SHOWN) + comp.changed_paths_omitted;
+        let shown = comp
+            .changed_paths
+            .iter()
+            .take(SHOWN)
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        match more {
+            0 => format!("changed {shown}"),
+            n => format!("changed {shown} (+{n} more)"),
+        }
+    };
+    format!(
+        "{agent_type} · {:?} · {checks} · {changed} · {}",
+        comp.status,
+        where_the_change_lives(c)
+    )
+}
+
+/// Where a child's change is to be found, for [`summary_facts`] — one place, so a contract that
+/// comes to record a preserved branch differently changes one line.
+fn where_the_change_lives(c: &TaskContract) -> String {
+    match &c.workspace {
+        marion_core::contract::Workspace::Worktree { branch, .. } => format!("branch {branch}"),
+        marion_core::contract::Workspace::SharedCwd { .. } => {
+            "in the shared checkout (no branch)".to_string()
+        }
+    }
+}
+
 /// The first failed verification command and its outcome, with how many failed — `None` when
 /// every recorded check exited 0.
 fn verification_failed(c: &TaskContract) -> Option<String> {
@@ -754,11 +819,13 @@ fn verification_passed(c: &TaskContract) -> Option<usize> {
 
 /// The tool result for one `spawn`, in the three shapes a `spawn` can end in.
 ///
-/// 1. **A child that finished `Ok`** returns exactly what it always did: the pretty-printed
-///    contract, `isError: false`, byte for byte.
-/// 2. **A child that ran and did not finish `Ok`** returns the same contract with a one-line
-///    account of the failure above it, and `isError: true` — except an `Unreported` child whose
+/// 1. **A child that finished `Ok`** returns one summary line, a blank line, and the contract as
+///    compact JSON, `isError: false`.
+/// 2. **A child that ran and did not finish `Ok`** returns the same shape, the line opening with
+///    its account of the failure, and `isError: true` — except an `Unreported` child whose
 ///    declared verification all passed, which says so and is `isError: false` ([`failure_line`]).
+///    Every summary line ends `| <type> · <status> · <checks> · <changed> · <where>`
+///    ([`summary_facts`]).
 /// 3. **A spawn that never launched** returns that same shape with no contract to print, and
 ///    `isError: true` — which it already did, and which is why the two now read alike.
 ///
@@ -804,12 +871,23 @@ pub fn spawn_result(
 pub fn spawn_text(agent_type: &str, outcome: Result<TaskContract, SpawnError>) -> (String, bool) {
     match outcome {
         Ok(contract) => {
-            let json = serde_json::to_string_pretty(&contract)
+            let json = serde_json::to_string(&contract)
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-            match failure_line(&contract) {
-                None => (json, false),
-                Some((line, is_error)) => (format!("{line}\n\n{json}"), is_error),
-            }
+            let (line, is_error) = failure_line(&contract).unwrap_or_else(|| {
+                let description = contract
+                    .completion
+                    .as_ref()
+                    .map_or("", |comp| comp.exit.description.as_str());
+                (
+                    bounded(&format!(
+                        "marion: the {} child finished Ok — {description}",
+                        contract.child.harness
+                    )),
+                    false,
+                )
+            });
+            let facts = bounded(&summary_facts(agent_type, &contract));
+            (format!("{} | {facts}\n\n{json}", one_line(&line)), is_error)
         }
         // **The verb comes from the error, not from this line.** Every refusal that predates §11
         // item 28 step 5 is a launch that did not happen, and "could not be launched" is exactly
@@ -1593,8 +1671,13 @@ mod tests {
             .to_string()
     }
 
+    /// The headline of a result's first line: everything before the `|` that opens its facts.
     fn first_line(v: &Value) -> String {
-        text(v).lines().next().unwrap_or_default().to_string()
+        let line = text(v).lines().next().unwrap_or_default().to_string();
+        match line.split_once(" | ") {
+            Some((head, _)) => head.to_string(),
+            None => line,
+        }
     }
 
     /// The measured shape from S13: an opencode-style failure whose whole diagnosis is in-stream,
@@ -1620,7 +1703,7 @@ mod tests {
         );
         assert_eq!(v["result"]["isError"], true, "S9: error-shaped, not fatal");
         assert!(
-            text(&v).contains("\"status\": \"Failed\""),
+            text(&v).contains("\"status\":\"Failed\""),
             "the contract is still there underneath; it just stopped being the message"
         );
         // The defect this closes, stated as an assertion. Before, both of these opened with `{`
@@ -1742,7 +1825,7 @@ mod tests {
              exited with code 0"
         );
         assert!(
-            text(&v).contains("\"status\": \"Unreported\""),
+            text(&v).contains("\"status\":\"Unreported\""),
             "the contract still records that no report arrived: {}",
             text(&v)
         );
@@ -1851,19 +1934,75 @@ mod tests {
         assert!(live.contains("block until it finishes"), "{live}");
     }
 
-    /// The success path is not merely similar — it is the same bytes it was before, so a
-    /// `cross_product` or `harness_matrix` cell that reads a returned contract cannot notice this
-    /// change happened.
+    /// **Every contract-carrying result leads with one summary line, then the compact contract.**
+    /// Measured live (2026-09-22): a pushed or waited-for child arrived as ~3 KB of pretty JSON,
+    /// and the facts a parent acts on — what ran, how it ended, whether its checks passed, what it
+    /// changed and where that change lives — had to be dug out of it. The line states them; the
+    /// contract underneath is the same record, one line of JSON.
     #[test]
-    fn a_successful_child_is_byte_identical_to_what_it_always_returned() {
+    fn a_successful_child_leads_with_a_summary_line_then_the_compact_contract() {
         let c = ran(crate::spawn::ChildOutcome {
             narrative: Some("did the work".into()),
             exit_code: Some(0),
             ..Default::default()
         });
-        let before = tool_result(&json!(2), &serde_json::to_string_pretty(&c).unwrap(), false);
-        assert_eq!(spawn_result(&json!(2), "codex-impl", Ok(c)), before);
-        assert_eq!(before["result"]["isError"], false);
+        let v = spawn_result(&json!(2), "codex-impl", Ok(c.clone()));
+        assert_eq!(v["result"]["isError"], false);
+        let body = text(&v);
+        let (line, rest) = body.split_once("\n\n").expect("a line, then the record");
+        assert_eq!(
+            line,
+            "marion: the codex child finished Ok — child exited with code 0 | codex-impl · Ok · \
+             no verification declared · changed nothing · branch marion/t1"
+        );
+        assert_eq!(
+            rest,
+            serde_json::to_string(&c).unwrap(),
+            "compact, and whole"
+        );
+    }
+
+    /// **The summary is one line whatever the harness printed.** A cline child's multi-line stderr
+    /// warning rode the exit description into the first line and split it, so a reader of the
+    /// text after the first blank line found stderr rather than the contract.
+    #[test]
+    fn a_multi_line_stderr_in_the_description_stays_on_the_summary_line() {
+        let c = ran(crate::spawn::ChildOutcome {
+            narrative: Some("did the work".into()),
+            exit_code: Some(0),
+            stderr: "Warning: one\n\n    at frame (x.js:1)\n".into(),
+            ..Default::default()
+        });
+        let body = text(&spawn_result(&json!(2), "codex-impl", Ok(c.clone())));
+        let (line, rest) = body.split_once("\n\n").unwrap();
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.contains("Warning: one at frame (x.js:1)"), "{line}");
+        assert_eq!(rest, serde_json::to_string(&c).unwrap());
+    }
+
+    /// The summary names what changed, bounded, and how the checks went.
+    #[test]
+    fn the_summary_line_names_the_checks_and_the_changed_paths() {
+        let mut c = verified(
+            ran(crate::spawn::ChildOutcome {
+                narrative: Some("did the work".into()),
+                exit_code: Some(0),
+                ..Default::default()
+            }),
+            &[Some(0), Some(0)],
+        );
+        let comp = c.completion.as_mut().unwrap();
+        comp.changed_paths = (0..7).map(|i| format!("src/f{i}.rs").into()).collect();
+        comp.changed_paths_omitted = 3;
+        let body = text(&spawn_result(&json!(2), "codex-impl", Ok(c)));
+        let line = body.lines().next().unwrap_or_default();
+        assert!(
+            line.ends_with(
+                "| codex-impl · Ok · verification 2/2 passed · changed src/f0.rs, src/f1.rs, \
+                 src/f2.rs, src/f3.rs, src/f4.rs (+5 more) · branch marion/t1"
+            ),
+            "{line}"
+        );
     }
 
     /// A launch failure and a run failure are the same news, so they open the same way — and the
@@ -1908,7 +2047,7 @@ mod tests {
     #[test]
     fn the_contract_beneath_the_failure_line_is_the_whole_unaltered_record() {
         let c = ran(failed());
-        let expected = serde_json::to_string_pretty(&c).unwrap();
+        let expected = serde_json::to_string(&c).unwrap();
         let body = text(&spawn_result(&json!(2), "codex-impl", Ok(c.clone())));
         let (line, rest) = body.split_once("\n\n").expect("a line, then the record");
         assert!(line.starts_with("marion: the codex child failed"));
@@ -1918,7 +2057,7 @@ mod tests {
             serde_json::from_str(rest).expect("what rides beneath still parses as a contract");
         assert_eq!(back.completion.unwrap().exit.description, {
             let e = c.completion.unwrap().exit.description;
-            assert!(line.ends_with(&e), "the line quotes it: {line}");
+            assert!(line.contains(&e), "the line quotes it: {line}");
             e
         });
     }

@@ -166,8 +166,8 @@ pub fn render(msg: &Message) -> String {
 pub fn child_ended_text(agent_type: &str, root: bool, task_id: &str, body: &str) -> String {
     let node = if root { "root" } else { "child" };
     format!(
-        "marion: the {agent_type} {node} you backgrounded as task_id {task_id:?} has ended. This \
-         is what its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}"
+        "The {agent_type} {node} you backgrounded as task_id {task_id:?} has ended. This is what \
+         its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}"
     )
 }
 

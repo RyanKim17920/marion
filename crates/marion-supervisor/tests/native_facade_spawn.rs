@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 mod common;
 use common::cast::cast_text;
 use common::client::Client;
-use common::mcp_result::tool_result_text;
+use common::mcp_result::{contract_json, tool_result_text};
 
 /// Every wait here is bounded by this and none is a verdict: a real claude turn, a real codex turn
 /// and a `git worktree add` all happen inside it.
@@ -398,9 +398,10 @@ fn a_native_root_delegates_a_child_through_marions_own_mcp_server() {
         .iter()
         .find_map(|r| tool_result_text(r, ROOT_TOOL_USE_ID))
         .expect("a request carries the spawn's tool_result");
-    let contract: TaskContract = serde_json::from_str(&result_text).unwrap_or_else(|e| {
-        panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
-    });
+    let contract: TaskContract =
+        serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
+            panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+        });
     assert_eq!(
         contract.requester, root,
         "the contract the native root received must name it as the requester"

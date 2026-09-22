@@ -192,7 +192,12 @@ through the real bridge to a real unreported child). A root refused after its `S
 `SpawnAborted` (`root::refused_after_running`), so replay no longer holds it non-terminal, the
 supervisor exits, and the run no longer names it "unattended at a permission gate". `wait` and
 `status` resolve a **blocking** spawn's `task_id` too (`Background::delivered_inline`), returning
-the contract rather than "no record of task_id" (`background_spawn.rs`).
+the contract rather than "no record of task_id" (`background_spawn.rs`). Every contract-carrying
+`spawn`/`wait`/push result now opens with one summary line — headline, then `| <type> · <status> ·
+<checks> · <changed paths, five shown> · <branch>` — and carries the contract beneath as compact
+JSON (the success path was bare pretty JSON); `tests/common/mcp_result.rs::contract_json` is how
+the end-to-end suites read it. The push no longer opens `marion:`, which the client's own server
+label doubled; `status` words its next step by the node's state.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

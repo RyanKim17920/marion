@@ -135,7 +135,7 @@ use serde_json::{Value, json};
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
-use common::mcp_result::{codex_call_output_text, mcp_blocks_text};
+use common::mcp_result::{codex_call_output_text, contract_json, mcp_blocks_text};
 
 /// The outermost safety net. Every cell has its own `--timeout` below; this only exists so a wedged
 /// `marion` fails loudly instead of wedging the suite.
@@ -1106,7 +1106,7 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
          Keeping it under that threshold is what §6.7's cap rules exist to guarantee.\n\
          {result_text}"
     );
-    let returned: TaskContract = serde_json::from_str(&result_text).unwrap_or_else(|e| {
+    let returned: TaskContract = serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
         panic!("{cell}: the root's tool result does not deserialize to a TaskContract: {e}\n{result_text}")
     });
     assert_eq!(

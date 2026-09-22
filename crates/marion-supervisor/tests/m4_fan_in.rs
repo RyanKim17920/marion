@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
-use common::mcp_result::codex_call_output_text;
+use common::mcp_result::{codex_call_output_text, contract_json};
 
 /// Generous. The bound exists so a hung harness fails loudly instead of wedging the suite; nothing
 /// is measured against it.
@@ -546,9 +546,10 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
             !text.contains("<persisted-output>"),
             "the tool result was replaced by a stub, so the contract never reached the model:\n{text}"
         );
-        let returned: TaskContract = serde_json::from_str(&text).unwrap_or_else(|e| {
-            panic!("turn {i}'s tool result does not deserialize to a TaskContract: {e}\n{text}")
-        });
+        let returned: TaskContract =
+            serde_json::from_str(contract_json(&text)).unwrap_or_else(|e| {
+                panic!("turn {i}'s tool result does not deserialize to a TaskContract: {e}\n{text}")
+            });
         let persisted_json = contracts
             .iter()
             .map(|(_, v)| (*v).clone())
@@ -570,7 +571,7 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         .iter()
         .map(|i| {
             let text = codex_tool_output(last, &format!("{ROOT_PREFIX}_{i:02}")).unwrap();
-            serde_json::from_str::<TaskContract>(&text)
+            serde_json::from_str::<TaskContract>(contract_json(&text))
                 .unwrap()
                 .task_id
                 .0

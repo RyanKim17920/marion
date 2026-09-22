@@ -2160,6 +2160,10 @@ mod tests {
             content.contains("\"t-1\"") && content.contains("`wait`"),
             "and the push names the handle and says a `wait` still resolves it: {content}"
         );
+        assert!(
+            content.starts_with("The codex-impl child you backgrounded"),
+            "the client already names the server, so a leading `marion:` reads doubled: {content}"
+        );
         let meta = &frame["params"]["meta"];
         assert_eq!(meta["task_id"], "t-1");
         assert_eq!(meta["agent_type"], "codex-impl");

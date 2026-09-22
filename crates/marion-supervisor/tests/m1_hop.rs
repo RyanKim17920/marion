@@ -44,7 +44,7 @@ use serde_json::Value;
 
 mod common;
 use common::cap_rules::normalize_for_cap_rules;
-use common::mcp_result::tool_result_text;
+use common::mcp_result::{contract_json, tool_result_text};
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite, not to
 /// measure anything. The measured run is a couple of seconds.
@@ -231,9 +231,10 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
         "the tool result was replaced by a stub, so the contract never reached the model. \
          Keeping it under that threshold is what §6.7's cap rules exist to guarantee.\n{result_text}"
     );
-    let returned: TaskContract = serde_json::from_str(&result_text).unwrap_or_else(|e| {
-        panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
-    });
+    let returned: TaskContract =
+        serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
+            panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+        });
 
     let walked = persisted_contracts(&state).expect("the state tree enumerates");
     let contracts = judge(&walked);
