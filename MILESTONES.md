@@ -90,7 +90,8 @@ harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `clin
 `HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
 one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `cross_product` 57
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
-with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
+with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
+(`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268 and 2.1.269; codex 0.146.0/0.146.1/0.147.0;
 gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
@@ -2612,8 +2613,11 @@ says a clause failed.
   - ~~*Not at all:* **an ACP node is not spawnable through `marion run`.**~~ **FALSE since
     `acp_child.rs` landed, and re-checked 2026-09-05:** `run_spawn` derives `LaunchPath::Acp` from
     the type's surfaces and `run_acp_child` drives the session; the `acp-opencode` built-in and
-    every `acp:<command>` type name `harness: acp`. What is still true is narrower: an ACP node is a
-    **child** — `marion run` starts roots, and no ACP type is a root type.
+    every `acp:<command>` type name `harness: acp`. ~~What is still true is narrower: an ACP node is a
+    **child** — `marion run` starts roots, and no ACP type is a root type.~~ **FALSE since
+    2026-09-22:** `root::launch_acp` runs an ACP agent as a headless root, its frames teed live off
+    `AcpChildSpec::on_line` (`tests/acp_root.rs`). Still true, narrowly: attach, pane and resume
+    of an ACP root are not built.
 
   **The blocker, unchanged and not marion's** *(2026-08-08; superseded 2026-09-05 — the second
   real agent arrived as `copilot --acp`, and clause 1 is met above; gemini's own refusal is
@@ -2964,7 +2968,9 @@ re-check date, so each line now carries its own.
   re-checked 2026-09-05.** `crates/marion-supervisor/src/acp_child.rs` drives `initialize`,
   `session/new` or `session/load`, and `session/prompt` for a spawned child, answering the agent's
   own requests mid-turn; `run_spawn` reaches it through `LaunchPath::Acp`; `acp-opencode` and every
-  `acp:<command>` type name `harness: acp`. Still true, narrowly: ACP nodes are children, not roots.
+  `acp:<command>` type name `harness: acp`. ~~Still true, narrowly: ACP nodes are children, not
+  roots.~~ **FALSE since 2026-09-22:** a headless ACP root runs through `root::launch_acp`
+  (`tests/acp_root.rs`); attach, pane and resume of one are not built.
 - ~~**`verification` execution is unimplemented, so `evidence` is always empty.**~~ **FALSE since
   2026-09-12.** `run::run_verification` runs the lines and `evidence` carries their outcomes; see
   the dated line under "Not done".

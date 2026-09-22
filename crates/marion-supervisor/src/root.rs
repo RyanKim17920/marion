@@ -41,6 +41,8 @@
 //!
 //! - **`Typed(_)`** — the path described above: pipes, a readiness marker, an `initialize` round
 //!   trip, a user frame written after launch, and `can_use_tool` answered over the same channel.
+//!   `Typed(Acp)` is its ACP spelling: `crate::acp_child` drives the session, the answer to
+//!   `session/new` is the readiness gate, and every agent line is teed live ([`launch`]).
 //! - **`LaunchOnly`** — the prompt rides argv, so there is no frame to withhold and nothing to
 //!   steer. §6.1 step 8 binds *"only surfaces whose prompt is written after launch"*, and says such
 //!   a node's MCP readiness *"is asserted post hoc from the `mcp_tool_call` items in its stream"*.
@@ -67,7 +69,7 @@ use marion_core::root_change::{
 };
 use marion_harness::{
     Auth, CallOutcome, ChildExit, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
-    LaunchSpec, MarionCall, McpDeclaration, SpawnCtx, adapter_for, json_frames,
+    LaunchSpec, MarionCall, McpDeclaration, SpawnCtx, adapter_for, adapter_for_type, json_frames,
 };
 use serde_json::Value;
 
@@ -367,6 +369,13 @@ pub struct RootNode {
     /// differently. `CeilingOnly` and not a ceiling-plus-request pair: **no parent authored a
     /// request** — see `marion_core::root_change::RootScope`.
     pub scope: RootScope,
+    /// The `session/new` request an ACP root is opened with — the one object
+    /// `McpRoute::verify` checked carries marion's bridge, so the frame sent is the frame verified.
+    /// `None` on every other path, whose declaration travels at launch.
+    pub session_declaration: Option<Value>,
+    /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
+    /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
+    pub acp_agent: Option<String>,
 }
 
 /// What the root's run produced.
@@ -454,27 +463,10 @@ pub enum RootError {
          rather than pushed down one that does not fit it."
     )]
     UnsupportedRootSurface(Harness),
-    /// **`acp` runs as a child and not yet as a root, and the difference is a watcher.**
-    ///
-    /// Not a gap in the adapter: `crate::acp_child` drives an ACP turn end to end and `run_spawn`
-    /// spawns one. What a root has that a child does not is a person looking at it — the frames are
-    /// teed to a `watcher` as they arrive, `attach` re-subscribes to them, and `launch_terminal`
-    /// renders them. `run_acp_child` owns its frame loop for the whole turn and hands the transcript
-    /// back at the end, so a root on this path would sit silent until it finished and then print
-    /// everything at once, and `marion attach` would find nothing to attach to.
-    ///
-    /// Refused by name rather than run that way, per §6.4's rule about marion choosing for the
-    /// operator: "your root produced no output for four minutes" is not a thing an operator can
-    /// diagnose, and it is what accept-and-degrade would deliver here.
-    #[error(
-        "`{0}` is an ACP agent, and marion runs ACP nodes as **children** — `marion spawn` with an \
-         `acp` agent type — not as roots. A root's frames are teed to a watcher as they arrive and \
-         re-subscribed to by `marion attach`; the ACP driver owns its frame loop for the whole turn \
-         and yields the transcript at the end, so a root here would be silent until it finished. \
-         Spawn it from a root on another harness, or use `marion doctor --harness acp` to exercise \
-         the agent directly."
-    )]
-    AcpIsNotARootHarness(String),
+    /// An ACP root's session never produced a transcript: no handshake, no session, a pipe that
+    /// closed under marion's write. The driver's own sentence, which carries the agent's stderr.
+    #[error("driving the ACP root: {0}")]
+    Acp(#[from] crate::acp_child::AcpChildError),
     #[error("running the root: {0}")]
     Run(#[from] SpawnError),
     /// **Relaxed in shape, not in strength.** It used to read an empty `config_files` as the
@@ -659,7 +651,9 @@ pub fn prepare_watched(
         ..spec.clone()
     };
     let harness = agent_type.harness;
-    let adapter = adapter_for(harness)?;
+    // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
+    // protocol, and the agent type's `acp_agent` names the agent.
+    let adapter = adapter_for_type(harness, agent_type.acp_agent.as_deref())?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
     // harness; the pane is a fact about the run. Selecting here — once, before anything is
     // compiled — is what keeps the two from being decided in two places and disagreeing: the
@@ -668,12 +662,6 @@ pub fn prepare_watched(
     // asking the adapter a second question.
     let surfaces = root_surfaces(adapter.as_ref(), spec.pane, harness)?;
     let path = root_path(&surfaces).ok_or(RootError::UnsupportedRootSurface(harness))?;
-    // **Here, and not further down.** Nothing has been created yet — no worktree, no config
-    // document, no process — so the refusal leaves the filesystem as it found it. The same
-    // reasoning as the pane refusal above, and see the variant for why it is a refusal at all.
-    if path == RootPath::Acp {
-        return Err(RootError::AcpIsNotARootHarness(agent_type.name.clone()));
-    }
 
     let ready_file = root_ready_file(path, &agent_dir);
 
@@ -694,7 +682,15 @@ pub fn prepare_watched(
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
     // name a document nobody wrote.
-    let launch = root_launch_spec(spec, path, tools, &token, adapter.as_ref(), &agent_dir);
+    let launch = root_launch_spec(
+        spec,
+        path,
+        tools,
+        &token,
+        adapter.as_ref(),
+        &agent_dir,
+        agent_type.acp_agent.clone(),
+    );
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -817,6 +813,8 @@ pub fn prepare_watched(
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
         },
+        session_declaration: session,
+        acp_agent: agent_type.acp_agent.clone(),
     })
 }
 
@@ -864,10 +862,8 @@ fn compile_root(
 /// path has a frame to withhold, so only it has a marker to wait on (§6.1 step 8).
 fn root_ready_file(path: RootPath, agent_dir: &AgentDir) -> Option<PathBuf> {
     match path {
-        // **Dead, and kept honest rather than wildcarded.** `prepare` refused this path by name
-        // before anything was created (`RootError::AcpIsNotARootHarness`), so control never reaches
-        // here. Spelling the arm out means the day ACP becomes a root harness, the compiler asks
-        // this question again instead of a `_` answering it silently.
+        // The agent's answer to `session/new` is the gate: an ACP agent connects the servers a
+        // session declares before it answers, so the prompt goes out after the tools exist.
         RootPath::Acp => None,
         // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
         //
@@ -933,6 +929,7 @@ fn root_change_base(spec: &RootSpec, agent_dir: &AgentDir) -> RootChangeBase {
 
 /// The root's launch, in the neutral vocabulary the adapter compiles from. `tools` is the axis
 /// [`availability_axis`] already gated, and `token` the per-run credential [`per_run_token`] minted.
+/// `acp_agent` is the agent type's, read only by the ACP adapter.
 fn root_launch_spec(
     spec: &RootSpec,
     path: RootPath,
@@ -940,14 +937,14 @@ fn root_launch_spec(
     token: &str,
     adapter: &dyn HarnessAdapter,
     agent_dir: &AgentDir,
+    acp_agent: Option<String>,
 ) -> LaunchSpec {
     LaunchSpec {
         cwd: spec.repo.clone(),
         model: spec.model.clone(),
         prompt: match path {
-            // Written after launch, not compiled into argv (§6.1 step 8). `Acp` is dead here —
-            // refused in `prepare` — and would be the same answer: the prompt is a
-            // `session/prompt` frame and reaches argv on no ACP agent.
+            // Written after launch, not compiled into argv (§6.1 step 8). On ACP the prompt is a
+            // `session/prompt` frame and reaches argv on no agent.
             RootPath::Duplex | RootPath::Acp => String::new(),
             // A positional, and what the harness then does with it **differs by harness** —
             // stated rather than generalised, because marion compiles the same field twice and
@@ -987,9 +984,8 @@ fn root_launch_spec(
         // to present the login the operator already has, and a placeholder beside it would be a
         // second credential competing with the real one.
         api_key: match (spec.auth, path) {
-            // `Acp` is dead here — refused in `prepare`. Under a canned provider the credential
-            // travels in the agent's own config document (S23), never in this field, so `None` is
-            // also the answer it would have if the refusal were lifted.
+            // On ACP, under a canned provider the credential travels in the agent's own config
+            // document (S23), never in this field.
             (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex | RootPath::Acp) => None,
             // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
@@ -998,7 +994,10 @@ fn root_launch_spec(
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
-        extra: Extras::default(),
+        extra: Extras {
+            acp_agent,
+            ..Extras::default()
+        },
     }
 }
 
@@ -1064,7 +1063,7 @@ pub fn launch(
 /// `marion run` passes to render those frames for a human; `launch` is the same call with none, and
 /// is what every non-interactive caller uses.
 ///
-/// **Additive, and only on the duplex path.** The accumulated `RootOutcome::transcript` is
+/// **Additive, and only on the duplex and ACP paths.** The accumulated `RootOutcome::transcript` is
 /// unchanged whether a watcher is present or not — many tests read it, and a live view is a second
 /// way to observe the same run, not a replacement for the record of it. A `LaunchOnly` root is
 /// launched through `run_bounded`, which has no frame loop to watch: its prompt is already in argv
@@ -1206,11 +1205,12 @@ fn launch_inner(
         node.path == RootPath::Terminal,
     );
     let result = match node.path {
-        // Unreachable by `prepare`'s refusal, and stated as the refusal rather than as a panic: a
-        // `Node` reaching here on this path would mean the guard had been removed, and an operator
-        // deserves the sentence that explains why over a supervisor abort.
+        // The same three readers as the duplex tee, fed from the ACP driver's live line seam.
         RootPath::Acp => {
-            return Err(RootError::AcpIsNotARootHarness(node.harness.to_string()));
+            let tee = |ev: duplex::StreamEvent<'_>| {
+                tee_root_frame(events.as_ref(), &session, watcher, ev)
+            };
+            launch_acp(node, bound, &tee, &started)
         }
         // The root's frames go to **two** places now, and they are different kinds of destination:
         // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
@@ -1834,6 +1834,55 @@ fn launch_only(
         assert_a_verb_was_answered(node.harness, &outcome)?;
     }
     Ok(outcome)
+}
+
+/// The ACP root: one driven turn, with every agent line teed live to `tee` as it arrives.
+///
+/// No post-hoc [`assert_a_verb_was_answered`]: the agent's answer to `session/new` is the readiness
+/// gate, because an ACP agent connects the servers a session declares before it answers, so the
+/// prompt goes out after marion's tools exist — the same ordering the duplex path buys with its
+/// marker. The outcome is read exactly as a child's ACP stream is read (`run_spawn`'s arm).
+fn launch_acp(
+    node: &RootNode,
+    bound: StdDuration,
+    tee: duplex::StreamSink<'_>,
+    on_started: &dyn Fn(i32),
+) -> Result<RootOutcome, RootError> {
+    let on_line = |line: &str| {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            return;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) if v.is_object() => tee(duplex::StreamEvent::Frame(&v)),
+            _ => tee(duplex::StreamEvent::Unparsed(line)),
+        }
+    };
+    let run = crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
+        inv: &node.invocation,
+        session_declaration: node.session_declaration.clone(),
+        prompt: &node.prompt,
+        bound,
+        on_started,
+        on_line: Some(&on_line),
+    })?;
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
+    Ok(RootOutcome {
+        // **The turn's code, not the process's.** An ACP agent is a stdio server marion shuts down
+        // once the turn is answered — EOF, then SIGINT — so its process status describes marion's
+        // shutdown (`AcpRun::exit`): `None` on a signal, or whatever the agent's interrupt handler
+        // chose. A turn the agent answered is a finished run, and its stream is what can still fail
+        // it (`failure` below); an unanswered one is `timed_out`, which outranks every code.
+        exit_code: (!run.exit.timed_out).then_some(0),
+        transcript: json_frames(&run.stdout),
+        marion_calls: adapter.marion_calls(&run.stdout),
+        failure: adapter.parse_stream(&run.stdout, run.exit).failure,
+        stderr: run.stderr,
+        // marion answers the agent's permission asks permissively in the driver, so it refused
+        // nothing — the same reading `run_spawn`'s ACP arm records.
+        denied_permissions: vec![],
+        timed_out: run.exit.timed_out,
+    })
 }
 
 /// The pane's geometry before anybody has attached.
@@ -3369,9 +3418,10 @@ mod tests {
     ///
     /// Driven off `builtin_names()` rather than a list kept here, because a list kept here is a
     /// list a new built-in is silently absent from — which is exactly what happened when
-    /// `acp-opencode` landed: it is the one type that is *not* a root, and a hardcoded sweep of the
-    /// other five would have called that fact proven without ever asking. Its refusal is asserted
-    /// by name below, so "ACP is not a root harness" is a measured claim rather than an omission.
+    /// `acp-opencode` landed, then as the one type refused as a root. It is a root now, on its own
+    /// path: the prompt is a `session/prompt` frame, there is no marker to gate on (the answer to
+    /// `session/new` is the gate), and the declaration rides the `session/new` request, stamped
+    /// depth 0 and with the root's own id, exactly as a child's is stamped with its own.
     #[test]
     fn every_builtin_agent_type_prepares_as_a_root_with_its_config_actually_on_disk() {
         let dir = temp("prepare");
@@ -3381,30 +3431,16 @@ mod tests {
         // where no change record can be taken. That refusal is correct; the fixture was wrong, and
         // a bare directory silently tested only the types that ask for nothing.
         marion_testsupport::fixture_repo(&dir);
-        let mut refused = 0;
+        let mut acp_roots = 0;
         for name in marion_core::agent_type::builtin_names() {
-            if builtin(name).unwrap().harness == Harness::Acp {
-                let e = prepare(&root_spec(&dir, name))
-                    .expect_err("`acp` runs as a child, not as a root");
-                assert!(
-                    matches!(e, RootError::AcpIsNotARootHarness(_)),
-                    "{name}: expected the named refusal, got {e}"
-                );
-                // Nothing was created before the refusal: a root that will not run must not leave a
-                // config document, a worktree or a state directory behind it.
-                assert!(
-                    !dir.join("state").join("agents").exists(),
-                    "{name}: the refusal came after something was written"
-                );
-                refused += 1;
-                continue;
-            }
             let node = prepare(&root_spec(&dir, name))
                 .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge here — in a document, or, on goose,
             // as the one `--with-extension marion:…` argv token its row routes through
-            // (`McpRoute::Argv`), which `verify` has already checked the argv for.
+            // (`McpRoute::Argv`), which `verify` has already checked the argv for. An ACP root's
+            // rides `session/new`, asserted in its own arm below.
             match node.mcp_config.as_ref() {
+                None if node.path == RootPath::Acp => {}
                 Some(declaration) => assert!(
                     declaration.is_file(),
                     "{name}: the MCP declaration marion compiled a path to must exist: {}",
@@ -3443,15 +3479,47 @@ mod tests {
                     "{name}: a built-in agent type reached the pane path without a run asking \
                      for one"
                 ),
-                // `prepare` refuses this path before a node exists, so a node holding it means the
-                // refusal was removed and the branch above was skipped.
-                RootPath::Acp => panic!("{name}: an ACP type prepared as a root"),
+                RootPath::Acp => {
+                    assert!(
+                        !in_argv,
+                        "{name}: an ACP prompt is a `session/prompt` frame"
+                    );
+                    assert!(
+                        node.ready_file.is_none(),
+                        "{name}: the answer to `session/new` is the gate, not a marker"
+                    );
+                    let decl = node
+                        .session_declaration
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{name}: no `session/new` declaration"));
+                    assert_eq!(decl["method"], "session/new", "{name}");
+                    let env = decl["params"]["mcpServers"][0]["env"]
+                        .as_array()
+                        .unwrap_or_else(|| panic!("{name}: no bridge env in {decl}"));
+                    let var = |k: &str| {
+                        env.iter()
+                            .find(|e| e["name"] == k)
+                            .and_then(|e| e["value"].as_str())
+                            .map(str::to_string)
+                    };
+                    assert_eq!(
+                        var(DEPTH_ENV).as_deref(),
+                        Some("0"),
+                        "{name}: a root's bridge is depth 0: {decl}"
+                    );
+                    assert_eq!(
+                        var(AGENT_ID_ENV).as_deref(),
+                        Some(node.agent_id.0.as_str()),
+                        "{name}: the bridge carries the root's own id: {decl}"
+                    );
+                    acp_roots += 1;
+                }
             }
             assert_eq!(node.prompt, "delegate it", "{name}");
         }
         assert!(
-            refused > 0,
-            "no built-in exercises the refusal, so this test asserts only the happy side"
+            acp_roots > 0,
+            "no built-in exercises the ACP root path, so this test asserts nothing about it"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

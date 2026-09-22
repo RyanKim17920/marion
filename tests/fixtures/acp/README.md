@@ -31,8 +31,8 @@ the tests below.
 
 ## Which tests read it
 
-Both reach it as `$CARGO_MANIFEST_DIR/../../tests/fixtures/acp/fake_acp_agent.py`, and both skip
-themselves when `python3` is not on `PATH`:
+Each reaches it as `$CARGO_MANIFEST_DIR/../../tests/fixtures/acp/fake_acp_agent.py`, and each skips
+itself when `python3` is not on `PATH`:
 
 - `crates/marion-supervisor/tests/acp_child.rs` —
   `a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_path`, which runs it as
@@ -43,9 +43,14 @@ themselves when `python3` is not on `PATH`:
   `an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake`, which proves the doctor row
   is keyed on what the agent said in `initialize` (`fake-acp-agent 0.1.0`) rather than on any row
   marion carries.
+- `crates/marion-supervisor/tests/acp_root.rs` —
+  `an_acp_root_delegates_to_a_child_and_is_watched_live`, which runs it as a **root** through
+  `marion run` with the prompt `spawn:acp:python3 <path>|write the file`. In that mode the agent
+  writes nothing, streams two `agent_message_chunk`s and calls the bridge's `spawn` tool, mirrored
+  as a `tool_call` titled `marion/spawn`; the child it spawns is the same fake in its reporting mode.
 
 Because the whole point is an agent no table names, **keep its tool spelling and its `agentInfo`
-out of `acp::AGENTS`**; adding either would silently convert both tests into table lookups.
+out of `acp::AGENTS`**; adding either would silently convert these tests into table lookups.
 
 ## Redaction
 

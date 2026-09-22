@@ -12,6 +12,10 @@ in `acp::AGENTS` was measured to use. The test this serves asserts that marion r
 a transcript in a spelling it has never seen, from an agent it has never named — the baseline "any
 ACP agent works" path — so the spelling here must stay one the refinement table does not carry.
 
+One more mode, for `tests/acp_root.rs`: a prompt containing `spawn:<agent type>|<child prompt>`
+makes it a delegating **root** instead — it writes nothing and calls the bridge's `spawn` tool with
+that agent type and prompt, mirrored as a `tool_call` titled `marion/spawn`.
+
 Runs nothing but the servers it is handed; no model, no network, no credential.
 """
 import json
@@ -24,6 +28,8 @@ CHILD_FILE = "src/marion_acp.txt"
 CHILD_FILE_CONTENT = "marion: written by the fake ACP agent\n"
 NARRATIVE = "Edited the worktree over ACP from an agent marion had never heard of."
 TOOL_TITLE = "marion/report"
+SPAWN_TITLE = "marion/spawn"
+SPAWN_MODE = "spawn:"
 
 out_lock = threading.Lock()
 
@@ -110,6 +116,36 @@ def update(session_id, body):
     send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session_id, "update": body}})
 
 
+def prompt_text(params):
+    return "".join(b.get("text", "") for b in params.get("prompt", []) if isinstance(b, dict))
+
+
+def mirrored_call(sid, server, title, tool, args):
+    """Call `tool` on `server` for real, mirrored as ACP `tool_call` / `tool_call_update` frames."""
+    update(sid, {"sessionUpdate": "tool_call", "toolCallId": "call-1", "title": title,
+                 "kind": "other", "status": "pending", "rawInput": {}})
+    result = server.call("tools/call", {"name": tool, "arguments": args})
+    failed = "error" in result or result.get("result", {}).get("isError") is True
+    text = json.dumps(result.get("result", result.get("error")))
+    update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "call-1",
+                 "status": "failed" if failed else "completed", "rawInput": args,
+                 "content": [{"type": "content", "content": {"type": "text", "text": text}}]})
+
+
+def delegate(sid, rid, text):
+    """The root mode: `spawn:<agent type>|<child prompt>` becomes one real `spawn` call."""
+    agent_type, _, child_prompt = text[text.index(SPAWN_MODE) + len(SPAWN_MODE):].partition("|")
+    marion = next((s for s in servers if s.name == "marion" and "spawn" in s.tools), None)
+    if marion is not None:
+        update(sid, {"sessionUpdate": "agent_message_chunk",
+                     "content": {"type": "text", "text": "Delegating to "}})
+        update(sid, {"sessionUpdate": "agent_message_chunk",
+                     "content": {"type": "text", "text": "a child."}})
+        mirrored_call(sid, marion, SPAWN_TITLE, "spawn",
+                      {"agent_type": agent_type.strip(), "prompt": child_prompt.strip()})
+    send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+
+
 def handle(frame):
     method = frame.get("method")
     rid = frame.get("id")
@@ -137,6 +173,10 @@ def handle(frame):
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": session["id"]}})
     elif method == "session/prompt":
         sid = params.get("sessionId") or session["id"]
+        text = prompt_text(params)
+        if SPAWN_MODE in text:
+            delegate(sid, rid, text)
+            return
         path = os.path.join(session["cwd"], CHILD_FILE)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as fh:
@@ -145,15 +185,7 @@ def handle(frame):
         if marion is None:
             send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
             return
-        args = {"narrative": NARRATIVE}
-        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "call-1", "title": TOOL_TITLE,
-                     "kind": "other", "status": "pending", "rawInput": {}})
-        result = marion.call("tools/call", {"name": "report", "arguments": args})
-        failed = "error" in result or result.get("result", {}).get("isError") is True
-        text = json.dumps(result.get("result", result.get("error")))
-        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "call-1",
-                     "status": "failed" if failed else "completed", "rawInput": args,
-                     "content": [{"type": "content", "content": {"type": "text", "text": text}}]})
+        mirrored_call(sid, marion, TOOL_TITLE, "report", {"narrative": NARRATIVE})
         send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
     elif method == "session/cancel":
         pass
