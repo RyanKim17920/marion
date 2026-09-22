@@ -62,7 +62,7 @@ Bare `marion` asks three questions — harness, model, prompt — and then runs 
 
 ## Where a child's work lands
 
-A child spawned with `isolation: "worktree"` works in its own git worktree on the branch `marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch — authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks and signing skipped — removes the worktree directory, and keeps the branch. The contract records the branch and commit (`completion.branch`, `completion.commit`). marion never merges into your branch; review and merge it yourself:
+A child spawned with `isolation: "worktree"` works in its own git worktree on the branch `marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch — authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks and signing skipped — removes the worktree directory, and keeps the branch. The contract records the branch and commit (`completion.branch`, `completion.commit`), and `marion run` prints them under the child's `CHILD` line as `changes on branch marion/<task_id> (<sha>); merge with: git merge marion/<task_id>`. marion never merges into your branch; review and merge it yourself:
 
 ```sh
 git log -p HEAD..marion/<task_id>     # what the child did

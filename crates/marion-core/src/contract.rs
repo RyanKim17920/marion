@@ -301,12 +301,18 @@ impl Completion {
     /// when there is nothing to merge. The sha is shortened to 12 characters for reading; the
     /// full one is [`Self::commit`].
     pub fn landed_line(&self) -> Option<String> {
-        let (branch, commit) = (self.branch.as_deref()?, self.commit.as_ref()?);
-        let short = commit.0.get(..12).unwrap_or(&commit.0);
-        Some(format!(
-            "changes on branch {branch} ({short}); merge with: git merge {branch}"
+        Some(landed_line(
+            self.branch.as_deref()?,
+            &self.commit.as_ref()?.0,
         ))
     }
+}
+
+/// [`Completion::landed_line`] from the two strings alone, for a reader holding a contract as JSON
+/// rather than as a [`Completion`] — one wording, wherever it is printed.
+pub fn landed_line(branch: &str, commit: &str) -> String {
+    let short = commit.get(..12).unwrap_or(commit);
+    format!("changes on branch {branch} ({short}); merge with: git merge {branch}")
 }
 
 /// The tokens one node's run spent, as its harness's own stream reported them.

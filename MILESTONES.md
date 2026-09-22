@@ -232,7 +232,8 @@ reads; the operator's configured identity else `marion <marion@localhost>`, pass
 never written to config; hooks and signing off — then the directory goes and the branch stays.
 Out-of-scope paths are committed too and stay in `scope_violations`. `Completion.branch` and
 `Completion.commit` (additive, absent when `None`, kept by every cap rule) record it, and
-`Completion::landed_line` is the sentence a parent prints. A child with no changes keeps the old
+`Completion::landed_line` is the sentence a parent prints — `marion run` shows it under the
+child's `CHILD` line (`marion.rs::contract_summary`). A child with no changes keeps the old
 shape; a commit that fails keeps the worktree and says so in the exit description. marion still
 never merges. `worktree_reap.rs` (11, real codex) inverts its three `CURRENT BEHAVIOUR` branch
 assertions and adds the no-change and out-of-scope cases; `spawn.rs` unit tests pin identity,

@@ -1196,9 +1196,17 @@ fn contract_summary(text: &str) -> Option<String> {
         // The failure line marion itself wrote, kept whole: it names what went wrong.
         summary = format!("{}\n{summary}", head.trim());
     }
-    match completion["narrative"]["value"].as_str() {
-        Some(n) => Some(format!("{summary}: {}", brief(n, LINE_CHARS))),
-        None => Some(format!("{summary}, reporting no narrative")),
+    let summary = match completion["narrative"]["value"].as_str() {
+        Some(n) => format!("{summary}: {}", brief(n, LINE_CHARS)),
+        None => format!("{summary}, reporting no narrative"),
+    };
+    // Where the work is, once its worktree is gone — the one thing a watcher must act on.
+    match (completion["branch"].as_str(), completion["commit"].as_str()) {
+        (Some(branch), Some(commit)) => Some(format!(
+            "{summary}\n{}",
+            marion_core::contract::landed_line(branch, commit)
+        )),
+        _ => Some(summary),
     }
 }
 
@@ -3458,6 +3466,45 @@ mod tests {
                 {"type":"tool_result","tool_use_id":"t","content":"{\"unrelated\":\"json\"}"}]}}"#,
         );
         assert!(plain[0].starts_with("ok"), "{:?}", plain[0]);
+    }
+
+    /// **A child whose work landed on a branch says so, with the command that takes it.** The
+    /// work is no longer in any worktree, so without this line the watcher learns the child
+    /// succeeded and has no idea where its change went.
+    #[test]
+    fn a_returned_contract_whose_work_landed_names_the_branch_and_the_merge() {
+        let contract = r#"{
+  "child": {"harness": "codex"},
+  "completion": {
+    "status": "Ok",
+    "narrative": {"value": "added subtract", "truncated": false},
+    "branch": "marion/01a0ca90",
+    "commit": "52dff3a0123456789abcdef0123456789abcdef0"
+  }
+}"#;
+        let lines = shown(&format!(
+            r#"{{"type":"user","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"toolu_1","content":{}}}]}}}}"#,
+            serde_json::to_string(contract).unwrap()
+        ));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("the codex child returned Ok: added subtract"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].ends_with(
+                "changes on branch marion/01a0ca90 (52dff3a01234); merge with: git merge \
+                 marion/01a0ca90"
+            ),
+            "{lines:?}"
+        );
+        let unlanded = shown(&format!(
+            r#"{{"type":"user","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"toolu_1","content":{}}}]}}}}"#,
+            serde_json::to_string(&contract.replace("\"branch\"", "\"elsewhere\"")).unwrap()
+        ));
+        assert_eq!(unlanded.len(), 1, "no branch, no line: {unlanded:?}");
     }
 
     // --- the child's life, read out of the journal ------------------------------------------------
