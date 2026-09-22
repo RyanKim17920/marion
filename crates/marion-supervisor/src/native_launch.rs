@@ -374,6 +374,7 @@ impl NativeNodeJournal {
                 // §3.1's agent-type default in the tree, which is the honest answer for a node
                 // marion is not timing.
                 timeout_secs: None,
+                verification: vec![],
             }))
     }
 

@@ -4726,6 +4726,7 @@ mod tests {
             depth,
             task_id: None,
             timeout_secs: None,
+            verification: vec![],
         })
     }
 
@@ -4874,6 +4875,7 @@ mod tests {
                 depth: 1,
                 task_id: None,
                 timeout_secs: bound,
+                verification: vec![],
             })
         };
         let bounded = node_of(&[line(0, 1, intent_with(Some(120)))], "r");
@@ -4911,6 +4913,7 @@ mod tests {
             depth: 1,
             task_id: None,
             timeout_secs: Some(60),
+            verification: vec![],
         };
         std::fs::write(&file, row("codex")).unwrap();
         assert_eq!(
@@ -11769,6 +11772,7 @@ mod tests {
                     depth: 1,
                     task_id: Some(marion_core::contract::TaskId(CHILD_TASK.into())),
                     timeout_secs: None,
+                    verification: vec![],
                 }),
                 spawned("child"),
                 session("child", workspace),

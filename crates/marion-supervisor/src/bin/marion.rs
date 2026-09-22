@@ -3406,6 +3406,7 @@ mod tests {
                             depth: 1,
                             task_id: None,
                             timeout_secs: None,
+                            verification: vec![],
                         }),
                     ),
                     // Written after the run is over, in the window between the stop and the last
@@ -4167,6 +4168,7 @@ mod tests {
                 depth: 0,
                 task_id: None,
                 timeout_secs,
+                verification: vec![],
             })
         };
         let session = |pane: bool| {

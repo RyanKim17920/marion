@@ -748,6 +748,7 @@ mod tests {
                 depth: 0,
                 task_id: None,
                 timeout_secs: None,
+                verification: vec![],
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("root"),
@@ -764,6 +765,7 @@ mod tests {
                 depth: 1,
                 task_id: Some(TaskId("t-1".into())),
                 timeout_secs: None,
+                verification: vec![],
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("child"),
@@ -1259,6 +1261,7 @@ mod tests {
                     depth: 0,
                     task_id: None,
                     timeout_secs: None,
+                    verification: vec![],
                 }),
             ),
             record(
@@ -1352,6 +1355,7 @@ mod tests {
                     depth: 0,
                     task_id: None,
                     timeout_secs: None,
+                    verification: vec![],
                 }),
             ),
             at(
@@ -1539,6 +1543,7 @@ mod tests {
                 depth: 0,
                 task_id: None,
                 timeout_secs: None,
+                verification: vec![],
             }),
         )];
         if let Some(observation) = change {
@@ -1832,6 +1837,7 @@ mod tests {
             depth: 1,
             task_id: Some(TaskId("t-1".into())),
             timeout_secs: None,
+            verification: vec![],
         })
     }
 

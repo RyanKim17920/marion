@@ -533,6 +533,7 @@ mod tests {
             depth: u32::from(parent.is_some()),
             task_id: None,
             timeout_secs: None,
+            verification: vec![],
         })
     }
 

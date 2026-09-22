@@ -268,6 +268,7 @@ mod tests {
                 depth: 0,
                 task_id: Some(TaskId(format!("t-{agent}"))),
                 timeout_secs: None,
+                verification: vec![],
             }));
             self.push(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -336,6 +337,7 @@ mod tests {
             depth: 0,
             task_id: None,
             timeout_secs: None,
+            verification: vec![],
         }));
         log.push(RecordKind::SpawnAborted(SpawnAborted {
             agent_id: id("nevergot"),

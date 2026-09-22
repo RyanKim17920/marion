@@ -780,6 +780,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             depth: 0,
             task_id: None,
             timeout_secs: None,
+            verification: vec![],
         }),
     );
     seed(

@@ -780,6 +780,7 @@ pub fn prepare_watched(
             // §3.1's bound as this run resolved it (`blocked_bound_secs`, on the spec), so the
             // tree reports the clock the operator asked for instead of the agent type's default.
             timeout_secs: Some(spec.bound_secs),
+            verification: vec![],
         }),
     );
     // **§6.1 step 7's shape, applied to the other thing this function decides.**

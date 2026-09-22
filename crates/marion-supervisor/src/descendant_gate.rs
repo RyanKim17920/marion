@@ -323,6 +323,7 @@ mod tests {
             depth,
             task_id: Some(TaskId(format!("task-{agent}"))),
             timeout_secs: None,
+            verification: vec![],
         })
     }
 

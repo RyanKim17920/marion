@@ -290,6 +290,21 @@ pub struct SpawnIntent {
     /// rather than inventing a number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// **The spawn's `verification` lines, in the order the caller gave them** — the commands the
+    /// supervisor runs after the child exits and records as the contract's evidence. Empty for a
+    /// root, which has no contract, and for a spawn that asked for none.
+    ///
+    /// **Recorded because a resumed child must re-run them.** A restart relaunches a lost child
+    /// from its journal alone; before this field the lines lived only in the spawn request, so the
+    /// resumed run verified nothing and its contract's evidence was silently empty.
+    ///
+    /// **Additive**, per this enum's rule: `#[serde(default)]` so every journal written before it
+    /// replays as *no lines*, and `skip_serializing_if` so an intent without any is byte-identical
+    /// to what the previous build wrote. The spawn path caps the lines' total size well under
+    /// [`MAX_RECORD_BYTES`], because an intent over the cap would be dropped and take the node's
+    /// identity with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
 }
 
 /// §6.1 step 7's confirmation: the process exists.
@@ -546,6 +561,7 @@ mod tests {
             depth: 1,
             task_id: Some(TaskId("t-1".into())),
             timeout_secs: None,
+            verification: vec![],
         })
     }
 
@@ -688,6 +704,7 @@ mod tests {
                 depth: 0,
                 task_id: None,
                 timeout_secs: None,
+                verification: vec![],
             })
             .is_barrier()
         );
@@ -824,6 +841,7 @@ mod tests {
             depth: 0,
             task_id: None,
             timeout_secs: None,
+            verification: vec![],
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(without)).unwrap(),
@@ -840,6 +858,7 @@ mod tests {
             depth: 0,
             task_id: None,
             timeout_secs: Some(300),
+            verification: vec![],
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
         assert!(
@@ -860,6 +879,52 @@ mod tests {
             RecordKind::SpawnIntent(i) => assert_eq!(
                 i.timeout_secs, None,
                 "the journal does not say, which is not the same as 900"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **The verification lines are additive in both directions, for the bound's reasons.** An
+    /// intent written before the field existed replays as *no lines* — which is what a resumed
+    /// child ran with before the lines were journaled — and an intent with none writes the
+    /// byte-identical line every earlier build wrote.
+    #[test]
+    fn a_spawn_intent_carries_its_verification_and_omits_it_when_there_is_none() {
+        let intent = |verification: Vec<String>| SpawnIntent {
+            agent_id: AgentId("a-1".into()),
+            parent_id: Some(AgentId("r-1".into())),
+            agent_type: "codex".into(),
+            harness: Harness::Codex,
+            depth: 1,
+            task_id: None,
+            timeout_secs: None,
+            verification,
+        };
+        assert_eq!(
+            serde_json::to_string(&RecordKind::SpawnIntent(intent(vec![]))).unwrap(),
+            r#"{"SpawnIntent":{"agent_id":"a-1","parent_id":"r-1","agent_type":"codex","harness":"codex","depth":1}}"#,
+            "`skip_serializing_if` keeps an intent without verification byte-identical to what \
+             every build before this field wrote"
+        );
+
+        let with = intent(vec!["cargo test".into(), "touch VERIFIED".into()]);
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
+        assert!(
+            line.contains(r#""verification":["cargo test","touch VERIFIED"]"#),
+            "the lines are on the record in order, as plain strings: {line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(with),
+            "round-trips, so a resumed child re-runs what its spawn asked for"
+        );
+
+        // An intent from a build that predates the field.
+        let old = r#"{"SpawnIntent":{"agent_id":"a-1","parent_id":"r-1","agent_type":"codex","harness":"codex","depth":1}}"#;
+        match serde_json::from_str::<RecordKind>(old).expect("an older intent must read") {
+            RecordKind::SpawnIntent(i) => assert!(
+                i.verification.is_empty(),
+                "an older journal names no lines, and replay invents none"
             ),
             other => panic!("{other:?}"),
         }
