@@ -360,10 +360,28 @@ type Refusal = String;
 /// with an empty forest, which reads as "no agents are running" rather than as "marion is not
 /// looking where you think".
 pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
+    let (stream, shown) = dial(repo, state_dir)?;
+    Session::open(stream, shown)?.pump(repo, state_dir)
+}
+
+/// **One `tree/subscribe` snapshot, and nothing kept open** — what `marion list` prints.
+///
+/// The screen's own dial and the screen's own subscribe, so the list and the tree cannot disagree
+/// about which supervisor they asked or what its answer adds up to; the notifications that arrive
+/// before the answer are folded exactly as the screen folds them. Refuses as [`run`] does, for
+/// [`run`]'s reason, when nobody is serving.
+pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refusal> {
+    let (stream, shown) = dial(repo, state_dir)?;
+    Ok(Session::open(stream, shown)?.nodes)
+}
+
+/// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
+/// row should name the project.
+fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String), Refusal> {
     let key = crate::socket::project_root(repo);
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
-        // One line. Why marion will not start a supervisor here is this function's doc comment.
+        // One line. Why marion will not start a supervisor here is `run`'s doc comment.
         return Err(format!(
             "no supervisor is serving `{}`; run `marion run <agent-type> --pane` here first",
             key.display()
@@ -380,7 +398,7 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
         Some(".git") => key.parent().unwrap_or(&key),
         _ => &key,
     };
-    Session::open(stream, shown.display().to_string())?.pump(repo, state_dir)
+    Ok((stream, shown.display().to_string()))
 }
 
 /// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
@@ -1716,6 +1734,33 @@ mod tests {
             refusal.len() < dir.display().to_string().len() + 100,
             "{} chars is a paragraph, not a hint: {refusal}",
             refusal.len()
+        );
+    }
+
+    /// **A one-shot snapshot refuses exactly as the screen does** when nobody is serving: it dials
+    /// the same way and, like the screen, starts no supervisor — an empty forest from a supervisor
+    /// started here would read as "nothing needs attention" rather than "wrong project".
+    #[test]
+    fn a_snapshot_with_no_supervisor_refuses_with_the_screens_sentence() {
+        let dir = std::env::temp_dir().join(format!(
+            "marion-snapshot-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let from_snapshot = snapshot(&dir, &dir).expect_err("nobody is serving a fresh directory");
+        let from_screen = run(&dir, &dir).expect_err("nobody is serving a fresh directory");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(from_snapshot, from_screen);
+        assert!(
+            crate::socket::nobody_is_serving(&crate::socket::socket_paths(
+                &dir,
+                &crate::socket::project_root(&dir),
+                crate::socket::own_uid()
+            )),
+            "a snapshot must not have started a supervisor"
         );
     }
 
