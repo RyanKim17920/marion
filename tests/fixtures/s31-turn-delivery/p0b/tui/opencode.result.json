@@ -1,0 +1,105 @@
+{
+ "name": "opencode",
+ "argv": [
+  "opencode",
+  "-m",
+  "canned/canned-1",
+  "<scratch>/p0b/repo"
+ ],
+ "ready": true,
+ "decset_2004h_at_boot": true,
+ "decset_1004h_at_boot": false,
+ "alt_screen_1049h": true,
+ "bells_at_boot": 0,
+ "osc_at_boot": [
+  [
+   99,
+   "i=opentui-notifications:p=?;"
+  ]
+ ],
+ "idle": {
+  "seconds": 10.01,
+  "bytes": 0,
+  "bytes_per_s": 0.0,
+  "chunks": 0,
+  "max_gap_ms": 10013,
+  "p50_gap_ms": 10013
+ },
+ "busy_focused": {
+  "request_seen_after_s": 3.55,
+  "busy_window": {
+   "seconds": 10.01,
+   "bytes": 29275,
+   "bytes_per_s": 2923.3,
+   "chunks": 156,
+   "max_gap_ms": 335,
+   "p50_gap_ms": 46
+  },
+  "bells_after_submit": 0,
+  "osc_after_submit": [],
+  "t_submit": 1790105709.464452,
+  "t_settled": 1790105738.309865
+ },
+ "busy_unfocused": {
+  "request_seen_after_s": 1.22,
+  "busy_window": {
+   "seconds": 5.01,
+   "bytes": 16059,
+   "bytes_per_s": 3206.9,
+   "chunks": 84,
+   "max_gap_ms": 361,
+   "p50_gap_ms": 46
+  },
+  "bells_after_submit": 0,
+  "osc_after_submit": [],
+  "t_submit": 1790105739.0484428,
+  "t_settled": 1790105749.946462
+ },
+ "idle_after_turns": {
+  "seconds": 10.02,
+  "bytes": 47,
+  "bytes_per_s": 4.7,
+  "chunks": 1,
+  "max_gap_ms": 10004,
+  "p50_gap_ms": 10004
+ },
+ "paste_delay": {
+  "0": {
+   "submitted": true,
+   "latency_s": 1.82
+  },
+  "50": {
+   "submitted": true,
+   "latency_s": 0.39
+  },
+  "150": {
+   "submitted": true,
+   "latency_s": 0.36
+  },
+  "300": {
+   "submitted": true,
+   "latency_s": 0.84
+  },
+  "600": {
+   "submitted": true,
+   "latency_s": 0.68
+  }
+ },
+ "raw_text_then_cr_0ms_submitted": true,
+ "busy_enter": {
+  "a_requests": 2,
+  "b_requests": 1,
+  "b_first_request_rel_submit_s": 7.73,
+  "b_before_a_answered": false,
+  "b_request_carries_a": true
+ },
+ "decset_2004h_anywhere": true,
+ "decset_2004l_anywhere": false,
+ "total_bells": 0,
+ "total_osc": [
+  [
+   99,
+   "i=opentui-notifications:p=?;"
+  ]
+ ]
+}

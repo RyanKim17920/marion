@@ -1,0 +1,62 @@
+{
+ "short0ms_0": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "short0ms_1": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "short0ms_2": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "short0ms_3": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "short0ms_4": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "short0ms_5": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "multiline0ms_0": {
+  "submitted_first_cr": true,
+  "multiline_preserved": true
+ },
+ "multiline0ms_1": {
+  "submitted_first_cr": true,
+  "multiline_preserved": true
+ },
+ "multiline0ms_2": {
+  "submitted_first_cr": true,
+  "multiline_preserved": true
+ },
+ "big3k_0ms_0": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "big3k_0ms_1": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "big3k_0ms_2": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "big3k_50ms_0": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "big3k_50ms_1": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ },
+ "big3k_50ms_2": {
+  "submitted_first_cr": true,
+  "multiline_preserved": null
+ }
+}

@@ -1,0 +1,44 @@
+{
+ "scenario": "b3",
+ "held_seen": true,
+ "r1": "after-tool[3]",
+ "r1_turns": 3,
+ "r2": "TIMEOUT",
+ "n_can_use_tool": 2,
+ "main_requests": [
+  {
+   "main": 1,
+   "last": {
+    "role": "system",
+    "blocks": [
+     "<harness system context, trimmed>"
+    ],
+    "text": "e with codebase documentation\n- security-review: Complete a security review of the pending changes on the current branch\n\n<total_tokens>15000000 tokens left</total_tokens>\n\nToday's date is 2026-09-22."
+   },
+   "n_msgs": 2
+  },
+  {
+   "main": 2,
+   "last": {
+    "role": "system",
+    "blocks": [
+     "<total_tokens>14999985 tokens left</total_tokens>"
+    ],
+    "text": "<total_tokens>14999985 tokens left</total_tokens>"
+   },
+   "n_msgs": 5
+  },
+  {
+   "main": 3,
+   "last": {
+    "role": "system",
+    "blocks": [
+     "The user sent a new message while you were working:\nINJECTED mid multi-step turn epsilon\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n\n<total_tokens>14999985 tokens left</total_tokens>"
+    ],
+    "text": "running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n\n<total_tokens>14999985 tokens left</total_tokens>"
+   },
+   "n_msgs": 8
+  }
+ ],
+ "exit": 0
+}

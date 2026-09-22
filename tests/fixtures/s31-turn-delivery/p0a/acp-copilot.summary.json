@@ -1,0 +1,115 @@
+{
+ "agent": "copilot",
+ "cmd": [
+  "/opt/homebrew/bin/copilot",
+  "--acp"
+ ],
+ "canned": false,
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": true,
+   "mcpCapabilities": {
+    "http": true,
+    "sse": true
+   },
+   "promptCapabilities": {
+    "image": true,
+    "audio": false,
+    "embeddedContext": true
+   },
+   "sessionCapabilities": {
+    "close": {},
+    "list": {}
+   }
+  },
+  "agentInfo": {
+   "name": "Copilot",
+   "title": "Copilot",
+   "version": "1.0.87"
+  },
+  "authMethods": [
+   {
+    "id": "copilot-login",
+    "name": "Log in with Copilot CLI",
+    "description": "Run `copilot login` in the terminal",
+    "_meta": {
+     "terminal-auth": {
+      "command": "/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot",
+      "args": [
+       "login"
+      ],
+      "label": "Copilot Login"
+     }
+    }
+   }
+  ]
+ },
+ "agentInfo": {
+  "name": "Copilot",
+  "title": "Copilot",
+  "version": "1.0.87"
+ },
+ "sessionId": "766489ae-79ad-4be2-889c-942b1c6849c8",
+ "a_p1": {
+  "t": 5.459,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "inputTokens": 14648,
+    "outputTokens": 5,
+    "totalTokens": 14653,
+    "thoughtTokens": 0,
+    "cachedReadTokens": 0,
+    "cachedWriteTokens": 14645
+   }
+  }
+ },
+ "a_p2": {
+  "t": 7.218,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "inputTokens": 29349,
+    "outputTokens": 24,
+    "totalTokens": 29373,
+    "thoughtTokens": 10,
+    "cachedReadTokens": 14645,
+    "cachedWriteTokens": 14698
+   }
+  },
+  "agent_text_p2": "PINEAPPLE"
+ },
+ "b_p4_sent_at": 7.524,
+ "b_released_at": null,
+ "b_p3": {
+  "t": 7.558,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "inputTokens": 29349,
+    "outputTokens": 24,
+    "totalTokens": 29373,
+    "thoughtTokens": 10,
+    "cachedReadTokens": 14645,
+    "cachedWriteTokens": 14698
+   }
+  }
+ },
+ "b_p4": {
+  "t": 9.325,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "inputTokens": 44140,
+    "outputTokens": 47,
+    "totalTokens": 44187,
+    "thoughtTokens": 24,
+    "cachedReadTokens": 29396,
+    "cachedWriteTokens": 14735
+   }
+  }
+ },
+ "n_permission_requests": 0,
+ "exit_after_stdin_close": 0
+}

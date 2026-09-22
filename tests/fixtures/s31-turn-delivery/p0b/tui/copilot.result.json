@@ -1,0 +1,219 @@
+{
+ "name": "copilot",
+ "argv": [
+  "copilot",
+  "--model",
+  "canned-1",
+  "--disable-builtin-mcps",
+  "--no-custom-instructions"
+ ],
+ "ready": true,
+ "decset_2004h_at_boot": true,
+ "decset_1004h_at_boot": true,
+ "alt_screen_1049h": true,
+ "bells_at_boot": 0,
+ "osc_at_boot": [],
+ "idle": {
+  "seconds": 10.0,
+  "bytes": 0,
+  "bytes_per_s": 0.0,
+  "chunks": 0,
+  "max_gap_ms": 10004,
+  "p50_gap_ms": 10004
+ },
+ "busy_focused": {
+  "request_seen_after_s": 0.74,
+  "busy_window": {
+   "seconds": 10.0,
+   "bytes": 4955,
+   "bytes_per_s": 495.4,
+   "chunks": 107,
+   "max_gap_ms": 189,
+   "p50_gap_ms": 92
+  },
+  "bells_after_submit": 0,
+  "osc_after_submit": [
+   [
+    9,
+    "4;3;0"
+   ],
+   [
+    9,
+    "4;3;0"
+   ],
+   [
+    9,
+    "4;3;0"
+   ],
+   [
+    9,
+    "4;0;0"
+   ]
+  ],
+  "t_submit": 1790105906.058434,
+  "t_settled": 1790105922.949781
+ },
+ "busy_unfocused": {
+  "request_seen_after_s": 1.72,
+  "busy_window": {
+   "seconds": 5.01,
+   "bytes": 1410,
+   "bytes_per_s": 281.5,
+   "chunks": 40,
+   "max_gap_ms": 336,
+   "p50_gap_ms": 106
+  },
+  "bells_after_submit": 0,
+  "osc_after_submit": [
+   [
+    9,
+    "4;3;0"
+   ],
+   [
+    9,
+    "4;3;0"
+   ],
+   [
+    9,
+    "4;0;0"
+   ]
+  ],
+  "t_submit": 1790105923.4757628,
+  "t_settled": 1790105934.889125
+ },
+ "idle_after_turns": {
+  "seconds": 10.01,
+  "bytes": 6,
+  "bytes_per_s": 0.6,
+  "chunks": 1,
+  "max_gap_ms": 9701,
+  "p50_gap_ms": 9701
+ },
+ "paste_delay": {
+  "0": {
+   "submitted": true,
+   "latency_s": 1.31
+  },
+  "50": {
+   "submitted": true,
+   "latency_s": 1.77
+  },
+  "150": {
+   "submitted": true,
+   "latency_s": 1.81
+  },
+  "300": {
+   "submitted": true,
+   "latency_s": 1.1
+  },
+  "600": {
+   "submitted": true,
+   "latency_s": 0.73
+  }
+ },
+ "raw_text_then_cr_0ms_submitted": true,
+ "busy_enter": {
+  "a_requests": 2,
+  "b_requests": 1,
+  "b_first_request_rel_submit_s": 7.51,
+  "b_before_a_answered": false,
+  "b_request_carries_a": true
+ },
+ "decset_2004h_anywhere": true,
+ "decset_2004l_anywhere": false,
+ "total_bells": 0,
+ "total_osc": [
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;3;0"
+  ],
+  [
+   9,
+   "4;0;0"
+  ]
+ ]
+}

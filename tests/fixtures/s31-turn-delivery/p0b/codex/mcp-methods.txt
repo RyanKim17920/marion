@@ -1,0 +1,12 @@
+# method of every frame codex sent the MCP stub, in order, across run1..run4 (t = unix seconds)
+1790104651.582 initialize
+1790104651.583 notifications/initialized
+1790104651.583 tools/list
+1790104653.269 tools/call
+1790104668.601 initialize
+1790104668.609 notifications/initialized
+1790104668.609 tools/list
+1790104848.665 initialize
+1790104848.681 notifications/initialized
+1790104848.687 tools/list
+1790104850.167 tools/call

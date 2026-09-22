@@ -1,0 +1,212 @@
+{
+ "agent": "codex-acp",
+ "cmd": [
+  "npx",
+  "-y",
+  "@agentclientprotocol/codex-acp@1.13.0"
+ ],
+ "canned": false,
+ "initialize": {
+  "protocolVersion": 1,
+  "agentInfo": {
+   "name": "@agentclientprotocol/codex-acp",
+   "title": "Codex",
+   "version": "1.13.0"
+  },
+  "agentCapabilities": {
+   "auth": {
+    "logout": {}
+   },
+   "providers": {},
+   "loadSession": true,
+   "promptCapabilities": {
+    "embeddedContext": true,
+    "image": true
+   },
+   "sessionCapabilities": {
+    "resume": {},
+    "list": {},
+    "close": {},
+    "delete": {},
+    "fork": {},
+    "additionalDirectories": {},
+    "subagents": {}
+   },
+   "mcpCapabilities": {
+    "acp": false,
+    "http": true,
+    "sse": false
+   },
+   "_meta": {
+    "authStatus": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "api-key",
+    "name": "API Key",
+    "description": "Use an API key to authenticate",
+    "_meta": {
+     "api-key": {
+      "provider": "openai"
+     }
+    }
+   },
+   {
+    "id": "chat-gpt",
+    "name": "ChatGPT",
+    "description": "Use ChatGPT to authenticate"
+   }
+  ],
+  "_meta": {
+   "steering": {
+    "supported": true
+   },
+   "goal": {
+    "version": 1,
+    "controlMethod": "_session/goal",
+    "actions": [
+     "set",
+     "pause",
+     "resume",
+     "clear"
+    ]
+   },
+   "jetbrains": {
+    "air": {
+     "version": 1,
+     "capabilities": [
+      "sessionFailure",
+      "agentFileChangeReport",
+      "nativeSubagentSessions",
+      "asyncTasks",
+      "recommendedValue"
+     ]
+    }
+   }
+  }
+ },
+ "agentInfo": {
+  "name": "@agentclientprotocol/codex-acp",
+  "title": "Codex",
+  "version": "1.13.0"
+ },
+ "sessionId": "01a0ca9c-28b1-7880-830f-82c0a5b33161",
+ "a_p1": {
+  "t": 36.012,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "totalTokens": 30789,
+    "inputTokens": 23744,
+    "cachedReadTokens": 7040,
+    "outputTokens": 5,
+    "thoughtTokens": 0
+   },
+   "_meta": {
+    "quota": {
+     "token_count": {
+      "totalTokens": 30789,
+      "inputTokens": 23744,
+      "cachedInputTokens": 7040,
+      "outputTokens": 5,
+      "reasoningOutputTokens": 0
+     },
+     "model_usage": [
+      {
+       "model": "gpt-6-sol",
+       "token_count": {
+        "totalTokens": 30789,
+        "inputTokens": 23744,
+        "cachedInputTokens": 7040,
+        "outputTokens": 5,
+        "reasoningOutputTokens": 0
+       }
+      }
+     ]
+    }
+   }
+  }
+ },
+ "a_p2": {
+  "t": 41.914,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "totalTokens": 30831,
+    "inputTokens": 232,
+    "cachedReadTokens": 30592,
+    "outputTokens": 7,
+    "thoughtTokens": 0
+   },
+   "_meta": {
+    "quota": {
+     "token_count": {
+      "totalTokens": 30831,
+      "inputTokens": 232,
+      "cachedInputTokens": 30592,
+      "outputTokens": 7,
+      "reasoningOutputTokens": 0
+     },
+     "model_usage": [
+      {
+       "model": "gpt-6-sol",
+       "token_count": {
+        "totalTokens": 30831,
+        "inputTokens": 232,
+        "cachedInputTokens": 30592,
+        "outputTokens": 7,
+        "reasoningOutputTokens": 0
+       }
+      }
+     ]
+    }
+   }
+  },
+  "agent_text_p2": "PINEAPPLE"
+ },
+ "b_p4_sent_at": 42.22,
+ "b_released_at": null,
+ "b_p3": {
+  "t": "TIMEOUT",
+  "resp": null
+ },
+ "b_p4": {
+  "t": 47.816,
+  "resp": {
+   "stopReason": "end_turn",
+   "usage": {
+    "totalTokens": 31031,
+    "inputTokens": 304,
+    "cachedReadTokens": 30720,
+    "outputTokens": 7,
+    "thoughtTokens": 0
+   },
+   "_meta": {
+    "quota": {
+     "token_count": {
+      "totalTokens": 31031,
+      "inputTokens": 304,
+      "cachedInputTokens": 30720,
+      "outputTokens": 7,
+      "reasoningOutputTokens": 0
+     },
+     "model_usage": [
+      {
+       "model": "gpt-6-sol",
+       "token_count": {
+        "totalTokens": 31031,
+        "inputTokens": 304,
+        "cachedInputTokens": 30720,
+        "outputTokens": 7,
+        "reasoningOutputTokens": 0
+       }
+      }
+     ]
+    }
+   }
+  }
+ },
+ "n_permission_requests": 0,
+ "exit_after_stdin_close": 0
+}

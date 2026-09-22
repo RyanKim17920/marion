@@ -302,6 +302,28 @@ agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired 2026-09-
 `compile`/`compile_pane` render the row's grammar or refuse by name with no per-harness branch
 (`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
 
+**A second turn, and a turn written mid-turn, per harness (S31, 2026-09-22,
+`tests/fixtures/s31-turn-delivery/`, $0.00 metered).** Measured on claude 2.1.280 (1a/1b and the
+channel probe repeated on 2.1.276; **not** on the admitted 2.1.269, which was not installed),
+opencode 1.18.32, claude-agent-acp 0.81.0, codex-acp 1.13.0, copilot 1.0.83/1.0.87, codex 0.147.0,
+qwen 0.23.0, goose 1.51.0. **Typed surfaces fold or lose a mid-turn write:** claude `-p`
+stream-json folds a frame written mid-turn into the running turn at the next tool-result boundary
+and emits one `result` for both (`p0a/b3`), or queues it as the next turn when the held request is
+the turn's last (`p0a/b`, `p0a/b2`); a claude interactive channel event does the same (`p0a/ch2`),
+and **channels are refused under API-key/token auth** ("Channels are not currently available") —
+they worked only with a claude.ai login. ACP `session/prompt` while one is in flight: opencode and
+claude-agent-acp fold it and answer both only when the loop drains; codex-acp never answers the
+first; copilot answers the first `end_turn` with no output and stale usage. **Headless resume
+continues the session** on codex `exec -C <cwd> resume <id>` — and a resume without the `-c
+mcp_servers.marion.*` pairs never starts marion's server (`p0b/codex/mcp-methods.txt`), copilot
+`--resume=<id>`, qwen `--resume <id>`, and opencode `run --session <id>` **only with a file
+`OPENCODE_DB`**: marion's `:memory:` made it exit 1 `Session not found` (`p0b/opencode/mem2.err`
+vs `db2.jsonl`). **TUIs:** codex, opencode, copilot and claude all enable bracketed paste;
+`\e[200~…\e[201~` then `\r` submits at 0 ms, byte-exact up to 3 KB, while unbracketed text + `\r`
+fails on codex; busy spinners repaint at ≤ 454 ms and idle output is ~0, so 1500 ms of output
+quiet is a reliable idle signal; Enter while busy is never dropped and never interrupts
+(`p0b/tui/`).
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
