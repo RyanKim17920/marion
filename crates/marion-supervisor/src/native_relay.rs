@@ -1765,6 +1765,10 @@ impl<W: Write> RawPaneSession<W> {
 /// about which nodes are still marion's processes; of those, a `NodeState::Blocked` child is shown
 /// in its own column rather than as running, because a blocked child is the one an operator has
 /// to act on. Done is `Exited(Ok)`; every other exit is failed. The columns are disjoint.
+///
+/// Then, only when non-zero, **attention over the whole subtree** by [`crate::tree::attention_of`]:
+/// the children's columns cannot show a grandchild that failed, and that is the node an operator
+/// inside a native session has no other way to hear about.
 fn status_line(id: &AgentId, nodes: &[marion_core::proto::NodeSummary]) -> String {
     use marion_core::contract::ExitStatus;
     use marion_core::node::NodeState;
@@ -1784,10 +1788,36 @@ fn status_line(id: &AgentId, nodes: &[marion_core::proto::NodeSummary]) -> Strin
     }
     // A blocked node is not exited, so `running` counts it; it is moved to its own column here.
     let running = crate::tree::running(&children).saturating_sub(blocked);
+    let attention = crate::tree::attention_count(&descendants(id, nodes));
+    let attention = match attention {
+        0 => String::new(),
+        n => format!(" · attention {n}"),
+    };
     format!(
-        "marion: {} children · running {running} · blocked {blocked} · done {done} · failed {failed}",
+        "marion: {} children · running {running} · blocked {blocked} · done {done} · failed {failed}{attention}",
         children.len()
     )
+}
+
+/// Every node below `id` in `nodes`, each once. The visited set starts with `id` itself, so a
+/// parent cycle — which §7.5's immutable parent should forbid and this refuses to trust — can
+/// neither loop the walk nor count the native node as its own descendant.
+fn descendants(
+    id: &AgentId,
+    nodes: &[marion_core::proto::NodeSummary],
+) -> Vec<marion_core::proto::NodeSummary> {
+    let mut seen = std::collections::HashSet::from([id.clone()]);
+    let mut frontier = vec![id.clone()];
+    let mut out = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for node in nodes {
+            if node.parent_id.as_ref() == Some(&parent) && seen.insert(node.agent_id.clone()) {
+                frontier.push(node.agent_id.clone());
+                out.push(node.clone());
+            }
+        }
+    }
+    out
 }
 
 /// One row, restored around: `ESC 7` saves the cursor, `CSI rows;1H` goes to the last row,
@@ -3942,11 +3972,50 @@ mod tests {
         ];
         assert_eq!(
             status_line(&id, &nodes),
-            "marion: 5 children · running 2 · blocked 1 · done 1 · failed 1"
+            "marion: 5 children · running 2 · blocked 1 · done 1 · failed 1 · attention 2"
         );
         assert_eq!(
             status_line(&id, &[]),
             "marion: 0 children · running 0 · blocked 0 · done 0 · failed 0"
+        );
+    }
+
+    /// **Attention is counted over the native node's whole subtree**, not just its children: a
+    /// grandchild that failed is exactly what the operator in the native session cannot see from
+    /// the children's columns. The node itself, an unrelated root, and a parent cycle that leads
+    /// back to the node are not counted, and nothing needing attention leaves the clause off.
+    #[test]
+    fn the_status_line_counts_attention_across_the_whole_subtree() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::{BlockReason, NodeState};
+        let id = AgentId("native".into());
+        let mut orphan = summary("lost", Some("c1"), NodeState::Idle);
+        orphan.reap_state = marion_core::node::ReapState::Orphaned;
+        let nodes = vec![
+            summary(
+                "native",
+                Some("loop"),
+                NodeState::Blocked(BlockReason::Descendants),
+            ),
+            summary("loop", Some("native"), NodeState::Running),
+            summary("c1", Some("native"), NodeState::Running),
+            summary("gc", Some("c1"), NodeState::Exited(ExitStatus::Failed)),
+            summary("ggc", Some("gc"), NodeState::Exited(ExitStatus::TimedOut)),
+            orphan,
+            summary("other", None, NodeState::Exited(ExitStatus::Failed)),
+        ];
+        assert_eq!(
+            status_line(&id, &nodes),
+            "marion: 2 children · running 2 · blocked 0 · done 0 · failed 0 · attention 3"
+        );
+        let calm = vec![
+            summary("native", None, NodeState::Running),
+            summary("c1", Some("native"), NodeState::Running),
+            summary("gc", Some("c1"), NodeState::Exited(ExitStatus::Ok)),
+        ];
+        assert_eq!(
+            status_line(&id, &calm),
+            "marion: 1 children · running 1 · blocked 0 · done 0 · failed 0"
         );
     }
 

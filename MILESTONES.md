@@ -122,7 +122,8 @@ failed / timed out / killed / unreported, or orphaned; `!` in `marion tree` jump
 node in drawn order, wrapping, and the status row adds `N need(s) attention` only when N > 0
 (`marion-tui` and `tree.rs` unit tests; the `l45_tree.rs` snapshots).
 2026-09-12: inside a native session `^] s` toggles marion's one optional status row on the
-terminal's bottom line — the root's direct children as running / blocked / done / failed, from a
+terminal's bottom line — the root's direct children as running / blocked / done / failed (and,
+since 2026-09-22, `attention N` over the root's whole subtree when N > 0), from a
 `tree/subscribe` on the claimed connection — painted as a saved-and-restored last row so it sits on
 the main and alternate screens alike and never reaches the node (`native_relay.rs` unit tests;
 `native_facade_e2e.rs` lane loop).
