@@ -1830,7 +1830,7 @@ fn launch_only(
     // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
     // other claim about the same run.
     if !outcome.timed_out {
-        assert_a_verb_was_answered(node.harness, &outcome)?;
+        assert_the_root_delegated(node.harness, &outcome, started_a_child(node))?;
     }
     Ok(outcome)
 }
@@ -1882,6 +1882,36 @@ fn launch_acp(
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,
     })
+}
+
+/// Whether the journal records a child of this root whose `Spawned` landed — a `spawn` the
+/// supervisor answered with a real node, whatever the tool result then said about how that node
+/// ended. An unreadable journal is no evidence either way, so it falls through to the stream.
+fn started_a_child(node: &RootNode) -> bool {
+    crate::journal::read_path(&node.project.journal()).is_ok_and(|tree| {
+        tree.children(&node.agent_id)
+            .iter()
+            .any(|c| c.spawn_confirmed)
+    })
+}
+
+/// §6.1 step 8's gate with the journal's answer beside the stream's.
+///
+/// [`assert_a_verb_was_answered`] reads the root's stream, and a stream records a `spawn` whose
+/// child ran and did not finish `Ok` exactly as it records one marion refused: both came back
+/// `isError`. Measured live (2026-09-22): opencode roots whose children ran, wrote their files and
+/// ended `Unreported` were refused as "cannot have delegated anything" about runs with a child and
+/// a persisted contract. A root that started a child delegated, so `delegated` passes the gate;
+/// the stream's reading still decides for a root the journal names no child of.
+fn assert_the_root_delegated(
+    harness: Harness,
+    outcome: &RootOutcome,
+    delegated: bool,
+) -> Result<(), RootError> {
+    if delegated {
+        return Ok(());
+    }
+    assert_a_verb_was_answered(harness, outcome)
 }
 
 /// The pane's geometry before anybody has attached.
@@ -4161,6 +4191,33 @@ mod tests {
     /// whose calls were all refused *had* marion's tools and something turned it away; telling that
     /// operator "the root never reached marion's bridge" sends them to re-check a configuration that
     /// is working.
+    /// **A root that started a child delegated, whatever its `spawn` result said.** Measured live
+    /// (2026-09-22): opencode roots whose child ran, wrote its file and ended `Unreported` got an
+    /// `isError` spawn result, the stream showed the call refused, and the gate refused the run as
+    /// "cannot have delegated anything" — about a run with a child and a persisted contract. The
+    /// journal is the witness: a child of this root whose `Spawned` landed is a spawn marion
+    /// answered with a node.
+    #[test]
+    fn a_root_whose_error_shaped_spawn_started_a_child_delegated() {
+        let refused = outcome(
+            &[(
+                "spawn",
+                CallOutcome::Refused(
+                    "marion: the claude-code child never called report, so it returned no answer"
+                        .into(),
+                ),
+            )],
+            2,
+            Some(0),
+            "",
+        );
+        assert!(assert_the_root_delegated(Harness::OpenCode, &refused, true).is_ok());
+        assert!(matches!(
+            assert_the_root_delegated(Harness::OpenCode, &refused, false),
+            Err(RootError::NoVerbAnswered { .. })
+        ));
+    }
+
     #[test]
     fn a_refused_call_is_not_reported_as_a_bridge_that_was_never_reached() {
         let refused = outcome(

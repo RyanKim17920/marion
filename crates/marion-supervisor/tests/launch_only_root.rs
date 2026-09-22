@@ -765,6 +765,136 @@ fn an_opencode_root_whose_own_report_was_refused_still_succeeds() {
     );
 }
 
+// --- property 2d: a spawn that started a child is a delegation, whatever its result said ---------
+//
+// Measured live (2026-09-22, cells c09-c11): an opencode root delegated to a child that ran, wrote
+// its file and ended `Unreported`; the child's `spawn` result was `isError`, opencode's stream
+// showed the call refused, and marion refused the run — "not one of the 2 verb(s) it called was
+// answered … cannot have delegated anything" — journalled the root `SpawnAborted` after its
+// `Spawned`, left the supervisor running on a node it had no process for, and told the operator
+// that node was "unattended at a permission gate". Here the root is a stub that really calls
+// marion's bridge, so the child really is started by the supervisor; the child is the same stub,
+// told apart by its prompt, and exits without calling `report`.
+
+/// In the child's prompt and nowhere in the root's.
+const CHILD_MARKER: &str = "MARION-LO-UNREPORTED-CHILD-7c1d";
+
+/// A stub opencode **root** that performs one real `spawn` through the bridge marion declared in
+/// its `opencode.json`, then prints the tool part opencode itself would print for the result it
+/// got — `error` when the result was `isError`.
+fn delegating_opencode_root(node: &Node) -> String {
+    let adapter = adapter_for(node.harness).expect("opencode has an adapter");
+    let spawn_args = serde_json::json!({
+        "agent_type": "opencode",
+        "prompt": format!("{CHILD_MARKER}: exit without reporting."),
+        "model": node.model,
+        "timeout_secs": 30,
+    });
+    format!(
+        r#"python3 - <<'PY'
+import json, subprocess
+from os import environ, path
+block = json.load(open(path.join(environ["XDG_CONFIG_HOME"], "opencode", "opencode.json")))["mcp"]["marion"]
+bridge_vars = dict(environ)
+bridge_vars.update(block.get("environment") or {{}})
+bridge = subprocess.Popen(block["command"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=bridge_vars, text=True)
+def send(frame):
+    bridge.stdin.write(json.dumps(frame) + "\n"); bridge.stdin.flush()
+def ask(frame):
+    send(frame); return json.loads(bridge.stdout.readline())
+ask({{"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {{"protocolVersion": "2025-06-18"}}}})
+send({{"jsonrpc": "2.0", "method": "notifications/initialized"}})
+ask({{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {{}}}})
+reply = ask({{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {{"name": "spawn", "arguments": {spawn_args}}}}})
+bridge.stdin.close(); bridge.wait()
+result = reply["result"]
+text = result["content"][0]["text"]
+state = {{"status": "error", "error": text}} if result.get("isError") else {{"status": "completed", "output": text}}
+state["input"] = {{}}
+print(json.dumps({{"type": "tool_use", "part": {{"tool": "{tool}", "state": state}}}}))
+PY
+exit 0"#,
+        tool = adapter.marion_tool_name("spawn"),
+    )
+}
+
+#[test]
+fn an_opencode_root_whose_spawn_started_an_unreported_child_delegated_and_exits_cleanly() {
+    use marion_core::contract::ExitStatus;
+    use marion_core::node::NodeState;
+
+    let node = &OPENCODE;
+    let dir = scratch("lo-delegated-opencode");
+    let repo = marion_testsupport::fixture_repo(&dir);
+    let bin = stub_harness(
+        &dir,
+        node,
+        &format!("case \"$*\" in *{CHILD_MARKER}*) exit 0 ;; esac"),
+        &delegating_opencode_root(node),
+    );
+
+    let run = marion_run(&dir, node, &bin, "Delegate the task to a child.", "60");
+
+    let journal = marion_supervisor::journal::read_path(
+        &marion_core::paths::ProjectDir::new(
+            &dir.join("state"),
+            &marion_supervisor::socket::project_root(&repo),
+        )
+        .journal(),
+    )
+    .expect("the run's journal reads back");
+    let roots = journal.roots();
+    assert_eq!(roots.len(), 1, "one root: {:?}", journal.nodes());
+    let root = roots[0];
+    let children = journal.children(&root.agent_id);
+    assert_eq!(
+        children.len(),
+        1,
+        "the stub really delegated one child\nstderr:\n{}",
+        run.stderr
+    );
+    let child = children[0];
+    // Collected and then killed before any assertion, so a failing run is not also a leak.
+    let survivors = marion_testsupport::survivors(&dir.to_string_lossy());
+    for (pid, _) in &survivors {
+        marion_testsupport::kill_hard(*pid);
+    }
+
+    assert_eq!(
+        child.state,
+        NodeState::Exited(ExitStatus::Unreported),
+        "the child ended without reporting"
+    );
+    assert!(
+        !run.stderr.contains("cannot have delegated anything"),
+        "a root whose spawn started a child delegated:\n{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the root exited 0 having delegated; the child's Unreported is the child's outcome, carried \
+         in its contract, not the root's\nstderr:\n{}",
+        run.stderr
+    );
+    assert_eq!(
+        root.state,
+        NodeState::Exited(ExitStatus::Ok),
+        "the root is journalled as the exit it made (spawn_aborted: {:?})",
+        root.spawn_aborted
+    );
+    assert!(
+        !run.stderr.contains("unattended at a permission gate")
+            && !run.stderr.contains("still running"),
+        "no node is left running, so none is disclosed as one:\n{}",
+        run.stderr
+    );
+    assert!(
+        survivors.is_empty(),
+        "nothing outlives the run, the supervisor included: {survivors:?}"
+    );
+}
+
 // --- property 3: the bound, and the group kill behind it ----------------------------------------
 //
 // A harness that never exits is not hypothetical: S13 measured opencode doing exactly that on a
