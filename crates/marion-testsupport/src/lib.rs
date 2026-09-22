@@ -703,7 +703,33 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // (`executed_tool_call_metadata`, `image_resize_notice`, `recommended_plugins`,
         // `view_image`) and removes none; `code_mode_host` is still `stable true`. s7's `setsid`
         // finding is re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded.**
-        accepted: &["0.146.0", "0.146.1", "0.147.0"],
+        // 0.155.1: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
+        // (codex 0.155.1 in one run): marion-testsupport (33), acp_child (5), cross_product (57),
+        // depth_gate (4), descendant_gate (3), harness_matrix (8), journal_wiring (18), m1_hop
+        // (1), m4_fan_in (1), native_facade_e2e (2), native_facade_smoke (1), native_facade_spawn
+        // (1), no_git (5), pane_attach (2), permission_round_trip (9), restart_resume (0),
+        // timeout_kill (1), worktree_reap (8).
+        // 0.147.0 was still on disk, so the shim had held every suite there. Once this entry was
+        // widened the shim resolved 0.155.1 (release dir `0.155.1-aarch64-apple-darwin`), and the
+        // root requests name codex's default `gpt-6-astra` where 0.147.0 named `gpt-5.6-sol`.
+        // **One shape moved:** `function_call_output.output` is now a list of `input_text` blocks,
+        // the `Wall time: …\nOutput:` wrapper first and then marion's blocks verbatim, where it
+        // used to be one string. All seven codex-root `cross_product` cells failed until the two
+        // string-only readers became `tests/common/mcp_result.rs::codex_call_output_text`.
+        //
+        // **Not caught by any canned cell: MCP tools deferred behind `tool_search`.** codex reads
+        // a per-model `supports_search_tool` from its model catalog (remote-fetched into
+        // `models_cache.json`, where every listed model is `true`). A model marked `true` is sent
+        // no MCP tools up front, only `tool_search` (non-code-mode, e.g. `gpt-5.5`) or an `exec`
+        // declaration without them (code-mode, `gpt-5.6-sol` / `gpt-6-astra` on 0.155.1). The
+        // canned model slug is not in the catalog, so canned cells still get the eager
+        // `mcp__marion` namespace and stay green on both versions. Measured at $0.00 against a
+        // capture-only provider. The feature flags `tool_search` and
+        // `tool_search_always_defer_mcp_tools` read `removed` on both versions and do nothing.
+        // `-c model_catalog_json=<file>` with the entries' `supports_search_tool: false` restores
+        // eager tools on 0.155.1: `mcp__marion` in `tools[]` for `gpt-5.5`, and the tools listed
+        // in `exec`'s declaration for `gpt-5.6-sol`. marion does not pass that today.
+        accepted: &["0.146.0", "0.146.1", "0.147.0", "0.155.1"],
     },
     PinnedHarness {
         program: "gemini",

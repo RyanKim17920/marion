@@ -93,7 +93,7 @@ cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launch
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
-own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0;
+own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0/0.155.1;
 gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0 and 1.51.0; cline 3.0.61;
 qwen 0.23.0.
 
@@ -496,6 +496,36 @@ in the matrix, so read a red there under load as the machine first.
 **goose 1.51.0, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the same run with the
 same suite counts. Homebrew replaced 1.50.0 in place. No test-side change was needed. Its only
 red cell, goose root with an opencode child, is the load finding under opencode 1.18.32 above.
+
+**codex 0.155.1, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The installer moved
+`current` to 0.155.1, with 0.153.4 and 0.154.0 between. 0.147.0 was still on disk, so the shim had
+held every suite there and the gate never went red. Widening the entry moved the shim to 0.155.1,
+and the root requests name codex's default `gpt-6-astra` in place of 0.147.0's `gpt-5.6-sol`.
+Green with one test-side change (`2944815`): `marion-testsupport` (33), `acp_child` (5),
+`cross_product` (57), `depth_gate` (4), `descendant_gate` (3), `harness_matrix` (8),
+`journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `native_facade_e2e` (2),
+`native_facade_smoke` (1), `native_facade_spawn` (1), `no_git` (5), `pane_attach` (2),
+`permission_round_trip` (9), `timeout_kill` (1), `worktree_reap` (8). **Request shape:**
+`function_call_output.output` is now a list of `input_text` blocks, the `Wall time: …\nOutput:`
+wrapper first and then marion's blocks verbatim, where it used to be one string. All seven
+codex-root `cross_product` cells failed until the readers in `cross_product` and `m4_fan_in`
+became one, `tests/common/mcp_result.rs::codex_call_output_text`, which reads both shapes.
+
+**A real gap no canned cell can see: codex defers MCP tools behind `tool_search`.** Measured at
+$0.00 against a capture-only provider on 0.147.0 and 0.155.1. codex decides per model from its
+catalog's `supports_search_tool`, which is fetched remotely into `models_cache.json`, and every
+listed model there is `true`. Such a model is sent none of marion's tools up front. Non-code-mode
+models (`gpt-5.5`, on both versions) get a `tool_search` tool instead. Code-mode models on 0.155.1
+(`gpt-5.6-sol`, `gpt-6-astra`) get an `exec` declaration that omits them, with a note to find
+deferred tools through `ALL_TOOLS`; on 0.147.0 `gpt-5.6-sol` still listed them. A slug missing from
+the catalog, like the canned `marion/canned-1`, gets the eager `mcp__marion` namespace, which is
+why every canned cell stays green while live children never surface marion's verbs. The feature
+flags `tool_search` and `tool_search_always_defer_mcp_tools` read `removed` in `codex features
+list` on both versions and change nothing. **What does work:** `-c model_catalog_json=<file>`,
+pointing at a copy of the catalog with each entry's `supports_search_tool` set to `false`, restores
+eager tools on 0.155.1. `gpt-5.5` then gets `mcp__marion` in `tools[]` and no `tool_search`, and
+`gpt-5.6-sol` gets the tools listed in `exec`'s declaration. marion passes no such file today, so
+this is a marion break for live codex nodes, and its fix belongs in the codex row, not in a test.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
