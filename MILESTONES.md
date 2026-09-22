@@ -185,7 +185,10 @@ root's own refused `report` no longer fails a run whose child finished `Ok` (`la
 §6.1 step 8's post-hoc gate now also asks the journal: a root with a child whose `Spawned` landed
 delegated, even when that child's `spawn` result was `isError` and the stream shows the call
 refused (`root::assert_the_root_delegated`; `launch_only_root.rs` drives a stub opencode root
-through the real bridge to a real unreported child).
+through the real bridge to a real unreported child). A root refused after its `Spawned` landed —
+`NoVerbAnswered` included — is journalled `Exited(Failed)` with marion's sentence, never
+`SpawnAborted` (`root::refused_after_running`), so replay no longer holds it non-terminal, the
+supervisor exits, and the run no longer names it "unattended at a permission gate".
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

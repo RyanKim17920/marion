@@ -1256,7 +1256,7 @@ fn launch_inner(
     journal_the_roots_outcome(node, &result, spawned.get(), &harness_version);
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
     if let Some(es) = &events {
-        es.lifecycle(roots_terminal_lifecycle(&result));
+        es.lifecycle(roots_terminal_lifecycle(&result, spawned.get()));
     }
     result
 }
@@ -1382,7 +1382,7 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
     )
 }
 
-/// The `ProcessExit` both records of a [`RootError::BridgeNeverReached`] carry.
+/// The `ProcessExit` both records of a refused run that **happened** carry ([`refused_after_running`]).
 ///
 /// **The description is marion's own sentence, not a summary of it** — and since §11 item 28 step 6
 /// that is load-bearing rather than tidy. The refusal names the harness, how many frames the root
@@ -1394,18 +1394,41 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
 ///
 /// One function, so the journal's `Exited` and `events.jsonl`'s closing bookend cannot come to
 /// describe one refusal two ways.
-fn bridge_never_reached_exit(exit: Option<i32>, e: &RootError) -> ProcessExit {
+fn refused_run_exit(e: &RootError) -> ProcessExit {
+    let code = match e {
+        RootError::BridgeNeverReached { exit, .. } | RootError::NoVerbAnswered { exit, .. } => {
+            *exit
+        }
+        _ => None,
+    };
     ProcessExit {
-        code: exit,
+        code,
         signal: None,
         description: e.to_string(),
     }
+}
+
+/// **Whether a root that ended in `e` ran**, and so ends in `Exited` rather than `SpawnAborted`.
+///
+/// A node past `Spawned` had a process, and §7.2 reserves `SpawnAborted` for a node marion decided
+/// the fate of before it produced anything. Measured live (2026-09-22): a `NoVerbAnswered` root was
+/// journalled `Spawned`, `Running`, then `SpawnAborted`; replay held it non-terminal, the
+/// supervisor stayed resident on a node with no process, and `marion run` told the operator it was
+/// "unattended at a permission gate". The two §6.1 step 8 refusals are post-run readings too, so
+/// they count as having run even if the hook's confirmation was never observed.
+fn refused_after_running(e: &RootError, spawned: bool) -> bool {
+    spawned
+        || matches!(
+            e,
+            RootError::BridgeNeverReached { .. } | RootError::NoVerbAnswered { .. }
+        )
 }
 
 /// The closing bookend for `events.jsonl`, mirroring [`journal_the_roots_outcome`]'s three arms so
 /// the two records of one run never disagree about which of them happened.
 fn roots_terminal_lifecycle(
     result: &Result<RootOutcome, RootError>,
+    spawned: bool,
 ) -> marion_core::event::Lifecycle {
     use marion_core::event::Lifecycle;
     match result {
@@ -1414,11 +1437,10 @@ fn roots_terminal_lifecycle(
             Lifecycle::Exited { status, exit }
         }
         // The run happened and marion refused the *result*, so this is an exit — the same reading
-        // the journal takes of this one variant, and the reason it is the only error arm that is
-        // not an abort.
-        Err(e @ RootError::BridgeNeverReached { exit, .. }) => Lifecycle::Exited {
+        // the journal takes of it.
+        Err(e) if refused_after_running(e, spawned) => Lifecycle::Exited {
             status: ExitStatus::Failed,
-            exit: bridge_never_reached_exit(*exit, e),
+            exit: refused_run_exit(e),
         },
         Err(e) => Lifecycle::Aborted {
             reason: e.to_string(),
@@ -1465,15 +1487,15 @@ fn journal_the_roots_outcome(
     let outcome = match result {
         Ok(o) => o,
         // The run happened, the process exited, and marion refused the *result* — so this is an
-        // exit, not an abandonment. It is the only error variant that can say so.
-        Err(e @ RootError::BridgeNeverReached { exit, .. }) => {
+        // exit, not an abandonment. See [`refused_after_running`].
+        Err(e) if refused_after_running(e, spawned) => {
             confirm(node);
             crate::journal::record(
                 &node.project,
                 RecordKind::Exited(Exited {
                     agent_id: node.agent_id.clone(),
                     status: ExitStatus::Failed,
-                    exit: bridge_never_reached_exit(*exit, e),
+                    exit: refused_run_exit(e),
                 }),
             );
             return;
@@ -3334,6 +3356,49 @@ mod tests {
             !n.did_marion_look(),
             "and no measurement exists yet — the post-snapshot happens at exit, which never came"
         );
+    }
+
+    /// **A root past `Spawned` ends in `Exited`, never `SpawnAborted`.** Measured live
+    /// (2026-09-22, c09): an opencode root refused after its run was journalled `Spawned`,
+    /// `Running`, then `SpawnAborted` — a record for a node marion decided the fate of before it
+    /// produced anything, about a node that ran and exited. Replay then held it non-terminal: the
+    /// supervisor stayed resident on it, and `marion run` disclosed it as "unattended at a
+    /// permission gate". A refusal of a run that happened is that run's exit, `Failed`, with
+    /// marion's sentence as its description; a root whose process never started still aborts.
+    #[test]
+    fn a_refused_root_that_ran_is_journalled_exited_and_one_that_never_ran_aborted() {
+        let refusal = || RootError::NoVerbAnswered {
+            harness: Harness::OpenCode,
+            calls: 1,
+            detail: "spawn was refused: no".into(),
+            exit: Some(0),
+            failure: String::new(),
+            stderr: String::new(),
+        };
+        let dir = temp("refused-after-spawned");
+        let ran = prepare(&root_spec(&dir, "claude")).unwrap();
+        journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0");
+        let tree = marion_core::registry::replay(&std::fs::read(ran.project.journal()).unwrap());
+        let n = tree.get(&ran.agent_id).unwrap();
+        assert_eq!(
+            n.state,
+            marion_core::node::NodeState::Exited(ExitStatus::Failed)
+        );
+        assert_eq!(n.spawn_aborted, None, "{n:?}");
+        assert!(matches!(
+            roots_terminal_lifecycle(&Err(refusal()), true),
+            marion_core::event::Lifecycle::Exited {
+                status: ExitStatus::Failed,
+                ..
+            }
+        ));
+
+        let never_dir = temp("refused-before-spawned");
+        let never = prepare(&root_spec(&never_dir, "claude")).unwrap();
+        let unstarted = RootError::UnaccountableNode { why: "full".into() };
+        journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0");
+        let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
+        assert!(tree.get(&never.agent_id).unwrap().spawn_aborted.is_some());
     }
 
     /// A root's scope is its type's **ceiling and nothing else**, because no parent authored a

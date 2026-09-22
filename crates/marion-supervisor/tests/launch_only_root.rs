@@ -708,6 +708,49 @@ fn a_root_whose_only_call_was_refused_is_not_a_success(node: &Node, name: &str) 
         node.harness,
         run.stderr
     );
+    assert_the_refused_root_exited(node, &dir, &run);
+}
+
+/// **A refused root that ran is journalled as the exit it made**, and nothing is left behind it.
+/// Measured live (2026-09-22): the refusal was journalled `SpawnAborted` after `Spawned`, replay
+/// held the root non-terminal, the supervisor stayed resident on it, and the run's closing lines
+/// called it "unattended at a permission gate".
+fn assert_the_refused_root_exited(node: &Node, dir: &Path, run: &Run) {
+    use marion_core::contract::ExitStatus;
+    use marion_core::node::NodeState;
+    let survivors = marion_testsupport::survivors(&dir.to_string_lossy());
+    for (pid, _) in &survivors {
+        marion_testsupport::kill_hard(*pid);
+    }
+    let journal = marion_supervisor::journal::read_path(
+        &marion_core::paths::ProjectDir::new(
+            &dir.join("state"),
+            &marion_supervisor::socket::project_root(&dir.join("repo")),
+        )
+        .journal(),
+    )
+    .expect("the run's journal reads back");
+    let roots = journal.roots();
+    assert_eq!(roots.len(), 1, "{}: one root", node.harness);
+    assert_eq!(
+        roots[0].state,
+        NodeState::Exited(ExitStatus::Failed),
+        "{}: a root that ran and was refused exited Failed (spawn_aborted: {:?})",
+        node.harness,
+        roots[0].spawn_aborted
+    );
+    assert!(
+        !run.stderr.contains("unattended at a permission gate")
+            && !run.stderr.contains("still running"),
+        "{}: no node was left running:\n{}",
+        node.harness,
+        run.stderr
+    );
+    assert!(
+        survivors.is_empty(),
+        "{}: nothing outlives the run, the supervisor included: {survivors:?}",
+        node.harness
+    );
 }
 
 #[test]
