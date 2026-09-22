@@ -7510,6 +7510,234 @@ mod tests {
         );
     }
 
+    /// An environment variable a live node must never be handed: a credential, an endpoint, a
+    /// provider or auth-route selection, or a relocation of the directory a login lives in.
+    /// marion's own `MARION_*` bridge variables are none of these.
+    fn is_credential_or_relocation(key: &str) -> bool {
+        const PARTS: &[&str] = &[
+            "KEY",
+            "TOKEN",
+            "AUTH",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIAL",
+            "BASE_URL",
+            "HOST",
+            "PROVIDER",
+            "HOME",
+            "STORAGE",
+            "OFFLINE",
+            "VERTEX",
+            "USE_GCA",
+        ];
+        !key.starts_with("MARION_")
+            && (key.starts_with("XDG_")
+                || key.ends_with("_DIR")
+                || PARTS.iter().any(|p| key.contains(p)))
+    }
+
+    /// Switches that keep the operator's own configuration — and so, possibly, their login — out
+    /// of a node. Canned-only on every row that has one.
+    const CONFIG_EXCLUDING_FLAGS: &[&str] = &[
+        "--setting-sources",
+        "--settings",
+        "--pure",
+        "--config",
+        "--data-dir",
+    ];
+
+    /// Keys that select an auth route, a provider or a credential, in any declaration document or
+    /// inline override marion writes.
+    const AUTH_SELECTING_KEYS: &[&str] = &[
+        "selectedType",
+        "enforcedType",
+        "apiKey",
+        "api_key",
+        "env_key",
+        "model_provider",
+        "preferred_auth_method",
+        "forced_login_method",
+        "baseURL",
+        "base_url",
+    ];
+
+    fn assert_leaves_the_auth_source_alone(who: &str, args: &[String], env: &[(String, String)]) {
+        for (k, v) in env {
+            assert!(
+                !is_credential_or_relocation(k),
+                "{who}: a live launch set `{k}`, which selects or hides a credential: {env:?}"
+            );
+            assert!(
+                !v.is_empty(),
+                "{who}: a live launch blanked `{k}`, which scrubs whatever the operator set: {env:?}"
+            );
+        }
+        for flag in CONFIG_EXCLUDING_FLAGS {
+            assert!(
+                !args.iter().any(|a| a == flag),
+                "{who}: a live launch carries {flag}, which hides the operator's own \
+                 configuration: {args:?}"
+            );
+        }
+        let blob = args.join(" ");
+        for key in AUTH_SELECTING_KEYS {
+            assert!(
+                !blob.contains(key),
+                "{who}: a live launch's argv names `{key}`: {args:?}"
+            );
+        }
+    }
+
+    fn assert_selects_no_auth(who: &str, document: &str) {
+        for key in AUTH_SELECTING_KEYS {
+            assert!(
+                !document.contains(key),
+                "{who}: a live declaration names `{key}`:\n{document}"
+            );
+        }
+    }
+
+    /// **Live mode writes no auth selection and removes no credential source — every row, every
+    /// shape it renders, and the native lane.** Under [`Auth::Inherited`] a node runs on whatever
+    /// the operator already configured for that harness (OAuth, an API-key variable, the keychain,
+    /// a config file), so nothing marion hands it may set, blank or relocate a credential, name a
+    /// provider or auth type, or switch off a configuration layer a login can live in.
+    ///
+    /// The spec it launches from still *carries* a base URL and a key, as a caller might hand
+    /// one: live mode must drop them, not merely never have been given them.
+    ///
+    /// Mutation: make any `HOME`/`XDG_*`/`CODEX_HOME`/`*_API_KEY` row `When::Always`, restore
+    /// gemini's `selectedType` fallback, blank `ANTHROPIC_API_KEY` beside no token, or turn
+    /// claude's `--setting-sources` / opencode's `--pure` back into `Arg::Lit`.
+    #[test]
+    fn no_live_launch_selects_an_auth_route_or_hides_a_credential_source() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+
+        let ctx = ctx();
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                model: match h {
+                    Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
+                    _ => spec_for(h).model,
+                },
+                ..spec_for(h)
+            };
+            assert!(
+                live.base_url.is_some(),
+                "{h}: the sweep hands every row an endpoint so live mode is seen dropping it"
+            );
+            let adapter = launch_adapter(h).unwrap();
+            let mut shapes = vec![("headless", adapter.compile(&live, &ctx))];
+            if row.pane.is_some() {
+                shapes.push(("pane", adapter.compile_pane(&live, &ctx)));
+            }
+            for (shape, inv) in shapes {
+                let inv = inv.unwrap_or_else(|e| panic!("{h} {shape}: {e}"));
+                assert_leaves_the_auth_source_alone(&format!("{h} {shape}"), &inv.args, &inv.env);
+            }
+            for (path, document) in adapter.config_files(&live, &ctx).unwrap() {
+                assert_selects_no_auth(&format!("{h} {}", path.display()), &document);
+            }
+            if let Some(session) = adapter.session_declaration(&live, &ctx).unwrap() {
+                assert_selects_no_auth(&format!("{h} session/new"), &session.to_string());
+            }
+
+            let Some(native) = native_adapter(h) else {
+                continue;
+            };
+            let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
+            let document_dir = PathBuf::from("/state/agents/019f-root");
+            let injection = native
+                .prepare_native(&NativeNodeContext {
+                    bridge: &bridge_env(&live, &ctx),
+                    document_dir: &document_dir,
+                    allowed_marion_tools: &["spawn", "wait", "status"],
+                    environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+                })
+                .unwrap_or_else(|e| panic!("{h} native: {e}"));
+            let lossy = |v: &OsString| v.to_string_lossy().into_owned();
+            let overlay: Vec<(String, String)> = injection
+                .env_overlay
+                .iter()
+                .map(|(k, v)| (lossy(k), lossy(v)))
+                .collect();
+            let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
+            assert_leaves_the_auth_source_alone(&format!("{h} native"), &prefix, &overlay);
+            for doc in &injection.documents {
+                assert_selects_no_auth(
+                    &format!("{h} native {}", doc.path.display()),
+                    &String::from_utf8_lossy(&doc.contents),
+                );
+            }
+        }
+    }
+
+    /// The sweep's filter is not vacuous: every credential and relocation variable a **canned**
+    /// row sets is one it recognises, and the flags it forbids live are ones canned rows carry.
+    #[test]
+    fn the_live_auth_sweep_recognises_every_canned_credential_and_relocation() {
+        for key in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CODEX_HOME",
+            "GEMINI_CLI_HOME",
+            "GEMINI_FORCE_FILE_STORAGE",
+            "GOOGLE_GEMINI_BASE_URL",
+            "GEMINI_API_KEY",
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "COPILOT_HOME",
+            "COPILOT_PROVIDER_BASE_URL",
+            "COPILOT_PROVIDER_TYPE",
+            "COPILOT_PROVIDER_API_KEY",
+            "COPILOT_OFFLINE",
+            "GOOSE_PROVIDER",
+            "OPENAI_HOST",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "CLINE_DIR",
+            "CLINE_DATA_DIR",
+            "QWEN_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        ] {
+            assert!(is_credential_or_relocation(key), "{key}");
+        }
+        for key in [
+            "MARION_NODE_TOKEN",
+            "MARION_AUTH",
+            "DISABLE_AUTOUPDATER",
+            "OPENCODE_DISABLE_AUTOUPDATE",
+            "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+            "CLINE_MCP_SETTINGS_PATH",
+            "OPENCODE_CONFIG_CONTENT",
+            "GOOSE_MODEL",
+            "OPENAI_MODEL",
+            "PWD",
+        ] {
+            assert!(!is_credential_or_relocation(key), "{key}");
+        }
+        let canned: Vec<String> = [Harness::ClaudeCode, Harness::OpenCode, Harness::Cline]
+            .into_iter()
+            .flat_map(|h| {
+                launch_adapter(h)
+                    .unwrap()
+                    .compile(&spec_for(h), &ctx())
+                    .unwrap()
+                    .args
+            })
+            .collect();
+        for flag in ["--setting-sources", "--pure", "--config", "--data-dir"] {
+            assert!(canned.iter().any(|a| a == flag), "{flag} in {canned:?}");
+        }
+    }
+
     /// **Every row states how its harness is kept from updating itself under marion, and every
     /// launch shape carries that switch.** A harness binary that self-updates mid-run (opencode
     /// 1.17.3 printed `Updating to v1.18.29...` on launch; codex 0.147.0's TUI offered
