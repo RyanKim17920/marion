@@ -55,9 +55,11 @@ use crate::spec::{
 /// per-harness property — codex enters one transiently for `/diff` — so the emulator must handle
 /// the switch either way, and a flag here would only hide whether it does.
 ///
-/// **`-s/--sandbox` and `-a/--ask-for-approval`.** Both are already set, by the same
-/// [`config_toml`] the headless shape is configured with (`sandbox_mode`, `approval_policy`), and
-/// a second spelling on argv is the drift [`SANDBOX_MODE`] exists to prevent.
+/// **`-s/--sandbox` and `-a/--ask-for-approval`.** Neither flag is used. A canned node sets both
+/// in the generated [`config_toml`] (`sandbox_mode`, `approval_policy`); a live node carries the
+/// sandbox as the `-c sandbox_mode=…` pair ([`live_sandbox_override`]), the same key the document
+/// writes, and keeps the operator's approval policy. A second spelling on argv is the drift
+/// [`SANDBOX_MODE`] exists to prevent.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Codex,
     // `LaunchOnly` + `ProtocolEvents` + no display — §3.4's combination outside the four presets.
@@ -115,10 +117,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }],
     stream: Some(&STREAM),
     // `write` → `sandbox:workspace-write`, §3.1's *"coarsest equivalent"* named for this exact
-    // harness: `codex exec` has no `--tools` and no permission list, only `--sandbox`, and
-    // [`config_toml`] compiles `workspace-write` on every node — so a declaration is **satisfied
-    // rather than newly granted** and argv carries nothing for it. Making the mode conditional
-    // would silently demote every codex node marion spawns today to `read-only`.
+    // harness: `codex exec` has no `--tools` and no permission list, only `--sandbox`, and marion
+    // compiles `workspace-write` on every node — into [`config_toml`] when canned, as the
+    // [`live_sandbox_override`] `-c` pair when live — so a declaration is **satisfied rather than
+    // newly granted** and adds nothing further. Making the mode conditional would silently demote
+    // every codex node marion spawns today to `read-only`.
     //
     // `read` is refused, and the absence is the decision: s14 measured codex's whole declaration
     // (`apply_patch, create_goal, exec_command, …`) identical under both sandbox modes with no
@@ -143,8 +146,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         pairs: live_config_overrides,
     }),
     // §3.1's worked example, verbatim: it replaces a hardcoded `["apply_patch", "shell"]` that
-    // named tools codex never checked a call against. Constant, because [`config_toml`] compiles
-    // that one sandbox mode on every node.
+    // named tools codex never checked a call against. Constant, because marion compiles that one
+    // sandbox mode on every node ([`config_toml`] canned, [`live_sandbox_override`] live).
     constraint: Constraint::Fixed {
         prefix: "sandbox:",
         value: SANDBOX_MODE,
@@ -269,6 +272,24 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
 /// adapter would be reporting a mode the generated config does not set.
 pub const SANDBOX_MODE: &str = "workspace-write";
+
+/// The config key [`SANDBOX_MODE`] is set under, in the generated `config.toml` and on a live
+/// node's `-c` channel alike.
+pub const SANDBOX_KEY: &str = "sandbox_mode";
+
+/// [`SANDBOX_MODE`] as the `-c` pair a **live** node carries — the constraint the contract records,
+/// compiled onto the one launch that reads no marion-written config.
+///
+/// Without it a live node runs in whatever the operator's `~/.codex/config.toml` resolves for the
+/// worktree, and an untrusted worktree resolves to `read-only`: measured on 0.155.1 (2026-09-22),
+/// `turn_context.sandbox_policy` read `read-only` on a node whose contract said `workspace-write`,
+/// and `-c sandbox_mode="workspace-write"` on the same untrusted directory read `workspace-write`.
+/// Separate from [`live_config_overrides`] because it is not part of marion's MCP declaration: it
+/// is owed with or without a bridge, and a native facade session (the operator's own codex) keeps
+/// the operator's sandbox.
+pub fn live_sandbox_override() -> (String, String) {
+    (SANDBOX_KEY.to_string(), toml_str(SANDBOX_MODE))
+}
 
 /// TOML basic-string escaping, for the handful of characters a path may legally contain.
 ///
@@ -403,7 +424,7 @@ pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
     format!(
         r#"model_provider = "canned"
 approval_policy = "never"
-sandbox_mode = "{SANDBOX_MODE}"
+{SANDBOX_KEY} = "{SANDBOX_MODE}"
 
 # Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
 # marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion

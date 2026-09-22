@@ -926,10 +926,15 @@ impl HarnessAdapter for CodexAdapter {
             Auth::Canned => None,
             Auth::Inherited => spec.model.clone(),
         };
+        // A live node reads no marion-written config, so the sandbox the contract records rides
+        // `-c` first, bridge or no bridge (`codex::live_sandbox_override`).
         f.pairs = match (spec.auth, spec.mcp) {
-            (Auth::Canned, _) | (_, McpDeclaration::None) => Vec::new(),
+            (Auth::Canned, _) => Vec::new(),
+            (Auth::Inherited, McpDeclaration::None) => vec![codex::live_sandbox_override()],
             (Auth::Inherited, McpDeclaration::Marion) => {
-                codex::live_config_overrides(&bridge_env(spec, ctx))
+                std::iter::once(codex::live_sandbox_override())
+                    .chain(codex::live_config_overrides(&bridge_env(spec, ctx)))
+                    .collect()
             }
         };
         Ok(f)
@@ -4355,6 +4360,34 @@ mod tests {
         assert!(!joined.contains("MARION_BASE_URL"), "{joined}");
     }
 
+    /// **The contract's `sandbox:workspace-write` is a claim about the launch, so a live launch must
+    /// carry it.** A canned node gets it from the generated `config.toml`; a live node reads the
+    /// operator's `~/.codex/config.toml`, where an untrusted worktree resolves to `read-only`
+    /// (measured 0.155.1, the live matrix's D9: `turn_context.sandbox_policy` read `read-only`
+    /// while the contract said `workspace-write`). Asserted with and without marion's declaration,
+    /// because the constraint is recorded on every node and the bridge is not what grants it.
+    #[test]
+    fn a_live_codex_node_runs_in_the_sandbox_its_contract_records() {
+        for mcp in [McpDeclaration::Marion, McpDeclaration::None] {
+            let spec = LaunchSpec {
+                mcp,
+                ..codex_live_spec()
+            };
+            let inv = CodexAdapter.compile(&spec, &ctx()).unwrap();
+            let want = format!("sandbox_mode=\"{}\"", codex::SANDBOX_MODE);
+            assert!(
+                inv.args.windows(2).any(|w| w[0] == "-c" && w[1] == want),
+                "{mcp:?}: missing `-c {want}` from {:?}",
+                inv.args
+            );
+            assert_eq!(
+                CodexAdapter.compiled_permissions(&spec).unwrap(),
+                vec![format!("sandbox:{}", codex::SANDBOX_MODE)],
+                "the recorded constraint and the compiled one are one value"
+            );
+        }
+    }
+
     /// A live node reaches a real vendor, so the model is the operator's to choose and `-m` carries
     /// it — verified present on the installed 0.146.0's `codex exec --help`.
     #[test]
@@ -6972,13 +7005,21 @@ mod tests {
     fn assert_argv_pairs(h: Harness, d: &Injected, m: &Managed, flag: &str, key: &str) {
         assert!(m.files.is_empty() && d.documents.is_empty(), "{h}");
         assert!(d.overlay.is_empty(), "{h}");
+        // The managed launch's sandbox is the constraint its contract records — a managed flag,
+        // which a native session (the operator's own codex) must not carry.
+        let (sk, sv) = codex::live_sandbox_override();
+        let sandbox = format!("{sk}={sv}");
         let live_pairs: Vec<String> = m
             .inv
             .args
             .windows(2)
-            .filter(|w| w[0] == flag)
+            .filter(|w| w[0] == flag && w[1] != sandbox)
             .map(|w| w[1].clone())
             .collect();
+        assert!(
+            !d.prefix.contains(&sandbox),
+            "{h}: a native session keeps the operator's sandbox"
+        );
         let native_pairs: Vec<String> = d
             .prefix
             .chunks(2)

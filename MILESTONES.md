@@ -1042,6 +1042,20 @@ Not measured, and so not claimed: the file-path form of `--mcp-config`, a bare p
 place of the deprecated `-p`, the interactive TUI's reading of `--mcp-config` (the native lane ships
 disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices.
 
+**Live-matrix row corrections (2026-09-22, real logins).** Each measured on the operator's existing
+login with the cheapest model the harness offered.
+
+- **codex 0.155.1: a live node's sandbox is the operator's unless marion passes one.** With
+  `CODEX_HOME` unset codex resolves the sandbox from `~/.codex/config.toml`, and a worktree that is
+  not a trusted project resolves to `read-only`: the live matrix's codex children ran with
+  `turn_context.sandbox_policy: read-only` (`approval_policy: on-request`, `approvals_reviewer:
+  auto_review`, so writes went through the reviewer) while their contracts recorded
+  `sandbox:workspace-write`. `codex exec -c 'sandbox_mode="workspace-write"'` on the same kind of
+  untrusted directory reads `sandbox_policy: {type: workspace-write, network_access: false}` (one
+  `gpt-5.6-luna` turn, ~22k input tokens mostly cached). `-c`, `-s/--sandbox` and `-m` are unchanged
+  from 0.147.0 on `codex exec --help`. The row now compiles `codex::live_sandbox_override` onto
+  every live node, bridge or not; a native facade session keeps the operator's sandbox.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---
