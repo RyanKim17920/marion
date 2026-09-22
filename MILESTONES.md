@@ -223,6 +223,20 @@ duplication.
 working tree, so a `shared-cwd` child of a caller in a linked worktree deleted the caller's
 checkout, uncommitted files and all. The cleanup now runs only for `Workspace::Worktree`
 (`worktree_reap.rs::a_shared_cwd_child_leaves_the_linked_worktree_it_ran_in`, real codex).
+**And it no longer destroys a worktree child's work (2026-09-22).** The reap used to remove a tree
+holding the child's uncommitted edits and leave `marion/<task_id>` at `base_commit`, so the only
+copy was the diff text in the contract while the parent told the human the file had changed (live
+UX run, item 1). Now `spawn::Landed::land` commits the tree onto that branch right after the
+contract's measurements and before verification — `git add -A`, the same view `changed_paths`
+reads; the operator's configured identity else `marion <marion@localhost>`, passed per command and
+never written to config; hooks and signing off — then the directory goes and the branch stays.
+Out-of-scope paths are committed too and stay in `scope_violations`. `Completion.branch` and
+`Completion.commit` (additive, absent when `None`, kept by every cap rule) record it, and
+`Completion::landed_line` is the sentence a parent prints. A child with no changes keeps the old
+shape; a commit that fails keeps the worktree and says so in the exit description. marion still
+never merges. `worktree_reap.rs` (11, real codex) inverts its three `CURRENT BEHAVIOUR` branch
+assertions and adds the no-change and out-of-scope cases; `spawn.rs` unit tests pin identity,
+subject, hooks, exact paths and the kept-worktree path.
 
 **Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` from the
 *shipped* binary (a real kernel stop and continue through the relay is observed by

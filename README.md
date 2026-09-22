@@ -60,6 +60,18 @@ marion-supervisor doctor --capabilities --harness codex
 
 Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 
+## Where a child's work lands
+
+A child spawned with `isolation: "worktree"` works in its own git worktree on the branch `marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch — authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks and signing skipped — removes the worktree directory, and keeps the branch. The contract records the branch and commit (`completion.branch`, `completion.commit`). marion never merges into your branch; review and merge it yourself:
+
+```sh
+git log -p HEAD..marion/<task_id>     # what the child did
+git merge marion/<task_id>            # take it
+git branch -D marion/<task_id>        # or drop it
+```
+
+Paths outside the child's `writable_scope` are committed too and listed in the contract's `scope_violations`, so decide before merging. A child that changed nothing leaves its branch at the commit it started from. If the commit itself fails, the worktree is kept rather than removed and the contract's exit description says where. A `shared-cwd` child writes straight into your directory, so there is nothing to merge.
+
 ## Harnesses
 
 | harness | pinned version | headless | native lane (`marion <harness>`) | ACP |

@@ -13,19 +13,19 @@
 //!    record. `RecordKind::ReapIntent`/`ReapConfirmed` are defined in `marion-core` and applied by
 //!    `registry::apply`; the supervisor constructs neither, so §7.2's restart resolution has
 //!    nothing to resolve.
-//! 2. **The branch outlives the worktree.** `marion/<task_id>` is left pointing at `base_commit`,
-//!    holding none of the child's work, in the user's own repo, once per spawn — and it makes a
-//!    task id single-use, since `git worktree add -b` cannot recreate it.
-//! 3. **The child's work survives only as the persisted contract's `diff`** — git holds none of it,
-//!    for a created file or a modified one. This is the one item that has already been fixed: it
-//!    originally recorded a *created* file's content being destroyed, because `spawn::diff_text`
-//!    omitted the intent-to-add pass §6.7 specifies while a *modified tracked* file came through.
-//!    The asymmetry was the diagnosis; `diff_text` now implements §6.7's recipe and the two cases
-//!    agree. The inverted assertion is kept deliberately, and says so at the test.
+//! 2. **The child's work is committed onto its branch before the reap.** `marion/<task_id>` gets
+//!    one commit holding exactly the contract's `changed_paths` — out-of-scope paths included and
+//!    still flagged — the worktree directory is removed, the branch is kept, and the contract
+//!    records `branch` and `commit`. A child that changed nothing leaves the branch at
+//!    `base_commit`. The operator's own branch never moves. Until this landed the reap deleted the
+//!    uncommitted work and left the branch empty, so the diff text in the contract was the only copy.
+//! 3. **The persisted contract's `diff` still carries the work too**, for a created file or a
+//!    modified one, so the audit record is self-sufficient without the branch.
 //!
-//! and one property of the fix, asserted on its own because it is the part that can silently harm a
+//! and two properties asserted on their own because they are the parts that can silently harm a
 //! user rather than merely lose data: the diff is derived through a **scratch `GIT_INDEX_FILE`**,
-//! so the operator's staged state is untouched.
+//! so the operator's staged state is untouched, and the reap removes **only a worktree marion
+//! created**, never a `shared-cwd` caller's own linked worktree.
 //!
 //! # Running it
 //!
@@ -331,14 +331,27 @@ fn a_shared_cwd_child_leaves_the_linked_worktree_it_ran_in() {
     let linked = _root.join("linked");
     git(
         &fx.repo,
-        &["worktree", "add", "-q", "-b", "feature", &linked.to_string_lossy()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            &linked.to_string_lossy(),
+        ],
     );
-    std::fs::write(linked.join("operator-notes.txt"), "the operator's own work\n").unwrap();
+    std::fs::write(
+        linked.join("operator-notes.txt"),
+        "the operator's own work\n",
+    )
+    .unwrap();
 
     spawn_in(&fx, "reap-shared-linked", &linked, Isolation::SharedCwd).expect("the child runs");
 
     assert_eq!(
-        std::fs::read_to_string(linked.join("operator-notes.txt")).ok().as_deref(),
+        std::fs::read_to_string(linked.join("operator-notes.txt"))
+            .ok()
+            .as_deref(),
         Some("the operator's own work\n"),
         "the caller's linked worktree, and the uncommitted file in it, survive a shared-cwd spawn"
     );
@@ -379,45 +392,219 @@ fn the_reap_reaches_the_journal_as_no_record_at_all() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 2. What is left in the operator's repository.
+// 2. What is left in the operator's repository: the child's work, on its own branch.
 // ---------------------------------------------------------------------------------------------
 
-/// **CURRENT BEHAVIOUR, NOT DESIRED.** The branch is created by `spawn::make_worktree` (`git
-/// worktree add -b marion/<task_id>`) and deleted by nothing, so one accrues per spawn — pointing
-/// at `base_commit`, holding none of the child's work, in the user's own repo.
+/// A child that edits nothing: its patch rewrites `src/keep.txt` with the bytes it already holds.
+const NOOP: &str =
+    "*** Begin Patch\n*** Update File: src/keep.txt\n@@\n-keep\n+keep\n*** End Patch";
+
+/// A child that writes **outside** `writable_scope` (`src/**`), at the worktree's root.
+const OUTSIDE: &str = "*** Begin Patch\n*** Add File: outside.txt\n\
+                       +written outside the child's writable scope\n*** End Patch";
+
+/// The base commit a worktree child was cut from.
+fn base_of(c: &TaskContract) -> String {
+    c.base_commit
+        .clone()
+        .expect("a worktree child always has a base commit")
+        .0
+}
+
+/// The paths one commit changed relative to its parent, sorted.
+fn paths_in_commit(repo: &Path, commit: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = git(
+        repo,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            commit,
+        ],
+    )
+    .lines()
+    .map(PathBuf::from)
+    .collect();
+    paths.sort();
+    paths
+}
+
+/// What `git commit` in `repo` would use as the author: the operator's configured name, else
+/// marion's own. Asked of git rather than assumed, so the test holds on any machine.
+fn expected_author(repo: &Path) -> String {
+    let get = |k: &str| {
+        git_try(repo, &["config", "--get", k])
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    match (get("user.name"), get("user.email")) {
+        (Some(name), Some(email)) => format!("{name} <{email}>"),
+        _ => "marion <marion@localhost>".to_string(),
+    }
+}
+
+/// **The child's work outlives its worktree, as one commit on `marion/<task_id>`.**
+///
+/// Before this, the reap ran `git worktree remove --force` over a tree holding the child's
+/// uncommitted edits, and the branch was left at `base_commit` — so the only copy of the work was
+/// the diff text inside the contract, while the parent told the human the file had changed. Now
+/// marion commits exactly the paths the contract names onto the child's own branch first, removes
+/// only the directory, and records where the work is. It never touches the operator's branch.
 #[test]
-fn the_reap_leaves_an_empty_branch_behind_at_the_base_commit() {
+fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
     require_codex();
     let _root = scratch("reap-branch");
     let fx = fixture(&_root, CREATE);
+    let config_before = std::fs::read(fx.repo.join(".git/config")).unwrap();
     let contract = spawn_one(&fx, "reap-branch").expect("the child runs");
+    let (wt, branch) = workspace_of(&contract);
+    let base = base_of(&contract);
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a finished run completes");
+
+    assert!(
+        !wt.exists(),
+        "the worktree is still reaped: {}",
+        wt.display()
+    );
+    assert_eq!(branch, "marion/reap-branch");
+    let tip = git(&fx.repo, &["rev-parse", &branch]).trim().to_string();
+    assert_eq!(
+        git(
+            &fx.repo,
+            &["rev-list", "--count", &format!("{base}..{branch}")]
+        )
+        .trim(),
+        "1",
+        "the branch is the base commit plus exactly one commit"
+    );
+    assert_eq!(
+        git(&fx.repo, &["rev-parse", &format!("{branch}^")]).trim(),
+        base
+    );
+    assert_eq!(
+        paths_in_commit(&fx.repo, &tip),
+        comp.changed_paths,
+        "the commit holds exactly the paths the contract attests, no more and no fewer"
+    );
+    assert_eq!(
+        git(&fx.repo, &["show", &format!("{branch}:src/marion_m1.txt")]),
+        "marion M1: written by the canned codex child\n",
+        "and the child's actual bytes"
+    );
+    assert_eq!(
+        git(
+            &fx.repo,
+            &["log", "-1", "--format=%an <%ae>|%cn <%ce>", &branch]
+        )
+        .trim(),
+        format!("{0}|{0}", expected_author(&fx.repo)),
+        "authored and committed as the operator's configured identity, or marion's own"
+    );
+    let subject = git(&fx.repo, &["log", "-1", "--format=%s", &branch]);
+    assert_eq!(
+        subject.trim(),
+        format!("marion: codex-impl reap-bra: {NARRATIVE}"),
+        "the subject names the agent type, the task and the child's own first line"
+    );
+
+    // The contract says where the work is, and so does the copy on disk.
+    assert_eq!(comp.branch.as_deref(), Some("marion/reap-branch"));
+    assert_eq!(
+        comp.commit.as_ref().map(|c| c.0.as_str()),
+        Some(tip.as_str())
+    );
+    let persisted = persisted_contract(&fx.state, "reap-branch")
+        .completion
+        .expect("the persisted contract completes");
+    assert_eq!(persisted.branch, comp.branch);
+    assert_eq!(persisted.commit, comp.commit);
+    assert_eq!(
+        comp.landed_line().as_deref(),
+        Some(
+            format!(
+                "changes on branch marion/reap-branch ({}); merge with: git merge \
+                 marion/reap-branch",
+                &tip[..12]
+            )
+            .as_str()
+        ),
+        "the one line a parent shows the human"
+    );
+
+    // And nothing of the operator's moved.
+    assert_eq!(
+        git(&fx.repo, &["rev-parse", "main"]).trim(),
+        base,
+        "marion never merges: the operator's branch is where it was"
+    );
+    assert!(
+        !fx.repo.join("src/marion_m1.txt").exists(),
+        "and the operator's checkout does not hold the child's file"
+    );
+    assert_eq!(
+        std::fs::read(fx.repo.join(".git/config")).unwrap(),
+        config_before,
+        "and the repository's config is byte-for-byte what it was: the identity is passed per \
+         command, never written"
+    );
+}
+
+/// **A child that changed nothing keeps the old shape**: no commit, the branch left at the base
+/// commit, and no branch or commit on the contract — there is nothing to merge.
+#[test]
+fn a_child_that_changed_nothing_leaves_its_branch_at_the_base_commit() {
+    require_codex();
+    let _root = scratch("reap-noop");
+    let fx = fixture(&_root, NOOP);
+    let contract = spawn_one(&fx, "reap-noop").expect("the child runs");
+    let (wt, branch) = workspace_of(&contract);
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a finished run completes");
+
+    assert!(comp.changed_paths.is_empty(), "{:?}", comp.changed_paths);
+    assert!(!wt.exists(), "the worktree is reaped");
+    assert_eq!(
+        git(&fx.repo, &["rev-parse", &branch]).trim(),
+        base_of(&contract),
+        "no commit was made for a child with no changes"
+    );
+    assert_eq!((&comp.branch, &comp.commit), (&None, &None));
+    assert_eq!(comp.landed_line(), None);
+}
+
+/// **An out-of-scope write is committed too, and still flagged.** Dropping it would destroy the
+/// evidence `scope_violations` points at; committing it keeps the contract and the branch saying
+/// the same thing, and the parent decides whether to merge.
+#[test]
+fn an_out_of_scope_write_is_committed_and_flagged() {
+    require_codex();
+    let _root = scratch("reap-outside");
+    let fx = fixture(&_root, OUTSIDE);
+    let contract = spawn_one(&fx, "reap-outside").expect("the child runs");
     let (_, branch) = workspace_of(&contract);
     let comp = contract
         .completion
         .as_ref()
         .expect("a finished run completes");
 
-    let head = git_try(&fx.repo, &["rev-parse", &branch])
-        .unwrap_or_else(|e| panic!("the branch is expected to survive the reap, and did not: {e}"));
+    assert!(comp.scope_enforced);
+    assert_eq!(comp.scope_violations, vec![PathBuf::from("outside.txt")]);
+    let tip = git(&fx.repo, &["rev-parse", &branch]).trim().to_string();
     assert_eq!(
-        head.trim(),
-        contract
-            .base_commit
-            .clone()
-            .expect("a worktree child always has a base commit")
-            .0,
-        "CURRENT BEHAVIOUR, NOT DESIRED: `{branch}` survives the reap pointing at the base commit \
-         — it advanced nowhere, because the child committed nothing and marion commits nothing on \
-         its behalf"
+        paths_in_commit(&fx.repo, &tip),
+        vec![PathBuf::from("outside.txt")]
     );
     assert_eq!(
-        git(&fx.repo, &["ls-tree", "-r", "--name-only", &branch])
-            .lines()
-            .collect::<Vec<_>>(),
-        vec!["src/keep.txt"],
-        "and its tree is the base tree: the branch is not a record of the work, it is residue. The \
-         contract meanwhile attests {:?}",
-        comp.changed_paths
+        comp.commit.as_ref().map(|c| c.0.as_str()),
+        Some(tip.as_str())
     );
 }
 
@@ -437,9 +624,9 @@ fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_bran
 
     let second = spawn_one(&fx, "reap-twice");
     let e = second.expect_err(
-        "CURRENT BEHAVIOUR, NOT DESIRED: `git worktree add -b marion/reap-twice` cannot create a \
-         branch that already exists, so the first run's residue must refuse the second — if this \
-         now succeeds, the branch is being cleaned up or reused and that is the fix landing",
+        "`git worktree add -b marion/reap-twice` cannot create a branch that already exists, and \
+         that branch now holds the first child's work, so the second spawn must be refused rather \
+         than handed it",
     );
     assert!(
         e.contains("a branch named 'marion/reap-twice' already exists"),
@@ -450,32 +637,24 @@ fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_bran
 }
 
 // ---------------------------------------------------------------------------------------------
-// 3. Whether the child's work survives at all.
+// 3. The contract's own copy of the work.
 // ---------------------------------------------------------------------------------------------
 
-/// **This assertion is inverted from what it said when the file was written, and that is the
-/// point.** It used to pin the defect from the first live run: the contract attested to a file the
-/// child created while the content existed nowhere, because `spawn::diff_text` omitted §6.7's
-/// intent-to-add pass (`git diff <base> HEAD` is empty with nothing committed, and `git diff HEAD`
-/// cannot see an untracked file). The reap then took the only copy.
-///
-/// Everything about the *reap* is unchanged and still asserted below — the worktree is gone, the
-/// branch holds the base tree, nothing is stashed, the reflog holds one line. What changed is the
-/// last line: the persisted contract now carries the bytes, so §6.7's audit record is
-/// self-sufficient and the work is recoverable from it as a patch.
+/// **The branch is not the only copy.** §6.7's diff still carries a created file's bytes, through
+/// the intent-to-add pass on a scratch index, so the audit record stays self-sufficient even for a
+/// reader that never looks at the branch. This test used to pin the opposite: before that pass, a
+/// created file reached neither git nor the contract once the worktree was reaped.
 #[test]
 fn a_created_files_content_survives_the_reap_in_the_persisted_contracts_diff() {
     require_codex();
     let _root = scratch("reap-created");
     let fx = fixture(&_root, CREATE);
     let contract = spawn_one(&fx, "reap-created").expect("the child runs");
-    let (wt, branch) = workspace_of(&contract);
     let comp = contract
         .completion
         .as_ref()
         .expect("a finished run completes");
 
-    // The claim the contract makes.
     assert_eq!(
         comp.changed_paths,
         vec![PathBuf::from("src/marion_m1.txt")],
@@ -483,56 +662,28 @@ fn a_created_files_content_survives_the_reap_in_the_persisted_contracts_diff() {
     );
     assert!(
         comp.result_commits.is_empty(),
-        "and that it committed nothing — `result_commits` is the one child-owned field, and this \
-         child, like the first live one, never used it. So the diff below is the *only* record of \
-         the work: this is not a case where a commit could be fallen back on"
+        "and that the child committed nothing itself — `result_commits` is the child's own field, \
+         and marion's commit is recorded in `commit`, not added to it"
     );
-
-    // Git holds none of it — unchanged by the diff fix, and the reason the contract has to.
-    assert!(!wt.exists(), "the worktree is gone");
-    assert!(
-        !git(&fx.repo, &["ls-tree", "-r", "--name-only", &branch]).contains("marion_m1.txt"),
-        "the branch does not hold it"
-    );
-    assert_eq!(
-        git(&fx.repo, &["stash", "list"]),
-        "",
-        "nothing was stashed on the way out"
-    );
-    let reflog = git_try(&fx.repo, &["reflog", "show", &branch]).unwrap_or_default();
-    assert!(
-        reflog.lines().count() <= 1,
-        "and the branch's reflog records only its creation, so there is no earlier tip to recover \
-         it from: {reflog}"
-    );
-
-    // And the contract does.
     let diff = persisted_contract(&fx.state, "reap-created")
         .completion
         .and_then(|c| c.diff)
         .expect(
             "§6.7's diff is `git diff <base_commit>` with intent-to-add for untracked paths, so a \
-             created file reaches it. An absent diff here is the original defect returning: the \
-             contract would attest to work whose bytes the reap destroyed",
+             created file reaches it",
         );
     assert!(
         diff.value.contains("new file mode"),
-        "the patch records it as a creation, which is what the intent-to-add pass buys — without \
-         it git emits nothing at all for a path it does not track: {}",
+        "the patch records it as a creation: {}",
         diff.value
     );
     assert!(
         diff.value
             .contains("+marion M1: written by the canned codex child"),
-        "and it carries the child's actual bytes, so the file can be reconstructed from the \
-         contract alone: {}",
+        "and it carries the child's actual bytes: {}",
         diff.value
     );
-    assert!(
-        !diff.truncated,
-        "whole, not capped — the persisted copy is uncapped by construction (`cap_for_return` \
-         applies to the returned one), so a truncation here would mean something else shortened it"
-    );
+    assert!(!diff.truncated, "whole, not capped");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -646,12 +797,10 @@ fn a_spawn_leaves_the_operators_staged_state_alone() {
     );
 }
 
-/// The control for the created-file test, and the case that always worked: a modified tracked file
-/// survives the reap in the persisted contract's diff. Its value is that the two now agree — before
-/// the intent-to-add fix this passed while its neighbour recorded content being destroyed, and that
-/// difference was the whole diagnosis.
+/// The control for the created-file test: a **modified** tracked file reaches both the branch and
+/// the persisted diff, so the two cases agree on where the work lands.
 #[test]
-fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_diff() {
+fn a_modified_tracked_files_content_survives_on_the_branch_and_in_the_persisted_diff() {
     require_codex();
     let _root = scratch("reap-modified");
     let fx = fixture(&_root, MODIFY);
@@ -666,8 +815,13 @@ fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_dif
     assert!(!wt.exists(), "the worktree is gone here too");
     assert_eq!(
         git(&fx.repo, &["show", &format!("{branch}:src/keep.txt")]),
+        "keep, edited by the canned codex child\n",
+        "and the branch holds the child's version"
+    );
+    assert_eq!(
+        git(&fx.repo, &["show", "main:src/keep.txt"]),
         "keep\n",
-        "and the branch still holds the base version, not the child's"
+        "while the operator's branch still holds the base version"
     );
 
     let diff = persisted_contract(&fx.state, "reap-modified")
@@ -677,13 +831,8 @@ fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_dif
     assert!(
         diff.value
             .contains("keep, edited by the canned codex child"),
-        "the child's actual bytes survive in the persisted contract — the sole recovery route for a \
-         run whose worktree has been reaped: {}",
+        "the child's bytes are in the persisted contract as well: {}",
         diff.value
     );
-    assert!(
-        !diff.truncated,
-        "and this one is whole, so the comparison with the created-file case is about capture and \
-         not about caps"
-    );
+    assert!(!diff.truncated);
 }

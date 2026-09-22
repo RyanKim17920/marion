@@ -1676,6 +1676,20 @@ pub fn run_spawn_watched(
         .as_ref()
         .and_then(|b| diff_text(&wt, b).ok())
         .filter(|d| !d.is_empty());
+    // **The child's work onto its own branch, over the same sealed tree the diff describes** —
+    // before verification can write into it, and before the reap below removes it. Without this
+    // the reap deleted uncommitted work and the diff text was the only copy left.
+    let landed = crate::spawn::Landed::land(
+        &workspace,
+        base.as_ref(),
+        changed.as_deref(),
+        &crate::spawn::commit_message(
+            &req.agent_type,
+            &task_id.0,
+            outcome.narrative.as_deref(),
+            &req.prompt,
+        ),
+    );
     // **After `changed_paths` and the diff, never before.** Verification writes into the worktree
     // — a `cargo test` leaves a `target/`, a formatter rewrites files — and §6.7's diff is the
     // child's work, so the measurement is taken first and the commands run over the sealed
@@ -1742,6 +1756,7 @@ pub fn run_spawn_watched(
     // §7.6's flags, from the gate that ran above — `reported_early`, `held_to_timeout`,
     // `died_before_gate` and the live set — written onto the completion before it reaches disk.
     gated.apply(&mut contract);
+    landed.apply(&mut contract);
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
@@ -1770,7 +1785,10 @@ pub fn run_spawn_watched(
     // Only a tree marion made is marion's to remove. A `shared-cwd` child ran in the caller's own
     // directory, and git refuses `worktree remove` only on the *main* working tree — so a caller in
     // a linked worktree would have its checkout deleted by the cleanup of a child it lent it to.
-    if let Workspace::Worktree { path, .. } = &contract.workspace {
+    // And not while it holds the only copy of work marion failed to commit.
+    if let Workspace::Worktree { path, .. } = &contract.workspace
+        && landed.may_reap()
+    {
         cleanup(&req.repo, path);
     }
     Ok(returned)

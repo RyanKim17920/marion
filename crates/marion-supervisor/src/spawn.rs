@@ -703,6 +703,175 @@ pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
     git_indexed(wt, &index, &["diff", "--no-renames", &base.0])
 }
 
+/// The identity marion commits under when the operator has configured none.
+pub const MARION_IDENTITY: (&str, &str) = ("marion", "marion@localhost");
+
+/// **Whose name goes on a child's commit**: the operator's configured `user.name` and
+/// `user.email` when both are set, else [`MARION_IDENTITY`]. Read, never written — the identity is
+/// passed to the one `git commit` through its environment, so no config file changes.
+pub fn commit_identity(name: Option<String>, email: Option<String>) -> (String, String) {
+    let set = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+    match (set(name), set(email)) {
+        (Some(name), Some(email)) => (name, email),
+        _ => (MARION_IDENTITY.0.into(), MARION_IDENTITY.1.into()),
+    }
+}
+
+/// The longest first line a commit subject quotes, in characters.
+const SUBJECT_QUOTE_CHARS: usize = 96;
+
+/// `marion: <agent_type> <short-id>: <first line of the narrative, else the prompt>`, with the whole
+/// task id in the body so the commit leads back to its contract.
+pub fn commit_message(
+    agent_type: &str,
+    task_id: &str,
+    narrative: Option<&str>,
+    prompt: &str,
+) -> String {
+    let first_line = |s: &str| {
+        s.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    };
+    let mut quote = narrative
+        .and_then(first_line)
+        .or_else(|| first_line(prompt))
+        .unwrap_or_else(|| "no narrative".into());
+    if quote.chars().count() > SUBJECT_QUOTE_CHARS {
+        quote = quote.chars().take(SUBJECT_QUOTE_CHARS - 1).collect();
+        quote.push('…');
+    }
+    let short: String = task_id.chars().take(8).collect();
+    format!("marion: {agent_type} {short}: {quote}\n\nmarion task {task_id}\n")
+}
+
+/// **Commit everything the child changed in its worktree `wt` onto the checked-out branch**, and
+/// return the tip when the branch now holds work beyond `base`.
+///
+/// `git add -A` with no pathspec is the same view of the tree `changed_paths` reads — tracked
+/// changes plus untracked files `--exclude-standard` does not ignore — so the commit holds exactly
+/// the paths the contract names. Passing those paths back as a pathspec would re-parse git's
+/// quoted `--name-only` output and could drop a file with an unusual name.
+///
+/// The commit is evidence, not a submission, so the operator's hooks do not run
+/// (`core.hooksPath=/dev/null`, `--no-verify`) and it is never signed (`--no-gpg-sign`): a
+/// failing hook or a locked key would otherwise lose the work this exists to keep. Under
+/// [`repo_write_guard`], because the objects and the branch ref are the shared repository's.
+///
+/// A child that committed its own work and left the tree clean returns its tip with no commit
+/// added; a tree with no changes and no commits returns `None`.
+pub fn commit_child_work(wt: &Path, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
+    let _serialized = repo_write_guard();
+    let get = |key: &str| {
+        git(wt, &["config", "--get", key])
+            .ok()
+            .map(|v| v.trim().to_string())
+    };
+    let (name, email) = commit_identity(get("user.name"), get("user.email"));
+    git(wt, &["add", "-A"])?;
+    if !git(wt, &["diff", "--cached", "--name-only"])?
+        .trim()
+        .is_empty()
+    {
+        let (name, email) = (OsStr::new(&name), OsStr::new(&email));
+        git_env(
+            wt,
+            &[
+                ("GIT_AUTHOR_NAME", name),
+                ("GIT_AUTHOR_EMAIL", email),
+                ("GIT_COMMITTER_NAME", name),
+                ("GIT_COMMITTER_EMAIL", email),
+            ],
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--no-verify",
+                "--no-gpg-sign",
+                "-q",
+                "-m",
+                message,
+            ],
+        )?;
+    }
+    let tip = git(wt, &["rev-parse", "HEAD"])?.trim().to_string();
+    Ok((tip != base.0).then_some(Oid(tip)))
+}
+
+/// **What became of a child's changes when its run ended**, decided before the worktree goes.
+#[derive(Debug)]
+pub enum Landed {
+    /// Nothing to keep here: a `shared-cwd` child's work is already in the caller's directory, and
+    /// a worktree child that changed nothing leaves its branch at the base commit, as before.
+    Nothing,
+    /// The branch holds the work, at `commit`. The worktree may go; the branch stays.
+    OnBranch { branch: String, commit: Oid },
+    /// marion could not commit it. The worktree is kept, because it is now the only copy.
+    Kept { path: PathBuf, why: String },
+}
+
+impl Landed {
+    /// Commit a worktree child's changes onto its `marion/<task_id>` branch, when it has any.
+    ///
+    /// `changed` is the contract's own `changed_paths`: `Some(empty)` is the measured "nothing
+    /// changed" and skips the commit; `None` (the measurement failed) still tries, since a failed
+    /// read is no evidence the tree is clean. Out-of-scope paths are committed with the rest —
+    /// dropping them would destroy the evidence `scope_violations` points at — and stay flagged
+    /// there, so the parent decides whether to merge.
+    pub fn land(
+        workspace: &Workspace,
+        base: Option<&Oid>,
+        changed: Option<&[PathBuf]>,
+        message: &str,
+    ) -> Self {
+        let (Workspace::Worktree { path, branch }, Some(base)) = (workspace, base) else {
+            return Self::Nothing;
+        };
+        if changed.is_some_and(<[PathBuf]>::is_empty) {
+            return Self::Nothing;
+        }
+        match commit_child_work(path, base, message) {
+            Ok(Some(commit)) => Self::OnBranch {
+                branch: branch.clone(),
+                commit,
+            },
+            Ok(None) => Self::Nothing,
+            Err(e) => Self::Kept {
+                path: path.clone(),
+                why: e.to_string(),
+            },
+        }
+    }
+
+    /// Whether the worktree may be removed: not while it holds the only copy of the work.
+    pub fn may_reap(&self) -> bool {
+        !matches!(self, Self::Kept { .. })
+    }
+
+    /// Record the outcome on the contract: the branch and commit, or why the worktree was kept.
+    pub fn apply(&self, contract: &mut TaskContract) {
+        let Some(completion) = contract.completion.as_mut() else {
+            return;
+        };
+        match self {
+            Self::Nothing => {}
+            Self::OnBranch { branch, commit } => {
+                completion.branch = Some(branch.clone());
+                completion.commit = Some(commit.clone());
+            }
+            Self::Kept { path, why } => {
+                completion.exit.description = format!(
+                    "{}; marion could not commit the child's changes ({why}), so its worktree \
+                     is kept at {}",
+                    completion.exit.description,
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 /// **The working tree of the operator's own repository, as a git tree object** — the base point of
 /// a root's change record (§9, `marion_core::root_change`).
 ///
@@ -1652,6 +1821,219 @@ mod tests {
         let d = c.completion.unwrap().exit.description;
         assert!(d.starts_with(line), "the cause leads: {d}");
         assert!(d.contains("child exited with code 55"), "{d}");
+    }
+
+    /// `git` for a unit test's scratch repository, panicking with git's own words on failure.
+    fn tgit(dir: &Path, args: &[&str]) -> String {
+        let out = SysCommand::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A one-commit repository with its own identity, and its base commit. The scratch guard is
+    /// returned because dropping it removes the directory.
+    fn committed_repo(name: &str) -> (marion_testsupport::Scratch, PathBuf, Oid) {
+        let dir = marion_testsupport::scratch(name);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        tgit(&repo, &["init", "-q", "-b", "main"]);
+        tgit(&repo, &["config", "user.name", "Op Erator"]);
+        tgit(&repo, &["config", "user.email", "op@example.invalid"]);
+        tgit(&repo, &["config", "maintenance.auto", "false"]);
+        std::fs::write(repo.join("keep.txt"), "keep\n").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "base"]);
+        let base = Oid(tgit(&repo, &["rev-parse", "HEAD"]));
+        (dir, repo, base)
+    }
+
+    #[test]
+    fn the_operators_configured_identity_is_used_and_marion_s_only_in_its_absence() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            commit_identity(some("Op"), some("op@x")),
+            ("Op".to_string(), "op@x".to_string())
+        );
+        let marion = (MARION_IDENTITY.0.to_string(), MARION_IDENTITY.1.to_string());
+        assert_eq!(commit_identity(None, some("op@x")), marion);
+        assert_eq!(commit_identity(some("Op"), None), marion);
+        assert_eq!(
+            commit_identity(some("  "), some("op@x")),
+            marion,
+            "a blank name is not an identity"
+        );
+    }
+
+    #[test]
+    fn the_commit_subject_names_the_type_the_short_task_and_the_first_line() {
+        let msg = |narrative: Option<&str>, prompt: &str| {
+            commit_message("codex-impl", "01a0ca90ffee", narrative, prompt)
+        };
+        let subject = |m: String| m.lines().next().unwrap().to_string();
+        assert_eq!(
+            subject(msg(Some("Added subtract.\nMore detail."), "Edit calc.py")),
+            "marion: codex-impl 01a0ca90: Added subtract."
+        );
+        assert_eq!(
+            subject(msg(None, "Edit calc.py\nand test it")),
+            "marion: codex-impl 01a0ca90: Edit calc.py",
+            "with no narrative, the prompt's first line"
+        );
+        assert_eq!(
+            subject(msg(Some("\n   \n"), "Edit calc.py")),
+            "marion: codex-impl 01a0ca90: Edit calc.py",
+            "a blank narrative is no narrative"
+        );
+        let long = subject(msg(Some(&"é".repeat(300)), "p"));
+        assert!(long.ends_with('…'), "{long}");
+        assert!(long.chars().count() <= 130, "{}", long.chars().count());
+        assert!(
+            msg(None, "p").contains("marion task 01a0ca90ffee"),
+            "the body carries the whole task id"
+        );
+    }
+
+    /// **Exactly the changed paths, one commit, on the child's branch, hooks and signing off.**
+    /// A failing `pre-commit` hook is installed to prove the commit does not run the operator's
+    /// hooks: marion is keeping evidence, not submitting work for review.
+    #[test]
+    fn a_childs_changes_are_committed_as_one_commit_and_the_tip_is_returned() {
+        let (_dir, repo, base) = committed_repo("spawn-commit-work");
+        let hooks = repo.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ntouch hooked\n").unwrap();
+        for h in ["pre-commit", "post-commit"] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(hooks.join(h), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        tgit(&repo, &["config", "commit.gpgsign", "true"]);
+        std::fs::write(repo.join("keep.txt"), "edited\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "created\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(repo.join("ignored.txt"), "never\n").unwrap();
+        let changed = changed_paths(&repo, &base).unwrap();
+
+        let tip = commit_child_work(&repo, &base, "marion: t: subject\n\nbody\n")
+            .expect("the commit succeeds")
+            .expect("and names a tip beyond the base");
+        assert_eq!(tip.0, tgit(&repo, &["rev-parse", "HEAD"]));
+        assert_eq!(
+            tgit(&repo, &["rev-parse", "HEAD^"]),
+            base.0,
+            "exactly one commit"
+        );
+        let mut committed: Vec<PathBuf> = tgit(
+            &repo,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+        )
+        .lines()
+        .map(PathBuf::from)
+        .collect();
+        committed.sort();
+        let mut changed = changed;
+        changed.sort();
+        assert_eq!(committed, changed, "exactly the contract's changed paths");
+        assert!(!committed.contains(&PathBuf::from("ignored.txt")));
+        assert_eq!(
+            tgit(&repo, &["log", "-1", "--format=%an <%ae>|%s"]),
+            "Op Erator <op@example.invalid>|marion: t: subject"
+        );
+        assert!(!repo.join("hooked").exists(), "no hook ran");
+        assert_eq!(
+            tgit(&repo, &["status", "--porcelain"]),
+            "",
+            "and the tree is clean after it, the ignored file still ignored"
+        );
+    }
+
+    #[test]
+    fn a_tree_with_no_changes_gets_no_commit_and_no_tip() {
+        let (_dir, repo, base) = committed_repo("spawn-commit-none");
+        assert_eq!(commit_child_work(&repo, &base, "m").unwrap(), None);
+        assert_eq!(tgit(&repo, &["rev-parse", "HEAD"]), base.0);
+    }
+
+    /// A child that committed its own work and left the tree clean still has work on the branch,
+    /// and marion adds no empty commit on top of it.
+    #[test]
+    fn a_childs_own_commit_is_the_tip_and_marion_adds_nothing() {
+        let (_dir, repo, base) = committed_repo("spawn-commit-own");
+        std::fs::write(repo.join("keep.txt"), "the child's\n").unwrap();
+        tgit(&repo, &["commit", "-qam", "child's own"]);
+        let own = tgit(&repo, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            commit_child_work(&repo, &base, "m").unwrap(),
+            Some(Oid(own))
+        );
+        assert_eq!(tgit(&repo, &["rev-list", "--count", "main"]), "2");
+    }
+
+    /// **A commit that fails keeps the worktree**: removing it would destroy the only copy of the
+    /// work, so the landing says the tree may not be reaped, and the contract says why.
+    #[test]
+    fn a_commit_that_fails_keeps_the_worktree_and_the_contract_says_why() {
+        let (_dir, repo, base) = committed_repo("spawn-commit-fails");
+        std::fs::write(repo.join("new.txt"), "created\n").unwrap();
+        // A held index lock is what a concurrent git in the same tree looks like.
+        std::fs::write(repo.join(".git/index.lock"), "").unwrap();
+        let workspace = Workspace::Worktree {
+            path: repo.clone(),
+            branch: "main".into(),
+        };
+        let changed = changed_paths(&repo, &base).unwrap();
+        let landed = Landed::land(&workspace, Some(&base), Some(&changed), "m");
+        assert!(matches!(landed, Landed::Kept { .. }), "{landed:?}");
+        assert!(!landed.may_reap());
+        let mut contract = verified_contract(
+            ChildOutcome {
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        landed.apply(&mut contract);
+        let comp = contract.completion.as_ref().unwrap();
+        assert_eq!((&comp.branch, &comp.commit), (&None, &None));
+        assert!(
+            comp.exit.description.contains("could not commit")
+                && comp.exit.description.contains(&repo.display().to_string()),
+            "{}",
+            comp.exit.description
+        );
+    }
+
+    /// The two cases that must not commit at all: a `shared-cwd` child, whose directory is the
+    /// caller's, and a worktree child whose measured changes are empty.
+    #[test]
+    fn a_shared_cwd_child_and_an_unchanged_worktree_land_nothing() {
+        let (_dir, repo, base) = committed_repo("spawn-commit-skip");
+        std::fs::write(repo.join("new.txt"), "created\n").unwrap();
+        let shared = Workspace::SharedCwd { path: repo.clone() };
+        let changed = changed_paths(&repo, &base).unwrap();
+        assert!(matches!(
+            Landed::land(&shared, Some(&base), Some(&changed), "m"),
+            Landed::Nothing
+        ));
+        let worktree = Workspace::Worktree {
+            path: repo.clone(),
+            branch: "main".into(),
+        };
+        assert!(matches!(
+            Landed::land(&worktree, Some(&base), Some(&[]), "m"),
+            Landed::Nothing
+        ));
+        assert_eq!(
+            tgit(&repo, &["rev-parse", "HEAD"]),
+            base.0,
+            "neither made a commit in the caller's repository"
+        );
     }
 
     fn sh(line: &str) -> Command {
