@@ -30,8 +30,8 @@ pub use agent_type::{
 };
 pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
-    ProcessExit, RepoIdentity, ResultStatus, TaskContract, TaskId, TaskTimestamps, Workspace,
-    new_agent_id, new_task_id,
+    ProcessExit, RepoIdentity, ResultStatus, TaskContract, TaskId, TaskTimestamps, TokenUsage,
+    Workspace, new_agent_id, new_task_id,
 };
 pub use event::{Event, EventLog, Lifecycle, Payload, PayloadKind};
 pub use harness::{Harness, UnknownHarness};

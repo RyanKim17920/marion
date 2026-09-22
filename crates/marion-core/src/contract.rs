@@ -283,6 +283,51 @@ pub struct Completion {
     pub exit: ProcessExit,
 }
 
+/// The tokens one node's run spent, as its harness's own stream reported them.
+///
+/// **Harness-sourced and unverified**, like `narrative`: marion reads these counters out of the
+/// child's stream and has no second source to check them against. The four counters are disjoint,
+/// so [`Self::total`] counts every token once — `input` is **uncached** input on every harness,
+/// normalised by the reader where a harness folds its cache reads into its input count (codex).
+///
+/// The cache counters default to zero on read because they are the ones a harness may not report
+/// at all; a missing input or output count is not a usage record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    /// Prompt tokens neither read from nor written to a cache.
+    pub input: u64,
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+
+impl TokenUsage {
+    /// Every token the run spent, each counted once. Saturates: the counters are foreign data.
+    pub fn total(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+    }
+}
+
+/// Counter-by-counter, **saturating**: a counter is a harness's number, and a hostile or buggy
+/// stream must neither panic a debug build nor wrap a release one into a small total.
+impl std::ops::Add for TokenUsage {
+    type Output = TokenUsage;
+
+    fn add(self, other: TokenUsage) -> TokenUsage {
+        TokenUsage {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cache_read: self.cache_read.saturating_add(other.cache_read),
+            cache_write: self.cache_write.saturating_add(other.cache_write),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskContract {
     pub task_id: TaskId,
@@ -317,4 +362,66 @@ pub struct TaskContract {
     /// `Some` iff a terminal transition was emitted. `None` while the run is live, and `None` if
     /// it ended unobserved (`reap_state: Orphaned`).
     pub completion: Option<Completion>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A: TokenUsage = TokenUsage {
+        input: 3989,
+        output: 5,
+        cache_read: 11008,
+        cache_write: 0,
+    };
+
+    #[test]
+    fn a_token_usage_totals_every_counter_once() {
+        assert_eq!(A.total(), 3989 + 5 + 11008);
+        assert_eq!(TokenUsage::default().total(), 0);
+    }
+
+    #[test]
+    fn token_usages_add_counter_by_counter_and_saturate_rather_than_wrap() {
+        let b = TokenUsage {
+            input: 1,
+            output: 2,
+            cache_read: 3,
+            cache_write: 4,
+        };
+        assert_eq!(
+            A + b,
+            TokenUsage {
+                input: 3990,
+                output: 7,
+                cache_read: 11011,
+                cache_write: 4,
+            }
+        );
+        // A harness's counter is foreign data: a hostile or buggy stream must not panic a debug
+        // build or wrap a release one into a small number.
+        let max = TokenUsage {
+            input: u64::MAX,
+            ..TokenUsage::default()
+        };
+        assert_eq!((max + b).input, u64::MAX);
+        assert_eq!(max.total(), u64::MAX);
+    }
+
+    #[test]
+    fn a_token_usage_persisted_without_cache_counters_still_reads() {
+        // The cache counters are the ones a harness may not report; a record written by a reader
+        // that had none must still deserialize, as zero.
+        let u: TokenUsage = serde_json::from_str(r#"{"input":7,"output":9}"#).unwrap();
+        assert_eq!(
+            u,
+            TokenUsage {
+                input: 7,
+                output: 9,
+                ..TokenUsage::default()
+            }
+        );
+        let back: TokenUsage = serde_json::from_str(&serde_json::to_string(&A).unwrap()).unwrap();
+        assert_eq!(back, A);
+    }
 }
