@@ -600,9 +600,24 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // and `DISABLE_AUTOUPDATER` strings are unchanged.
         //
         // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
+        // 2.1.280: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
+        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
+        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
+        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
+        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
+        // restart_resume (0), timeout_kill (1), worktree_reap (8). 2.1.269 is no longer on disk
+        // (the versions dir holds 2.1.276, 2.1.278, 2.1.280), so the gate went red and the shim
+        // resolved `claude` to the 2.1.280 build once widened. **One shape moved:** every
+        // `can_use_tool` ask for an MCP tool now carries `mcp_server: {name, source: "dynamic"}`
+        // (already in 2.1.276's strings), which marion never reads; `permission_round_trip`
+        // names and drops it before comparing against the 2.1.220 recording (its ninth test
+        // checks that allowance). The trust dialog and `DISABLE_AUTOUPDATER` strings are
+        // unchanged in 2.1.276, 2.1.278 and 2.1.280.
+        //
+        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
         accepted: &[
             "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
-            "2.1.268", "2.1.269",
+            "2.1.268", "2.1.269", "2.1.280",
         ],
     },
     PinnedHarness {

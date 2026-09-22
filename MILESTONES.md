@@ -93,7 +93,7 @@ cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launch
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
-own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268 and 2.1.269; codex 0.146.0/0.146.1/0.147.0;
+own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0;
 gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
 qwen 0.23.0.
 
@@ -454,6 +454,33 @@ and a `tool_result.content` list holding only marion's block, with **no** `<tota
 anywhere. `tests/common/mcp_result.rs` reads both. The trust dialog still reads "Quick safety
 check…" and `DISABLE_AUTOUPDATER` is still in the binary's strings, both counts identical to
 2.1.268's. The s10/s11/s14/s16 probes were not re-run.
+
+**claude 2.1.280, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The binary first on PATH
+moved from 2.1.269 through 2.1.276 and 2.1.278 to 2.1.280, and 2.1.269 left the versions dir, so
+the gate went red (86 local tests). Admitted in one run with opencode 1.18.32 and goose 1.51.0,
+because `cross_product` gates every pinned harness in one binary; the shim resolved `claude` to
+`~/.local/share/claude/versions/2.1.280`. Green with the table widened and one test-side change:
+`marion-testsupport` (33), `acp_child` (5), `cross_product` (57), `depth_gate` (4),
+`harness_matrix` (8), `journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `native_facade_e2e`
+(2), `native_facade_spawn` (1), `no_git` (5), `pane_attach` (2), `permission_round_trip` (9),
+`timeout_kill` (1), `worktree_reap` (8); `restart_resume` is `--ignored`. **One shape moved, in
+the control channel:** a `can_use_tool` ask for an MCP tool now carries
+`mcp_server: {"name": "marion", "source": "dynamic"}` (the `...s.mcpInfo&&{mcp_server:…}` spread,
+already in 2.1.276). marion reads the ask by pointer and never looks at it, but
+`permission_round_trip` compares the live ask with the 2.1.220 recording and failed 2/8 on the
+extra key. The key is now named in a dated list and dropped only when the recording lacks it
+(`78c1a2d`); any unnamed new key still fails. The tool-result request shape is unchanged from
+2.1.269's. The trust dialog and `DISABLE_AUTOUPDATER` strings are unchanged. **Why it
+self-updated at all:** not a marion leak. Nodes marion spawns carry `DISABLE_AUTOUPDATER=1`
+(checked on a live node with `ps eww`); the operator's own interactive sessions do not, and
+`autoUpdates: false` in `~/.claude.json` is ignored because the native installer also set
+`autoUpdatesProtectedForNative: true`, and the binary honours the config switch only when that
+flag is off. The run needed `RUST_TEST_THREADS=4` (see opencode 1.18.32 below) and
+`COPILOT_AUTO_UPDATE=false`. The global npm copilot is still 1.0.83, but its loader execs a build
+it downloaded itself into `~/Library/Caches/copilot/pkg/darwin-arm64/1.0.87` (fetched 14:07 that
+day by a copilot started without the switch) unless the switch is `false`. marion's nodes get
+`false` and run 1.0.83, while the gate's bare `--version` probe does not get it and read 1.0.87. The s10/s11/s14/s16
+probes were not re-run.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
