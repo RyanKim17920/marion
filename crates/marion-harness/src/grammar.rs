@@ -243,7 +243,7 @@ fn counter(unit: &Value, ptr: Option<&str>) -> u64 {
 /// that never reached its usage frame made no claim about spend, and zero would be one. A unit of
 /// zeros is `Some` of zero: a run that reported spending nothing did report.
 pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
-    let per_unit = units(frames, &rule.at).into_iter().map(|unit| {
+    let mut per_unit = units(frames, &rule.at).into_iter().map(|unit| {
         let cache_read = counter(unit, rule.cache_read);
         let input = counter(unit, Some(rule.input));
         TokenUsage {
@@ -258,7 +258,7 @@ pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
         }
     });
     match rule.fold {
-        UsageFold::Last => per_unit.last(),
+        UsageFold::Last => per_unit.next_back(),
         UsageFold::Sum => per_unit.reduce(|a, b| a + b),
     }
 }
@@ -680,7 +680,10 @@ mod tests {
             ..RULE
         };
         let frame = serde_json::json!({"type": "done", "usage": {"in": "12", "cached": 5}});
-        assert_eq!(usage(&rule, &[frame.clone()]), Some(tokens(12, 0, 0)));
+        assert_eq!(
+            usage(&rule, std::slice::from_ref(&frame)),
+            Some(tokens(12, 0, 0))
+        );
         let write = UsageRule {
             cache_write: Some("/usage/written"),
             ..RULE

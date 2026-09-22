@@ -199,7 +199,11 @@ fn every_acp_agent_reads_its_usage_from_the_protocols_prompt_response() {
         ),
     ];
     for (name, agent, stdout, want) in cases {
-        assert_eq!(usage_of(Harness::Acp, *agent, stdout), Some(*want), "{name}");
+        assert_eq!(
+            usage_of(Harness::Acp, *agent, stdout),
+            Some(*want),
+            "{name}"
+        );
     }
     // The protocol row, bound to no agent, reads the same shape.
     let unbound = adapter_for(Harness::Acp).expect("the protocol row");
