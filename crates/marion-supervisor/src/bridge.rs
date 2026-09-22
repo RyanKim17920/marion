@@ -610,20 +610,54 @@ fn bounded(s: &str) -> String {
 /// A contract with no completion at all is not a failure: that is a live or unobserved run, which
 /// M1's blocking `spawn` never returns, and inventing a failure line for it would change the
 /// success path on a shape this function cannot diagnose.
-fn failure_line(c: &TaskContract) -> Option<String> {
+///
+/// **An `Unreported` child whose declared verification all passed is the one line that is not an
+/// error** (the `bool` is `isError`). Measured live on 2026-09-22: claude and codex children did
+/// the work, passed every check their parent declared, and simply never called `report`, and an
+/// `isError: true` told the parent its call had not done what it asked. The status stays
+/// `Unreported` in the contract — no answer arrived — but the verdict the parent acts on follows
+/// the evidence marion ran itself, and says both halves.
+fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
     let comp = c.completion.as_ref()?;
     let harness = c.child.harness;
     let head = match comp.status {
         ExitStatus::Ok => return None,
-        ExitStatus::Unreported => {
-            format!("marion: the {harness} child never called report, so it returned no answer")
-        }
+        ExitStatus::Unreported => match verification_passed(c) {
+            Some(n) => {
+                let line = format!(
+                    "marion: the {harness} child did not call report; verification passed \
+                     ({n}/{n}) — {}",
+                    comp.exit.description
+                );
+                return Some((bounded(&line), false));
+            }
+            None => {
+                format!("marion: the {harness} child never called report, so it returned no answer")
+            }
+        },
         ExitStatus::TimedOut => format!("marion: the {harness} child timed out"),
         ExitStatus::Cancelled => format!("marion: the {harness} child was cancelled"),
         ExitStatus::Killed => format!("marion: the {harness} child was killed"),
         ExitStatus::Failed => format!("marion: the {harness} child failed"),
     };
-    Some(bounded(&format!("{head} — {}", comp.exit.description)))
+    Some((
+        bounded(&format!("{head} — {}", comp.exit.description)),
+        true,
+    ))
+}
+
+/// How many declared verification commands ran and passed, **when every one of them did** — or
+/// `None` when there were none, one did not pass, or the cap left an outcome unseen. Only a
+/// complete record vouches for the work: a check marion cannot read is not a check that passed.
+fn verification_passed(c: &TaskContract) -> Option<usize> {
+    let comp = c.completion.as_ref()?;
+    let n = c.verification.len();
+    let all_ran = n > 0 && comp.evidence_omitted == 0 && comp.evidence.len() == n;
+    let all_passed = comp
+        .evidence
+        .iter()
+        .all(|e| e.exit_code == Some(0) && !e.timed_out);
+    (all_ran && all_passed).then_some(n)
 }
 
 /// The tool result for one `spawn`, in the three shapes a `spawn` can end in.
@@ -631,7 +665,8 @@ fn failure_line(c: &TaskContract) -> Option<String> {
 /// 1. **A child that finished `Ok`** returns exactly what it always did: the pretty-printed
 ///    contract, `isError: false`, byte for byte.
 /// 2. **A child that ran and did not finish `Ok`** returns the same contract with a one-line
-///    account of the failure above it, and `isError: true`.
+///    account of the failure above it, and `isError: true` — except an `Unreported` child whose
+///    declared verification all passed, which says so and is `isError: false` ([`failure_line`]).
 /// 3. **A spawn that never launched** returns that same shape with no contract to print, and
 ///    `isError: true` — which it already did, and which is why the two now read alike.
 ///
@@ -681,7 +716,7 @@ pub fn spawn_text(agent_type: &str, outcome: Result<TaskContract, SpawnError>) -
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
             match failure_line(&contract) {
                 None => (json, false),
-                Some(line) => (format!("{line}\n\n{json}"), true),
+                Some((line, is_error)) => (format!("{line}\n\n{json}"), is_error),
             }
         }
         // **The verb comes from the error, not from this line.** Every refusal that predates §11
@@ -1553,6 +1588,94 @@ mod tests {
             "never silently promote, and never silently demote either: {line}"
         );
         assert_eq!(v["result"]["isError"], true);
+    }
+
+    /// `c`, with one declared verification command per entry of `codes`, each run to that exit.
+    fn verified(mut c: TaskContract, codes: &[Option<i32>]) -> TaskContract {
+        use marion_core::contract::{Capped, Command, CommandOutcome};
+        use marion_core::encoding::{Duration, Millis};
+        let commands: Vec<Command> = (0..codes.len())
+            .map(|i| Command {
+                program: "sh".into(),
+                args: vec!["-c".into(), format!("check {i}")],
+                cwd: "/tmp/wt".into(),
+                timeout: Duration::from_secs(300),
+            })
+            .collect();
+        let comp = c
+            .completion
+            .as_mut()
+            .expect("a contract that ran has a completion");
+        comp.evidence = commands
+            .iter()
+            .zip(codes)
+            .map(|(command, code)| CommandOutcome {
+                command: command.clone(),
+                exit_code: *code,
+                stdout: Capped::whole(""),
+                stderr: Capped::whole(""),
+                duration: Millis(std::time::Duration::from_millis(1)),
+                timed_out: false,
+            })
+            .collect();
+        c.verification = commands;
+        c
+    }
+
+    /// **A child that did the work, passed every check its parent declared, and only omitted
+    /// `report` is not an error to its parent.** Measured live (2026-09-22): ten claude and codex
+    /// children wrote their file, passed `test -f` and `grep -q`, and ended `Unreported`, and each
+    /// parent was handed `isError: true` — "this call did not do what you asked" about a call that
+    /// did. The contract keeps `Unreported`, because no answer arrived; the verdict the parent acts
+    /// on follows the evidence marion itself ran.
+    #[test]
+    fn an_unreported_child_whose_verification_all_passed_is_not_an_error() {
+        let c = verified(
+            ran(crate::spawn::ChildOutcome {
+                exit_code: Some(0),
+                ..Default::default()
+            }),
+            &[Some(0), Some(0)],
+        );
+        let v = spawn_result(&json!(2), "codex-impl", Ok(c));
+        assert_eq!(v["result"]["isError"], false, "{v}");
+        assert_eq!(
+            first_line(&v),
+            "marion: the codex child did not call report; verification passed (2/2) — child \
+             exited with code 0"
+        );
+        assert!(
+            text(&v).contains("\"status\": \"Unreported\""),
+            "the contract still records that no report arrived: {}",
+            text(&v)
+        );
+    }
+
+    /// The other side of the rule: a failed check, or no declared check at all, leaves the
+    /// unreported child an error — marion then has nothing of its own that vouches for the work.
+    #[test]
+    fn an_unreported_child_without_passing_verification_stays_an_error() {
+        let unreported = || {
+            ran(crate::spawn::ChildOutcome {
+                exit_code: Some(0),
+                ..Default::default()
+            })
+        };
+        for (why, c) in [
+            ("no verification declared", unreported()),
+            (
+                "one check failed",
+                verified(unreported(), &[Some(0), Some(1)]),
+            ),
+            (
+                "one check was signalled",
+                verified(unreported(), &[Some(0), None]),
+            ),
+        ] {
+            let v = spawn_result(&json!(2), "codex-impl", Ok(c));
+            assert_eq!(v["result"]["isError"], true, "{why}: {v}");
+            assert!(first_line(&v).contains("never called report"), "{why}");
+        }
     }
 
     /// The success path is not merely similar — it is the same bytes it was before, so a

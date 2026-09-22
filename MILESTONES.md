@@ -164,6 +164,13 @@ Witnesses: `inbox::tests` (FIFO, sealed/None/not-ready refusals, the barrier rac
 journaled), `handler::steer::tests` (the auth matrix, digest-only journal, state refusals, drop on
 end), `restart::tests::every_message_left_queued_by_a_lost_supervisor_is_dropped_in_order`.
 
+**Live-run verdicts (2026-09-22).** A live any-harness matrix (real logins, real models) had every
+claude and codex child do the work and pass its verification yet end `Unreported`. Fixed in
+marion's verdicts rather than papered over: an `Unreported` child whose declared verification all
+ran and passed stays `Unreported` in its contract, but its parent's `spawn`/`wait` result is no
+longer `isError` and opens "did not call report; verification passed (N/N)" (`bridge.rs` unit
+tests); with no declared check, or any check failing, it stays an error.
+
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
