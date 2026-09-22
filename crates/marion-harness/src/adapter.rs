@@ -2529,7 +2529,7 @@ mod tests {
                     ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
                     ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
                     ("OPENCODE_DISABLE_SHARE", "1"),
-                    ("OPENCODE_DB", ":memory:"),
+                    ("OPENCODE_DB", "/state/x/config/opencode.db"),
                     ("PWD", "/wt"),
                     // The row's update policy, rendered after its `Env` rows.
                     ("OPENCODE_DISABLE_AUTOUPDATE", "1"),

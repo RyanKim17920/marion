@@ -318,7 +318,10 @@ continues the session** on codex `exec -C <cwd> resume <id>` — and a resume wi
 mcp_servers.marion.*` pairs never starts marion's server (`p0b/codex/mcp-methods.txt`), copilot
 `--resume=<id>`, qwen `--resume <id>`, and opencode `run --session <id>` **only with a file
 `OPENCODE_DB`**: marion's `:memory:` made it exit 1 `Session not found` (`p0b/opencode/mem2.err`
-vs `db2.jsonl`). **TUIs:** codex, opencode, copilot and claude all enable bracketed paste;
+vs `db2.jsonl`); the row now sets `OPENCODE_DB=<node config dir>/opencode.db` under both modes
+(`opencode::tests::the_session_store_is_a_file_under_the_nodes_own_dir_so_a_resume_finds_it`, RED
+with `left: Some(":memory:")`), which is what makes opencode's `--session` resume row real rather
+than a refusal in disguise. **TUIs:** codex, opencode, copilot and claude all enable bracketed paste;
 `\e[200~…\e[201~` then `\r` submits at 0 ms, byte-exact up to 3 KB, while unbracketed text + `\r`
 fails on codex; busy spinners repaint at ≤ 454 ms and idle output is ~0, so 1500 ms of output
 quiet is a reliable idle signal; Enter while busy is never dropped and never interrupts

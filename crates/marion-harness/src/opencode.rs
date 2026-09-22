@@ -37,6 +37,10 @@ pub fn live_config_document(b: &BridgeEnv) -> String {
 /// [`config_path`], so the document is written where the relocated root is read from.
 const XDG_CONFIG_DIR: &str = "config";
 
+/// The session store's file under the node's config dir — [`SPEC`]'s `OPENCODE_DB`. A file, because
+/// a resume is a second process that must find the first one's session (S31).
+const SESSION_DB: &str = "opencode.db";
+
 /// opencode's row. Measured against 1.17.3 (`tests/fixtures/s13/`). `LaunchOnly`: `run --pure
 /// --format json` is a full agent turn as NDJSON over pipes, binding no port.
 ///
@@ -45,14 +49,18 @@ const XDG_CONFIG_DIR: &str = "config";
 /// `$XDG_CONFIG_HOME/opencode/`, resolved through **different variables**, with `HOME`
 /// independently driving the `~/.claude`, `~/.agents` and `~/.opencode` lookups. Relocating any of
 /// them hides the login a live node is meant to present, so the five relocations are `Canned`;
-/// the `OPENCODE_DISABLE_*` set and `OPENCODE_DB=:memory:` are kept under both modes because they
+/// the `OPENCODE_DISABLE_*` set and `OPENCODE_DB` are kept under both modes because they
 /// were never the isolation — and two of them matter *more* live, not less:
 /// `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no `XDG_*`
 /// var ever closed (`~/.claude/CLAUDE.md` and `~/.claude/skills/**` are found via `HOME`, and
 /// under live that `HOME` is the operator's real one). The rest suppress work a spawned node has
 /// no business doing: a boot models.dev fetch plus a 60-minute in-process loop, an LSP toolchain
-/// download, an auto-updater that pipes an install script into `bash`, session sharing, and an
-/// on-disk sqlite file.
+/// download, an auto-updater that pipes an install script into `bash`, and session sharing.
+///
+/// **`OPENCODE_DB` names a file under the node's own directory, never `:memory:`** ([`SESSION_DB`]):
+/// it keeps the session store off the operator's `~/.local/share/opencode` under both modes, and it
+/// outlives the process, which `run --session <id>` needs — S31 measured `:memory:` failing every
+/// resume with `Session not found` (`tests/fixtures/s31-turn-delivery/p0b/opencode/`).
 ///
 /// **What this env cannot do is bound the run.** opencode *never exits* on a provider hang: S13
 /// measured a 500 still retrying at 90 s and a connection-refused still hung at 180 s. The provider
@@ -141,7 +149,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
         Env {
             key: "OPENCODE_DB",
-            val: Val::Lit(":memory:"),
+            val: Val::Under(SESSION_DB),
             when: When::Always,
         },
         // **`cwd` alone does not place an opencode node, and the difference is a containment
@@ -655,7 +663,7 @@ mod tests {
         assert_eq!(get("XDG_DATA_HOME"), "/tmp/sb/data");
         assert_eq!(get("XDG_CACHE_HOME"), "/tmp/sb/cache");
         assert_eq!(get("XDG_STATE_HOME"), "/tmp/sb/state");
-        assert_eq!(get("OPENCODE_DB"), ":memory:");
+        assert_eq!(get("OPENCODE_DB"), "/tmp/sb/opencode.db");
     }
 
     #[test]
@@ -775,6 +783,40 @@ mod tests {
         );
     }
 
+    /// **A resumed opencode node can find its own session**, because the session store is a file
+    /// under the node's own directory rather than `:memory:`. S31 (`tests/fixtures/
+    /// s31-turn-delivery/p0b/opencode/`): with `OPENCODE_DB=:memory:` a second `run --session <id>`
+    /// exits 1 `Session not found` — the store died with the first process — and with
+    /// `OPENCODE_DB=<agent dir>/node.db` the second life carries the first life's history. Under
+    /// both modes: the store is the node's, never the operator's `~/.local/share/opencode`, and a
+    /// live node resumes exactly as a canned one does.
+    #[test]
+    fn the_session_store_is_a_file_under_the_nodes_own_dir_so_a_resume_finds_it() {
+        for (mode, f) in [("canned", spec()), ("live", live_spec())] {
+            let inv = compile_run(&f);
+            let db = inv
+                .env
+                .iter()
+                .find(|(k, _)| k == "OPENCODE_DB")
+                .map(|(_, v)| v.clone());
+            assert_eq!(
+                db.as_deref(),
+                Some("/tmp/sb/opencode.db"),
+                "{mode}: the store must outlive the process that made the session"
+            );
+        }
+        let resumed = compile_run(&Fields {
+            resume: Some("ses_prev".into()),
+            ..live_spec()
+        });
+        assert!(
+            resumed
+                .args
+                .windows(2)
+                .any(|w| w == ["--session", "ses_prev"])
+        );
+    }
+
     /// The hygiene set is **kept**, and the two contamination severs matter *more* live, not less:
     /// under `--live` the `HOME` an unsevered child reads `~/.claude/CLAUDE.md` and
     /// `~/.claude/skills/**` from is the operator's real one (`tests/fixtures/s13/`).
@@ -789,7 +831,7 @@ mod tests {
             ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
             ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
             ("OPENCODE_DISABLE_SHARE", "1"),
-            ("OPENCODE_DB", ":memory:"),
+            ("OPENCODE_DB", "/tmp/sb/opencode.db"),
         ] {
             assert_eq!(
                 inv.env

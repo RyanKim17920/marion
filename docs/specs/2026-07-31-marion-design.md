@@ -2158,7 +2158,8 @@ marion **never mutates the user's real harness config.**
     no amount of `XDG_*` isolation helps, because `~/.claude` is found via `HOME` (§12).
   - **SHOULD** also set `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`
     (there is otherwise a boot fetch **plus a 60-minute in-process loop**),
-    `OPENCODE_DISABLE_LSP_DOWNLOAD=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DB=:memory:`, and
+    `OPENCODE_DISABLE_LSP_DOWNLOAD=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DB=<node dir>/opencode.db` (a file, not `:memory:`,
+    which fails every `run --session` resume with `Session not found` — S31), and
     pre-seed `rg` on the child's `PATH` — the ripgrep auto-download is gated by **neither** `--pure`
     nor `OPENCODE_DISABLE_LSP_DOWNLOAD`. Note that `--pure` also does **not** gate a `forkDetach`ed
     `@opencode-ai/plugin` npm install, so a first run **makes a network call on a run specified to
