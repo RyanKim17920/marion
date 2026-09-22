@@ -118,6 +118,10 @@ Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resum
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
+2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
+facade's connection holds — now runs the keyboard reader too, forwarding nothing and detaching on
+`^] d`; before, nothing read the keys and the client had to be killed (`attach.rs`,
+`a_read_only_attach_to_a_silent_node_still_detaches_on_the_prefix`).
 2026-09-22: an attention queue — one rule, `tree::attention_of`, names a node blocked, exited
 failed / timed out / killed / unreported, or orphaned; `!` in `marion tree` jumps to the next such
 node in drawn order, wrapping, and the status row adds `N need(s) attention` only when N > 0

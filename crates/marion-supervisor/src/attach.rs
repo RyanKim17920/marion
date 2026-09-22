@@ -236,6 +236,7 @@ enum KeyRead {
 /// every destructor and leave the operator's terminal in raw mode.
 fn watch_keyboard(
     id: AgentId,
+    writable: bool,
     input_fd: std::os::fd::RawFd,
     writer: Arc<std::sync::Mutex<UnixStream>>,
     leaving: Arc<AtomicBool>,
@@ -254,6 +255,11 @@ fn watch_keyboard(
             KeyRead::Stop => return,
         };
         for action in keys.feed(&buf[..n]) {
+            // A read-only attach has no write half: the supervisor answers an unleased keystroke
+            // by closing the connection, so only the operator's chords are acted on.
+            if !writable && matches!(action, Action::Forward(_)) {
+                continue;
+            }
             if forward_key(action, &id, &mut encoder, &writer, &failure, &leaving).is_break() {
                 return;
             }
@@ -690,9 +696,10 @@ impl Session {
             if matches!(self.pane_stream, PaneStream::Legacy) {
                 self.view_mut()?.resize_grid(viewport_cols, viewport_rows)?;
             }
-            self.start_keyboard()?;
         }
-        Ok(())
+        // Every attach, read-only included: the keyboard reader is the only thing that hears
+        // `^] d`, and a read-only view the operator cannot leave is a wedged terminal.
+        self.start_keyboard()
     }
 
     /// The attach response, and whether pane-v1 is the capability it answers.
@@ -909,19 +916,24 @@ impl Session {
         let leaving = Arc::clone(&self.leaving);
         let failure = Arc::clone(&self.keyboard_failure);
         let id = self.id.clone();
+        let writable = self.writable;
         let input_fd = self.input_fd;
         let writer = Arc::clone(&self.writer);
         let encoder = KeyboardEncoder::for_stream(self.pane_stream)?;
-        writer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_write_timeout(Some(POLL))
-            .map_err(|e| format!("bounding pane keyboard writes: {e}"))?;
+        // Only a writable reader writes; a read-only one must start even on a socket the
+        // supervisor has already closed, where this call fails.
+        if writable {
+            writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_write_timeout(Some(POLL))
+                .map_err(|e| format!("bounding pane keyboard writes: {e}"))?;
+        }
         self.keyboard = Some(
             std::thread::Builder::new()
                 .name("marion-attach-keys".into())
                 .spawn(move || {
-                    watch_keyboard(id, input_fd, writer, leaving, failure, encoder);
+                    watch_keyboard(id, writable, input_fd, writer, leaving, failure, encoder);
                 })
                 .map_err(|e| format!("starting the pane keyboard reader: {e}"))?,
         );
@@ -1480,6 +1492,93 @@ mod tests {
         let error = session.pump().unwrap_err();
         assert!(error.contains("keyboard"), "{error}");
         server_thread.join().unwrap();
+    }
+
+    /// **A read-only attach can still be left.** `marion tree` → Enter on a native root attaches
+    /// read-only, because the facade's own connection holds the keyboard; the keyboard reader was
+    /// started only for a writable attach, so nothing read `^] d` and the client sat in its socket
+    /// read until killed. The reader now runs for every attach: a read-only one forwards nothing —
+    /// the supervisor closes on an unleased keystroke — and detaches on `^] d` even when the
+    /// supervisor never sends another frame.
+    #[test]
+    fn a_read_only_attach_to_a_silent_node_still_detaches_on_the_prefix() {
+        use std::os::fd::AsRawFd;
+        let master =
+            crate::pty::PtyMaster::open(crate::pty::WinSize::new(80, 24)).expect("an operator pty");
+        let slave = master.open_slave().expect("the operator's tty");
+
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    pane_attach_response(marion_core::proto::result::PaneAttach {
+                        cols: 80,
+                        rows: 24,
+                        writable: false,
+                        held_by: Some(7),
+                        ended: false,
+                        pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
+                            token: pane_token(),
+                            cut: 0,
+                        }),
+                    })
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            // Silent from here on: whatever the client sends is collected until it hangs up.
+            let mut sent = Vec::new();
+            loop {
+                line.clear();
+                if lines.read_line(&mut line).unwrap() == 0 {
+                    return sent;
+                }
+                sent.push(Frame::from_line(&line).unwrap());
+            }
+        });
+
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            slave.as_raw_fd(),
+            (80, 24),
+        )
+        .expect("a read-only attach opens");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut session = session;
+            let pumped = session.pump();
+            drop(session);
+            let _ = done_tx.send(pumped);
+        });
+        master.write_all(b"x").unwrap();
+        master
+            .write_all(&[marion_tui::keys::PREFIX, marion_tui::keys::DETACH_KEY])
+            .unwrap();
+        let pumped = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a read-only attach did not detach on ^] d");
+        pumped.unwrap_or_else(|e| panic!("the detach was reported as a failure: {e}"));
+        let sent = server_thread.join().unwrap();
+        assert!(
+            !sent.iter().any(|frame| matches!(
+                frame,
+                Frame::Input(note) if matches!(
+                    note.input,
+                    Input::NodePaneWrite(_) | Input::NodePtyWrite { .. }
+                )
+            )),
+            "a read-only attach sent the supervisor a keystroke: {sent:?}"
+        );
+        drop(master);
     }
 
     fn pane_token() -> marion_core::proto::PaneReadyTokenV1 {
