@@ -182,8 +182,13 @@ fn a_user_defined_reviewer_runs_on_codex_and_is_journaled_under_its_own_name() {
         requests.len()
     );
     assert_eq!(
-        contract.instructions.value, prefixed,
-        "and the contract records that prompt, not the request's"
+        contract.instructions.value,
+        format!(
+            "{prefixed}\n\n{}",
+            marion_supervisor::bridge::REPORT_INSTRUCTION
+        ),
+        "and the contract records that prompt, with marion's report instruction last, not the \
+         request's"
     );
 }
 

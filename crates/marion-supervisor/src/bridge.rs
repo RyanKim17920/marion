@@ -458,6 +458,17 @@ fn tools_describing(agent_type_description: &str) -> Value {
 /// (`HarnessAdapter::marion_tool_name`) applied to this, never a second literal.
 pub const REPORT: &str = "report";
 
+/// **The one sentence every child's prompt ends with**, appended by [`crate::run::child_prompt`].
+///
+/// The tool's own description said "call this exactly once" and was the only place marion said
+/// so; measured live (2026-09-22), claude and codex children did their work and never called it,
+/// ending `Unreported`. Written against marion's *server* rather than one harness's spelling of the
+/// tool (`mcp__marion__report`, `marion_report`, `marion-report` …), so the same text is true on
+/// every harness and a harness that lazy-loads MCP tools has the server's name to search for.
+pub const REPORT_INSTRUCTION: &str = "When you have finished, call the `report` tool of the marion \
+     MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is \
+     not returned to whoever delegated this task; only that report is.";
+
 /// **§5.4's answer to a `report` from a node that has no contract**, in that table's own terms.
 ///
 /// Written as a sentence rather than a code, for the reason [`tools`] gives about absence: the node

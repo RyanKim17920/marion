@@ -1241,6 +1241,20 @@ pub fn prefixed_prompt(ty: &AgentType, prompt: &str) -> String {
     }
 }
 
+/// The prompt a **child** of `ty` is given: [`prefixed_prompt`], then marion's
+/// [`crate::bridge::REPORT_INSTRUCTION`] after a blank line.
+///
+/// A child and not a root: §9 gives a root no contract and no `report`, so `root::prepare_watched`
+/// keeps [`prefixed_prompt`] alone. Applied once, where the child's type resolves, so the launch,
+/// the frame and the contract all read the text the node actually saw.
+pub fn child_prompt(ty: &AgentType, prompt: &str) -> String {
+    format!(
+        "{}\n\n{}",
+        prefixed_prompt(ty, prompt),
+        crate::bridge::REPORT_INSTRUCTION
+    )
+}
+
 /// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
 pub fn run_spawn_watched(
     env: &Env,
@@ -1254,10 +1268,11 @@ pub fn run_spawn_watched(
     let agent_type = agent_types(&req.repo)?
         .resolve(&req.agent_type)
         .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
-    // The type's standing instruction, once, here — and `req` is the prefixed request from this
-    // line on, so the four places that read its prompt read one value.
+    // The type's standing instruction and marion's report instruction, once, here — and `req` is
+    // the child's full request from this line on, so the four places that read its prompt read
+    // one value.
     let req = &SpawnRequest {
-        prompt: prefixed_prompt(&agent_type, &req.prompt),
+        prompt: child_prompt(&agent_type, &req.prompt),
         ..req.clone()
     };
     // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
@@ -3592,6 +3607,49 @@ mod tests {
         assert_eq!(once.matches("Review only.").count(), 1);
     }
 
+    /// **Every child is told, in its prompt, to call `report`.** Measured live (2026-09-22): ten
+    /// claude and codex children did the work and never called `report`, because the tool's own
+    /// description was the only place marion said so. The instruction comes last — after a type's
+    /// prefix and the task — exactly once, and it names the tool by marion's server rather than
+    /// in any one harness's spelling.
+    #[test]
+    fn a_childs_prompt_ends_with_marions_one_report_instruction() {
+        let plain = builtin("codex-impl").unwrap();
+        let prompt = child_prompt(&plain, "do the task");
+        assert_eq!(
+            prompt,
+            format!("do the task\n\n{}", crate::bridge::REPORT_INSTRUCTION)
+        );
+        let reviewer = marion_core::agent_type::AgentTypes::parse(
+            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
+             prompt_prefix = \"Review only.\\n\\n\"\n",
+        )
+        .unwrap()
+        .resolve("reviewer")
+        .unwrap();
+        let prefixed = child_prompt(&reviewer, "do the task");
+        assert!(
+            prefixed.starts_with("Review only.\n\ndo the task\n\n"),
+            "{prefixed}"
+        );
+        assert_eq!(
+            prefixed.matches(crate::bridge::REPORT_INSTRUCTION).count(),
+            1,
+            "{prefixed}"
+        );
+        let instruction = crate::bridge::REPORT_INSTRUCTION;
+        assert!(
+            instruction.contains("marion MCP server") && instruction.contains("`report`"),
+            "{instruction}"
+        );
+        for spelling in ["mcp__marion__report", "marion_report", "marion-report"] {
+            assert!(
+                !instruction.contains(spelling),
+                "harness-neutral: {instruction}"
+            );
+        }
+    }
+
     /// **A prefix and a prompt are two sentences, and marion keeps them apart.** A row that ends
     /// its prefix on a letter gets one newline between it and the prompt; a row whose author
     /// already ended it in whitespace (`"\n\n"`) is joined exactly as written, because that
@@ -3688,7 +3746,13 @@ mod tests {
             &Caller::root("root", builtin("claude").unwrap()),
         )
         .expect("a codex child against a dead endpoint still ends in a contract");
-        assert_eq!(contract.instructions.value, "Review only.\n\ndo the task");
+        assert_eq!(
+            contract.instructions.value,
+            format!(
+                "Review only.\n\ndo the task\n\n{}",
+                crate::bridge::REPORT_INSTRUCTION
+            )
+        );
     }
 
     fn spawn_env(name: &str) -> (Scratch, PathBuf, PathBuf, Env) {
