@@ -1815,3 +1815,98 @@ fn a_supervisor_wearing_a_reissued_pid_is_not_the_supervisor_that_was_there_befo
     drop(ensured);
     sweep(&dir.display().to_string());
 }
+
+/// **`marion list --attention` prints the one node that needs the operator, and only that one.**
+///
+/// A real supervisor boots over a journal holding a finished forest — a root that exited cleanly,
+/// one child that failed, one that finished and one that was cancelled — and the shipped binary is
+/// asked for the attention queue over the socket. Launches no harness, so it is ungated: the
+/// journal is seeded through `marion_core`'s own encoder and the canned provider is only the
+/// endpoint the supervisor is started with.
+///
+/// The unfiltered list is read too, as the control: the other three nodes are there, so their
+/// absence from the filtered list is the filter and not a snapshot that lost them.
+#[test]
+fn marion_list_attention_prints_only_the_failed_child() {
+    use common::journal::a_finished_node;
+    use marion_core::contract::ExitStatus;
+
+    let dir = scratch("list-attention");
+    let repo = dir.join("repo");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let key = marion_supervisor::socket::project_root(&repo);
+    let journal = project(&state, &repo).journal();
+    let mut seq = 0;
+    a_finished_node(&journal, &mut seq, "root-a1b2", None, ExitStatus::Ok);
+    a_finished_node(
+        &journal,
+        &mut seq,
+        "kid-failed",
+        Some("root-a1b2"),
+        ExitStatus::Failed,
+    );
+    a_finished_node(
+        &journal,
+        &mut seq,
+        "kid-done",
+        Some("root-a1b2"),
+        ExitStatus::Ok,
+    );
+    a_finished_node(
+        &journal,
+        &mut seq,
+        "kid-cancelled",
+        Some("root-a1b2"),
+        ExitStatus::Cancelled,
+    );
+
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: dir.join("provider-requests.jsonl"),
+        script: Script::default(),
+    })
+    .expect("the canned provider binds");
+    struct Stopped(common::Supervisor);
+    impl Drop for Stopped {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+    let _sup = Stopped(common::Supervisor::start(
+        &state,
+        &key,
+        &std::env::var("PATH").unwrap_or_default(),
+        &server.base_url(),
+        BOUND,
+    ));
+
+    let list = |extra: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+            .arg("list")
+            .args(extra)
+            .args(["--repo", repo.to_str().unwrap()])
+            .args(["--state-dir", state.to_str().unwrap()])
+            .output()
+            .expect("the marion binary runs");
+        assert!(
+            out.status.success(),
+            "`marion list {extra:?}` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf-8")
+    };
+
+    let all = list(&[]);
+    for id in ["root-a1b2", "kid-failed", "kid-done", "kid-cancelled"] {
+        assert!(all.contains(id), "the unfiltered list lost {id}:\n{all}");
+    }
+    assert_eq!(all.lines().count(), 4, "one line per node:\n{all}");
+
+    assert_eq!(
+        list(&["--attention"]),
+        "✗ exited:failed codex-impl kid-failed parent root-a1b2\n",
+        "the attention queue is the failed child alone, its reason being its state word"
+    );
+}

@@ -33,6 +33,7 @@ fn usage_text() -> String {
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
          \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
          \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
@@ -48,6 +49,11 @@ fn usage_text() -> String {
          node that needs attention (blocked, failed, or orphaned), enter attaches to the\n\
          selected node, q leaves. It starts no supervisor: with none running there is nothing to\n\
          show, and an empty forest would read as \"no agents\" rather than as \"wrong project\".\n\
+         \n\
+         marion list prints the same forest once, one node per line -- glyph, state, agent type,\n\
+         the whole agent id, and its parent's short id -- and exits 0. --attention keeps only the\n\
+         nodes that need an operator: blocked, exited failed / timed out / killed / unreported, or\n\
+         orphaned; the state word is the reason. Like tree, it starts no supervisor.\n\
          \n\
          marion mcp serves marion's own MCP tools — spawn, wait, status, list — over stdio, for\n\
          an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
@@ -464,6 +470,67 @@ fn tree_main(argv: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `marion list [--attention] [--repo <path>] [--state-dir <path>]`.
+struct ListArgs {
+    /// Keep only the nodes `tree::attention_of` names.
+    attention: bool,
+    repo: Option<PathBuf>,
+    state_dir: Option<String>,
+}
+
+/// A parser of its own, for [`parse_attach`]'s reason: `list` shares only the two flags that
+/// choose a supervisor, and its one other flag means nothing to any other verb.
+fn parse_list(argv: &[String]) -> Option<ListArgs> {
+    let mut args = ListArgs {
+        attention: false,
+        repo: None,
+        state_dir: None,
+    };
+    let mut rest = argv[1..].iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--attention" => args.attention = true,
+            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
+            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
+            // An unknown flag or a positional is a refusal, for `parse_attach`'s reason.
+            _ => return None,
+        }
+    }
+    Some(args)
+}
+
+/// **The whole of `marion list`**: one `tree/subscribe` snapshot from the supervisor `marion tree`
+/// would dial, printed one [`marion_supervisor::tree::list_line`] per node, filtered to
+/// [`marion_supervisor::tree::attention_of`] under `--attention`. Refuses like `tree` when nobody
+/// is serving; an empty answer is exit 0, because nothing needing attention is an answer.
+fn list_main(argv: &[String]) -> ExitCode {
+    use marion_supervisor::tree;
+    let Some(args) = parse_list(argv) else {
+        usage()
+    };
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    let nodes = match tree::snapshot(&repo, &state) {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut out = io::stdout().lock();
+    for node in nodes
+        .iter()
+        .filter(|n| !args.attention || tree::attention_of(n).is_some())
+    {
+        if writeln!(out, "{}", tree::list_line(node)).is_err() {
+            // A closed stdout — `marion list | head -1` — is the reader's decision, not a failure.
+            return ExitCode::SUCCESS;
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// The two flags `attach` and `tree` share, resolved once.
@@ -1915,6 +1982,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("tree") {
         return tree_main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("list") {
+        return list_main(&argv);
+    }
     if argv.first().map(String::as_str) == Some("resume") {
         return resume_main(&argv);
     }
@@ -2770,6 +2840,65 @@ mod tests {
             let argv: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
             assert!(parse_attach(&argv).is_none(), "{bad:?} was accepted");
         }
+    }
+
+    /// **`marion list` takes the two flags that choose a supervisor and `--attention`, and
+    /// nothing else** — an unknown flag, a positional, or a flag missing its value is a refusal,
+    /// for `parse_attach`'s reason: a mistyped `--state-dir` that fell through would list the
+    /// empty forest under `$HOME` and report every agent as absent.
+    #[test]
+    fn list_takes_the_project_flags_and_attention_and_refuses_the_rest() {
+        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let bare = parse_list(&argv(&["list"])).expect("`marion list` parses");
+        assert_eq!(bare.repo, None);
+        assert_eq!(bare.state_dir, None);
+        assert!(!bare.attention);
+
+        let full = parse_list(&argv(&[
+            "list",
+            "--attention",
+            "--repo",
+            "/r",
+            "--state-dir",
+            "/s",
+        ]))
+        .expect("every flag parses");
+        assert!(full.attention);
+        assert_eq!(full.repo.as_deref(), Some(std::path::Path::new("/r")));
+        assert_eq!(full.state_dir.as_deref(), Some("/s"));
+
+        for bad in [
+            vec!["list", "a-1"],
+            vec!["list", "--repo"],
+            vec!["list", "--state-dir"],
+            vec!["list", "--canned"],
+            vec!["list", "--attention=yes"],
+        ] {
+            assert!(parse_list(&argv(&bad)).is_none(), "{bad:?} was accepted");
+        }
+        assert!(
+            parse_args(&argv(&["list"])).is_none(),
+            "a list must not be readable as a run"
+        );
+    }
+
+    /// `list` is discoverable and dispatched before the run parser, for `tree`'s reasons.
+    #[test]
+    fn the_list_verb_is_named_and_dispatched() {
+        let text = usage_text();
+        assert!(
+            text.contains("marion list ["),
+            "usage does not name `list`:\n{text}"
+        );
+        let src = include_str!("marion.rs");
+        let (production, _tests) = src
+            .split_once("\n#[cfg(test)]\n")
+            .expect("this file has a test module");
+        assert!(
+            production.contains(r#"== Some("list") {"#)
+                && production.contains("return list_main(&argv);"),
+            "`main` no longer dispatches `list`"
+        );
     }
 
     /// The usage text names the verb. A subcommand nobody can discover is a subcommand that does

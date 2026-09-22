@@ -375,6 +375,29 @@ pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refus
     Ok(Session::open(stream, shown)?.nodes)
 }
 
+/// **One node as one `marion list` line**: `<glyph> <state> <agent_type> <agent_id>`, then
+/// `parent <short>` for a child.
+///
+/// The state word is [`state_label`]'s and so, for a node that needs attention, it *is*
+/// [`attention_of`]'s reason — `--attention` filters these lines rather than printing another
+/// shape. The whole id, unlike the tree row's short one, because a list is what `marion attach`
+/// is copied from; the parent short, because it is only there to place the node.
+pub fn list_line(node: &NodeSummary) -> String {
+    let (state, reap) = (node.state, node.reap_state);
+    let mut line = format!(
+        "{} {} {} {}",
+        tone_of(state, reap).glyph(),
+        state_label(state, reap),
+        node.agent_type,
+        node.agent_id.0
+    );
+    if let Some(parent) = &node.parent_id {
+        line.push_str(" parent ");
+        line.push_str(short_id(&parent.0));
+    }
+    line
+}
+
 /// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
 /// row should name the project.
 fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String), Refusal> {
@@ -1761,6 +1784,34 @@ mod tests {
                 crate::socket::own_uid()
             )),
             "a snapshot must not have started a supervisor"
+        );
+    }
+
+    /// **`marion list`'s line: glyph, state, type, the whole id, and the parent's short id.** The
+    /// whole id because a list is what an operator copies `marion attach` from; the parent short,
+    /// because it is only there to place the node, and the tree's own short id is how it is named
+    /// everywhere else. A root has no parent clause at all rather than an empty one.
+    #[test]
+    fn a_list_line_is_glyph_state_type_id_and_parent() {
+        use marion_core::contract::ExitStatus;
+        let root = summary(
+            "01a091ba-8ea3-7000-8000-000000000001",
+            Harness::Codex,
+            false,
+            None,
+        );
+        assert_eq!(
+            list_line(&root),
+            "● idle codex-impl 01a091ba-8ea3-7000-8000-000000000001"
+        );
+        let child = NodeSummary {
+            parent_id: Some(root.agent_id.clone()),
+            state: NodeState::Exited(ExitStatus::Failed),
+            ..summary("kid", Harness::Codex, false, None)
+        };
+        assert_eq!(
+            list_line(&child),
+            "✗ exited:failed codex-impl kid parent 8ea3"
         );
     }
 

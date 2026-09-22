@@ -120,7 +120,11 @@ gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree,
 2026-09-22: an attention queue — one rule, `tree::attention_of`, names a node blocked, exited
 failed / timed out / killed / unreported, or orphaned; `!` in `marion tree` jumps to the next such
 node in drawn order, wrapping, and the status row adds `N need(s) attention` only when N > 0
-(`marion-tui` and `tree.rs` unit tests; the `l45_tree.rs` snapshots).
+(`marion-tui` and `tree.rs` unit tests; the `l45_tree.rs` snapshots). `marion list [--attention]`
+prints the same `tree/subscribe` snapshot once, one node per line, and `--attention` keeps only
+those nodes; like `tree` it starts no supervisor (`client_run.rs`,
+`marion_list_attention_prints_only_the_failed_child`: a real supervisor over a seeded journal, no
+harness, $0.00).
 2026-09-12: inside a native session `^] s` toggles marion's one optional status row on the
 terminal's bottom line — the root's direct children as running / blocked / done / failed (and,
 since 2026-09-22, `attention N` over the root's whole subtree when N > 0), from a
