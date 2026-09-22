@@ -14,7 +14,8 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::grammar::{
-    Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar, Verdict, Where,
+    Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar, UsageFold, UsageRule,
+    Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -228,6 +229,22 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/thread_id",
+    }),
+    // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), each that turn's spend, so the
+    // run is their sum. `input_tokens` **counts** `cached_input_tokens` (14997 of which 11008
+    // cached in `stream-none.jsonl`), and the reader takes the cache back out.
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "turn.completed")],
+            each: None,
+            unit: &[],
+        },
+        input: "/usage/input_tokens",
+        output: "/usage/output_tokens",
+        cache_read: Some("/usage/cached_input_tokens"),
+        cache_write: Some("/usage/cache_write_input_tokens"),
+        input_includes_cache: true,
+        fold: UsageFold::Sum,
     }),
 };
 

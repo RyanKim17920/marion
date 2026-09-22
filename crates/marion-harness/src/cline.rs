@@ -45,7 +45,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, UsageFold, UsageRule, Verdict,
+    Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -245,6 +246,21 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // No frame carries the session id (s27 item 7): `hook_event.taskId` is a conversation id, and
     // the session id is a directory name.
     session: None,
+    // The terminal `run_result` frame (`s27/*.stdout.jsonl`): `aggregateUsage` is the whole run,
+    // where `usage` beside it is only the last request's.
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "run_result")],
+            each: None,
+            unit: &[],
+        },
+        input: "/aggregateUsage/inputTokens",
+        output: "/aggregateUsage/outputTokens",
+        cache_read: Some("/aggregateUsage/cacheReadTokens"),
+        cache_write: Some("/aggregateUsage/cacheWriteTokens"),
+        input_includes_cache: false,
+        fold: UsageFold::Last,
+    }),
 };
 
 /// Relocates the rules/skills roots (`~/.agents`, `~/Documents/Cline`, `~/Cline`) and whatever

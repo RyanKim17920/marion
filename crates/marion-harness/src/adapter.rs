@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use marion_core::agent_type;
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::harness::Harness;
 
 use crate::acp;
@@ -494,6 +494,15 @@ pub trait HarnessAdapter {
                 ..StreamOutcome::default()
             },
         }
+    }
+
+    /// The tokens the run spent, as the stream in `frames` states them — read with the row's
+    /// [`grammar::StreamGrammar::usage`] rule. `None` when the row has no rule (no grammar, or a
+    /// harness that reports no token count) and when the stream never reached the unit that
+    /// carries one: an absent claim is not a claim of zero.
+    fn usage(&self, frames: &[serde_json::Value]) -> Option<TokenUsage> {
+        let rule = self.spec().stream?.usage.as_ref()?;
+        grammar::usage(rule, frames)
     }
 
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**

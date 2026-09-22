@@ -34,7 +34,9 @@
 use marion_core::agent_type;
 use marion_core::harness::Harness;
 
-use crate::grammar::{Cond, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where};
+use crate::grammar::{
+    Cond, Name, OnRefusedReport, Pairing, StreamGrammar, UsageFold, UsageRule, Verdict, Where,
+};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
@@ -196,6 +198,21 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     failures: &[],
     file_changes: None,
     session: None,
+    // The terminal `complete` frame (`s26/*.stdout.jsonl`) totals the run at the top level, with
+    // `total_tokens` = input + output and the cache counters beside them.
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "complete")],
+            each: None,
+            unit: &[],
+        },
+        input: "/input_tokens",
+        output: "/output_tokens",
+        cache_read: Some("/cache_read_input_tokens"),
+        cache_write: Some("/cache_write_input_tokens"),
+        input_includes_cache: false,
+        fold: UsageFold::Last,
+    }),
 };
 
 /// Relocates `~/.config/goose` (config, `GOOSE_MODE`), the sqlite session store under

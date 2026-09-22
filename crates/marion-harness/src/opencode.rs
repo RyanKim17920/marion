@@ -18,7 +18,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
+    Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -268,6 +269,22 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/sessionID",
+    }),
+    // One `step_finish` per model step (`s13/README.md`), each that step's spend. **README-only**:
+    // every captured step reports zeros, so that `tokens.input` excludes `tokens.cache` is the
+    // documented shape, not a measured one.
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "step_finish")],
+            each: None,
+            unit: &[],
+        },
+        input: "/part/tokens/input",
+        output: "/part/tokens/output",
+        cache_read: Some("/part/tokens/cache/read"),
+        cache_write: Some("/part/tokens/cache/write"),
+        input_includes_cache: false,
+        fold: UsageFold::Sum,
     }),
 };
 

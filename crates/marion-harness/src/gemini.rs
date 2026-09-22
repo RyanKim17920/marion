@@ -12,7 +12,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
+    Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -230,6 +231,22 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+    }),
+    // The terminal `result` frame's `stats` (`s12/README.md`) totals the run. **Unmeasured past
+    // that one README line**, whose `cached` is 0: that `input_tokens` counts cached tokens (and
+    // `stats.input` is the uncached remainder) is assumed from the zero-cache capture, not shown.
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "result")],
+            each: None,
+            unit: &[],
+        },
+        input: "/stats/input_tokens",
+        output: "/stats/output_tokens",
+        cache_read: Some("/stats/cached"),
+        cache_write: None,
+        input_includes_cache: true,
+        fold: UsageFold::Last,
     }),
 };
 

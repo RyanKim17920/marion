@@ -10,7 +10,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
+    Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -229,6 +230,22 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+    }),
+    // The terminal `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals the run;
+    // `input_tokens` excludes both cache counters (Anthropic's convention). qwen shares this row
+    // and was measured emitting the same shape without the cache-write key (`s25`).
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "result")],
+            each: None,
+            unit: &[],
+        },
+        input: "/usage/input_tokens",
+        output: "/usage/output_tokens",
+        cache_read: Some("/usage/cache_read_input_tokens"),
+        cache_write: Some("/usage/cache_creation_input_tokens"),
+        input_includes_cache: false,
+        fold: UsageFold::Last,
     }),
 };
 

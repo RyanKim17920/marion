@@ -6,7 +6,8 @@
 //! own ~70-line reader that walked frames, matched a type, found a name, paired a result and
 //! folded a `StreamOutcome`; they differed in *where* and *what*, never in *how*. So the how is
 //! [`parse_stream`] and [`marion_calls`], once, and the where and what are a [`StreamGrammar`]
-//! row per harness beside its launch row.
+//! row per harness beside its launch row. A row also says where the harness states the tokens the
+//! run spent ([`UsageRule`], read by [`usage`]) — the same pointers-over-units data, one reader.
 //!
 //! # What is data and what is code
 //!
@@ -53,6 +54,9 @@ pub struct StreamGrammar {
     /// carrying one, and a resume of such a node is refused rather than guessed. Read by
     /// [`session_id`], once per frame, by whoever owns the node's stream.
     pub session: Option<SessionId>,
+    /// Where the harness states the tokens the run spent — read by [`usage`]. `None` where no
+    /// frame was measured carrying a token count, and the row says why beside it.
+    pub usage: Option<UsageRule>,
 }
 
 /// Where a harness states its session id: the string at `path` in each unit of `at`. The first
