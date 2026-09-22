@@ -1055,6 +1055,25 @@ login with the cheapest model the harness offered.
   `gpt-5.6-luna` turn, ~22k input tokens mostly cached). `-c`, `-s/--sandbox` and `-m` are unchanged
   from 0.147.0 on `codex exec --help`. The row now compiles `codex::live_sandbox_override` onto
   every live node, bridge or not; a native facade session keeps the operator's sandbox.
+- **codex 0.155.1: an instructed model reaches a deferred `report`; an uninstructed child does
+  not report.** With a stub `marion` MCP server and the prompt "Call the marion report tool",
+  `gpt-5.6-luna` made the `report` call through codex's MCP-tool deferral (one turn). The live
+  re-run `r1` (codex root, codex-impl child) ended `Unreported`: the child handed the work to
+  codex's own collab subagent, following the operator's `AGENTS.md`, and never tried `report`. The
+  same cell with "call the marion report tool" appended to the child's prompt (`r1b`) ended `Ok`
+  with `child.model: gpt-5.6-luna`. So the missing completion instruction is the live matrix's D1
+  on this harness, independent of deferral. (`r1`/`r1b` ran a build that also pointed codex at a
+  derived `model_catalog_json`; that approach was dropped in favour of the per-server
+  `mcp_servers.marion.omit_tools_from`, and the result above does not depend on it.)
+- **Live re-measurement through marion (2026-09-22, this branch's binaries).** `r1` codex child:
+  rollout `turn_context.sandbox_policy` `{type: workspace-write, network_access: false}` (D9 fixed).
+  `r2` claude-haiku root to copilot-impl (`--model auto`): the child called `apply_patch` and
+  `marion-report`, contract `Ok`, `changed_paths` = the file, evidence 0/0, `allowed_tools`
+  `[allow-tool:marion(report), allow-tool:write]` (D5 fixed). `r3` codex root to acp-opencode with
+  `model: opencode/nemotron-3-ultra-free`: the transcript shows `currentValue` going
+  `opencode/big-pickle` to `opencode/nemotron-3-ultra-free`, contract `Ok` with `child.model`
+  `opencode/nemotron-3-ultra-free` (D4 fixed). `r1b`, `r2` and `r3` appended a report instruction to
+  the child prompt, for D1's reason above.
 - **copilot 1.0.87: the file-editing tool depends on the model, so `write` maps to three names.**
   `copilot -p … --model auto --available-tools=view,create,edit,apply_patch,str_replace,str_replace_editor
   --allow-tool=write` resolved `auto` to `gpt-5.6-luna`, which was offered only `view` and
