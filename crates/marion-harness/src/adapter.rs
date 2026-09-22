@@ -1985,6 +1985,12 @@ impl HarnessAdapter for AcpAdapter {
             .map(|r| acp::marion_calls(stdout, r))
             .unwrap_or_default()
     }
+
+    /// The protocol's own `session/prompt` response shape ([`acp::USAGE`]), whatever the agent and
+    /// whether or not one is bound: spend is a protocol fact, not an agent refinement.
+    fn usage(&self, frames: &[serde_json::Value]) -> Option<TokenUsage> {
+        grammar::usage(&acp::USAGE, frames)
+    }
 }
 
 /// The JSON-RPC id [`AcpAdapter::session_declaration`] stamps on its request. A constant so the

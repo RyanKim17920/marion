@@ -158,3 +158,75 @@ fn every_stream_grammar_states_where_its_usage_is_or_why_it_has_none() {
         }
     }
 }
+
+#[test]
+fn every_acp_agent_reads_its_usage_from_the_protocols_prompt_response() {
+    // ACP's `session/prompt` response carries `result.usage` in the protocol's own shape, the same
+    // for every agent; each transcript's `totalTokens` is the four counters' sum, so `inputTokens`
+    // excludes the cache. The `usage_update` notifications around it are context occupancy, not
+    // spend, and must not be read.
+    let cases: &[(&str, Option<&str>, &str, TokenUsage)] = &[
+        (
+            "opencode acp s21",
+            Some("opencode"),
+            fixture!("s21/opencode-acp-session.jsonl"),
+            tokens(113, 4, 14464, 0),
+        ),
+        (
+            "claude-agent-acp s22",
+            Some("claude-acp"),
+            fixture!("s22/claude-agent-acp-session.jsonl"),
+            tokens(6, 139, 82749, 19170),
+        ),
+        (
+            "codex-acp s22",
+            Some("codex-acp"),
+            fixture!("s22/codex-acp-session.jsonl"),
+            tokens(905, 4, 28416, 0),
+        ),
+        (
+            "opencode acp canned s23",
+            Some("opencode"),
+            fixture!("s23/opencode-acp-canned-session.jsonl"),
+            TokenUsage::default(),
+        ),
+        // An agent marion has no refinement row for is read by the protocol alone.
+        (
+            "generic agent over s22",
+            Some("some-agent --acp"),
+            fixture!("s22/claude-agent-acp-session.jsonl"),
+            tokens(6, 139, 82749, 19170),
+        ),
+    ];
+    for (name, agent, stdout, want) in cases {
+        assert_eq!(usage_of(Harness::Acp, *agent, stdout), Some(*want), "{name}");
+    }
+    // The protocol row, bound to no agent, reads the same shape.
+    let unbound = adapter_for(Harness::Acp).expect("the protocol row");
+    assert_eq!(
+        unbound.usage(&json_frames(fixture!("s21/opencode-acp-session.jsonl"))),
+        Some(tokens(113, 4, 14464, 0))
+    );
+}
+
+#[test]
+fn an_acp_session_sums_its_turns_and_ignores_context_occupancy() {
+    let turns = [
+        r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":23739,"size":258400}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":1,"cachedReadTokens":100,"totalTokens":111}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"inputTokens":20,"outputTokens":2,"cachedWriteTokens":5,"totalTokens":27}}}"#,
+    ]
+    .join("\n");
+    assert_eq!(
+        usage_of(Harness::Acp, Some("opencode"), &turns),
+        Some(tokens(30, 3, 100, 5))
+    );
+    // A session that only ever reported occupancy, and a prompt response with no usage at all,
+    // made no claim about spend.
+    let silent = [
+        r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":23739,"size":258400}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#,
+    ]
+    .join("\n");
+    assert_eq!(usage_of(Harness::Acp, Some("opencode"), &silent), None);
+}

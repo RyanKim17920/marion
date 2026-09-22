@@ -49,6 +49,7 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
+use crate::grammar::{Cond, UsageFold, UsageRule, Where};
 use crate::spec::{
     Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Push, Spelling, Surfaces,
     UpdatePolicy,
@@ -836,6 +837,26 @@ pub const SESSION_LOAD_METHOD: &str = "session/load";
 /// The `session/new` param key [`crate::McpRoute::Session`] verifies. One string, so the compiler
 /// keeps the builder and the check on the same key.
 pub const MCP_SERVERS_KEY: &str = "mcpServers";
+
+/// Where an ACP session states the tokens it spent: the `session/prompt` **response**'s
+/// `result.usage`, one per turn, so a session's spend is their sum. The shape is the protocol's
+/// own and every measured agent emits it — `opencode acp` (`s21`, `s23`), `claude-agent-acp` and
+/// `codex-acp` (`s22`) — with `totalTokens` equal to the four counters' sum, so `inputTokens`
+/// excludes the cache. The `usage_update` session notification is context-window occupancy
+/// (`used`/`size`), not spend, and is deliberately not a unit here.
+pub const USAGE: UsageRule = UsageRule {
+    at: Where {
+        frame: &[Cond::Has("/result/stopReason"), Cond::Has("/result/usage")],
+        each: None,
+        unit: &[],
+    },
+    input: "/result/usage/inputTokens",
+    output: "/result/usage/outputTokens",
+    cache_read: Some("/result/usage/cachedReadTokens"),
+    cache_write: Some("/result/usage/cachedWriteTokens"),
+    input_includes_cache: false,
+    fold: UsageFold::Sum,
+};
 
 /// `session/prompt`. One text block: §8's micro-contract asserts a *response shape*.
 pub fn prompt_request(id: u64, session_id: &str, text: &str) -> Value {
