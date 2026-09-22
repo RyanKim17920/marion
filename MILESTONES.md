@@ -1075,6 +1075,28 @@ login with the cheapest model the harness offered.
   model through the config option, keyed on the category rather than on the agent, records it on
   the contract, and refuses by name before the prompt when the session offers no model select or
   not that model. The matrix's ACP children ran on opencode's default with `model: null`.
+- **ACP session modes, on all four agents (2026-09-22, no prompt sent: $0).** Each `session/new`
+  answer carries a `configOptions` entry of `category: "mode"` (`id: "mode"`) and the `modes`
+  object, and each answers both `session/set_config_option {configId: "mode", value}` (with the
+  updated `configOptions`) and `session/set_mode {modeId}` (with `{}`), plus a
+  `current_mode_update`/`config_option_update` notification. opencode 1.18.32: `build` (current),
+  `plan`. claude-agent-acp 0.66.0: `default` (current), `auto`, `acceptEdits`, `plan`, `dontAsk`,
+  `bypassPermissions`. codex-acp 1.13.0 (`npx -y @agentclientprotocol/codex-acp`): `agent`
+  (current), `read-only`, `agent-full-access`. copilot `--acp` (reports 1.0.83 while `copilot
+  --version` says 1.0.87): `…/session-modes#agent` (current), `#plan`, `#autopilot`, and setting
+  `#autopilot` also flips its `allow_all` (`category: "permissions"`) option to `on`. A value not
+  offered is refused on every one: `-32602 mode not found` (opencode), `-32603 Invalid value for
+  config option mode` (claude), `-32602 Invalid params` (codex), `-32602 Invalid mode '…'.
+  Supported values: …` (copilot). An agent type's `approval_mode` is now set through this channel
+  (`session/set_mode` only where no `mode` config option exists), recorded as
+  `session-mode:<id>` in the contract's `allowed_tools`, and refused by name before the prompt when
+  the agent does not offer it. The advertised modes are already in each node's `events.jsonl`,
+  which records the `session/new` answer verbatim. There is no row-level default mode: the
+  auto-accept ids differ per agent and none is marion's to pick.
+- **ACP permission asks are answered allow-once.** claude-agent-acp's `allow_always` for marion's own
+  `report` carries a `persistent`, `project_local` policy rule (S22), and codex-acp offers two
+  `allow_always` kinds beside `allow_once` (S22). The driver used to pick the first allow in the
+  list, which could be the persistent one. It now picks `allow_once` wherever an agent offers it.
 - **copilot 1.0.87: `--model` refusals are the account's entitlement, not marion's spelling.**
   marion passes `--model <id>` verbatim. `gpt-5-mini`, `claude-haiku-4.5` and a made-up
   `bogus-model-xyz` all fail the same way, `Error: Model "<id>" from --model flag is not

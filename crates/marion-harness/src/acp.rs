@@ -891,69 +891,132 @@ pub fn cancel_notification(session_id: &str) -> Value {
     })
 }
 
-/// ACP's request for changing one of a session's advertised `configOptions`. The model is chosen
-/// **inside** the session on every agent marion has measured (S21, S22), and this is the
-/// protocol's own channel for choosing it — no argv, no per-agent config document.
+/// ACP's request for changing one of a session's advertised `configOptions`. The model and the
+/// mode are both chosen **inside** the session on every agent marion has measured (S21, S22, S28,
+/// and the 2026-09-22 probe of all four), and this is the protocol's own channel for choosing them
+/// — no argv, no per-agent config document.
 pub const SET_CONFIG_OPTION_METHOD: &str = "session/set_config_option";
 
-/// The session's model select, as the agent advertised it in its `session/new` (or `session/load`)
-/// answer: which config option it is, what it is set to, and every value it offers.
+/// ACP's older, mode-only request: `session/set_mode {sessionId, modeId}` against the session's
+/// `modes.availableModes`. Used only where an agent advertises `modes` and no `mode` config option;
+/// every agent measured on 2026-09-22 advertises both and answers both.
+pub const SET_MODE_METHOD: &str = "session/set_mode";
+
+/// The `configOptions` category of the session's model select.
+pub const MODEL_CATEGORY: &str = "model";
+/// The `configOptions` category of the session's mode select — where an agent's approval behaviour
+/// lives (claude-agent-acp's `acceptEdits`/`bypassPermissions`, codex-acp's `agent-full-access`,
+/// copilot's `#autopilot`, opencode's `build`/`plan`).
+pub const MODE_CATEGORY: &str = "mode";
+
+/// How a contract's `allowed_tools` names the session mode an ACP launch set: `session-mode:<id>`,
+/// beside [`NO_TOOL_AVAILABILITY_SURFACE`].
+pub const SESSION_MODE_PREFIX: &str = "session-mode:";
+
+/// How a [`SessionSelect`] is changed.
+///
+/// A small shared type on purpose: a row-level approval strategy that chooses a session mode can
+/// name this channel rather than a second spelling of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOption {
-    /// The option's `id` — `model` on every measured agent, but the agent's own string, so it is
+pub enum SelectChannel {
+    /// `session/set_config_option` on the config option with this `id` — the agent's own string,
     /// read rather than assumed.
-    pub config_id: String,
+    ConfigOption { config_id: String },
+    /// `session/set_mode`, for an agent that advertises `modes` and no `mode` config option.
+    SetMode,
+}
+
+/// One session-level select an agent advertised in its `session/new` (or `session/load`) answer:
+/// how it is changed, what it is set to, and every value it offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSelect {
+    pub channel: SelectChannel,
     pub current: Option<String>,
-    /// Every offered `value`, flattened out of ACP's option groups where the agent groups them.
+    /// Every offered value, flattened out of ACP's option groups where the agent groups them.
     pub values: Vec<String>,
 }
 
-/// The advertised model select, keyed on ACP's own `category: "model"` rather than on any agent's
-/// id for it. `None` where the answer offers none (copilot's ACP session, S28) or is not an answer.
-pub fn model_option(frame: &str) -> Option<ModelOption> {
+/// The advertised select of `category`, keyed on ACP's own category rather than on any agent's id
+/// for it; for [`MODE_CATEGORY`], the `modes` object where no config option carries it. `None`
+/// where the answer offers none (copilot's ACP session has no model select, S28) or is not an
+/// answer. Also reads a `config_option_update` notification's `configOptions`.
+pub fn session_select(frame: &str, category: &str) -> Option<SessionSelect> {
     let v: Value = serde_json::from_str(frame).ok()?;
-    let opt = v
-        .pointer("/result/configOptions")?
-        .as_array()?
-        .iter()
-        .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))?;
-    let mut values = Vec::new();
-    for o in opt.get("options").and_then(Value::as_array)? {
-        match o.get("options").and_then(Value::as_array) {
-            Some(group) => values.extend(
-                group
-                    .iter()
-                    .filter_map(|g| g.get("value").and_then(Value::as_str))
-                    .map(str::to_string),
-            ),
-            None => values.extend(o.get("value").and_then(Value::as_str).map(str::to_string)),
+    let options = v
+        .pointer("/result/configOptions")
+        .or_else(|| v.pointer("/params/update/configOptions"))
+        .and_then(Value::as_array);
+    if let Some(opt) = options.and_then(|os| {
+        os.iter()
+            .find(|o| o.get("category").and_then(Value::as_str) == Some(category))
+    }) {
+        let mut values = Vec::new();
+        for o in opt.get("options").and_then(Value::as_array)? {
+            match o.get("options").and_then(Value::as_array) {
+                Some(group) => values.extend(
+                    group
+                        .iter()
+                        .filter_map(|g| g.get("value").and_then(Value::as_str))
+                        .map(str::to_string),
+                ),
+                None => values.extend(o.get("value").and_then(Value::as_str).map(str::to_string)),
+            }
         }
+        return Some(SessionSelect {
+            channel: SelectChannel::ConfigOption {
+                config_id: opt.get("id").and_then(Value::as_str)?.to_string(),
+            },
+            current: opt
+                .get("currentValue")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            values,
+        });
     }
-    Some(ModelOption {
-        config_id: opt.get("id").and_then(Value::as_str)?.to_string(),
-        current: opt
-            .get("currentValue")
+    if category != MODE_CATEGORY {
+        return None;
+    }
+    let modes = v.pointer("/result/modes")?;
+    Some(SessionSelect {
+        channel: SelectChannel::SetMode,
+        current: modes
+            .get("currentModeId")
             .and_then(Value::as_str)
             .map(str::to_string),
-        values,
+        values: modes
+            .get("availableModes")?
+            .as_array()?
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
     })
 }
 
-/// `session/set_config_option` for one option (measured on `opencode acp` 1.18.32).
-pub fn set_config_option_request(id: u64, session_id: &str, config_id: &str, value: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": SET_CONFIG_OPTION_METHOD,
-        "params": {"sessionId": session_id, "configId": config_id, "value": value},
-    })
+/// The request that sets `select` to `value` in `session_id`, on the select's own channel.
+pub fn select_request(id: u64, session_id: &str, select: &SessionSelect, value: &str) -> Value {
+    let (method, params) = match &select.channel {
+        SelectChannel::ConfigOption { config_id } => (
+            SET_CONFIG_OPTION_METHOD,
+            json!({"sessionId": session_id, "configId": config_id, "value": value}),
+        ),
+        SelectChannel::SetMode => (
+            SET_MODE_METHOD,
+            json!({"sessionId": session_id, "modeId": value}),
+        ),
+    };
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
 
-/// The option's value after a `session/set_config_option`, off the `configOptions` the answer
-/// carries — `None` where the answer does not restate it — or the agent's refusal in its own words.
-pub fn config_option_value(frame: &str, config_id: &str) -> Result<Option<String>, AcpError> {
+/// The select's value after a [`select_request`], off the `configOptions` the answer carries —
+/// `None` where the answer does not restate it (a `session/set_mode` answer is `{}`) — or the
+/// agent's refusal in its own words.
+pub fn selected_value(frame: &str, select: &SessionSelect) -> Result<Option<String>, AcpError> {
     let v = session_answer(frame)?;
     let result = v.get("result").ok_or(AcpError::NeitherResultNorError)?;
+    let SelectChannel::ConfigOption { config_id } = &select.channel else {
+        return Ok(None);
+    };
     Ok(result
         .get("configOptions")
         .and_then(Value::as_array)
@@ -1228,14 +1291,15 @@ mod tests {
     /// session (S28) offers no model select at all, which is `None` rather than a guess.
     #[test]
     fn the_model_select_is_read_off_the_session_answer_by_its_category() {
-        let oc = model_option(&session_new_answer(&s21_session())).expect("S21 offers one");
-        assert_eq!(oc.config_id, "model");
+        let oc = session_select(&session_new_answer(&s21_session()), MODEL_CATEGORY)
+            .expect("S21 offers one");
+        assert_eq!(oc.channel, config("model"));
         assert_eq!(oc.current.as_deref(), Some("opencode/big-pickle"));
         assert!(oc.values.iter().any(|v| v == "opencode/big-pickle"));
         assert_eq!(oc.values.len(), 66, "every option, flat");
         for agent in ["claude-agent-acp", "codex-acp"] {
-            let o = model_option(&session_new_answer(&s22(agent))).expect(agent);
-            assert_eq!(o.config_id, "model", "{agent}");
+            let o = session_select(&session_new_answer(&s22(agent)), MODEL_CATEGORY).expect(agent);
+            assert_eq!(o.channel, config("model"), "{agent}");
             assert!(
                 o.current.as_ref().is_some_and(|c| o.values.contains(c)),
                 "{agent}"
@@ -1246,7 +1310,10 @@ mod tests {
             "/../../tests/fixtures/s28/copilot-acp-session.jsonl"
         ))
         .unwrap();
-        assert_eq!(model_option(&session_new_answer(&copilot)), None);
+        assert_eq!(
+            session_select(&session_new_answer(&copilot), MODEL_CATEGORY),
+            None
+        );
     }
 
     /// ACP lets a select's options come in groups; the values are the leaves either way.
@@ -1261,10 +1328,16 @@ mod tests {
                  ]}
             ]}})
             .to_string();
-        let o = model_option(&frame).unwrap();
-        assert_eq!(o.config_id, "m");
+        let o = session_select(&frame, MODEL_CATEGORY).unwrap();
+        assert_eq!(o.channel, config("m"));
         assert_eq!(o.values, vec!["a/one", "b/two"]);
         assert_eq!(o.current.as_deref(), Some("b/two"));
+    }
+
+    fn config(id: &str) -> SelectChannel {
+        SelectChannel::ConfigOption {
+            config_id: id.into(),
+        }
     }
 
     /// The request is ACP's `session/set_config_option`, measured on `opencode acp` 1.18.32: a
@@ -1272,7 +1345,12 @@ mod tests {
     /// `-32602` in its own words.
     #[test]
     fn a_model_is_set_through_the_protocols_config_option_request() {
-        let r = set_config_option_request(4, "ses_1", "model", "opencode/nemotron-3-ultra-free");
+        let select = SessionSelect {
+            channel: config("model"),
+            current: None,
+            values: vec![],
+        };
+        let r = select_request(4, "ses_1", &select, "opencode/nemotron-3-ultra-free");
         assert_eq!(r["method"], SET_CONFIG_OPTION_METHOD);
         assert_eq!(r["id"], 4);
         assert_eq!(
@@ -1285,14 +1363,78 @@ mod tests {
         ]}})
         .to_string();
         assert_eq!(
-            config_option_value(&took, "model").unwrap().as_deref(),
+            selected_value(&took, &select).unwrap().as_deref(),
             Some("opencode/nemotron-3-ultra-free")
         );
         let refused = r#"{"jsonrpc":"2.0","id":4,"error":{"code":-32602,"message":"Invalid params: model not found: nope/x"}}"#;
         assert!(matches!(
-            config_option_value(refused, "model"),
+            selected_value(refused, &select),
             Err(AcpError::Refused { code: -32602, .. })
         ));
+    }
+
+    /// **The mode select, on all four measured agents, by the same category** — the approval
+    /// behaviour each one lets a client choose. Measured 2026-09-22 (opencode 1.18.32,
+    /// claude-agent-acp 0.66.0, codex-acp 1.13.0, copilot 1.0.83 `--acp`): every one advertises a
+    /// `mode` config option **and** the `modes` object, and answers both `session/set_config_option`
+    /// and `session/set_mode`. The committed captures carry the same selects.
+    #[test]
+    fn the_mode_select_is_read_by_its_category_on_every_measured_agent() {
+        let copilot = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s28/copilot-acp-session.jsonl"
+        ))
+        .unwrap();
+        for (agent, transcript, current, auto) in [
+            ("opencode", s21_session(), "build", "build"),
+            (
+                "claude-agent-acp",
+                s22("claude-agent-acp"),
+                "default",
+                "acceptEdits",
+            ),
+            ("codex-acp", s22("codex-acp"), "agent", "agent-full-access"),
+            (
+                "copilot",
+                copilot,
+                "https://agentclientprotocol.com/protocol/session-modes#agent",
+                "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+            ),
+        ] {
+            let m = session_select(&session_new_answer(&transcript), MODE_CATEGORY).expect(agent);
+            assert_eq!(m.channel, config("mode"), "{agent}");
+            assert_eq!(m.current.as_deref(), Some(current), "{agent}");
+            assert!(
+                m.values.iter().any(|v| v == auto),
+                "{agent}: {:?}",
+                m.values
+            );
+        }
+    }
+
+    /// An agent with `modes` and no `mode` config option still has its mode set, over
+    /// `session/set_mode`, whose answer restates nothing.
+    #[test]
+    fn a_mode_with_no_config_option_falls_back_to_set_mode() {
+        let frame = json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s", "modes": {
+            "currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "yolo", "name": "Yolo"}]
+        }}})
+        .to_string();
+        let m = session_select(&frame, MODE_CATEGORY).unwrap();
+        assert_eq!(m.channel, SelectChannel::SetMode);
+        assert_eq!(m.values, vec!["ask", "yolo"]);
+        let r = select_request(3, "s", &m, "yolo");
+        assert_eq!(r["method"], SET_MODE_METHOD);
+        assert_eq!(r["params"], json!({"sessionId": "s", "modeId": "yolo"}));
+        assert_eq!(
+            selected_value(r#"{"jsonrpc":"2.0","id":3,"result":{}}"#, &m).unwrap(),
+            None
+        );
+        assert_eq!(
+            session_select(&frame, MODEL_CATEGORY),
+            None,
+            "only the mode falls back"
+        );
     }
 
     /// The model-facing spelling, as the shipped adapter produces it.

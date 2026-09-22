@@ -2022,6 +2022,8 @@ fn child_launch_spec(
         resume: req.resume.as_ref().map(|r| r.session.clone()),
         extra: Extras {
             acp_agent: agent_type.acp_agent.clone(),
+            // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
+            approval_mode: agent_type.approval_mode.clone(),
             ..Extras::default()
         },
     }

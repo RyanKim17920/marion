@@ -689,7 +689,11 @@ pub fn prepare_watched(
         &token,
         adapter.as_ref(),
         &agent_dir,
-        agent_type.acp_agent.clone(),
+        Extras {
+            acp_agent: agent_type.acp_agent.clone(),
+            approval_mode: agent_type.approval_mode.clone(),
+            ..Extras::default()
+        },
     );
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
@@ -937,7 +941,7 @@ fn root_launch_spec(
     token: &str,
     adapter: &dyn HarnessAdapter,
     agent_dir: &AgentDir,
-    acp_agent: Option<String>,
+    extra: Extras,
 ) -> LaunchSpec {
     LaunchSpec {
         cwd: spec.repo.clone(),
@@ -994,10 +998,7 @@ fn root_launch_spec(
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
-        extra: Extras {
-            acp_agent,
-            ..Extras::default()
-        },
+        extra,
     }
 }
 

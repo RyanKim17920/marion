@@ -17,8 +17,9 @@ makes it a delegating **root** instead — it writes nothing and calls the bridg
 that agent type and prompt, mirrored as a `tool_call` titled `marion/spawn`.
 
 Its `session/new` answer advertises a `model` select in ACP's `configOptions` shape (`fake/alpha`,
-the current value, and `fake/beta`), and it answers `session/set_config_option` for it — accepting an
-offered value and refusing any other with `-32602`, as `opencode acp` 1.18.32 was measured to do.
+the current value, and `fake/beta`) and a `mode` select (`ask`, the current value, and `auto`), and
+it answers `session/set_config_option` for both — accepting an offered value and refusing any other
+with `-32602`, as `opencode acp` 1.18.32 was measured to do.
 
 Runs nothing but the servers it is handed; no model, no network, no credential.
 """
@@ -113,13 +114,18 @@ class McpServer:
 
 
 servers = []
-session = {"id": None, "cwd": None, "model": None}
+session = {"id": None, "cwd": None, "model": None, "mode": None}
 
 # The session's model select, in ACP's `configOptions` shape (S21 measured opencode's): the model is
 # chosen inside the session and changed with `session/set_config_option`. Values no measured agent
 # offers, so a test that sees one knows it came from here.
 MODEL_OPTION_ID = "model"
 MODELS = ["fake/alpha", "fake/beta"]
+# And a mode select, the category an approval mode lives in (claude-agent-acp's `acceptEdits`,
+# copilot's `#autopilot`): `ask` is the default, `auto` the one a test asks for.
+MODE_OPTION_ID = "mode"
+MODES = ["ask", "auto"]
+SELECTS = {MODEL_OPTION_ID: MODELS, MODE_OPTION_ID: MODES}
 
 
 def model_options():
@@ -130,6 +136,13 @@ def model_options():
         "type": "select",
         "currentValue": session["model"],
         "options": [{"value": m, "name": m} for m in MODELS],
+    }, {
+        "id": MODE_OPTION_ID,
+        "name": "Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": session["mode"],
+        "options": [{"value": m, "name": m} for m in MODES],
     }]
 
 
@@ -192,13 +205,15 @@ def handle(frame):
             servers.append(server)
         session["id"] = "fake-session-1"
         session["model"] = MODELS[0]
+        session["mode"] = MODES[0]
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": session["id"], "configOptions": model_options()}})
     elif method == "session/set_config_option":
         value = params.get("value")
-        if params.get("configId") != MODEL_OPTION_ID or value not in MODELS:
-            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": f"Invalid params: model not found: {value}"}})
+        config_id = params.get("configId")
+        if value not in SELECTS.get(config_id, []):
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": f"Invalid params: {config_id} not found: {value}"}})
             return
-        session["model"] = value
+        session[config_id] = value
         send({"jsonrpc": "2.0", "id": rid, "result": {"configOptions": model_options()}})
     elif method == "session/prompt":
         sid = params.get("sessionId") or session["id"]

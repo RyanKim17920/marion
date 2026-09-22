@@ -223,6 +223,14 @@ pub struct AgentType {
     /// whitespace, in which case it is joined exactly as written: end it in `"\n\n"` for a blank
     /// line, end it on a letter and marion supplies the line break.
     pub prompt_prefix: Option<String>,
+    /// The ACP session mode a node of this type runs in (`.marion/agents.toml`'s `approval_mode`):
+    /// the agent's own approval behaviour, chosen by its id as the agent advertises it —
+    /// claude-agent-acp's `acceptEdits` or `bypassPermissions`, codex-acp's `agent-full-access`,
+    /// copilot's `https://agentclientprotocol.com/protocol/session-modes#autopilot`. marion sets it
+    /// over the protocol after `session/new` and refuses the run by name where the agent does not
+    /// offer it. `None` — every built-in, and the default — leaves the agent in its own default
+    /// mode. Only an ACP type may state one: the other harnesses have no session to set it in.
+    pub approval_mode: Option<String>,
 }
 
 impl AgentType {
@@ -275,6 +283,7 @@ impl AgentType {
             max_depth: DEFAULT_MAX_DEPTH,
             max_concurrent_children: DEFAULT_MAX_CONCURRENT_CHILDREN,
             prompt_prefix: None,
+            approval_mode: None,
         }
     }
 }
@@ -628,6 +637,16 @@ pub enum AgentTypesError {
         "agent type {name:?} declares tool {tool:?}; marion's tool vocabulary is {TOOL_READ}, {TOOL_WRITE}"
     )]
     UnknownTool { name: String, tool: String },
+    #[error(
+        "agent type {name:?} states approval_mode {mode:?} on harness {harness:?}; an approval \
+         mode is an ACP session mode, set over the protocol, so only an `acp:<command>` type (or \
+         harness = \"acp\") can have one"
+    )]
+    ApprovalModeOffAcp {
+        name: String,
+        harness: String,
+        mode: String,
+    },
 }
 
 /// `Harness::ALL`'s wire spellings, joined for [`AgentTypesError::UnknownHarness`].
@@ -651,6 +670,7 @@ struct FileRow {
     model: Option<String>,
     tools: Option<Vec<String>>,
     prompt_prefix: Option<String>,
+    approval_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -748,11 +768,21 @@ impl FileRow {
                 tool: tool.clone(),
             });
         }
+        if let Some(mode) = &self.approval_mode
+            && harness != Harness::Acp
+        {
+            return Err(AgentTypesError::ApprovalModeOffAcp {
+                name: self.name,
+                harness: self.harness,
+                mode: mode.clone(),
+            });
+        }
         Ok(AgentType {
             model: self.model,
             acp_agent,
             tools,
             prompt_prefix: self.prompt_prefix,
+            approval_mode: self.approval_mode,
             ..AgentType::defaults(&self.name, &self.description, harness)
         })
     }
@@ -1225,6 +1255,28 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
         assert_eq!(types.resolve("codex-impl"), builtin("codex-impl"));
         assert_eq!(types.resolve("acp:goose acp"), builtin("acp:goose acp"));
         assert_eq!(types.resolve("nope"), None);
+    }
+
+    /// **`approval_mode` is an ACP row's session mode**, carried verbatim, and refused by name on
+    /// a harness with no session to set it in.
+    #[test]
+    fn an_approval_mode_parses_on_an_acp_row_and_is_refused_off_acp() {
+        let types = AgentTypes::parse(
+            "[[agent]]\nname = \"claude-acp-edits\"\nharness = \"acp:npx -y @agentclientprotocol/claude-agent-acp@0.66.0\"\ndescription = \"x\"\napproval_mode = \"acceptEdits\"\n",
+        )
+        .unwrap();
+        let t = types.resolve("claude-acp-edits").unwrap();
+        assert_eq!(t.harness, Harness::Acp);
+        assert_eq!(t.approval_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(builtin("codex-impl").unwrap().approval_mode, None);
+        let e = AgentTypes::parse(
+            "[[agent]]\nname = \"c\"\nharness = \"codex\"\ndescription = \"x\"\napproval_mode = \"auto\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&e, AgentTypesError::ApprovalModeOffAcp { name, mode, .. } if name == "c" && mode == "auto"),
+            "{e}"
+        );
     }
 
     /// No file and an empty file are the same table: the built-ins, and nothing else.

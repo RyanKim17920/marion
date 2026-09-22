@@ -1644,6 +1644,7 @@ mod tests {
             env: vec![],
             cwd: std::env::temp_dir(),
             model: None,
+            session_mode: None,
         };
         let mut notes = Vec::new();
         let turn = live_turn(
@@ -1861,6 +1862,7 @@ mod tests {
             env: vec![],
             cwd: std::env::temp_dir(),
             model: None,
+            session_mode: None,
         };
         // `finish` reports the escalation rather than swallowing it, and the process is gone.
         fn ready(c: &AcpChild) {

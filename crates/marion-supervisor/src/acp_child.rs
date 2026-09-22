@@ -78,11 +78,12 @@ const INITIALIZE_ID: u64 = 0;
 /// loudly; they would wait out the whole session budget for an answer that had already arrived
 /// under a different id.
 const PROMPT_ID: u64 = 2;
-/// The id on `session/set_config_option`, the request that sets a requested model.
-const SET_MODEL_ID: u64 = 3;
-/// How long the agent is given to answer `session/set_config_option`. One local state change on
-/// `opencode acp` 1.18.32, answered with no network round trip; bounded like every other step.
-const SET_MODEL_BUDGET: Duration = Duration::from_secs(30);
+/// The id on the request that sets a session select (the model, then the approval mode), one at a
+/// time.
+const SET_SELECT_ID: u64 = 3;
+/// How long the agent is given to answer one select. A local state change on every agent measured,
+/// answered with no network round trip; bounded like every other step.
+const SET_SELECT_BUDGET: Duration = Duration::from_secs(30);
 
 /// How long the agent is given to answer `initialize`. A process start and one frame.
 ///
@@ -260,33 +261,39 @@ pub enum AcpChildError {
          it a continuation"
     )]
     NoLoadSession { agent: String, session: String },
-    /// A model was asked for and the session's answer advertised no model select
-    /// (`configOptions` entry of `category: "model"`), which is the only way ACP chooses one.
-    /// Refused before the prompt, because a turn on the agent's own default would run under a
-    /// contract naming the request.
+    /// A session-level select was asked for — a model, or the agent type's `approval_mode` — and
+    /// the session's answer advertised none of that category (`configOptions`, or `modes` for a
+    /// mode), which is the only way ACP chooses one. Refused before the prompt, because a turn on
+    /// the agent's own default would run under a contract naming the request.
     #[error(
-        "the launch asks for model `{model}` and the agent (`{agent}`) advertises no model select \
-         in its session (`configOptions` of category `model`), the one channel ACP has for it; \
-         marion will not run the turn on a model nobody chose. Leave the model unset to run on \
-         the agent's own default"
+        "the launch asks for {category} `{value}` and the agent (`{agent}`) advertises no \
+         {category} select in its session (`configOptions` of category `{category}`), the one \
+         channel ACP has for it; marion will not run the turn on a {category} nobody chose. Leave \
+         it unset to run on the agent's own default"
     )]
-    NoModelOption { agent: String, model: String },
-    /// The session offers a model select, and not this model.
+    NoSelect {
+        agent: String,
+        category: &'static str,
+        value: String,
+    },
+    /// The session offers a select of that category, and not this value.
     #[error(
-        "the launch asks for model `{model}` and the agent (`{agent}`) does not offer it; it \
+        "the launch asks for {category} `{value}` and the agent (`{agent}`) does not offer it; it \
          offers: {offered}"
     )]
-    ModelNotOffered {
+    NotOffered {
         agent: String,
-        model: String,
+        category: &'static str,
+        value: String,
         offered: String,
     },
-    /// The agent refused `session/set_config_option`, or answered it with the option still on
-    /// another value, or not at all.
-    #[error("the agent (`{agent}`) did not switch its session to model `{model}`: {why}")]
-    ModelNotSet {
+    /// The agent refused the set request, answered it with the select still on another value, or
+    /// did not answer.
+    #[error("the agent (`{agent}`) did not switch its session's {category} to `{value}`: {why}")]
+    NotSet {
         agent: String,
-        model: String,
+        category: &'static str,
+        value: String,
         why: String,
     },
 }
@@ -341,15 +348,23 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
     }
 
     let (session, opened) = open_session(&mut agent, &session_new, &opening, deadline)?;
-    if let Some(model) = spec.inv.model.as_deref() {
-        select_model(
-            &mut agent,
-            &handshake.key(),
-            &session,
-            &opened,
-            model,
-            deadline,
-        )?;
+    // The model first, then the approval mode: each is its own select, and a refusal of either
+    // ends the run before the prompt.
+    for (category, value) in [
+        (acp::MODEL_CATEGORY, spec.inv.model.as_deref()),
+        (acp::MODE_CATEGORY, spec.inv.session_mode.as_deref()),
+    ] {
+        if let Some(value) = value {
+            select_in_session(
+                &mut agent,
+                &handshake.key(),
+                &session,
+                &opened,
+                category,
+                value,
+                deadline,
+            )?;
+        }
     }
     let answered = prompt_session(&mut agent, &session, spec.prompt, deadline)?;
 
@@ -395,7 +410,7 @@ fn handshake_with(
 ///
 /// A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
 /// answer only says whether the agent took it (ACP's `session/load` result carries no id). The
-/// answer itself comes back too: its `configOptions` are what [`select_model`] reads.
+/// answer itself comes back too: its `configOptions` are what [`select_in_session`] reads.
 fn open_session(
     agent: &mut Driver<'_>,
     session_new: &Value,
@@ -426,69 +441,82 @@ fn open_session(
     }
 }
 
-/// Put the session on the requested model, through the protocol, or refuse the run by name.
+/// Put the session on the requested `value` of a select `category` — the model, or the approval
+/// mode — through the protocol, or refuse the run by name.
 ///
-/// ACP chooses the model inside the session: the answer that opened it advertises a select of
-/// `category: "model"` (S21 opencode, S22 both Registry shims), and `session/set_config_option`
-/// changes it (measured on `opencode acp` 1.18.32, which answers with the updated
-/// `configOptions`, and with `-32602 model not found` for a value it lacks). Keyed on the category,
-/// never on an agent's name, so any agent that advertises one gets its model set. Every other
-/// outcome is a refusal before the prompt, because the contract records the requested model and a
-/// turn on anything else would make it false.
-fn select_model(
+/// ACP chooses both inside the session: the answer that opened it advertises a select per
+/// category (`model` on S21 opencode and both S22 Registry shims; `mode` on all four agents probed
+/// 2026-09-22), and `session/set_config_option` changes it (measured on `opencode acp` 1.18.32,
+/// claude-agent-acp 0.66.0, codex-acp 1.13.0 and copilot 1.0.83 `--acp`: each answers with the
+/// updated `configOptions`, and refuses a value it lacks with a JSON-RPC error).
+/// [`acp::session_select`] falls back to `modes` + `session/set_mode` for a mode where no config
+/// option carries it. Keyed on the category, never on an agent's name, so any agent that
+/// advertises a select gets it set. Every other outcome is a refusal before the prompt, because
+/// the contract records the request and a turn on anything else would make it false.
+fn select_in_session(
     agent: &mut Driver,
     agent_key: &str,
     session: &str,
     opened: &str,
-    model: &str,
+    category: &'static str,
+    value: &str,
     deadline: Instant,
 ) -> Result<(), AcpChildError> {
     let refuse = |agent: &mut Driver, e: AcpChildError| {
         let _ = agent.finish(true);
         Err(e)
     };
-    let Some(option) = acp::model_option(opened) else {
+    let Some(select) = acp::session_select(opened, category) else {
         return refuse(
             agent,
-            AcpChildError::NoModelOption {
+            AcpChildError::NoSelect {
                 agent: agent_key.to_string(),
-                model: model.to_string(),
+                category,
+                value: value.to_string(),
             },
         );
     };
-    if option.current.as_deref() == Some(model) {
+    if select.current.as_deref() == Some(value) {
         return Ok(());
     }
-    if !option.values.iter().any(|v| v == model) {
+    if !select.values.iter().any(|v| v == value) {
         return refuse(
             agent,
-            AcpChildError::ModelNotOffered {
+            AcpChildError::NotOffered {
                 agent: agent_key.to_string(),
-                model: model.to_string(),
-                offered: option.values.join(", "),
+                category,
+                value: value.to_string(),
+                offered: select.values.join(", "),
             },
         );
     }
+    let method = match select.channel {
+        acp::SelectChannel::ConfigOption { .. } => acp::SET_CONFIG_OPTION_METHOD,
+        acp::SelectChannel::SetMode => acp::SET_MODE_METHOD,
+    };
     agent.send(
-        &acp::set_config_option_request(SET_MODEL_ID, session, &option.config_id, model),
-        acp::SET_CONFIG_OPTION_METHOD,
+        &acp::select_request(SET_SELECT_ID, session, &select, value),
+        method,
     )?;
-    let not_set = |why: String| AcpChildError::ModelNotSet {
+    let not_set = |why: String| AcpChildError::NotSet {
         agent: agent_key.to_string(),
-        model: model.to_string(),
+        category,
+        value: value.to_string(),
         why,
     };
-    let Some(answer) = agent.settle(SET_MODEL_ID, clip(deadline, SET_MODEL_BUDGET)) else {
+    let Some(answer) = agent.settle(SET_SELECT_ID, clip(deadline, SET_SELECT_BUDGET)) else {
         return refuse(
             agent,
-            not_set(format!("no answer within {SET_MODEL_BUDGET:?}")),
+            not_set(format!("no answer within {SET_SELECT_BUDGET:?}")),
         );
     };
-    match acp::config_option_value(&answer, &option.config_id) {
-        // An answer that does not restate the option is taken at its word: ACP's response is the
-        // agent saying the change was applied.
+    // Consumed: the next select reuses the id, and this answer must not settle it.
+    agent.responses.retain(|(k, _)| *k != SET_SELECT_ID);
+    match acp::selected_value(&answer, &select) {
+        // An answer that does not restate the select is taken at its word: ACP's response is the
+        // agent saying the change was applied (`session/set_mode` answers `{}`).
         Ok(None) => Ok(()),
-        Ok(Some(v)) if v == model => Ok(()),
+        Ok(Some(v)) if v == value => Ok(()),
         Ok(Some(v)) => refuse(agent, not_set(format!("the session is still on `{v}`"))),
         Err(e) => refuse(agent, not_set(e.to_string())),
     }
@@ -805,6 +833,21 @@ impl<'a> Driver<'a> {
     /// asking for nothing. Denying the prompt while the agent holds `bash` would buy a slower turn
     /// and no safety.
     ///
+    /// **The permission rule, stated once.** Every `session/request_permission` is answered with
+    /// [`allow_option`]'s choice, whoever's tool it is:
+    /// * *marion's own verbs* (`report`, `spawn`, …, in any agent's spelling — S22's claude shim
+    ///   names `mcp__marion__report` in the ask, codex's only in the `tool_call` before it) are
+    ///   approved because the bridge is the node's reason to exist, and an unapproved `report` is
+    ///   a node that did the work and ends `Unreported`;
+    /// * *the agent's other tools* follow the grant, and on ACP the grant is the agent's whole
+    ///   toolset — the contract records [`acp::NO_TOOL_AVAILABILITY_SURFACE`] because the protocol
+    ///   has no field that narrows it. An operator who wants the agent to stop asking at all states
+    ///   the agent's own auto-accept mode as the type's `approval_mode`, which the driver sets as
+    ///   the session mode before the prompt.
+    ///
+    /// Both are answered allow-once where the agent offers it, never allow-always (see
+    /// [`allow_option`]), so no grant outlives the turn inside the agent's own settings.
+    ///
     /// Anything else gets a JSON-RPC `-32601` naming the method — **answered, not dropped**, for
     /// `duplex`'s reason about unimplemented `control_request`s. `terminal/*` is the live case:
     /// marion advertises `terminal: true` and implements none of it, so a terminal-using agent
@@ -958,19 +1001,28 @@ impl Drop for Driver<'_> {
     }
 }
 
-/// The option an agent's permission request should be answered with: the first one it labels as an
-/// allow, else the first one it offered at all. Keyed on `kind` rather than on `optionId`, because
-/// `kind` is ACP's own enumerated field (`allow_once`, `allow_always`, `reject_once`, …) and the id
-/// is the agent's private string.
+/// The option an agent's permission request should be answered with: `allow_once` where it is
+/// offered, else any other allow, else the first option offered at all. Keyed on `kind` rather than
+/// on `optionId`, because `kind` is ACP's own enumerated field (`allow_once`, `allow_always`,
+/// `reject_once`, …) and the id is the agent's private string.
+///
+/// **Once, never "always", where the agent lets marion choose.** An `allow_always` is the agent
+/// remembering the grant, and where it remembers it is the agent's business: claude-agent-acp
+/// 0.66.0 attaches a `persistent`, `project_local` policy rule to it (S22's capture, for marion's
+/// own `report`), which would write into the operator's project on marion's say-so (§6.4). A turn
+/// that asks again is answered again; that costs a frame, not a hang.
 fn allow_option(params: &Value) -> Option<String> {
     let options = params.get("options")?.as_array()?;
+    let kind = |o: &&Value| {
+        o.get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     options
         .iter()
-        .find(|o| {
-            o.get("kind")
-                .and_then(Value::as_str)
-                .is_some_and(|k| k.starts_with("allow"))
-        })
+        .find(|o| kind(o) == "allow_once")
+        .or_else(|| options.iter().find(|o| kind(o).starts_with("allow")))
         .or_else(|| options.first())
         .and_then(|o| o.get("optionId")?.as_str())
         .map(str::to_string)
@@ -1020,6 +1072,7 @@ mod tests {
             env: vec![],
             cwd: cwd.to_path_buf(),
             model: None,
+            session_mode: None,
         }
     }
 
@@ -1429,6 +1482,7 @@ sleep 15"#,
             env: vec![],
             cwd: dir.to_path_buf(),
             model: None,
+            session_mode: None,
         };
         let refuse = |d: Value| {
             run_acp_child(AcpChildSpec {
@@ -1494,6 +1548,7 @@ sleep 15"#,
             env: vec![],
             cwd: cwd.to_path_buf(),
             model: model.map(str::to_string),
+            session_mode: None,
         })
     }
 
@@ -1502,7 +1557,7 @@ sleep 15"#,
     fn models_seen(stdout: &str) -> Vec<String> {
         stdout
             .lines()
-            .filter_map(|l| acp::model_option(l)?.current)
+            .filter_map(|l| acp::session_select(l, acp::MODEL_CATEGORY)?.current)
             .collect()
     }
 
@@ -1559,7 +1614,7 @@ sleep 15"#,
             .expect_err("fake/gamma is not on offer");
         let text = e.to_string();
         assert!(
-            matches!(&e, AcpChildError::ModelNotOffered { model, .. } if model == "fake/gamma"),
+            matches!(&e, AcpChildError::NotOffered { value, category: "model", .. } if value == "fake/gamma"),
             "{text}"
         );
         assert!(
@@ -1596,9 +1651,96 @@ sleep 15"#,
         let e = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {}))
             .expect_err("nothing to set the model with");
         assert!(
-            matches!(&e, AcpChildError::NoModelOption { model, .. } if model == "fake/beta"),
+            matches!(&e, AcpChildError::NoSelect { value, category: "model", .. } if value == "fake/beta"),
             "{e}"
         );
         assert!(!prompt_seen.exists(), "no prompt was sent");
+    }
+
+    /// **An agent type's `approval_mode` is set as the session's mode, over the protocol, after
+    /// the model** — the generic route to an agent's own auto-accept (claude-agent-acp's
+    /// `acceptEdits`, copilot's `#autopilot`), keyed on ACP's `mode` category.
+    #[test]
+    fn a_requested_approval_mode_is_set_as_the_sessions_mode_before_the_prompt() {
+        let dir = scratch("acp-mode-set");
+        let Some(inv) = fake_agent(&dir, Some("fake/beta")) else {
+            return;
+        };
+        let inv = Invocation {
+            session_mode: Some("auto".into()),
+            ..inv
+        };
+        let run = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {})).unwrap();
+        let modes: Vec<String> = run
+            .stdout
+            .lines()
+            .filter_map(|l| acp::session_select(l, acp::MODE_CATEGORY)?.current)
+            .collect();
+        assert_eq!(
+            modes,
+            vec!["ask", "ask", "auto"],
+            "opened on `ask`, restated by the model's answer, then set: {}",
+            run.stdout
+        );
+        assert_eq!(
+            models_seen(&run.stdout).last().map(String::as_str),
+            Some("fake/beta"),
+            "the model is still the one asked for"
+        );
+        assert!(dir.join("src/marion_acp.txt").exists());
+    }
+
+    /// A mode the agent does not offer is refused by name, naming what it does offer.
+    #[test]
+    fn an_approval_mode_the_agent_does_not_offer_is_refused_by_name() {
+        let dir = scratch("acp-mode-absent");
+        let Some(inv) = fake_agent(&dir, None) else {
+            return;
+        };
+        let inv = Invocation {
+            session_mode: Some("bypassPermissions".into()),
+            ..inv
+        };
+        let e = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {})).unwrap_err();
+        assert!(
+            matches!(&e, AcpChildError::NotOffered { category: "mode", value, .. } if value == "bypassPermissions"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("ask, auto"), "{e}");
+        assert!(
+            !dir.join("src/marion_acp.txt").exists(),
+            "no prompt was sent"
+        );
+    }
+
+    /// **Every permission ask is answered allow-once where the agent offers it, never "always".**
+    /// claude-agent-acp's `allow_always` for marion's own `report` carries a persistent,
+    /// `project_local` policy rule (S22's capture), so choosing it would write into the operator's
+    /// project; codex-acp offers two `allow_always` kinds beside `allow_once`. Both captures are
+    /// asks for marion's own `report`, and the same rule answers any other tool (see
+    /// `Driver::answer`).
+    #[test]
+    fn a_permission_ask_is_answered_allow_once_on_both_measured_shapes() {
+        let claude = json!({"options": [
+            {"optionId": "reject", "kind": "reject_once"},
+            {"optionId": "allow_always", "kind": "allow_always"},
+            {"optionId": "allow", "kind": "allow_once"},
+        ]});
+        assert_eq!(allow_option(&claude).as_deref(), Some("allow"));
+        let codex = json!({"options": [
+            {"optionId": "allow_session", "kind": "allow_always"},
+            {"optionId": "allow_once", "kind": "allow_once"},
+            {"optionId": "decline", "kind": "reject_once"},
+        ]});
+        assert_eq!(allow_option(&codex).as_deref(), Some("allow_once"));
+        // Only "always" on offer: taken, because an unanswered ask hangs the turn.
+        assert_eq!(
+            allow_option(&json!({"options": [
+                {"optionId": "r", "kind": "reject_once"},
+                {"optionId": "a", "kind": "allow_always"},
+            ]}))
+            .as_deref(),
+            Some("a")
+        );
     }
 }

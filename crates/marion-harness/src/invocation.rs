@@ -23,4 +23,9 @@ pub struct Invocation {
     /// `TaskContract.child.model` must be the one that went on the wire. `codex exec` takes no
     /// model argument, so the Codex adapter compiles `None` however loudly a caller asked for one.
     pub model: Option<String>,
+    /// The session mode an ACP launch asks its driver to set — the agent type's `approval_mode`,
+    /// applied over the protocol after `session/new` and refused by name where the agent does not
+    /// offer it — or `None`, the agent's own default. Always `None` off ACP, whose other harnesses
+    /// have no session to set one in.
+    pub session_mode: Option<String>,
 }

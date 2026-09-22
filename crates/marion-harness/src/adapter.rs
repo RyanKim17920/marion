@@ -139,6 +139,9 @@ pub struct Extras {
     /// other vendor's agent than the one an agent type asked for, which is the exact bug the
     /// `HarnessAdapter` seam was introduced to end.
     pub acp_agent: Option<String>,
+    /// The agent type's `approval_mode`: an ACP session mode the driver sets over the protocol.
+    /// Read only by [`AcpAdapter`]; any other adapter refuses a launch carrying one, by name.
+    pub approval_mode: Option<String>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -331,6 +334,15 @@ pub trait HarnessAdapter {
     /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
         let f = self.fields(spec, ctx, spec::Shape::Headless)?;
+        // An approval mode is a session mode, and only a hook that has a session to set it in
+        // carries it onward; anything else would launch a node ignoring the operator's choice.
+        if spec.extra.approval_mode.is_some() && f.session_mode.is_none() {
+            return Err(HarnessError::MissingInput {
+                harness: self.harness(),
+                what: "the agent type states an approval_mode, which is an ACP session mode set \
+                       over the protocol; this harness has no ACP session to set it in",
+            });
+        }
         render_row(self.spec(), spec::Shape::Headless, &f)
     }
 
@@ -1848,7 +1860,25 @@ impl HarnessAdapter for AcpAdapter {
                 });
             }
         };
+        // The agent type's approval mode rides the session too, set by the driver after the model.
+        f.session_mode = spec.extra.approval_mode.clone();
         Ok(f)
+    }
+
+    /// The row's constraint, plus the session mode where the launch sets one: the driver refuses a
+    /// run whose agent does not offer it, so the record names a mode the session really ran in.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        self.binding(spec)?;
+        // The refusal owed to a `tools:` declaration, as the default runs it.
+        self.axes(spec)?;
+        let mut out = vec![acp::NO_TOOL_AVAILABILITY_SURFACE.to_string()];
+        out.extend(
+            spec.extra
+                .approval_mode
+                .as_ref()
+                .map(|m| format!("{}{m}", acp::SESSION_MODE_PREFIX)),
+        );
+        Ok(out)
     }
 
     /// **No declaration document, on any ACP agent** — and, under a canned provider, one document
@@ -2136,6 +2166,7 @@ mod tests {
             env: vec![],
             cwd: "/wt".into(),
             model: None,
+            session_mode: None,
         };
         let doc: PathBuf = "/state/x/mcp.json".into();
 
@@ -2423,6 +2454,7 @@ mod tests {
                 env: vec![("CODEX_HOME".into(), "/state/x/config".into())],
                 cwd: "/wt".into(),
                 model: None,
+                session_mode: None,
             }
         );
     }
@@ -3308,6 +3340,7 @@ mod tests {
                 ],
                 cwd: "/repo".into(),
                 model: Some("haiku".into()),
+                session_mode: None,
             }
         );
     }
@@ -6354,6 +6387,61 @@ mod tests {
     /// The compiled launch is the agent's own argv and **nothing else** — no prompt, no model, no
     /// credential. Each absence is a decision `AcpAdapter::compile` argues, and each would be
     /// invisible without a row here.
+    /// **An agent type's `approval_mode` is a session mode, set over the protocol.** It reaches the
+    /// driver on the compiled [`Invocation`] (never argv), and the contract's constraint names it,
+    /// because the driver refuses a run whose agent does not offer it — so the record describes a
+    /// mode the session really ran in.
+    #[test]
+    fn an_acp_approval_mode_rides_the_session_and_is_recorded_as_the_constraint() {
+        let spec = LaunchSpec {
+            extra: Extras {
+                approval_mode: Some("acceptEdits".into()),
+                ..acp_spec().extra
+            },
+            ..acp_spec()
+        };
+        let inv = acp_adapter().compile(&spec, &ctx()).unwrap();
+        assert_eq!(inv.session_mode.as_deref(), Some("acceptEdits"));
+        assert!(
+            !inv.args.iter().any(|a| a.contains("acceptEdits")),
+            "{:?}",
+            inv.args
+        );
+        assert_eq!(
+            acp_adapter().compiled_permissions(&spec).unwrap(),
+            vec![
+                acp::NO_TOOL_AVAILABILITY_SURFACE.to_string(),
+                format!("{}acceptEdits", acp::SESSION_MODE_PREFIX),
+            ]
+        );
+        // And without one, nothing changes.
+        assert_eq!(
+            acp_adapter()
+                .compile(&acp_spec(), &ctx())
+                .unwrap()
+                .session_mode,
+            None
+        );
+    }
+
+    /// A harness with no ACP session has nowhere to set a session mode, and says so by name rather
+    /// than launching a node that ignores the operator's approval choice.
+    #[test]
+    fn an_approval_mode_off_acp_is_refused_by_name() {
+        let spec = LaunchSpec {
+            extra: Extras {
+                approval_mode: Some("auto".into()),
+                ..Extras::default()
+            },
+            ..codex_live_spec()
+        };
+        let e = CodexAdapter.compile(&spec, &ctx()).unwrap_err();
+        assert!(
+            matches!(e, HarnessError::MissingInput { harness: Harness::Codex, what } if what.contains("approval_mode")),
+            "{e}"
+        );
+    }
+
     #[test]
     fn an_acp_launch_carries_the_agents_argv_and_nothing_marion_added() {
         let spec = LaunchSpec {

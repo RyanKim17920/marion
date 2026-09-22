@@ -495,6 +495,8 @@ pub struct Fields {
     pub program: Option<String>,
     pub prompt: String,
     pub model: Option<String>,
+    /// The ACP session mode the driver sets ([`Invocation::session_mode`]); never on argv.
+    pub session_mode: Option<String>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub axes: Axes,
@@ -730,6 +732,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         // What the row carried, including its absence: the model that reached argv is the one the
         // hook placed in `Fields::model`, and nothing else is recorded.
         model: f.model.clone(),
+        session_mode: f.session_mode.clone(),
     })
 }
 
