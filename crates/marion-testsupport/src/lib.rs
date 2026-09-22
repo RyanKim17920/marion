@@ -731,7 +731,19 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
         // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
         // native_facade_e2e (2).
-        accepted: &["1.17.3", "1.18.29", "1.18.30"],
+        // 1.18.32: observed green on Darwin 25.5.0, 2026-09-22, via scripts/admit-harness.sh
+        // (claude 2.1.280 and opencode 1.18.32 and goose 1.51.0 in one run): marion-testsupport
+        // (33), acp_child (5), cross_product (57), depth_gate (4), harness_matrix (8),
+        // journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
+        // native_facade_spawn (1), no_git (5), pane_attach (2), permission_round_trip (9),
+        // restart_resume (0), timeout_kill (1), worktree_reap (8); the recorded contracts name
+        // `opencode` `1.18.32`. Homebrew again replaced the build in place. At default test
+        // threads on a machine at load 36-130 (12 cores), `cross_product`'s goose-root and
+        // cline-root cells with an opencode child failed 2/57 twice (the child ran past its 60 s
+        // bound after writing its file); the same two cells failed the same way against an
+        // npm-installed 1.18.30 under the same load, all eight opencode-child cells passed 8/8
+        // serially on 1.18.32, and the admitting run used `RUST_TEST_THREADS=4`. Load, not drift.
+        accepted: &["1.17.3", "1.18.29", "1.18.30", "1.18.32"],
     },
     PinnedHarness {
         program: "copilot",

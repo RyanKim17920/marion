@@ -94,7 +94,7 @@ with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — a
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0;
-gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
+gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
 qwen 0.23.0.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
@@ -481,6 +481,17 @@ it downloaded itself into `~/Library/Caches/copilot/pkg/darwin-arm64/1.0.87` (fe
 day by a copilot started without the switch) unless the switch is `false`. marion's nodes get
 `false` and run 1.0.83, while the gate's bare `--version` probe does not get it and read 1.0.87. The s10/s11/s14/s16
 probes were not re-run.
+
+**opencode 1.18.32, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the claude 2.1.280
+run, with the same suite counts. Homebrew replaced 1.18.30 in place, so no pinned build was on
+disk. The recorded contracts name `opencode` `1.18.32`. **Not drift, but a trap:** at the default
+test-thread count, on a machine at load 36-130 across 12 cores from concurrent live runs,
+`cross_product`'s `zi_goose_root…opencode_child` and `zu_cline_root…opencode_child` failed 2/57
+twice. The opencode child wrote its marker and then ran past its 60 s bound, and cline's own 60 s
+MCP call timeout fired first. An npm-installed 1.18.30 driven through the same suite under the
+same load failed the same two cells. All eight opencode-child cells passed 8/8 serially on
+1.18.32, and the admitting run used `RUST_TEST_THREADS=4`. Those two cells are the tightest bounds
+in the matrix, so read a red there under load as the machine first.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
