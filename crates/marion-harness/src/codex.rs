@@ -532,6 +532,48 @@ mod tests {
         );
     }
 
+    /// **A live resume re-sends marion's MCP declaration, after the subcommand.** S31
+    /// (`tests/fixtures/s31-turn-delivery/p0b/codex/`): `exec resume <id>` without the `-c
+    /// mcp_servers.marion.*` pairs continues the thread and never starts marion's server — no
+    /// `initialize` reaches it — while the history still names marion's tools, so the resumed
+    /// turn's first marion call would fail. With the pairs the server is spawned again. So every
+    /// pair a fresh live launch carries must ride the resume too, and after `resume <id>`, where
+    /// the row's `Arg::Each("-c")` renders them.
+    #[test]
+    fn a_live_resume_redeclares_marions_mcp_server_after_the_subcommand() {
+        let fresh = compile_exec(&live_spec());
+        let resumed = compile_exec(&Fields {
+            resume: Some("019a-thread".into()),
+            ..live_spec()
+        });
+        let pairs = |args: &[String]| -> Vec<String> {
+            args.windows(2)
+                .filter(|w| w[0] == "-c" && w[1].starts_with(MCP_SERVER_KEY))
+                .map(|w| w[1].clone())
+                .collect()
+        };
+        assert!(
+            !pairs(&fresh.args).is_empty(),
+            "the live row declares marion on -c"
+        );
+        assert_eq!(pairs(&resumed.args), pairs(&fresh.args));
+        let resume = resumed
+            .args
+            .iter()
+            .position(|a| a == "resume")
+            .expect("the subcommand");
+        let first_pair = resumed
+            .args
+            .iter()
+            .position(|a| a.starts_with(MCP_SERVER_KEY))
+            .expect("a pair");
+        assert!(
+            resume < first_pair,
+            "the declaration follows `resume <id>`: {:?}",
+            resumed.args
+        );
+    }
+
     /// **The interactive command is not `exec` with a flag off.** Every name below is an `exec`
     /// flag that `codex --help` on 0.147.0 does not list, so compiling one here is an argv the
     /// binary rejects before it draws a cell — a pane that fails at launch rather than a pane that
