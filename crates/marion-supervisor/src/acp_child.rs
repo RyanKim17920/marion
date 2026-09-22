@@ -78,6 +78,11 @@ const INITIALIZE_ID: u64 = 0;
 /// loudly; they would wait out the whole session budget for an answer that had already arrived
 /// under a different id.
 const PROMPT_ID: u64 = 2;
+/// The id on `session/set_config_option`, the request that sets a requested model.
+const SET_MODEL_ID: u64 = 3;
+/// How long the agent is given to answer `session/set_config_option`. One local state change on
+/// `opencode acp` 1.18.32, answered with no network round trip; bounded like every other step.
+const SET_MODEL_BUDGET: Duration = Duration::from_secs(30);
 
 /// How long the agent is given to answer `initialize`. A process start and one frame.
 ///
@@ -255,6 +260,35 @@ pub enum AcpChildError {
          it a continuation"
     )]
     NoLoadSession { agent: String, session: String },
+    /// A model was asked for and the session's answer advertised no model select
+    /// (`configOptions` entry of `category: "model"`), which is the only way ACP chooses one.
+    /// Refused before the prompt, because a turn on the agent's own default would run under a
+    /// contract naming the request.
+    #[error(
+        "the launch asks for model `{model}` and the agent (`{agent}`) advertises no model select \
+         in its session (`configOptions` of category `model`), the one channel ACP has for it; \
+         marion will not run the turn on a model nobody chose. Leave the model unset to run on \
+         the agent's own default"
+    )]
+    NoModelOption { agent: String, model: String },
+    /// The session offers a model select, and not this model.
+    #[error(
+        "the launch asks for model `{model}` and the agent (`{agent}`) does not offer it; it \
+         offers: {offered}"
+    )]
+    ModelNotOffered {
+        agent: String,
+        model: String,
+        offered: String,
+    },
+    /// The agent refused `session/set_config_option`, or answered it with the option still on
+    /// another value, or not at all.
+    #[error("the agent (`{agent}`) did not switch its session to model `{model}`: {why}")]
+    ModelNotSet {
+        agent: String,
+        model: String,
+        why: String,
+    },
 }
 
 /// Drive one ACP turn and hand back the transcript.
@@ -306,7 +340,17 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         });
     }
 
-    let session = open_session(&mut agent, &session_new, &opening, deadline)?;
+    let (session, opened) = open_session(&mut agent, &session_new, &opening, deadline)?;
+    if let Some(model) = spec.inv.model.as_deref() {
+        select_model(
+            &mut agent,
+            &handshake.key(),
+            &session,
+            &opened,
+            model,
+            deadline,
+        )?;
+    }
     let answered = prompt_session(&mut agent, &session, spec.prompt, deadline)?;
 
     let (end, _) = agent.finish(!answered);
@@ -350,13 +394,14 @@ fn handshake_with(
 /// The adapter's own opening request, and the session id the agent is then working in.
 ///
 /// A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
-/// answer only says whether the agent took it (ACP's `session/load` result carries no id).
+/// answer only says whether the agent took it (ACP's `session/load` result carries no id). The
+/// answer itself comes back too: its `configOptions` are what [`select_model`] reads.
 fn open_session(
     agent: &mut Driver<'_>,
     session_new: &Value,
     opening: &Opening,
     deadline: Instant,
-) -> Result<String, AcpChildError> {
+) -> Result<(String, String), AcpChildError> {
     agent.send(session_new, opening.method)?;
     let opened = match agent.settle(opening.id, clip(deadline, SESSION_BUDGET)) {
         Some(f) => f,
@@ -373,11 +418,79 @@ fn open_session(
         Some(s) => acp::session_loaded(&opened).map(|()| s.clone()),
     };
     match session {
-        Ok(s) => Ok(s),
+        Ok(s) => Ok((s, opened)),
         Err(e) => {
             let _ = agent.finish(true);
             Err(AcpChildError::SessionRefused(e))
         }
+    }
+}
+
+/// Put the session on the requested model, through the protocol, or refuse the run by name.
+///
+/// ACP chooses the model inside the session: the answer that opened it advertises a select of
+/// `category: "model"` (S21 opencode, S22 both Registry shims), and `session/set_config_option`
+/// changes it (measured on `opencode acp` 1.18.32, which answers with the updated
+/// `configOptions`, and with `-32602 model not found` for a value it lacks). Keyed on the category,
+/// never on an agent's name, so any agent that advertises one gets its model set. Every other
+/// outcome is a refusal before the prompt, because the contract records the requested model and a
+/// turn on anything else would make it false.
+fn select_model(
+    agent: &mut Driver,
+    agent_key: &str,
+    session: &str,
+    opened: &str,
+    model: &str,
+    deadline: Instant,
+) -> Result<(), AcpChildError> {
+    let refuse = |agent: &mut Driver, e: AcpChildError| {
+        let _ = agent.finish(true);
+        Err(e)
+    };
+    let Some(option) = acp::model_option(opened) else {
+        return refuse(
+            agent,
+            AcpChildError::NoModelOption {
+                agent: agent_key.to_string(),
+                model: model.to_string(),
+            },
+        );
+    };
+    if option.current.as_deref() == Some(model) {
+        return Ok(());
+    }
+    if !option.values.iter().any(|v| v == model) {
+        return refuse(
+            agent,
+            AcpChildError::ModelNotOffered {
+                agent: agent_key.to_string(),
+                model: model.to_string(),
+                offered: option.values.join(", "),
+            },
+        );
+    }
+    agent.send(
+        &acp::set_config_option_request(SET_MODEL_ID, session, &option.config_id, model),
+        acp::SET_CONFIG_OPTION_METHOD,
+    )?;
+    let not_set = |why: String| AcpChildError::ModelNotSet {
+        agent: agent_key.to_string(),
+        model: model.to_string(),
+        why,
+    };
+    let Some(answer) = agent.settle(SET_MODEL_ID, clip(deadline, SET_MODEL_BUDGET)) else {
+        return refuse(
+            agent,
+            not_set(format!("no answer within {SET_MODEL_BUDGET:?}")),
+        );
+    };
+    match acp::config_option_value(&answer, &option.config_id) {
+        // An answer that does not restate the option is taken at its word: ACP's response is the
+        // agent saying the change was applied.
+        Ok(None) => Ok(()),
+        Ok(Some(v)) if v == model => Ok(()),
+        Ok(Some(v)) => refuse(agent, not_set(format!("the session is still on `{v}`"))),
+        Err(e) => refuse(agent, not_set(e.to_string())),
     }
 }
 
@@ -1105,7 +1218,7 @@ read open
 printf '%s\n' "$open" > '{opened}'
 printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_prev","update":{{"sessionUpdate":"user_message_chunk","content":{{"type":"text","text":"replayed"}}}}}}}}'
 printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":null}}'
-read prompt
+read prompt || exit 0
 printf '%s\n' "$prompt" > '{prompt}'
 printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
 sleep 15"#,
@@ -1360,5 +1473,132 @@ sleep 15"#,
         );
         assert_eq!(allow_option(&json!({"options": []})), None);
         assert_eq!(allow_option(&Value::Null), None);
+    }
+
+    /// `tests/fixtures/acp/fake_acp_agent.py`, as an [`Invocation`] asking for `model`. `None`
+    /// where `python3` is absent, so the caller skips by name rather than failing on the machine.
+    fn fake_agent(cwd: &Path, model: Option<&str>) -> Option<Invocation> {
+        if !marion_testsupport::on_path("python3") {
+            eprintln!("skipped: `python3` is not installed");
+            return None;
+        }
+        Some(Invocation {
+            program: "python3".into(),
+            args: vec![
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/acp/fake_acp_agent.py"
+                )
+                .into(),
+            ],
+            env: vec![],
+            cwd: cwd.to_path_buf(),
+            model: model.map(str::to_string),
+        })
+    }
+
+    /// The fake agent's model option's `currentValue`, in every frame of the transcript that
+    /// restates it, in order.
+    fn models_seen(stdout: &str) -> Vec<String> {
+        stdout
+            .lines()
+            .filter_map(|l| acp::model_option(l)?.current)
+            .collect()
+    }
+
+    /// **The requested model reaches the session over ACP itself** — the live matrix's D4, where an
+    /// `opencode acp` child ran on whatever its own default was and the contract recorded no model.
+    /// The agent advertised a `model` select in `session/new`, marion set it with
+    /// `session/set_config_option`, and only then prompted.
+    #[test]
+    fn a_requested_model_is_set_through_the_session_before_the_prompt() {
+        let dir = scratch("acp-model-set");
+        let Some(inv) = fake_agent(&dir, Some("fake/beta")) else {
+            return;
+        };
+        let run = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {}))
+            .expect("the agent offers the model, so the turn runs");
+        assert_eq!(
+            models_seen(&run.stdout),
+            vec!["fake/alpha", "fake/beta"],
+            "the session opened on the agent's default and was then set to the request: {}",
+            run.stdout
+        );
+        assert!(
+            dir.join("src/marion_acp.txt").exists(),
+            "the prompt ran after the model was set"
+        );
+    }
+
+    /// A request the session already satisfies sends nothing: the transcript restates the model
+    /// once, in the `session/new` answer.
+    #[test]
+    fn a_model_the_session_already_runs_is_not_set_again() {
+        let dir = scratch("acp-model-same");
+        let Some(inv) = fake_agent(&dir, Some("fake/alpha")) else {
+            return;
+        };
+        let run = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {})).unwrap();
+        assert_eq!(
+            models_seen(&run.stdout),
+            vec!["fake/alpha"],
+            "{}",
+            run.stdout
+        );
+    }
+
+    /// **A model the agent does not offer is refused by name, before the prompt** — rather than a
+    /// turn on the agent's own default under a contract naming the request.
+    #[test]
+    fn a_model_the_agent_does_not_offer_is_refused_by_name_before_any_prompt() {
+        let dir = scratch("acp-model-absent");
+        let Some(inv) = fake_agent(&dir, Some("fake/gamma")) else {
+            return;
+        };
+        let e = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {}))
+            .expect_err("fake/gamma is not on offer");
+        let text = e.to_string();
+        assert!(
+            matches!(&e, AcpChildError::ModelNotOffered { model, .. } if model == "fake/gamma"),
+            "{text}"
+        );
+        assert!(
+            text.contains("fake/alpha") && text.contains("fake/beta"),
+            "names what is offered: {text}"
+        );
+        assert!(
+            !dir.join("src/marion_acp.txt").exists(),
+            "no prompt was sent"
+        );
+    }
+
+    /// An agent that advertises no model select cannot be given one, and saying so beats a run on
+    /// a model nobody chose (copilot's ACP session, S28, offers none).
+    #[test]
+    fn a_model_asked_of_an_agent_with_no_model_select_is_refused_by_name() {
+        let dir = scratch("acp-model-none");
+        let prompt_seen = dir.join("prompt.json");
+        let script = format!(
+            r#"read init
+printf '%s\n' '{HELLO}'
+read new
+printf '%s\n' '{OPENED}'
+read prompt
+printf '%s\n' "$prompt" > '{prompt}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+sleep 15"#,
+            prompt = prompt_seen.display(),
+        );
+        let inv = Invocation {
+            model: Some("fake/beta".into()),
+            ..agent(&dir, &script)
+        };
+        let e = run_acp_child(spec(&inv, Duration::from_secs(20), &|_| {}))
+            .expect_err("nothing to set the model with");
+        assert!(
+            matches!(&e, AcpChildError::NoModelOption { model, .. } if model == "fake/beta"),
+            "{e}"
+        );
+        assert!(!prompt_seen.exists(), "no prompt was sent");
     }
 }

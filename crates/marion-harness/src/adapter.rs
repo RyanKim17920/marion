@@ -1772,12 +1772,13 @@ impl HarnessAdapter for AcpAdapter {
     ///
     /// * *No prompt.* It rides `session/prompt` after the handshake, so `spec.prompt` reaches argv
     ///   on no ACP agent — the claude-code situation, one protocol over.
-    /// * *No model.* S21's `session/new` result carries a `configOptions` `model` **select**: the
-    ///   model is chosen inside the session, and marion has measured no argv that sets it. So the
-    ///   compiled [`Invocation::model`] is `None` however loudly a caller asked, exactly as codex
-    ///   does, rather than a value the launch did not carry appearing in the audit record. Under
-    ///   the canned recipe it is the config document's `model` key that carries it, which is
-    ///   recorded because it is what the launch actually compiled.
+    /// * *No model on argv.* S21's `session/new` result carries a `configOptions` `model`
+    ///   **select**: the model is chosen inside the session, and marion has measured no argv that
+    ///   sets it. The compiled [`Invocation::model`] is the requested one because the ACP driver
+    ///   applies it over the protocol (`session/set_config_option`, measured on `opencode acp`
+    ///   1.18.32) and refuses the run by name where the agent offers no model select or not that
+    ///   model, so the record never names a model that did not run. Under the canned recipe the
+    ///   config document's `model` key carries it too, and the session then already has it.
     /// * *No credential.* Under [`Auth::Canned`] marion would have to point the agent at its own
     ///   endpoint, and there is no ACP-level way to do that — it is per-agent config, and this
     ///   adapter is per-protocol. Refused by name rather than launched at the operator's real
@@ -1816,7 +1817,10 @@ impl HarnessAdapter for AcpAdapter {
         // it.
         f.resume = None;
         (f.extra_env, f.model) = match (spec.auth, binding.canned()) {
-            (Auth::Inherited, _) => (Vec::new(), None),
+            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
+            // `session/set_config_option` and refuses the run by name where the agent offers no
+            // such model, so recording it here names what ran.
+            (Auth::Inherited, _) => (Vec::new(), spec.model.clone()),
             // opencode's own isolation rows, over the same binary: the relocations, the hygiene
             // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
             // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
@@ -6362,9 +6366,10 @@ mod tests {
         assert_eq!(inv.program, "opencode");
         assert_eq!(inv.args, vec!["acp"]);
         assert_eq!(
-            inv.model, None,
-            "ACP chooses its model inside the session, so the audit record must not name one the \
-             launch did not carry"
+            inv.model.as_deref(),
+            Some("anthropic/claude-opus-5"),
+            "the model rides the session (`session/set_config_option`, which the driver refuses \
+             the run without), so the record names it while argv does not"
         );
         assert!(
             inv.env.is_empty(),

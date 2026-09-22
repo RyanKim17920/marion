@@ -1065,6 +1065,16 @@ login with the cheapest model the harness offered.
   (`str_replace_editor` is `read`+`edit`). The row maps `write` to all three, so a `copilot-impl`
   child has an edit tool whichever of the three its model is offered (only `auto` was runnable
   here); the matrix's children had only `view`.
+- **opencode 1.18.32 over ACP: the model is set with `session/set_config_option`.** `session/new`
+  answers with `configOptions`, one of `category: "model"` (`id: "model"`, `type: "select"`, 77
+  flat options, `currentValue: "opencode/big-pickle"`). `session/set_config_option {sessionId,
+  configId: "model", value: "opencode/nemotron-3-ultra-free"}` answers `{configOptions}` with the
+  new `currentValue` and also pushes a `config_option_update` notification. A value it does not
+  offer is `-32602 Invalid params: model not found: <value>`. (No prompt was sent: $0.) The
+  unstable `session/set_model {modelId}` also answers `{}`. The ACP driver now sets a requested
+  model through the config option, keyed on the category rather than on the agent, records it on
+  the contract, and refuses by name before the prompt when the session offers no model select or
+  not that model. The matrix's ACP children ran on opencode's default with `model: null`.
 - **copilot 1.0.87: `--model` refusals are the account's entitlement, not marion's spelling.**
   marion passes `--model <id>` verbatim. `gpt-5-mini`, `claude-haiku-4.5` and a made-up
   `bogus-model-xyz` all fail the same way, `Error: Model "<id>" from --model flag is not

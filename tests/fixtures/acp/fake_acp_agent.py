@@ -16,6 +16,10 @@ One more mode, for `tests/acp_root.rs`: a prompt containing `spawn:<agent type>|
 makes it a delegating **root** instead — it writes nothing and calls the bridge's `spawn` tool with
 that agent type and prompt, mirrored as a `tool_call` titled `marion/spawn`.
 
+Its `session/new` answer advertises a `model` select in ACP's `configOptions` shape (`fake/alpha`,
+the current value, and `fake/beta`), and it answers `session/set_config_option` for it — accepting an
+offered value and refusing any other with `-32602`, as `opencode acp` 1.18.32 was measured to do.
+
 Runs nothing but the servers it is handed; no model, no network, no credential.
 """
 import json
@@ -109,7 +113,24 @@ class McpServer:
 
 
 servers = []
-session = {"id": None, "cwd": None}
+session = {"id": None, "cwd": None, "model": None}
+
+# The session's model select, in ACP's `configOptions` shape (S21 measured opencode's): the model is
+# chosen inside the session and changed with `session/set_config_option`. Values no measured agent
+# offers, so a test that sees one knows it came from here.
+MODEL_OPTION_ID = "model"
+MODELS = ["fake/alpha", "fake/beta"]
+
+
+def model_options():
+    return [{
+        "id": MODEL_OPTION_ID,
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": session["model"],
+        "options": [{"value": m, "name": m} for m in MODELS],
+    }]
 
 
 def update(session_id, body):
@@ -170,7 +191,15 @@ def handle(frame):
             server.handshake()
             servers.append(server)
         session["id"] = "fake-session-1"
-        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": session["id"]}})
+        session["model"] = MODELS[0]
+        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": session["id"], "configOptions": model_options()}})
+    elif method == "session/set_config_option":
+        value = params.get("value")
+        if params.get("configId") != MODEL_OPTION_ID or value not in MODELS:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": f"Invalid params: model not found: {value}"}})
+            return
+        session["model"] = value
+        send({"jsonrpc": "2.0", "id": rid, "result": {"configOptions": model_options()}})
     elif method == "session/prompt":
         sid = params.get("sessionId") or session["id"]
         text = prompt_text(params)

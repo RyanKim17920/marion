@@ -23,6 +23,11 @@ The four spellings it is deliberately *not* — `marion_report` (S21, `opencode 
 `mcp__marion__report` and `mcp.marion.report` (S22, the ACP Registry shims) and `marion-report`
 (S28, copilot) — are the measured ones, each with its own fixture directory.
 
+Its session also advertises a `model` select (`configOptions`, category `model`) and answers
+`session/set_config_option` for it, so the driver's model selection has a witness that is no
+measured agent's; `acp_child`'s unit tests (`a_requested_model_is_set_through_the_session_before_the_prompt`
+and its refusals) run it directly.
+
 ## Which harness / version produced it
 
 None. It is source, not a recording, so there is no harness, version or capture date to stamp. The
