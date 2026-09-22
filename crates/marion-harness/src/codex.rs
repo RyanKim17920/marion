@@ -366,6 +366,13 @@ pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
             format!("{MCP_SERVER_KEY}.default_tools_approval_mode"),
             toml_str("approve"),
         ),
+        // Measured 2026-09-22 on 0.155.1: codex defers MCP tools behind `tool_search` unless the
+        // server is omitted from that surface, and a live child that must search for `report`
+        // did not call it. Parsed by 0.147.0 and later; 0.146.0 ignores it as an unknown key.
+        (
+            format!("{MCP_SERVER_KEY}.omit_tools_from"),
+            format!("[{}]", toml_str("deferred")),
+        ),
     ];
     for (k, v) in env.pairs() {
         out.push((format!("{MCP_SERVER_KEY}.env.{k}"), toml_str(&v)));
@@ -829,6 +836,25 @@ mod tests {
             )),
             "without it every marion tool call is cancelled and the bridge never sees tools/call: \
              {o:?}"
+        );
+    }
+
+    /// **marion's tools are offered directly, never deferred behind `tool_search`.** codex 0.155.1
+    /// lazy-loads MCP tools by default (`codex features list`: `tool_search_always_defer_mcp_tools
+    /// removed true`, so no feature flag turns it off). Measured on 2026-09-22 with a stub
+    /// `marion` server: asked which tools it could call directly, a `gpt-5.6-luna` node answered
+    /// that `report` from `marion` was *absent*, and with `omit_tools_from = ["deferred"]` it named
+    /// `mcp__marion__report` as directly callable. `codex mcp get` on 0.147.0 and 0.155.1 rejects
+    /// an unknown value of this key (`expected one of code_mode, deferred, direct`), which is the
+    /// proof it is parsed; 0.146.0 accepts it as an unknown key and is unchanged.
+    #[test]
+    fn marions_tools_are_never_deferred_behind_tool_search_on_the_live_route() {
+        assert!(
+            live_config_overrides(&bridge_env()).contains(&(
+                "mcp_servers.marion.omit_tools_from".to_string(),
+                r#"["deferred"]"#.to_string()
+            )),
+            "a live codex child that has to search for `report` is a child that never calls it"
         );
     }
 

@@ -172,7 +172,10 @@ longer `isError` and opens "did not call report; verification passed (N/N)" (`br
 tests); with no declared check, or any check failing, it stays an error. Every child's prompt now
 ends with one marion-owned sentence (`bridge::REPORT_INSTRUCTION`, appended by `run::child_prompt`
 after any `prompt_prefix`) telling it to call the marion MCP server's `report` once; roots do not
-get it, and the contract's `instructions` record it as the prompt the child saw.
+get it, and the contract's `instructions` record it as the prompt the child saw. codex 0.155.1
+defers MCP tools behind `tool_search` (no feature flag disables it); a live codex node's overlay now
+carries `mcp_servers.marion.omit_tools_from = ["deferred"]`, measured to turn `report` from
+"absent" to directly callable (parsed by 0.147.0+, ignored by 0.146.0).
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
