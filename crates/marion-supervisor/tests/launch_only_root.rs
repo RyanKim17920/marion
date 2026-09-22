@@ -725,6 +725,46 @@ fn an_opencode_root_whose_only_marion_call_was_refused_is_not_a_success() {
     a_root_whose_only_call_was_refused_is_not_a_success(&OPENCODE, "refused-opencode");
 }
 
+// --- property 2c: a root's own refused `report` is not the run failing --------------------------
+//
+// Measured live (2026-09-22, opencode 1.18.32): an opencode root delegated to a child that finished
+// `Ok`, then called `report` itself, which §5.4 refuses on a root. opencode's grammar reads a refused
+// `report` as the run failing — correct for a child, which has a contract to report into — and the
+// root, exit 0, was journalled `Failed` and `marion run` exited 1, the refusal worded as "the
+// child's marion_report call ended in error" about a node that is not a child.
+
+#[test]
+fn an_opencode_root_whose_own_report_was_refused_still_succeeds() {
+    let node = &OPENCODE;
+    let adapter = adapter_for(node.harness).expect("opencode has an adapter");
+    let refused_report = format!(
+        r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","input":{{"narrative":"done"}},"error":"marion: `report` is self only"}}}}}}"#,
+        adapter.marion_tool_name("report")
+    );
+    let frames = format!("{}\n{refused_report}", reached_the_bridge(node));
+    let dir = scratch("lo-own-report-opencode");
+    let bin = stub_harness(
+        &dir,
+        node,
+        "",
+        &format!("cat <<'EOF'\n{frames}\nEOF\nexit 0"),
+    );
+
+    let run = marion_run(&dir, node, &bin, "Delegate the task to a child.", "30");
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the root delegated and exited 0; its own refused report must not fail it\nstderr:\n{}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("the child's"),
+        "a root is not a child, and no refusal about it may call it one:\n{}",
+        run.stderr
+    );
+}
+
 // --- property 3: the bound, and the group kill behind it ----------------------------------------
 //
 // A harness that never exits is not hypothetical: S13 measured opencode doing exactly that on a

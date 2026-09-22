@@ -524,10 +524,7 @@ pub fn marion_calls(g: &StreamGrammar, stdout: &str, prefix: &str) -> Vec<Marion
 pub fn parse_stream(g: &StreamGrammar, stdout: &str, prefix: &str) -> StreamOutcome {
     let frames = json_frames(stdout);
     let mut out = StreamOutcome {
-        // Stream order, every rule per frame: the first claim the stream makes is the one recorded.
-        failure: frames
-            .iter()
-            .find_map(|frame| g.failures.iter().find_map(|f| f.claim(frame))),
+        failure: first_failure_claim(g, &frames),
         ..StreamOutcome::default()
     };
     for call in calls(g, &frames, prefix)
@@ -566,6 +563,20 @@ pub fn parse_stream(g: &StreamGrammar, stdout: &str, prefix: &str) -> StreamOutc
         }
     }
     out
+}
+
+/// The stream's **own** failure claims alone, without [`parse_stream`]'s refused-`report` rule —
+/// what a root is judged by. That rule is about a node that has a contract; a root has none (§9),
+/// and its refused `report` is §5.4 turning away a call, not the run failing.
+pub fn stream_failure(g: &StreamGrammar, stdout: &str) -> Option<String> {
+    first_failure_claim(g, &json_frames(stdout))
+}
+
+/// Stream order, every rule per frame: the first claim the stream makes is the one recorded.
+fn first_failure_claim(g: &StreamGrammar, frames: &[Value]) -> Option<String> {
+    frames
+        .iter()
+        .find_map(|frame| g.failures.iter().find_map(|f| f.claim(frame)))
 }
 
 impl Failure {

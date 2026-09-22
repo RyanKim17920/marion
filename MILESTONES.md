@@ -179,7 +179,9 @@ carries `mcp_servers.marion.omit_tools_from = ["deferred"]`, measured to turn `r
 lists `report` in `tools/list` when its declared depth is 0 (`bridge::report_is_offered`;
 `report_on_a_root.rs`): only claude's allowlist hid it before, and codex and opencode roots called
 it. The §5.4 refusal still answers a root that calls it anyway; a top-level client's list is
-unchanged.
+unchanged. A `LaunchOnly` root is judged by its stream's own failure frames
+(`HarnessAdapter::stream_failure`), no longer by the child's refused-`report` rule, so an opencode
+root's own refused `report` no longer fails a run whose child finished `Ok` (`launch_only_root.rs`).
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

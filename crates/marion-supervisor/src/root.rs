@@ -68,8 +68,8 @@ use marion_core::root_change::{
     Reason, RootChange, RootChanged, RootDelta, RootGrant, RootObservation, RootScope,
 };
 use marion_harness::{
-    Auth, CallOutcome, ChildExit, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
-    LaunchSpec, MarionCall, McpDeclaration, SpawnCtx, adapter_for, adapter_for_type, json_frames,
+    Auth, CallOutcome, ExecutionSurfaces, Extras, HarnessAdapter, Invocation, LaunchSpec,
+    MarionCall, McpDeclaration, SpawnCtx, adapter_for, adapter_for_type, json_frames,
 };
 use serde_json::Value;
 
@@ -1807,18 +1807,17 @@ fn launch_only(
         es.record_capture(&stdout);
     }
     let adapter = adapter_for(node.harness)?;
-    let exit = ChildExit {
-        code: out.code,
-        signal: None,
-        timed_out: out.timed_out,
-    };
     let outcome = RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),
         marion_calls: adapter.marion_calls(&stdout),
-        // The same reading `spawn::build_contract` gives a child's stream, asked of the root's. A
-        // root has no `TaskContract` to record it in, so its only destination is the refusal below.
-        failure: adapter.parse_stream(&stdout, exit).failure,
+        // The stream's own failure claims, asked of the root's stream — **not** the child's
+        // refused-`report` rule: a root has no contract (§9), so §5.4 turning its `report` away is
+        // a refused call, not the run failing. Measured live (2026-09-22): an opencode root's
+        // refused `report` read as "the child's marion_report call ended in error" and failed a run
+        // whose child finished `Ok`. A root has no `TaskContract` to record the claim in, so its
+        // only destination is the refusal below and `roots_exit`.
+        failure: adapter.stream_failure(&stdout),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,

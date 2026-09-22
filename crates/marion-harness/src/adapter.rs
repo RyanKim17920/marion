@@ -505,6 +505,16 @@ pub trait HarnessAdapter {
         grammar::usage(rule, frames)
     }
 
+    /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
+    /// reading a **root** is judged by, since §9 gives a root no contract and §5.4 refuses its
+    /// `report`. A row with no grammar reads as [`Self::parse_stream`] does.
+    fn stream_failure(&self, stdout: &str) -> Option<String> {
+        match self.spec().stream {
+            Some(g) => grammar::stream_failure(g, stdout),
+            None => self.parse_stream(stdout, ChildExit::default()).failure,
+        }
+    }
+
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
     ///
@@ -2054,6 +2064,44 @@ mod tests {
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
+
+    /// **A root is judged by its stream's own failure claims, never by the `report` rule.** The
+    /// rule that a refused `report` fails the run is about a node with a contract; a root has
+    /// none (§9). Measured live (2026-09-22): an opencode root called `report`, was refused, and
+    /// `parse_stream` read that as "the child's marion_report call ended in error", which marked a
+    /// run whose child had finished `Ok` as failed. [`HarnessAdapter::stream_failure`] is the
+    /// root's reading; `parse_stream` keeps the child's.
+    #[test]
+    fn a_refused_report_is_a_childs_failure_and_not_a_streams() {
+        let adapter = adapter_for(Harness::OpenCode).unwrap();
+        let spawned = format!(
+            r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"completed","input":{{}}}}}}}}"#,
+            adapter.marion_tool_name("spawn")
+        );
+        let refused_report = format!(
+            r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","input":{{"narrative":"done"}},"error":"marion: report is self only"}}}}}}"#,
+            adapter.marion_tool_name("report")
+        );
+        let stdout = format!("{spawned}\n{refused_report}\n");
+        assert!(
+            adapter
+                .parse_stream(&stdout, ChildExit::default())
+                .failure
+                .is_some_and(|f| f.contains("report call ended in error")),
+            "a child's refused report still fails the child"
+        );
+        assert_eq!(adapter.stream_failure(&stdout), None, "{stdout}");
+
+        let errored = format!(
+            "{spawned}\n{}\n",
+            r#"{"type":"error","error":{"name":"APIError","data":{"message":"model gone"}}}"#
+        );
+        assert_eq!(
+            adapter.stream_failure(&errored).as_deref(),
+            Some("model gone"),
+            "the stream's own failure frame still fails a root"
+        );
+    }
 
     /// [`McpRoute::verify`]'s four branches, directly. The supervisor's launch path and `marion
     /// doctor --adapter` both hang off this one answer, so each branch is pinned here rather than
