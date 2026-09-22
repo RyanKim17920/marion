@@ -842,8 +842,11 @@ pub(crate) fn relay_claimed(
                 other => break other,
             }
         };
+        // The operator's shell gets its whole screen back: no scroll region above a row marion
+        // no longer paints. A primary failure outranks a failure to say so.
+        let released = session.release_status();
         drop(session);
-        result
+        result.and_then(|stop| released.map(|()| stop))
     })();
     finish_claimed_relay(terminal, primary, signals)
 }
@@ -876,11 +879,17 @@ fn suspend_until_continued<W: Write>(
         // The operator detached or the worker failed before the stop; the pump reports that.
         return signals.unblock_terminations();
     }
-    let passive = write_passive_terminal_cleanup(terminal).map_err(|error| {
-        format!(
-            "native relay cleanup stage `passive terminal bytes` failed before the stop: {error}"
-        )
-    });
+    // The shell in front during the stop gets the whole screen; the row comes back on resume,
+    // because it is still wanted.
+    let passive = session
+        .release_status()
+        .and_then(|()| write_passive_terminal_cleanup(terminal).map_err(|error| error.to_string()))
+        .map_err(|error| {
+            format!(
+                "native relay cleanup stage `passive terminal bytes` failed before the stop: \
+                 {error}"
+            )
+        });
     let restored = terminal
         .restore_for_suspend()
         .map_err(|error| format!("restoring the native terminal before the stop: {error}"));
@@ -1089,8 +1098,11 @@ struct StatusOverlay {
     /// The supervisor refused the subscribe, or it could not be sent. The row says so; the relay
     /// itself is unaffected, because a status line is never worth the node's screen.
     unavailable: bool,
-    /// Whether the row is currently on the terminal.
+    /// Whether the row, and the scroll region that stops above it, are on the terminal.
     shown: bool,
+    /// Whether the node was told its window is one row shorter than the operator's, so that the
+    /// last row is marion's and the node never paints it.
+    reserved: bool,
     /// Something to repaint at the next tick: a tree event, the toggle, or a resize.
     dirty: bool,
     last_drawn: Option<std::time::Instant>,
@@ -1108,12 +1120,54 @@ impl StatusOverlay {
             subscribed: false,
             unavailable: false,
             shown: false,
+            reserved: false,
             dirty: false,
             last_drawn: None,
             rows,
             cols,
             stream: sequence::StreamPosition::default(),
         }
+    }
+
+    /// The height the node is told it has: the operator's, less the row while marion holds it.
+    fn node_rows(&self) -> u16 {
+        if self.reserved {
+            self.rows.saturating_sub(1).max(1)
+        } else {
+            self.rows
+        }
+    }
+
+    /// Bytes to put right after each node sequence in `marks` that widened the scroll region past
+    /// the node's own last row, so the node's scrolling never carries the row into its text. Only
+    /// while the row is shown: otherwise the whole screen is the node's.
+    fn margin_repairs(&mut self, marks: &[sequence::Mark]) -> Vec<(usize, Vec<u8>)> {
+        if !self.shown || self.rows < 2 {
+            return Vec::new();
+        }
+        let limit = self.rows - 1;
+        let mut repairs = Vec::new();
+        for mark in marks {
+            match *mark {
+                sequence::Mark::ScrollRegion { end, top, bottom } => {
+                    if bottom.unwrap_or(self.rows) > limit {
+                        let top = top.min(limit - 1).max(1);
+                        repairs.push((end, format!("\x1b[{top};{limit}r").into_bytes()));
+                    }
+                }
+                // RIS homes the cursor as DECSTBM does, and clears the screen the row was on.
+                sequence::Mark::HardReset { end } => {
+                    self.dirty = true;
+                    repairs.push((end, format!("\x1b[1;{limit}r").into_bytes()));
+                }
+                // DECSTR leaves the cursor where it is, and has just reset the saved cursor, so a
+                // save and restore around the region costs the node nothing.
+                sequence::Mark::SoftReset { end } => {
+                    repairs.push((end, format!("\x1b7\x1b[1;{limit}r\x1b8").into_bytes()));
+                }
+            }
+        }
+        repairs
     }
 
     fn resized(&mut self, cols: u16, rows: u16) {
@@ -1653,9 +1707,21 @@ impl<W: Write> RawPaneSession<W> {
         self.next_seq = decoded.next_seq;
         match decoded.action {
             crate::pane_client::PaneV1Action::Output(bytes) => {
-                self.status.stream.advance(bytes.as_bytes());
+                let bytes = bytes.as_bytes();
+                let marks = self.status.stream.advance(bytes);
+                let repairs = self.status.margin_repairs(&marks);
+                let mut from = 0;
+                for (end, repair) in &repairs {
+                    self.output
+                        .write_all(&bytes[from..*end])
+                        .and_then(|()| self.output.write_all(repair))
+                        .map_err(|error| {
+                            format!("writing native pane output to the terminal: {error}")
+                        })?;
+                    from = *end;
+                }
                 self.output
-                    .write_all(bytes.as_bytes())
+                    .write_all(&bytes[from..])
                     .and_then(|()| self.output.flush())
                     .map_err(|error| {
                         format!("writing native pane output to the terminal: {error}")
@@ -1679,7 +1745,7 @@ impl<W: Write> RawPaneSession<W> {
             return Ok(());
         };
         self.status.resized(cols, rows);
-        self.send_size(cols, rows)
+        self.send_size(cols, self.status.node_rows())
     }
 
     /// The status row, on the pump's tick: subscribe at the first request, paint when due, clear
@@ -1692,6 +1758,7 @@ impl<W: Write> RawPaneSession<W> {
         }
         if wanted {
             self.subscribe_for_status();
+            self.reserve_status_row()?;
         }
         // A pane frame is one pty read and can stop inside the node's escape sequence; marion's
         // bytes there would end it early and print the rest as text. Paint or clear the row once
@@ -1700,15 +1767,17 @@ impl<W: Write> RawPaneSession<W> {
             return Ok(());
         }
         if !wanted {
+            // Off the terminal first, then back to the node: the full-height resize is the edge
+            // the harness repaints its last row on, and a clear after that repaint would erase it.
             if self.status.shown {
                 self.status.shown = false;
                 self.status.dirty = false;
                 self.status.last_drawn = None;
                 self.write_status(&status_clear_bytes(self.status.rows))?;
             }
-            return Ok(());
+            return self.return_status_row();
         }
-        if !self.status.due() {
+        if !self.status.due() || self.status.rows < 2 {
             return Ok(());
         }
         let line = self.status.line(&self.id);
@@ -1720,6 +1789,43 @@ impl<W: Write> RawPaneSession<W> {
             self.status.cols,
             &line,
         ))
+    }
+
+    /// Tell the node its window is one row shorter, once per showing. An ended pane has no write
+    /// half and nothing left to paint, so it is only overlaid.
+    fn reserve_status_row(&mut self) -> Result<(), Refusal> {
+        if !self.writable || self.status.reserved || self.status.rows < 2 {
+            return Ok(());
+        }
+        self.status.reserved = true;
+        self.send_size(self.status.cols, self.status.node_rows())
+    }
+
+    /// Give the node its full height back.
+    fn return_status_row(&mut self) -> Result<(), Refusal> {
+        if !self.status.reserved {
+            return Ok(());
+        }
+        self.status.reserved = false;
+        self.send_size(self.status.cols, self.status.rows)
+    }
+
+    /// Take the row off the terminal and give it back to the node because the relay is leaving
+    /// the terminal — a detach, the end, a failure or a stop — whatever the node's stream is in
+    /// the middle of: nothing of the node's follows on this terminal to be interrupted. The row is
+    /// still wanted, so a relay that resumes after a stop shows it again. The resize is best
+    /// effort: a connection that is already gone has no node to tell.
+    fn release_status(&mut self) -> Result<(), Refusal> {
+        let cleared = if self.status.shown {
+            self.status.shown = false;
+            self.status.dirty = true;
+            self.status.last_drawn = None;
+            self.write_status(&status_clear_bytes(self.status.rows))
+        } else {
+            Ok(())
+        };
+        let _ = self.return_status_row();
+        cleared
     }
 
     /// The row's `tree/subscribe`, made once at the first request. A refused or unsendable
@@ -1840,14 +1946,17 @@ fn descendants(
     out
 }
 
-/// One row, restored around: `ESC 7` saves the cursor, `CSI rows;1H` goes to the last row,
-/// `CSI 2K` clears it, the text is painted in reverse video and reset, and `ESC 8` puts the cursor
-/// back. Nothing here touches `?1049`, so the overlay is the same bytes on the main and alternate
-/// screens alike, and the node's next paint of that row simply replaces it.
+/// One row, restored around: `ESC 7` saves the cursor, `CSI 1;rows-1 r` stops the scroll region
+/// above the last row so the node's scrolling never carries the row into its text, `CSI rows;1H`
+/// goes to the last row, `CSI 2K` clears it, the text is painted in reverse video and reset, and
+/// `ESC 8` puts the cursor back where the node left it (DECSTBM homes it). Nothing here touches
+/// `?1049`, so the overlay is the same bytes on the main and alternate screens alike. The region is
+/// restated on every paint, so a reset the relay did not see is repaired at the next one.
 fn status_overlay_bytes(rows: u16, cols: u16, line: &str) -> Vec<u8> {
     let shown: String = line.chars().take(usize::from(cols)).collect();
-    let mut bytes = Vec::with_capacity(shown.len() + 32);
+    let mut bytes = Vec::with_capacity(shown.len() + 40);
     bytes.extend_from_slice(b"\x1b7");
+    bytes.extend_from_slice(format!("\x1b[1;{}r", rows.saturating_sub(1)).as_bytes());
     bytes.extend_from_slice(format!("\x1b[{rows};1H").as_bytes());
     bytes.extend_from_slice(b"\x1b[2K\x1b[7m");
     bytes.extend_from_slice(shown.as_bytes());
@@ -1855,9 +1964,10 @@ fn status_overlay_bytes(rows: u16, cols: u16, line: &str) -> Vec<u8> {
     bytes
 }
 
-/// The overlay's row, cleared, with the cursor restored: what toggling the line off leaves.
+/// What toggling the line off leaves: the whole screen as the scroll region again, the row
+/// cleared, and the cursor restored.
 fn status_clear_bytes(rows: u16) -> Vec<u8> {
-    format!("\x1b7\x1b[{rows};1H\x1b[2K\x1b8").into_bytes()
+    format!("\x1b7\x1b[r\x1b[{rows};1H\x1b[2K\x1b8").into_bytes()
 }
 
 impl<W: Write> Drop for RawPaneSession<W> {
@@ -4039,23 +4149,23 @@ mod tests {
         );
     }
 
-    /// The overlay is one row, restored around: save the cursor, go to the last row, clear it,
-    /// paint reverse video, restore. It never touches the alternate screen, so it is the same
-    /// sequence on either.
+    /// The overlay is one row, restored around: save the cursor, stop the scroll region above the
+    /// last row, go to it, clear it, paint reverse video, restore. The clear gives the whole screen
+    /// back as the region. Neither touches the alternate screen, so each is the same on either.
     #[test]
     fn the_status_overlay_is_one_saved_and_restored_last_row() {
         assert_eq!(
             status_overlay_bytes(24, 80, "marion: tree pending"),
-            b"\x1b7\x1b[24;1H\x1b[2K\x1b[7mmarion: tree pending\x1b[0m\x1b8".to_vec()
+            b"\x1b7\x1b[1;23r\x1b[24;1H\x1b[2K\x1b[7mmarion: tree pending\x1b[0m\x1b8".to_vec()
         );
         // Truncated to the terminal's width, on a character boundary.
         assert_eq!(
             status_overlay_bytes(10, 9, "marion: 0 children · running 0"),
-            b"\x1b7\x1b[10;1H\x1b[2K\x1b[7mmarion: 0\x1b[0m\x1b8".to_vec()
+            b"\x1b7\x1b[1;9r\x1b[10;1H\x1b[2K\x1b[7mmarion: 0\x1b[0m\x1b8".to_vec()
         );
         assert_eq!(
             status_clear_bytes(24),
-            b"\x1b7\x1b[24;1H\x1b[2K\x1b8".to_vec()
+            b"\x1b7\x1b[r\x1b[24;1H\x1b[2K\x1b8".to_vec()
         );
     }
 
@@ -4378,10 +4488,15 @@ mod tests {
                     .as_bytes(),
                 )
                 .unwrap();
-            // The detach is the barrier: nothing after the subscribe was sent for the node.
-            let mut after = String::new();
-            lines.read_line(&mut after).unwrap();
-            assert_eq!(after, "", "a status toggle reached the node as input");
+            // The detach is the barrier: after the subscribe, the node was told only that it lost
+            // the row and got it back, and was sent no input.
+            let after = frames_until_eof(&mut lines);
+            assert_eq!(resizes(&after), vec![(80, 23), (80, 24)], "{after:?}");
+            assert_eq!(
+                pane_writes(&after),
+                0,
+                "a status toggle reached the node as input"
+            );
         });
 
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
@@ -4469,6 +4584,28 @@ mod tests {
         }
     }
 
+    fn resizes(frames: &[Frame]) -> Vec<(u16, u16)> {
+        frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Frame::Input(note) => match &note.input {
+                    Input::NodeResize { cols, rows, .. } => Some((*cols, *rows)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pane_writes(frames: &[Frame]) -> usize {
+        frames
+            .iter()
+            .filter(|frame| {
+                matches!(frame, Frame::Input(note) if matches!(note.input, Input::NodePaneWrite(_)))
+            })
+            .count()
+    }
+
     fn output_frame(seq: u64, bytes: &[u8]) -> Vec<u8> {
         pane_frame(
             seq,
@@ -4478,6 +4615,158 @@ mod tests {
         )
         .to_line()
         .into_bytes()
+    }
+
+    /// While the row is shown it is marion's, not the node's: the node is told its window is one
+    /// row shorter, the operator's scroll region stops above the row so the node's scrolling
+    /// cannot carry it away, and toggling off gives the row back — margins reset, the row cleared,
+    /// and the full height sent, which is the resize edge the harness repaints on.
+    #[test]
+    fn showing_the_status_row_takes_the_last_row_from_the_node_and_hiding_it_gives_it_back() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            frames_until_eof(&mut BufReader::new(server))
+        });
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            drop(session);
+            outcome
+        });
+
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        until_sink(&sink, "the reserved row's scroll region", |text| {
+            text.contains("\x1b[1;23r") && text.contains("marion: tree pending")
+        });
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        until_sink(&sink, "the released scroll region", |text| {
+            text.ends_with("\x1b7\x1b[r\x1b[24;1H\x1b[2K\x1b8")
+        });
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        assert!(matches!(pump.join().unwrap(), Ok(RelayStop::Complete)));
+        let frames = server_thread.join().unwrap();
+
+        assert_eq!(
+            resizes(&frames),
+            vec![(80, 23), (80, 24)],
+            "the node was not told its window lost, then regained, the status row: {frames:?}"
+        );
+        assert_eq!(pane_writes(&frames), 0, "a status toggle reached the node");
+    }
+
+    /// A relay that leaves while the row is shown — here a detach — gives the operator's shell the
+    /// whole screen and the node its whole height, since nothing marion paints stays behind.
+    #[test]
+    fn leaving_with_the_row_shown_gives_the_screen_and_the_row_back() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            frames_until_eof(&mut BufReader::new(server))
+        });
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            (session, outcome)
+        });
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        until_sink(&sink, "the status row", |text| text.contains("marion:"));
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        let (mut session, outcome) = pump.join().unwrap();
+        assert!(matches!(outcome, Ok(RelayStop::Complete)), "{outcome:?}");
+
+        session.release_status().unwrap();
+        drop(session);
+        let frames = server_thread.join().unwrap();
+        assert!(
+            sink_text(&sink).ends_with(&String::from_utf8(status_clear_bytes(24)).unwrap()),
+            "the scroll region and the row were left on the operator's terminal: {:?}",
+            sink_text(&sink)
+        );
+        assert_eq!(resizes(&frames), vec![(80, 23), (80, 24)], "{frames:?}");
+    }
+
+    /// While the row is shown, a node that widens the scroll region past its own last row —
+    /// codex resets its region after inserting history, `CSI r` — gets the region stopped above
+    /// the row again right after that sequence, or its next scroll would carry the row into its
+    /// text. With the row hidden the same bytes pass through untouched.
+    #[test]
+    fn a_node_that_widens_its_scroll_region_gets_it_stopped_above_the_row() {
+        const WIDENING: &[u8] = b"\x1b[r\x1b[5;24rA\x1b[2;9rB\x1bcC\x1b[!pD";
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (cue_tx, cue_rx) = mpsc::channel::<()>();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            complete_attach(&mut server);
+            server.write_all(&output_frame(0, WIDENING)).unwrap();
+            cue_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the test's cue that the row is shown");
+            server.write_all(&output_frame(1, WIDENING)).unwrap();
+            frames_until_eof(&mut BufReader::new(server))
+        });
+        let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            ChannelInput(keys_rx),
+            sink.clone(),
+            (80, 24),
+        )
+        .unwrap();
+        let pump = std::thread::spawn(move || {
+            let outcome = session.pump();
+            drop(session);
+            outcome
+        });
+
+        let hidden = String::from_utf8(WIDENING.to_vec()).unwrap();
+        until_sink(&sink, "the node's bytes", |text| text == hidden);
+        keys_tx.send(vec![0x1d, b's']).unwrap();
+        until_sink(&sink, "the status row", |text| text.contains("marion:"));
+        let before = sink_text(&sink).len();
+        cue_tx.send(()).unwrap();
+        until_sink(&sink, "the node's second frame", |text| {
+            text[before..].contains('D')
+        });
+        // What follows `D` is the row repainted: RIS cleared the screen it was on.
+        let after = sink_text(&sink)[before..].to_string();
+        assert!(
+            after.starts_with(
+                "\x1b[r\x1b[1;23r\x1b[5;24r\x1b[5;23rA\x1b[2;9rB\x1bc\x1b[1;23rC\x1b[!p\x1b7\x1b[1;23r\x1b8D"
+            ),
+            "the widened region was not stopped above the row: {after:?}"
+        );
+        keys_tx.send(vec![0x1d, b'd']).unwrap();
+        assert!(matches!(pump.join().unwrap(), Ok(RelayStop::Complete)));
+        server_thread.join().unwrap();
     }
 
     /// A pane frame is whatever one pty read returned, so it can end inside an escape sequence:

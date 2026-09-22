@@ -322,6 +322,13 @@ impl Operator {
             .unwrap_or_default()
     }
 
+    /// Every row of the operator's terminal but the last, at its current size.
+    fn rows_above_the_last(&self) -> Vec<String> {
+        let mut lines = self.term_at(self.size.get()).viewport_lines();
+        lines.pop();
+        lines
+    }
+
     fn type_in(&self, bytes: &[u8]) {
         if let Err(error) = self.host.master().write_all(bytes) {
             panic!(
@@ -374,6 +381,33 @@ fn geometries(path: &Path) -> Vec<String> {
         .filter(|(c, _)| c == "r")
         .map(|(_, d)| d)
         .collect()
+}
+
+/// The node's screen as the node itself drew it: its own recording, replayed from the size its
+/// header names through every geometry the node's pty was given.
+fn node_screen(node_cast: &Path) -> Vec<String> {
+    let header: serde_json::Value = std::fs::read_to_string(node_cast)
+        .ok()
+        .and_then(|text| serde_json::from_str(text.lines().next()?).ok())
+        .unwrap_or_default();
+    let dimension = |key: &str| {
+        header
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .map_or(24, |value| value as usize)
+    };
+    let mut term = marion_term::Term::with_options(
+        marion_term::Size::new(dimension("width"), dimension("height")),
+        marion_tui::grid_options(),
+    );
+    for (code, data) in cast_records(node_cast) {
+        match code.as_str() {
+            "o" => term.advance(data.as_bytes()),
+            "r" => resize_from(&mut term, &data),
+            _ => {}
+        }
+    }
+    term.viewport_lines()
 }
 
 fn resize_from(term: &mut marion_term::Term, record: &str) {
@@ -551,21 +585,50 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
         // ---- the status row: marion's one optional line, and neither toggle reaches the node ----
         //
         // A native root has no children here, so the row's counts are all zero; what the clause
-        // asserts is that `^] s` paints the row on the bottom line of the *resized* terminal, that
-        // a second `^] s` takes it off, and that both chords stopped at marion: the node's
-        // recording still carries no `i` record.
+        // asserts is that `^] s` takes the bottom line of the *resized* terminal from the node —
+        // the node's pty is resized one row shorter — and paints the row there, that the node's
+        // screen above it is exactly what the node drew (its own recording, replayed at its own
+        // size, is the oracle: a row that split a sequence or scrolled into the node's text shows
+        // up as a difference), that a second `^] s` takes the row off and gives the node its full
+        // height back, and that both chords stopped at marion: no `i` record.
         let toggle = [marion_tui::keys::PREFIX, marion_tui::keys::STATUS_KEY];
+        let reserved = WinSize {
+            cols: RESIZED.cols,
+            rows: RESIZED.rows - 1,
+        };
         op.type_in(&toggle);
+        assert!(
+            until(|| geometries(&node_cast).last() == Some(&reserved.as_cast())),
+            "[{harness}] `^] s` did not give the status row's line back from the node: its pty \
+             geometries are {:?}",
+            geometries(&node_cast)
+        );
         assert!(
             until(|| op.last_viewport_line().contains("marion: 0 children")),
             "[{harness}] `^] s` put no status row on the bottom line, which reads {:?}",
             op.last_viewport_line()
+        );
+        let mut above = (Vec::new(), Vec::new());
+        assert!(
+            until(|| {
+                above = (op.rows_above_the_last(), node_screen(&node_cast));
+                above.0 == above.1
+            }),
+            "[{harness}] with the status row shown, the operator's screen above it is not the \
+             node's own screen.\noperator:\n{}\nnode:\n{}",
+            above.0.join("\n"),
+            above.1.join("\n")
         );
         op.type_in(&toggle);
         assert!(
             until(|| !op.last_viewport_line().contains("marion:")),
             "[{harness}] a second `^] s` did not take the status row off; the bottom line reads {:?}",
             op.last_viewport_line()
+        );
+        assert!(
+            until(|| geometries(&node_cast).last() == Some(&RESIZED.as_cast())),
+            "[{harness}] the second `^] s` did not give the node its full height back: {:?}",
+            geometries(&node_cast)
         );
         assert!(
             cast_text(&node_cast, "i").is_empty(),

@@ -133,8 +133,16 @@ since 2026-09-22, `attention N` over the root's whole subtree when N > 0), from 
 the main and alternate screens alike and never reaches the node (`native_relay.rs` unit tests;
 `native_facade_e2e.rs` lane loop). 2026-09-22: the row is written only where the node's byte
 stream is at a boundary — never inside a CSI, OSC/DCS string, UTF-8 scalar, open `?2026`
-frame or unrestored `ESC 7` — because a pane frame is one pty read and can end mid-sequence
-(`native_relay/sequence.rs`; `the_status_row_is_never_painted_inside_a_sequence_a_pane_frame_split`).
+frame or unrestored `ESC 7` on the current screen — because a pane frame is one pty read and can
+end mid-sequence (`native_relay/sequence.rs`;
+`the_status_row_is_never_painted_inside_a_sequence_a_pane_frame_split`). And while shown the row
+is **reserved**: the node's pty is told it is one row shorter, the operator's scroll region stops
+above the row (restated after any node sequence that widens it, e.g. codex's `CSI r`), and
+toggle-off, detach, exit or a stop gives both back — the full-height resize being the edge the
+harness repaints on. The lane loop now asserts the node's pty goes to rows-1 and back and that the
+operator's screen above the row equals the node's own recording replayed at its own size; green
+on claude 2.1.280, codex 0.155.1, gemini 0.53.0, opencode 1.18.32 and copilot 1.0.88 (run with
+those versions admitted locally, not committed — the pin table still names the measured ones).
 
 **Parent ping (2026-09-11).** A backgrounded child's end now reaches its parent's model
 without a `wait`: after the handle's reply, the bridge watches the node on its own clock and pushes
