@@ -141,7 +141,39 @@ pub struct NodeResumeParams {
 #[serde(deny_unknown_fields)]
 pub struct NodeSteerParams {
     pub agent_id: AgentId,
+    /// At most [`MAX_STEER_BYTES`] bytes, refused at decode past it.
+    #[serde(deserialize_with = "deserialize_steer_text")]
     pub text: String,
+    /// `None` is a client steering for the operator; `Some` is a node steering one of its
+    /// descendants, proved exactly as [`AgentSpawnParams::caller`] is. See [`SpawnCaller`].
+    ///
+    /// **Additive**: absent from an older client's request, and absent from the wire when `None`,
+    /// so a steer without one is byte-identical to what earlier builds sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<SpawnCaller>,
+}
+
+/// The most one `node/steer` may carry, in bytes of its UTF-8 `text`.
+///
+/// A steer is a message into another agent's running turn, so it is sized for a message and not a
+/// document: large enough for any instruction a parent or operator types, and small enough that a
+/// queued one never approaches a journal record's cap. Refused at decode, before a handler sees it,
+/// as [`crate::proto::input::MAX_PANE_INPUT_BYTES`] is — a bound applied later would already have been
+/// paid for.
+pub const MAX_STEER_BYTES: usize = 8 * 1024;
+
+fn deserialize_steer_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = String::deserialize(deserializer)?;
+    if text.len() > MAX_STEER_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "steer text exceeds {MAX_STEER_BYTES} bytes ({} given)",
+            text.len()
+        )));
+    }
+    Ok(text)
 }
 
 /// `node/cancel` — interrupt the running turn. `caps.interrupt`.
@@ -495,7 +527,16 @@ mod tests {
         });
         rt!(NodeSteerParams {
             agent_id: agent(),
-            text: "stop that".into()
+            text: "stop that".into(),
+            caller: None,
+        });
+        rt!(NodeSteerParams {
+            agent_id: agent(),
+            text: "stop that".into(),
+            caller: Some(SpawnCaller {
+                agent_id: AgentId("parent".into()),
+                node_token: "tok".into(),
+            }),
         });
         rt!(NodeCancelParams { agent_id: agent() });
         rt!(NodeKillParams { agent_id: agent() });
@@ -740,6 +781,58 @@ mod tests {
     fn a_caller_without_a_token_is_not_a_caller() {
         let e = serde_json::from_str::<SpawnCaller>(r#"{"agent_id":"a"}"#).unwrap_err();
         assert!(e.to_string().contains("node_token"), "{e}");
+    }
+
+    /// **`caller` is additive in both directions.** A steer from a client that predates the field
+    /// still decodes, as the operator's (`None`), and a steer with no caller writes the line every
+    /// earlier build wrote.
+    #[test]
+    fn a_steer_without_a_caller_reads_and_writes_as_it_always_did() {
+        let old = r#"{"agent_id":"a","text":"stop"}"#;
+        let p: NodeSteerParams = serde_json::from_str(old).expect("an older steer must decode");
+        assert_eq!(p.caller, None);
+        assert_eq!(serde_json::to_string(&p).unwrap(), old);
+
+        let with = r#"{"agent_id":"a","text":"stop","caller":{"agent_id":"p","node_token":"t"}}"#;
+        let p: NodeSteerParams = serde_json::from_str(with).unwrap();
+        assert_eq!(
+            p.caller,
+            Some(SpawnCaller {
+                agent_id: AgentId("p".into()),
+                node_token: "t".into(),
+            })
+        );
+        assert_eq!(serde_json::to_string(&p).unwrap(), with);
+    }
+
+    /// **A steer is bounded in bytes at decode**, before any handler sees it, and the refusal names
+    /// the bound. Bytes rather than characters: a text of fewer than the bound's characters but
+    /// more than its bytes is still refused.
+    #[test]
+    fn an_oversize_steer_is_refused_at_decode_by_name() {
+        let steer = |text: String| {
+            serde_json::to_string(&serde_json::json!({"agent_id": "a", "text": text})).unwrap()
+        };
+        let at = serde_json::from_str::<NodeSteerParams>(&steer("x".repeat(MAX_STEER_BYTES)))
+            .expect("exactly the bound is accepted");
+        assert_eq!(at.text.len(), MAX_STEER_BYTES);
+
+        for over in [
+            "x".repeat(MAX_STEER_BYTES + 1),
+            "é".repeat(MAX_STEER_BYTES / 2 + 1),
+        ] {
+            let e = serde_json::from_str::<NodeSteerParams>(&steer(over.clone())).unwrap_err();
+            assert!(
+                e.to_string()
+                    .contains(&format!("steer text exceeds {MAX_STEER_BYTES} bytes")),
+                "{e}"
+            );
+            let call = format!(r#"{{"method":"node/steer","params":{}}}"#, steer(over));
+            assert!(
+                serde_json::from_str::<crate::proto::Call>(&call).is_err(),
+                "refused through the call envelope too"
+            );
+        }
     }
 
     #[test]

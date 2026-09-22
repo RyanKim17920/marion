@@ -387,6 +387,7 @@ mod tests {
                 Call::NodeSteer(NodeSteerParams {
                     agent_id: agent("a"),
                     text: "stop".into(),
+                    caller: None,
                 }),
                 MethodResult::NodeSteer(DeliveryResult {
                     delivered_as: Delivery::Steer,
@@ -611,7 +612,8 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Call::NodeSteer(NodeSteerParams {
                 agent_id: agent("a"),
-                text: "stop".into()
+                text: "stop".into(),
+                caller: None,
             }))
             .unwrap(),
             r#"{"method":"node/steer","params":{"agent_id":"a","text":"stop"}}"#
