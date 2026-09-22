@@ -280,6 +280,15 @@ pub struct PinnedHarness {
     /// Where the installer keeps releases side by side, so [`Shim`] can `exec` an admitted one
     /// while a newer release sits first on `PATH` — or that it keeps none.
     pub store: ReleaseStore,
+    /// The no-self-update environment marion gives every node of this harness — the row's
+    /// `UpdatePolicy::Env` pair in `marion_harness`, and nothing where the row's switch is not an
+    /// environment variable. The gate's `--version` probe runs with it, because a harness that
+    /// execs a build it downloaded itself answers the bare probe with that build's version while
+    /// every node marion spawns runs the installed one: copilot's npm 1.0.83 read `1.0.87` until
+    /// `COPILOT_AUTO_UPDATE=false`, and an admission taken on that reading would have credited
+    /// 1.0.87 with passes 1.0.83 produced. `marion-harness`'s
+    /// `every_pinned_harness_probes_with_its_rows_update_env` keeps the two from drifting.
+    pub probe_env: &'static [(&'static str, &'static str)],
 }
 
 /// **The one table.** Every version check reads from here; nothing else in the workspace decides
@@ -302,6 +311,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "claude",
         store: ReleaseStore::ClaudeVersions,
+        probe_env: &[],
         // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
         // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
         //
@@ -623,6 +633,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "codex",
         store: ReleaseStore::CodexReleases,
+        probe_env: &[],
         // 0.146.0 is the pin: the version that accepts a bogus `-c` key with a clean exit, that
         // leaks the background `git fetch` MILESTONES records, and that `tests/fixtures/s6`, `s7`
         // and `s14`'s codex halves were captured from.
@@ -734,12 +745,14 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "gemini",
         store: ReleaseStore::Npm("@google/gemini-cli"),
+        probe_env: &[],
         // The version that omits MCP tools entirely without `trust: true`, silently.
         accepted: &["0.53.0"],
     },
     PinnedHarness {
         program: "opencode",
         store: ReleaseStore::PathOnly,
+        probe_env: &[],
         // 1.17.3 is the pin: the version that never exits on a provider hang, and the one S13's
         // `tests/fixtures/s13/` captures and the `/mcp` dialog reading were taken from.
         //
@@ -774,6 +787,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "copilot",
         store: ReleaseStore::Npm("@github/copilot"),
+        probe_env: &[],
         // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
         // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
         // installed has none of the three, so nothing about copilot was measurable before it.
@@ -792,6 +806,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "goose",
         store: ReleaseStore::PathOnly,
+        probe_env: &[],
         // 1.49.0 is the pin: the Homebrew `block-goose-cli` bottle present on this machine on
         // 2026-09-05, and the version every S26 probe ran against — each against a canned local
         // provider at $0.00 (`tests/fixtures/s26/`).
@@ -820,6 +835,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "cline",
         store: ReleaseStore::Npm("cline"),
+        probe_env: &[],
         // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
         // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
         // every S27 probe ran against — each against a canned local provider at $0.00
@@ -839,6 +855,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "qwen",
         store: ReleaseStore::Npm("@qwen-code/qwen-code"),
+        probe_env: &[],
         // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
         // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
         // version every S25 probe ran against — each against a canned local provider at $0.00
@@ -1826,6 +1843,7 @@ mod tests {
             program: "claude",
             accepted: &["2.1.220"],
             store: ReleaseStore::ClaudeVersions,
+            probe_env: &[],
         };
         let e = check_version(&only_the_pin, "2.1.222 (Claude Code)\n", "")
             .expect_err("a table that lists only 2.1.220 must not accept 2.1.222");

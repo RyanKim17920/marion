@@ -56,7 +56,7 @@
 //! taken away from the auto-updater.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -280,9 +280,7 @@ impl Shim {
     /// Does the `program` first on the *inherited* `PATH` already satisfy the table? Asked only
     /// before an npm install, because that is the one step with a cost worth avoiding.
     fn path_binary_is_admitted(&self, pin: &PinnedHarness) -> bool {
-        Command::new(pin.program)
-            .env("PATH", &self.inherited_path)
-            .arg("--version")
+        version_probe(pin, &self.inherited_path)
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -335,9 +333,7 @@ impl Shim {
     pub fn gate(&self, program: &str) -> Result<(), GateFailure> {
         let pin = self.pin(program);
         let resolution = self.resolve(program);
-        let out = Command::new(program)
-            .env("PATH", self.path())
-            .arg("--version")
+        let out = version_probe(pin, &self.path())
             .output()
             .map_err(|_| GateFailure::Absent)?;
         if !out.status.success() {
@@ -360,6 +356,18 @@ impl Shim {
             )),
         })
     }
+}
+
+/// `<program> --version` resolved through `path`, with the no-self-update env marion gives every
+/// node of the harness ([`PinnedHarness::probe_env`]) — so the version the gate reads is the one
+/// the nodes run, not a build the harness would exec when left to update itself.
+fn version_probe(pin: &PinnedHarness, path: &OsStr) -> Command {
+    let mut probe = Command::new(pin.program);
+    probe
+        .env("PATH", path)
+        .envs(pin.probe_env.iter().copied())
+        .arg("--version");
+    probe
 }
 
 /// The env var `scripts/cargo-runner.sh` sets to the per-process shim directory it made.
@@ -420,11 +428,36 @@ mod tests {
         accepted: &'static [&'static str],
         store: ReleaseStore,
     ) -> &'static [PinnedHarness] {
+        probing(program, accepted, store, &[])
+    }
+
+    fn probing(
+        program: &'static str,
+        accepted: &'static [&'static str],
+        store: ReleaseStore,
+        probe_env: &'static [(&'static str, &'static str)],
+    ) -> &'static [PinnedHarness] {
         Box::leak(Box::new([PinnedHarness {
             program,
             accepted,
             store,
+            probe_env,
         }]))
+    }
+
+    /// A self-updating harness: the installed build unless `key=value` is set, and otherwise the
+    /// build it downloaded — copilot 1.0.83 execing its cached 1.0.87, measured 2026-09-22.
+    fn self_updating_release(path: &Path, key: &str, value: &str, pinned: &str, updated: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                "#!/bin/sh\nif [ \"${key}\" = '{value}' ]; then printf '%s\\n' '{pinned}'; \
+                 else printf '%s\\n' '{updated}'; fi\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn shim_in(dir: &Path, table: &'static [PinnedHarness]) -> Shim {
@@ -569,6 +602,77 @@ mod tests {
             "nothing was installed for a binary the gate already passes"
         );
         assert!(!dir.join("shim/copilot").exists());
+    }
+
+    /// **The case that happened on 2026-09-22.** The gate must read the version of the build a
+    /// node runs, and a node runs with the row's no-self-update env; a bare probe reads the build
+    /// the harness downloaded for itself instead.
+    #[test]
+    fn the_gate_probes_with_the_harness_no_self_update_env() {
+        let dir = scratch("shim-probe-env");
+        self_updating_release(
+            &dir.join("bin/copilot"),
+            "COPILOT_AUTO_UPDATE",
+            "false",
+            "GitHub Copilot CLI 1.0.83.",
+            "GitHub Copilot CLI 1.0.87.",
+        );
+        let shim = shim_in(
+            &dir,
+            probing(
+                "copilot",
+                &["1.0.83"],
+                ReleaseStore::PathOnly,
+                &[("COPILOT_AUTO_UPDATE", "false")],
+            ),
+        );
+        shim.gate("copilot")
+            .expect("with the node's env the installed 1.0.83 answers, and it is admitted");
+
+        let bare = scratch("shim-probe-no-env");
+        self_updating_release(
+            &bare.join("bin/copilot"),
+            "COPILOT_AUTO_UPDATE",
+            "false",
+            "GitHub Copilot CLI 1.0.83.",
+            "GitHub Copilot CLI 1.0.87.",
+        );
+        let e = refused(
+            shim_in(&bare, table("copilot", &["1.0.83"], ReleaseStore::PathOnly)).gate("copilot"),
+        );
+        assert!(
+            e.contains("1.0.87"),
+            "the fake does self-update without the env: {e}"
+        );
+    }
+
+    /// The pre-install probe asks the same question the gate does, so it carries the same env: a
+    /// PATH binary that answers with an admitted version under the node's env is not reinstalled.
+    #[test]
+    fn the_pre_install_probe_also_carries_the_no_self_update_env() {
+        let dir = scratch("shim-npm-probe-env");
+        self_updating_release(
+            &dir.join("bin/copilot"),
+            "COPILOT_AUTO_UPDATE",
+            "false",
+            "GitHub Copilot CLI 1.0.83.",
+            "GitHub Copilot CLI 1.0.87.",
+        );
+        let shim = shim_in(
+            &dir,
+            probing(
+                "copilot",
+                &["1.0.83"],
+                ReleaseStore::Npm("@github/copilot"),
+                &[("COPILOT_AUTO_UPDATE", "false")],
+            ),
+        );
+        shim.gate("copilot")
+            .expect("PATH's copilot is 1.0.83 under the node's env");
+        assert!(
+            !dir.join("state/harness-pins").exists(),
+            "no install was attempted for a binary that is admitted under the node's env"
+        );
     }
 
     /// A Homebrew formula has no store: PATH decides, and the gate alone judges, both ways.
