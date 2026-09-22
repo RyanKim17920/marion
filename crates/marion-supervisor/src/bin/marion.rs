@@ -101,9 +101,10 @@ fn usage_text() -> String {
          directory holding a `.git` — and to the working directory itself when there is none, so\n\
          that running marion from a subdirectory still scopes the node to the whole checkout.\n\
          \n\
-         --state-dir defaults to $XDG_STATE_HOME/marion, else ~/.local/state/marion. It is\n\
-         deliberately not repo-local and not a temp directory: §4.3's tree is what survives a run,\n\
-         and a run whose journal vanished with /tmp would have nothing to resume from.\n\
+         --state-dir defaults to $MARION_STATE_DIR, else $XDG_STATE_HOME/marion, else\n\
+         ~/.local/state/marion, for every verb. It is deliberately not repo-local and not a temp\n\
+         directory: it is what survives a run, and a journal that vanished with /tmp would leave\n\
+         nothing to resume from.\n\
          \n\
          --no-change-record tells marion not to snapshot the repository the root runs in. A root\n\
          runs in the operator's own checkout, not a worktree, so marion takes that working tree as\n\
@@ -697,18 +698,38 @@ fn resolve_project(
     Some((repo, state))
 }
 
+/// **The one place the CLI resolves a state directory**, for every verb: `--state-dir`, else
+/// `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. The native
+/// facade (`socket::resolve_state_dir`) reads the same variable, so `marion claude` and `marion
+/// tree` in one shell find the same supervisor.
 fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
-    match state_dir(
+    match state_dir_from(
         explicit,
+        std::env::var("MARION_STATE_DIR").ok().as_deref(),
         std::env::var("XDG_STATE_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     ) {
         Some(s) => Some(s),
         None => {
-            eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+            eprintln!(
+                "marion: cannot resolve a state directory (set --state-dir, $MARION_STATE_DIR or \
+                 $HOME)"
+            );
             None
         }
     }
+}
+
+/// [`state_dir_or_report`]'s rule over explicit inputs: the flag wins over the variable, and an
+/// empty value of either counts as unset.
+fn state_dir_from(
+    flag: Option<&str>,
+    marion_state_dir: Option<&str>,
+    xdg_state_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let explicit = flag.filter(|s| !s.is_empty()).or(marion_state_dir);
+    state_dir(explicit, xdg_state_home, home)
 }
 
 /// Hand-rolled, because `run`'s whole surface is one subcommand and six flags.
@@ -1001,12 +1022,7 @@ fn run_mcp(args: McpArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let Some(state) = state_dir(
-        args.state_dir.as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) else {
-        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
         return ExitCode::FAILURE;
     };
     let base_url = match resolve_base_url(
@@ -2433,12 +2449,7 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
         );
         return Err(ExitCode::FAILURE);
     };
-    let Some(state) = state_dir(
-        args.state_dir.as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) else {
-        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
         return Err(ExitCode::FAILURE);
     };
     let base_url = match resolve_base_url(
@@ -3129,6 +3140,33 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// **`$MARION_STATE_DIR` is honoured by every verb, and `--state-dir` still wins over it.**
+    ///
+    /// `marion claude` read it (through `socket::resolve_state_dir`) while `run`, `tree`, `list`,
+    /// `attach`, `resume`, `mcp` and the picker passed `None` in its place, so a session started
+    /// natively under a custom state dir was invisible to `marion tree` in the same shell.
+    #[test]
+    fn the_state_dir_is_the_flag_then_marion_state_dir_then_xdg_then_home() {
+        use std::path::PathBuf;
+        let all = |flag| state_dir_from(flag, Some("/m"), Some("/x"), Some("/h"));
+        assert_eq!(all(Some("/f")), Some(PathBuf::from("/f")));
+        assert_eq!(all(None), Some(PathBuf::from("/m")));
+        assert_eq!(
+            all(Some("")),
+            Some(PathBuf::from("/m")),
+            "an empty flag is no flag"
+        );
+        assert_eq!(
+            state_dir_from(None, Some(""), Some("/x"), Some("/h")),
+            Some(PathBuf::from("/x/marion")),
+            "an empty variable is unset"
+        );
+        assert_eq!(
+            state_dir_from(None, None, None, Some("/h")),
+            Some(PathBuf::from("/h/.local/state/marion"))
+        );
+    }
 
     /// **The second verb exists and is not `run`.**
     ///
