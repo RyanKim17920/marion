@@ -73,6 +73,16 @@ pub const CLINE_DEFAULT_MODEL: &str = "marion-canned";
 /// adapter refuses it by name under `--live`.
 pub const QWEN_DEFAULT_MODEL: &str = "marion-canned";
 
+/// The default models that name marion's own canned plumbing rather than a vendor's model, which
+/// [`AgentType::default_model`] drops on a live run.
+const CANNED_PLUMBING_MODELS: &[&str] = &[
+    OPENCODE_DEFAULT_MODEL,
+    COPILOT_DEFAULT_MODEL,
+    GOOSE_DEFAULT_MODEL,
+    CLINE_DEFAULT_MODEL,
+    QWEN_DEFAULT_MODEL,
+];
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -262,6 +272,19 @@ impl AgentType {
     /// being one predicate rather than a `contains` spelled out at the call site.
     pub fn writes_files(&self) -> bool {
         self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t == TOOL_WRITE)
+    }
+
+    /// The model a spawn of this type runs on when the request names none.
+    ///
+    /// On a live run (`canned == false`) a default that names marion's own canned plumbing is
+    /// dropped: it exists so a canned node can launch, it names nothing on the operator's own
+    /// account, and without it the harness uses the operator's own default model, as it uses their
+    /// login. A real vendor id (gemini's) is kept either way.
+    pub fn default_model(&self, canned: bool) -> Option<String> {
+        match &self.model {
+            Some(m) if !canned && CANNED_PLUMBING_MODELS.contains(&m.as_str()) => None,
+            other => other.clone(),
+        }
     }
 
     /// A type carrying every §3.1 default, so a built-in only states what it changes.
@@ -1006,6 +1029,28 @@ mod tests {
                 .is_some_and(|(p, m)| !p.is_empty() && !m.is_empty() && !m.contains('/')),
             "the opencode default must be in `provider/model` form"
         );
+    }
+
+    /// **A default model that names marion's canned plumbing is not applied to a live run.** The
+    /// live node then names no model and the harness uses the operator's own default, exactly as
+    /// it uses their login. A real vendor id (gemini's) is still a default either way.
+    #[test]
+    fn a_canned_plumbing_default_model_is_dropped_on_a_live_run() {
+        for name in [
+            "opencode",
+            "copilot",
+            "goose",
+            "cline",
+            "qwen",
+            "acp-opencode",
+        ] {
+            let t = builtin(name).unwrap();
+            assert_eq!(t.default_model(false), None, "{name}: live");
+            assert_eq!(t.default_model(true), t.model, "{name}: canned keeps it");
+        }
+        let gemini = builtin("gemini").unwrap();
+        assert_eq!(gemini.default_model(false), gemini.model);
+        assert_eq!(builtin("claude").unwrap().default_model(false), None);
     }
 
     /// **Exactly the `-impl` types declare a tool, and the orchestrator types declare none.**

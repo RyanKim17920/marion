@@ -1141,7 +1141,11 @@ fn pick(
         writeln!(out, "  not one of 1..={}, nor a listed name.", names.len())?;
     };
 
-    let default_model = types.resolve(&agent_type).and_then(|t| t.model);
+    // The picker runs on the operator's own login (it has no `--canned`), so the default is the
+    // live one: a canned-plumbing default is not offered.
+    let default_model = types
+        .resolve(&agent_type)
+        .and_then(|t| t.default_model(false));
     let model_hint = default_model
         .clone()
         .unwrap_or_else(|| "the harness's own default".into());
@@ -4622,13 +4626,19 @@ mod tests {
     /// own default apply — including for the two harnesses whose adapters refuse without one.
     #[test]
     fn an_empty_model_answer_takes_the_agent_types_own_default() {
-        let (chosen, shown) = run_picker("opencode\n\nship it\n");
+        let (chosen, shown) = run_picker("gemini\n\nship it\n");
         let c = chosen.unwrap();
-        assert_eq!(c.model, builtin("opencode").unwrap().model);
+        assert_eq!(c.model, builtin("gemini").unwrap().model);
         assert!(
-            shown.contains(&builtin("opencode").unwrap().model.unwrap()),
+            shown.contains(&builtin("gemini").unwrap().model.unwrap()),
             "the default is shown, so an empty answer is an informed one: {shown}"
         );
+
+        // The picker runs on the operator's own login, so a default naming marion's canned
+        // provider is not offered: opencode then uses the operator's own default model.
+        let (chosen, shown) = run_picker("opencode\n\nship it\n");
+        assert_eq!(chosen.unwrap().model, None);
+        assert!(!shown.contains("marion/default"), "{shown}");
 
         // And where the type states none, an empty answer stays none rather than becoming "".
         let (chosen, shown) = run_picker("claude\n\nship it\n");

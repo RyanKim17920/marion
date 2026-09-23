@@ -1465,8 +1465,12 @@ fn root_spec_from_spawn(
         base_url: env.base_url.clone(),
         bridge: env.bridge.clone(),
         // §3.1's precedence, the same one a child's spawn gets: the stated model, else the agent
-        // type's own `model` key.
-        model: p.model.clone().or_else(|| agent_type.model.clone()),
+        // type's own `model` key — dropped on a live run when it names marion's canned plumbing
+        // (`AgentType::default_model`).
+        model: p
+            .model
+            .clone()
+            .or_else(|| agent_type.default_model(env.auth == marion_harness::Auth::Canned)),
         // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
         no_change_record: p.no_change_record.unwrap_or(false),
         auth: env.auth,
