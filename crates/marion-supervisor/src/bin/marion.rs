@@ -36,6 +36,7 @@ fn usage_text() -> String {
          \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
          \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--canned [--base-url <url>]]\n\
+         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
@@ -54,6 +55,13 @@ fn usage_text() -> String {
          the whole agent id, and its parent's short id -- and exits 0. --attention keeps only the\n\
          nodes that need an operator: blocked, exited failed / timed out / killed / unreported, or\n\
          orphaned; the state word is the reason. Like tree, it starts no supervisor.\n\
+         \n\
+         marion steer queues a message for a running node's next turn, as the operator: the\n\
+         node reads it when its current turn ends, not mid-sentence. The node is named by its\n\
+         whole id or by the short id its tree row shows; `-` reads the message from stdin. It\n\
+         exits 0 when the message was queued and says which node takes it, and 1 with the\n\
+         supervisor's own sentence when it was refused -- an ended node, an unknown id, a harness\n\
+         with no measured way to take one. Like list, it starts no supervisor.\n\
          \n\
          marion mcp serves marion's own MCP tools — spawn, wait, status, list — over stdio, for\n\
          an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
@@ -531,6 +539,129 @@ fn list_main(argv: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] [--] <text…>`.
+struct SteerArgs {
+    /// A whole agent id, or the short id the tree row shows ([`marion_supervisor::tree::short_id`]).
+    target: String,
+    text: SteerText,
+    repo: Option<PathBuf>,
+    state_dir: Option<String>,
+}
+
+/// Where the message comes from.
+#[derive(Debug, PartialEq, Eq)]
+enum SteerText {
+    /// The words after the flags, joined with single spaces.
+    Words(String),
+    /// A lone `-`: stdin, read to its end.
+    Stdin,
+}
+
+/// A parser of its own, for [`parse_attach`]'s reason. The project flags come only **before** the
+/// message and `--` ends them, so a message may say anything — including `--repo` — without being
+/// read as a flag; an unknown flag before the message is a refusal rather than the start of it,
+/// because a mistyped `--state-dir` taken as text would steer the right node with the wrong words.
+fn parse_steer(argv: &[String]) -> Option<SteerArgs> {
+    let target = argv.get(1)?.clone();
+    if target.starts_with('-') {
+        return None;
+    }
+    let (mut repo, mut state_dir) = (None, None);
+    let mut rest = argv[2..].iter().peekable();
+    while let Some(flag) = rest.peek().map(|f| f.as_str()) {
+        match flag {
+            "--repo" => {
+                rest.next();
+                repo = Some(PathBuf::from(rest.next()?));
+            }
+            "--state-dir" => {
+                rest.next();
+                state_dir = Some(rest.next()?.clone());
+            }
+            "--" => {
+                rest.next();
+                break;
+            }
+            "-" => break,
+            f if f.starts_with('-') => return None,
+            _ => break,
+        }
+    }
+    let words: Vec<&str> = rest.map(String::as_str).collect();
+    let text = match words.as_slice() {
+        [] => return None,
+        ["-"] => SteerText::Stdin,
+        ["-", ..] => return None,
+        _ => SteerText::Words(words.join(" ")),
+    };
+    Some(SteerArgs {
+        target,
+        text,
+        repo,
+        state_dir,
+    })
+}
+
+/// A piped message without the one line ending the pipe added: `echo x | marion steer id -` means
+/// `x`, not `x` and a newline. Only one, and nothing else is trimmed — the rest is the message.
+fn piped_message(mut text: String) -> String {
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    text
+}
+
+/// **The whole of `marion steer`**: resolve the target against one `tree/subscribe` snapshot, send
+/// `node/steer` as the operator (`caller: None`), and print what the supervisor said.
+///
+/// Exit 0 when the message was queued, printing where it goes; exit 1 with the supervisor's own
+/// sentence when it was refused. Like `list` it starts no supervisor: a supervisor started here
+/// would have no node to steer, and "unknown node" would be a lie about the operator's agents.
+fn steer_main(argv: &[String]) -> ExitCode {
+    let Some(args) = parse_steer(argv) else {
+        usage()
+    };
+    let text = match args.text {
+        SteerText::Words(w) => w,
+        SteerText::Stdin => {
+            let mut buf = String::new();
+            if let Err(e) = io::Read::read_to_string(&mut io::stdin(), &mut buf) {
+                eprintln!("marion: reading the message from stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            piped_message(buf)
+        }
+    };
+    if text.trim().is_empty() {
+        eprintln!("marion: the message is empty, so there is nothing to steer with");
+        return ExitCode::FAILURE;
+    }
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    let steered = marion_supervisor::tree::snapshot(&repo, &state)
+        .and_then(|nodes| marion_supervisor::tree::resolve_target(&args.target, &nodes))
+        .and_then(|agent_id| {
+            let sock =
+                socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
+            marion_supervisor::courier::steer(sock.socket(), &agent_id, &text, None)
+                .map_err(|e| e.to_string())
+        });
+    match steered {
+        Ok(s) => {
+            println!("marion: {}", s.sentence());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The two flags `attach` and `tree` share, resolved once.
@@ -2173,6 +2304,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("resume") {
         return resume_main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("steer") {
+        return steer_main(&argv);
+    }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
     // the protocol stream and leave the client parsing prose.
@@ -3078,6 +3212,86 @@ mod tests {
         assert!(
             parse_args(&argv(&["list"])).is_none(),
             "a list must not be readable as a run"
+        );
+    }
+
+    /// **`marion steer <id> [--repo p] [--state-dir p] [--] <text…>`**: the project flags only
+    /// before the text, the words after them joined with single spaces, and a lone `-` meaning
+    /// stdin. `--` ends the flags, so a message that begins with a dash can still be sent. Every
+    /// other shape is a refusal — above all a missing message, which would queue an empty turn.
+    #[test]
+    fn steer_takes_a_target_the_project_flags_and_a_message() {
+        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let words = parse_steer(&argv(&["steer", "8ea3", "use", "the", "v2", "API"]))
+            .expect("`marion steer <id> <text…>` parses");
+        assert_eq!(words.target, "8ea3");
+        assert_eq!(words.text, SteerText::Words("use the v2 API".into()));
+        assert_eq!((words.repo, words.state_dir), (None, None));
+
+        let flagged = parse_steer(&argv(&[
+            "steer",
+            "8ea3",
+            "--repo",
+            "/r",
+            "--state-dir",
+            "/s",
+            "--",
+            "--repo",
+            "is",
+            "text",
+        ]))
+        .expect("flags, then `--`, then text");
+        assert_eq!(flagged.repo.as_deref(), Some(std::path::Path::new("/r")));
+        assert_eq!(flagged.state_dir.as_deref(), Some("/s"));
+        assert_eq!(flagged.text, SteerText::Words("--repo is text".into()));
+
+        let piped = parse_steer(&argv(&["steer", "8ea3", "-"])).expect("`-` reads stdin");
+        assert_eq!(piped.text, SteerText::Stdin);
+        let quoted = parse_steer(&argv(&["steer", "8ea3", "text", "-"])).expect("a dash in text");
+        assert_eq!(quoted.text, SteerText::Words("text -".into()));
+
+        for bad in [
+            vec!["steer"],
+            vec!["steer", "8ea3"],
+            vec!["steer", "8ea3", "--"],
+            vec!["steer", "--repo", "/r", "hi"],
+            vec!["steer", "8ea3", "--repo"],
+            vec!["steer", "8ea3", "--canned", "hi"],
+            vec!["steer", "8ea3", "-", "more"],
+        ] {
+            assert!(parse_steer(&argv(&bad)).is_none(), "{bad:?} was accepted");
+        }
+        assert!(
+            parse_args(&argv(&["steer", "8ea3", "hi"])).is_none(),
+            "a steer must not be readable as a run"
+        );
+    }
+
+    /// A message read from stdin loses the one newline a pipe adds, and nothing else.
+    #[test]
+    fn a_piped_message_loses_only_its_trailing_newline() {
+        assert_eq!(piped_message("use v2\n".into()), "use v2");
+        assert_eq!(piped_message("use v2\r\n".into()), "use v2");
+        assert_eq!(piped_message("a\nb\n\n".into()), "a\nb\n");
+        assert_eq!(piped_message("  keep  ".into()), "  keep  ");
+    }
+
+    /// `steer` is discoverable and dispatched before the run parser.
+    #[test]
+    fn the_steer_verb_is_named_and_dispatched() {
+        let text = usage_text();
+        assert!(
+            text.contains("marion steer <agent-id|short-id>"),
+            "usage does not name `steer`:\n{text}"
+        );
+        let src = include_str!("marion.rs");
+        let (production, _tests) = src
+            .split_once("\n#[cfg(test)]\n")
+            .expect("this file has a test module");
+        assert!(
+            production.contains(r#"== Some("steer") {"#)
+                && production.contains("return steer_main(&argv);"),
+            "`main` no longer dispatches `steer`"
         );
     }
 

@@ -53,10 +53,15 @@ marion attach <agent-id>
 # Relaunch a root whose supervisor died, under its own id.
 marion resume <agent-id>
 
+# Queue a message for a running node's next turn, as the operator (id or the tree's short id).
+marion steer 8ea3 "use the v2 API, not v1"
+
 # What marion has actually measured about the harnesses on this machine.
 marion-supervisor doctor --capabilities
 marion-supervisor doctor --capabilities --harness codex
 ```
+
+**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. The operator sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
 
 Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 

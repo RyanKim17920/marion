@@ -49,6 +49,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
+use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
@@ -154,6 +155,33 @@ pub fn short_id(id: &str) -> &str {
             .char_indices()
             .all(|(i, c)| (c == '-') == matches!(i, 8 | 13 | 18 | 23));
     if uuid_shaped { &id[9..13] } else { id }
+}
+
+/// **The node `marion steer <id|short-id>` means**, read off one snapshot.
+///
+/// A whole id is itself. Otherwise the one node whose [`short_id`] is `arg` — the id the tree row
+/// shows, so an operator can type what they see. Two nodes sharing a short id is refused with every
+/// candidate's whole id, because guessing between them would steer an agent nobody chose. An arg
+/// that names nothing is returned as-is: the supervisor's own `not found` sentence is the better
+/// answer, and a second one here would be a second spelling of it.
+pub fn resolve_target(arg: &str, nodes: &[NodeSummary]) -> Result<AgentId, String> {
+    if nodes.iter().any(|n| n.agent_id.0 == arg) {
+        return Ok(AgentId(arg.to_string()));
+    }
+    let matches: Vec<&str> = nodes
+        .iter()
+        .map(|n| n.agent_id.0.as_str())
+        .filter(|id| short_id(id) == arg)
+        .collect();
+    match matches.as_slice() {
+        [] => Ok(AgentId(arg.to_string())),
+        [one] => Ok(AgentId((*one).to_string())),
+        many => Err(format!(
+            "`{arg}` is the short id of {} nodes ({}); name the one you mean by its whole id",
+            many.len(),
+            many.join(", ")
+        )),
+    }
 }
 
 /// A node's state in one short word.
@@ -1784,6 +1812,35 @@ mod tests {
                 crate::socket::own_uid()
             )),
             "a snapshot must not have started a supervisor"
+        );
+    }
+
+    /// **What `marion steer <id|short-id>` addresses**: a whole id as itself, a short id as the one
+    /// node that carries it, an ambiguous short id refused with every candidate named, and anything
+    /// else passed through untouched so the supervisor's own `not found` sentence answers it.
+    #[test]
+    fn a_steer_target_is_a_whole_id_or_one_nodes_short_id() {
+        let a = "01a091ba-8ea3-7000-8000-000000000001";
+        let b = "01a091ba-5b04-7000-8000-000000000002";
+        let c = "01a091bb-5b04-7000-8000-000000000003";
+        let nodes: Vec<_> = [a, b, c]
+            .iter()
+            .map(|id| summary(id, Harness::Codex, false, None))
+            .collect();
+        assert_eq!(resolve_target(a, &nodes), Ok(AgentId(a.into())));
+        assert_eq!(resolve_target("8ea3", &nodes), Ok(AgentId(a.into())));
+        let ambiguous = resolve_target("5b04", &nodes).expect_err("two nodes carry 5b04");
+        assert!(
+            ambiguous.contains(b) && ambiguous.contains(c),
+            "{ambiguous}"
+        );
+        assert_eq!(
+            resolve_target("nobody", &nodes),
+            Ok(AgentId("nobody".into()))
+        );
+        assert_eq!(
+            resolve_target("root-claude", &[]),
+            Ok(AgentId("root-claude".into()))
         );
     }
 

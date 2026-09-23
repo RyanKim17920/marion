@@ -239,6 +239,15 @@ runs on the admitted release and each admission re-runs it — the installer had
 and the file skipped. Not
 yet: the continuation, pane and bridge lanes; `node/prompt`.
 
+**Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
+<text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
+naming every candidate), sends `node/steer` with `caller: None` through `courier::steer`, and exits
+0 printing `queued as m-…; reaches <type> <short> at its next turn boundary`, or 1 with the
+supervisor's sentence verbatim. It starts no supervisor. Witnesses:
+`background_spawn::marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one` (real
+detached supervisor, shim codex root: queued, ended, unknown), the `marion` bin's parse tests,
+`tree::tests::a_steer_target_is_a_whole_id_or_one_nodes_short_id`.
+
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:

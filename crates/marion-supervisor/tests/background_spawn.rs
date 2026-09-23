@@ -1880,3 +1880,99 @@ fn a_backgrounded_childs_end_reaches_an_unmeasured_parent_as_a_log_notification(
     );
     assert!(bridge.close().success());
 }
+
+// ---------------------------------------------------------------------------------------------
+// `node/steer`'s surfaces: `marion steer`, and the `steer` tool.
+// ---------------------------------------------------------------------------------------------
+
+impl Fixture {
+    /// Every node the journal says the root spawned, in spawn order.
+    fn children_of_root(&self) -> Vec<AgentId> {
+        self.journal_text()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v.get("kind").and_then(|k| k.get("SpawnIntent")).cloned())
+            .filter(|i| i.get("parent_id").and_then(Value::as_str) == Some(&self.root_id.0))
+            .filter_map(|i| {
+                i.get("agent_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .map(AgentId)
+            .collect()
+    }
+
+    /// `marion steer <target> <words…>` as an operator types it, against this fixture's project.
+    fn marion_steer(&self, target: &str, words: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_marion"))
+            .arg("steer")
+            .arg(target)
+            .arg("--repo")
+            .arg(&self.repo)
+            .arg("--state-dir")
+            .arg(&self.state)
+            .args(words)
+            .stdin(Stdio::null())
+            .output()
+            .expect("the marion binary runs")
+    }
+}
+
+/// **`marion steer`'s three answers, by exit code and sentence.** A live node takes the message —
+/// exit 0, the message's id and who reads it when; an ended one is refused with the supervisor's
+/// own sentence pointing at `node/resume`; an id nobody has is refused with the supervisor's `not
+/// found`. The target is typed as the short id where it has one, because that is what the tree
+/// shows.
+#[test]
+fn marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one() {
+    let fx = fixture("bg-steer-cli");
+    let root_short = marion_supervisor::tree::short_id(&fx.root_id.0).to_string();
+
+    let queued = fx.marion_steer(&root_short, &["use", "the", "v2", "API"]);
+    let out = String::from_utf8_lossy(&queued.stdout);
+    assert_eq!(
+        queued.status.code(),
+        Some(0),
+        "stdout {out} stderr {}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    assert!(out.contains("queued as m-"), "{out}");
+    assert!(
+        out.contains("reaches codex")
+            && out.contains(&format!(" {root_short} at its next turn boundary")),
+        "{out}"
+    );
+    assert!(
+        fx.journal_text().contains("MessageQueued"),
+        "the journal records the message"
+    );
+
+    // A child that has run to its end.
+    let mut bridge = fx.bridge();
+    let handle = bridge.tool("spawn", spawn_args(true));
+    let task_id = handle_task_id(&handle);
+    fx.open_gate();
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "the child ran to its end: {collected}"
+    );
+    let child = fx
+        .children_of_root()
+        .pop()
+        .expect("the root spawned a child");
+    let ended = fx.marion_steer(&child.0, &["too", "late"]);
+    let err = String::from_utf8_lossy(&ended.stderr);
+    assert_eq!(ended.status.code(), Some(1), "{err}");
+    assert!(err.contains("the node has ended"), "{err}");
+    assert!(err.contains("node/resume"), "{err}");
+
+    let unknown = fx.marion_steer("no-such-node", &["hello"]);
+    let err = String::from_utf8_lossy(&unknown.stderr);
+    assert_eq!(unknown.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("no node `no-such-node` is on this project's journal"),
+        "{err}"
+    );
+    assert!(bridge.close().success());
+}
