@@ -1591,6 +1591,117 @@ fn probe_ctx() -> SpawnCtx {
 }
 
 /// The report an operator reads.
+/// The newest version of each harness marion's own suite was last verified against:
+/// `(harness, program, version)`. **Not a second table** — it is the newest entry of
+/// `marion_testsupport::PINNED_HARNESSES` per program, which the shipped binary cannot link, and
+/// `tests::the_verified_versions_are_the_newest_the_pin_table_admits` fails the day the two
+/// disagree. Read only to *note* a newer installed version; it never blocks a run.
+const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
+    (Harness::ClaudeCode, "claude", "2.1.269"),
+    (Harness::Codex, "codex", "0.147.0"),
+    (Harness::Gemini, "gemini", "0.53.0"),
+    (Harness::OpenCode, "opencode", "1.18.30"),
+    (Harness::Copilot, "copilot", "1.0.83"),
+    (Harness::Goose, "goose", "1.50.0"),
+    (Harness::Cline, "cline", "3.0.61"),
+    (Harness::Qwen, "qwen", "0.23.0"),
+];
+
+/// The newest version marion verified `h` against, if it keeps one (an ACP agent's version is the
+/// agent's, and has no entry).
+fn last_verified(h: Harness) -> Option<&'static str> {
+    VERIFIED_HARNESSES
+        .iter()
+        .find(|(v, _, _)| *v == h)
+        .map(|(_, _, version)| *version)
+}
+
+/// Dotted versions, compared numerically part by part (`1.18.30` > `1.18.4`); a non-numeric part
+/// compares as zero.
+fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a).cmp(&parts(b))
+}
+
+/// The closing verdict: one `ready:` line per harness (its node row; a pane row is the same
+/// binary) and one overall. A harness is ready when its binary answered with a version and, under
+/// `--adapter`, its micro-contract passed. A version newer than [`VERIFIED_HARNESSES`] is noted
+/// and stays ready: harnesses update themselves, and marion keeps running on them.
+pub fn verdict(rows: &[Row]) -> String {
+    let node_rows: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.role == SurfaceRole::Node)
+        .collect();
+    let mut s = String::from("summary\n");
+    let mut ready = 0;
+    for r in &node_rows {
+        let label = row_label(r);
+        let version = r.report.harness_version.as_deref();
+        let head = match version {
+            Some(v) => format!("{label} {v}"),
+            None => label,
+        };
+        let why_not = match (version, r.report.adapter_check) {
+            (_, Some(false)) => Some("adapter check failed".to_string()),
+            (None, _) => Some(
+                r.report
+                    .notes
+                    .iter()
+                    .find(|n| {
+                        n.contains("not found")
+                            || n.contains("FAILED")
+                            || n.starts_with("adapter:")
+                            || n.contains("refused")
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| "its version could not be read".into()),
+            ),
+            (Some(_), _) => None,
+        };
+        match why_not {
+            Some(why) => s.push_str(&format!("  {head}: ready: no — {why}\n")),
+            None => {
+                ready += 1;
+                s.push_str(&format!("  {head}: ready: yes"));
+                let newer = version
+                    .zip(last_verified(r.report.harness))
+                    .filter(|(v, known)| cmp_versions(v, known).is_gt());
+                if let Some((_, known)) = newer {
+                    s.push_str(&format!(
+                        " — note: newer than the last version marion verified ({known}); it \
+                         should work, and anything that does not is worth reporting"
+                    ));
+                }
+                s.push('\n');
+            }
+        }
+    }
+    if node_rows.iter().all(|r| r.report.adapter_check.is_none()) {
+        // `--capabilities` ran no turn: "ready" here is "installed and answering".
+        s.push_str("  (ready = installed and answering; --adapter also runs one live turn each)\n");
+    }
+    s.push_str(&format!(
+        "overall: ready: {} ({ready} of {} ready)\n",
+        if ready > 0 { "yes" } else { "no" },
+        node_rows.len()
+    ));
+    s
+}
+
+/// A row's harness, and for an ACP row the agent it probed (`acp agent: \`<id>\` …`).
+fn row_label(r: &Row) -> String {
+    let agent = r
+        .report
+        .notes
+        .iter()
+        .find_map(|n| n.strip_prefix("acp agent: `"))
+        .and_then(|rest| rest.split('`').next());
+    match agent {
+        Some(a) => format!("{} {a}", r.report.harness),
+        None => r.report.harness.to_string(),
+    }
+}
+
 pub fn render(rows: &[Row]) -> String {
     let mut s = String::new();
     for r in rows {
@@ -1619,6 +1730,7 @@ pub fn render(rows: &[Row]) -> String {
             r.report.elapsed.0.as_millis()
         ));
     }
+    s.push_str(&verdict(rows));
     s
 }
 
@@ -1744,6 +1856,106 @@ mod tests {
         for none in ["", "unknown", "0.146", "1.2.3.4", "abc.def.ghi", "1.2.x"] {
             assert_eq!(version_token(none), None, "{none:?}");
         }
+    }
+
+    fn row(h: Harness, version: Option<&str>, notes: &[&str], check: Option<bool>) -> Row {
+        Row {
+            report: HarnessReport {
+                harness: h,
+                harness_version: version.map(str::to_string),
+                adapter_check: check,
+                notes: notes.iter().map(|n| n.to_string()).collect(),
+                elapsed: Millis(Duration::ZERO),
+            },
+            role: SurfaceRole::Node,
+            surfaces: ExecutionSurfaces::opaque(),
+            capabilities: Capabilities::NONE,
+        }
+    }
+
+    /// **Doctor ends with a verdict**: one `ready:` line per harness and one overall, so an
+    /// operator does not have to read 150 lines to learn whether anything will run.
+    #[test]
+    fn the_report_ends_with_a_ready_line_per_harness_and_an_overall_verdict() {
+        let rows = [
+            row(
+                Harness::Codex,
+                Some("0.147.0"),
+                &["binary: codex (/bin/codex)"],
+                None,
+            ),
+            row(
+                Harness::Gemini,
+                None,
+                &["binary: `gemini` not found on $PATH"],
+                None,
+            ),
+        ];
+        let v = verdict(&rows);
+        assert!(v.contains("codex 0.147.0: ready: yes"), "{v}");
+        assert!(
+            v.contains("gemini: ready: no — binary: `gemini` not found on $PATH"),
+            "{v}"
+        );
+        assert!(
+            v.trim_end().ends_with("overall: ready: yes (1 of 2 ready)"),
+            "{v}"
+        );
+        assert!(render(&rows).ends_with(&v), "render ends with the verdict");
+
+        let none = verdict(&rows[1..]);
+        assert!(
+            none.trim_end()
+                .ends_with("overall: ready: no (0 of 1 ready)"),
+            "{none}"
+        );
+        // Under --adapter a failed micro-contract is not ready, whatever the version.
+        let failed = verdict(&[row(Harness::Codex, Some("0.147.0"), &[], Some(false))]);
+        assert!(
+            failed.contains("ready: no — adapter check failed"),
+            "{failed}"
+        );
+    }
+
+    /// **A version newer than the last one marion verified is noted, never blocking**: the user's
+    /// harness updates on its own, and marion must keep working on it.
+    #[test]
+    fn a_harness_newer_than_the_last_verified_version_is_ready_with_a_note() {
+        let newest = last_verified(Harness::Codex).expect("codex has a verified version");
+        let v = verdict(&[row(Harness::Codex, Some("99.0.0"), &[], None)]);
+        assert!(v.contains("codex 99.0.0: ready: yes"), "{v}");
+        assert!(
+            v.contains(&format!(
+                "newer than the last version marion verified ({newest})"
+            )),
+            "{v}"
+        );
+        let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)]);
+        assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **The verified-versions table is the test suite's, not a second opinion.** Each entry must
+    /// be the newest version `marion_testsupport::PINNED_HARNESSES` admits for that program, so
+    /// `scripts/admit-harness.sh` widening the pin table without this one fails here.
+    #[test]
+    fn the_verified_versions_are_the_newest_the_pin_table_admits() {
+        for pinned in marion_testsupport::PINNED_HARNESSES {
+            let newest = pinned
+                .accepted
+                .iter()
+                .copied()
+                .max_by(|a, b| cmp_versions(a, b))
+                .unwrap();
+            let h = VERIFIED_HARNESSES
+                .iter()
+                .find(|(_, program, _)| *program == pinned.program)
+                .unwrap_or_else(|| panic!("{} is missing from VERIFIED_HARNESSES", pinned.program));
+            assert_eq!(h.2, newest, "{}", pinned.program);
+        }
+        assert_eq!(
+            VERIFIED_HARNESSES.len(),
+            marion_testsupport::PINNED_HARNESSES.len()
+        );
     }
 
     fn caps_rows(harness: Option<Harness>) -> Vec<Row> {
