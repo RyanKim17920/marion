@@ -3586,8 +3586,25 @@ mod tests {
         marion_testsupport::fixture_repo(&dir);
         let mut acp_roots = 0;
         for name in marion_core::agent_type::builtin_names() {
-            let node = prepare(&root_spec(&dir, name))
-                .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
+            // agy has no canned route and refuses one by name; its root is prepared live.
+            let agy = builtin(name).unwrap().harness == Harness::Antigravity;
+            let spec = if agy {
+                let canned = prepare(&root_spec(&dir, name)).err().map(|e| e.to_string());
+                assert!(
+                    canned
+                        .as_deref()
+                        .is_some_and(|e| e.contains("no canned provider route")),
+                    "{name}: {canned:?}"
+                );
+                RootSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    ..root_spec(&dir, name)
+                }
+            } else {
+                root_spec(&dir, name)
+            };
+            let node = prepare(&spec).unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge here — in a document, or, on goose,
             // as the one `--with-extension marion:…` argv token its row routes through
             // (`McpRoute::Argv`), which `verify` has already checked the argv for. An ACP root's
@@ -3608,7 +3625,12 @@ mod tests {
                     node.invocation.args
                 ),
             }
-            let in_argv = node.invocation.args.iter().any(|a| a == "delegate it");
+            // Verbatim, or (agy) headed by the working-directory preamble its adapter states.
+            let in_argv = node
+                .invocation
+                .args
+                .iter()
+                .any(|a| a == "delegate it" || a.ends_with("\n\ndelegate it"));
             match node.path {
                 RootPath::LaunchOnly => {
                     assert!(

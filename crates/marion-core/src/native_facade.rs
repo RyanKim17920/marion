@@ -852,6 +852,19 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
+    // Disabled 2026-09-22: the `--add-dir` root that carries the declaration was measured on the
+    // headless `-p` surface (s32); in the TUI marion's tools were seen appearing only after the
+    // first turn had started (the MCP-visibility race), so the lane stays dark until measured.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("agy"),
+        command: "agy",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("agy", "agy", NativeAdapterId::new("agy")),
+        )),
+        structured: None,
+    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.

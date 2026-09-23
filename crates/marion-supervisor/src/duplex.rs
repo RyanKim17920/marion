@@ -1000,6 +1000,8 @@ mod tests {
                 ("qwen-orchestrator", Some(LaunchPath::LaunchOnly)),
                 // The one built-in on the second typed path, and the reason that path exists.
                 ("acp-opencode", Some(LaunchPath::Acp)),
+                ("agy", Some(LaunchPath::LaunchOnly)),
+                ("agy-impl", Some(LaunchPath::LaunchOnly)),
             ]
         );
     }

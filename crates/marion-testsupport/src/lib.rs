@@ -882,6 +882,18 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // and cwd. See `marion_harness::qwen`.
         accepted: &["0.23.0"],
     },
+    PinnedHarness {
+        program: "agy",
+        store: ReleaseStore::PathOnly,
+        probe_env: &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        // 1.2.8 is the pin: the Homebrew cask (`/opt/homebrew/Caskroom/antigravity-cli/1.2.8,…`)
+        // present on 2026-09-22, and the version every s32 probe ran against on the operator's own
+        // keychain login (`tests/fixtures/s32/`). What was measured on it: the `--add-dir` root
+        // declaration, the lexicographic workspace order, headless auto-denial and the operator's
+        // `permissions.allow` rule, `DONE` with no output on a denied call, `--conversation`
+        // resume and the fresh conversation an unknown id starts. See `marion_harness::antigravity`.
+        accepted: &["1.2.8"],
+    },
 ];
 
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
@@ -918,6 +930,7 @@ pub fn pinned_version(program: &str) -> &'static str {
 /// | `goose`    | ` 1.49.0` — a leading space, no name (measured 2026-09-05)                 |
 /// | `cline`    | `3.0.61` — bare (measured 2026-09-05)                                      |
 /// | `qwen`     | `0.23.0` — bare (measured 2026-09-05)                                      |
+/// | `agy`      | `1.2.8` — bare (measured 2026-09-22)                                       |
 ///
 /// Three carry a name and two do not, and the name comes first where it is present — so the rule
 /// is "first token that is digits and dots", which skips `codex-cli` and `GitHub` (no leading

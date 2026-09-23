@@ -157,8 +157,10 @@ pub enum Push {
     /// on every row that carries it: it is what the protocol lets any server send, and what a
     /// client may show, log or drop. No launch flag.
     McpLog,
-    /// Nothing is pushed. ACP: the declaration is a `session/new` request after launch, so
-    /// there is no stdio pipe of marion's to push on.
+    /// Nothing is pushed, or nothing pushed was **measured delivered**. ACP: the declaration is a
+    /// `session/new` request after launch, so there is no stdio pipe of marion's to push on. agy
+    /// 1.2.8: a `notifications/message` pushed after a call reached the pipe and the harness
+    /// surfaced it nowhere, headless or in its TUI (s32).
     None,
 }
 
@@ -896,6 +898,7 @@ impl Surfaces {
 /// | copilot 1.0.83 | `marion-report` | s24 |
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
 /// | goose 1.49.0, cline 3.0.61 | `marion__report` | S26, S27 |
+/// | agy 1.2.8 | `call_mcp_tool{ServerName: marion, ToolName: report}`, shown as `marion/report` | s32 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
@@ -910,6 +913,10 @@ pub enum ToolSpelling {
     McpDotted,
     /// `<server>__<tool>` — the `mcp__` form without its prefix.
     ServerDoubleUnderscoreTool,
+    /// `<server>/<tool>` — agy's own name for an MCP tool, in its TUI and its permission rules
+    /// (`mcp(marion/report)`). The model calls it through the generic `call_mcp_tool` with the
+    /// two halves as separate arguments, so a stream is read by server and verb, not this string.
+    ServerSlashTool,
 }
 
 impl ToolSpelling {
@@ -921,6 +928,7 @@ impl ToolSpelling {
             Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
             Self::ServerDoubleUnderscoreTool => format!("{MCP_ALIAS}__{tool}"),
+            Self::ServerSlashTool => format!("{MCP_ALIAS}/{tool}"),
         }
     }
 }
@@ -984,6 +992,16 @@ pub enum LiveDeclaration {
         key: &'static str,
         body: fn(&BridgeEnv) -> String,
     },
+    /// `<flag> <dir>/<root>` on argv, naming a **directory** the harness reads a document out of:
+    /// the document is written to `<root>/<file>` under the node's own directory — agy's
+    /// `--add-dir <root>`, which loads `<root>/.agents/mcp_config.json` as a workspace's own MCP
+    /// declaration (s32). The root is marion's and holds nothing else.
+    ArgvRoot {
+        flag: &'static str,
+        root: &'static str,
+        file: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
 }
 
 impl LiveDeclaration {
@@ -991,9 +1009,9 @@ impl LiveDeclaration {
     /// carries it.
     pub fn route(self) -> McpRoute {
         match self {
-            LiveDeclaration::ArgvDocument { .. } | LiveDeclaration::EnvDocument { .. } => {
-                McpRoute::Document
-            }
+            LiveDeclaration::ArgvDocument { .. }
+            | LiveDeclaration::EnvDocument { .. }
+            | LiveDeclaration::ArgvRoot { .. } => McpRoute::Document,
             LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
             LiveDeclaration::ArgvPairs { key, .. } | LiveDeclaration::ArgvInline { key, .. } => {
                 McpRoute::Argv(key)

@@ -83,6 +83,12 @@ const CANNED_PLUMBING_MODELS: &[&str] = &[
     QWEN_DEFAULT_MODEL,
 ];
 
+/// The `agy` built-ins' default model: a real slug, because agy has **no canned route** — it runs
+/// only on the operator's own login (the adapter refuses a canned launch by name) — and the
+/// cheapest one 1.2.8 lists (`agy models`), so a default node spends the least of the operator's
+/// consumer quota (s32).
+pub const AGY_DEFAULT_MODEL: &str = "gemini-3.6-flash-low";
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -516,6 +522,27 @@ const BUILTINS: &[Builtin] = &[
         tools: &[],
         acp_agent: None,
     },
+    // The ninth binary, run only on the operator's own login: agy has no canned provider route.
+    Builtin {
+        canonical: "agy",
+        aliases: &[],
+        description: "Implements a well-specified change on Google's Antigravity CLI.",
+        harness: Harness::Antigravity,
+        model: Some(AGY_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The implementer flavour: the default `request-review` mode auto-denies a headless write,
+    // and a `write` declaration is what compiles `--mode accept-edits` (s32).
+    Builtin {
+        canonical: "agy-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on Google's Antigravity CLI.",
+        harness: Harness::Antigravity,
+        model: Some(AGY_DEFAULT_MODEL),
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
     // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
     // named after the harness because there the harness *is* the program. Here it is not: a type
     // named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -604,6 +631,8 @@ pub fn builtin_names() -> &'static [&'static str] {
         "qwen",
         "qwen-orchestrator",
         "acp-opencode",
+        "agy",
+        "agy-impl",
     ]
 }
 
@@ -908,13 +937,15 @@ mod tests {
             ("qwen", Harness::Qwen),
             ("qwen-orchestrator", Harness::Qwen),
             ("acp-opencode", Harness::Acp),
+            ("agy", Harness::Antigravity),
+            ("agy-impl", Harness::Antigravity),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
         }
         assert_eq!(
             builtin_names().len(),
-            14,
+            16,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -1076,7 +1107,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude" | "gemini" | "copilot" | "qwen" => {
+                "claude" | "gemini" | "copilot" | "qwen" | "agy-impl" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
                 // `write` alone: goose's developer extension has no read-only tool to answer

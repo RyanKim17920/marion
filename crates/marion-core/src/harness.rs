@@ -34,6 +34,10 @@ pub enum Harness {
     /// Qwen Code, headless `-p` (measured on 0.23.0, `tests/fixtures/s25/`). The ninth name and
     /// the eighth binary; a Gemini CLI fork whose headless surface is Claude Code's shape.
     Qwen,
+    /// Google's Antigravity CLI, headless `-p` with `--output-format stream-json` (measured on
+    /// 1.2.8, `tests/fixtures/s32/`). The tenth name and the ninth binary; not a Gemini CLI fork,
+    /// and it speaks no ACP. Wire name `agy`, the binary's own.
+    Antigravity,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -56,6 +60,7 @@ impl Harness {
             Harness::Goose => "goose",
             Harness::Cline => "cline",
             Harness::Qwen => "qwen",
+            Harness::Antigravity => "agy",
             Harness::Acp => "acp",
         }
     }
@@ -118,16 +123,19 @@ impl Harness {
             // only with `--with-builtin developer`, which a `write` declaration compiles (S26).
             // qwen: `--core-tools` plus `--exclude-tools` offers exactly the declared names, and
             // `write_file` is offered only when declared (S25).
+            // agy: the default `request-review` mode auto-denies a headless `write_to_file`, and
+            // `--mode accept-edits` arrives only with a `write` declaration (s32).
             Harness::ClaudeCode
             | Harness::Gemini
             | Harness::Copilot
             | Harness::Goose
-            | Harness::Qwen => false,
+            | Harness::Qwen
+            | Harness::Antigravity => false,
         }
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 9] = [
+    pub const ALL: [Harness; 10] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::Gemini,
@@ -136,6 +144,7 @@ impl Harness {
         Harness::Goose,
         Harness::Cline,
         Harness::Qwen,
+        Harness::Antigravity,
         Harness::Acp,
     ];
 }
@@ -146,7 +155,7 @@ impl Harness {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "unknown harness {0:?}; known harnesses are claude, codex, gemini, opencode, copilot, goose, \
-     cline, qwen, acp (claude-code is accepted for claude)"
+     cline, qwen, agy, acp (claude-code is accepted for claude)"
 )]
 pub struct UnknownHarness(pub String);
 
@@ -211,6 +220,8 @@ mod tests {
         assert_eq!(Harness::Goose.as_str(), "goose");
         assert_eq!(Harness::Cline.as_str(), "cline");
         assert_eq!(Harness::Qwen.as_str(), "qwen");
+        // The binary's own name: Google's Antigravity CLI installs as `agy`.
+        assert_eq!(Harness::Antigravity.as_str(), "agy");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }
@@ -238,6 +249,9 @@ mod tests {
                 // Measured on 0.23.0 (`tests/fixtures/s25/`): `--core-tools` names what the model is
                 // offered, and `write_file` is in `tools[]` only when the launch names it.
                 ("qwen", false),
+                // Measured on 1.2.8 (s32): in the default `request-review` mode a headless
+                // `write_to_file` is auto-denied; `--mode accept-edits` is what a `write` compiles.
+                ("agy", false),
                 ("acp", true),
             ]
         );

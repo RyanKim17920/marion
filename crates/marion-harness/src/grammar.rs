@@ -194,6 +194,19 @@ pub enum Verdict {
         words: &'static [&'static str],
         fallback: &'static str,
     },
+    /// [`Self::Terminal`], except that `ok` **answers only when the unit also carries `output`**.
+    /// agy 1.2.8 marks a call it auto-denied headless either `ERROR` with a message or `DONE` with
+    /// no output at all (s32), so the state alone is not an answer: `ok` without `output` is a
+    /// refusal spelled `silent`.
+    TerminalWithOutput {
+        path: &'static str,
+        ok: &'static str,
+        err: &'static str,
+        output: &'static str,
+        words: &'static [&'static str],
+        fallback: &'static str,
+        silent: &'static str,
+    },
     /// A boolean: `true` is answered, `false` a refusal with `words` (or `fallback`), missing is
     /// unknown.
     Success {
@@ -417,6 +430,30 @@ fn read_terminal(
     }
 }
 
+/// [`Verdict::TerminalWithOutput`]: [`read_terminal`], with an `ok` that carries no `output`
+/// read as the `silent` refusal.
+fn read_terminal_with_output(unit: &Value, v: &TerminalRead<'_>) -> CallOutcome {
+    match text(unit, v.path) {
+        Some(s) if s == v.ok && unit.pointer(v.output).is_some_and(|o| !o.is_null()) => {
+            CallOutcome::Answered
+        }
+        Some(s) if s == v.ok => CallOutcome::Refused(v.silent.to_string()),
+        Some(s) if s == v.err => refused(unit, v.words, v.fallback),
+        _ => CallOutcome::Unknown,
+    }
+}
+
+/// [`Verdict::TerminalWithOutput`]'s fields, borrowed, so its reader takes one argument.
+struct TerminalRead<'a> {
+    path: &'a str,
+    ok: &'a str,
+    err: &'a str,
+    output: &'a str,
+    words: &'a [&'a str],
+    fallback: &'a str,
+    silent: &'a str,
+}
+
 /// [`Verdict::Success`]: `true` is answered, `false` a refusal, missing unknown.
 fn read_success(unit: &Value, path: &str, words_at: &[&str], fallback: &str) -> CallOutcome {
     match unit.pointer(path).and_then(Value::as_bool) {
@@ -451,6 +488,26 @@ impl Verdict {
                 words: w,
                 fallback,
             } => read_terminal(unit, path, ok, err, w, fallback),
+            Verdict::TerminalWithOutput {
+                path,
+                ok,
+                err,
+                output,
+                words: w,
+                fallback,
+                silent,
+            } => read_terminal_with_output(
+                unit,
+                &TerminalRead {
+                    path,
+                    ok,
+                    err,
+                    output,
+                    words: w,
+                    fallback,
+                    silent,
+                },
+            ),
             Verdict::Success {
                 path,
                 words: w,

@@ -18,6 +18,7 @@ use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::harness::Harness;
 
 use crate::acp;
+use crate::antigravity;
 pub use crate::auth::Auth;
 use crate::claude_code;
 use crate::cline;
@@ -794,6 +795,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Goose => &goose::SPEC,
         Harness::Cline => &cline::SPEC,
         Harness::Qwen => &qwen::SPEC,
+        Harness::Antigravity => &antigravity::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1667,6 +1669,76 @@ impl HarnessAdapter for QwenAdapter {
     }
 }
 
+/// agy 1.2.8, headless `-p` (fixture `tests/fixtures/s32/`). See [`antigravity`]'s module docs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AntigravityAdapter;
+
+impl HarnessAdapter for AntigravityAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Antigravity
+    }
+
+    /// A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
+    /// and agy's default otherwise — under which a headless edit is auto-denied (s32).
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| antigravity::is_edit_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| antigravity::ACCEPT_EDITS_MODE.to_string()),
+        })
+    }
+
+    /// The refusal this harness owes, the root, and the working-directory preamble.
+    ///
+    /// **Canned is refused by name.** agy has no measured way to point it at marion's canned
+    /// provider (an API-key route would need the operator's profile relocated, which loses the
+    /// keychain login), so a "canned" node would spend the operator's real quota under a mode
+    /// that promises it spends nothing.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if spec.auth == Auth::Canned {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Antigravity,
+                what: "agy has no canned provider route: it runs only on the operator's own \
+                       login, so launch it live (marion run --live)",
+            });
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        if spec.mcp == McpDeclaration::Marion {
+            let root = antigravity::root_dir(&spec.config_dir);
+            f.prompt = format!(
+                "{}{}",
+                antigravity::working_directory_preamble(&spec.cwd, &root),
+                f.prompt
+            );
+            f.mcp_config = Some(root.to_string_lossy().into_owned());
+        }
+        Ok(f)
+    }
+
+    /// The root's one document, where a declaration was asked for — the row's live declaration,
+    /// byte for byte.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.mcp == McpDeclaration::None {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(
+            antigravity::root_dir(&spec.config_dir).join(antigravity::MCP_CONFIG_FILE),
+            antigravity::mcp_config_document(&bridge_env(spec, ctx)),
+        )])
+    }
+}
+
 /// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
 ///
 /// # What the surfaces are, and why
@@ -2112,6 +2184,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Goose => Ok(Box::new(GooseAdapter)),
         Harness::Cline => Ok(Box::new(ClineAdapter)),
         Harness::Qwen => Ok(Box::new(QwenAdapter)),
+        Harness::Antigravity => Ok(Box::new(AntigravityAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -2426,6 +2499,17 @@ mod tests {
             model: Some("canned-1".into()),
             api_key: Some("sk-fake".into()),
             allowed_tools: vec!["mcp__marion__report".into()],
+            ..codex_spec()
+        }
+    }
+
+    /// agy runs only live: there is no canned route (the adapter refuses one by name).
+    fn agy_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: Some(agent_type::AGY_DEFAULT_MODEL.into()),
             ..codex_spec()
         }
     }
@@ -3551,6 +3635,7 @@ mod tests {
             Harness::Goose => goose_spec(),
             Harness::Cline => cline_spec(),
             Harness::Qwen => qwen_spec(),
+            Harness::Antigravity => agy_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -5646,6 +5731,10 @@ mod tests {
                 Harness::Cline => format!(
                     r#"{{"type":"agent_event","event":{{"type":"content_start","contentType":"tool","toolName":"{tool}","toolCallId":"c1","input":{args}}}}}"#
                 ),
+                // s32: a `call_mcp_tool` step, the arguments under `parameters.Arguments`.
+                Harness::Antigravity => format!(
+                    r#"{{"event":"step_update","step_update":{{"step_index":3,"state":"DONE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{{"parameters":{{"ServerName":"marion","ToolName":"report","Arguments":{args}}},"output":"ok"}}}}}}"#
+                ),
                 // S25: Claude Code's `assistant` `tool_use`, frame for frame.
                 Harness::Qwen => format!(
                     r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"c1","name":"{tool}","input":{args}}}]}}}}"#
@@ -7389,6 +7478,32 @@ mod tests {
         );
     }
 
+    /// [`LiveDeclaration::ArgvRoot`]: the same document under the same root, and the root named
+    /// on argv the way the live launch names it.
+    fn assert_argv_root(h: Harness, d: &Injected, m: &Managed, flag: &str, root: &str, file: &str) {
+        let dir = m.document_dir.join(root);
+        let path = dir.join(file);
+        let body = String::from_utf8(d.documents[0].contents.clone()).unwrap();
+        assert_eq!(
+            m.files,
+            vec![(path.clone(), body)],
+            "{h}: the native document is not the live launch's"
+        );
+        assert_eq!(d.documents.len(), 1, "{h}");
+        assert_eq!(d.documents[0].path, path, "{h}");
+        assert_eq!(
+            d.prefix,
+            vec![flag.to_string(), dir.display().to_string()],
+            "{h}"
+        );
+        assert!(d.overlay.iter().all(|(k, _)| k.starts_with("AGY_")), "{h}");
+        assert!(
+            m.inv.args.windows(2).any(|w| w == d.prefix.as_slice()),
+            "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+            m.inv.args
+        );
+    }
+
     /// [`LiveDeclaration::EnvDocument`]: the same file, byte for byte, named by the same variable.
     fn assert_env_document(h: Harness, d: &Injected, m: &Managed, key: &str, file: &str) {
         let path = m.document_dir.join(file);
@@ -7509,6 +7624,9 @@ mod tests {
             LiveDeclaration::EnvInline { key, .. } => assert_env_inline(h, d, m, key),
             LiveDeclaration::ArgvPairs { flag, key, .. } => assert_argv_pairs(h, d, m, flag, key),
             LiveDeclaration::ArgvInline { flag, key, .. } => assert_argv_inline(h, d, m, flag, key),
+            LiveDeclaration::ArgvRoot {
+                flag, root, file, ..
+            } => assert_argv_root(h, d, m, flag, root, file),
         }
     }
 
@@ -7963,6 +8081,11 @@ mod tests {
         let a = launch_adapter(h).unwrap();
         let mut launches: Vec<Launch> = Vec::new();
         for auth in [Auth::Canned, Auth::Inherited] {
+            // agy has no canned route, and refuses one by name
+            // (`agy_refuses_a_canned_launch_by_name`): there is no canned launch to render.
+            if h == Harness::Antigravity && auth == Auth::Canned {
+                continue;
+            }
             let launch = LaunchSpec {
                 auth,
                 model: match h {
@@ -8268,6 +8391,8 @@ mod tests {
             (Harness::Goose, "none", "none"),
             (Harness::Cline, "none", "none"),
             (Harness::Qwen, "continuation", "none"),
+            // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
+            (Harness::Antigravity, "continuation", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(
@@ -8432,6 +8557,92 @@ mod tests {
         assert_eq!(mid(&generic), MidTurn::Queue);
     }
 
+    /// agy's measured launch (s32): the prompt headed by the working directory, stream-json, the
+    /// model, the cwd **and** marion's root as workspaces, and `--mode accept-edits` only where a
+    /// write is declared; one document at `<config_dir>/agy-root/.agents/mcp_config.json`.
+    #[test]
+    fn the_agy_adapter_compiles_the_measured_invocation() {
+        let a = AntigravityAdapter;
+        let spec = LaunchSpec {
+            prompt: "do the task".into(),
+            ..agy_spec()
+        };
+        let inv = a.compile(&spec, &ctx()).unwrap();
+        let root = "/state/x/config/agy-root";
+        assert_eq!(inv.program, "agy");
+        assert_eq!(
+            inv.args,
+            vec![
+                "-p".to_string(),
+                format!(
+                    "Your working directory is /wt; every relative path below is relative to it. \
+                     {root} is marion's configuration directory, not a place for your work.\n\n\
+                     do the task"
+                ),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--model".into(),
+                agent_type::AGY_DEFAULT_MODEL.into(),
+                "--add-dir".into(),
+                "/wt".into(),
+                "--add-dir".into(),
+                root.into(),
+            ]
+        );
+        assert_eq!(
+            inv.env,
+            vec![("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into())]
+        );
+        let files = a.config_files(&spec, &ctx()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].0,
+            PathBuf::from(format!("{root}/.agents/mcp_config.json"))
+        );
+        assert!(
+            !files[0].1.contains("mcp(marion"),
+            "marion grants nothing itself"
+        );
+        assert_eq!(a.compiled_permissions(&spec).unwrap(), vec!["mode:default"]);
+
+        let writer = LaunchSpec {
+            tools: vec![agent_type::TOOL_READ.into(), agent_type::TOOL_WRITE.into()],
+            ..spec.clone()
+        };
+        let inv = a.compile(&writer, &ctx()).unwrap();
+        assert!(
+            inv.args
+                .windows(2)
+                .any(|w| w == ["--mode", antigravity::ACCEPT_EDITS_MODE]),
+            "a write is auto-denied headless without accept-edits: {:?}",
+            inv.args
+        );
+        assert_eq!(
+            a.compiled_permissions(&writer).unwrap(),
+            vec!["mode:accept-edits"]
+        );
+
+        let resumed = LaunchSpec {
+            resume: Some("66e0c65e".into()),
+            ..spec
+        };
+        let inv = a.compile(&resumed, &ctx()).unwrap();
+        assert_eq!(&inv.args[..2], ["--conversation", "66e0c65e"]);
+    }
+
+    #[test]
+    fn agy_refuses_a_canned_launch_by_name() {
+        let canned = LaunchSpec {
+            auth: Auth::Canned,
+            ..agy_spec()
+        };
+        assert!(matches!(
+            AntigravityAdapter.compile(&canned, &ctx()),
+            Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
+                if what.contains("no canned provider route")
+        ));
+    }
+
     /// **Every row states how a headless node is let call marion's tools, and the launch carries
     /// exactly that grant.** A headless node has no operator to answer a prompt, and each harness
     /// was measured denying, cancelling or classifier-declining an unapproved marion call at exit 0
@@ -8531,6 +8742,7 @@ mod tests {
                 ("goose", "env-var"),
                 ("cline", "cli-flag"),
                 ("qwen", "cli-flag"),
+                ("agy", "operator-allowlist"),
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"

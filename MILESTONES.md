@@ -542,6 +542,34 @@ pasted turn backgrounds a canned codex child whose end then arrives as the root'
 fallback yet), and a message held by an injector whose pane is replaced is dropped rather than
 handed to the new one.
 
+**agy — Google's Antigravity CLI — is a row (s32, 2026-09-22, agy 1.2.8, `tests/fixtures/s32/`,
+the operator's own keychain login, `gemini-3.6-flash-low`).** Measured headless: `-p <prompt>
+--output-format stream-json --model <slug>`; no ACP, no MCP-config flag. **Declaration:** `--add-dir
+<root>` with `<root>/.agents/mcp_config.json` loads marion's server (the row's new
+`LiveDeclaration::ArgvRoot`, root `<config_dir>/agy-root`). **Workspace order is lexicographic:**
+with two `--add-dir` roots the model takes the first-sorting one as "the current directory" (5/5
+runs), and with none it does not know its cwd; the launch therefore names the cwd with `--add-dir`
+too and the adapter heads the prompt with the working directory, measured landing the write in the
+cwd with marion's root sorting first. **Approval:** headless auto-denies every tool it would prompt
+for at exit 0, `status: SUCCESS`, `denied_actions` and an `auto-denied` stderr line. None of
+`--mode accept-edits` (which does approve `write_to_file`, so a `write` compiles it), `--sandbox`,
+`ANTIGRAVITY_PERM_GRANTS=mcp(marion/*)`, or a `PreToolUse` hook in marion's root (`allow` leaves
+the call `DONE` with no output; `ask` + `permissionOverrides` is still denied) approves marion's
+tools, and no settings-path flag or variable exists; only `--dangerously-skip-permissions`
+(everything) or the operator's `"permissions": {"allow": ["mcp(marion/*)"]}` in
+`~/.gemini/antigravity-cli/settings.json` does. The row states `Approval::OperatorAllowlist`,
+marion never writes it, and `marion doctor` reports it granted or MISSING with the line. The rule
+was added to this machine's settings on 2026-09-22 with the operator's authorization (backup
+`settings.json.marion-backup`). **Stream:** a marion call is a `call_mcp_tool` `step_update` whose
+`parameters.ServerName` is `marion`; `DONE` answers only with an `output`
+(`Verdict::TerminalWithOutput`), `ERROR` carries the denial. **Resume:** `--conversation <id>`
+continues under the same id; an unknown id starts a new conversation at exit 0 with only a stderr
+warning. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is the only update switch; a pushed
+`notifications/message` is surfaced nowhere (`Push::None`); `clientInfo.name` is
+`antigravity-client`. **No canned route** (an API-key route would need the profile relocated): the
+adapter refuses a canned launch by name, so no canned matrix cell names agy. Built-ins `agy` and
+`agy-impl`; the native lane ships disabled.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
