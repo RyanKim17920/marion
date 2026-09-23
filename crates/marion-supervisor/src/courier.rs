@@ -51,8 +51,12 @@ use marion_core::cap::cap_for_return;
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::paths::ProjectDir;
-use marion_core::proto::params::{AgentSpawnParams, NodeGetParams, TreeSubscribeParams};
-use marion_core::proto::result::{AgentSpawnResult, NodeGetResult, TreeSubscribeResult};
+use marion_core::proto::params::{
+    AgentSpawnParams, NodeGetParams, NodeSteerParams, TreeSubscribeParams,
+};
+use marion_core::proto::result::{
+    AgentSpawnResult, DeliveryResult, NodeGetResult, TreeSubscribeResult,
+};
 use marion_core::proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
 use crate::spawn::SpawnError;
@@ -278,6 +282,84 @@ pub fn node_get(socket: &Path, agent_id: &AgentId) -> Result<NodeGetResult, Spaw
             socket,
             "it answered `node/get` with a result marion cannot read",
         )),
+    }
+}
+
+/// **Queue a message for one node's next turn** — §2's `node/steer`, the call behind `marion
+/// steer`, the MCP `steer` tool and the tree's `s`.
+///
+/// `caller` is `None` for a top-level peer (the operator's CLI, the tree, a `marion mcp`) and the
+/// node's own [`marion_core::proto::SpawnCaller`] for a node's bridge; the supervisor decides what
+/// either may steer, and a refusal is its sentence, carried verbatim.
+///
+/// On acceptance one `node/get` follows, for the target's agent type — the one fact the sentence
+/// needs that `node/steer`'s answer does not carry. It is asked only *after* the supervisor has
+/// authorized the steer, so it tells a caller nothing about a node it may not address; and it is
+/// best-effort, because the message is already queued and a failed read must not report it lost.
+pub fn steer(
+    socket: &Path,
+    agent_id: &AgentId,
+    text: &str,
+    caller: Option<marion_core::proto::SpawnCaller>,
+) -> Result<Steered, SpawnError> {
+    let result = match Conn::dial(socket)?.ask(
+        Call::NodeSteer(NodeSteerParams {
+            agent_id: agent_id.clone(),
+            text: text.to_string(),
+            caller,
+        }),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `node/steer` within {} s, so marion cannot say whether the message \
+             was queued; the journal's `MessageQueued` records are the answer",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NodeSteer(r) => r,
+        _ => {
+            return Err(unreachable(
+                socket,
+                "it answered `node/steer` with a result marion cannot read",
+            ));
+        }
+    };
+    let agent_type = node_get(socket, agent_id).ok().map(|r| r.node.agent_type);
+    Ok(Steered {
+        agent_id: agent_id.clone(),
+        agent_type,
+        result,
+    })
+}
+
+/// An accepted steer: the supervisor's answer and the node it is for.
+#[derive(Debug, Clone)]
+pub struct Steered {
+    pub agent_id: AgentId,
+    /// `None` when the follow-up `node/get` could not be read.
+    pub agent_type: Option<String>,
+    pub result: DeliveryResult,
+}
+
+impl Steered {
+    /// **The one sentence every steer surface prints on acceptance**: the message's id and when the
+    /// node takes it. "Queued", never "delivered", while the supervisor says `queued` — a queued
+    /// message reaches the model only at the node's next turn boundary.
+    pub fn sentence(&self) -> String {
+        let short = crate::tree::short_id(&self.agent_id.0);
+        let who = match &self.agent_type {
+            Some(t) => format!("{t} {short}"),
+            None => short.to_string(),
+        };
+        let id = self
+            .result
+            .message_id
+            .as_deref()
+            .map_or_else(String::new, |m| format!(" as {m}"));
+        if self.result.queued {
+            format!("queued{id}; reaches {who} at its next turn boundary")
+        } else {
+            format!("delivered{id} to {who}")
+        }
     }
 }
 
@@ -545,6 +627,56 @@ mod tests {
         assert!(
             matches!(e, SpawnError::SupervisorUnreachable { .. }),
             "a missing supervisor is a missing supervisor, whichever verb asked: {e}"
+        );
+    }
+
+    /// A steer with nobody listening is the same typed refusal, and names the socket.
+    #[test]
+    fn a_steer_with_no_supervisor_listening_is_refused_and_names_the_socket() {
+        let e = steer(
+            std::path::Path::new("/tmp/marion-no-such-supervisor.sock"),
+            &AgentId("019f-node".into()),
+            "use the v2 API",
+            None,
+        )
+        .expect_err("nothing is listening there");
+        assert!(matches!(e, SpawnError::SupervisorUnreachable { .. }), "{e}");
+        assert!(
+            e.to_string().contains("marion-no-such-supervisor.sock"),
+            "{e}"
+        );
+    }
+
+    /// **What every steer surface prints on acceptance**: the message's id, and who takes it when.
+    /// Worded once here so the CLI, the MCP tool and the tree cannot describe one queueing three
+    /// ways; an unread type falls back to the id rather than inventing one.
+    #[test]
+    fn an_accepted_steer_names_its_message_the_node_and_when_it_arrives() {
+        let result = marion_core::proto::result::DeliveryResult {
+            delivered_as: marion_core::proto::Delivery::Steer,
+            state: marion_core::node::NodeState::Running,
+            resumed: false,
+            message_id: Some("m-7".into()),
+            queued: true,
+        };
+        let id = AgentId("01a091ba-8ea3-7000-8000-000000000000".into());
+        let typed = Steered {
+            agent_id: id.clone(),
+            agent_type: Some("codex-impl".into()),
+            result: result.clone(),
+        };
+        assert_eq!(
+            typed.sentence(),
+            "queued as m-7; reaches codex-impl 8ea3 at its next turn boundary"
+        );
+        let untyped = Steered {
+            agent_id: id,
+            agent_type: None,
+            result,
+        };
+        assert_eq!(
+            untyped.sentence(),
+            "queued as m-7; reaches 8ea3 at its next turn boundary"
         );
     }
 }
