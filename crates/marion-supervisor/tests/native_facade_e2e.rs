@@ -236,6 +236,11 @@ struct Operator {
     /// The operator's window as last set. `resize_window` is a raw `TIOCSWINSZ`, which the cast
     /// does not record, so the bottom row of the terminal is known here and nowhere in the cast.
     size: std::cell::Cell<WinSize>,
+    /// Each resize, with how many cast records existed when it was made, so a replay can resize at
+    /// about the same point in the stream the terminal did. Replaying everything at the final size
+    /// instead wraps the pre-resize output of a main-screen TUI differently from the node's own
+    /// screen, and the two can then never be compared.
+    resizes: std::cell::RefCell<Vec<(usize, WinSize)>>,
 }
 
 impl Operator {
@@ -285,6 +290,7 @@ impl Operator {
             cast,
             baseline,
             size: std::cell::Cell::new(OPERATOR_SIZE),
+            resizes: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -304,6 +310,37 @@ impl Operator {
         term
     }
 
+    /// The terminal as the operator has it now: the recording replayed from the original size,
+    /// resized where [`Self::resize_window`] resized it.
+    fn live_term(&self) -> marion_term::Term {
+        let mut term = marion_term::Term::with_options(
+            marion_term::Size::new(OPERATOR_SIZE.cols as usize, OPERATOR_SIZE.rows as usize),
+            marion_tui::grid_options(),
+        );
+        let resizes = self.resizes.borrow();
+        let mut pending = resizes.iter().peekable();
+        for (index, (code, data)) in cast_records(&self.cast).into_iter().enumerate() {
+            while let Some((_, size)) = pending.next_if(|(at, _)| *at <= index) {
+                term.resize(marion_term::Size::new(
+                    size.cols as usize,
+                    size.rows as usize,
+                ));
+            }
+            match code.as_str() {
+                "o" => term.advance(data.as_bytes()),
+                "r" => resize_from(&mut term, &data),
+                _ => {}
+            }
+        }
+        for (_, size) in pending {
+            term.resize(marion_term::Size::new(
+                size.cols as usize,
+                size.rows as usize,
+            ));
+        }
+        term
+    }
+
     /// What the operator can read: scrollback and viewport together.
     fn screen(&self) -> String {
         let term = self.term_at(OPERATOR_SIZE);
@@ -313,18 +350,14 @@ impl Operator {
     }
 
     /// The bottom row of the operator's terminal **at its current size**, where marion's status
-    /// line goes. Replayed at that size from the start: what was painted before a resize lands in
-    /// scrollback, and the bottom row is whatever was addressed there since.
+    /// line goes, from [`Self::live_term`].
     fn last_viewport_line(&self) -> String {
-        self.term_at(self.size.get())
-            .viewport_lines()
-            .pop()
-            .unwrap_or_default()
+        self.live_term().viewport_lines().pop().unwrap_or_default()
     }
 
     /// Every row of the operator's terminal but the last, at its current size.
     fn rows_above_the_last(&self) -> Vec<String> {
-        let mut lines = self.term_at(self.size.get()).viewport_lines();
+        let mut lines = self.live_term().viewport_lines();
         lines.pop();
         lines
     }
@@ -342,6 +375,9 @@ impl Operator {
 
     /// `TIOCSWINSZ` on the operator's master; the relay's geometry tick is what forwards it.
     fn resize_window(&self, size: WinSize) {
+        self.resizes
+            .borrow_mut()
+            .push((cast_records(&self.cast).len(), size));
         self.host
             .master()
             .set_size(size)
@@ -383,21 +419,11 @@ fn geometries(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The node's screen as the node itself drew it: its own recording, replayed from the size its
-/// header names through every geometry the node's pty was given.
+/// The node's screen as the node itself drew it: its own recording, replayed through every
+/// geometry the node's pty was given (the first record is its opening size).
 fn node_screen(node_cast: &Path) -> Vec<String> {
-    let header: serde_json::Value = std::fs::read_to_string(node_cast)
-        .ok()
-        .and_then(|text| serde_json::from_str(text.lines().next()?).ok())
-        .unwrap_or_default();
-    let dimension = |key: &str| {
-        header
-            .get(key)
-            .and_then(serde_json::Value::as_u64)
-            .map_or(24, |value| value as usize)
-    };
     let mut term = marion_term::Term::with_options(
-        marion_term::Size::new(dimension("width"), dimension("height")),
+        marion_term::Size::new(OPERATOR_SIZE.cols as usize, OPERATOR_SIZE.rows as usize),
         marion_tui::grid_options(),
     );
     for (code, data) in cast_records(node_cast) {
@@ -408,6 +434,90 @@ fn node_screen(node_cast: &Path) -> Vec<String> {
         }
     }
     term.viewport_lines()
+}
+
+/// Whether the last alternate-screen switch in `output` entered it.
+fn on_alternate_screen(output: &str) -> bool {
+    match (output.rfind("\u{1b}[?1049h"), output.rfind("\u{1b}[?1049l")) {
+        (Some(on), Some(off)) => on > off,
+        (on, _) => on.is_some(),
+    }
+}
+
+/// The operator's stream with marion's own bytes taken out: the status row
+/// (`ESC 7 CSI 1;limit r CSI row;1H CSI 2K CSI 7m … CSI 0m ESC 8`), its clear
+/// (`ESC 7 CSI r CSI row;1H CSI 2K ESC 8`), and a scroll-region repair (`CSI top;limit r`, or the
+/// same between `ESC 7`/`ESC 8`) where it directly follows a node sequence it repairs.
+fn without_marions_bytes(operator: &str, limit: u16) -> String {
+    let row = format!(
+        "\u{1b}7\u{1b}[1;{limit}r\u{1b}[{};1H\u{1b}[2K\u{1b}[7m",
+        limit + 1
+    );
+    let clear = format!("\u{1b}7\u{1b}[r\u{1b}[{};1H\u{1b}[2K\u{1b}8", limit + 1);
+    let saved_repair = format!("\u{1b}7\u{1b}[1;{limit}r\u{1b}8");
+    let repair_tail = format!(";{limit}r");
+    let mut out = String::with_capacity(operator.len());
+    let mut rest = operator;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix(row.as_str()) {
+            // A row inside a node sequence would strip back to the node's bytes and hide the very
+            // corruption this looks for, so it is made visible instead.
+            if ends_inside_a_csi(&out) {
+                out.push_str("<marion's row inside a node CSI>");
+            }
+            let end = after
+                .find("\u{1b}[0m\u{1b}8")
+                .map_or(after.len(), |end| end + 6);
+            rest = &after[end..];
+        } else if let Some(after) = rest.strip_prefix(clear.as_str()) {
+            if ends_inside_a_csi(&out) {
+                out.push_str("<marion's clear inside a node CSI>");
+            }
+            rest = after;
+        } else if out.ends_with("\u{1b}[!p")
+            && let Some(after) = rest.strip_prefix(saved_repair.as_str())
+        {
+            rest = after;
+        } else if (out.ends_with('r') || out.ends_with("\u{1b}c"))
+            && is_region_or_reset_end(&out)
+            && let Some(len) = repair_len(rest, &repair_tail)
+        {
+            rest = &rest[len..];
+        } else {
+            let next = rest.chars().next().expect("non-empty");
+            out.push(next);
+            rest = &rest[next.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// Whether `out` stops after an escape or a CSI that has not reached its final byte.
+fn ends_inside_a_csi(out: &str) -> bool {
+    if out.ends_with('\u{1b}') {
+        return true;
+    }
+    out.rfind("\u{1b}[")
+        .is_some_and(|start| out[start + 2..].bytes().all(|b| (0x20..=0x3f).contains(&b)))
+}
+
+/// Whether `out` ends in a complete `CSI … r` or `ESC c`.
+fn is_region_or_reset_end(out: &str) -> bool {
+    if out.ends_with("\u{1b}c") {
+        return true;
+    }
+    let Some(start) = out.rfind("\u{1b}[") else {
+        return false;
+    };
+    let body = &out[start + 2..out.len() - 1];
+    body.bytes().all(|b| b.is_ascii_digit() || b == b';')
+}
+
+/// The length of a `CSI digits;limit r` at the start of `rest`.
+fn repair_len(rest: &str, tail: &str) -> Option<usize> {
+    let body = rest.strip_prefix("\u{1b}[")?;
+    let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+    (digits > 0 && body[digits..].starts_with(tail)).then_some(2 + digits + tail.len())
 }
 
 fn resize_from(term: &mut marion_term::Term, record: &str) {
@@ -608,17 +718,50 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
             "[{harness}] `^] s` put no status row on the bottom line, which reads {:?}",
             op.last_viewport_line()
         );
-        let mut above = (Vec::new(), Vec::new());
+        // Byte for byte, every harness: what reached the operator is the node's own output with
+        // only marion's row, its clear and its scroll-region repairs added — none of them inside a
+        // node sequence, or the node's bytes would not survive the strip intact.
+        let limit = reserved.rows;
+        let mut relayed = (String::new(), String::new());
         assert!(
             until(|| {
-                above = (op.rows_above_the_last(), node_screen(&node_cast));
-                above.0 == above.1
+                relayed = (
+                    without_marions_bytes(&cast_text(&op.cast, "o"), limit),
+                    cast_text(&node_cast, "o"),
+                );
+                relayed.0 == relayed.1
             }),
-            "[{harness}] with the status row shown, the operator's screen above it is not the \
-             node's own screen.\noperator:\n{}\nnode:\n{}",
-            above.0.join("\n"),
-            above.1.join("\n")
+            "[{harness}] the operator's stream is not the node's output plus marion's row: they \
+             part at byte {:?}",
+            relayed
+                .0
+                .char_indices()
+                .zip(relayed.1.chars())
+                .find(|((_, a), b)| a != b)
+                .map(|((at, _), _)| (
+                    at,
+                    tail(&relayed.0[..at]),
+                    tail(&relayed.1[..at.min(relayed.1.len())])
+                ))
         );
+        // And as a screen, where the node repaints all of it on a resize (the alternate screen):
+        // the rows above marion's are exactly the node's screen at the node's size. A main-screen
+        // TUI's picture after a resize depends on where in its stream the resize landed, which two
+        // emulators replaying two recordings cannot reproduce, so for those the bytes above are
+        // the proof.
+        if on_alternate_screen(&cast_text(&node_cast, "o")) {
+            let mut above = (Vec::new(), Vec::new());
+            assert!(
+                until(|| {
+                    above = (op.rows_above_the_last(), node_screen(&node_cast));
+                    above.0 == above.1
+                }),
+                "[{harness}] with the status row shown, the operator's screen above it is not \
+                 the node's own screen.\noperator:\n{}\nnode:\n{}",
+                above.0.join("\n"),
+                above.1.join("\n")
+            );
+        }
         op.type_in(&toggle);
         assert!(
             until(|| !op.last_viewport_line().contains("marion:")),
