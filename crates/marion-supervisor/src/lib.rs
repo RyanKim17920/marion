@@ -88,6 +88,8 @@ pub(crate) mod native_launch;
 pub(crate) mod native_relay;
 mod native_tty;
 mod pane_client;
+/// Turn delivery into an interactive node: a bracketed paste into its pty.
+pub mod paste;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;

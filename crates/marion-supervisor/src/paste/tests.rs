@@ -1,0 +1,518 @@
+//! Tests for terminal-paste delivery.
+//!
+//! The pure parts (framing, the gate) are tested on values. The injector runs against a real pty
+//! with **no child**: the test holds the slave in raw mode, so what a read of it returns is what a
+//! harness would have read, and it plays the node (writing `CSI ? 2004 h`) and the operator
+//! (writing through a lease) by hand. Every wait is on a causal marker — a gate decision the
+//! injector reports, a journal record, bytes on the slave — never on a sleep.
+
+use std::io::{Read, Write};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use marion_core::contract::AgentId;
+use marion_core::journal::{MessageDelivered, MessageDropped, RecordKind};
+use marion_harness::spec::TurnDelivery;
+
+use super::*;
+use crate::inbox::{Inboxes, Source, render};
+use crate::pty::{PtyHost, PtyMaster, WinSize};
+use crate::serve::ConnId;
+
+const PASTE: TurnDelivery = TurnDelivery::bracketed_paste("test row");
+
+fn agent() -> AgentId {
+    AgentId("paste-node".into())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Framing
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_message_is_framed_as_one_bracketed_paste() {
+    assert_eq!(frame("hi"), "\x1b[200~hi\x1b[201~");
+    assert_eq!(
+        frame("a\nb\tc"),
+        "\x1b[200~a\nb\tc\x1b[201~",
+        "newlines and tabs are text"
+    );
+}
+
+/// **Nothing inside the brackets can end them or type a key.** A child's result is quoted into
+/// the parent's paste; an `ESC[201~` in it would close the paste early and the rest would arrive
+/// as typing — its first newline a submit. So every control but newline and tab goes, and a CR
+/// becomes the newline it means.
+#[test]
+fn control_characters_cannot_escape_the_paste() {
+    let hostile = "ok\x1b[201~\rrm -rf /\r\n\x03\x7f\u{9b}201~done";
+    let framed = frame(hostile);
+    let inner = framed
+        .strip_prefix("\x1b[200~")
+        .and_then(|f| f.strip_suffix("\x1b[201~"))
+        .expect("one bracket each side");
+    assert!(
+        !inner.contains('\x1b') && !inner.contains('\r'),
+        "{inner:?}"
+    );
+    assert!(
+        !inner
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t'),
+        "{inner:?}"
+    );
+    assert_eq!(inner, "ok[201~\nrm -rf /\n201~done");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------------------------
+
+fn policy() -> PastePolicy {
+    PastePolicy {
+        operator_quiet: Duration::from_millis(1500),
+        paste_mode_grace: Duration::from_secs(30),
+        recheck: Duration::from_millis(100),
+    }
+}
+
+fn state(bracketed: bool, typed: Option<Instant>, empty: bool) -> crate::pty::InputState {
+    crate::pty::InputState {
+        bracketed_paste: bracketed,
+        last_operator_input: typed,
+        composer_empty: empty,
+    }
+}
+
+#[test]
+fn the_gate_opens_only_on_a_quiet_empty_bracketed_terminal() {
+    let now = Instant::now();
+    let p = policy();
+    let mut off = None;
+    assert_eq!(
+        gate(&state(true, None, true), now, &p, &mut off),
+        Gate::Ready
+    );
+    let long_ago = now - Duration::from_secs(2);
+    assert_eq!(
+        gate(&state(true, Some(long_ago), true), now, &p, &mut off),
+        Gate::Ready
+    );
+
+    let just_now = now - Duration::from_millis(400);
+    assert_eq!(
+        gate(&state(true, Some(just_now), true), now, &p, &mut off),
+        Gate::Wait(Hold::OperatorTyping, just_now + p.operator_quiet),
+        "quiet is measured from the operator's last key"
+    );
+    assert_eq!(
+        gate(&state(true, Some(long_ago), false), now, &p, &mut off),
+        Gate::Wait(Hold::ComposerNotEmpty, now + p.recheck),
+        "a half-typed line waits for the operator however long ago it was typed"
+    );
+}
+
+/// Bracketed paste off holds the message for the grace, counted from the first time it was the
+/// only thing in the way, and past the grace refuses it. Turning on within the grace resets it.
+#[test]
+fn bracketed_paste_off_holds_then_refuses_after_the_grace() {
+    let t0 = Instant::now();
+    let p = policy();
+    let mut off = None;
+    let off_state = state(false, None, true);
+    assert_eq!(
+        gate(&off_state, t0, &p, &mut off),
+        Gate::Wait(Hold::NoBracketedPaste, t0 + p.recheck)
+    );
+    let later = t0 + Duration::from_secs(10);
+    assert_eq!(
+        gate(&off_state, later, &p, &mut off),
+        Gate::Wait(Hold::NoBracketedPaste, later + p.recheck),
+        "the grace runs from t0, not from each look"
+    );
+    assert!(matches!(
+        gate(&off_state, t0 + p.paste_mode_grace, &p, &mut off),
+        Gate::Refuse(reason) if reason.contains("bracketed paste")
+    ));
+    assert_eq!(
+        off, None,
+        "a refusal starts the next message's grace afresh"
+    );
+
+    let mut off = None;
+    gate(&off_state, t0, &p, &mut off);
+    assert_eq!(
+        gate(&state(true, None, true), t0, &p, &mut off),
+        Gate::Ready
+    );
+    assert_eq!(off, None, "on again resets the grace");
+}
+
+#[test]
+fn only_a_terminal_paste_row_gets_an_injector() {
+    assert!(PasteParams::of(PASTE).is_some());
+    for other in [
+        TurnDelivery::TypedTurn { note: "" },
+        TurnDelivery::Continuation { note: "" },
+        TurnDelivery::McpChannel { note: "" },
+        TurnDelivery::None { note: "" },
+    ] {
+        assert!(PasteParams::of(other).is_none(), "{other:?}");
+    }
+    let p = PasteParams::of(PASTE).unwrap();
+    assert_eq!(
+        (p.submit, p.submit_delay),
+        (&b"\r"[..], Duration::from_millis(50))
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The injector, on a real pty
+// ---------------------------------------------------------------------------------------------
+
+struct Bed {
+    _dir: marion_testsupport::Scratch,
+    cast: std::path::PathBuf,
+    host: Arc<PtyHost>,
+    slave: std::fs::File,
+    inboxes: Arc<Inboxes>,
+    records: Arc<Mutex<Vec<RecordKind>>>,
+    decisions: Receiver<Gate>,
+    injector: Arc<PasteInjector>,
+}
+
+impl Bed {
+    fn new(tag: &str, policy: PastePolicy) -> Bed {
+        let dir = marion_testsupport::scratch(tag);
+        let cast = dir.join("pty.cast");
+        let size = WinSize::new(80, 24);
+        let master = PtyMaster::open(size).expect("a pty");
+        let slave = std::fs::File::from(master.open_slave().expect("the slave opens"));
+        let mut termios = rustix::termios::tcgetattr(&slave).expect("termios");
+        termios.make_raw();
+        rustix::termios::tcsetattr(&slave, rustix::termios::OptionalActions::Now, &termios)
+            .expect("the slave goes raw");
+        let host = Arc::new(
+            PtyHost::start(
+                agent(),
+                master,
+                &cast,
+                size,
+                "xterm-256color",
+                Instant::now(),
+            )
+            .expect("the host starts"),
+        );
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&records);
+        let inboxes = Arc::new(Inboxes::new(Box::new(move |k| {
+            sink.lock().unwrap().push(k);
+            Ok(())
+        })));
+        inboxes.open(&agent());
+        let (tx, decisions) = channel();
+        let injector = PasteInjector::start_observed(
+            agent(),
+            &host,
+            &inboxes,
+            PasteParams::of(PASTE).unwrap(),
+            policy,
+            tx,
+        )
+        .expect("the injector starts");
+        Bed {
+            _dir: dir,
+            cast,
+            host,
+            slave,
+            inboxes,
+            records,
+            decisions,
+            injector,
+        }
+    }
+
+    fn node_writes(&mut self, bytes: &[u8]) {
+        let before = self.host.bytes_read();
+        self.slave.write_all(bytes).unwrap();
+        assert!(marion_testsupport::until(
+            || self.host.bytes_read() >= before + bytes.len() as u64
+        ));
+    }
+
+    fn steer(&self, text: &str) -> String {
+        self.inboxes
+            .enqueue(&agent(), PASTE, Source::Operator, text.into())
+            .expect("queued")
+    }
+
+    fn read_slave(&mut self, want: usize) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while got.len() < want {
+            let n = self.slave.read(&mut buf).unwrap();
+            assert!(n > 0, "the slave hung up");
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
+    }
+
+    /// The next decision the injector reports that is not `want`-irrelevant: skips repeats of
+    /// the same hold until `pred` matches, bounded.
+    fn await_decision(&self, pred: impl Fn(&Gate) -> bool) -> Gate {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let d = self
+                .decisions
+                .recv_timeout(left)
+                .expect("the injector reported the decision in time");
+            if pred(&d) {
+                return d;
+            }
+        }
+    }
+
+    fn resolution(&self, id: &str) -> RecordKind {
+        let mut found = None;
+        assert!(
+            marion_testsupport::until(|| {
+                found = self.records.lock().unwrap().iter().find_map(|r| match r {
+                    RecordKind::MessageDelivered(MessageDelivered { message_id, .. })
+                    | RecordKind::MessageDropped(MessageDropped { message_id, .. })
+                        if message_id == id =>
+                    {
+                        Some(r.clone())
+                    }
+                    _ => None,
+                });
+                found.is_some()
+            }),
+            "message {id} was never resolved: {:?}",
+            self.records.lock().unwrap()
+        );
+        found.unwrap()
+    }
+
+    fn cast_records(&self) -> Vec<(f64, String, String)> {
+        std::fs::read_to_string(&self.cast)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+}
+
+fn fast() -> PastePolicy {
+    PastePolicy {
+        operator_quiet: Duration::from_millis(200),
+        paste_mode_grace: Duration::from_secs(30),
+        recheck: Duration::from_millis(10),
+    }
+}
+
+fn expected_paste(text: &str) -> Vec<u8> {
+    let msg = crate::inbox::Message {
+        id: String::new(),
+        source: Source::Operator,
+        text: text.into(),
+        queued_at: std::time::SystemTime::UNIX_EPOCH,
+    };
+    let mut want = frame(&render(&msg)).into_bytes();
+    want.push(b'\r');
+    want
+}
+
+/// **The end-to-end unit: queued → pasted → delivered.** The node sees exactly one bracketed
+/// paste of the rendered message and then the submit; the journal says `pty:paste`; the cast
+/// marks the injection with the message id.
+#[test]
+fn a_queued_message_is_pasted_submitted_and_journaled_as_delivered() {
+    let mut bed = Bed::new("paste-delivers", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let id = bed.steer("use the v2 API");
+    let want = expected_paste("use the v2 API");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert_eq!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(MessageDelivered {
+            agent_id: agent(),
+            message_id: id.clone(),
+            via: "pty:paste".into(),
+        })
+    );
+    let records = bed.cast_records();
+    assert!(
+        records
+            .iter()
+            .any(|(_, c, d)| c == "m" && d.contains(&id) && d.starts_with("marion")),
+        "the cast marks marion's paste: {records:?}"
+    );
+}
+
+/// **A half-typed line holds the paste until the operator submits it**, and the paste then comes
+/// after the operator's line, never inside it.
+#[test]
+fn the_operators_half_typed_line_holds_the_paste() {
+    let mut bed = Bed::new("paste-composer", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"hel").unwrap();
+    assert_eq!(bed.read_slave(3), b"hel");
+    let id = bed.steer("wait for me");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::ComposerNotEmpty, _)));
+    bed.host.write_input(&lease, b"lo\r").unwrap();
+    let mut want = b"lo\r".to_vec();
+    want.extend(expected_paste("wait for me"));
+    assert_eq!(
+        bed.read_slave(want.len()),
+        want,
+        "the operator's line, then marion's"
+    );
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
+/// **The operator's last key starts the quiet period**: the paste is written no sooner than
+/// `operator_quiet` after it, measured on the cast's own clock.
+#[test]
+fn the_paste_waits_for_the_operator_to_be_quiet() {
+    let mut bed = Bed::new("paste-quiet", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"\r").unwrap();
+    bed.read_slave(1);
+    let id = bed.steer("after a pause");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::OperatorTyping, _)));
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+    let mut clock = 0.0;
+    let mut operator_at = None;
+    let mut paste_at = None;
+    for (dt, code, data) in bed.cast_records() {
+        clock += dt;
+        match code.as_str() {
+            "i" if data == "\r" && paste_at.is_none() => operator_at = Some(clock),
+            "m" => paste_at = Some(clock),
+            _ => {}
+        }
+    }
+    let gap = paste_at.unwrap() - operator_at.unwrap();
+    assert!(gap >= 0.2, "the paste came {gap}s after the operator's key");
+}
+
+/// **No bracketed paste, no paste**: past the grace the message is dropped by name and the node
+/// receives nothing — the next byte it reads is the operator's.
+#[test]
+fn a_terminal_without_bracketed_paste_drops_the_message_by_name() {
+    let mut bed = Bed::new(
+        "paste-no-2004",
+        PastePolicy {
+            paste_mode_grace: Duration::ZERO,
+            ..fast()
+        },
+    );
+    let id = bed.steer("never typed");
+    match bed.resolution(&id) {
+        RecordKind::MessageDropped(d) => assert!(d.reason.contains("bracketed paste"), "{d:?}"),
+        other => panic!("expected a drop, got {other:?}"),
+    }
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"x").unwrap();
+    assert_eq!(
+        bed.read_slave(1),
+        b"x",
+        "nothing of the message reached the node"
+    );
+}
+
+/// A node that turns bracketed paste on within the grace — a TUI still booting — gets the paste.
+#[test]
+fn a_message_waits_for_the_node_to_turn_bracketed_paste_on() {
+    let mut bed = Bed::new("paste-late-2004", fast());
+    let id = bed.steer("boot first");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::NoBracketedPaste, _)));
+    bed.node_writes(b"\x1b[?2004h");
+    let want = expected_paste("boot first");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
+/// **8 KiB — the steer cap — arrives byte-exact** through the whole path.
+#[test]
+fn a_message_at_the_steer_cap_arrives_byte_exact() {
+    let mut bed = Bed::new("paste-8k", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let text: String = (0..marion_core::proto::params::MAX_STEER_BYTES)
+        .map(|i| (b'a' + (i % 26) as u8) as char)
+        .collect();
+    let want = expected_paste(&text);
+    let mut reader = bed.slave.try_clone().unwrap();
+    let n = want.len();
+    let read = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while got.len() < n {
+            let k = reader.read(&mut buf).unwrap();
+            assert!(k > 0);
+            got.extend_from_slice(&buf[..k]);
+        }
+        got
+    });
+    let id = bed.steer(&text);
+    assert_eq!(read.join().unwrap(), want);
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
+/// Messages go in order, one paste each.
+#[test]
+fn several_messages_are_pasted_one_at_a_time_in_order() {
+    let mut bed = Bed::new("paste-order", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let ids: Vec<_> = ["one", "two", "three"]
+        .iter()
+        .map(|t| bed.steer(t))
+        .collect();
+    let want: Vec<u8> = ["one", "two", "three"]
+        .iter()
+        .flat_map(|t| expected_paste(t))
+        .collect();
+    assert_eq!(bed.read_slave(want.len()), want);
+    for id in ids {
+        assert!(matches!(
+            bed.resolution(&id),
+            RecordKind::MessageDelivered(_)
+        ));
+    }
+}
+
+/// **When the node ends, the injector's thread ends**, and a message it was holding for a
+/// half-typed line is dropped by name rather than lost.
+#[test]
+fn the_injector_ends_with_its_node_and_drops_what_it_held() {
+    let mut bed = Bed::new("paste-close", fast());
+    bed.node_writes(b"\x1b[?2004h");
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"typing").unwrap();
+    let id = bed.steer("too late");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::ComposerNotEmpty, _)));
+    bed.inboxes.close(&agent(), "the node ended");
+    assert!(matches!(bed.resolution(&id), RecordKind::MessageDropped(_)));
+    assert!(
+        bed.injector.join_for_test(Duration::from_secs(10)),
+        "the injector's thread did not end with its node"
+    );
+}
