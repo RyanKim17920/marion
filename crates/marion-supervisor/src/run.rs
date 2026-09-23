@@ -1142,6 +1142,16 @@ pub trait SpawnObserver: Sync {
     /// A process exists. `pid` is a signal target, not an identity — see the `Spawned` writer below
     /// and `restart.rs` for why those are different claims.
     fn started(&self, agent_id: &AgentId, pid: i32);
+    /// **The node's inbox, for its driver** — the queue `node/steer` and a background child's end
+    /// land in, bound to this node, or `None` for an owner that keeps none. A typed-turn driver
+    /// delivers from it at the node's turn boundaries (and mid-turn where the row folds); with
+    /// `None` it takes the one turn it was launched with, as before.
+    fn turn_source(
+        &self,
+        _agent_id: &AgentId,
+    ) -> Option<std::sync::Arc<dyn crate::inbox::TurnSource>> {
+        None
+    }
     /// **§7.6's subtree scan, answered by whoever holds the tree.** The live descendants of
     /// `agent_id` — the whole subtree, in the gating sense `descendant_gate::live_descendants`
     /// states — or `None` for an owner that holds no registry and so cannot see the tree at all.

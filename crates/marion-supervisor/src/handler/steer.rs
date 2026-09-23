@@ -639,6 +639,35 @@ mod tests {
         assert!(fx.queued_records().is_empty());
     }
 
+    /// **A node's driver reaches exactly its own inbox through its owner** — what `node/steer`
+    /// queues for the node is what the driver takes, and another node's queue is not visible.
+    #[test]
+    fn a_nodes_owner_hands_its_driver_the_nodes_own_inbox() {
+        use crate::run::SpawnObserver;
+        let (fx, _) = family("owner-turns");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let owner = super::super::NodeOwner {
+            handle: Arc::clone(&fx.handle),
+            task_id: None,
+            repo: "/repo".into(),
+            tx,
+            identified: std::sync::Mutex::new(None),
+            announce_to: None,
+            owes: Default::default(),
+        };
+        let turns = owner
+            .turn_source(&id("child"))
+            .expect("the supervisor keeps an inbox");
+        let m = assert_queued(fx.steer("child", None));
+        assert_queued(fx.steer("grand", None));
+        assert_eq!(turns.take_next().map(|m| m.id), Some(m));
+        assert_eq!(
+            turns.take_next(),
+            None,
+            "the grandchild's message is not the child's"
+        );
+    }
+
     /// `node/prompt` stays unbuilt, and its refusal points at `node/steer`.
     #[test]
     fn node_prompt_is_unimplemented_and_points_at_steer() {

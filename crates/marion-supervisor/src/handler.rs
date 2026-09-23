@@ -1063,6 +1063,14 @@ impl crate::run::SpawnObserver for NodeOwner {
         let _ = self.tx.send(Progress::Started);
     }
 
+    /// The node's own inbox, opened at [`RegistryHandle::claim`] a moment before this is asked.
+    fn turn_source(&self, agent_id: &AgentId) -> Option<Arc<dyn crate::inbox::TurnSource>> {
+        Some(Arc::new(crate::inbox::BoundInbox::new(
+            Arc::clone(&self.handle.inboxes),
+            agent_id.clone(),
+        )))
+    }
+
     /// §7.6's subtree scan, off the registry this supervisor already follows. Refreshed first: the
     /// registry is a follower of the journal, and a descendant's `Exited` that landed since the last
     /// poll is exactly the transition a held node is waiting to see.
@@ -1353,7 +1361,7 @@ pub struct RegistryHandle {
     /// and with the same lifetime: opened at [`Self::claim`], closed at [`Self::mark_finished`].
     /// `node/steer` enqueues here (`handler/steer.rs`); no delivery port is attached yet, so a
     /// queued message waits and is dropped, journaled, when its node ends.
-    inboxes: crate::inbox::Inboxes,
+    inboxes: Arc<crate::inbox::Inboxes>,
     /// §3.4's display plane, per node. See [`Panes`] for why this is not in `shared`.
     panes: Mutex<Panes>,
     /// Completion-based monotonic time for the bounded pane replay cache. Cloned before invoking
@@ -1511,11 +1519,11 @@ impl RegistryHandle {
         // The inbox's records go through the supervisor's one journal handle, as every other
         // record this handle writes does ([`Self::journal_append`]).
         let journal = live.read(|r| r.path().to_path_buf());
-        let inboxes = crate::inbox::Inboxes::new(Box::new(move |kind| {
+        let inboxes = Arc::new(crate::inbox::Inboxes::new(Box::new(move |kind| {
             crate::journal::append_at(&journal, kind)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        }));
+        })));
         Arc::new_cyclic(|me| RegistryHandle {
             me: me.clone(),
             live,
