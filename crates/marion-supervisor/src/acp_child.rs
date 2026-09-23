@@ -1654,7 +1654,13 @@ sleep 15"#,
             matches!(&e, AcpChildError::NoSelect { value, category: "model", .. } if value == "fake/beta"),
             "{e}"
         );
-        assert!(!prompt_seen.exists(), "no prompt was sent");
+        // What the agent read after the session, if anything: a `read` torn by marion's shutdown
+        // may still run the next line, so the claim is on the content, not the file's existence.
+        let after = std::fs::read_to_string(&prompt_seen).unwrap_or_default();
+        assert!(
+            !after.contains("session/prompt"),
+            "no prompt was sent: {after}"
+        );
     }
 
     /// **An agent type's `approval_mode` is set as the session's mode, over the protocol, after
