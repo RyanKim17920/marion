@@ -2782,9 +2782,12 @@ fn report_watched(
             return Err(ExitCode::FAILURE);
         }
     };
-    for frame in &watched.transcript {
-        println!("{frame}");
-    }
+    // A closed stdout (`marion run … | head -1`) is the reader's decision, not a failure.
+    let _ = write_transcript(
+        &watched.transcript,
+        &mut io::stdout().lock(),
+        io::stdout().is_terminal(),
+    );
     // Every permission marion refused this root, read back from the journal it was recorded in
     // (§9: a root has no contract, so the journal is the only place these live). Best effort by
     // construction: it is a summary of a fact the node was already told, printed in its transcript
@@ -2800,6 +2803,21 @@ fn report_watched(
         );
     }
     Ok(run_verdict(watched.terminal, blocked_bound))
+}
+
+/// The root's frames, one JSON line each, onto `out` — **unless `out` is a terminal.**
+///
+/// stdout is `marion run`'s machine surface (`tests/launch_only_root.rs` parses it), so a pipe gets
+/// every frame. A terminal already watched the same frames rendered on stderr by the live view;
+/// printing them again raw dumped ~20 KB of stream-json over the screen when a picker run ended.
+fn write_transcript(frames: &[Value], out: &mut dyn Write, is_terminal: bool) -> io::Result<()> {
+    if is_terminal {
+        return Ok(());
+    }
+    for frame in frames {
+        writeln!(out, "{frame}")?;
+    }
+    Ok(())
 }
 
 /// Dial the supervisor this run may start, and split its connection for reading. Either failure
@@ -3213,6 +3231,20 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// **Raw frames reach stdout only when stdout is not a terminal.** The live view already
+    /// rendered every frame on stderr; printing the transcript again on a terminal dumped ~20 KB of
+    /// stream-json over it when the picker's run ended. Piped, stdout stays the machine surface.
+    #[test]
+    fn the_transcript_is_written_to_a_pipe_and_never_to_a_terminal() {
+        let frames = vec![serde_json::json!({"type": "result"})];
+        let mut piped = Vec::new();
+        write_transcript(&frames, &mut piped, false).unwrap();
+        assert_eq!(String::from_utf8(piped).unwrap(), "{\"type\":\"result\"}\n");
+        let mut tty = Vec::new();
+        write_transcript(&frames, &mut tty, true).unwrap();
+        assert!(tty.is_empty());
+    }
 
     /// **`--canned` against a port nobody listens on is refused at once, naming how to start the
     /// provider**, instead of the run hanging forever on a provider that will never answer (the
