@@ -1112,7 +1112,14 @@ pub struct OpenCodeAdapter;
 impl OpenCodeAdapter {
     /// The `provider/model` pair, which both argv and the generated config name. Parsed once so
     /// they cannot disagree.
-    fn model_ref(spec: &LaunchSpec) -> Result<opencode::ModelRef, HarnessError> {
+    ///
+    /// `Ok(None)` only on a live node with no model: opencode then uses the operator's own default
+    /// model, as it uses their login. A canned node always needs one, because the provider block
+    /// marion generates names it.
+    fn model_ref(spec: &LaunchSpec) -> Result<Option<opencode::ModelRef>, HarnessError> {
+        if spec.model.is_none() && spec.auth == Auth::Inherited {
+            return Ok(None);
+        }
         let m = spec.model.as_deref().ok_or(HarnessError::MissingInput {
             harness: Harness::OpenCode,
             what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
@@ -1127,17 +1134,18 @@ impl OpenCodeAdapter {
         if spec.auth == Auth::Inherited && m == marion_core::agent_type::OPENCODE_DEFAULT_MODEL {
             return Err(HarnessError::MissingInput {
                 harness: Harness::OpenCode,
-                what: "the built-in default model `marion/default` names the provider block marion \
-                       generates for its own canned endpoint, and a --live node writes none — so \
-                       it resolves to no provider at all. Name a real provider/model from the \
-                       operator's own opencode config instead (marion run --live -m …)",
+                what: "the model `marion/default` is marion's canned test provider, which a run on \
+                       your own login does not use. Pass a provider/model from your opencode \
+                       config (-m provider/model), or pass none to use opencode's own default",
             });
         }
-        opencode::ModelRef::parse(m).ok_or(HarnessError::MissingInput {
-            harness: Harness::OpenCode,
-            what: "the model must be in `provider/model` form, which is the only spelling `-m` \
-                   accepts and the one the generated provider block has to repeat",
-        })
+        opencode::ModelRef::parse(m)
+            .map(Some)
+            .ok_or(HarnessError::MissingInput {
+                harness: Harness::OpenCode,
+                what: "the model must be in `provider/model` form, which is the only spelling `-m` \
+                       accepts and the one the generated provider block has to repeat",
+            })
     }
 }
 
@@ -1165,7 +1173,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         // the row reads the result — see `Self::tool_name` for why a declaration here compiles
         // nothing.
         let mut f = neutral_fields(spec, self.axes(spec)?);
-        f.model = Some(Self::model_ref(spec)?.qualified());
+        f.model = Self::model_ref(spec)?.map(|m| m.qualified());
         // Any stable string suppresses the title-generation call; the node's own id makes the
         // session identifiable in `opencode session list` without leaking the prompt.
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
@@ -1197,7 +1205,12 @@ impl HarnessAdapter for OpenCodeAdapter {
         let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
         let json = opencode::config_json(
             &opencode::ConfigSpec {
-                model: Self::model_ref(spec)?,
+                // Canned always resolves one: `model_ref` answers `None` only under `Inherited`,
+                // which returned above.
+                model: Self::model_ref(spec)?.ok_or(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "a canned node needs a provider/model for the generated provider block",
+                })?,
                 base_url: base_url.to_string(),
                 api_key: spec.api_key.clone(),
             },
@@ -1318,9 +1331,9 @@ impl HarnessAdapter for CopilotAdapter {
                 if spec.model.as_deref() == Some(agent_type::COPILOT_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Copilot,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real Copilot model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real Copilot model \
+                               (-m <model>), or none to use Copilot's own default",
                     });
                 }
             }
@@ -1412,9 +1425,9 @@ impl HarnessAdapter for GooseAdapter {
                 if spec.model.as_deref() == Some(agent_type::GOOSE_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Goose,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
                     });
                 }
             }
@@ -1511,9 +1524,9 @@ impl HarnessAdapter for ClineAdapter {
                 if spec.model.as_deref() == Some(agent_type::CLINE_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Cline,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …), or none to use providers.json's own",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use providers.json's own",
                     });
                 }
             }
@@ -1618,9 +1631,9 @@ impl HarnessAdapter for QwenAdapter {
                 if spec.model.as_deref() == Some(agent_type::QWEN_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Qwen,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
                     });
                 }
             }
@@ -4788,6 +4801,98 @@ mod tests {
                 .any(|(k, _)| k == "OPENCODE_CONFIG_CONTENT"),
             "the canned route writes a file and carries no inline config"
         );
+    }
+
+    /// **A live opencode node with no model runs on the operator's own default.** marion passes no
+    /// `-m` rather than refusing, because the operator's opencode config already names one and
+    /// marion inherits the login and the choice together.
+    #[test]
+    fn a_live_opencode_node_with_no_model_passes_no_model_flag() {
+        let live = LaunchSpec {
+            model: None,
+            ..opencode_live_spec()
+        };
+        let inv = OpenCodeAdapter
+            .compile(&live, &ctx())
+            .expect("no model is the operator's default, not an error");
+        assert!(!inv.args.iter().any(|a| a == "-m"), "{:?}", inv.args);
+        // Canned still needs one: the generated provider block names it.
+        assert!(
+            OpenCodeAdapter
+                .compile(
+                    &LaunchSpec {
+                        model: None,
+                        ..opencode_spec()
+                    },
+                    &ctx()
+                )
+                .is_err()
+        );
+    }
+
+    /// **The canned-default refusals speak to a person**: no spec sections, and no `--live` flag,
+    /// which no longer exists as a choice (real auth is the default).
+    #[test]
+    fn the_live_canned_default_refusals_name_no_spec_section_and_no_live_flag() {
+        let cases: Vec<(Box<dyn HarnessAdapter>, LaunchSpec)> = vec![
+            (
+                Box::new(OpenCodeAdapter),
+                LaunchSpec {
+                    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                    ..opencode_live_spec()
+                },
+            ),
+            (
+                Box::new(CopilotAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::COPILOT_DEFAULT_MODEL.into()),
+                    ..copilot_spec()
+                },
+            ),
+            (
+                Box::new(GooseAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::GOOSE_DEFAULT_MODEL.into()),
+                    ..goose_spec()
+                },
+            ),
+            (
+                Box::new(ClineAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::CLINE_DEFAULT_MODEL.into()),
+                    ..cline_spec()
+                },
+            ),
+            (
+                Box::new(QwenAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::QWEN_DEFAULT_MODEL.into()),
+                    ..qwen_spec()
+                },
+            ),
+        ];
+        for (adapter, spec) in cases {
+            let e = adapter.compile(&spec, &ctx()).unwrap_err().to_string();
+            assert!(!e.contains("--live"), "{}: {e}", adapter.harness());
+            assert!(!e.contains('§'), "{}: {e}", adapter.harness());
+            assert!(
+                e.contains("-m"),
+                "{}: it must say what to pass: {e}",
+                adapter.harness()
+            );
+        }
     }
 
     /// **`marion/default` names marion's own generated plumbing, and a live node generates none.**
