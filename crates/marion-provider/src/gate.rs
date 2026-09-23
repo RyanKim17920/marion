@@ -28,7 +28,10 @@
 //! session-title request concurrently with its first real turn, measured 8 ms apart), which is why
 //! nothing in `script.rs` counts. This does count — it has to, since "the second turn" is the thing
 //! being held — so it counts within **one wire**, where the requests are one node's sequential
-//! conversation and an auxiliary request on another wire cannot shift the numbering.
+//! conversation and an auxiliary request on another wire cannot shift the numbering. An auxiliary
+//! request on the **same** wire (the title request, gemini's router probe) never reaches a hold at
+//! all: the server filters it through [`crate::script::is_auxiliary`], because whether a release
+//! sends one is harness drift (Claude Code 2.1.278 stopped sending the title on a marion root).
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};

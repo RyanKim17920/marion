@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::gate::{Hold, TurnGate};
 use crate::reqlog::RequestLog;
-use crate::script::{Script, Wire, classify_wire, wire_name};
+use crate::script::{Script, Wire, classify_wire, is_auxiliary, wire_name};
 
 /// Default listen port, matching `spikes/s6`'s `S6_PORT`.
 pub const DEFAULT_PORT: u16 = 8099;
@@ -343,7 +343,8 @@ fn serve_connection(
             break;
         };
         let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-        let wire = classify_wire(&req.path, &body).map(wire_name);
+        let classified = classify_wire(&req.path, &body);
+        let wire = classified.map(wire_name);
         // Log before answering: if the script panics, the evidence is already on disk.
         if !req.method.eq_ignore_ascii_case("GET") {
             let _ = log.append(&req.method, &req.path, &req.headers, &req.body, wire);
@@ -352,7 +353,13 @@ fn serve_connection(
         // **After the log, before the answer.** `gate.rs` argues why that is the only placement
         // that makes the ordering checkable: the held request is already on disk, so a test can
         // read the provider's own account of what it has been asked while it is still holding.
-        if let Some(gate) = gate {
+        //
+        // **A harness's own auxiliary request is never offered to a hold** ([`is_auxiliary`]): a
+        // hold is about a node's turns, and whether a release sends a title request at all is
+        // harness drift, so counting one would move "the n-th turn" from build to build.
+        if let Some(gate) = gate
+            && !classified.is_some_and(|w| is_auxiliary(w, &body))
+        {
             gate.wait_for(wire, &body);
         }
 
@@ -613,6 +620,62 @@ mod tests {
             log[0]["body"]["contents"].is_array() && log[1]["body"]["messages"].is_array(),
             "bodies are recorded parsed and complete on the new wires too"
         );
+        let _ = std::fs::remove_file(&reqlog);
+    }
+
+    /// **A hold counts node turns, and a request that belongs to no node is not one.** Claude Code
+    /// 2.1.276 sends a session-title request on the anthropic wire; 2.1.278 and 2.1.280 do not, in
+    /// the same run shape. A gate that counted it held "the third anthropic request" as the root's
+    /// closing turn on one build and as nothing at all on the next, so the root finished unheld.
+    /// Title first here, then two real turns: `holding_from(2)` must answer the first real turn and
+    /// hold the second.
+    #[test]
+    fn an_auxiliary_request_is_neither_counted_nor_held_by_a_turn_gate() {
+        let reqlog = std::env::temp_dir().join(format!(
+            "marion-canned-gate-aux-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&reqlog);
+        let gate = TurnGate::holding_from("anthropic", 2);
+        let server = CannedServer::start_gated(
+            Config {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reqlog: reqlog.clone(),
+                script: Script::default(),
+            },
+            Some(Arc::clone(&gate)),
+        )
+        .unwrap();
+        let addr = server.addr();
+        let title = post("/v1/messages", &json!({"messages": []}).to_string());
+        let turn = post(
+            "/v1/messages",
+            &json!({"tools": [{"name": "mcp__marion__spawn"}], "messages": []}).to_string(),
+        );
+
+        assert!(
+            speak(addr, &title).contains("200"),
+            "the title stub is answered"
+        );
+        let first = {
+            let turn = turn.clone();
+            std::thread::spawn(move || speak(addr, &turn))
+        };
+        assert!(
+            marion_testsupport::until(|| first.is_finished()),
+            "the first real turn is answered: the title request before it was not a turn, so it \
+             must not have used up the gate's count (parked: {})",
+            gate.parked()
+        );
+        assert_eq!(gate.parked(), 0);
+
+        let second = std::thread::spawn(move || speak(addr, &turn));
+        assert!(
+            marion_testsupport::until(|| gate.parked() == 1),
+            "the second real turn is the one held"
+        );
+        gate.release();
+        second.join().unwrap();
         let _ = std::fs::remove_file(&reqlog);
     }
 

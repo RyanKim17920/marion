@@ -1458,11 +1458,15 @@ fn start_supervisor(
 ///
 /// # The shape, and why one run covers §9's second run too
 ///
-/// The gate holds the **root's third `anthropic` turn**, which is its closing one. Three is
-/// measured, not assumed: the root's wire carries a session-title request and two scripted turns,
-/// and while the title races the first turn, both precede the closing turn by the whole of the
-/// child's run — so the third is deterministically `Finish` even though the first two are not
-/// ordered.
+/// The gate holds the **root's second `anthropic` turn**, which is its closing one: the root has
+/// two scripted turns, `Delegate` and `Finish`, and the second cannot be asked for before the
+/// child's whole run has returned through `spawn`. The count is of *turns*, not requests. This
+/// used to hold the third request, counting Claude Code's session-title request as the first —
+/// and 2.1.278 and 2.1.280 stopped sending that request on this run, so the third request never
+/// came, the closing turn was answered, the root exited and the supervisor left correctly with
+/// nothing to drive. The server now passes every auxiliary request past a hold
+/// (`marion_provider::script::is_auxiliary`), so the count no longer depends on whether a release
+/// sends one.
 ///
 /// That buys the entire criterion from one run:
 ///
@@ -1492,7 +1496,7 @@ fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_re
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
 
-    let gate = TurnGate::holding_from(ROOT_WIRE, 3);
+    let gate = TurnGate::holding_from(ROOT_WIRE, 2);
     let server = CannedServer::start_gated(
         Config {
             addr: ([127, 0, 0, 1], 0).into(),

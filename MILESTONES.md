@@ -558,6 +558,19 @@ day by a copilot started without the switch) unless the switch is `false`. mario
 `false` and run 1.0.83, while the gate's bare `--version` probe does not get it and read 1.0.87. The s10/s11/s14/s16
 probes were not re-run.
 
+**claude 2.1.278 and 2.1.280 stopped sending the session-title request on a marion root's run
+(measured 2026-09-22).** One-axis A/B through the shim, codex 0.155.1 fixed, on `client_run`'s
+quit-and-return test: on 2.1.276 the root's `anthropic` wire carried a tool-less title request
+plus two scripted turns; on 2.1.278 and 2.1.280 only the two turns. That test's `TurnGate` held
+"the third `anthropic` request" as the root's closing turn, so on the newer builds the closing
+turn was answered, the root exited 0, the journal went quiescent and the supervisor wrote
+`SupervisorExited` and left, correctly by §5.7 — the test then read `Gone` during the detached
+window. marion's lifetime rule was right; the canned provider's hold was counting a request that
+belongs to no node. The server now passes every auxiliary request (the title request, gemini's
+router probe; `marion_provider::script::is_auxiliary`) past any hold, and the test holds the
+root's second turn, green on 2.1.276 and 2.1.280. The admission ritual's suite list does not
+include `client_run`, which is why the admission run was green.
+
 **opencode 1.18.32, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the claude 2.1.280
 run, with the same suite counts. Homebrew replaced 1.18.30 in place, so no pinned build was on
 disk. The recorded contracts name `opencode` `1.18.32`. **Not drift, but a trap:** at the default

@@ -184,6 +184,22 @@ fn messages_wire(path: &str, body: &Value) -> Wire {
     }
 }
 
+/// Is this request one a harness makes **for itself**, belonging to no node's conversation?
+///
+/// Two wires carry one: Claude Code's session-title generation and gemini's model-routing
+/// classifier probe, both recognised by carrying no tools. Whether a harness sends one at all is
+/// its own business and moves between releases (Claude Code 2.1.276 sends the title request on a
+/// marion root's run; 2.1.278 and 2.1.280 do not), so nothing that counts or holds a node's turns
+/// may count these: [`crate::server`] passes them past every [`crate::Hold`], and
+/// [`Script::respond`] answers them before asking whose turn it is.
+pub fn is_auxiliary(wire: Wire, body: &Value) -> bool {
+    match wire {
+        Wire::Anthropic => classify_anthropic(body) == RequestKind::SessionTitle,
+        Wire::Gemini { .. } => classify_gemini(body) == GeminiKind::RouterProbe,
+        Wire::Responses | Wire::OpenAi => false,
+    }
+}
+
 /// Where the root is in its two-step script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootStep {
@@ -916,14 +932,13 @@ impl Script {
     /// 2. **whose turn is it?** [`RootScript::marker`], when a root is scripted at all.
     /// 3. **which step of that node's script?** the per-wire classifiers, unchanged.
     pub fn respond(&self, wire: Wire, body: &Value) -> String {
-        match wire {
-            Wire::Anthropic if classify_anthropic(body) == RequestKind::SessionTitle => {
-                return anthropic::session_title_stub();
-            }
-            Wire::Gemini { streaming } if classify_gemini(body) == GeminiKind::RouterProbe => {
-                return gemini::text_turn(&self.gemini_router_verdict, streaming);
-            }
-            _ => {}
+        if is_auxiliary(wire, body) {
+            return match wire {
+                Wire::Gemini { streaming } => {
+                    gemini::text_turn(&self.gemini_router_verdict, streaming)
+                }
+                _ => anthropic::session_title_stub(),
+            };
         }
         // **Before the two-step scripts**, and first-match-wins: a root's transcript carries its
         // children's task text too, so the entries are ordered rather than assumed disjoint (see
