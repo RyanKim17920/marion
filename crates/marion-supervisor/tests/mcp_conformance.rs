@@ -587,9 +587,21 @@ fn tools_list_names_are_bare_and_in_the_pinned_order() {
         .collect();
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list", "report"],
+        vec!["spawn", "wait", "status", "list", "steer", "report"],
         "the order is pinned because it is what the model reads first"
     );
+
+    // `steer`'s schema on the wire: one message, addressed by a handle or by an id `list` shows.
+    let steer = &v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "steer")
+        .expect("steer is declared")["inputSchema"];
+    assert_eq!(steer["required"], json!(["message"]), "{steer}");
+    for p in ["task_id", "agent_id", "message"] {
+        assert_eq!(steer["properties"][p]["type"], "string", "{p}: {steer}");
+    }
 
     let whole = v.to_string();
     assert!(

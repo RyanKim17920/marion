@@ -112,7 +112,7 @@ pub use marion_harness::claude_code::{
 /// into `--available-tools`, where `mcp__marion__spawn` names no tool and the root would launch
 /// with none of marion's verbs, at exit 0. So the root does what `run_spawn` does for a child:
 /// name the verb, and let the adapter spell it (`HarnessAdapter::marion_tool_name`, §3.1).
-pub const ROOT_VERBS: [&str; 4] = ["spawn", "status", "wait", "list"];
+pub const ROOT_VERBS: [&str; 5] = ["spawn", "status", "wait", "list", "steer"];
 
 /// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
 /// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**
@@ -2976,7 +2976,11 @@ mod tests {
     #[test]
     fn the_root_allowlist_is_every_verb_an_m1_root_can_reach() {
         // Omitting a reachable verb denies a call that then blocks until the root's bound expires.
-        assert_eq!(ROOT_VERBS.to_vec(), vec!["spawn", "status", "wait", "list"]);
+        // `steer` because a root may redirect its own descendants (§5.4), and the verb is declared.
+        assert_eq!(
+            ROOT_VERBS.to_vec(),
+            vec!["spawn", "status", "wait", "list", "steer"]
+        );
         assert!(
             !ROOT_VERBS.contains(&"report"),
             "report is rejected on a node without a contract, and a root has none"
@@ -2993,7 +2997,8 @@ mod tests {
                 "mcp__marion__spawn",
                 "mcp__marion__status",
                 "mcp__marion__wait",
-                "mcp__marion__list"
+                "mcp__marion__list",
+                "mcp__marion__steer"
             ]
         );
         // Whereas copilot, the other adapter that compiles this list, spells them its own way.

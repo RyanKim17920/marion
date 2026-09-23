@@ -63,8 +63,8 @@ fn usage_text() -> String {
          supervisor's own sentence when it was refused -- an ended node, an unknown id, a harness\n\
          with no measured way to take one. Like list, it starts no supervisor.\n\
          \n\
-         marion mcp serves marion's own MCP tools — spawn, wait, status, list — over stdio, for\n\
-         an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
+         marion mcp serves marion's own MCP tools — spawn, wait, status, list, steer — over\n\
+         stdio, for an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
          makes, over the same socket: it starts no agent itself and owns none. Point a client at\n\
          it with `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. It is not a\n\
          command to run at a terminal — stdout is JSON-RPC.\n\

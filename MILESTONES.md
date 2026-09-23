@@ -247,6 +247,16 @@ supervisor's sentence verbatim. It starts no supervisor. Witnesses:
 `background_spawn::marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one` (real
 detached supervisor, shim codex root: queued, ended, unknown), the `marion` bin's parse tests,
 `tree::tests::a_steer_target_is_a_whole_id_or_one_nodes_short_id`.
+A node steers through the MCP `steer {task_id | agent_id, message}` tool (declared after `list`;
+six tools now): a `task_id` resolves through the bridge's handle table as `status` does, an
+`agent_id` from `list` reaches a grandchild, the caller is the bridge's own `SpawnCaller` (none for
+`marion mcp`), and the supervisor's refusal is returned verbatim. `root::ROOT_VERBS` and
+`native_launch::NATIVE_ROOT_MARION_TOOLS` allow it, so a root may steer its descendants. Witnesses:
+`background_spawn::a_parent_steers_its_child_by_handle_or_by_the_id_list_shows`,
+`background_spawn::a_child_steering_its_parent_or_sibling_is_refused_verbatim`,
+`mcp::tests::steer_refuses_a_call_without_one_address_and_a_message`,
+`bridge::tests::steer_declares_its_address_and_says_when_the_child_reads_it`, and the tools/list
+pins in `mcp_conformance` and `background_spawn`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

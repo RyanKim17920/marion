@@ -273,6 +273,7 @@ fn handle_tool_call(
         "wait" => tool_wait(who, bg, id, args).unwrap_or_else(|refused| refused),
         "status" => tool_status(who, bg, id, args).unwrap_or_else(|refused| refused),
         "list" => tool_list(who, id).unwrap_or_else(|refused| refused),
+        "steer" => tool_steer(who, bg, id, args).unwrap_or_else(|refused| refused),
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
 }
@@ -637,6 +638,62 @@ fn tool_status(
         // `not_found` that already names the id and how current the registry is), and
         // marion's where the supervisor could not be reached at all. Neither is reworded.
         Err(e) => Err(bridge::tool_result(id, &format!("marion: {e}"), true)),
+    }
+}
+
+/// **`steer`: queue a message for a node below the caller** — §2's `node/steer` over the courier.
+///
+/// The address is resolved here and the authority is not: a `task_id` through this process's
+/// handle table (as `status` resolves one), an `agent_id` as given, and the supervisor decides
+/// whether this caller may steer it — a node proves its token and must be a strict ancestor; a
+/// top-level `marion mcp` is the operator's peer. A refusal is the supervisor's sentence, verbatim.
+fn tool_steer(
+    who: &Principal,
+    bg: &background::Background,
+    id: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let refuse = |text: &str| bridge::tool_result(id, text, true);
+    let Some(message) = args["message"].as_str().filter(|m| !m.trim().is_empty()) else {
+        return Err(refuse(
+            "marion: `steer` needs a non-empty `message` — the words the child should read at its \
+             next turn boundary. Nothing was queued.",
+        ));
+    };
+    let agent_id = match (args["task_id"].as_str(), args["agent_id"].as_str()) {
+        (Some(task_id), None) => match bg.node_of(task_id) {
+            Some((agent_id, _)) => agent_id,
+            None => {
+                return Err(refuse(&format!(
+                    "marion: this bridge has no record of task_id {task_id:?}; it knows only the \
+                     handles its own `spawn` calls returned, in this process. Pass the child's \
+                     `agent_id` from `list` instead. Nothing was queued."
+                )));
+            }
+        },
+        (None, Some(agent_id)) => AgentId(agent_id.to_string()),
+        (None, None) => {
+            return Err(refuse(
+                "marion: `steer` needs an address: the `task_id` from a `spawn` handle, or an \
+                 `agent_id` that `list` shows. Nothing was queued.",
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(refuse(
+                "marion: `steer` takes one of `task_id` or `agent_id`, not both — steering the \
+                 one you did not mean would redirect the wrong child. Nothing was queued.",
+            ));
+        }
+    };
+    let (sock, _) = paths_or_refuse(who, id)?;
+    let (caller, _) = spawn_identity(who, id)?;
+    match courier::steer(sock.socket(), &agent_id, message, caller) {
+        Ok(steered) => Ok(bridge::tool_result(
+            id,
+            &format!("marion: {}", steered.sentence()),
+            false,
+        )),
+        Err(e) => Err(refuse(&format!("marion: {e}"))),
     }
 }
 
@@ -1411,6 +1468,43 @@ mod tests {
     ///
     /// It needs no `MARION_REPO` and starts no child, so it is a unit test rather than the
     /// end-to-end control in `tests/background_spawn.rs`.
+    /// **`steer` names what it is missing before it dials anything**: a message, and exactly one
+    /// address. Both addresses at once is refused rather than one silently preferred — a model that
+    /// passed two ids meant one of them, and steering the other would redirect the wrong child.
+    #[test]
+    fn steer_refuses_a_call_without_one_address_and_a_message() {
+        let bg = crate::background::Background::new();
+        let call = |args: serde_json::Value| {
+            let reply =
+                handle_tool_call(&Principal::Node, &bg, &serde_json::json!(1), "steer", &args);
+            assert_eq!(
+                reply["result"]["isError"],
+                serde_json::json!(true),
+                "{reply}"
+            );
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let no_message = call(serde_json::json!({"agent_id": "a"}));
+        assert!(no_message.contains("`message`"), "{no_message}");
+        let blank = call(serde_json::json!({"agent_id": "a", "message": "  "}));
+        assert!(blank.contains("`message`"), "{blank}");
+        let nobody = call(serde_json::json!({"message": "use v2"}));
+        assert!(
+            nobody.contains("`task_id`") && nobody.contains("`agent_id`"),
+            "{nobody}"
+        );
+        let both = call(serde_json::json!({"task_id": "t", "agent_id": "a", "message": "use v2"}));
+        assert!(both.contains("one of"), "{both}");
+        let unknown = call(serde_json::json!({"task_id": "task-never-started", "message": "hi"}));
+        assert!(
+            unknown.contains("task-never-started") && unknown.contains("`list`"),
+            "{unknown}"
+        );
+    }
+
     #[test]
     fn wait_refuses_by_name_rather_than_blocking_on_a_child_it_never_started() {
         let bg = crate::background::Background::new();

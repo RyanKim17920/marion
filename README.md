@@ -9,7 +9,7 @@ Full 8-minute demo (21 scenes, 492 s): [marion-demo.mp4](https://github.com/Ryan
 ## What marion does
 
 - Supervises eight harnesses as one tree. Every node is journaled, addressable by id, and shown in the same view regardless of which CLI is behind it.
-- Gives a running agent five tools over MCP — `spawn`, `wait`, `status`, `list`, `report` — so a harness delegates to another harness by calling a tool, not by shelling out.
+- Gives a running agent six tools over MCP — `spawn`, `wait`, `status`, `list`, `steer`, `report` — so a harness delegates to another harness, and redirects what it delegated, by calling a tool, not by shelling out.
 - Runs a harness's own TUI as a marion root: `marion claude`, `marion codex`, `marion gemini`, `marion opencode`, `marion copilot`. Same login, same keybindings, plus marion's MCP server injected and the session journaled.
 - Attaches to any live node's terminal (`marion attach`) and shows the fleet as a tree with a detail pane and a per-node capability strip (`marion tree`).
 - Survives its own death. `kill -9` the supervisor and `marion resume <id>` relaunches the lost root under the same id against the same session, recorded as a second generation.
@@ -61,7 +61,7 @@ marion-supervisor doctor --capabilities
 marion-supervisor doctor --capabilities --harness codex
 ```
 
-**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. The operator sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
+**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
 
 Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 

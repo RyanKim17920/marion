@@ -1624,7 +1624,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // a root, and listing it invited live roots to call it — `bridge::tools_list_result`).
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list"],
+        vec!["spawn", "wait", "status", "list", "steer"],
         "the declared surface of a root, over a real handshake"
     );
     // Stated as a number as well as a list, because `ntools` is what the harness logs and what a
@@ -1632,7 +1632,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // declarations gets wrong while keeping every name.
     assert_eq!(
         names.len(),
-        4,
+        5,
         "§9's ntools, as a real client would count it"
     );
 
@@ -1974,5 +1974,79 @@ fn marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one() {
         err.contains("no node `no-such-node` is on this project's journal"),
         "{err}"
     );
+    assert!(bridge.close().success());
+}
+
+/// **A parent steers its child through the `steer` tool, by handle or by the id `list` shows**,
+/// and the answer says the message was queued — never read — and who takes it when.
+#[test]
+fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
+    let fx = fixture("bg-steer-tool");
+    let mut bridge = fx.bridge();
+    let handle = bridge.tool("spawn", spawn_args(true));
+    let task_id = handle_task_id(&handle);
+    fx.await_children(1);
+    let child = fx
+        .children_of_root()
+        .pop()
+        .expect("the root spawned a child");
+
+    let by_handle = bridge.tool(
+        "steer",
+        json!({"task_id": &task_id, "message": "use the v2 API"}),
+    );
+    let text = text_of(&by_handle);
+    assert!(!is_error(&by_handle), "{by_handle}");
+    assert!(text.starts_with("marion: queued as m-"), "{text}");
+    let short = marion_supervisor::tree::short_id(&child.0);
+    assert!(
+        text.contains(&format!(
+            "reaches codex-impl {short} at its next turn boundary"
+        )),
+        "{text}"
+    );
+
+    let listed = text_of(&bridge.tool("list", json!({})));
+    assert!(listed.contains(&child.0), "`list` shows the id: {listed}");
+    let by_id = bridge.tool("steer", json!({"agent_id": &child.0, "message": "and v3"}));
+    assert!(!is_error(&by_id), "{by_id}");
+    assert!(
+        text_of(&by_id).starts_with("marion: queued as m-"),
+        "{by_id}"
+    );
+    assert_eq!(
+        fx.journal_text().matches("MessageQueued").count(),
+        2,
+        "one journal record per accepted steer"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **A node may steer only below itself.** A child's bridge — started from the declaration marion
+/// wrote for the child — steering its parent or its sibling gets the supervisor's §5.4 refusal,
+/// verbatim, and queues nothing.
+#[test]
+fn a_child_steering_its_parent_or_sibling_is_refused_verbatim() {
+    let fx = fixture("bg-steer-upward");
+    let mut bridge = fx.bridge();
+    bridge.tool("spawn", spawn_args(true));
+    bridge.tool("spawn", spawn_args(true));
+    fx.await_children(2);
+    let children = fx.children_of_root();
+    let [first, second] = children.as_slice() else {
+        panic!("two children: {children:?}");
+    };
+    let mut child = Bridge::start(&declaration_of(&fx.state, first), &[]);
+    for target in [&fx.root_id, second] {
+        let reply = child.tool("steer", json!({"agent_id": &target.0, "message": "stop"}));
+        assert!(is_error(&reply), "{reply}");
+        let text = text_of(&reply);
+        assert!(
+            text.starts_with("marion: a node may steer only a node below it in the tree (§5.4)"),
+            "the supervisor's sentence, verbatim: {text}"
+        );
+    }
+    assert!(!fx.journal_text().contains("MessageQueued"));
+    assert!(child.close().success());
     assert!(bridge.close().success());
 }

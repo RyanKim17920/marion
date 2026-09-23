@@ -70,7 +70,7 @@ pub(crate) trait NativeCommandFactory: Send + Sync + 'static {
 /// The marion tools a native root may call through its injected MCP server, in marion's own
 /// spelling. Each vendor adapter maps them to that harness's spelling; the registry-driven
 /// adapters own that translation, not this factory.
-pub const NATIVE_ROOT_MARION_TOOLS: &[&str] = &["spawn", "wait", "status"];
+pub const NATIVE_ROOT_MARION_TOOLS: &[&str] = &["spawn", "wait", "status", "steer"];
 
 /// Where the factory finds the vendor injection adapter for a selected harness.
 ///
@@ -704,6 +704,16 @@ mod tests {
     use crate::native_exec::{NativeLifecycleSpawner, NativeLifecycleTask};
     use crate::registry::{LiveRegistry, Registry};
     use crate::serve::ConnId;
+
+    /// A native root may redirect what it delegated: `steer` is on its list beside `spawn`, so
+    /// the harness does not offer the verb and then deny it.
+    #[test]
+    fn a_native_root_may_steer_its_descendants() {
+        assert_eq!(
+            NATIVE_ROOT_MARION_TOOLS,
+            &["spawn", "wait", "status", "steer"]
+        );
+    }
 
     fn invocation(work: &std::path::Path) -> NativeInvocation {
         assemble_native(

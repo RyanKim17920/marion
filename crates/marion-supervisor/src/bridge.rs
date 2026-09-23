@@ -439,6 +439,36 @@ fn tools_describing(agent_type_description: &str) -> Value {
             }
         },
         {
+            // **§2's `node/steer`, from a node.** The supervisor decides who may steer whom — a
+            // strict ancestor, token first (`handler/steer.rs`) — so this schema grants nothing:
+            // an `agent_id` outside the caller's subtree is refused there, verbatim. `agent_id` is
+            // accepted beside `task_id` because a grandchild has no handle in this process, and
+            // `list` already shows its id.
+            //
+            // The description states *when* generically, because the answer is per row
+            // (`TurnDelivery`) and a model cannot read the row: never "now", never "read".
+            "name": "steer",
+            "description": "Queue a message for a running child agent of yours — or any agent \
+                            below you — that it will see at its next turn boundary. Address it \
+                            by the task_id from the handle `spawn` returned, or by an agent_id \
+                            that `list` shows (the only way to reach a grandchild). Where the \
+                            child's harness folds a message into work in progress, that boundary \
+                            is its next tool round, mid-task; otherwise it is the child's next \
+                            turn or resume. The reply says the message was queued, not that the \
+                            child has read it. A finished child, a node that is not below you, \
+                            and a harness with no measured way to take a message are refused, \
+                            and the refusal says which.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "message": {"type": "string"}
+                },
+                "required": ["message"]
+            }
+        },
+        {
             "name": "report",
             "description": "Return your result to marion. Call this exactly once when the task \
                             is done. Your final assistant message is NOT the return value.",
@@ -1543,11 +1573,52 @@ mod tests {
         // **The order is pinned, and it is the order a caller meets them in** — delegate, then
         // block on one child, then poll one child, then survey them all, then return your own
         // result. It is not the allowlist's order and does not have to be; the allowlist is a set.
-        assert_eq!(names, vec!["spawn", "wait", "status", "list", "report"]);
+        // `steer` sits after the survey: a caller looks at its children, then redirects one.
+        assert_eq!(
+            names,
+            vec!["spawn", "wait", "status", "list", "steer", "report"]
+        );
         let s = t.to_string();
         assert!(
             !s.contains("mcp__marion"),
             "the prefix is applied by the harness; baking it in would double it"
+        );
+    }
+
+    /// **`steer` takes a message and one address**: the `task_id` a handle carries, or an
+    /// `agent_id` `list` showed — the only way to name a grandchild, whose handle this caller never
+    /// held. Its description says when the child reads the message, generically and truthfully:
+    /// the next tool round where a harness folds one in, the next turn or resume otherwise, and a
+    /// refusal where a harness has no measured way at all.
+    #[test]
+    fn steer_declares_its_address_and_says_when_the_child_reads_it() {
+        let t = tools(&AgentTypes::builtins_only());
+        let steer = t
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == "steer")
+            .expect("steer is declared");
+        let schema = &steer["inputSchema"];
+        assert_eq!(schema["type"], "object");
+        for p in ["task_id", "agent_id", "message"] {
+            assert_eq!(schema["properties"][p]["type"], "string", "{p}: {schema}");
+        }
+        assert_eq!(schema["required"], json!(["message"]), "{schema}");
+        let desc = steer["description"].as_str().unwrap();
+        for needle in [
+            "queue",
+            "`list`",
+            "tool round",
+            "next turn",
+            "resume",
+            "refused",
+        ] {
+            assert!(desc.contains(needle), "`{needle}` missing: {desc}");
+        }
+        assert!(
+            !desc.contains("immediately"),
+            "a queued message is never immediate: {desc}"
         );
     }
 
