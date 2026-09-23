@@ -2007,3 +2007,15 @@ mod tests {
         );
     }
 }
+
+/// A `--canned --base-url` for a run whose harness is a stub that never dials it: a real listener
+/// that accepts connections and answers nothing, so `marion run --canned`'s reachability probe
+/// passes. The listener lives as long as the test process, so a run spawned in the background
+/// still finds it.
+pub fn silent_canned_endpoint() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port binds");
+    let port = listener.local_addr().expect("a bound address").port();
+    // Deliberately kept for the process's life: the probe may run after the caller returns.
+    Box::leak(Box::new(listener));
+    format!("http://127.0.0.1:{port}/v1")
+}

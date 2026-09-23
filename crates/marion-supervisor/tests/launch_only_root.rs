@@ -441,13 +441,13 @@ fn marion_run(dir: &Path, node: &Node, bin: &Path, prompt: &str, timeout_secs: &
         repo.to_string_lossy().into_owned(),
         "--state-dir".into(),
         state.to_string_lossy().into_owned(),
-        // Nothing listens here. The stub is the whole model side of this run, and a URL that
-        // resolves would only invite a real request. `--canned` is what makes that legible to the
+        // Listening and silent. The stub is the whole model side of this run, and a provider that
+        // answered would only invite a real request. `--canned` is what makes that legible to the
         // binary: a loopback endpoint under real vendor auth is refused at argument parsing,
         // because it aims the operator's credential at a fake server.
         "--canned".into(),
         "--base-url".into(),
-        "http://127.0.0.1:9/v1".into(),
+        marion_testsupport::silent_canned_endpoint(),
         "--timeout".into(),
         timeout_secs.into(),
     ];

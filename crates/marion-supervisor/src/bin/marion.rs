@@ -398,7 +398,7 @@ fn resumed_shape(journal: &Path, agent_id: &marion_core::contract::AgentId) -> R
 
 /// The resume's base URL, by [`resolve_base_url`]'s rule; a refusal is its sentence and the code.
 fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
-    resolve_base_url(
+    resolve_reachable_base_url(
         args.canned,
         args.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
@@ -929,6 +929,67 @@ fn resolve_base_url(
                 .unwrap_or_else(|| CANNED_BASE_URL.into()),
         )),
     }
+}
+
+/// How long `--canned` waits for its provider to accept a connection before refusing the run.
+const CANNED_PROBE: StdDuration = StdDuration::from_secs(1);
+
+/// **Is anything listening at the canned endpoint?** A bounded TCP connect, nothing more.
+///
+/// Measured: `marion run codex --prompt "say hello" --canned` with no provider on :8099 hung
+/// forever — the harness retries a refused connection without end (opencode never exits on one at
+/// all, S13) — and left the root and its supervisor running after the client was killed. A connect
+/// probe turns that into one sentence naming the command that starts the provider. It proves only
+/// that a port is open, not that the listener is marion's provider; that is the operator's to say.
+fn canned_endpoint_listening(url: &str) -> Result<(), String> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let not_listening = |why: &str| {
+        format!(
+            "--canned points at {url}, and {why}. Start marion's canned provider first, from a \
+             marion checkout: `cargo install --path crates/marion-provider` and then \
+             `marion-canned &` (MARION_CANNED_PORT picks the port, default 8099), or pass \
+             --base-url for one that is already running. Drop --canned to run on your own login."
+        )
+    };
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| not_listening("that is not an http:// URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let has_port = match authority.strip_prefix('[') {
+        Some(v6) => v6.contains("]:"),
+        None => authority.contains(':'),
+    };
+    let target = match (has_port, scheme) {
+        (true, _) => authority.to_string(),
+        (false, "https") => format!("{authority}:443"),
+        (false, _) => format!("{authority}:80"),
+    };
+    let addrs: Vec<_> = target
+        .to_socket_addrs()
+        .map_err(|e| not_listening(&format!("its address does not resolve ({e})")))?
+        .collect();
+    if addrs
+        .iter()
+        .any(|a| TcpStream::connect_timeout(a, CANNED_PROBE).is_ok())
+    {
+        return Ok(());
+    }
+    Err(not_listening("nothing is listening there"))
+}
+
+/// [`resolve_base_url`], then [`canned_endpoint_listening`] on the endpoint it chose: one refusal
+/// path for `run`, `resume` and `mcp`, so none of them can hang on a provider that is not there.
+fn resolve_reachable_base_url(
+    canned: bool,
+    explicit: Option<String>,
+    from_env: Option<String>,
+) -> Result<Option<String>, String> {
+    let url = resolve_base_url(canned, explicit, from_env)?;
+    if let Some(u) = &url {
+        canned_endpoint_listening(u)?;
+    }
+    Ok(url)
 }
 
 /// `--repo`'s default: the enclosing git repository, else the working directory itself.
@@ -2459,7 +2520,7 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
     let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
         return Err(ExitCode::FAILURE);
     };
-    let base_url = match resolve_base_url(
+    let base_url = match resolve_reachable_base_url(
         args.canned,
         args.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
@@ -3147,6 +3208,37 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// **`--canned` against a port nobody listens on is refused at once, naming how to start the
+    /// provider**, instead of the run hanging forever on a provider that will never answer (the
+    /// README's first command did exactly that). A listening port passes.
+    #[test]
+    fn a_canned_endpoint_that_is_not_listening_is_refused_fast_with_the_command_to_start_one() {
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = dead.local_addr().unwrap().port();
+        drop(dead);
+        let url = format!("http://127.0.0.1:{port}/v1");
+        let started = std::time::Instant::now();
+        let e = canned_endpoint_listening(&url).expect_err("nothing listens there");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "bounded"
+        );
+        assert!(e.contains(&url), "{e}");
+        assert!(
+            e.contains("marion-canned"),
+            "it names the provider binary: {e}"
+        );
+        assert!(e.contains("MARION_CANNED_PORT"), "and how to aim it: {e}");
+
+        let live = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/v1", live.local_addr().unwrap().port());
+        assert_eq!(canned_endpoint_listening(&url), Ok(()));
+        assert!(
+            canned_endpoint_listening("not a url").is_err(),
+            "an unreadable endpoint is refused, not probed as a guess"
+        );
+    }
 
     /// **`$MARION_STATE_DIR` is honoured by every verb, and `--state-dir` still wins over it.**
     ///
