@@ -23,6 +23,15 @@
 //! either lands before it (and is taken) or after it (and is refused, "node ended"). Never both
 //! accepted and lost.
 //!
+//! # A node owed a child's end is held open
+//!
+//! A node that backgrounded a child is owed that child's end as a message (§7.6's gate, applied
+//! at a turn boundary rather than at process exit). [`Inboxes::owe`] records the debt when the
+//! child starts; [`Inboxes::announce`] queues the end and settles the debt in one step. While a
+//! debt is open `take_or_seal` does not seal, and [`TurnSource::held`] tells the driver to wait
+//! on its port instead of ending the node — so "the child ended" can never land between a
+//! driver's "nothing queued" and its seal.
+//!
 //! # What the journal holds
 //!
 //! `MessageQueued` / `MessageDelivered` / `MessageDropped`, keyed by the message id — **the
@@ -47,6 +56,66 @@ pub type MessageId = String;
 pub trait DeliveryPort: Send + Sync {
     /// A message is waiting. Called after it is queued, outside the inbox's lock.
     fn wake(&self);
+}
+
+/// **One node's inbox, as that node's driver holds it** — the same queue as [`Inboxes`], bound
+/// to the node, so a lane's driver never names another node's id.
+///
+/// `take_or_seal` is the only way a driver ends its node, for the late-steer race's reason, and
+/// [`Self::held`] is how it tells "nothing now" from "nothing ever": a node owed a background
+/// child's end (§7.6) is kept open, and its driver waits on its [`DeliveryPort`] instead of ending.
+pub trait TurnSource: Send + Sync {
+    /// The oldest waiting message, leaving the inbox open. For a delivery made mid-turn, where the
+    /// node is not ending.
+    fn take_next(&self) -> Option<Message>;
+    /// The oldest waiting message, or — when there is none and nothing is owed — seal the inbox
+    /// in the same step. See [`Inboxes::take_or_seal`].
+    fn take_or_seal(&self) -> Option<Message>;
+    /// A taken message reached the node, by `via`.
+    fn delivered(&self, id: &str, via: &str);
+    /// A taken message will never reach the node.
+    fn dropped(&self, id: &str, reason: &str);
+    /// Wake `port` for every message queued from now on (and once now if one waits).
+    fn attach_port(&self, port: Arc<dyn DeliveryPort>);
+    /// The inbox is still open after a `take_or_seal` found it empty: something is owed to it, so
+    /// the driver must wait for its port rather than end the node. `false` for a source that
+    /// never holds.
+    fn held(&self) -> bool {
+        false
+    }
+}
+
+/// [`TurnSource`] over the supervisor's [`Inboxes`], for one node.
+pub struct BoundInbox {
+    inboxes: Arc<Inboxes>,
+    agent: AgentId,
+}
+
+impl BoundInbox {
+    pub fn new(inboxes: Arc<Inboxes>, agent: AgentId) -> Self {
+        BoundInbox { inboxes, agent }
+    }
+}
+
+impl TurnSource for BoundInbox {
+    fn take_next(&self) -> Option<Message> {
+        self.inboxes.take_next(&self.agent)
+    }
+    fn take_or_seal(&self) -> Option<Message> {
+        self.inboxes.take_or_seal(&self.agent)
+    }
+    fn delivered(&self, id: &str, via: &str) {
+        self.inboxes.delivered(&self.agent, id, via);
+    }
+    fn dropped(&self, id: &str, reason: &str) {
+        self.inboxes.dropped(&self.agent, id, reason);
+    }
+    fn attach_port(&self, port: Arc<dyn DeliveryPort>) {
+        self.inboxes.attach_port(&self.agent, port);
+    }
+    fn held(&self) -> bool {
+        self.inboxes.held(&self.agent)
+    }
 }
 
 /// Who a message is from, with what its rendering needs. Richer than the journal's
@@ -179,6 +248,10 @@ struct Inbox {
     queue: VecDeque<Message>,
     port: Option<Arc<dyn DeliveryPort>>,
     sealed: bool,
+    /// Announcements this node is owed: one per backgrounded child still running (§7.6). The
+    /// inbox cannot seal while any is owed, which is what makes the hold race-free — "the child
+    /// ended" and "its announcement is queued" are one step ([`Inboxes::announce`]).
+    owed: usize,
 }
 
 /// Every node's inbox, keyed by the node. Held by the supervisor beside its node table.
@@ -235,6 +308,70 @@ impl Inboxes {
         source: Source,
         text: String,
     ) -> Result<MessageId, Refusal> {
+        self.accept(agent, delivery, source, text, false)
+    }
+
+    /// Record that `agent` is owed one announcement — a backgrounded child of it has started —
+    /// so its inbox stays open until [`Self::announce`] or [`Self::release`] settles it. `false`
+    /// (and nothing recorded) for a node with no inbox or a sealed one: it has taken its last
+    /// turn, so there is nothing to hold open.
+    pub fn owe(&self, agent: &AgentId) -> bool {
+        match self.lock().get_mut(agent) {
+            Some(inbox) if !inbox.sealed => {
+                inbox.owed += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Self::enqueue`] for an owed announcement: the message is queued and the debt settled
+    /// **in one step**, so a driver can never see the debt gone and the message not yet there.
+    /// A refusal settles the debt too — the announcement was attempted and will not come again.
+    pub fn announce(
+        &self,
+        agent: &AgentId,
+        delivery: TurnDelivery,
+        source: Source,
+        text: String,
+    ) -> Result<MessageId, Refusal> {
+        let accepted = self.accept(agent, delivery, source, text, true);
+        if accepted.is_err() {
+            self.release(agent);
+        }
+        accepted
+    }
+
+    /// Settle one debt with no message: the announcement goes another way (the parent's own lane
+    /// pushes it) or nowhere. Wakes the driver, which may be holding for exactly this.
+    pub fn release(&self, agent: &AgentId) {
+        let port = {
+            let mut boxes = self.lock();
+            let Some(inbox) = boxes.get_mut(agent) else {
+                return;
+            };
+            inbox.owed = inbox.owed.saturating_sub(1);
+            inbox.port.clone()
+        };
+        if let Some(port) = port {
+            port.wake();
+        }
+    }
+
+    /// The inbox exists and is not sealed — after a `take_or_seal` found it empty, that means an
+    /// announcement is owed and the driver must wait. See [`TurnSource::held`].
+    pub fn held(&self, agent: &AgentId) -> bool {
+        self.lock().get(agent).is_some_and(|b| !b.sealed)
+    }
+
+    fn accept(
+        &self,
+        agent: &AgentId,
+        delivery: TurnDelivery,
+        source: Source,
+        text: String,
+        settles_debt: bool,
+    ) -> Result<MessageId, Refusal> {
         let port = {
             let mut boxes = self.lock();
             if boxes.get(agent).is_some_and(|b| b.sealed) {
@@ -265,6 +402,9 @@ impl Inboxes {
                 text,
                 queued_at: SystemTime::now(),
             });
+            if settles_debt {
+                inbox.owed = inbox.owed.saturating_sub(1);
+            }
             (id, inbox.port.clone())
         };
         let (id, port) = port;
@@ -281,11 +421,15 @@ impl Inboxes {
 
     /// The oldest waiting message — or, when there is none, **seal the inbox in the same step**,
     /// so no message can be accepted after the driver decided the node has taken its last turn.
+    ///
+    /// **Except while an announcement is owed**: then the inbox is left open and `None` means
+    /// "not yet" ([`Self::held`] says which). Sealing over a debt would refuse the child's end a
+    /// moment after marion promised to announce it.
     pub fn take_or_seal(&self, agent: &AgentId) -> Option<Message> {
         let mut boxes = self.lock();
         let inbox = boxes.get_mut(agent)?;
         let next = inbox.queue.pop_front();
-        if next.is_none() {
+        if next.is_none() && inbox.owed == 0 {
             inbox.sealed = true;
         }
         next
@@ -320,6 +464,7 @@ impl Inboxes {
             };
             inbox.sealed = true;
             inbox.port = None;
+            inbox.owed = 0;
             inbox.queue.drain(..).collect()
         };
         for m in stranded {
@@ -644,6 +789,134 @@ mod tests {
             }
         }
         assert_eq!(outcomes.iter().sum::<usize>(), 400);
+    }
+
+    fn ended(child: &str) -> Source {
+        Source::ChildEnded {
+            child: id(child),
+            task_id: TaskId(format!("t-{child}")),
+            status: "completed".into(),
+            agent_type: "codex".into(),
+            root: false,
+        }
+    }
+
+    /// **A node owed a background child's end is held, not sealed**: `take_or_seal` finds nothing
+    /// and leaves the inbox open while the announcement is owed, the announcement is then taken,
+    /// and only after it does the empty inbox seal.
+    #[test]
+    fn an_inbox_owed_an_announcement_is_held_open_until_it_arrives() {
+        let (inboxes, _) = recording();
+        let (p, c) = (id("parent"), id("child"));
+        inboxes.open(&p);
+        assert!(inboxes.owe(&p), "an open inbox records what it is owed");
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(inboxes.held(&p), "owed, so still open");
+        let m = inboxes
+            .announce(&p, TYPED, ended("child"), "the contract".into())
+            .expect("an owed announcement is accepted");
+        let taken = inboxes.take_or_seal(&p).expect("the announcement is taken");
+        assert_eq!(taken.id, m);
+        assert_eq!(taken.source, ended(c.0.as_str()));
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.held(&p), "nothing owed and nothing queued: sealed");
+        assert_eq!(
+            inboxes.enqueue(&p, TYPED, Source::Operator, "late".into()),
+            Err(Refusal::Ended)
+        );
+    }
+
+    /// An announcement that will not be delivered by the inbox — the parent's lane pushes it
+    /// itself, or has no way to take it — is released, which lets the inbox seal and wakes the
+    /// driver so it notices.
+    #[test]
+    fn a_released_debt_lets_the_inbox_seal_and_wakes_the_driver() {
+        let (inboxes, log) = recording();
+        let p = id("parent");
+        inboxes.open(&p);
+        let port = Arc::new(Counting(AtomicUsize::new(0)));
+        inboxes.attach_port(&p, port.clone());
+        inboxes.owe(&p);
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(inboxes.held(&p));
+        inboxes.release(&p);
+        assert_eq!(port.0.load(Ordering::SeqCst), 1, "the held driver is told");
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.held(&p));
+        assert!(records(&log).is_empty(), "a release is no message");
+    }
+
+    /// A sealed or unknown inbox records no debt, so it cannot be held open by one.
+    #[test]
+    fn a_sealed_or_unknown_inbox_is_owed_nothing() {
+        let (inboxes, _) = recording();
+        let p = id("parent");
+        assert!(!inboxes.owe(&p), "no inbox");
+        inboxes.open(&p);
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.owe(&p), "sealed");
+        assert_eq!(
+            inboxes.announce(&p, TYPED, ended("c"), "x".into()),
+            Err(Refusal::Ended)
+        );
+    }
+
+    /// **The late-announcement race, closed** — the held driver's loop (`take_or_seal`, then
+    /// `held`) against a concurrent `announce`, released together many times. Every round ends
+    /// with the announcement taken: an owed inbox cannot seal, so "held says no" can only follow
+    /// the announcement having been queued, and the next `take_or_seal` takes it.
+    #[test]
+    fn a_held_driver_never_loses_an_announcement_racing_its_boundary() {
+        for round in 0..400 {
+            let (inboxes, _) = recording();
+            let inboxes = Arc::new(inboxes);
+            let p = id("p");
+            inboxes.open(&p);
+            inboxes.owe(&p);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (i2, b2, p2) = (Arc::clone(&inboxes), Arc::clone(&barrier), p.clone());
+            let child = std::thread::spawn(move || {
+                b2.wait();
+                i2.announce(&p2, TYPED, ended("c"), format!("m{round}"))
+            });
+            barrier.wait();
+            let mut taken = None;
+            loop {
+                match inboxes.take_or_seal(&p) {
+                    Some(m) => taken = Some(m),
+                    None if inboxes.held(&p) => std::thread::yield_now(),
+                    None => break,
+                }
+            }
+            let sent = child.join().unwrap().expect("owed, so accepted");
+            assert_eq!(taken.map(|m| m.id), Some(sent), "round {round}");
+        }
+    }
+
+    /// A node's inbox, as its driver holds it: the same queue, bound to the one node.
+    #[test]
+    fn a_bound_inbox_is_the_nodes_own_queue() {
+        let (inboxes, log) = recording();
+        let inboxes = Arc::new(inboxes);
+        let a = id("a");
+        inboxes.open(&a);
+        let turns: Arc<dyn TurnSource> = Arc::new(BoundInbox::new(Arc::clone(&inboxes), a.clone()));
+        let port = Arc::new(Counting(AtomicUsize::new(0)));
+        turns.attach_port(port.clone());
+        let m = inboxes
+            .enqueue(&a, TYPED, Source::Operator, "one".into())
+            .unwrap();
+        assert_eq!(port.0.load(Ordering::SeqCst), 1);
+        let got = turns.take_next().unwrap();
+        assert_eq!(got.id, m);
+        turns.delivered(&got.id, "stream-json:mid-turn");
+        assert!(matches!(
+            records(&log).last(),
+            Some(RecordKind::MessageDelivered(d)) if d.via == "stream-json:mid-turn" && d.message_id == m
+        ));
+        assert!(turns.held(), "open and unsealed");
+        assert_eq!(turns.take_or_seal(), None);
+        assert!(!turns.held());
     }
 
     #[test]
