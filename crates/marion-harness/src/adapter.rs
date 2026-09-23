@@ -7871,6 +7871,34 @@ mod tests {
         }
     }
 
+    /// **A claude node that took two turns spent both turns' tokens.** Measured on 2.1.280
+    /// (S31 `p0a/out/a`, two stream-json turns in one process): each `result` frame's `usage` is
+    /// that turn's alone (10 in / 5 out, twice) while `modelUsage` and `total_cost_usd` run
+    /// cumulative — so the row folds `usage` by summing, which a one-turn run reads identically.
+    #[test]
+    fn a_claude_nodes_usage_sums_the_result_frame_of_every_turn() {
+        let turn = |i: u64, o: u64| {
+            serde_json::json!({"type": "result", "subtype": "success", "usage": {
+                "input_tokens": i, "output_tokens": o,
+                "cache_read_input_tokens": 1, "cache_creation_input_tokens": 2}})
+        };
+        let a = adapter_for(Harness::ClaudeCode).unwrap();
+        assert_eq!(
+            a.usage(&[turn(10, 5), turn(7, 3)]),
+            Some(TokenUsage {
+                input: 17,
+                output: 8,
+                cache_read: 2,
+                cache_write: 4,
+            })
+        );
+        assert_eq!(
+            a.usage(&[turn(10, 5)]).map(|u| (u.input, u.output)),
+            Some((10, 5)),
+            "a one-turn run reads as it always did"
+        );
+    }
+
     /// **What a message written mid-turn does is row data, refined per ACP agent** (S31): Claude
     /// Code's stream-json folds it, the protocol-generic ACP row queues it, and an ACP binding
     /// takes its refinement row's measurement — opencode and claude-agent-acp fold, codex-acp and

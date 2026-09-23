@@ -250,9 +250,11 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/session_id",
     }),
-    // The terminal `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals the run;
-    // `input_tokens` excludes both cache counters (Anthropic's convention). qwen shares this row
-    // and was measured emitting the same shape without the cache-write key (`s25`).
+    // Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
+    // S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while
+    // `modelUsage` ran cumulative, so a node that took several turns sums them. `input_tokens`
+    // excludes both cache counters (Anthropic's convention). qwen shares this row and was measured
+    // emitting the same shape without the cache-write key (`s25`); one result, so the sum is it.
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/type", "result")],
@@ -264,7 +266,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_read: Some("/usage/cache_read_input_tokens"),
         cache_write: Some("/usage/cache_creation_input_tokens"),
         input_includes_cache: false,
-        fold: UsageFold::Last,
+        fold: UsageFold::Sum,
     }),
 };
 
