@@ -247,6 +247,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+        resumes_in_place: false,
     }),
     // The terminal `result` frame's `stats` (`s12/README.md`) totals the run. **Unmeasured past
     // that one README line**, whose `cached` is 0: that `input_tokens` counts cached tokens (and

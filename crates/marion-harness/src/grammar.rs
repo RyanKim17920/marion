@@ -115,6 +115,12 @@ pub struct RecentActivity {
 pub struct SessionId {
     pub at: Where,
     pub path: &'static str,
+    /// A resumed launch was **measured** naming the session it resumed in this same unit, so a
+    /// different id is a fresh session the harness started instead — agy 1.2.8 answers an unknown
+    /// `--conversation` that way, at exit 0 (s32). `false` where that was not measured, and no
+    /// resume is checked: a harness that mints a new id per resumed turn would otherwise fail
+    /// every resume it ever ran.
+    pub resumes_in_place: bool,
 }
 
 /// A set of JSON units inside a stream: frames of a shape, or elements of an array in them.
@@ -671,6 +677,22 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 .map(str::to_string)
         }),
     }
+}
+
+/// Why a launch that resumed `resumed` did not: the stream's first session unit names another
+/// session, on a row whose [`SessionId::resumes_in_place`] was measured. `None` on every other row,
+/// and on a stream that named no session at all — that is no claim either way.
+pub fn resume_refusal(g: &StreamGrammar, stdout: &str, resumed: &str) -> Option<String> {
+    g.session.as_ref().filter(|s| s.resumes_in_place)?;
+    let started = json_frames(stdout)
+        .iter()
+        .find_map(|frame| session_id(g, frame))?;
+    (started != resumed).then(|| {
+        format!(
+            "asked to resume session {resumed}, the harness started session {started} instead: \
+             the resumed session was not found, and the run is a fresh one with none of its history"
+        )
+    })
 }
 
 /// Every call to one of marion's verbs the stream shows, with what came of each — in

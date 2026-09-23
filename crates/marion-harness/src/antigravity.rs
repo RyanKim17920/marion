@@ -188,6 +188,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/conversation_id",
+        resumes_in_place: true,
     }),
     // The terminal `result` totals the run; `input_tokens` excludes cache reads (sC: 12733 input
     // beside 32519 cache reads, `total_tokens` = input + output).
@@ -333,6 +334,32 @@ mod tests {
         let frames = crate::stream::json_frames(ANSWERED);
         let u = usage(STREAM.usage.as_ref().unwrap(), &frames).unwrap();
         assert!(u.input > 0 && u.output > 0, "{u:?}");
+    }
+
+    /// An unknown `--conversation` starts a new conversation at exit 0 (s32): a resumed run whose
+    /// stream names another conversation is refused, and one that names the resumed one is not.
+    #[test]
+    fn a_resume_answered_with_another_conversation_is_refused() {
+        let unknown = fixture!("resume-unknown.stream.jsonl");
+        let why = crate::grammar::resume_refusal(
+            &STREAM,
+            unknown,
+            "0badc0de-0000-4000-8000-000000000000",
+        )
+        .expect("a fresh conversation under a resume is refused");
+        assert!(
+            why.contains("0badc0de-0000-4000-8000-000000000000")
+                && why.contains("0c2e9a72-d6c6-499f-b947-593d60fc1398"),
+            "{why}"
+        );
+        assert_eq!(
+            crate::grammar::resume_refusal(
+                &STREAM,
+                RESUMED,
+                "66e0c65e-5fda-41f7-8ddf-c25b84eb67a4"
+            ),
+            None
+        );
     }
 
     #[test]

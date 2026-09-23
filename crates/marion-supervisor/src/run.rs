@@ -1700,11 +1700,15 @@ pub fn run_spawn_watched(
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
     // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
-    let outcome = ChildOutcome::from_stream(
-        adapter.parse_stream(&run.stdout, run.exit),
-        run.exit,
-        run.stderr.clone(),
-    );
+    let mut parsed = adapter.parse_stream(&run.stdout, run.exit);
+    // A resume the harness answered with a fresh session (agy's unknown `--conversation`, exit 0)
+    // is a run with none of the resumed node's history: the more specific claim, so it wins.
+    if let Some(why) =
+        adapter.resume_refusal(&run.stdout, req.resume.as_ref().map(|r| r.session.as_str()))
+    {
+        parsed.failure = Some(why);
+    }
+    let outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the

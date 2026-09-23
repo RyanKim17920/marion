@@ -276,6 +276,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+        resumes_in_place: false,
     }),
     // Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
     // S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while

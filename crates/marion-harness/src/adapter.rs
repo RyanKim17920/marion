@@ -535,6 +535,13 @@ pub trait HarnessAdapter {
         spec::delivery_for(self.spec(), shape)
     }
 
+    /// Why a run that resumed session `resumed` did not continue it — the row's
+    /// [`grammar::resume_refusal`], where its stream grammar measured a resume naming its own
+    /// session. `None` for a fresh run, and on every row where no such check was measured.
+    fn resume_refusal(&self, stdout: &str, resumed: Option<&str>) -> Option<String> {
+        grammar::resume_refusal(self.spec().stream?, stdout, resumed?)
+    }
+
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
     ///
@@ -8628,6 +8635,30 @@ mod tests {
         };
         let inv = a.compile(&resumed, &ctx()).unwrap();
         assert_eq!(&inv.args[..2], ["--conversation", "66e0c65e"]);
+    }
+
+    /// A resume is checked only where the row measured one naming its own session, and never on a
+    /// fresh run: the same stream reads as a refusal only for the agy row asked to resume another id.
+    #[test]
+    fn only_a_row_that_measured_an_in_place_resume_checks_one() {
+        let fresh = r#"{"event":"init","conversation_id":"new-id","init":{}}"#;
+        let agy = AntigravityAdapter;
+        assert!(agy.resume_refusal(fresh, Some("old-id")).is_some());
+        assert_eq!(agy.resume_refusal(fresh, Some("new-id")), None);
+        assert_eq!(agy.resume_refusal(fresh, None), None);
+        for h in Harness::ALL {
+            let a = launch_adapter(h).unwrap();
+            let checks = a
+                .spec()
+                .stream
+                .and_then(|g| g.session.as_ref())
+                .is_some_and(|s| s.resumes_in_place);
+            assert_eq!(
+                checks,
+                h == Harness::Antigravity,
+                "{h}: measured on agy alone"
+            );
+        }
     }
 
     #[test]

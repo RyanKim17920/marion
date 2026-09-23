@@ -300,6 +300,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/sessionID",
+        resumes_in_place: false,
     }),
     // One `step_finish` per model step (`s13/README.md`), each that step's spend. **README-only**:
     // every captured step reports zeros, so that `tokens.input` excludes `tokens.cache` is the

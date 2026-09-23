@@ -251,6 +251,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/thread_id",
+        resumes_in_place: false,
     }),
     // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), each that turn's spend, so the
     // run is their sum. `input_tokens` **counts** `cached_input_tokens` (14997 of which 11008

@@ -381,6 +381,9 @@ pub struct RootNode {
     /// reach the root as a turn after its first. `None` on the pane and `LaunchOnly` paths, which
     /// have no typed channel to carry one.
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// The harness session this launch resumes, where it resumes one — what the stream is checked
+    /// against ([`marion_harness::HarnessAdapter::resume_refusal`]).
+    pub resumed: Option<String>,
 }
 
 /// What the root's run produced.
@@ -846,6 +849,7 @@ pub fn prepare_watched(
         },
         session_declaration: session,
         acp_agent: agent_type.acp_agent.clone(),
+        resumed: spec.resume.as_ref().map(|(_, session)| session.clone()),
     })
 }
 
@@ -1870,8 +1874,11 @@ fn launch_only(
         // a refused call, not the run failing. Measured live (2026-09-22): an opencode root's
         // refused `report` read as "the child's marion_report call ended in error" and failed a run
         // whose child finished `Ok`. A root has no `TaskContract` to record the claim in, so its
-        // only destination is the refusal below and `roots_exit`.
-        failure: adapter.stream_failure(&stdout),
+        // only destination is the refusal below and `roots_exit`. A resume the harness answered
+        // with a fresh session is the more specific claim.
+        failure: adapter
+            .resume_refusal(&stdout, node.resumed.as_deref())
+            .or_else(|| adapter.stream_failure(&stdout)),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
