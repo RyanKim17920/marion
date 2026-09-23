@@ -110,6 +110,7 @@ use marion_harness::{ControlTransport, PtyWitness};
 
 use crate::serve::{ConnId, Outbound};
 
+mod input;
 mod splice;
 /// Production-dark durable binary PTY recording and recovery.
 pub mod stream;
@@ -1503,6 +1504,9 @@ struct Shared {
     splice: splice::PtySplice,
     splice_error: Mutex<Option<String>>,
     splice_disabled: AtomicBool,
+    /// The terminal modes read off the node's output that decide how marion may type into it
+    /// (`input.rs`). Written only by the reader thread, before [`Self::bytes`] publishes the chunk.
+    modes: Mutex<input::ModeScan>,
     pane_streams: Mutex<PaneStreams>,
     pane_clock: Mutex<Arc<dyn Fn() -> Instant + Send + Sync>>,
     #[cfg(test)]
@@ -2700,6 +2704,7 @@ impl PtyHost {
             ),
             splice_error: Mutex::new(None),
             splice_disabled: AtomicBool::new(false),
+            modes: Mutex::new(input::ModeScan::default()),
             pane_streams: Mutex::new(PaneStreams {
                 generation: 1,
                 valid: true,
@@ -2904,6 +2909,16 @@ impl PtyHost {
     /// [`ProbeScan`]: a counter, deliberately, and not a responder.
     pub fn unanswered_probes(&self) -> u64 {
         self.shared.probes.load(Ordering::SeqCst)
+    }
+
+    /// Whether the node has asked for bracketed paste (`CSI ? 2004 h`) and not since withdrawn it,
+    /// as of the last chunk [`Self::bytes_read`] counts.
+    pub fn bracketed_paste(&self) -> bool {
+        self.shared
+            .modes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bracketed_paste()
     }
 
     pub fn bytes_read(&self) -> u64 {
@@ -4130,6 +4145,11 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
         eprintln!("marion: {error}");
     }
     shared.retain_output(chunk);
+    shared
+        .modes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .feed(chunk);
     // Published last: tests and diagnostics use this counter as the completion witness for the
     // whole recording step, not merely for the kernel read returning.
     shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
@@ -4295,3 +4315,6 @@ fn publish_resize_outcome(shared: &Shared, applied: AppliedResize) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod inject_tests;
