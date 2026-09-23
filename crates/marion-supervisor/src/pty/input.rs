@@ -5,6 +5,12 @@
 //! (`CSI ? 2004 h`). A paste into a terminal that did not ask for it arrives as typed keys, and a
 //! newline inside the message then submits half of it; S31 measured codex turning an unbracketed
 //! burst's CR into a newline, so marion never types a paste the node cannot tell from typing.
+//!
+//! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
+//! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
+//! a half-typed line would be submitted *with* it — the operator's words and marion's as one turn.
+
+use std::time::Instant;
 
 /// Longest parameter list kept for one private-mode CSI. Real mode sets are a handful of short
 /// numbers; anything longer is not one marion needs to read, and a bound keeps a hostile stream
@@ -113,9 +119,183 @@ impl ModeScan {
     }
 }
 
+/// **What a writer other than the operator needs to know before it types**, read together under
+/// the host's write lock so no operator keystroke can land between the reading and the typing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputState {
+    /// The node asked for bracketed paste ([`ModeScan`]).
+    pub bracketed_paste: bool,
+    /// When the operator last typed a key — `None` if nobody has.
+    pub last_operator_input: Option<Instant>,
+    /// The operator's last key submitted (or nobody has typed): the composer is **presumed**
+    /// empty. Presumed, because only the harness knows its composer; marion knows the keys.
+    pub composer_empty: bool,
+}
+
+/// The operator's typing, as far as the host saw it. See [`InputState`].
+#[derive(Debug)]
+pub(crate) struct Typing {
+    last_operator_input: Option<Instant>,
+    composer_empty: bool,
+}
+
+impl Default for Typing {
+    fn default() -> Self {
+        Typing {
+            last_operator_input: None,
+            composer_empty: true,
+        }
+    }
+}
+
+impl Typing {
+    pub(crate) fn last_operator_input(&self) -> Option<Instant> {
+        self.last_operator_input
+    }
+
+    pub(crate) fn composer_empty(&self) -> bool {
+        self.composer_empty
+    }
+
+    /// The operator wrote `bytes` at `now`. Reports the operator's terminal makes on its own —
+    /// focus in/out, mouse, key releases — are not typing and change nothing. Otherwise the last
+    /// key decides: an Enter submitted the line, anything else (an arrow can recall history into
+    /// the composer) leaves it presumed non-empty.
+    pub(crate) fn operator_wrote(&mut self, bytes: &[u8], now: Instant) {
+        let mut last = None;
+        for key in Keys(bytes) {
+            if key != Key::Report {
+                last = Some(key);
+            }
+        }
+        let Some(last) = last else {
+            return;
+        };
+        self.last_operator_input = Some(now);
+        self.composer_empty = last == Key::Submit;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// Enter: `CR`, `LF`, or the kitty keyboard protocol's `CSI 13 … u` press.
+    Submit,
+    /// A report the terminal sends by itself: focus (`CSI I`/`CSI O`), SGR mouse (`CSI < … M/m`),
+    /// a kitty key release (`CSI … : 3 u`).
+    Report,
+    Other,
+}
+
+/// Operator bytes as keys: one CSI sequence, or one byte.
+struct Keys<'a>(&'a [u8]);
+
+impl Iterator for Keys<'_> {
+    type Item = Key;
+
+    fn next(&mut self) -> Option<Key> {
+        let (&first, rest) = self.0.split_first()?;
+        if first == 0x1b && rest.first() == Some(&b'[') {
+            let body = &rest[1..];
+            if let Some(end) = body.iter().position(|b| (0x40..=0x7e).contains(b)) {
+                self.0 = &body[end + 1..];
+                return Some(csi_key(&body[..end], body[end]));
+            }
+            // A sequence cut off by the end of the write: nothing to read it as.
+            self.0 = &[];
+            return Some(Key::Other);
+        }
+        self.0 = rest;
+        Some(match first {
+            b'\r' | b'\n' => Key::Submit,
+            _ => Key::Other,
+        })
+    }
+}
+
+fn csi_key(params: &[u8], fin: u8) -> Key {
+    match fin {
+        b'I' | b'O' if params.is_empty() => Key::Report,
+        b'M' | b'm' if params.first() == Some(&b'<') => Key::Report,
+        b'u' => {
+            let mut fields = params.split(|&b| b == b';');
+            let code = fields.next().unwrap_or_default();
+            let code = code.split(|&b| b == b':').next().unwrap_or_default();
+            let event = fields
+                .next()
+                .and_then(|mods| mods.split(|&b| b == b':').nth(1));
+            if event == Some(b"3") {
+                Key::Report
+            } else if code == b"13" {
+                Key::Submit
+            } else {
+                Key::Other
+            }
+        }
+        _ => Key::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn after(writes: &[&[u8]]) -> (bool, bool) {
+        let mut typing = Typing::default();
+        for w in writes {
+            typing.operator_wrote(w, Instant::now());
+        }
+        (typing.last_operator_input.is_some(), typing.composer_empty)
+    }
+
+    #[test]
+    fn the_last_key_decides_whether_the_composer_is_presumed_empty() {
+        assert_eq!(after(&[]), (false, true));
+        assert_eq!(after(&[b"abc"]), (true, false));
+        assert_eq!(after(&[b"abc\r"]), (true, true));
+        assert_eq!(after(&[b"abc\r", b"d"]), (true, false));
+        assert_eq!(after(&[b"a\x1b[13u"]), (true, true), "kitty Enter");
+        assert_eq!(
+            after(&[b"a\x1b[13;1:1u"]),
+            (true, true),
+            "kitty Enter, event press"
+        );
+        assert_eq!(
+            after(&[b"a\r\x1b[13;1:3u"]),
+            (true, true),
+            "its release is a report"
+        );
+        assert_eq!(
+            after(&[b"\r\x1b[A"]),
+            (true, false),
+            "an arrow may recall history"
+        );
+        assert_eq!(
+            after(&[b"\x1b[200~x\x1b[201~"]),
+            (true, false),
+            "an operator paste"
+        );
+        assert_eq!(
+            after(&[b"a\x1b["]),
+            (true, false),
+            "a cut-off sequence is a key"
+        );
+    }
+
+    #[test]
+    fn reports_the_terminal_makes_by_itself_are_not_typing() {
+        assert_eq!(after(&[b"\x1b[I\x1b[O"]), (false, true));
+        assert_eq!(
+            after(&[b"\x1b[<0;10;5M\x1b[<0;10;5m"]),
+            (false, true),
+            "SGR mouse"
+        );
+        assert_eq!(
+            after(&[b"ab", b"\x1b[I"]),
+            (true, false),
+            "and do not submit"
+        );
+        assert_eq!(after(&[b"ab\r", b"\x1b[O"]), (true, true), "or dirty");
+    }
 
     fn scanned(chunks: &[&[u8]]) -> bool {
         let mut scan = ModeScan::default();

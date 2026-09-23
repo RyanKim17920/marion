@@ -111,6 +111,7 @@ use marion_harness::{ControlTransport, PtyWitness};
 use crate::serve::{ConnId, Outbound};
 
 mod input;
+pub use input::InputState;
 mod splice;
 /// Production-dark durable binary PTY recording and recovery.
 pub mod stream;
@@ -820,6 +821,12 @@ impl CastWriter {
 
     pub fn input(&mut self, text: &str) -> io::Result<()> {
         self.record("i", text)
+    }
+
+    /// asciicast's `m` (marker): a label at this instant. Marion writes one ahead of every input it
+    /// types itself, so the cast says whose keys the following `i` records are.
+    pub fn marker(&mut self, label: &str) -> io::Result<()> {
+        self.record("m", label)
     }
 
     pub fn resize(&mut self, size: WinSize) -> io::Result<()> {
@@ -2555,6 +2562,12 @@ fn pane_frame(agent_id: &AgentId, record: splice::DisplayRecord) -> PaneFrameV1 
 pub struct PtyHost {
     master: Arc<PtyMaster>,
     shared: Arc<Shared>,
+    /// **The one lock every master write takes**, operator's and marion's, and what those writes
+    /// left behind: the operator's typing ([`input::Typing`]). One lock for both is the point — an
+    /// injector reads the operator's state and types under the same hold ([`Self::inject`]), so no
+    /// operator keystroke can land between "the composer is empty" and marion's paste, nor between
+    /// the paste and its submit.
+    typing: Mutex<input::Typing>,
     child: Mutex<Option<PtyChild>>,
     reader: Mutex<Option<std::thread::JoinHandle<io::Result<()>>>>,
     reader_completion: Arc<ReaderCompletion>,
@@ -2585,6 +2598,26 @@ pub(crate) enum PaneReplayReservationError {
     Busy,
     #[error("the pane replay could not mint a readiness token")]
     Entropy,
+}
+
+/// One injection of marion's own into a node's terminal: [`PtyHost::inject`].
+#[derive(Debug, Clone, Copy)]
+pub struct Injection<'a> {
+    /// The cast marker that says marion typed what follows, and why.
+    pub label: &'a str,
+    /// Written first — already framed by the caller (the paste brackets are `crate::paste`'s).
+    pub body: &'a [u8],
+    /// Written `submit_delay` after `body`.
+    pub submit: &'a [u8],
+    pub submit_delay: Duration,
+}
+
+/// What [`PtyHost::inject`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Injected {
+    Written,
+    /// The guard said not now; nothing was written or recorded.
+    Declined,
 }
 
 struct PtyHostStart {
@@ -2760,6 +2793,7 @@ impl PtyHost {
         Ok(Self {
             master,
             shared,
+            typing: Mutex::new(input::Typing::default()),
             child: Mutex::new(None),
             reader: Mutex::new(reader),
             reader_completion,
@@ -3471,13 +3505,7 @@ impl PtyHost {
         drop(permit);
         #[cfg(test)]
         self.observe_post_cast_input_hook();
-        #[cfg(test)]
-        let outcome = match self.take_master_input_failure() {
-            Some(error) => Err(io::Error::other(error)),
-            None => self.master.write_all(bytes),
-        };
-        #[cfg(not(test))]
-        let outcome = self.master.write_all(bytes);
+        let outcome = self.write_operator_keys(bytes);
         let delivery_failure = outcome.as_ref().err().map(|error| {
             format!("pty input was recorded but delivery failed before completion: {error}")
         });
@@ -3575,16 +3603,127 @@ impl PtyHost {
         drop(permit);
         #[cfg(test)]
         self.observe_post_cast_input_hook();
-        #[cfg(test)]
-        let outcome = match self.take_master_input_failure() {
-            Some(error) => Err(io::Error::other(error)),
-            None => self.master.write_all(bytes),
-        };
-        #[cfg(not(test))]
-        let outcome = self.master.write_all(bytes);
+        let outcome = self.write_operator_keys(bytes);
         let delivery_failure = outcome.as_ref().err().map(|error| {
             format!("pty opaque input was evidenced but delivery failed before completion: {error}")
         });
+        delivery.finish(delivery_failure.clone());
+        if let Some(error) = delivery_failure {
+            self.mark_replay_ineligible(error);
+        }
+        outcome
+    }
+
+    /// **The operator's keys reach the master here, on both input paths**, under the write lock and
+    /// noted as the operator's typing in the same hold.
+    fn write_operator_keys(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut typing = self.typing.lock().unwrap_or_else(|e| e.into_inner());
+        typing.operator_wrote(bytes, Instant::now());
+        #[cfg(test)]
+        if let Some(error) = self.take_master_input_failure() {
+            return Err(io::Error::other(error));
+        }
+        self.master.write_all(bytes)
+    }
+
+    /// What a writer other than the operator needs before it types. See [`input::InputState`].
+    pub fn input_state(&self) -> input::InputState {
+        let typing = self.typing.lock().unwrap_or_else(|e| e.into_inner());
+        self.input_state_locked(&typing)
+    }
+
+    fn input_state_locked(&self, typing: &input::Typing) -> input::InputState {
+        input::InputState {
+            bracketed_paste: self.bracketed_paste(),
+            last_operator_input: typing.last_operator_input(),
+            composer_empty: typing.composer_empty(),
+        }
+    }
+
+    /// **Marion types into the node's terminal** — turn delivery's paste (`crate::paste`).
+    ///
+    /// Under the write lock every operator keystroke also takes, and in this order: `admit` is
+    /// asked with the terminal's [`input::InputState`] as of now; if it declines, nothing is
+    /// written or recorded ([`Injected::Declined`]). Otherwise `body` is written, then — still
+    /// under the lock, so no operator key can land between them — `submit` after `submit_delay`.
+    /// The lock is held across the delay on purpose: an operator key in that gap would be
+    /// submitted as part of marion's message. It costs the operator at most that delay of latency.
+    ///
+    /// Each write is admitted through the control gate as any input is (refused once the pane is
+    /// closing) and recorded before it is written: a cast `m` marker carrying `label`, then the
+    /// `i` records, so the recording says what marion typed and that marion typed it — and the
+    /// durable stream's length evidence, as every input has. Bytes that are not UTF-8 are refused
+    /// for the reason [`Self::write_input`] gives. What marion types is **not** the operator's
+    /// typing: [`input::InputState::last_operator_input`] does not move.
+    ///
+    /// One ordering the lock does not give: an operator write records its `i` *before* it takes
+    /// the lock, so a keystroke racing an injection can appear in the cast one record away from
+    /// where it reached the node. The bytes the node receives are never interleaved.
+    pub fn inject(
+        &self,
+        injection: &Injection<'_>,
+        admit: &dyn Fn(&input::InputState) -> bool,
+    ) -> io::Result<Injected> {
+        for part in [injection.body, injection.submit] {
+            std::str::from_utf8(part).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "refusing to inject bytes that are not valid UTF-8 (at offset {}): the                          cast's `i` record could not say what was typed",
+                        e.valid_up_to()
+                    ),
+                )
+            })?;
+        }
+        let typing = self.typing.lock().unwrap_or_else(|e| e.into_inner());
+        if !admit(&self.input_state_locked(&typing)) {
+            return Ok(Injected::Declined);
+        }
+        self.inject_part(Some(injection.label), injection.body)?;
+        std::thread::sleep(injection.submit_delay);
+        self.inject_part(None, injection.submit)?;
+        drop(typing);
+        Ok(Injected::Written)
+    }
+
+    /// One admitted, recorded write of marion's own. The caller holds [`Self::typing`].
+    fn inject_part(&self, label: Option<&str>, bytes: &[u8]) -> io::Result<()> {
+        let text = std::str::from_utf8(bytes).expect("checked by `inject`");
+        let (permit, delivery) = self.control.admit_write(None)?;
+        let (durable_failure, cast_result) = {
+            let mut recorders = self
+                .shared
+                .recorders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let durable_failure = recorders
+                .inject_durable_failure()
+                .and_then(|()| recorders.durable.append_input_evidence(bytes.len()))
+                .err();
+            let cast_result = label
+                .map_or(Ok(()), |label| recorders.cast.marker(label))
+                .and_then(|()| recorders.cast.input(text));
+            if let Err(error) = &cast_result {
+                recorders.note_cast_failure("injected input", error);
+            }
+            (durable_failure, cast_result)
+        };
+        if let Some(error) = durable_failure {
+            self.mark_replay_ineligible(error);
+        }
+        if let Err(error) = cast_result {
+            let failure = format!("injected pty input recording failed before delivery: {error}");
+            drop(permit);
+            delivery.finish(Some(failure.clone()));
+            self.mark_replay_ineligible(failure);
+            return Err(error);
+        }
+        drop(permit);
+        let outcome = self.master.write_all(bytes);
+        let delivery_failure = outcome
+            .as_ref()
+            .err()
+            .map(|error| format!("injected pty input was recorded but delivery failed: {error}"));
         delivery.finish(delivery_failure.clone());
         if let Some(error) = delivery_failure {
             self.mark_replay_ineligible(error);
