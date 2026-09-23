@@ -1681,6 +1681,26 @@ fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
         "result" => render_result(frame, out),
         "system" if subtype == "init" => render_session_init(frame, out),
         "control_request" => render_control_request(frame, out),
+        // The item-stream shape (codex `exec --json`): a finished message or reasoning item is
+        // the root's words, like an `assistant` text or `thinking` block. Other items keep the
+        // generic one-line name below.
+        "item.completed" if frame["item"]["type"] == "agent_message" => say(
+            out,
+            "root",
+            frame["item"]["text"].as_str().unwrap_or_default(),
+        ),
+        "item.completed" if frame["item"]["type"] == "reasoning" => say(
+            out,
+            "think",
+            &format!(
+                "({} characters of reasoning)",
+                frame["item"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .count()
+            ),
+        ),
         // Never its body: the `initialize` reply alone is ~30 kB of session catalogue.
         "control_response" => say(
             out,
@@ -3585,6 +3605,27 @@ mod tests {
             .lines()
             .map(|l| l.trim_end().to_string())
             .collect()
+    }
+
+    /// **A root's answer is shown as its words**, on the item-stream shape too (codex `exec
+    /// --json`): `marion run codex --prompt "say hello"` rendered "frame item.completed" and never
+    /// the "Hello!" the root said. Other item kinds keep their one-line name.
+    #[test]
+    fn an_item_stream_message_is_rendered_as_the_roots_words() {
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"Hello!"}}"#
+            ),
+            ["root      Hello!"]
+        );
+        assert_eq!(
+            shown(r#"{"type":"item.completed","item":{"id":"i","type":"reasoning","text":"abc"}}"#),
+            ["think     (3 characters of reasoning)"]
+        );
+        assert_eq!(
+            shown(r#"{"type":"turn.started"}"#),
+            ["frame     turn.started"]
+        );
     }
 
     /// The event a person runs `marion run` to watch: the root stopping working alone. It is marked
