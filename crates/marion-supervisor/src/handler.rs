@@ -9885,17 +9885,21 @@ mod tests {
         let host = pane(
             &w,
             "root",
-            // **`ready` is printed after the trap is installed**, and the test waits for it. A
-            // signal delivered to a shell that has not reached its `trap` yet is simply lost, so
-            // without this the test races the child's startup and fails under load — a flake that
-            // says nothing about whether resize works.
-            "stty -echo; trap 'stty size' WINCH; echo ready; while :; do sleep 0.05; done",
+            // **`ready` is printed after the trap is installed, and only once the test has typed
+            // `go` through its attach**, and the test waits for it. A signal delivered to a shell
+            // that has not reached its `trap` yet is simply lost, so without `ready` the test races
+            // the child's startup. And without `go`, a quick child prints `ready` before the attach
+            // lands: legacy attach replays the node's event stream, never earlier pty bytes, so
+            // that `ready` never reaches this client and the wait for it expires. That flaked
+            // on macOS CI.
+            "stty -echo; trap 'stty size' WINCH; read go; echo ready; while :; do sleep 0.05; done",
         );
 
         let mut c = w.dial();
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
         let (_, outcome) = attach(&mut c, &mut r, "root", 1);
         assert!(attached_ok(outcome).pane.expect("a pane").writable);
+        write_keys(&mut c, "root", "go\r");
         assert!(
             pty_until(&mut r, "ready", std::time::Duration::from_secs(10)).is_some(),
             "the child never installed its WINCH trap"
