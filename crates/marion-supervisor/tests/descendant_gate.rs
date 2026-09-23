@@ -211,6 +211,7 @@ fn spawn_over_socket(
 
 fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnParams {
     AgentSpawnParams {
+        notify_parent: false,
         agent_type: "codex-impl".into(),
         prompt,
         native_launch: None,

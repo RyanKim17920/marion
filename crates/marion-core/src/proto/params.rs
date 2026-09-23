@@ -365,6 +365,13 @@ pub struct AgentSpawnParams {
     /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
     #[serde(default)]
     pub caller: Option<SpawnCaller>,
+    /// **The caller will not block on this child, so its end is owed to the caller as a
+    /// message** — set by the bridge's `spawn` with `background: true`. The supervisor then holds
+    /// the caller's inbox open while the child runs and queues the child's end into it (§7.6,
+    /// turn delivery), unless the caller's own lane pushes it. Absent is `false`: a blocking
+    /// `spawn` returns the contract as its tool result, and a second copy would be a duplicate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub notify_parent: bool,
     /// **The working tree the spawn is of** — required with `caller: None`, forbidden with
     /// `caller: Some(_)`, and the supervisor refuses both mismatches by name.
     ///
@@ -555,6 +562,7 @@ mod tests {
             response: ElicitationResponse::Provided(serde_json::json!({"branch": "main"}))
         });
         rt!(AgentSpawnParams {
+            notify_parent: false,
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
             native_launch: None,
@@ -571,6 +579,7 @@ mod tests {
             allow_concurrent_writes: None,
         });
         rt!(AgentSpawnParams {
+            notify_parent: false,
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
             native_launch: None,
@@ -683,6 +692,7 @@ mod tests {
         // makes the legacy shape one thing.
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
                 native_launch: None,
@@ -703,6 +713,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
                 native_launch: None,

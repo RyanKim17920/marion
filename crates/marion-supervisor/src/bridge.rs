@@ -873,11 +873,20 @@ pub fn spawn_result(
 /// announces a backgrounded child's end ([`push_frame`]), so the two can never say different
 /// things about the same child.
 pub fn spawn_text(agent_type: &str, outcome: Result<TaskContract, SpawnError>) -> (String, bool) {
+    spawn_text_of(agent_type, &outcome)
+}
+
+/// [`spawn_text`] over a borrowed outcome — for the supervisor, which announces a child's end
+/// into its parent's inbox and still files the outcome itself afterwards.
+pub fn spawn_text_of(
+    agent_type: &str,
+    outcome: &Result<TaskContract, SpawnError>,
+) -> (String, bool) {
     match outcome {
         Ok(contract) => {
-            let json = serde_json::to_string(&contract)
+            let json = serde_json::to_string(contract)
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-            let (line, is_error) = failure_line(&contract).unwrap_or_else(|| {
+            let (line, is_error) = failure_line(contract).unwrap_or_else(|| {
                 let description = contract
                     .completion
                     .as_ref()
@@ -890,7 +899,7 @@ pub fn spawn_text(agent_type: &str, outcome: Result<TaskContract, SpawnError>) -
                     false,
                 )
             });
-            let facts = bounded(&summary_facts(agent_type, &contract));
+            let facts = bounded(&summary_facts(agent_type, contract));
             (format!("{} | {facts}\n\n{json}", one_line(&line)), is_error)
         }
         // **The verb comes from the error, not from this line.** Every refusal that predates §11

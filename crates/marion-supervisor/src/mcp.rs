@@ -428,6 +428,9 @@ fn spawn_params(
     repo: Option<std::path::PathBuf>,
 ) -> marion_core::proto::params::AgentSpawnParams {
     marion_core::proto::params::AgentSpawnParams {
+        // A node that backgrounds a child is owed its end as a message (turn delivery); read
+        // before `caller` moves into its field below.
+        notify_parent: caller.is_some() && args["background"].as_bool() == Some(true),
         agent_type: agent_type.to_string(),
         prompt: args["prompt"].as_str().unwrap_or_default().to_string(),
         native_launch: None,
@@ -1182,7 +1185,7 @@ fn watch(
 }
 
 /// A terminal status as one identifier-shaped word — on the channel it becomes a tag attribute.
-fn status_word(status: marion_core::contract::ExitStatus) -> String {
+pub(crate) fn status_word(status: marion_core::contract::ExitStatus) -> String {
     match status {
         marion_core::contract::ExitStatus::Ok => "completed".to_string(),
         other => format!("{other:?}").to_ascii_lowercase(),
@@ -1977,6 +1980,24 @@ mod tests {
             None,
         );
         assert!(absent.verification.is_empty(), "absent asks for nothing");
+    }
+
+    /// **A node's background spawn asks the supervisor to announce the child's end to it**; a
+    /// blocking spawn gets the contract as its tool result, and a top-level client is no node to
+    /// announce to.
+    #[test]
+    fn only_a_nodes_background_spawn_asks_for_its_childs_end_as_a_message() {
+        let caller = || {
+            Some(marion_core::proto::SpawnCaller {
+                agent_id: AgentId("p".into()),
+                node_token: "t".into(),
+            })
+        };
+        let bg = serde_json::json!({"prompt": "go", "background": true});
+        let blocking = serde_json::json!({"prompt": "go"});
+        assert!(spawn_params("codex", &bg, caller(), None).notify_parent);
+        assert!(!spawn_params("codex", &blocking, caller(), None).notify_parent);
+        assert!(!spawn_params("codex", &bg, None, Some("/r".into())).notify_parent);
     }
 
     /// **Every tool marion declares is dispatched — none is declared and then answered as if it

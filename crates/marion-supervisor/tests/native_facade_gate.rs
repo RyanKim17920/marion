@@ -154,6 +154,7 @@ impl Bed {
 
     fn root_params(&self) -> AgentSpawnParams {
         AgentSpawnParams {
+            notify_parent: false,
             agent_type: "claude".into(),
             prompt: "unused because native launch is gated".into(),
             native_launch: Some(Box::new(NativeLaunchContext::V1(self.context()))),

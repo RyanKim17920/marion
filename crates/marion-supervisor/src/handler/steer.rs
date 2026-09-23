@@ -21,13 +21,14 @@
 //! message waits until its node ends and is then dropped, by name, on the journal. The result says
 //! `queued: true` and never claims a delivery.
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, TaskContract, TaskId};
+use marion_core::harness::Harness;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::params::NodeSteerParams;
 use marion_core::proto::result::DeliveryResult;
 use marion_core::proto::{Delivery, RpcError, SpawnCaller};
 use marion_core::registry::Replay;
-use marion_harness::spec::{NodeShape, delivery_for};
+use marion_harness::spec::{NodeShape, TurnDelivery, delivery_for};
 
 use super::{RegistryHandle, lock, root_spawn_authorized};
 use crate::inbox::{Refusal, Source};
@@ -77,17 +78,11 @@ impl RegistryHandle {
                 "§4.3",
             ));
         };
-        // Interactive iff marion hosts a live terminal for it — a pane, or a native session's.
-        let shape = if lock(&self.panes).has_live(&p.agent_id) {
-            NodeShape::Interactive
-        } else {
-            NodeShape::Headless
-        };
-        let delivery = delivery_for(marion_harness::adapter::harness_spec(harness), shape);
+        let delivery = self.delivery_of(&p.agent_id, harness);
         // A node this supervisor's `agent/spawn` did not launch — a native `marion <harness>`
         // session, or one an earlier supervisor launched — has no inbox here. The gap is marion's,
         // so it is `Unimplemented`, never "retry": waiting would not open one.
-        if !matches!(delivery, marion_harness::spec::TurnDelivery::None { .. })
+        if !matches!(delivery, TurnDelivery::None { .. })
             && self.owned_running(&p.agent_id).is_none()
         {
             return Err(RpcError::unimplemented(
@@ -114,6 +109,66 @@ impl RegistryHandle {
         })
     }
 
+    /// How a message reaches `agent`'s next turn: its harness's row, in the shape marion is
+    /// running it in — interactive iff marion hosts a live terminal for it (a pane, or a native
+    /// session's).
+    fn delivery_of(&self, agent: &AgentId, harness: Harness) -> TurnDelivery {
+        let shape = if lock(&self.panes).has_live(agent) {
+            NodeShape::Interactive
+        } else {
+            NodeShape::Headless
+        };
+        delivery_for(marion_harness::adapter::harness_spec(harness), shape)
+    }
+
+    /// **A backgrounded child ended: queue its end for its parent's next turn** — the text the
+    /// parent's `wait` on that task returns, from [`Source::ChildEnded`] — and settle the debt the
+    /// parent's inbox was held open by ([`crate::inbox::Inboxes::announce`]).
+    ///
+    /// Exactly one path announces it ([`announcement_route`]): a parent on Claude Code's channel
+    /// gets the bridge's push and nothing here, and a parent whose row has no strategy gets
+    /// nothing. A parent that already ended is refused by its sealed inbox, which journals nothing
+    /// — there is no queued message to resolve.
+    pub(crate) fn announce_child_end(&self, parent: &AgentId, end: ChildEnd<'_>) {
+        self.live.refresh();
+        let harness = self
+            .live
+            .read(|r| r.tree().get(parent).and_then(|n| n.harness()));
+        let delivery = harness.map(|h| self.delivery_of(parent, h));
+        match delivery.map(announcement_route) {
+            Some(AnnouncementRoute::Inbox) => {}
+            _ => {
+                self.inboxes.release(parent);
+                return;
+            }
+        }
+        let (body, _) = crate::bridge::spawn_text_of(end.agent_type, end.outcome);
+        let status = match end.outcome {
+            Ok(c) => c.completion.as_ref().map_or_else(
+                || "failed".to_string(),
+                |comp| crate::mcp::status_word(comp.status),
+            ),
+            Err(_) => "failed".to_string(),
+        };
+        let source = Source::ChildEnded {
+            child: end.child.clone(),
+            task_id: end.task_id.clone(),
+            status,
+            agent_type: end.agent_type.to_string(),
+            root: false,
+        };
+        let delivery = delivery.expect("the inbox route has a delivery");
+        if let Err(r) = self.inboxes.announce(parent, delivery, source, body) {
+            // Not an error of the child's: the parent ended first, or the journal refused.
+            eprintln!(
+                "marion: `{}`'s end was not queued for its parent `{}`: {}",
+                end.child.0,
+                parent.0,
+                r.sentence()
+            );
+        }
+    }
+
     /// The caller, if it proved to be a node this supervisor minted a token for **and** a strict
     /// ancestor of `target`; the one §5.4 refusal otherwise.
     fn steering_ancestor(&self, c: &SpawnCaller, target: &AgentId) -> Result<Source, RpcError> {
@@ -138,6 +193,37 @@ impl RegistryHandle {
                 "§5.4",
             )),
         }
+    }
+}
+
+/// One backgrounded child's end, as [`RegistryHandle::announce_child_end`] words it.
+pub(crate) struct ChildEnd<'a> {
+    pub child: &'a AgentId,
+    pub agent_type: &'a str,
+    pub task_id: &'a TaskId,
+    pub outcome: &'a Result<TaskContract, crate::spawn::SpawnError>,
+}
+
+/// Which one path a child's end takes to its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnnouncementRoute {
+    /// Queued in the parent's inbox, for the lane that drives it.
+    Inbox,
+    /// The parent's bridge already pushes it (Claude Code's channel), so queuing it too would
+    /// deliver it twice.
+    Pushed,
+    /// The parent's row has no measured way to take it.
+    Nowhere,
+}
+
+/// The route for a parent taking turns by `delivery`. No harness is named: the row decides.
+pub(crate) fn announcement_route(delivery: TurnDelivery) -> AnnouncementRoute {
+    match delivery {
+        TurnDelivery::TypedTurn { .. }
+        | TurnDelivery::Continuation { .. }
+        | TurnDelivery::TerminalPaste { .. } => AnnouncementRoute::Inbox,
+        TurnDelivery::McpChannel { .. } => AnnouncementRoute::Pushed,
+        TurnDelivery::None { .. } => AnnouncementRoute::Nowhere,
     }
 }
 
@@ -466,6 +552,91 @@ mod tests {
             })
             .collect();
         assert_eq!(dropped, vec![m]);
+    }
+
+    /// **A backgrounded child's end, queued for its parent's next turn** — worded exactly as the
+    /// parent's `wait` on that task would answer, with the journal naming who it is from.
+    #[test]
+    fn a_background_childs_end_is_queued_for_its_parent_as_its_wait_text() {
+        let (fx, _) = family("announce-queued");
+        assert!(fx.handle.inboxes.owe(&id("root")));
+        let outcome = Err(crate::spawn::SpawnError::NoContract {
+            path: "/nowhere".into(),
+            why: "the test's child left none".into(),
+        });
+        let task = marion_core::contract::TaskId("t-1".into());
+        fx.handle.announce_child_end(
+            &id("root"),
+            super::ChildEnd {
+                child: &id("child"),
+                agent_type: "type-child",
+                task_id: &task,
+                outcome: &outcome,
+            },
+        );
+        let m = fx.handle.inboxes.take_next(&id("root")).expect("queued");
+        let (wait_text, _) = crate::bridge::spawn_text_of("type-child", &outcome);
+        assert_eq!(
+            crate::inbox::render(&m),
+            crate::inbox::child_ended_text("type-child", false, "t-1", &wait_text)
+        );
+        assert_eq!(
+            fx.queued_records()[0].source,
+            MessageSource::ChildEnded {
+                child: id("child"),
+                task_id: task,
+                status: "failed".into(),
+            }
+        );
+        assert!(
+            fx.handle.inboxes.held(&id("root")),
+            "the debt is settled, the message still waits: open"
+        );
+    }
+
+    /// **Exactly one path announces a child's end.** A parent whose lane is Claude Code's channel
+    /// already gets the bridge's push, so the inbox must not queue a second copy; a parent with no
+    /// strategy gets nothing queued; every lane marion drives from the inbox gets it there.
+    #[test]
+    fn a_childs_end_takes_exactly_one_route_to_its_parent() {
+        use super::AnnouncementRoute::{Inbox, Nowhere, Pushed};
+        use marion_harness::spec::{MidTurn, TurnDelivery};
+        let n = "n";
+        for (d, want) in [
+            (
+                TurnDelivery::TypedTurn {
+                    mid_turn: MidTurn::Fold,
+                    note: n,
+                },
+                Inbox,
+            ),
+            (TurnDelivery::Continuation { note: n }, Inbox),
+            (TurnDelivery::bracketed_paste(n), Inbox),
+            (TurnDelivery::McpChannel { note: n }, Pushed),
+            (TurnDelivery::None { note: n }, Nowhere),
+        ] {
+            assert_eq!(super::announcement_route(d), want, "{d:?}");
+        }
+    }
+
+    /// A parent that already ended is told nothing and journals nothing: its inbox is sealed, and
+    /// the announcement settles no debt it could still be holding open for.
+    #[test]
+    fn a_childs_end_for_a_parent_that_ended_is_not_queued() {
+        let (fx, _) = family("announce-ended");
+        fx.handle
+            .mark_finished(&id("root"), super::super::NodeOutcome::Root(Ok(())));
+        let outcome = Err(crate::spawn::SpawnError::NodeAborted("gone".into()));
+        fx.handle.announce_child_end(
+            &id("root"),
+            super::ChildEnd {
+                child: &id("child"),
+                agent_type: "type-child",
+                task_id: &marion_core::contract::TaskId("t-2".into()),
+                outcome: &outcome,
+            },
+        );
+        assert!(fx.queued_records().is_empty());
     }
 
     /// `node/prompt` stays unbuilt, and its refusal points at `node/steer`.

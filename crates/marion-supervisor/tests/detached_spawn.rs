@@ -215,6 +215,7 @@ fn agent_spawn(paths: &SocketPaths, p: AgentSpawnParams) -> Result<serde_json::V
 
 fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
     AgentSpawnParams {
+        notify_parent: false,
         agent_type: "claude".into(),
         prompt: "unused: every case here is refused before anything launches".into(),
         native_launch: None,

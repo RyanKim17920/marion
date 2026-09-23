@@ -459,6 +459,7 @@ fn fixture(tag: &str) -> Fixture {
     // capability, because there is no node behind it yet (`handler::root_spawn_authorized`).
     let answered = supervisor
         .call(Call::AgentSpawn(AgentSpawnParams {
+            notify_parent: false,
             agent_type: CALLER_TYPE.into(),
             prompt: format!("{ROOT_MARKER}: hold until this fixture is torn down"),
             native_launch: None,

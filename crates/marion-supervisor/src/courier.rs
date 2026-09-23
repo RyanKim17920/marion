@@ -490,6 +490,7 @@ mod tests {
         let e = spawn(
             socket,
             AgentSpawnParams {
+                notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "nothing may be started by this call".into(),
                 native_launch: None,

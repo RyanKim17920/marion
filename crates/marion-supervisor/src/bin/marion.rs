@@ -2686,6 +2686,7 @@ fn spawn_root(
 ) -> Result<marion_core::proto::result::AgentSpawnResult, String> {
     let id = supervisor.send(marion_core::proto::Call::AgentSpawn(
         marion_core::proto::params::AgentSpawnParams {
+            notify_parent: false,
             agent_type: args.agent_type.clone(),
             prompt: args.prompt.clone(),
             native_launch: None,

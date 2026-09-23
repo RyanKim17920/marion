@@ -464,6 +464,7 @@ mod tests {
                 // is the one carrying the most structure — a `SpawnCaller` nested inside an
                 // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
+                    notify_parent: false,
                     no_change_record: None,
                     pane: None,
                     isolation: None,

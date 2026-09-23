@@ -990,6 +990,12 @@ struct NodeOwner {
     /// The id this spawn minted, once it has one — read by the thread body after `run_spawn`
     /// returns, so the outcome can be filed under the node it belongs to.
     identified: Mutex<Option<AgentId>>,
+    /// The parent this child's end is owed to as a message (a background `spawn`,
+    /// `AgentSpawnParams::notify_parent`), or `None`.
+    announce_to: Option<AgentId>,
+    /// The parent's inbox recorded the debt at claim ([`crate::inbox::Inboxes::owe`]), so the end
+    /// must settle it — and only then, or it would settle another child's.
+    owes: std::sync::atomic::AtomicBool,
 }
 
 impl NodeOwner {
@@ -1028,6 +1034,13 @@ impl crate::run::SpawnObserver for NodeOwner {
             .handle
             .claim(agent_id, self.task_id.clone(), self.repo.clone());
         *lock(&self.identified) = Some(agent_id.clone());
+        // Held open from here: the parent's driver must not end it while this child runs.
+        if let Some(parent) = &self.announce_to {
+            self.owes.store(
+                self.handle.inboxes.owe(parent),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
         // Ignored: a receiver dropped before this fires means the call that started the spawn has
         // already given up on it, and the node goes on running either way. Panicking here would
         // unwind through `AbortOnDrop` and journal `SpawnAborted` over a node that is fine.
@@ -3093,7 +3106,10 @@ impl RegistryHandle {
         // Kept out of the thread's move, because the answer names it: the composing client reads
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
-        let (agent_id, state) = self.launch_child(me, env, req, task_id, caller, repo, decision)?;
+        // A background spawn's end is owed to its caller as a message (turn delivery).
+        let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
+        let (agent_id, state) =
+            self.launch_child(me, env, req, task_id, caller, repo, decision, announce_to)?;
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
@@ -3124,6 +3140,7 @@ impl RegistryHandle {
         caller: crate::run::Caller,
         repo: PathBuf,
         decision: std::sync::MutexGuard<'_, ()>,
+        announce_to: Option<AgentId>,
     ) -> Result<(AgentId, NodeState), RpcError> {
         let (tx, progress) = std::sync::mpsc::channel();
         let observer = NodeOwner {
@@ -3133,6 +3150,8 @@ impl RegistryHandle {
             repo,
             tx,
             identified: Mutex::new(None),
+            announce_to,
+            owes: Default::default(),
         };
         // **Everything the thread needs is owned**, for `Background::start`'s reason: this work
         // outlives the JSON-RPC frame that asked for it, so it cannot borrow from this stack frame.
@@ -3148,6 +3167,20 @@ impl RegistryHandle {
             // unknown agent type, a scope outside the ceiling — never minted a node, so there is
             // nothing to file the outcome under and nothing holding the supervisor open.
             if let Some(agent_id) = observer.identified_id() {
+                // The parent's owed announcement, before the outcome moves into the table.
+                if let Some(parent) = &observer.announce_to
+                    && observer.owes.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    owner.announce_child_end(
+                        parent,
+                        steer::ChildEnd {
+                            child: &agent_id,
+                            agent_type: &agent_type,
+                            task_id: &task_id,
+                            outcome: &outcome,
+                        },
+                    );
+                }
                 owner.mark_finished(&agent_id, NodeOutcome::Child(Box::new(outcome)));
             }
             // Sent last and unconditionally, so a launch that failed before either earlier moment
@@ -3332,6 +3365,8 @@ impl RegistryHandle {
                 repo,
                 tx,
                 identified: Mutex::new(None),
+                announce_to: None,
+                owes: Default::default(),
             };
             // **Wrapped for [`caught`]'s reason**, in the root's own vocabulary: `NodeOutcome::Root`
             // carries marion's sentence rather than a `SpawnError`, so the panic becomes that
@@ -3844,7 +3879,8 @@ impl RegistryHandle {
                 workspace,
             }),
         };
-        self.launch_child(me, env.clone(), req, task_id, caller, repo, decision)
+        // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
+        self.launch_child(me, env.clone(), req, task_id, caller, repo, decision, None)
     }
 
     /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
@@ -7555,6 +7591,8 @@ mod tests {
             repo: w.dir.clone(),
             tx: progress,
             identified: Mutex::new(None),
+            announce_to: None,
+            owes: Default::default(),
         };
         <NodeOwner as crate::root::PaneOwner>::closing(&owner, &id("root"), &host);
         host.shutdown().expect("the exited child and reader join");
@@ -7937,6 +7975,8 @@ mod tests {
             repo: w.dir.clone(),
             tx: progress,
             identified: Mutex::new(None),
+            announce_to: None,
+            owes: Default::default(),
         };
         <NodeOwner as crate::root::PaneOwner>::closing(&owner, &id("root"), &old);
         let replacement = pane(&w, "root", "sleep 30");
@@ -10434,6 +10474,7 @@ mod tests {
 
         fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
+                notify_parent: false,
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),
                 native_launch: None,

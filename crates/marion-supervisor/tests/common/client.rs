@@ -186,6 +186,7 @@ impl Client {
     pub fn spawn_root(&mut self, repo: &Path, prompt: &str, timeout_secs: u64) -> AgentId {
         let id = self.send(Call::AgentSpawn(
             marion_core::proto::params::AgentSpawnParams {
+                notify_parent: false,
                 agent_type: "claude".into(),
                 prompt: prompt.into(),
                 native_launch: None,

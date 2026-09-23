@@ -464,6 +464,7 @@ fn spawn_over_socket(
 /// The spawn a chain node is asked for: a shim of the chain's own type, holding its depth open.
 fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
     AgentSpawnParams {
+        notify_parent: false,
         agent_type: CHAIN_TYPE.into(),
         prompt: format!("depth-gate chain node at depth {depth}: hold until released"),
         native_launch: None,
