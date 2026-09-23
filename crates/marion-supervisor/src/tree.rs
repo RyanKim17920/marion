@@ -27,7 +27,9 @@
 //!
 //! # Navigation, and why attaching is not reimplemented here
 //!
-//! `↑`/`↓`/`j`/`k` move the cursor, `!` jumps it to the next node [`attention_of`] names, `Tab`
+//! `↑`/`↓`/`j`/`k` move the cursor, `!` jumps it to the next node [`attention_of`] names, `s` opens
+//! a one-line compose on the hint row whose Enter sends `node/steer` as the operator (Esc cancels,
+//! the answer lands in the detail pane's notice), `Tab`
 //! moves focus between the tree and the content pane, `q` (or the pane's own `^]`) leaves. **`Enter` runs [`crate::attach::run`]** — the same function
 //! `marion attach <agent-id>` calls, reached by leaving this screen first and re-entering it when
 //! the attach returns. A tree that spoke `node/attach` itself would be a second attach client with
@@ -47,7 +49,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
@@ -388,8 +390,8 @@ type Refusal = String;
 /// with an empty forest, which reads as "no agents are running" rather than as "marion is not
 /// looking where you think".
 pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
-    let (stream, shown) = dial(repo, state_dir)?;
-    Session::open(stream, shown)?.pump(repo, state_dir)
+    let (stream, shown, socket) = dial(repo, state_dir)?;
+    Session::open(stream, shown, socket)?.pump(repo, state_dir)
 }
 
 /// **One `tree/subscribe` snapshot, and nothing kept open** — what `marion list` prints.
@@ -399,8 +401,8 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
 /// before the answer are folded exactly as the screen folds them. Refuses as [`run`] does, for
 /// [`run`]'s reason, when nobody is serving.
 pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refusal> {
-    let (stream, shown) = dial(repo, state_dir)?;
-    Ok(Session::open(stream, shown)?.nodes)
+    let (stream, shown, socket) = dial(repo, state_dir)?;
+    Ok(Session::open(stream, shown, socket)?.nodes)
 }
 
 /// **One node as one `marion list` line**: `<glyph> <state> <agent_type> <agent_id>`, then
@@ -427,8 +429,8 @@ pub fn list_line(node: &NodeSummary) -> String {
 }
 
 /// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
-/// row should name the project.
-fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String), Refusal> {
+/// row should name the project and where a steer dials.
+fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {
     let key = crate::socket::project_root(repo);
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
@@ -449,7 +451,11 @@ fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String), Refusal> 
         Some(".git") => key.parent().unwrap_or(&key),
         _ => &key,
     };
-    Ok((stream, shown.display().to_string()))
+    Ok((
+        stream,
+        shown.display().to_string(),
+        paths.socket().to_path_buf(),
+    ))
 }
 
 /// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
@@ -519,10 +525,17 @@ struct Session {
     hint: Option<&'static str>,
     /// The state changes this screen has watched, per node.
     events: Events,
+    /// §2's socket, which a steer dials on a connection of its own ([`crate::courier::steer`]):
+    /// this one is a subscription, and an answer in its stream would have to be told apart from
+    /// the notifications around it.
+    socket: PathBuf,
+    /// The steer being typed after `s`, and the node it is for — fixed when `s` was pressed, so
+    /// the message goes where the operator was looking when they began it.
+    compose: Option<(AgentId, tree::Compose)>,
 }
 
 impl Session {
-    fn open(stream: UnixStream, repo: String) -> Result<Session, Refusal> {
+    fn open(stream: UnixStream, repo: String, socket: PathBuf) -> Result<Session, Refusal> {
         let lines = BufReader::new(
             stream
                 .try_clone()
@@ -538,6 +551,8 @@ impl Session {
             notice: None,
             hint: None,
             events: Events::default(),
+            socket,
+            compose: None,
         };
         s.subscribe()?;
         Ok(s)
@@ -697,11 +712,9 @@ impl Session {
                 leave(&terminal);
                 return Ok(None);
             };
-            for action in tree::nav(&buf[..n]) {
-                if let Some(chosen) = self.apply_nav(action) {
-                    leave(&terminal);
-                    return Ok(chosen);
-                }
+            if let Some(chosen) = self.keys(&buf[..n]) {
+                leave(&terminal);
+                return Ok(chosen);
             }
         }
     }
@@ -716,6 +729,72 @@ impl Session {
             }
             Ok(None) => true,
             Err(_) => false,
+        }
+    }
+
+    /// One chunk of the keyboard: to the compose line while one is open, as navigation otherwise.
+    /// A line that ends mid-chunk hands the rest back to navigation, and `s` mid-chunk hands the
+    /// rest to the line it opens — so typed-ahead keys land where the operator meant them.
+    fn keys(&mut self, mut bytes: &[u8]) -> Option<Option<String>> {
+        while !bytes.is_empty() {
+            if let Some((_, line)) = self.compose.as_mut() {
+                let (ended, used) = line.feed(bytes)?;
+                bytes = &bytes[used..];
+                let (target, _) = self.compose.take().expect("composing");
+                if let tree::Composed::Send(text) = ended {
+                    self.notice = Some(steer_notice(crate::courier::steer(
+                        &self.socket,
+                        &target,
+                        &text,
+                        None,
+                    )));
+                }
+            } else {
+                let (actions, used) = tree::nav_prefix(bytes);
+                bytes = &bytes[used..];
+                for action in actions {
+                    if let Some(chosen) = self.apply_nav(action) {
+                        return Some(chosen);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Open the compose line for the selected node, or say why there is none.
+    fn start_steer(&mut self) {
+        match self.selected_summary() {
+            Some(n) => {
+                let target = n.agent_id.clone();
+                self.notice = None;
+                self.hint = None;
+                self.compose = Some((
+                    target,
+                    tree::Compose::with_limit(marion_core::proto::params::MAX_STEER_BYTES),
+                ));
+            }
+            None => self.hint = Some("nothing selected to steer"),
+        }
+    }
+
+    /// The hint row: the compose line while one is open, the screen's keys otherwise, with the
+    /// reason the last key did nothing after them.
+    fn hint_row(&self) -> String {
+        if let Some((target, line)) = &self.compose {
+            let who = self
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == *target)
+                .map_or_else(|| short_id(&target.0).to_string(), label_of);
+            return format!(
+                "enter send  esc cancel  ·  steer {who}: {}▏",
+                tail(&line.text(), COMPOSE_SHOWN)
+            );
+        }
+        match self.hint {
+            Some(hint) => format!("{}  ·  {hint}", keys_for(self.selected_summary())),
+            None => keys_for(self.selected_summary()),
         }
     }
 
@@ -745,7 +824,11 @@ impl Session {
                 self.hint = next_attention(&mut self.tree, &self.nodes).err();
                 None
             }
-            Nav::Up | Nav::Down | Nav::NextAttention => None,
+            Nav::Steer if self.focus == Focus::Tree => {
+                self.start_steer();
+                None
+            }
+            Nav::Up | Nav::Down | Nav::NextAttention | Nav::Steer => None,
             Nav::Open => self.open_selected().map(Some),
         }
     }
@@ -789,10 +872,7 @@ impl Session {
         let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
         let parent = selected.and_then(|n| parent_label(&self.nodes, n));
         // A key that did nothing says why, on the row that lists the keys.
-        let keys = match self.hint {
-            Some(hint) => format!("{}  ·  {hint}", keys_for(selected)),
-            None => keys_for(selected),
-        };
+        let keys = self.hint_row();
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
             f.render_widget(status, panes.status);
@@ -877,7 +957,29 @@ fn parent_label(nodes: &[NodeSummary], node: &NodeSummary) -> Option<String> {
 ///
 /// No `^] d detach`: that is the pane's chord, and on this screen `^]` quits and `d` does nothing,
 /// so listing it here taught a first-time operator a key that did not exist yet.
-const KEYS: &str = "j/k move  tab focus  ! next attention  q quit";
+const KEYS: &str = "j/k move  tab focus  ! next attention  s steer  q quit";
+
+/// How much of a compose line the hint row shows: its end, where the cursor is.
+const COMPOSE_SHOWN: usize = 60;
+
+/// The last `n` characters of `text`, with `…` where the front was cut.
+fn tail(text: &str, n: usize) -> String {
+    let count = text.chars().count();
+    if count <= n {
+        return text.to_string();
+    }
+    let kept: String = text.chars().skip(count - (n - 1)).collect();
+    format!("…{kept}")
+}
+
+/// **What a steer sent from the tree says in the notice**: the courier's acceptance sentence, or
+/// the refusal — the supervisor's own sentence where it gave one — after `steer refused:`.
+fn steer_notice(r: Result<crate::courier::Steered, crate::spawn::SpawnError>) -> String {
+    match r {
+        Ok(steered) => format!("steer: {}", steered.sentence()),
+        Err(e) => format!("steer refused: {e}"),
+    }
+}
 
 /// The hint row for one selection.
 ///
@@ -1565,7 +1667,13 @@ mod tests {
             keys_for(Some(&headless)),
             keys_for(None),
         ] {
-            for rest in ["j/k move", "tab focus", "! next attention", "q quit"] {
+            for rest in [
+                "j/k move",
+                "tab focus",
+                "! next attention",
+                "s steer",
+                "q quit",
+            ] {
                 assert!(keys.contains(rest), "`{rest}` left the hint row: {keys}");
             }
             assert!(
@@ -1620,6 +1728,90 @@ mod tests {
             Err("nothing needs attention")
         );
         assert_eq!(t.selected().unwrap().id, "done", "the cursor stays put");
+    }
+
+    /// A screen over a socket pair, with `socket` as where a steer would dial — nothing listens
+    /// there, so a sent steer comes back as the courier's refusal.
+    fn session(nodes: Vec<NodeSummary>, socket: &str) -> Session {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let lines = BufReader::new(stream.try_clone().unwrap());
+        let mut s = Session {
+            stream,
+            lines,
+            nodes,
+            tree: Tree::new(Vec::new()),
+            focus: Focus::Tree,
+            repo: "/repo".into(),
+            socket: socket.into(),
+            notice: None,
+            hint: None,
+            events: Events::default(),
+            compose: None,
+        };
+        s.rebuild();
+        s
+    }
+
+    /// **`s` opens a compose line for the selected node; the keys typed then are the message.**
+    /// `q` inside it is a letter, not a quit; Esc closes it having sent nothing; the hint row shows
+    /// the line and names the node it is for.
+    #[test]
+    fn s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it() {
+        let mut s = session(
+            vec![summary("n-1", Harness::Codex, false, None)],
+            "/nowhere",
+        );
+        assert_eq!(s.keys(b"squit"), None, "`q` is text once composing");
+        let (target, line) = s.compose.as_ref().expect("composing");
+        assert_eq!(target.0, "n-1");
+        assert_eq!(line.text(), "quit");
+        let hint = s.hint_row();
+        assert!(hint.contains("steer codex-impl n-1: quit"), "{hint}");
+        assert!(hint.starts_with("enter send  esc cancel"), "{hint}");
+
+        assert_eq!(
+            s.keys(b"\x1bq"),
+            Some(None),
+            "Esc closes it; the `q` after quits"
+        );
+        assert!(s.compose.is_none());
+        assert_eq!(
+            s.notice, None,
+            "a cancelled line sends nothing and says nothing"
+        );
+
+        let mut empty = session(Vec::new(), "/nowhere");
+        assert_eq!(empty.keys(b"s"), None);
+        assert!(
+            empty.compose.is_none(),
+            "nothing selected, nothing to steer"
+        );
+        assert_eq!(empty.hint, Some("nothing selected to steer"));
+    }
+
+    /// **Enter sends the line and the answer lands in the notice** — here the courier's refusal,
+    /// since nothing listens on the socket; a supervisor's refusal arrives the same way, verbatim.
+    #[test]
+    fn enter_sends_the_steer_and_its_refusal_lands_in_the_notice() {
+        let mut s = session(
+            vec![summary("n-1", Harness::Codex, false, None)],
+            "/tmp/marion-no-such-supervisor.sock",
+        );
+        assert_eq!(s.keys(b"suse v2\r"), None);
+        assert!(s.compose.is_none(), "Enter closes the line");
+        let notice = s.notice.clone().expect("the answer is on the screen");
+        assert!(notice.starts_with("steer refused: "), "{notice}");
+        assert!(
+            notice.contains("marion-no-such-supervisor.sock"),
+            "{notice}"
+        );
+
+        assert_eq!(
+            steer_notice(Err(crate::spawn::SpawnError::SupervisorRefused(
+                "the node has ended".into()
+            ))),
+            "steer refused: the node has ended"
+        );
     }
 
     /// **The hints belong to the screen, at the bottom left, above the caps strip.**

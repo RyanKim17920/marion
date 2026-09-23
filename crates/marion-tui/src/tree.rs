@@ -359,6 +359,9 @@ pub enum Nav {
     /// `!`: move the cursor to the next node that needs the operator. Which nodes those are is the
     /// caller's to decide — see [`Tree::cycle_to`] — because this crate cannot read a node's state.
     NextAttention,
+    /// `s`: write a message for the selected node's next turn. The caller opens a [`Compose`] line,
+    /// and every byte after this one is the message's until it ends — see [`nav_prefix`].
+    Steer,
 }
 
 /// Decode a chunk of stdin into navigation. Bytes with no meaning here are dropped, not forwarded:
@@ -366,30 +369,169 @@ pub enum Nav {
 pub fn nav(bytes: &[u8]) -> Vec<Nav> {
     let mut out = Vec::new();
     let mut i = 0;
-    while i < bytes.len() {
-        // `CSI A`/`CSI B` before the single-byte arms, so an arrow key is not read as `[` + `A`.
-        if bytes[i..].starts_with(b"\x1b[A") {
-            out.push(Nav::Up);
-            i += 3;
-            continue;
-        }
-        if bytes[i..].starts_with(b"\x1b[B") {
-            out.push(Nav::Down);
-            i += 3;
-            continue;
-        }
-        match bytes[i] {
-            b'k' => out.push(Nav::Up),
-            b'j' => out.push(Nav::Down),
-            b'\r' | b'\n' => out.push(Nav::Open),
-            b'\t' => out.push(Nav::ToggleFocus),
-            b'q' | 0x1d => out.push(Nav::Quit),
-            b'!' => out.push(Nav::NextAttention),
-            _ => {}
-        }
-        i += 1;
+    while let Some((key, used)) = next_nav(&bytes[i..]) {
+        out.extend(key);
+        i += used;
     }
     out
+}
+
+/// [`nav`], stopping right after the first [`Nav::Steer`]: the keys, and how many bytes they took.
+///
+/// A screen in compose mode must not read the rest of the chunk as commands — `sq` typed fast, or
+/// pasted, is a steer whose message starts with `q`, not a steer and a quit — so the caller hands
+/// the bytes after the count to its [`Compose`] line.
+pub fn nav_prefix(bytes: &[u8]) -> (Vec<Nav>, usize) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some((key, used)) = next_nav(&bytes[i..]) {
+        i += used;
+        if let Some(k) = key {
+            out.push(k);
+            if k == Nav::Steer {
+                break;
+            }
+        }
+    }
+    (out, i)
+}
+
+/// One key off the front of `bytes`, and how many bytes it was; `None` at the end.
+fn next_nav(bytes: &[u8]) -> Option<(Option<Nav>, usize)> {
+    let first = *bytes.first()?;
+    // `CSI A`/`CSI B` before the single-byte arms, so an arrow key is not read as `[` + `A`.
+    if bytes.starts_with(b"\x1b[A") {
+        return Some((Some(Nav::Up), 3));
+    }
+    if bytes.starts_with(b"\x1b[B") {
+        return Some((Some(Nav::Down), 3));
+    }
+    let key = match first {
+        b'k' => Some(Nav::Up),
+        b'j' => Some(Nav::Down),
+        b'\r' | b'\n' => Some(Nav::Open),
+        b'\t' => Some(Nav::ToggleFocus),
+        b'q' | 0x1d => Some(Nav::Quit),
+        b'!' => Some(Nav::NextAttention),
+        b's' => Some(Nav::Steer),
+        _ => None,
+    };
+    Some((key, 1))
+}
+
+/// **A one-line message being typed on the tree screen**, for `s`'s steer.
+///
+/// Raw bytes in, because the screen reads stdin raw: printable bytes and UTF-8 are the text,
+/// Backspace (`DEL` or `BS`) removes one whole character, Enter sends, and Esc or `^C` cancels. A
+/// CSI sequence — an arrow, say — is neither text nor a cancel and is skipped; a bracketed paste is
+/// text, its line breaks flattened to spaces, so pasting two lines does not send the first. The
+/// line never grows past `limit` bytes, and a character that would cross it is not split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compose {
+    buf: Vec<u8>,
+    limit: usize,
+    /// Inside `CSI 200~` … `CSI 201~`.
+    pasting: bool,
+}
+
+/// How a [`Compose`] line ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Composed {
+    /// Enter, on a line with something on it.
+    Send(String),
+    /// Esc, `^C`, or Enter on a blank line.
+    Cancel,
+}
+
+impl Compose {
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            limit,
+            pasting: false,
+        }
+    }
+
+    /// What has been typed so far.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf).into_owned()
+    }
+
+    /// Take `bytes` into the line. `Some` when the line ended, with how many of `bytes` it used —
+    /// the rest belong to the screen's navigation again.
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<(Composed, usize)> {
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+                i += self.csi(&bytes[i..]);
+                continue;
+            }
+            i += 1;
+            match b {
+                b'\r' | b'\n' if self.pasting => self.push(b" "),
+                b'\r' | b'\n' => return Some((self.finish(), i)),
+                0x1b | 0x03 => return Some((Composed::Cancel, i)),
+                0x7f | 0x08 => self.backspace(),
+                b'\t' => self.push(b" "),
+                0x00..=0x1f => {}
+                _ => {
+                    let len = utf8_len(b);
+                    let end = (i - 1 + len).min(bytes.len());
+                    self.push(&bytes[i - 1..end]);
+                    i = end;
+                }
+            }
+        }
+        None
+    }
+
+    /// Skip one CSI sequence, noting a bracketed paste's start and end. Returns its length.
+    fn csi(&mut self, bytes: &[u8]) -> usize {
+        let end = bytes[2..]
+            .iter()
+            .position(|b| (0x40..=0x7e).contains(b))
+            .map_or(bytes.len(), |p| p + 3);
+        match &bytes[..end] {
+            b"\x1b[200~" => self.pasting = true,
+            b"\x1b[201~" => self.pasting = false,
+            _ => {}
+        }
+        end
+    }
+
+    fn push(&mut self, ch: &[u8]) {
+        if self.buf.len() + ch.len() <= self.limit {
+            self.buf.extend_from_slice(ch);
+        }
+    }
+
+    fn backspace(&mut self) {
+        while let Some(b) = self.buf.pop() {
+            if b & 0xc0 != 0x80 {
+                break;
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Composed {
+        let text = self.text();
+        if text.trim().is_empty() {
+            Composed::Cancel
+        } else {
+            Composed::Send(text)
+        }
+    }
+}
+
+/// How many bytes the UTF-8 character led by `b` takes; `1` for anything that is not a lead byte.
+fn utf8_len(b: u8) -> usize {
+    match b {
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => 1,
+    }
 }
 
 /// How wide the tree column is, in columns.
@@ -894,6 +1036,78 @@ mod tests {
     fn a_bang_asks_for_the_next_node_that_needs_attention() {
         assert_eq!(nav(b"!"), [Nav::NextAttention]);
         assert_eq!(nav(b"j!k"), [Nav::Down, Nav::NextAttention, Nav::Up]);
+    }
+
+    /// **`s` opens a steer, and the bytes after it are the message, not commands.** `nav_prefix`
+    /// stops right after the `s`, so `sq` typed fast (or pasted) steers with `q` rather than
+    /// quitting; `nav` still decodes a whole chunk for the screen's other keys.
+    #[test]
+    fn s_asks_to_steer_and_nav_prefix_stops_right_after_it() {
+        assert_eq!(nav(b"s"), [Nav::Steer]);
+        assert_eq!(nav(b"js"), [Nav::Down, Nav::Steer]);
+        assert_eq!(nav_prefix(b"jsqk"), (vec![Nav::Down, Nav::Steer], 2));
+        assert_eq!(nav_prefix(b"\x1b[Bq"), (vec![Nav::Down, Nav::Quit], 4));
+        assert_eq!(nav_prefix(b""), (vec![], 0));
+    }
+
+    fn fed(c: &mut Compose, bytes: &[u8]) -> Option<(Composed, usize)> {
+        c.feed(bytes)
+    }
+
+    /// **The compose line**: printable bytes (UTF-8 included) are buffered, Backspace removes one
+    /// whole character, Enter sends what was typed, Esc cancels. Each end reports how many bytes it
+    /// consumed so the rest of the chunk goes back to navigation.
+    #[test]
+    fn a_compose_line_buffers_edits_sends_and_cancels() {
+        let mut c = Compose::with_limit(64);
+        assert_eq!(fed(&mut c, b"use v2"), None);
+        assert_eq!(c.text(), "use v2");
+        assert_eq!(fed(&mut c, b"\x7f\x7f3"), None);
+        assert_eq!(c.text(), "use 3");
+        assert_eq!(fed(&mut c, "é".as_bytes()), None);
+        assert_eq!(fed(&mut c, b"\x7f"), None);
+        assert_eq!(
+            c.text(),
+            "use 3",
+            "Backspace takes the whole é, not half of it"
+        );
+        assert_eq!(
+            fed(&mut c, b"!\rjk"),
+            Some((Composed::Send("use 3!".into()), 2)),
+            "Enter ends it; `jk` is left for navigation"
+        );
+
+        let mut c = Compose::with_limit(64);
+        assert_eq!(fed(&mut c, b"oops\x1bq"), Some((Composed::Cancel, 5)));
+        let mut c = Compose::with_limit(64);
+        assert_eq!(
+            fed(&mut c, b"   \r"),
+            Some((Composed::Cancel, 4)),
+            "a blank line sends nothing"
+        );
+        let mut c = Compose::with_limit(64);
+        assert_eq!(fed(&mut c, b"\x03"), Some((Composed::Cancel, 1)));
+    }
+
+    /// An arrow key is a CSI sequence and does nothing to the line — it is neither text nor a
+    /// cancel. A bracketed paste is text, with its newlines flattened, so pasting two lines does
+    /// not send the first one. The line never grows past its limit.
+    #[test]
+    fn a_compose_line_ignores_arrows_flattens_a_paste_and_holds_its_limit() {
+        let mut c = Compose::with_limit(64);
+        assert_eq!(fed(&mut c, b"a\x1b[Ab"), None);
+        assert_eq!(c.text(), "ab");
+        assert_eq!(fed(&mut c, b"\x1b[200~x\ny\x1b[201~"), None);
+        assert_eq!(c.text(), "abx y");
+        let mut c = Compose::with_limit(3);
+        assert_eq!(fed(&mut c, b"abcdef"), None);
+        assert_eq!(c.text(), "abc");
+        assert_eq!(fed(&mut c, "é".as_bytes()), None);
+        assert_eq!(
+            c.text(),
+            "abc",
+            "a character that does not fit is not split"
+        );
     }
 
     /// **`cycle_to` walks the rows as drawn, from the one after the cursor, and wraps.**

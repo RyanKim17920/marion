@@ -257,6 +257,15 @@ six tools now): a `task_id` resolves through the bridge's handle table as `statu
 `mcp::tests::steer_refuses_a_call_without_one_address_and_a_message`,
 `bridge::tests::steer_declares_its_address_and_says_when_the_child_reads_it`, and the tools/list
 pins in `mcp_conformance` and `background_spawn`.
+In `marion tree`, `s` (`Nav::Steer`; `!` stays attention) opens a one-line `marion_tui::tree::Compose`
+on the hint row for the selected node: printable bytes and UTF-8 are buffered, Backspace removes a
+whole character, arrows are skipped, a bracketed paste is flattened to one line, Enter sends through
+`courier::steer` with no caller and Esc/`^C` cancel; `nav_prefix` hands the rest of a chunk to the
+line so a typed-ahead `q` is text, not a quit. The answer — acceptance or refusal verbatim — lands in
+the detail pane's notice. Witnesses: `marion_tui::tree::tests::{s_asks_to_steer_and_nav_prefix_stops_right_after_it,
+a_compose_line_buffers_edits_sends_and_cancels, a_compose_line_ignores_arrows_flattens_a_paste_and_holds_its_limit}`,
+`tree::tests::{s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it,
+enter_sends_the_steer_and_its_refusal_lands_in_the_notice}`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

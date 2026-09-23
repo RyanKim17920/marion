@@ -47,9 +47,11 @@ fn usage_text() -> String {
          marion tree shows this project's node tree beside a content pane, with each node's\n\
          capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
          out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, ! jumps to the next\n\
-         node that needs attention (blocked, failed, or orphaned), enter attaches to the\n\
-         selected node, q leaves. It starts no supervisor: with none running there is nothing to\n\
-         show, and an empty forest would read as \"no agents\" rather than as \"wrong project\".\n\
+         node that needs attention (blocked, failed, or orphaned), s writes a message for the\n\
+         selected node's next turn on the hint row (enter sends it as marion steer would, esc\n\
+         cancels), enter attaches to the selected node, q leaves. It starts no supervisor: with\n\
+         none running there is nothing to show, and an empty forest would read as \"no agents\"\n\
+         rather than as \"wrong project\".\n\
          \n\
          marion list prints the same forest once, one node per line -- glyph, state, agent type,\n\
          the whole agent id, and its parent's short id -- and exits 0. --attention keeps only the\n\
