@@ -62,6 +62,7 @@ use std::time::{Duration, Instant};
 use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_core::proto::{HarnessReport, ProbeMode};
+use marion_harness::spec::Approval;
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
     LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, adapter_for_type, static_caps,
@@ -282,6 +283,10 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         Err(e) => return vec![adapter_refused_row(h, opts, &e, started)],
     };
     let surfaces = adapter.surfaces();
+    notes.push(approval_note(
+        adapter.spec().approval,
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    ));
 
     let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
     let identity = identify(
@@ -323,6 +328,91 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             )
         })
         .collect()
+}
+
+/// **The row's approval grant, as doctor reports it** — one line per row, whatever the shape.
+///
+/// Where marion compiles the grant into the launch the line says so and names it. Where only the
+/// operator can grant it ([`Approval::OperatorAllowlist`]) the line is a read of the operator's
+/// own settings under `home` — never a write: marion does not edit an operator's profile, so a
+/// missing grant is reported with the exact line to add. A file that is absent, or holds no such
+/// entry, is `MISSING`; one doctor cannot read or parse, or no `HOME` at all, is "cannot tell",
+/// because guessing either way would be a finding about a file nobody read.
+fn approval_note(approval: Approval, home: Option<&Path>) -> String {
+    let kind = approval.kind();
+    match approval {
+        Approval::AllowedToolsArg { flag, .. } => {
+            format!("approval: {kind} — marion lists its tools on `{flag}` at every launch")
+        }
+        Approval::DeclarationKey { key, .. } => {
+            format!("approval: {kind} — marion's own server declaration carries `{key}`")
+        }
+        Approval::CliFlag { flag, scope, .. } => {
+            format!("approval: {kind} — marion passes `{flag}`, which approves {scope}")
+        }
+        Approval::EnvVar {
+            key, value, scope, ..
+        } => format!("approval: {kind} — marion sets `{key}={value}`, which approves {scope}"),
+        Approval::SessionMode { .. } => {
+            format!("approval: {kind} — marion's client answers the protocol's permission requests")
+        }
+        Approval::None { .. } => {
+            format!("approval: {kind} — the harness asks nothing for an MCP tool")
+        }
+        Approval::OperatorAllowlist {
+            file,
+            pointer,
+            rule,
+            ..
+        } => operator_grant(kind, home, file, pointer, rule),
+    }
+}
+
+/// [`Approval::OperatorAllowlist`]'s line: whether `rule` is in the array at `pointer` of
+/// `<home>/<file>`, read and never written.
+fn operator_grant(
+    kind: &str,
+    home: Option<&Path>,
+    file: &str,
+    pointer: &str,
+    rule: &str,
+) -> String {
+    let (parent, leaf) = pointer.rsplit_once('/').unwrap_or(("", pointer));
+    let key = parent.trim_start_matches('/');
+    let line = format!(r#""{key}": {{"{leaf}": ["{rule}"]}}"#);
+    let missing = || {
+        format!(
+            "approval: {kind} — MISSING: headless runs are denied marion's tools until the \
+             operator adds {line} to ~/{file} (marion never edits it)"
+        )
+    };
+    let Some(home) = home else {
+        return format!("approval: {kind} — cannot tell: no HOME to find ~/{file} under");
+    };
+    let path = home.join(file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return missing(),
+        Err(e) => return format!("approval: {kind} — cannot tell: {}: {e}", path.display()),
+    };
+    let doc: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            return format!(
+                "approval: {kind} — cannot tell: {} is not JSON: {e}",
+                path.display()
+            );
+        }
+    };
+    let granted = doc
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|rules| rules.iter().any(|r| r.as_str() == Some(rule)));
+    if granted {
+        format!("approval: {kind} — granted: `{rule}` is in ~/{file}")
+    } else {
+        missing()
+    }
 }
 
 /// The one row a harness gets when no adapter could be bound to it at all.
@@ -1768,6 +1858,68 @@ pub fn render(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// **Every row's approval grant is reported, and a grant only the operator can give is read
+    /// from their own settings and never written.** The file is a scratch one handed in as
+    /// `home`: nothing here reads the real operator profile, and no harness runs.
+    #[test]
+    fn every_row_reports_its_approval_grant_and_a_missing_operator_grant_names_the_line() {
+        for h in Harness::ALL {
+            let row = marion_harness::adapter::harness_spec(h);
+            let note = approval_note(row.approval, None);
+            assert!(
+                note.starts_with(&format!("approval: {}", row.approval.kind())),
+                "{h}: {note}"
+            );
+        }
+
+        let grant = Approval::OperatorAllowlist {
+            file: ".tool/settings.json",
+            pointer: "/permissions/allow",
+            rule: "mcp(marion/*)",
+            note: "a scratch row",
+        };
+        let home = marion_testsupport::scratch("doctor-approval");
+        let line = r#""permissions": {"allow": ["mcp(marion/*)"]}"#;
+        let settings = home.join(".tool/settings.json");
+
+        let absent = approval_note(grant, Some(&*home));
+        assert!(
+            absent.contains("MISSING") && absent.contains(line) && absent.contains("~/.tool"),
+            "no file is a missing grant, and the note names the line: {absent}"
+        );
+        assert!(
+            !settings.exists(),
+            "doctor writes nothing into the operator's profile"
+        );
+
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"trustedWorkspaces":["/w"],"permissions":{"allow":["command(ls)"]}}"#,
+        )
+        .unwrap();
+        let other = approval_note(grant, Some(&*home));
+        assert!(other.contains("MISSING") && other.contains(line), "{other}");
+
+        std::fs::write(
+            &settings,
+            r#"{"permissions":{"allow":["command(ls)","mcp(marion/*)"]}}"#,
+        )
+        .unwrap();
+        let granted = approval_note(grant, Some(&*home));
+        assert!(
+            granted.contains("granted") && !granted.contains("MISSING"),
+            "{granted}"
+        );
+
+        std::fs::write(&settings, "not json").unwrap();
+        let unreadable = approval_note(grant, Some(&*home));
+        assert!(unreadable.contains("cannot tell"), "{unreadable}");
+
+        let no_home = approval_note(grant, None);
+        assert!(no_home.contains("cannot tell"), "{no_home}");
+    }
 
     /// **A live turn that could not authenticate says so, in the harness's own words.** Measured:
     /// gemini on a personal login writes nothing to stdout, exits 55, and puts the whole diagnosis
