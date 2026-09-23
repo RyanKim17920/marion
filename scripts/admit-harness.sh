@@ -14,9 +14,9 @@
 #      `marion_testsupport::PINNED_HARNESSES` (entry zero — the pin — is never touched);
 #   2. runs `cargo test -p marion-testsupport --lib` (the table's own sanity tests), then every
 #      integration suite under crates/marion-supervisor/tests that names one of the harnesses AND
-#      gates on `on_path(`, plus the suites that walk every enabled native lane when a named
-#      harness's lane is on — sequentially, each bounded by MARION_ADMIT_BOUND seconds (default
-#      1800);
+#      gates on a real one (`$gate`, below), plus the suites that walk every enabled native lane
+#      when a named harness's lane is on — sequentially, each bounded by MARION_ADMIT_BOUND
+#      seconds (default 1800);
 #   3. on all green, writes the dated observation comment above each `accepted` list, formats the
 #      file, and prints the MILESTONES "Verified harness facts" paragraph(s) and the commit message.
 #      On any red, restores the table exactly as it was and exits non-zero with the suite named
@@ -86,8 +86,12 @@ done || { restore; exit 1; }
 rustfmt --edition 2024 --config skip_children=true "$table" || { restore; exit 1; }
 
 # --- 2. the suites that drive these harnesses ---------------------------------------------------
-# Named by grep, not by hand: a suite that mentions a harness as a whole word and gates on
-# `on_path(` drives a real one (cross_product gates on `n.program`, so the word match carries it).
+# Named by grep, not by hand: a suite that mentions a harness as a whole word and gates on a real
+# one drives it (cross_product gates on `n.program`, so the word match carries it). A suite gates
+# through `on_path(` or through the helpers built on it — `harness_available(` and
+# `common::script::require_claude_and_codex(` — and all three spellings count: matching `on_path(`
+# alone skipped client_run, node_attach, child_events, child_stream, verification and
+# user_agent_types, so a claude drift that broke client_run was admitted green.
 # A suite that iterates `production_native_facades().enabled_native_commands()` drives every
 # enabled native lane without ever naming one, so the word grep cannot see it. When a named
 # harness's lane is on (`Lane::new(true, NativeLane::new("<h>", …))` in the facade table), add
@@ -95,17 +99,18 @@ rustfmt --edition 2024 --config skip_children=true "$table" || { restore; exit 1
 lane_on() {
     ADMIT_HARNESS=$1 perl -0ne 'exit !(/Lane::new\(\s*true,\s*NativeLane::new\("\Q$ENV{ADMIT_HARNESS}\E"/)' "$facades"
 }
+gate='on_path\(|harness_available\(|require_claude_and_codex\('
 suites=""
 lane_suites=""
 for h in $(printf '%s' "$pairs" | awk '{print $1}'); do
     suites="$suites
-$(grep -lw "$h" "$tests_dir"/*.rs | xargs grep -l 'on_path(' | xargs -n1 basename | sed 's/\.rs$//')"
+$(grep -lw "$h" "$tests_dir"/*.rs | xargs grep -lE "$gate" | xargs -n1 basename | sed 's/\.rs$//')"
     if lane_on "$h"; then
-        lane_suites=$(grep -l 'enabled_native_commands()' "$tests_dir"/*.rs | xargs grep -l 'on_path(' | xargs -n1 basename | sed 's/\.rs$//')
+        lane_suites=$(grep -l 'enabled_native_commands()' "$tests_dir"/*.rs | xargs grep -lE "$gate" | xargs -n1 basename | sed 's/\.rs$//')
     fi
 done
 suites=$(printf '%s\n%s\n' "$suites" "$lane_suites" | sed '/^$/d' | sort -u)
-[ -n "$suites" ] || { echo "no suite under $tests_dir names these harnesses and gates on on_path(" >&2; restore; exit 1; }
+[ -n "$suites" ] || { echo "no suite under $tests_dir names these harnesses and gates on one ($gate)" >&2; restore; exit 1; }
 echo "admit-harness: suites driving" $(printf '%s' "$pairs" | awk '{print $1}') ":" $suites
 
 # One command, bounded: the child is put in its own process group (perl's setpgrp) so the bound can
