@@ -374,7 +374,10 @@ mod tests {
         AgentId(s.into())
     }
 
-    const TYPED: TurnDelivery = TurnDelivery::TypedTurn { note: "t" };
+    const TYPED: TurnDelivery = TurnDelivery::TypedTurn {
+        mid_turn: marion_harness::spec::MidTurn::Queue,
+        note: "t",
+    };
 
     /// An inbox set whose records land in a vector the test reads back.
     fn recording() -> (Inboxes, Arc<Mutex<Vec<RecordKind>>>) {

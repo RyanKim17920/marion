@@ -190,22 +190,25 @@ pub enum NodeShape {
 /// **How marion hands a message to a node's next turn** — measured per harness and per shape
 /// (S31, `tests/fixtures/s31-turn-delivery/`).
 ///
-/// **Every strategy delivers at a turn boundary; marion queues on its own side until then.** There
-/// is deliberately no mid-turn variant. S31 measured every typed surface misbehaving under a write
-/// made while a turn is in flight: Claude Code's stream-json and both folding ACP agents (opencode,
-/// claude-agent-acp) fold it into the running turn and emit **one** completion for two messages,
-/// which breaks marion's one-result-per-turn pairing; codex-acp never answers the first prompt;
-/// copilot's ACP supersedes it with an empty `end_turn`. A mid-turn write is a later, per-row
-/// refinement with its own measurement, never a default.
+/// **Marion queues on its own side and delivers at a turn boundary, except where a row measured
+/// the harness folding a mid-turn write safely.** S31 measured the typed surfaces under a write
+/// made while a turn is in flight: Claude Code's stream-json and two ACP agents (opencode,
+/// claude-agent-acp) fold it into the running turn — the model reads it at its next tool round,
+/// with no completion of its own — while codex-acp never answers the first prompt and copilot's
+/// ACP supersedes it with an empty `end_turn`. [`MidTurn`] carries that difference on the typed
+/// row; every other strategy is turn-boundary only.
 ///
 /// Every variant carries a `note` naming the measurement, `None` included — an absence says what
 /// was searched, as [`UpdatePolicy::None`] does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnDelivery {
-    /// A new user turn on the node's typed control channel, written when the previous one has
-    /// ended: a stream-json `user` frame after `result`, an ACP `session/prompt` after the last
-    /// one resolved.
-    TypedTurn { note: &'static str },
+    /// A new user turn on the node's typed control channel: a stream-json `user` frame, an ACP
+    /// `session/prompt`. Between turns it is always the next turn; `mid_turn` says what marion
+    /// does with a message that arrives while a turn is in flight.
+    TypedTurn {
+        mid_turn: MidTurn,
+        note: &'static str,
+    },
     /// The next turn is a **relaunch of the same session**: the row's [`HarnessSpec::resume`]
     /// grammar with the message as the prompt, after the previous process exited.
     Continuation { note: &'static str },
@@ -229,7 +232,7 @@ impl TurnDelivery {
     /// The measurement behind this strategy, or behind its absence.
     pub const fn note(self) -> &'static str {
         match self {
-            TurnDelivery::TypedTurn { note }
+            TurnDelivery::TypedTurn { note, .. }
             | TurnDelivery::Continuation { note }
             | TurnDelivery::McpChannel { note }
             | TurnDelivery::TerminalPaste { note, .. }
@@ -249,6 +252,23 @@ impl TurnDelivery {
             note,
         }
     }
+}
+
+/// **What marion does with a message for a typed-turn node whose turn is still running** — the one
+/// place S31 found the harnesses disagree (`tests/fixtures/s31-turn-delivery/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidTurn {
+    /// Write it now: the harness folds it into the running turn at its next tool-result boundary
+    /// (the model reads it in its next request of the same turn), or queues it as the next turn
+    /// when the in-flight request is the turn's last. Measured on Claude Code's stream-json
+    /// (`p0a/b3`, `p0a/b`, `p0a/b2`) and on the opencode and claude-agent-acp ACP agents
+    /// (`p0a/acp-*-fold`). A fold emits no completion of its own, so marion's `MessageDelivered`
+    /// is the acknowledgement and the node's answer is still its last completion.
+    Fold,
+    /// Hold it until the turn ends, then send it as the next turn: a write while a turn runs
+    /// loses a response on this agent (codex-acp never answers the first prompt; copilot's ACP
+    /// supersedes it with an empty `end_turn`), or it was never measured.
+    Queue,
 }
 
 /// How marion tells an interactive node is waiting for input. One measured variant.

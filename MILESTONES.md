@@ -389,9 +389,13 @@ quiet is a reliable idle signal; Enter while busy is never dropped and never int
 claude and ACP `TypedTurn`; codex, opencode, copilot and qwen `Continuation`; gemini, goose and
 cline `None` (goose's resume needs `--no-session` dropped); interactive claude `McpChannel` (its
 note records that API-key/token auth refuses channels — no fallback yet); codex, opencode and
-copilot `TerminalPaste` (bracketed, `\r` after 50 ms, `OutputQuiet{1500}`). Every strategy
-delivers at a turn boundary — there is no mid-turn variant, because every typed surface above
-folds or loses a mid-turn write. Pinned by
+copilot `TerminalPaste` (bracketed, `\r` after 50 ms, `OutputQuiet{1500}`). A typed turn also
+states `MidTurn` — what marion does with a message while a turn runs: claude stream-json `Fold`
+(written at once; the model reads it at its next tool round), the generic ACP row `Queue` (held to
+the turn boundary), refined per agent through `HarnessAdapter::turn_delivery` — opencode and
+claude-agent-acp `Fold`, codex-acp and copilot `Queue`
+(`a_typed_turns_mid_turn_behaviour_is_the_rows_and_an_acp_agent_refines_it`). Every other
+strategy delivers at a turn boundary. Pinned by
 `adapter::tests::every_row_resolves_one_turn_delivery_per_shape_as_s31_measured` and the sweep
 `every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). **Row
 data only**: nothing delivers through it yet.

@@ -19,7 +19,7 @@ pub use crate::mcp_bridge::{
 };
 use crate::spec::{
     Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 use crate::surfaces::TypedKind;
 
@@ -163,10 +163,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     delivery: Deliveries {
         // S31 `p0a/b3`, `p0a/b`, `p0a/b2` (2.1.280, repeated on 2.1.276).
         headless: TurnDelivery::TypedTurn {
+            mid_turn: MidTurn::Fold,
             note: "S31 p0a/b3,b,b2 (2.1.280/2.1.276): a stream-json user frame after `result` \
                    starts turn 2 in the same process and session; a frame written mid-turn is \
-                   folded into the running turn with no `result` of its own, so marion holds it \
-                   and writes it at the turn boundary",
+                   folded into the running turn at the next tool-result boundary with no \
+                   `result` of its own, or queued as the next turn (its own `result`) when the \
+                   in-flight request is the turn's last. Never dropped",
         },
         // S31 `p0a/ch2`. The fallback a later phase may take is measured (`p0b/tui/claude`).
         interactive: TurnDelivery::McpChannel {

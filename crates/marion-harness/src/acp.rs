@@ -51,8 +51,8 @@ use marion_core::harness::Harness;
 use crate::caps::Capabilities;
 use crate::grammar::{Cond, UsageFold, UsageRule, Where};
 use crate::spec::{
-    Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, Push, Spelling, Surfaces,
-    TurnDelivery, UpdatePolicy,
+    Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push, Spelling,
+    Surfaces, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -109,10 +109,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     delivery: Deliveries {
         // Protocol-generic: any agent takes a second `session/prompt` after the first resolved.
         headless: TurnDelivery::TypedTurn {
+            // The protocol-generic answer. An agent measured to fold says so on its refinement
+            // row ([`Agent::mid_turn`]), and `AcpAdapter::turn_delivery` layers it on.
+            mid_turn: MidTurn::Queue,
             note: "S31 p0a/acp-*: a second session/prompt after the first resolved is a new turn \
                    on every agent probed; one written while a prompt is in flight is folded \
                    (opencode, claude-agent-acp), orphans the first (codex-acp) or supersedes it \
-                   (copilot), so marion sends the next prompt only at the turn boundary",
+                   (copilot), so an agent no row measured to fold gets its next prompt only at \
+                   the turn boundary",
         },
         interactive: TurnDelivery::None {
             note: "ACP has no interactive shape: no pane row and no native lane",
@@ -515,6 +519,9 @@ pub struct Agent {
     pub canned: Option<CannedRecipe>,
     /// How marion's bridge reaches this agent. [`Declaration::Session`] on every row but one.
     pub declaration: Declaration,
+    /// What this agent was measured to do with a `session/prompt` sent while one is in flight,
+    /// overriding the row's [`MidTurn::Queue`]; `None` where it was not measured.
+    pub mid_turn: Option<MidTurn>,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
 }
@@ -577,6 +584,9 @@ pub const OPENCODE: Agent = Agent {
     tools: Some(ToolSpelling::ServerUnderscoreTool),
     canned: Some(CannedRecipe::OpencodeConfigDocument),
     declaration: Declaration::Session,
+    // S31 `p0a/acp-opencode-fold` (opencode 1.18.32): the second prompt is folded into the running
+    // loop and both responses arrive when it drains.
+    mid_turn: Some(MidTurn::Fold),
     note: "S21: initialize, session/new, session/prompt and a real `marion_report` tool call, \
            against opencode 1.17.3. Its canned recipe is inferred from S13 over the same binary, \
            not measured on the `acp` subcommand",
@@ -594,6 +604,8 @@ pub const GEMINI: Agent = Agent {
     tools: None,
     canned: None,
     declaration: Declaration::Session,
+    // No turn has ever run, so nothing mid-turn was measured.
+    mid_turn: None,
     note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
            ineligibility). No turn has run, so no tool spelling has been measured",
 };
@@ -610,6 +622,9 @@ pub const CLAUDE_ACP: Agent = Agent {
     tools: Some(ToolSpelling::McpDoubleUnderscore),
     canned: None,
     declaration: Declaration::Session,
+    // S31 `p0a/acp-claude-acp-fold`, measured on 0.81.0 rather than this row's pinned 0.66.0: the
+    // second prompt is folded or queued into the running loop, both responses at the drain.
+    mid_turn: Some(MidTurn::Fold),
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
 };
@@ -629,6 +644,9 @@ pub const CODEX_ACP: Agent = Agent {
     tools: Some(ToolSpelling::McpDotted),
     canned: None,
     declaration: Declaration::Session,
+    // S31 `p0a/acp-codex-acp` (1.13.0): the second prompt is steered into the turn and the first
+    // is never answered, so a message waits for the turn boundary.
+    mid_turn: Some(MidTurn::Queue),
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
            (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
@@ -650,6 +668,9 @@ pub const COPILOT: Agent = Agent {
     tools: Some(ToolSpelling::ServerHyphenTool),
     canned: None,
     declaration: Declaration::Argv(COPILOT_MCP_FLAG),
+    // S31 `p0a/acp-copilot` (1.0.87): the second prompt supersedes the first, which returns an
+    // empty `end_turn` with stale usage, so a message waits for the turn boundary.
+    mid_turn: Some(MidTurn::Queue),
     note: "S28: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
@@ -740,6 +761,12 @@ impl Binding {
     /// names no provider, and that is the one thing the baseline cannot supply.
     pub fn canned(&self) -> Option<CannedRecipe> {
         self.refinement.and_then(|a| a.canned)
+    }
+
+    /// What this agent was measured to do with a prompt sent mid-turn, where a row measured it.
+    /// `None` is "the row's generic answer applies", never "unsafe".
+    pub fn mid_turn(&self) -> Option<MidTurn> {
+        self.refinement.and_then(|a| a.mid_turn)
     }
 
     /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.

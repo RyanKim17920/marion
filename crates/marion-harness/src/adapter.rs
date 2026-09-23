@@ -527,6 +527,13 @@ pub trait HarnessAdapter {
         }
     }
 
+    /// How a message reaches this node's next turn in `shape` — the row's
+    /// [`spec::delivery_for`], which an adapter bound to one agent may refine (ACP's per-agent
+    /// [`spec::MidTurn`]). The one question a driver asks; no caller reads the row directly.
+    fn turn_delivery(&self, shape: spec::NodeShape) -> spec::TurnDelivery {
+        spec::delivery_for(self.spec(), shape)
+    }
+
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
     ///
@@ -2035,6 +2042,23 @@ impl HarnessAdapter for AcpAdapter {
     /// The unbound adapter gets [`acp::UNBOUND_TOOL_NAME`] — a string that is not a tool name in
     /// any spelling and matches nothing in any transcript. It is unreachable from a launch:
     /// `compile` refuses an unbound adapter by name before anything is put in front of a model.
+    /// The row's typed turn, with the bound agent's measured [`spec::MidTurn`] where a refinement
+    /// row carries one: opencode and claude-agent-acp fold, codex-acp and copilot queue, and an
+    /// unmeasured agent keeps the row's queue.
+    fn turn_delivery(&self, shape: spec::NodeShape) -> spec::TurnDelivery {
+        match spec::delivery_for(self.spec(), shape) {
+            spec::TurnDelivery::TypedTurn { mid_turn, note } => spec::TurnDelivery::TypedTurn {
+                mid_turn: self
+                    .binding
+                    .as_ref()
+                    .and_then(acp::Binding::mid_turn)
+                    .unwrap_or(mid_turn),
+                note,
+            },
+            other => other,
+        }
+    }
+
     fn marion_tool_name(&self, tool: &str) -> String {
         match self.reading() {
             Some(r) => r.spell(tool),
@@ -7845,6 +7869,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **What a message written mid-turn does is row data, refined per ACP agent** (S31): Claude
+    /// Code's stream-json folds it, the protocol-generic ACP row queues it, and an ACP binding
+    /// takes its refinement row's measurement — opencode and claude-agent-acp fold, codex-acp and
+    /// copilot queue — while a command no row names keeps the generic queue.
+    #[test]
+    fn a_typed_turns_mid_turn_behaviour_is_the_rows_and_an_acp_agent_refines_it() {
+        use crate::spec::{MidTurn, NodeShape, TurnDelivery};
+        let mid = |a: &dyn HarnessAdapter| match a.turn_delivery(NodeShape::Headless) {
+            TurnDelivery::TypedTurn { mid_turn, .. } => mid_turn,
+            other => panic!("{:?}: not a typed turn: {other:?}", a.harness()),
+        };
+        assert_eq!(
+            mid(&*adapter_for(Harness::ClaudeCode).unwrap()),
+            MidTurn::Fold
+        );
+        assert_eq!(mid(&AcpAdapter::unbound()), MidTurn::Queue);
+        for (id, want) in [
+            ("opencode", MidTurn::Fold),
+            ("claude-acp", MidTurn::Fold),
+            ("codex-acp", MidTurn::Queue),
+            ("copilot", MidTurn::Queue),
+            // Refused `session/new` vendor-side, so nothing mid-turn was ever measured.
+            ("gemini", MidTurn::Queue),
+        ] {
+            let bound = AcpAdapter::bound(acp::Binding::resolve(id).unwrap());
+            assert_eq!(mid(&bound), want, "{id}");
+        }
+        let generic = AcpAdapter::bound(acp::Binding::resolve("my-agent --acp").unwrap());
+        assert_eq!(mid(&generic), MidTurn::Queue);
     }
 
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to
