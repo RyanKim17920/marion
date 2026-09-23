@@ -168,9 +168,22 @@ printf '%s' "$pairs" | while read -r h v; do annotate "$h" "$v" || exit 1; done 
 rustfmt --edition 2024 --config skip_children=true "$table" || { restore; exit 1; }
 rm -f "$backup"
 
+# --- 4. doctor's copy of the newest verified version ---------------------------------------------
+# `marion-supervisor doctor` notes a harness newer than the last verified version, and the shipped
+# binary cannot link this crate, so it carries a copy of each program's newest `accepted` entry
+# (`VERIFIED_HARNESSES`). A unit test fails when the two disagree; this keeps them agreeing.
+doctor="$here/crates/marion-supervisor/src/doctor.rs"
+printf '%s' "$pairs" | while read -r h v; do
+    ADMIT_HARNESS=$h ADMIT_VERSION=$v perl -0pi -e '
+        s{(\(Harness::\w+, "\Q$ENV{ADMIT_HARNESS}\E", ")[^"]*(")}{$1$ENV{ADMIT_VERSION}$2}
+            or die "no VERIFIED_HARNESSES entry for $ENV{ADMIT_HARNESS}\n";
+    ' "$doctor" || exit 1
+done || exit 1
+
 cat <<EOF
 
-admit-harness: all green. Not committed. Review:  git diff -- crates/marion-testsupport/src/lib.rs
+admit-harness: all green. Not committed. Review:  git diff -- crates/marion-testsupport/src/lib.rs \
+    crates/marion-supervisor/src/doctor.rs
 
 --- MILESTONES.md, "Verified harness facts", after the last admission paragraph -----------------
 EOF
