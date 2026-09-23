@@ -698,6 +698,13 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     // ---- detach, and the node is left exactly as it was (§7.3.1) ----
     op.type_in(&[marion_tui::keys::PREFIX, marion_tui::keys::DETACH_KEY]);
     assert!(until(|| op.exited()), "`marion attach` did not exit on ^]d");
+    // One line on the restored terminal names the way back to the node that kept running.
+    let hint = format!("marion attach {}", agent.0);
+    assert!(
+        until(|| op.seen().contains(&hint)),
+        "the detach did not tell the operator how to get back ({hint:?}); last bytes:\n{}",
+        tail(&op.seen())
+    );
 
     // **The other half of "the alt-screen switch is handled": the restore leg is never exercised,
     // and marion must not wait for it.**

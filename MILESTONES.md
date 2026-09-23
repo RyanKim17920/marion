@@ -121,7 +121,10 @@ gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree,
 2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
 facade's connection holds — now runs the keyboard reader too, forwarding nothing and detaching on
 `^] d`; before, nothing read the keys and the client had to be killed (`attach.rs`,
-`a_read_only_attach_to_a_silent_node_still_detaches_on_the_prefix`).
+`a_read_only_attach_to_a_silent_node_still_detaches_on_the_prefix`). After `^] d`, both
+`marion attach` and a native facade print one line on the restored terminal naming the way back —
+`marion attach <agent-id>` or `marion tree` (`native_facade_e2e.rs` lane loop; `pane_attach.rs`
+claude cell).
 2026-09-22: an attention queue — one rule, `tree::attention_of`, names a node blocked, exited
 failed / timed out / killed / unreported, or orphaned; `!` in `marion tree` jumps to the next such
 node in drawn order, wrapping, and the status row adds `N need(s) attention` only when N > 0
@@ -143,8 +146,10 @@ end mid-sequence (`native_relay/sequence.rs`;
 is **reserved**: the node's pty is told it is one row shorter, the operator's scroll region stops
 above the row (restated after any node sequence that widens it, e.g. codex's `CSI r`), and
 toggle-off, detach, exit or a stop gives both back — the full-height resize being the edge the
-harness repaints on. The lane loop now asserts the node's pty goes to rows-1 and back and that the
-operator's screen above the row equals the node's own recording replayed at its own size; green
+harness repaints on. The lane loop now asserts the node's pty goes to rows-1 and back, that the
+operator's stream is byte for byte the node's output plus marion's row, clear and region repairs
+(none inside a node CSI), and — for nodes on the alternate screen — that the screen above the row
+equals the node's own recording replayed at its own size; green
 on claude 2.1.280, codex 0.155.1, gemini 0.53.0, opencode 1.18.32 and copilot 1.0.88 (run with
 those versions admitted locally, not committed — the pin table still names the measured ones).
 

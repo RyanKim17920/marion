@@ -787,7 +787,9 @@ impl Write for OwnedFdWriter {
 
 /// Claim the authenticated launch on its issuing socket and transparently relay its pane until
 /// End or operator detach. The terminal guard remains live across every protocol and I/O failure.
-pub(crate) fn run(handoff: crate::native_bootstrap::NativeFacadeHandoff) -> Result<(), Refusal> {
+pub(crate) fn run(
+    handoff: crate::native_bootstrap::NativeFacadeHandoff,
+) -> Result<RelayExit, Refusal> {
     let claimed = handoff
         .claim()
         .map_err(|error| format!("claiming the native launch: {error}"))?;
@@ -814,7 +816,9 @@ pub(crate) fn relay_claimed(
     terminal: &mut crate::native_tty::NativeRelayTerminal,
     stream: UnixStream,
     signals: RelaySignalGuard,
-) -> Result<(), Refusal> {
+) -> Result<RelayExit, Refusal> {
+    let node = agent_id.clone();
+    let mut detached = false;
     let primary = (|| {
         let input_fd = {
             use std::os::fd::AsRawFd;
@@ -845,10 +849,26 @@ pub(crate) fn relay_claimed(
         // The operator's shell gets its whole screen back: no scroll region above a row marion
         // no longer paints. A primary failure outranks a failure to say so.
         let released = session.release_status();
+        detached = session.detached.load(Ordering::SeqCst);
         drop(session);
         result.and_then(|stop| released.map(|()| stop))
     })();
-    finish_claimed_relay(terminal, primary, signals)
+    finish_claimed_relay(terminal, primary, signals).map(|()| {
+        if detached {
+            RelayExit::Detached(node)
+        } else {
+            RelayExit::Ended
+        }
+    })
+}
+
+/// How a relay that did not fail ended, for the one line the facade prints after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelayExit {
+    /// The node's End, a signal, or anything else that was not the operator leaving.
+    Ended,
+    /// The operator typed `^] d`; the node keeps running.
+    Detached(AgentId),
 }
 
 fn retained_terminal_input(
@@ -1076,6 +1096,9 @@ struct RawPaneSession<W: Write> {
     input_sent: Arc<AtomicBool>,
     keyboard: Option<std::thread::JoinHandle<()>>,
     status: StatusOverlay,
+    /// Set by the keyboard worker on the operator's `^] d`, and only then: the relay's other
+    /// endings are not a detach and get no reattach hint.
+    detached: Arc<AtomicBool>,
 }
 
 /// The shortest gap between two repaints of the status row that node output asked for: the node
@@ -1294,6 +1317,7 @@ impl<W: Write> RawPaneSession<W> {
             input_sent: Arc::new(AtomicBool::new(false)),
             keyboard: None,
             status: StatusOverlay::new(geometry),
+            detached: Arc::new(AtomicBool::new(false)),
         };
         session.attach(geometry)?;
         session.start_keyboard(input)?;
@@ -1468,6 +1492,7 @@ impl<W: Write> RawPaneSession<W> {
         let id = self.id.clone();
         let writable = self.writable;
         let status_wanted = Arc::clone(&self.status.wanted);
+        let detached = Arc::clone(&self.detached);
         // The pump blocks in `stream.read` for up to `POLL`. Shutting the read side from here
         // returns that read at once, so a worker that stops — for any reason — ends the relay now
         // rather than at the next timeout; `pump` reads the failure slot before the EOF it caused.
@@ -1509,7 +1534,10 @@ impl<W: Write> RawPaneSession<W> {
                         };
                         for action in keys.feed(&bytes[..count]) {
                             match action {
-                                Action::Detach => return stop(None),
+                                Action::Detach => {
+                                    detached.store(true, Ordering::SeqCst);
+                                    return stop(None);
+                                }
                                 // The pump paints or clears the row on its next tick; the key
                                 // is marion's and never the node's.
                                 Action::ToggleStatus => {

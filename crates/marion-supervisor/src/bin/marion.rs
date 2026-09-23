@@ -209,7 +209,15 @@ fn attach_main(argv: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match marion_supervisor::attach::run(&args.agent_id, &repo, &state) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(marion_supervisor::attach::Leave::Ended) => ExitCode::SUCCESS,
+        // After the `Screen` guard has restored the terminal, as the refusal below is.
+        Ok(marion_supervisor::attach::Leave::Detached) => {
+            eprintln!(
+                "{}",
+                marion_supervisor::attach::reattach_hint(&args.agent_id)
+            );
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             // After the `Screen` guard has restored the terminal — `Session::drop` runs before
             // this returns — so the sentence lands on the operator's real screen rather than on

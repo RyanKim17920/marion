@@ -153,11 +153,29 @@ fn announce_read_only(
 /// would be a vocabulary with exactly one consumer.
 type Refusal = String;
 
+/// How an attach that did not fail ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leave {
+    /// The operator typed `^] d`; the node keeps running.
+    Detached,
+    /// The node's pane ended.
+    Ended,
+}
+
+/// The one line printed after a detach, on the restored terminal: the node is still running and
+/// this is the way back. The full id, because `marion attach` takes nothing shorter.
+pub fn reattach_hint(agent_id: &str) -> String {
+    format!(
+        "marion: detached; node {agent_id} keeps running. Back in: `marion attach {agent_id}`, \
+         or `marion tree` to see every node."
+    )
+}
+
 /// Attach to `agent`, render its pane, and return when the operator detaches or the node ends.
 ///
 /// `repo` is the directory whose supervisor to ask — §2 keys a supervisor on the git common dir, so
 /// this is the same resolution `marion run` performs and not a second one.
-pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
+pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<Leave, Refusal> {
     let key = crate::socket::project_root(repo);
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
@@ -1038,8 +1056,9 @@ impl Session {
     }
 
     /// The render loop: bytes out, geometry in, until the operator leaves or the node ends.
-    fn pump(&mut self) -> Result<(), Refusal> {
+    fn pump(&mut self) -> Result<Leave, Refusal> {
         loop {
+            // The worker records a failure for every stop but the operator's `^] d`.
             if self.leaving.load(Ordering::SeqCst) {
                 if let Some(error) = self
                     .keyboard_failure
@@ -1049,13 +1068,13 @@ impl Session {
                 {
                     return Err(error);
                 }
-                return Ok(());
+                return Ok(Leave::Detached);
             }
             self.forward_size()?;
             match self.next_frame() {
                 Ok(Some(Frame::Notification(note))) => {
                     if self.consume_pane_event(note.event)? == PaneProgress::End {
-                        return Ok(());
+                        return Ok(Leave::Ended);
                     }
                 }
                 // A read timeout is the one moment the loop knows the stream is quiet. That is
@@ -1080,7 +1099,7 @@ impl Session {
                     }
                     // Legacy has no display-plane terminal marker. Preserve its historical
                     // treatment of connection loss as the end of a view.
-                    PaneStream::Legacy => return Ok(()),
+                    PaneStream::Legacy => return Ok(Leave::Ended),
                     PaneStream::Negotiating => {
                         return Err(format!("the attach ended before negotiation: {error}"));
                     }
@@ -1527,6 +1546,18 @@ mod tests {
         server_thread.join().unwrap();
     }
 
+    /// The hint names the full id, since `marion attach` resolves nothing shorter, and the tree.
+    #[test]
+    fn the_reattach_hint_is_one_line_naming_the_way_back() {
+        let hint = reattach_hint("01a0ca8b-2cf8-766b-82c0-a64a086b5688");
+        assert!(!hint.contains('\n'), "{hint}");
+        assert!(
+            hint.contains("`marion attach 01a0ca8b-2cf8-766b-82c0-a64a086b5688`"),
+            "{hint}"
+        );
+        assert!(hint.contains("`marion tree`"), "{hint}");
+    }
+
     /// A supervisor that takes the attach request and never answers must not hold the operator:
     /// no keyboard can run before the answer says which pane protocol to encode, so the wait for
     /// it is bounded and ends in a refusal the tree shows as its notice.
@@ -1636,7 +1667,8 @@ mod tests {
         let pumped = done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a read-only attach did not detach on ^] d");
-        pumped.unwrap_or_else(|e| panic!("the detach was reported as a failure: {e}"));
+        let left = pumped.unwrap_or_else(|e| panic!("the detach was reported as a failure: {e}"));
+        assert_eq!(left, Leave::Detached, "a ^] d was not reported as a detach");
         let sent = server_thread.join().unwrap();
         assert!(
             !sent.iter().any(|frame| matches!(

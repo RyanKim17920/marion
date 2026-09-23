@@ -104,7 +104,11 @@ pub(crate) fn build_native_launch_v2(
 /// terminal: a refusal printed into raw mode would be one the operator could not read.
 pub fn relay_native_facade(handoff: NativeFacadeHandoff) -> ExitCode {
     match crate::native_relay::run(handoff) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(crate::native_relay::RelayExit::Ended) => ExitCode::SUCCESS,
+        Ok(crate::native_relay::RelayExit::Detached(agent)) => {
+            eprintln!("{}", crate::attach::reattach_hint(&agent.0));
+            ExitCode::SUCCESS
+        }
         Err(refusal) => {
             eprintln!("marion: {refusal}");
             ExitCode::FAILURE

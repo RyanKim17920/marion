@@ -785,6 +785,14 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
             until(|| op.exited()),
             "[{harness}] `marion {harness}` did not exit on ^]d"
         );
+        // One line on the restored terminal says how to get back to the node that kept running.
+        let hint = format!("marion attach {}", agent.0);
+        assert!(
+            until(|| cast_text(&op.cast, "o").contains(&hint)),
+            "[{harness}] the detach did not tell the operator how to get back ({hint:?}); what the \
+             client last wrote:\n{}",
+            tail(&cast_text(&op.cast, "o"))
+        );
         let restored = op.termios();
         let baseline = op.baseline.clone();
         let last_written = tail(&cast_text(&op.cast, "o"));
