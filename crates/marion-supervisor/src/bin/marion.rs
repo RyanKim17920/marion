@@ -29,106 +29,98 @@ use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
 
 fn usage_text() -> String {
+    let native: String = production_native_facades()
+        .enabled_native_commands()
+        .iter()
+        .map(|c| format!("\x20      marion {c} [<its own flags>…]\n"))
+        .collect();
+    let tools = mcp_tool_names();
     format!(
-        "usage: marion                                (interactive: pick harness, model, prompt)\n\
-         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--canned [--base-url <url>]]\n\
-         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
+        "usage: marion                                (interactive: pick agent type, model, prompt)\n\
+         {native}\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
+         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
+         \x20                 [--canned [--base-url <url>]]\n\
+         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \n\
-         agent types: {}, plus any in the repository's .marion/agents.toml\n\
+         marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
+         marion root with marion's MCP server connected. ^] d detaches, ^] s toggles a status row.\n\
          \n\
-         marion tree shows this project's node tree beside a content pane, with each node's\n\
-         capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
-         out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, ! jumps to the next\n\
-         node that needs attention (blocked, failed, or orphaned), s writes a message for the\n\
-         selected node's next turn on the hint row (enter sends it as marion steer would, esc\n\
-         cancels), enter attaches to the selected node, q leaves. It starts no supervisor: with\n\
-         none running there is nothing to show, and an empty forest would read as \"no agents\"\n\
-         rather than as \"wrong project\".\n\
+         agent types: {types}, plus any in the repository's .marion/agents.toml. A plain harness\n\
+         name is that harness's implementer; <harness>-orchestrator is the read-only planner.\n\
          \n\
-         marion list prints the same forest once, one node per line -- glyph, state, agent type,\n\
-         the whole agent id, and its parent's short id -- and exits 0. --attention keeps only the\n\
-         nodes that need an operator: blocked, exited failed / timed out / killed / unreported, or\n\
-         orphaned; the state word is the reason. Like tree, it starts no supervisor.\n\
+         marion tree shows this project's nodes beside a content pane, with each node's\n\
+         capabilities along the bottom (greyed where its harness cannot do them). j/k or the\n\
+         arrows move, tab changes focus, ! jumps to the next node that needs attention, s writes\n\
+         a message for the selected node's next turn (enter sends it, esc cancels), enter\n\
+         attaches, q leaves. It starts no supervisor: with none running there is nothing to show.\n\
          \n\
-         marion steer queues a message for a running node's next turn, as the operator: the\n\
-         node reads it when its current turn ends, not mid-sentence. The node is named by its\n\
-         whole id or by the short id its tree row shows; `-` reads the message from stdin. It\n\
-         exits 0 when the message was queued and says which node takes it, and 1 with the\n\
-         supervisor's own sentence when it was refused -- an ended node, an unknown id, a harness\n\
-         with no measured way to take one. Like list, it starts no supervisor.\n\
+         marion list prints the same forest once, one node per line, and exits 0. --attention\n\
+         keeps only nodes that need an operator (blocked, failed, timed out, unreported, orphaned).\n\
          \n\
-         marion mcp serves marion's own MCP tools — spawn, wait, status, list, steer — over\n\
-         stdio, for an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
-         makes, over the same socket: it starts no agent itself and owns none. Point a client at\n\
-         it with `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. It is not a\n\
-         command to run at a terminal — stdout is JSON-RPC.\n\
+         marion steer queues a message for a running node's next turn, as the operator. The node\n\
+         is named by its whole id or by the short id its tree row shows; `-` reads the message\n\
+         from stdin. It exits 0 when the message was queued and says which node takes it, and 1\n\
+         with the supervisor's own sentence when it was refused. Like list, it starts no\n\
+         supervisor.\n\
          \n\
-         marion with no arguments asks three questions — harness, model, prompt — and then runs\n\
-         exactly what `marion run <answer> --prompt <answer>` would. It asks **only** when stdin\n\
-         is a terminal: in a pipe or under CI there is nobody to answer, so it prints this text\n\
-         and exits non-zero rather than blocking forever on a read nothing will satisfy.\n\
+         marion mcp serves marion's {n} tools — {tool_list} — over stdio, for an MCP client to\n\
+         be configured with (report answers only inside a child marion started). Its spawn\n\
+         creates a root over the same socket `marion run` uses. Point a client at it with\n\
+         `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. stdout is JSON-RPC.\n\
          \n\
-         A run uses the vendor the operator is already logged in to. marion is not a credential\n\
-         store and seeds nothing: no code in it clears a child's environment, so a harness's own\n\
-         login is inherited, and marion simply declines to overlay a base URL and a placeholder\n\
-         key on top of it. That is the default because it is what a person at a terminal means,\n\
-         and it makes real model calls that cost real money.\n\
+         marion with no arguments asks three questions and then runs what `marion run` would.\n\
+         It asks only when stdin is a terminal; in a pipe it prints this text and exits non-zero.\n\
          \n\
-         --canned points the node at marion's own canned provider ({CANNED_BASE_URL}) instead.\n\
-         It is the fixture the test suite runs against: it costs nothing, and it answers nothing\n\
-         useful. `--live` is still accepted and now does nothing — real auth is the default it\n\
-         used to have to ask for.\n\
+         A run uses the login you already have for each harness and makes real model calls that\n\
+         cost real money. marion stores no credential and starts no login.\n\
          \n\
-         --base-url belongs to --canned and is refused without it. Two different reasons, one\n\
-         remedy. A loopback endpoint aims a real credential at a fake server, which is the one\n\
-         mistake whose blast radius is the operator's account rather than the run. Any other\n\
-         endpoint -- a proxy or a gateway -- is refused because marion does not implement it: no\n\
-         adapter passes an endpoint to a node running on the operator's own login, so the run\n\
-         would reach the vendor directly while looking like it went through the gateway. Pointing\n\
-         a real credential through a proxy is a reasonable thing to want and may land later;\n\
-         marion will not pretend to do it until it does. Pass --canned if the fixture is what was\n\
-         meant.\n\
+         --canned points the node at marion's canned test provider ({CANNED_BASE_URL}) instead:\n\
+         no credential, no cost, and answers nothing useful. Start it first (`marion-canned`,\n\
+         installed from crates/marion-provider); a run refuses at once if nothing listens there.\n\
+         `--live` is still accepted and does nothing: real auth is the default.\n\
          \n\
-         --repo defaults to the enclosing git repository — the nearest ancestor of the working\n\
-         directory holding a `.git` — and to the working directory itself when there is none, so\n\
-         that running marion from a subdirectory still scopes the node to the whole checkout.\n\
+         --base-url belongs to --canned and is refused without it. A loopback endpoint would aim\n\
+         a real credential at a fake server; any other endpoint (a proxy, a gateway) is refused\n\
+         because marion does not implement it, and the run would reach the vendor directly.\n\
+         \n\
+         --repo defaults to the enclosing git repository, else the working directory.\n\
          \n\
          --state-dir defaults to $MARION_STATE_DIR, else $XDG_STATE_HOME/marion, else\n\
-         ~/.local/state/marion, for every verb. It is deliberately not repo-local and not a temp\n\
-         directory: it is what survives a run, and a journal that vanished with /tmp would leave\n\
-         nothing to resume from.\n\
+         ~/.local/state/marion, for every verb. Use the same one for `marion tree` as for the\n\
+         session it should show.\n\
          \n\
-         --no-change-record tells marion not to snapshot the repository the root runs in. A root\n\
-         runs in the operator's own checkout, not a worktree, so marion takes that working tree as\n\
-         a git tree object at launch and at exit and records the delta -- which is the only record\n\
-         of what the run did. An agent type that declares built-in tools is therefore refused in a\n\
-         directory marion cannot snapshot: a grant with no diff behind it is indistinguishable\n\
-         from a write that escaped. This flag is the way to say that is understood and wanted; the\n\
-         run then launches with no built-in tool at all and journals that marion did not look.\n\
+         --no-change-record skips the snapshot marion takes of your checkout at a root's launch\n\
+         and exit. That snapshot is the only record of what a root changed, so a type with file\n\
+         tools is refused where marion cannot take it (outside a git repository); with this flag\n\
+         the root runs with no built-in tool at all instead.\n\
          \n\
-         --pane runs the root in a terminal marion owns rather than headlessly, so `marion\n\
-         attach <agent-id>` shows its TUI and types into it. It is asked for per run:\n\
-         without it the node is launched from exactly the bytes it was launched from\n\
-         before panes existed, which is what keeps M1's measured path measured. A harness\n\
-         with no interactive shape marion can drive refuses by name rather than quietly\n\
-         launching headless, because a run that asked for a pane is one that is about to\n\
-         attach to it.\n\
+         --pane runs the root in a terminal marion owns, so `marion attach <agent-id>` shows its\n\
+         TUI and types into it.\n\
          \n\
-         --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
-         surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
-         and not a wall-clock ceiling, since marion offers a root none; on a LaunchOnly surface\n\
-         (codex, gemini, opencode) there is no `Blocked` state to budget and it is the wall-clock\n\
-         bound instead — which is not optional, because opencode never exits on a provider hang.",
-        builtin_names().join(", ")
+         --timeout is the root's bound: on claude, the budget for one blocked permission request;\n\
+         on the other harnesses, a wall-clock limit.",
+        types = builtin_names().join(", "),
+        n = tools.len(),
+        tool_list = tools.join(", "),
     )
+}
+
+/// The tool names `marion mcp` declares in `tools/list`, read off the list itself so `--help`
+/// cannot drift from it.
+fn mcp_tool_names() -> Vec<String> {
+    marion_supervisor::bridge::tools(&AgentTypes::builtins_only())
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 fn usage() -> ! {
@@ -4798,6 +4790,32 @@ mod tests {
             let (chosen, _) = run_picker(input);
             assert_eq!(chosen, None, "EOF after {input:?} must end it");
         }
+    }
+
+    /// **`--help` names the headline commands and the real tool list.** The native `marion
+    /// <harness>` lanes come from the facade registry, so a lane switched on is listed the same
+    /// day; the MCP tools are read off the list `marion mcp` actually declares; and a person
+    /// reading help meets no design-doc section numbers.
+    #[test]
+    fn the_usage_text_lists_the_native_commands_and_the_declared_tools() {
+        let u = usage_text();
+        for command in production_native_facades().enabled_native_commands() {
+            assert!(
+                u.contains(&format!("marion {command} ")),
+                "`marion {command}` is missing from help:\n{u}"
+            );
+        }
+        let declared = mcp_tool_names();
+        assert_eq!(declared.len(), 5, "{declared:?}");
+        assert!(
+            u.contains(&format!(
+                "{} tools — {}",
+                declared.len(),
+                declared.join(", ")
+            )),
+            "{u}"
+        );
+        assert!(!u.contains('§'), "help cites no spec sections:\n{u}");
     }
 
     /// The usage text is the only place the flag semantics are stated to a person, so it has to
