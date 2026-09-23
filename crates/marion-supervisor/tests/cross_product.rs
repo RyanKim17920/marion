@@ -227,7 +227,7 @@ struct Node {
 }
 
 const CLAUDE: Node = Node {
-    agent_type: "claude",
+    agent_type: "claude-orchestrator",
     child_agent_type: "claude-impl",
     harness: Harness::ClaudeCode,
     // Claude Code's `--model` is legitimately omissible, and these cells pass one anyway: an
@@ -257,7 +257,7 @@ const CODEX: Node = Node {
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     child_agent_type: "gemini-impl",
     harness: Harness::Gemini,
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
@@ -279,7 +279,7 @@ const OPENCODE: Node = Node {
 };
 
 const COPILOT: Node = Node {
-    agent_type: "copilot",
+    agent_type: "copilot-orchestrator",
     child_agent_type: "copilot-impl",
     harness: Harness::Copilot,
     // Explicit: BYOK exits 1 without one (`BYOK providers require an explicit model`), and the
@@ -291,7 +291,7 @@ const COPILOT: Node = Node {
 };
 
 const GOOSE: Node = Node {
-    agent_type: "goose",
+    agent_type: "goose-orchestrator",
     child_agent_type: "goose-impl",
     harness: Harness::Goose,
     // Explicit: `GOOSE_MODEL` is how the `openai` provider is told what to name, and the adapter
@@ -317,7 +317,7 @@ const CLINE: Node = Node {
 };
 
 const QWEN: Node = Node {
-    agent_type: "qwen",
+    agent_type: "qwen-orchestrator",
     child_agent_type: "qwen-impl",
     harness: Harness::Qwen,
     // Explicit: `OPENAI_MODEL` is how the provider is told what to name, and the adapter refuses a

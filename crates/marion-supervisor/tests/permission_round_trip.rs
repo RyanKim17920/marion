@@ -109,7 +109,7 @@ impl Default for Setup {
         // What every probe in this file used before the grant gate existed: the orchestrator type,
         // a bare directory. It declares no tool, so it meets no gate.
         Self {
-            agent_type: "claude",
+            agent_type: "claude-orchestrator",
             git: false,
             no_change_record: false,
         }

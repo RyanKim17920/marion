@@ -148,7 +148,7 @@ const CODEX: Node = Node {
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     harness: Harness::Gemini,
     program: "gemini",
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).

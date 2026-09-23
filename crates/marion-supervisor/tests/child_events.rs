@@ -124,7 +124,7 @@ fn a_real_run_leaves_both_node_kinds_replayable_from_streams_one_supervisor_wrot
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
             "--repo",

@@ -184,8 +184,8 @@ pub struct AgentType {
     /// **The default is empty, and empty is exactly the behaviour every node has had until now** —
     /// `--tools ""` on Claude Code, gemini's default approval mode, i.e. no built-in tool at all.
     /// **No orchestrator type states one.** A tool declared here widens what *every* node of that
-    /// type may do, so it is stated only by the `-impl` types, which is the difference between
-    /// closing item 24 and hardcoding a tool name to make a matrix green.
+    /// type may do, so it is stated only by the implementer types (the plain harness names), which
+    /// is the difference between closing item 24 and hardcoding a tool name to make a matrix green.
     ///
     /// **This list now reaches a root too, and what guards the operator's repository is a record
     /// rather than a refusal.** `run_spawn` gives a child a git worktree marion made and later
@@ -338,171 +338,159 @@ impl Builtin {
 
 /// The built-in types, by name. `None` is a spawn error (§6.1 step 2 resolves the type first).
 ///
-/// `codex-impl` is the spelling the supervisor already defaults `spawn`'s `agent_type` to, and
-/// `codex` is accepted as the same type so the design's own prose reads correctly; both resolve to
-/// one row rather than two that could drift.
+/// **A plain harness name is that harness's full implementer, and `<harness>-impl` is an alias of
+/// it.** One rule for every harness, because a model choosing a child reaches for the plain name:
+/// when plain `claude` was a read-only orchestrator and plain `codex` an implementer, a live
+/// opencode root spawned `claude` to edit a file twice, and the child could only fail. `-impl`
+/// stays a spelling of the same row, so every script and prompt that names it keeps resolving, and
+/// the name written into a contract is the plain one.
 ///
-/// **The `-impl` flavours are the only built-ins that declare a tool**, and they are *new names*
-/// rather than a widening of the plain ones for two reasons that are not the same reason:
+/// **The read-only flavour has a name that says so**: `<harness>-orchestrator`, on exactly the
+/// harnesses where marion can withhold writes ([`Harness::writes_without_a_declaration`] is
+/// false). Where the harness writes on its own (codex, opencode, cline) a "read-only" type would
+/// describe a grant marion does not compile, so there is none.
 ///
-/// 1. An existing type that grew a tool would widen every node anyone already runs under it.
-/// 2. `claude` is the **root orchestrator** — its own description says so — and a root is compiled
-///    with `cwd` set to the operator's own repository rather than a worktree. A grant on that type
-///    is a write tool pointed at the user's tree.
+/// What guards the operator's checkout from a root with a grant is
+/// `marion_supervisor::root::availability_axis`: a root gets a grant list only over a repository
+/// whose working tree marion is recording, and is refused by name otherwise. See the `tools`
+/// field's doc comment.
 ///
-/// §11 item 24 is what they close: a claude or gemini child was read-only by construction, so
-/// marion spawned it to do work and gave it no route to any — and the contract it persisted was
-/// byte-identical to one whose write had escaped its worktree. `codex-impl` is the precedent for
-/// both halves: the implementer flavour has always been a separate name beside the orchestrator,
-/// and this is what that name was always for.
-///
-/// The second reason is *not* discharged by naming, since `marion run claude-impl` resolves right
-/// here. What discharges it is `marion_supervisor::root::availability_axis`: a root gets a grant
-/// list only over a repository whose working tree marion is recording, and is refused by name
-/// otherwise. See the `tools` field's doc comment.
-///
-/// Most `-impl` rows declare `read` beside `write`, because a node that may create a file and may
+/// Most implementers declare `read` beside `write`, because a node that may create a file and may
 /// not open one is §11 item 24 half-closed — measured in `tests/fixtures/s14/`, where claude's
 /// `Read` is absent under marion's `--tools ""` and present under `--tools Read`.
 const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "claude",
+        aliases: &["claude-impl"],
+        description: "Implementer on Claude Code: may read and write files.",
+        harness: Harness::ClaudeCode,
+        model: None,
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "claude-orchestrator",
         aliases: &[],
-        description: "Root orchestrator: plans, delegates, and reviews.",
+        description: "Orchestrator on Claude Code: plans and delegates through marion; cannot \
+                      write files.",
         harness: Harness::ClaudeCode,
         model: None,
         tools: &[],
         acp_agent: None,
     },
+    // No `tools`: codex grants writes under its own `workspace-write` sandbox, and has no read
+    // tool for `read` to map to (see [`TOOL_READ`]).
     Builtin {
-        canonical: "codex-impl",
-        aliases: &["codex"],
-        description: "Implements a well-specified change.",
+        canonical: "codex",
+        aliases: &["codex-impl"],
+        description: "Implementer on Codex: may read, write and run commands in its sandbox.",
         harness: Harness::Codex,
         model: None,
         tools: &[],
         acp_agent: None,
     },
     Builtin {
-        canonical: "claude-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on Claude Code.",
-        harness: Harness::ClaudeCode,
-        model: None,
-        tools: &[TOOL_READ, TOOL_WRITE],
-        acp_agent: None,
-    },
-    Builtin {
-        canonical: "gemini-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on the Gemini CLI.",
+        canonical: "gemini",
+        aliases: &["gemini-impl"],
+        description: "Implementer on the Gemini CLI: may read and write files.",
         harness: Harness::Gemini,
         model: Some(GEMINI_DEFAULT_MODEL),
         tools: &[TOOL_READ, TOOL_WRITE],
         acp_agent: None,
     },
-    // The harnesses added with M-generality's adapters. Named for their harness because that is
-    // all they are: the same defaults, dispatched elsewhere. Without a built-in name a harness
-    // with a working adapter is still unreachable from `spawn`, which resolves an agent *type*,
-    // never a harness.
     Builtin {
-        canonical: "gemini",
+        canonical: "gemini-orchestrator",
         aliases: &[],
-        description: "Implements a well-specified change on the Gemini CLI.",
+        description: "Orchestrator on the Gemini CLI: plans and delegates through marion; cannot \
+                      write files.",
         harness: Harness::Gemini,
         model: Some(GEMINI_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
     },
+    // No `tools`: opencode's default tool list already grants reads and writes.
     Builtin {
         canonical: "opencode",
-        aliases: &[],
-        description: "Implements a well-specified change on opencode.",
+        aliases: &["opencode-impl"],
+        description: "Implementer on opencode: all of opencode's own tools.",
         harness: Harness::OpenCode,
         model: Some(OPENCODE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
     },
-    // The fifth binary, on the same footing as `gemini` and `opencode`: the harness's own name,
-    // the defaults, and a model because its adapter refuses to launch canned without one.
+    // The adapter withholds every built-in it is not told to declare (`--available-tools`), so
+    // the grant has to live on the type.
     Builtin {
         canonical: "copilot",
-        aliases: &[],
-        description: "Implements a well-specified change on the GitHub Copilot CLI.",
-        harness: Harness::Copilot,
-        model: Some(COPILOT_DEFAULT_MODEL),
-        tools: &[],
-        acp_agent: None,
-    },
-    // The implementer flavour, for the same reason `claude-impl` and `gemini-impl` exist: the
-    // adapter withholds every built-in it is not told to declare (`--available-tools`), so a
-    // `copilot` child has no route to a file at all, and the grant has to live on a type.
-    Builtin {
-        canonical: "copilot-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on the GitHub Copilot CLI.",
+        aliases: &["copilot-impl"],
+        description: "Implementer on the GitHub Copilot CLI: may read and write files.",
         harness: Harness::Copilot,
         model: Some(COPILOT_DEFAULT_MODEL),
         tools: &[TOOL_READ, TOOL_WRITE],
         acp_agent: None,
     },
-    // The sixth binary. A model because `GOOSE_MODEL` is how the `openai` provider is told which
-    // model to name, and the adapter refuses to launch canned without one.
     Builtin {
-        canonical: "goose",
+        canonical: "copilot-orchestrator",
         aliases: &[],
-        description: "Implements a well-specified change on goose.",
-        harness: Harness::Goose,
-        model: Some(GOOSE_DEFAULT_MODEL),
+        description: "Orchestrator on the GitHub Copilot CLI: plans and delegates through marion; \
+                      cannot write files.",
+        harness: Harness::Copilot,
+        model: Some(COPILOT_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
     },
-    // The implementer flavour: under `--no-profile` a `goose` child has no route to a file at all,
-    // and `write` is what compiles `--with-builtin developer`. `read` is deliberately absent — the
-    // developer extension has no read-only tool, and answering `read` with an extension that also
-    // carries `shell` and `write` would mislabel the node (S26).
+    // `write` compiles `--with-builtin developer`; `read` is deliberately absent — the developer
+    // extension has no read-only tool, and answering `read` with an extension that also carries
+    // `shell` and `write` would mislabel the node (S26).
     Builtin {
-        canonical: "goose-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on goose.",
+        canonical: "goose",
+        aliases: &["goose-impl"],
+        description: "Implementer on goose: may write files and run shell commands.",
         harness: Harness::Goose,
         model: Some(GOOSE_DEFAULT_MODEL),
         tools: &[TOOL_WRITE],
         acp_agent: None,
     },
-    // The seventh binary, on opencode's footing: one type in both roles, because cline grants its
-    // 26 built-ins unconditionally and a `-impl` flavour would declare a grant marion does not
-    // compile (S27 item 12). A model because `providers.json` needs one.
+    Builtin {
+        canonical: "goose-orchestrator",
+        aliases: &[],
+        description: "Orchestrator on goose: plans and delegates through marion; cannot write \
+                      files.",
+        harness: Harness::Goose,
+        model: Some(GOOSE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // On opencode's footing: cline grants its 26 built-ins unconditionally, so a declaration
+    // would name a grant marion does not compile (S27 item 12). A model because `providers.json`
+    // needs one.
     Builtin {
         canonical: "cline",
-        aliases: &[],
-        description: "Implements a well-specified change on the Cline CLI.",
+        aliases: &["cline-impl"],
+        description: "Implementer on the Cline CLI: all of cline's own tools.",
         harness: Harness::Cline,
         model: Some(CLINE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
     },
-    // The eighth binary. A model because `OPENAI_MODEL` is how the provider is told what to name,
-    // and the adapter refuses to launch canned without one.
+    // The adapter offers only what `--core-tools` names, so the grant has to live on the type.
     Builtin {
         canonical: "qwen",
-        aliases: &[],
-        description: "Implements a well-specified change on Qwen Code.",
-        harness: Harness::Qwen,
-        model: Some(QWEN_DEFAULT_MODEL),
-        tools: &[],
-        acp_agent: None,
-    },
-    // The implementer flavour, for the reason `claude-impl` and `copilot-impl` exist: the adapter
-    // offers only what `--core-tools` names, so a `qwen` child has no route to a file at all, and
-    // the grant has to live on a type.
-    Builtin {
-        canonical: "qwen-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on Qwen Code.",
+        aliases: &["qwen-impl"],
+        description: "Implementer on Qwen Code: may read and write files.",
         harness: Harness::Qwen,
         model: Some(QWEN_DEFAULT_MODEL),
         tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "qwen-orchestrator",
+        aliases: &[],
+        description: "Orchestrator on Qwen Code: plans and delegates through marion; cannot write \
+                      files.",
+        harness: Harness::Qwen,
+        model: Some(QWEN_DEFAULT_MODEL),
+        tools: &[],
         acp_agent: None,
     },
     // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
@@ -518,7 +506,8 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "acp-opencode",
         aliases: &[],
-        description: "Implements a well-specified change on opencode over the Agent Client Protocol.",
+        description: "Implementer on opencode over the Agent Client Protocol: all of opencode's \
+                      own tools.",
         harness: Harness::Acp,
         model: Some(OPENCODE_DEFAULT_MODEL),
         tools: &[],
@@ -573,24 +562,25 @@ fn acp_command(name: &str) -> Option<AgentType> {
     })
 }
 
-/// Every built-in name, aliases included — what `marion doctor` would list.
+/// Every built-in type's canonical name, once each and **no alias** — what the picker, the `spawn`
+/// schema and `marion doctor` list. An alias still resolves through [`builtin`]; listing it beside
+/// its type would print the same type twice under two names.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
-        "acp-opencode",
         "claude",
-        "claude-impl",
-        "cline",
+        "claude-orchestrator",
         "codex",
-        "codex-impl",
-        "copilot",
-        "copilot-impl",
         "gemini",
-        "gemini-impl",
-        "goose",
-        "goose-impl",
+        "gemini-orchestrator",
         "opencode",
+        "copilot",
+        "copilot-orchestrator",
+        "goose",
+        "goose-orchestrator",
+        "cline",
         "qwen",
-        "qwen-impl",
+        "qwen-orchestrator",
+        "acp-opencode",
     ]
 }
 
@@ -861,6 +851,10 @@ mod tests {
         let t = builtin("codex-impl").expect("codex-impl must exist");
         assert_eq!(t.harness, Harness::Codex);
         assert_eq!(
+            t.name, "codex",
+            "the plain name is canonical, -impl its alias"
+        );
+        assert_eq!(
             builtin("codex"),
             Some(t),
             "the alias must not become a second definition"
@@ -873,28 +867,27 @@ mod tests {
     #[test]
     fn each_builtin_names_its_own_harness_and_no_name_is_a_second_definition() {
         for (name, h) in [
-            ("acp-opencode", Harness::Acp),
             ("claude", Harness::ClaudeCode),
-            ("claude-impl", Harness::ClaudeCode),
+            ("claude-orchestrator", Harness::ClaudeCode),
             ("cline", Harness::Cline),
             ("codex", Harness::Codex),
-            ("codex-impl", Harness::Codex),
             ("copilot", Harness::Copilot),
-            ("copilot-impl", Harness::Copilot),
+            ("copilot-orchestrator", Harness::Copilot),
             ("gemini", Harness::Gemini),
-            ("gemini-impl", Harness::Gemini),
+            ("gemini-orchestrator", Harness::Gemini),
             ("goose", Harness::Goose),
-            ("goose-impl", Harness::Goose),
+            ("goose-orchestrator", Harness::Goose),
             ("opencode", Harness::OpenCode),
             ("qwen", Harness::Qwen),
-            ("qwen-impl", Harness::Qwen),
+            ("qwen-orchestrator", Harness::Qwen),
+            ("acp-opencode", Harness::Acp),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
         }
         assert_eq!(
             builtin_names().len(),
-            15,
+            14,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -1034,33 +1027,100 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude-impl" | "gemini-impl" | "copilot-impl" | "qwen-impl" => {
+                "claude" | "gemini" | "copilot" | "qwen" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
                 // `write` alone: goose's developer extension has no read-only tool to answer
                 // `read` with, and the grant is the whole extension (S26).
-                "goose-impl" => vec![TOOL_WRITE.into()],
+                "goose" => vec![TOOL_WRITE.into()],
                 _ => vec![],
             };
             assert_eq!(
                 declared, expected,
-                "{name}: the orchestrator types must stay read-only and the -impl types must not \
+                "{name}: the orchestrator types must stay read-only and the implementers must not \
                  lose the grant that closes item 24"
             );
         }
     }
 
-    /// The `-impl` types are **additive**: the type an existing caller names is untouched.
+    /// **A plain harness name is that harness's full implementer**, and `<harness>-impl` is the
+    /// same type spelled the old way.
     ///
-    /// `run_spawn` defaults `spawn`'s `agent_type` to `codex-impl` and `marion run` takes a name
-    /// from argv, so every node marion launches today resolves one of these four. If any of them
-    /// grew a tool, this axis would have widened production rather than opened a route.
+    /// Measured live: models picking a child reach for the plain name. When plain `claude` was a
+    /// read-only orchestrator and plain `codex` an implementer, an opencode root spawned `claude`
+    /// twice to edit a file, and the child could only call `spawn` itself and fail. One rule for
+    /// every harness is what a model can guess.
     #[test]
-    fn the_types_that_already_existed_compile_the_declaration_they_always_had() {
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+    fn every_plain_harness_name_is_the_full_implementer_and_impl_is_its_alias() {
+        for name in [
+            "claude", "codex", "gemini", "opencode", "copilot", "goose", "cline", "qwen",
+        ] {
+            let plain = builtin(name).unwrap_or_else(|| panic!("{name} resolves"));
+            assert_eq!(plain.name, name, "{name} is the canonical spelling");
+            assert!(plain.writes_files(), "{name} must be able to change files");
+            assert_eq!(
+                builtin(&format!("{name}-impl")),
+                Some(plain),
+                "{name}-impl must stay a spelling of the same type, not a second definition"
+            );
+        }
+    }
+
+    /// **The read-only flavour has a name that says so**, on every harness where marion can
+    /// actually withhold file writes, and it states its grant in its description.
+    #[test]
+    fn every_orchestrator_is_named_as_one_and_cannot_write() {
+        let orchestrators: Vec<&str> = builtin_names()
+            .iter()
+            .copied()
+            .filter(|n| n.ends_with("-orchestrator"))
+            .collect();
+        for (plain, h) in [
+            ("claude", Harness::ClaudeCode),
+            ("codex", Harness::Codex),
+            ("gemini", Harness::Gemini),
+            ("opencode", Harness::OpenCode),
+            ("copilot", Harness::Copilot),
+            ("goose", Harness::Goose),
+            ("cline", Harness::Cline),
+            ("qwen", Harness::Qwen),
+        ] {
+            // Only where the harness writes on a declaration alone can the grant be withheld; a
+            // "read-only" codex type would be a lie, since codex writes under its own sandbox.
+            let name = format!("{plain}-orchestrator");
+            assert_eq!(
+                orchestrators.contains(&name.as_str()),
+                !h.writes_without_a_declaration(),
+                "{name}"
+            );
+        }
+        for name in orchestrators {
+            let t = builtin(name).unwrap();
+            assert!(t.tools.is_empty(), "{name}");
+            assert!(!t.writes_files(), "{name}");
             assert!(
-                builtin(name).unwrap().tools.is_empty(),
-                "{name}: existed before the availability axis and must be unchanged by it"
+                t.description.starts_with("Orchestrator") && t.description.contains("cannot write"),
+                "{name}: {}",
+                t.description
+            );
+        }
+    }
+
+    /// **The listed names are the types, once each**: an alias is never listed beside its type,
+    /// and no two types share a description — the picker and the `spawn` schema both print
+    /// `name (description)` for every listed name, and a pair of identical lines is a pair a model
+    /// cannot tell apart.
+    #[test]
+    fn each_listed_type_appears_once_with_a_description_of_its_own() {
+        let names = builtin_names();
+        let mut seen = std::collections::BTreeSet::new();
+        for name in names {
+            let t = builtin(name).unwrap();
+            assert_eq!(&t.name, name, "{name}: an alias must not be listed");
+            assert!(
+                seen.insert(t.description.clone()),
+                "{name}: duplicate description {:?}",
+                t.description
             );
         }
     }
@@ -1072,7 +1132,13 @@ mod tests {
     /// thing `codex`/`codex-impl` resolving to one definition exists to prevent.
     #[test]
     fn an_impl_type_differs_from_its_orchestrator_only_in_the_grant() {
-        for (orchestrator, implementer) in [("claude", "claude-impl"), ("gemini", "gemini-impl")] {
+        for (orchestrator, implementer) in [
+            ("claude-orchestrator", "claude"),
+            ("gemini-orchestrator", "gemini"),
+            ("copilot-orchestrator", "copilot"),
+            ("goose-orchestrator", "goose"),
+            ("qwen-orchestrator", "qwen"),
+        ] {
             let o = builtin(orchestrator).unwrap();
             let i = builtin(implementer).unwrap();
             assert_eq!(i.harness, o.harness, "{implementer}");
@@ -1106,7 +1172,7 @@ mod tests {
     /// adapter and `marion run codex-impl` would stop launching. See [`TOOL_READ`].
     #[test]
     fn the_impl_types_can_read_what_they_write() {
-        for name in ["claude-impl", "gemini-impl"] {
+        for name in ["claude", "gemini"] {
             let t = builtin(name).unwrap();
             assert_eq!(
                 t.tools,
@@ -1114,7 +1180,7 @@ mod tests {
                 "{name}: a node that may write and may not read is item 24 half-closed"
             );
         }
-        for name in ["codex-impl", "opencode"] {
+        for name in ["codex", "opencode"] {
             assert!(
                 !builtin(name)
                     .unwrap()
@@ -1302,7 +1368,13 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
     /// `codex-impl`, and a row named `codex` would silently rebind every spawn that spells it.
     #[test]
     fn a_row_named_after_a_builtin_or_alias_is_refused() {
-        for name in ["codex-impl", "codex", "claude", "acp-opencode"] {
+        for name in [
+            "codex-impl",
+            "codex",
+            "claude",
+            "claude-orchestrator",
+            "acp-opencode",
+        ] {
             let text = format!(
                 "[[agent]]\nname = \"{name}\"\nharness = \"gemini\"\ndescription = \"x\"\n"
             );

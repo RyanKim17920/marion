@@ -478,7 +478,7 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
         needle: root_dir.display().to_string(),
     };
     start_paned_run(
-        "claude",
+        "claude-orchestrator",
         PROMPT_MARK,
         &root_dir,
         &repo,

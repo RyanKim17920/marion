@@ -3352,7 +3352,7 @@ mod tests {
         // The orchestrator type through the same path: unchanged, which is what keeps this
         // additive.
         let orchestrator = LaunchSpec {
-            tools: builtin("claude").unwrap().tools,
+            tools: builtin("claude-orchestrator").unwrap().tools,
             ..spec
         };
         let args = adapter.compile(&orchestrator, &launch_ctx()).unwrap().args;
@@ -3360,7 +3360,7 @@ mod tests {
         assert_eq!(
             args[i + 1],
             "",
-            "a `claude` child is read-only as it always was"
+            "a `claude-orchestrator` child is read-only, as plain `claude` used to be"
         );
     }
 
@@ -3959,7 +3959,7 @@ mod tests {
             "a child of a depth-1 caller is at depth 2, and its bridge must be told so:\n{config}"
         );
         assert!(
-            config.contains(r#"MARION_AGENT_TYPE = "codex-impl""#),
+            config.contains(r#"MARION_AGENT_TYPE = "codex""#),
             "and told its own canonical type, whose max_depth its own spawns are gated on:\n{config}"
         );
     }

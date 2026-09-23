@@ -135,7 +135,7 @@ fn marion_run(dir: &Path, model: &str, lingers: bool) -> Run {
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "gemini",
+                "gemini-orchestrator",
                 "--prompt",
                 "delegate one thing",
                 "--repo",

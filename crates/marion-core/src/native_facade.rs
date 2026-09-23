@@ -1295,7 +1295,8 @@ mod tests {
             identity: VendorIdentity::new("codex"),
             command: "codex-native",
             aliases: &[],
-            native: Some(native(true, "codex", "codex")),
+            // Spelled by its alias, so the assertion below is about canonicalisation.
+            native: Some(native(true, "codex", "codex-impl")),
             structured: None,
         };
         let descriptors = [descriptor];
@@ -1309,7 +1310,7 @@ mod tests {
                 .unwrap()
                 .agent_type()
                 .name,
-            "codex-impl"
+            "codex"
         );
     }
 

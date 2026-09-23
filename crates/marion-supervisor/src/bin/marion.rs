@@ -1109,7 +1109,10 @@ fn pick(
     types: &AgentTypes,
 ) -> io::Result<Option<Chosen>> {
     let names = types.names();
-    writeln!(out, "marion — pick a harness:")?;
+    writeln!(
+        out,
+        "marion — pick an agent type (the harness it runs on, and what it may do):"
+    )?;
     for (i, name) in names.iter().enumerate() {
         let desc = types
             .resolve(name)
@@ -1117,10 +1120,10 @@ fn pick(
         writeln!(out, "  {}) {name}{desc}", i + 1)?;
     }
     let agent_type = loop {
-        let Some(answer) = ask(input, out, "harness [1]: ")? else {
+        let Some(answer) = ask(input, out, "agent type [1]: ")? else {
             return Ok(None);
         };
-        // Empty takes the first, which is the root orchestrator — the one a bare `marion` means.
+        // Empty takes the first: plain `claude`, the implementer.
         if answer.is_empty() {
             break names[0].to_string();
         }
@@ -4582,6 +4585,17 @@ mod tests {
                 prompt: "port the parser".into(),
             })
         );
+    }
+
+    /// **The list is agent types, and the title says so**; an empty answer takes the first, which
+    /// is plain `claude`, the implementer.
+    #[test]
+    fn the_picker_is_titled_for_agent_types_and_defaults_to_the_first() {
+        let (chosen, shown) = run_picker("\n\nship it\n");
+        assert!(shown.starts_with("marion — pick an agent type"), "{shown}");
+        assert!(!shown.contains("pick a harness"), "{shown}");
+        assert!(shown.contains("agent type [1]: "), "{shown}");
+        assert_eq!(chosen.unwrap().agent_type, builtin_names()[0]);
     }
 
     /// The list is `builtin_names()`, never a literal, so a fifth built-in is offered the day it

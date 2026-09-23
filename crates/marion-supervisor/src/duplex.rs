@@ -985,22 +985,21 @@ mod tests {
         assert_eq!(
             got,
             vec![
+                ("claude", Some(LaunchPath::Duplex)),
+                ("claude-orchestrator", Some(LaunchPath::Duplex)),
+                ("codex", Some(LaunchPath::LaunchOnly)),
+                ("gemini", Some(LaunchPath::LaunchOnly)),
+                ("gemini-orchestrator", Some(LaunchPath::LaunchOnly)),
+                ("opencode", Some(LaunchPath::LaunchOnly)),
+                ("copilot", Some(LaunchPath::LaunchOnly)),
+                ("copilot-orchestrator", Some(LaunchPath::LaunchOnly)),
+                ("goose", Some(LaunchPath::LaunchOnly)),
+                ("goose-orchestrator", Some(LaunchPath::LaunchOnly)),
+                ("cline", Some(LaunchPath::LaunchOnly)),
+                ("qwen", Some(LaunchPath::LaunchOnly)),
+                ("qwen-orchestrator", Some(LaunchPath::LaunchOnly)),
                 // The one built-in on the second typed path, and the reason that path exists.
                 ("acp-opencode", Some(LaunchPath::Acp)),
-                ("claude", Some(LaunchPath::Duplex)),
-                ("claude-impl", Some(LaunchPath::Duplex)),
-                ("cline", Some(LaunchPath::LaunchOnly)),
-                ("codex", Some(LaunchPath::LaunchOnly)),
-                ("codex-impl", Some(LaunchPath::LaunchOnly)),
-                ("copilot", Some(LaunchPath::LaunchOnly)),
-                ("copilot-impl", Some(LaunchPath::LaunchOnly)),
-                ("gemini", Some(LaunchPath::LaunchOnly)),
-                ("gemini-impl", Some(LaunchPath::LaunchOnly)),
-                ("goose", Some(LaunchPath::LaunchOnly)),
-                ("goose-impl", Some(LaunchPath::LaunchOnly)),
-                ("opencode", Some(LaunchPath::LaunchOnly)),
-                ("qwen", Some(LaunchPath::LaunchOnly)),
-                ("qwen-impl", Some(LaunchPath::LaunchOnly)),
             ]
         );
     }

@@ -170,7 +170,7 @@ struct Node {
 }
 
 const CLAUDE: Node = Node {
-    agent_type: "claude",
+    agent_type: "claude-orchestrator",
     // Claude Code's `--model` is legitimately omissible and the canned provider ignores it, so no
     // vendor id is pinned here that marion has no basis for.
     model: None,
@@ -190,7 +190,7 @@ const CODEX: Node = Node {
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     harness: Harness::Gemini,
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
     model: Some("gemini-2.5-flash"),

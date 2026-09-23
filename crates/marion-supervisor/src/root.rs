@@ -3129,7 +3129,7 @@ mod tests {
             "marion must never compile --disallowedTools (§3.1)"
         );
 
-        let (tools, allowed) = axis("claude");
+        let (tools, allowed) = axis("claude-orchestrator");
         assert_eq!(
             tools, "",
             "an orchestrator type declares nothing and must still get the flag, empty"
@@ -3265,7 +3265,7 @@ mod tests {
         }
 
         // 2. Nothing declared, same directory: unchanged, and that is the co-extensive half.
-        let a = prepare(&root_spec(&outside, "claude"))
+        let a = prepare(&root_spec(&outside, "claude-orchestrator"))
             .expect("a root that declares no tool still runs outside a repository");
         match &a.change_base {
             RootChangeBase::Unavailable { reason } => assert!(
@@ -3431,11 +3431,11 @@ mod tests {
     #[test]
     fn a_roots_scope_is_a_ceiling_with_no_request_beside_it() {
         let dir = temp("scope");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         match &node.scope {
             RootScope::CeilingOnly { ceiling } => assert_eq!(
                 ceiling,
-                &builtin("claude").unwrap().scope_ceiling,
+                &builtin("claude-orchestrator").unwrap().scope_ceiling,
                 "the agent type's own ceiling, not a copy that could drift"
             ),
             other => panic!("{other:?}"),
@@ -3662,10 +3662,10 @@ mod tests {
         use marion_harness::ControlTransport;
 
         let dir = temp("pane-selection");
-        let headless = prepare(&root_spec(&dir, "claude")).expect("a claude root");
+        let headless = prepare(&root_spec(&dir, "claude-orchestrator")).expect("a claude root");
         let paned = prepare(&RootSpec {
             pane: true,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .expect("a claude root with a pane");
 
@@ -3786,7 +3786,13 @@ mod tests {
     fn asking_for_a_pane_a_harness_does_not_have_is_refused_rather_than_downgraded() {
         let dir = temp("pane-refusal");
         let mut refused = 0;
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let has_pane = adapter_for(builtin(name).unwrap().harness)
                 .unwrap()
                 .pane_surfaces()
@@ -3829,7 +3835,13 @@ mod tests {
     #[test]
     fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
         let dir = temp("depth");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let doc = std::fs::read_to_string(node.mcp_config.as_ref().unwrap()).unwrap();
             assert!(
@@ -3895,7 +3907,13 @@ mod tests {
         // Distinctive enough that it cannot collide with an id, a path or a model name.
         const TOKEN: &str = "root-node-token-8f1c-4a20-b7de";
         let dir = temp("node-token");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
@@ -3921,7 +3939,12 @@ mod tests {
     #[test]
     fn only_the_duplex_root_carries_the_anthropic_env_pair() {
         let dir = temp("token");
-        for name in ["claude", "codex", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let has = |k: &str| node.invocation.env.iter().any(|(n, _)| n == k);
             assert_eq!(
@@ -3954,7 +3977,7 @@ mod tests {
         let node = prepare(&RootSpec {
             base_url: None,
             auth: Auth::Inherited,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .unwrap();
         for k in [
@@ -4045,7 +4068,7 @@ mod tests {
     #[test]
     fn a_canned_root_still_carries_the_pair_exactly_where_it_always_did() {
         let dir = temp("canned-auth");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         let get = |k: &str| {
             node.invocation
                 .env

@@ -685,7 +685,7 @@ fn a_run_whose_supervisor_cannot_start_is_refused_and_journals_nothing() {
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             "this must never launch",
             "--repo",
