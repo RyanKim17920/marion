@@ -2989,6 +2989,11 @@ fn run_verdict(terminal: Terminal_, blocked_bound: StdDuration) -> ExitCode {
                 eprintln!("marion: {}", exit.description);
                 return ExitCode::FAILURE;
             }
+            // A root that answered without delegating is a success, and says so rather than
+            // ending in silence (`root::ANSWERED_WITHOUT_DELEGATING`).
+            if exit.description.contains(root::ANSWERED_WITHOUT_DELEGATING) {
+                eprintln!("marion: note: {}", root::ANSWERED_WITHOUT_DELEGATING);
+            }
             match exit.code {
                 Some(0) => ExitCode::SUCCESS,
                 _ => ExitCode::FAILURE,

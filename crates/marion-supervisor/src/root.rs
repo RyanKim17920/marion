@@ -407,7 +407,18 @@ pub struct RootOutcome {
     /// failing with exit 1 and an empty stderr. `None` never means "it succeeded" — only that the
     /// stream itself claimed nothing (see [`marion_harness::StreamOutcome::failure`]).
     pub failure: Option<String>,
+    /// A `LaunchOnly` root that answered and exited cleanly **without calling any marion tool** —
+    /// a legitimate run (a prompt that needed no delegation), reported as `Ok` with
+    /// [`ANSWERED_WITHOUT_DELEGATING`] in its exit description. Set only by the post-hoc check,
+    /// the one place that can tell; `false` everywhere else.
+    pub bridge_unused: bool,
 }
+
+/// The note an `Ok` root's exit description carries when it answered without calling any marion
+/// tool. `marion run` prints it, so a run that delegated nothing still says so rather than
+/// ending in silence.
+pub const ANSWERED_WITHOUT_DELEGATING: &str =
+    "the root answered without calling any marion tool, so nothing was delegated";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RootError {
@@ -1386,6 +1397,10 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
         Some(f) => format!("{description}; the root's stream reported: {f}"),
         None => description,
     };
+    let description = match outcome.bridge_unused && status == ExitStatus::Ok {
+        true => format!("{description}; {ANSWERED_WITHOUT_DELEGATING}"),
+        false => description,
+    };
     (
         status,
         ProcessExit {
@@ -1860,6 +1875,7 @@ fn launch_only(
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
+        bridge_unused: false,
     };
     // Evaluated **after** the transcript is assembled and before anything is returned, so the
     // refusal is the run's outcome rather than a warning printed beside a success.
@@ -1868,8 +1884,11 @@ fn launch_only(
     // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
     // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
     // other claim about the same run.
+    let mut outcome = outcome;
     if !outcome.timed_out {
-        assert_the_root_delegated(node.harness, &outcome, started_a_child(node))?;
+        let delegated = started_a_child(node);
+        assert_the_root_delegated(node.harness, &outcome, delegated)?;
+        outcome.bridge_unused = !delegated && outcome.marion_calls.is_empty();
     }
     Ok(outcome)
 }
@@ -1921,6 +1940,7 @@ fn launch_acp(
         // nothing — the same reading `run_spawn`'s ACP arm records.
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2196,6 +2216,7 @@ fn launch_terminal(
         stderr: String::new(),
         denied_permissions: vec![],
         timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2245,6 +2266,19 @@ fn launch_terminal(
 /// closing that needs a recording, not a cleverer predicate.
 fn assert_a_verb_was_answered(harness: Harness, outcome: &RootOutcome) -> Result<(), RootError> {
     if outcome.marion_calls.iter().any(|c| c.outcome.is_answered()) {
+        return Ok(());
+    }
+    // **A plain answer is a normal run.** No marion call, a clean exit, a stream with frames in
+    // it and no failure claim: the root answered a prompt that needed no delegation (measured
+    // live: `marion run codex --prompt "say hello"` → "Hello!"). It is `Ok` with a note
+    // ([`ANSWERED_WITHOUT_DELEGATING`]) rather than silent, which is what §6.1 step 8 forbids.
+    // The loud refusal below is kept for what a broken bridge actually looks like: no frame at
+    // all, a non-zero exit, or the stream's own failure claim.
+    if outcome.marion_calls.is_empty()
+        && outcome.exit_code == Some(0)
+        && outcome.failure.is_none()
+        && !outcome.transcript.is_empty()
+    {
         return Ok(());
     }
     // Pre-formatted once, so both variants below quote the run's own words the same way.
@@ -2360,6 +2394,7 @@ fn launch_duplex(
         // for a stream failure claim to be read from here.
         failure: None,
         timed_out: out.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -4133,33 +4168,55 @@ mod tests {
         }
     }
 
-    /// **§6.1 step 8's post-hoc assertion, and the failure it exists for.** A `LaunchOnly` root that
-    /// never reached marion's bridge exited 0 having done nothing — the §12 shape — so it must be a
-    /// refusal that *names the cause*, never a success.
+    /// **A root that answered plainly and exited cleanly is a normal run, not a refusal.**
+    ///
+    /// Measured live: `marion run codex --prompt "say hello"` printed "Hello!" and marion exited 1
+    /// with "the root never reached marion's bridge". A prompt that needs no delegation is a
+    /// legitimate use, so the run is `Ok` and carries a note saying nothing was delegated — the
+    /// note is what keeps it from being the silent success §6.1 step 8 refuses.
     #[test]
-    fn a_launch_only_root_that_never_reached_the_bridge_is_a_refusal_not_an_exit_zero() {
-        let clean_looking = ran(&[], 3, Some(0), "");
-        let err = assert_a_verb_was_answered(Harness::Codex, &clean_looking)
-            .expect_err("a run with no marion call must not be reported as a success");
-        let msg = err.to_string();
-        assert!(msg.contains("codex"), "it must name the harness: {msg}");
+    fn a_launch_only_root_that_answered_without_marion_is_ok_with_a_note() {
+        let answered = ran(&[], 3, Some(0), "");
+        assert!(assert_a_verb_was_answered(Harness::Codex, &answered).is_ok());
+        let (status, exit) = roots_exit(&RootOutcome {
+            bridge_unused: true,
+            ..answered
+        });
+        assert_eq!(status, ExitStatus::Ok);
         assert!(
-            msg.contains("never reached marion's bridge"),
-            "it must name the cause, not just fail: {msg}"
+            exit.description.contains(ANSWERED_WITHOUT_DELEGATING),
+            "{}",
+            exit.description
         );
-        assert!(
-            msg.contains("Some(0)"),
-            "and it must say that the exit code looked clean, which is the whole trap: {msg}"
-        );
-        assert!(matches!(
-            err,
-            RootError::BridgeNeverReached {
-                harness: Harness::Codex,
-                frames: 3,
-                exit: Some(0),
-                ..
-            }
-        ));
+        // A root that did call marion gets no such note.
+        let (_, delegated) = roots_exit(&ran(&["spawn"], 3, Some(0), ""));
+        assert!(!delegated.description.contains(ANSWERED_WITHOUT_DELEGATING));
+    }
+
+    /// **What still guards a genuinely broken run**: no marion call *and* no answer (no frame at
+    /// all), a non-zero exit, or a stream that reported a failure is still the loud refusal.
+    #[test]
+    fn a_launch_only_root_that_never_reached_the_bridge_and_did_not_answer_is_a_refusal() {
+        for (label, o) in [
+            ("no frame", ran(&[], 0, Some(0), "")),
+            ("non-zero exit", ran(&[], 3, Some(1), "")),
+            (
+                "stream failure",
+                RootOutcome {
+                    failure: Some("APIError".into()),
+                    ..ran(&[], 3, Some(0), "")
+                },
+            ),
+        ] {
+            let err = assert_a_verb_was_answered(Harness::Codex, &o)
+                .expect_err(label)
+                .to_string();
+            assert!(
+                err.contains("never reached marion's bridge"),
+                "{label}: {err}"
+            );
+            assert!(err.starts_with("codex: "), "{label}: {err}");
+        }
     }
 
     /// **The refusal must carry the harness's own words when the exit code has none.** Measured
@@ -4259,7 +4316,10 @@ mod tests {
         let refused = || CallOutcome::Refused("§5.4 rejects `report` on a root".into());
         // (label, the run's marion calls, does the gate pass)
         let cases = [
-            ("no call at all", vec![], false),
+            // A clean exit with frames and no call is a plain answer, passed with a note; see
+            // `a_launch_only_root_that_answered_without_marion_is_ok_with_a_note`. The failing
+            // no-call shapes are in the test beside that one.
+            ("no call at all, a plain answer", vec![], true),
             (
                 "one answered call",
                 vec![("spawn", CallOutcome::Answered)],
