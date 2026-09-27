@@ -752,9 +752,15 @@ fn summary_facts(agent_type: &str, c: &TaskContract) -> String {
     )
 }
 
-/// Where a child's change is to be found, for [`summary_facts`] — one place, so a contract that
-/// comes to record a preserved branch differently changes one line.
+/// Where a child's change is to be found, for [`summary_facts`]: the committed branch and how to
+/// merge it when the reap recorded one ([`Completion::landed_line`], the wording `marion run`
+/// prints too), else the workspace the child ran in.
+///
+/// [`Completion::landed_line`]: marion_core::contract::Completion::landed_line
 fn where_the_change_lives(c: &TaskContract) -> String {
+    if let Some(line) = c.completion.as_ref().and_then(|comp| comp.landed_line()) {
+        return line;
+    }
     match &c.workspace {
         marion_core::contract::Workspace::Worktree { branch, .. } => format!("branch {branch}"),
         marion_core::contract::Workspace::SharedCwd { .. } => {
@@ -1998,6 +2004,30 @@ mod tests {
             line.ends_with(
                 "| codex-impl · Ok · verification 2/2 passed · changed src/f0.rs, src/f1.rs, \
                  src/f2.rs, src/f3.rs, src/f4.rs (+5 more) · branch marion/t1"
+            ),
+            "{line}"
+        );
+    }
+
+    /// **A child whose reap committed its work says where and how to merge it**, in the same
+    /// words `marion run`'s CHILD line uses, rather than only the branch name.
+    #[test]
+    fn the_summary_line_names_the_landed_commit_and_how_to_merge_it() {
+        let mut c = ran(crate::spawn::ChildOutcome {
+            narrative: Some("did the work".into()),
+            exit_code: Some(0),
+            ..Default::default()
+        });
+        let comp = c.completion.as_mut().unwrap();
+        comp.branch = Some("marion/t1".into());
+        comp.commit = Some(marion_core::contract::Oid(
+            "0123456789abcdef0123456789abcdef01234567".into(),
+        ));
+        let body = text(&spawn_result(&json!(2), "codex-impl", Ok(c)));
+        let line = body.lines().next().unwrap_or_default();
+        assert!(
+            line.ends_with(
+                "· changes on branch marion/t1 (0123456789ab); merge with: git merge marion/t1"
             ),
             "{line}"
         );
