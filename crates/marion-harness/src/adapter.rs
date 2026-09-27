@@ -3829,11 +3829,10 @@ mod tests {
                 Harness::ClaudeCode => &[Wire::AnthropicMessages],
                 Harness::Codex => &[Wire::OpenAiResponses],
                 Harness::Gemini => &[Wire::Gemini],
-                Harness::OpenCode
-                | Harness::Copilot
-                | Harness::Goose
-                | Harness::Cline
-                | Harness::Qwen => &[Wire::OpenAiChat],
+                Harness::Copilot => &[Wire::OpenAiChat, Wire::AnthropicMessages],
+                Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
+                    &[Wire::OpenAiChat]
+                }
                 Harness::Acp => &[],
             };
             assert_eq!(wires, want, "{h}");

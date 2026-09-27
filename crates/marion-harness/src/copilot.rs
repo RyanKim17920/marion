@@ -205,11 +205,22 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 336 ms; OSC 9;4;0 also marks the turn end",
         ),
     },
-    wires: &[WireRecipe {
-        wire: Wire::OpenAiChat,
-        env: &[],
-        note: "the row's own BYOK overlay (openai type, completions wire)",
-    }],
+    // Chat first: it is the wire harness_matrix's copilot cell has always proved. Responses
+    // (`COPILOT_PROVIDER_WIRE_API=responses`) is documented and unmeasured, so it is not a recipe.
+    wires: &[
+        WireRecipe {
+            wire: Wire::OpenAiChat,
+            env: &[],
+            note: "the row's own BYOK overlay (openai type, completions wire); endpoint_matrix's \
+                   copilot chat cell",
+        },
+        WireRecipe {
+            wire: Wire::AnthropicMessages,
+            env: &[(PROVIDER_TYPE_ENV, "anthropic")],
+            note: "COPILOT_PROVIDER_TYPE=anthropic over the same base URL; endpoint_matrix's \
+                   copilot anthropic cell",
+        },
+    ],
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

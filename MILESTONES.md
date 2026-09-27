@@ -1608,9 +1608,11 @@ ever runs a real login.
 - **Endpoint resolution — built.** `marion_supervisor::endpoint::resolve_endpoint`, called by
   `run_spawn_watched` (before the intent is journaled) and `root::prepare`: the provider is the
   request model's registry-id prefix, else the type's `provider`, else the type model's prefix;
-  the wire is the first of the harness row's `endpoint_wires` the provider serves natively (claude
-  anthropic; codex openai-responses; gemini gemini; opencode, copilot, goose, cline, qwen
-  openai-chat; ACP none, refused by name); a missing key, unknown provider, missing model or no
+  the wire is the first of the harness row's `wires` recipes (a wire plus the env that selects it,
+  applied by the one renderer; the resolver names no harness) the provider serves natively (claude
+  anthropic; codex openai-responses; gemini gemini; copilot openai-chat then anthropic via
+  `COPILOT_PROVIDER_TYPE=anthropic`; opencode, goose, cline, qwen openai-chat; ACP none, refused by
+  name); a missing key, unknown provider, missing model or no
   shared wire is refused naming the command or both wire lists. A Claude Code endpoint node also
   gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
   per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
@@ -1626,6 +1628,17 @@ ever runs a real login.
   (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
   provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
   `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
+- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+  `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
+  `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
+  server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
+  from the request log (which now records a fingerprint beside every redacted credential header):
+  every request presents the stored key and no second credential, no header carries an OAuth
+  marker, every request body names exactly `endpoint-model-7`, the contract and journal name the
+  provider and route and hold no key. Measured on 2026-09-27: codex 0.147 on Responses, opencode on
+  Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
+  with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
+  is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

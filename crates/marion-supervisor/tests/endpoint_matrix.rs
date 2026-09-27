@@ -38,7 +38,9 @@ fn fixture() -> &'static Fixture {
         std::fs::create_dir_all(&config).unwrap();
         write_owner_only(
             &config.join("credentials.json"),
-            &format!("{{\"providers\": {{\"canned-test\": \"{KEY}\"}}}}\n"),
+            &format!(
+                "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\"}}}}\n"
+            ),
         );
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has read the
         // environment or started a process — every test's first act is to call this.
@@ -65,7 +67,8 @@ fn write_owner_only(path: &Path, body: &str) {
 }
 
 /// Hold the cell lock and point the fixture providers at `base_url`: `canned-test` serving all
-/// four wires, `canned-chat` serving Chat Completions alone, `canned-nokey` with no stored key.
+/// four wires, `canned-chat` serving Chat Completions alone, `canned-anthropic` serving Anthropic
+/// Messages alone, `canned-nokey` with no stored key.
 fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
     static CELLS: Mutex<()> = Mutex::new(());
     let guard = CELLS.lock().unwrap_or_else(|p| p.into_inner());
@@ -77,7 +80,10 @@ fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
              wires = [\"anthropic\", \"openai-chat\", \"openai-responses\", \"gemini\"]\n\n\
              [providers.canned-chat]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\n\
              [providers.canned-nokey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\", \
-             \"openai-responses\"]\n"
+             \"openai-responses\"]\n\n\
+             [providers.canned-anthropic]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n",
+            // An Anthropic base is the root, as the seed rows spell it: the SDK appends `/v1`.
+            root = base_url.trim_end_matches("/v1")
         ),
     )
     .unwrap();
@@ -183,4 +189,300 @@ fn an_acp_type_naming_a_provider_is_refused_because_acp_has_no_endpoint_wire() {
     let _cells = providers_at("http://127.0.0.1:9/v1");
     let err = spawn_err(&t, "acp-opencode", "canned-test:some-model");
     assert_refused_before_the_node_existed(&t, &err, &["no endpoint wire"]);
+}
+
+// ---- the cells: a real harness, pointed at the fixture provider --------------------------------
+
+use marion_core::contract::{ExitStatus, TaskContract};
+use marion_provider::{CannedServer, Config, Script, reqlog::fingerprint};
+use marion_testsupport::{
+    judge, kill_hard, on_path, persisted_contracts, pinned_version, survivors,
+};
+use serde_json::{Value, json};
+
+/// The model every cell asks the provider for, through the `canned-test:` prefix.
+const MODEL: &str = "endpoint-model-7";
+const NARRATIVE: &str = "Reported back through marion from an endpoint node.";
+
+/// How the harness presents the key: `Authorization: Bearer <key>`, or the Anthropic SDK's
+/// `x-api-key: <key>`.
+#[derive(Clone, Copy)]
+enum Presents {
+    Bearer,
+    XApiKey,
+}
+
+struct Cell {
+    presents: Presents,
+    agent_type: &'static str,
+    /// The fixture provider the model names.
+    provider: &'static str,
+    script: Script,
+    /// The model the contract records: the harness's own spelling of [`MODEL`].
+    compiled_model: &'static str,
+    wire: &'static str,
+}
+
+struct Evidence {
+    contract: Result<TaskContract, String>,
+    persisted: Vec<Value>,
+    requests: Vec<Value>,
+    journal: String,
+    leaked: Vec<String>,
+}
+
+fn drive(cell: &Cell) -> Evidence {
+    let reqlog_dir = scratch(&format!("endpoint-reqlog-{}", cell.agent_type));
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: cell.script.clone(),
+    })
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+    let _cells = providers_at(&base_url);
+    let t = tree(cell.agent_type, Some(base_url));
+    let contract = run_spawn(
+        &t.env,
+        &request(&t, cell.agent_type, &format!("{}:{MODEL}", cell.provider)),
+        &TaskId(format!("endpoint-{}", cell.agent_type)),
+        &Caller::root(
+            "root",
+            marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+        ),
+    )
+    .map_err(|e| e.to_string());
+    let requests = server.requests().unwrap_or_default();
+    let walked = persisted_contracts(&t.state);
+    let journal = std::fs::read_to_string(t.env.project_dir.journal()).unwrap_or_default();
+    drop(server);
+    let leaked = survivors(&t.state.parent().unwrap().to_string_lossy());
+    for (pid, _) in &leaked {
+        kill_hard(*pid);
+    }
+    let walked = walked.expect("the state dir walks");
+    let persisted = judge(&walked).into_iter().map(|(_, v)| v.clone()).collect();
+    Evidence {
+        contract,
+        persisted,
+        requests,
+        journal,
+        leaked: leaked.into_iter().map(|(_, l)| l).collect(),
+    }
+}
+
+fn summary(ev: &Evidence) -> String {
+    ev.requests
+        .iter()
+        .map(|r| {
+            format!(
+                "  seq {} {} {} wire {:?} model {:?} credentials {}",
+                r["seq"], r["method"], r["path"], r["wire"], r["body"]["model"], r["credentials"]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
+    let who = cell.agent_type;
+    let contract = ev
+        .contract
+        .as_ref()
+        .unwrap_or_else(|e| panic!("{who}: run_spawn failed: {e}\n{}", summary(ev)));
+    assert!(!ev.requests.is_empty(), "{who}: the provider saw nothing");
+    let (header, value) = match cell.presents {
+        Presents::Bearer => ("authorization", fingerprint(&format!("Bearer {KEY}"))),
+        Presents::XApiKey => ("x-api-key", fingerprint(KEY)),
+    };
+    for r in &ev.requests {
+        // The user's stored key on every request — never a placeholder.
+        assert_eq!(
+            r["credentials"][header],
+            value,
+            "{who}: every request presents the stored key in `{header}`\n{}",
+            summary(ev)
+        );
+        // And no second credential beside it.
+        let others: Vec<&String> = r["credentials"]
+            .as_object()
+            .map(|m| m.keys().filter(|k| *k != header).collect())
+            .unwrap_or_default();
+        assert!(others.is_empty(), "{who}: a second credential {others:?}");
+        // No subscription login: no OAuth marker anywhere in what the harness sent.
+        let headers = r["headers"].to_string().to_ascii_lowercase();
+        assert!(
+            !headers.contains("oauth"),
+            "{who}: an OAuth header: {headers}"
+        );
+        // No request names any model but the chosen one — background calls included.
+        if let Some(m) = r["body"]["model"].as_str() {
+            assert_eq!(
+                m,
+                MODEL,
+                "{who}: a request named another model\n{}",
+                summary(ev)
+            );
+        }
+        assert_eq!(r["wire"], cell.wire, "{who}: wire\n{}", summary(ev));
+    }
+    assert!(
+        ev.requests.iter().any(|r| r["body"]["model"] == MODEL),
+        "{who}: no request named the model at all\n{}",
+        summary(ev)
+    );
+    let comp = contract.completion.as_ref().expect("a finished run");
+    assert_eq!(
+        comp.status,
+        ExitStatus::Ok,
+        "{who}: {}",
+        comp.exit.description
+    );
+    assert!(
+        comp.narrative
+            .as_ref()
+            .is_some_and(|n| n.value == NARRATIVE),
+        "{who}: the child reported through marion's bridge"
+    );
+    assert_eq!(
+        contract.child.model.as_deref(),
+        Some(cell.compiled_model),
+        "{who}"
+    );
+    assert_eq!(
+        contract.child.provider.as_deref(),
+        Some(cell.provider),
+        "{who}"
+    );
+    assert_eq!(contract.child.route.as_deref(), Some("native"), "{who}");
+    assert_eq!(ev.persisted.len(), 1, "{who}");
+    // The key is in no record marion keeps.
+    for (what, text) in [
+        ("the persisted contract", ev.persisted[0].to_string()),
+        ("the journal", ev.journal.clone()),
+    ] {
+        assert!(!text.contains(KEY), "{who}: the key is in {what}");
+    }
+    assert!(
+        ev.journal
+            .contains(&format!("\"provider\":\"{}\"", cell.provider)),
+        "{who}: the journal's Spawned names the provider"
+    );
+    assert!(ev.leaked.is_empty(), "{who}: leaked {:?}", ev.leaked);
+}
+
+#[test]
+fn a_claude_code_child_runs_on_the_users_provider_over_the_anthropic_wire() {
+    assert!(
+        on_path("claude"),
+        "put `claude` ({}) on PATH",
+        pinned_version("claude")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type: "claude",
+        script: Script {
+            root_tool: "mcp__marion__report".into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "anthropic",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_codex_child_runs_on_the_users_provider_over_the_responses_wire() {
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type: "codex-impl",
+        script: Script {
+            child_narrative: NARRATIVE.into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "responses",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn an_opencode_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("opencode"),
+        "put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type: "opencode",
+        script: Script {
+            openai_report_tool: "marion_report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: "marion/endpoint-model-7",
+        wire: "openai",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_copilot_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("copilot"),
+        "put `copilot` ({}) on PATH",
+        pinned_version("copilot")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type: "copilot",
+        script: Script {
+            openai_report_tool: "marion-report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "openai",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+/// **The same harness on a second wire, chosen by the same resolver from row data alone.** A
+/// provider serving only Anthropic Messages leaves copilot's Chat recipe unusable, so resolution
+/// takes the row's next recipe — `COPILOT_PROVIDER_TYPE=anthropic` — and nothing in the resolver
+/// names copilot.
+#[test]
+fn a_copilot_child_takes_its_anthropic_recipe_when_the_provider_serves_only_that_wire() {
+    assert!(
+        on_path("copilot"),
+        "put `copilot` ({}) on PATH",
+        pinned_version("copilot")
+    );
+    let cell = Cell {
+        // The Anthropic SDK's own header, which is what api.anthropic.com itself reads.
+        presents: Presents::XApiKey,
+        provider: "canned-anthropic",
+        agent_type: "copilot",
+        script: Script {
+            root_tool: "marion-report".into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "anthropic",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
 }
