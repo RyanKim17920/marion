@@ -295,12 +295,14 @@ pub fn tokens(n: u64) -> String {
     }
 }
 
-/// A duration in seconds the way a row prints it: `42s`, `2m17s`, `1h04m`.
+/// A duration in seconds the way a row prints it: `42s`, `2m17s`, `1h04m`, `2d03h`. The unit
+/// below the largest is zero-padded so a ticking column does not jitter.
 pub fn elapsed(secs: u64) -> String {
     match secs {
         0..=59 => format!("{secs}s"),
         60..=3599 => format!("{}m{:02}s", secs / 60, secs % 60),
-        _ => format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60),
+        3600..=86_399 => format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60),
+        _ => format!("{}d{:02}h", secs / 86_400, (secs % 86_400) / 3600),
     }
 }
 
@@ -470,5 +472,6 @@ mod tests {
         assert_eq!(elapsed(42), "42s");
         assert_eq!(elapsed(137), "2m17s");
         assert_eq!(elapsed(3840), "1h04m");
+        assert_eq!(elapsed(2 * 86_400 + 3 * 3600), "2d03h");
     }
 }

@@ -250,20 +250,8 @@ fn row_time(n: &NodeSummary, now: std::time::SystemTime) -> String {
         return String::new();
     }
     now.duration_since(started.0)
-        .map(|d| elapsed_word(d.as_secs()))
+        .map(|d| marion_tui::home::text::elapsed(d.as_secs()))
         .unwrap_or_default()
-}
-
-/// A duration as few characters as it needs: `45s`, `2m17s`, `12m04s`, `1h05m`, `2d03h`. The
-/// unit below the largest is zero-padded so a ticking column does not jitter.
-pub fn elapsed_word(secs: u64) -> String {
-    let (d, h, m, s) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
-    match (d, h, m) {
-        (0, 0, 0) => format!("{s}s"),
-        (0, 0, _) => format!("{m}m{s:02}s"),
-        (0, _, _) => format!("{h}h{m:02}m"),
-        _ => format!("{d}d{h:02}h"),
-    }
 }
 
 /// What the row says after the harness: the agent type with the harness's own name taken off —

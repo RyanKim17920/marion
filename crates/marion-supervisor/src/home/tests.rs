@@ -485,17 +485,6 @@ fn only_a_moving_screen_asks_for_a_clock() {
     assert!(h.animating());
 }
 
-#[test]
-fn elapsed_time_is_worded_short_and_widens_only_as_it_grows() {
-    use view::elapsed_word;
-    assert_eq!(elapsed_word(0), "0s");
-    assert_eq!(elapsed_word(45), "45s");
-    assert_eq!(elapsed_word(137), "2m17s");
-    assert_eq!(elapsed_word(724), "12m04s");
-    assert_eq!(elapsed_word(3900), "1h05m");
-    assert_eq!(elapsed_word(2 * 86_400 + 3 * 3600), "2d03h");
-}
-
 /// A row carries its elapsed time and its token total from the summary — for every node, not
 /// only the selected one whose detail was read.
 #[test]
