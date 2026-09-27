@@ -100,6 +100,8 @@ pub mod procid;
 /// §5.3's display plane: the pty master, its recording, and the thread that reads it. The master
 /// lives here and not in a client, because a client that held it would SIGHUP the agent by dying.
 pub mod pty;
+/// The projects and models the home screen remembers between runs.
+pub mod recent;
 pub mod registry;
 /// §7.2's supervisor-restart marking: the `Live` → `Orphaned` judgement applied to a replayed
 /// tree, and what it refuses to decide without a process to look at.
