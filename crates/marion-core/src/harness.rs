@@ -34,6 +34,10 @@ pub enum Harness {
     /// Qwen Code, headless `-p` (measured on 0.23.0, `tests/fixtures/s25/`). The ninth name and
     /// the eighth binary; a Gemini CLI fork whose headless surface is Claude Code's shape.
     Qwen,
+    /// Google's Antigravity CLI, headless `-p` with `--output-format stream-json` (measured on
+    /// 1.2.8, `tests/fixtures/s32/`). The tenth name and the ninth binary; not a Gemini CLI fork,
+    /// and it speaks no ACP. Wire name `agy`, the binary's own.
+    Antigravity,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -56,6 +60,7 @@ impl Harness {
             Harness::Goose => "goose",
             Harness::Cline => "cline",
             Harness::Qwen => "qwen",
+            Harness::Antigravity => "agy",
             Harness::Acp => "acp",
         }
     }
@@ -118,16 +123,19 @@ impl Harness {
             // only with `--with-builtin developer`, which a `write` declaration compiles (S26).
             // qwen: `--core-tools` plus `--exclude-tools` offers exactly the declared names, and
             // `write_file` is offered only when declared (S25).
+            // agy: the default `request-review` mode auto-denies a headless `write_to_file`, and
+            // `--mode accept-edits` arrives only with a `write` declaration (s32).
             Harness::ClaudeCode
             | Harness::Gemini
             | Harness::Copilot
             | Harness::Goose
-            | Harness::Qwen => false,
+            | Harness::Qwen
+            | Harness::Antigravity => false,
         }
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 9] = [
+    pub const ALL: [Harness; 10] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::Gemini,
@@ -136,6 +144,7 @@ impl Harness {
         Harness::Goose,
         Harness::Cline,
         Harness::Qwen,
+        Harness::Antigravity,
         Harness::Acp,
     ];
 }
@@ -145,15 +154,20 @@ impl Harness {
 /// marion has never heard of.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, \
-     goose, cline, qwen, acp"
+    "unknown harness {0:?}; known harnesses are claude, codex, gemini, opencode, copilot, goose, \
+     cline, qwen, agy, acp (claude-code is accepted for claude)"
 )]
 pub struct UnknownHarness(pub String);
 
 impl FromStr for Harness {
     type Err = UnknownHarness;
 
+    /// The wire spelling, plus `claude` for Claude Code: the name a person types everywhere else
+    /// (agent types, `marion claude`), accepted as input while the wire keeps `claude-code`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "claude" {
+            return Ok(Harness::ClaudeCode);
+        }
         Harness::ALL
             .into_iter()
             .find(|h| h.as_str() == s)
@@ -206,6 +220,8 @@ mod tests {
         assert_eq!(Harness::Goose.as_str(), "goose");
         assert_eq!(Harness::Cline.as_str(), "cline");
         assert_eq!(Harness::Qwen.as_str(), "qwen");
+        // The binary's own name: Google's Antigravity CLI installs as `agy`.
+        assert_eq!(Harness::Antigravity.as_str(), "agy");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }
@@ -233,9 +249,24 @@ mod tests {
                 // Measured on 0.23.0 (`tests/fixtures/s25/`): `--core-tools` names what the model is
                 // offered, and `write_file` is in `tools[]` only when the launch names it.
                 ("qwen", false),
+                // Measured on 1.2.8 (s32): in the default `request-review` mode a headless
+                // `write_to_file` is auto-denied; `--mode accept-edits` is what a `write` compiles.
+                ("agy", false),
                 ("acp", true),
             ]
         );
+    }
+
+    /// **`claude` is the spelling a person types**: agent types, `marion claude` and the README
+    /// all say it, so `.marion/agents.toml`'s `harness =` and `doctor --harness` accept it. The
+    /// wire spelling stays `claude-code`, which persisted contracts carry, and still parses.
+    #[test]
+    fn claude_parses_as_claude_code_and_the_wire_spelling_is_unchanged() {
+        assert_eq!("claude".parse::<Harness>(), Ok(Harness::ClaudeCode));
+        assert_eq!("claude-code".parse::<Harness>(), Ok(Harness::ClaudeCode));
+        assert_eq!(Harness::ClaudeCode.as_str(), "claude-code");
+        let e = "clod".parse::<Harness>().unwrap_err().to_string();
+        assert!(e.contains("known harnesses are claude,"), "{e}");
     }
 
     #[test]

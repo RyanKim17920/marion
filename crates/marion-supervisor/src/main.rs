@@ -10,16 +10,27 @@
 //! `bin/marion.rs` refuses every argv[0] but `run`, a refusal that is pinned by a test and that
 //! this change deliberately leaves standing. `detach.rs` owns all three of its stages.
 
-use marion_supervisor::{detach, doctor, mcp};
+use marion_supervisor::{detach, doctor, mcp, preflight};
+
+/// The doctor's flags, as a person types them through `marion doctor`.
+const DOCTOR_USAGE: &str = "usage: marion doctor [--capabilities|--adapter] [--harness <name>] \
+                            [--model <id>] [--acp-command <cmd>]";
 
 fn usage() -> ! {
-    eprintln!("usage: marion-supervisor <mcp|serve|doctor>");
+    eprintln!(
+        "usage: marion-supervisor doctor [--capabilities|--adapter] [--harness <name>] …\n\
+         \x20      marion-supervisor --version\n\
+         \n\
+         `marion-supervisor doctor` is the same as `marion doctor`. `mcp` and `serve` are \
+         internal:\nmarion starts them itself, and they are not commands to type."
+    );
     std::process::exit(2)
 }
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
+        Some("--version" | "-V") => println!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),
         Some("mcp") => mcp::serve_stdio(mcp::Principal::Node),
         Some(detach::SERVE) => {
             let program = std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into());
@@ -34,19 +45,26 @@ fn main() {
         Some("doctor") => match doctor::parse_args(&argv[1..]) {
             Ok(opts) => {
                 let rows = doctor::run(&opts);
-                print!("{}", doctor::render(&rows));
+                let environment = preflight::checks(&preflight::gather());
+                print!("{}", doctor::render(&rows, &environment));
+                // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
+                // the doctor in either mode; a warning never does.
+                if environment
+                    .iter()
+                    .any(|c| c.level == preflight::Level::Fail)
+                {
+                    std::process::exit(1);
+                }
                 // A non-zero exit for a failing `--adapter`, so §8's "Run `--adapter` in CI" is a
-                // gate rather than a log. `--capabilities` cannot fail: it reports what is
-                // installed, and nothing being installed is an answer, not an error.
+                // gate rather than a log. A harness missing under `--capabilities` is not a
+                // failure: nothing being installed is an answer, not an error.
                 if rows.iter().any(|r| r.report.adapter_check == Some(false)) {
                     std::process::exit(1);
                 }
             }
             Err(e) => {
                 eprintln!("marion doctor: {e}");
-                eprintln!(
-                    "usage: marion-supervisor doctor <--capabilities|--adapter> [--harness <name>] [--model <id>] [--acp-command <cmd>]"
-                );
+                eprintln!("{DOCTOR_USAGE}");
                 std::process::exit(2);
             }
         },

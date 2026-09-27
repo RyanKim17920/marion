@@ -1,21 +1,18 @@
 //! Durable binary PTY stream primitives.
-
-// This increment deliberately lands the format and durability machinery before its production
-// callsite, so every item in this module is expected to remain dark until that integration lands.
-#![allow(dead_code)]
+//!
+//! The supervisor only ever writes a stream. The decoder (`recover_session_bytes` and the
+//! `decode` halves of each type) is compiled for tests alone: they read a stream back to prove
+//! what the writer committed.
 
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
 use thiserror::Error;
 
-const MAGIC: [u8; 8] = *b"MRNPTY01";
-const VERSION: u16 = 1;
-const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
 const FRAME_LEN_BYTES: usize = size_of::<u32>();
 const CHECKSUM_BYTES: usize = 32;
 const FRAME_FIXED_BYTES: usize = 1 + (3 * size_of::<u64>()) + size_of::<u32>();
@@ -25,14 +22,6 @@ const MAX_RECOVERY_BYTES: usize = 16 * 1024 * 1024;
 /// Exhausting this display budget is an honest truncation boundary, not a writer failure.
 const SESSION_CONTROL_RESERVE_BYTES: usize = 1024 * 1024;
 const SESSION_OUTPUT_LIMIT_BYTES: usize = MAX_RECOVERY_BYTES - SESSION_CONTROL_RESERVE_BYTES;
-const MAX_SEGMENTS: usize = 1024;
-const TRAILER_LEN: usize = MAGIC.len() + size_of::<u16>() + (4 * size_of::<u64>()) + CHECKSUM_BYTES;
-const TRAILER_VERSION_START: usize = MAGIC.len();
-const TRAILER_COMMITTED_LEN_START: usize = TRAILER_VERSION_START + size_of::<u16>();
-const TRAILER_RECORD_SEQ_START: usize = TRAILER_COMMITTED_LEN_START + size_of::<u64>();
-const TRAILER_DISPLAY_SEQ_START: usize = TRAILER_RECORD_SEQ_START + size_of::<u64>();
-const TRAILER_INPUT_SEQ_START: usize = TRAILER_DISPLAY_SEQ_START + size_of::<u64>();
-const TRAILER_DIGEST_START: usize = TRAILER_INPUT_SEQ_START + size_of::<u64>();
 
 const OUTPUT_KIND: u8 = 1;
 const RESIZE_KIND: u8 = 2;
@@ -41,12 +30,11 @@ const END_KIND: u8 = 4;
 const DISPLAY_INCOMPLETE_KIND: u8 = 5;
 
 const SESSION_MAGIC: [u8; 8] = *b"MRNPTS01";
-const LEGACY_SESSION_VERSION: u16 = 2;
 const SESSION_VERSION: u16 = 3;
 const SESSION_ID_BYTES: usize = 16;
 const AGENT_BINDING_BYTES: usize = 32;
-/// Reserved zero bytes retain the fixed v2 header length without persisting a secret-verification
-/// key. Readers accept v2's historical non-zero salt, but every v3 writer emits zeros.
+/// Reserved zero bytes where v2 persisted a content-verification key. Writers emit zeros, and a
+/// reader refuses anything else rather than hold a key that would make input guesses verifiable.
 const PRIVACY_RESERVED_BYTES: usize = 32;
 const SESSION_HEADER_PREFIX_LEN: usize = SESSION_MAGIC.len()
     + size_of::<u16>()
@@ -56,119 +44,66 @@ const SESSION_HEADER_PREFIX_LEN: usize = SESSION_MAGIC.len()
     + PRIVACY_RESERVED_BYTES;
 const SESSION_HEADER_LEN: usize = SESSION_HEADER_PREFIX_LEN + CHECKSUM_BYTES;
 const AGENT_BINDING_DOMAIN: &[u8] = b"marion.pty.agent-binding.v1\0";
-const LEGACY_TERMINAL_OUTCOME_BYTES: usize = 11;
 const TERMINAL_OUTCOME_BYTES: usize = 12;
+const INPUT_EVIDENCE_PAYLOAD_BYTES: usize = size_of::<u32>();
 const EXIT_CODE_PRESENT: u8 = 1 << 0;
 const SIGNAL_PRESENT: u8 = 1 << 1;
 const TIMED_OUT: u8 = 1 << 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecordFormat {
-    LegacyV1,
-    SessionV2,
-    SessionV3,
-}
-
-impl RecordFormat {
-    fn for_session_version(version: u16) -> Result<Self, StreamError> {
-        match version {
-            LEGACY_SESSION_VERSION => Ok(Self::SessionV2),
-            SESSION_VERSION => Ok(Self::SessionV3),
-            other => Err(StreamError::UnsupportedVersion(other)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Header {
-    pub(crate) version: u16,
-}
-
-impl Header {
-    pub(crate) fn encode(self) -> [u8; HEADER_LEN] {
-        let mut encoded = [0_u8; HEADER_LEN];
-        encoded[..MAGIC.len()].copy_from_slice(&MAGIC);
-        encoded[MAGIC.len()..].copy_from_slice(&self.version.to_le_bytes());
-        encoded
-    }
-
-    pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
-        if encoded.len() != HEADER_LEN {
-            return Err(StreamError::InvalidHeaderLength {
-                actual: encoded.len(),
-                expected: HEADER_LEN,
-            });
-        }
-        if encoded[..MAGIC.len()] != MAGIC {
-            return Err(StreamError::BadMagic);
-        }
-
-        let version = u16::from_le_bytes(
-            encoded[MAGIC.len()..]
-                .try_into()
-                .expect("the header length was checked"),
-        );
-        if version != VERSION {
-            return Err(StreamError::UnsupportedVersion(version));
-        }
-        Ok(Self { version })
-    }
-}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum StreamError {
     #[error("PTY stream storage error: {0}")]
     Storage(String),
+    #[cfg(test)]
     #[error("invalid PTY stream header length: got {actual}, expected {expected}")]
     InvalidHeaderLength { actual: usize, expected: usize },
+    #[cfg(test)]
     #[error("invalid PTY stream magic")]
     BadMagic,
+    #[cfg(test)]
     #[error("unsupported PTY stream version {0}")]
     UnsupportedVersion(u16),
+    #[cfg(test)]
     #[error("truncated PTY stream frame")]
     TruncatedFrame,
     #[error("PTY stream frame length {actual} exceeds maximum {max}")]
     RecordTooLarge { actual: usize, max: usize },
+    #[cfg(test)]
     #[error("unknown PTY stream record kind {0}")]
     UnknownRecordKind(u8),
+    #[cfg(test)]
     #[error("invalid PTY stream record payload")]
     InvalidRecordPayload,
+    #[cfg(test)]
     #[error("PTY stream record checksum mismatch")]
     ChecksumMismatch,
     #[error("input evidence sequence does not match its record sequence")]
     InputSequenceMismatch,
-    #[error("invalid or missing PTY stream commit trailer")]
-    InvalidTrailer,
-    #[error("PTY stream commit trailer digest mismatch")]
-    TrailerDigestMismatch,
+    #[cfg(test)]
     #[error("PTY stream record sequence is not dense: expected {expected}, got {actual}")]
     RecordSequenceGap { expected: u64, actual: u64 },
+    #[cfg(test)]
     #[error("PTY stream display sequence is invalid: expected {expected}, got {actual}")]
     DisplaySequenceGap { expected: u64, actual: u64 },
+    #[cfg(test)]
     #[error("PTY stream input sequence is invalid: expected {expected}, got {actual}")]
     InputSequenceGap { expected: u64, actual: u64 },
-    #[error("PTY stream segment has no terminal End record")]
-    MissingEnd,
+    #[cfg(test)]
     #[error("PTY stream record appears after End")]
     RecordAfterEnd,
-    #[error("PTY stream segment ended without a commit trailer")]
-    MissingTrailer,
     #[error("PTY stream recovery input exceeds maximum {max} bytes")]
     RecoveryTooLarge { max: usize },
     #[error("PTY stream display output reached its bounded {max}-byte budget")]
     OutputBudgetExhausted { max: usize },
-    #[error("PTY stream recovery exceeds maximum {max} segments")]
-    TooManySegments { max: usize },
     #[error("PTY stream committed length overflow")]
     CommittedLengthOverflow,
     #[error("PTY stream writer is poisoned after a prior durability failure")]
     WriterPoisoned,
     #[error("PTY stream session id entropy failed: {0}")]
     Entropy(String),
+    #[cfg(test)]
     #[error("PTY stream session header checksum mismatch")]
     HeaderChecksumMismatch,
-    #[error("PTY stream session is already ended")]
-    SessionEnded,
     #[error("PTY stream path has no file name")]
     InvalidCastPath,
     #[error("PTY stream parent directory is not private and owned by the effective user")]
@@ -179,16 +114,16 @@ pub(crate) enum StreamError {
     PathChanged,
     #[error("PTY stream already has a live writer")]
     WriterLocked,
+    #[cfg(test)]
     #[error("PTY stream session header does not match the expected identity or geometry")]
     HeaderMismatch,
     #[error("PTY stream counter overflow")]
     CounterOverflow,
     #[error("PTY stream terminal outcome is internally inconsistent")]
     InvalidTerminalOutcome,
+    #[cfg(test)]
     #[error("PTY stream session format requires a typed terminal outcome")]
     MissingTerminalOutcome,
-    #[error("legacy PTY stream segments cannot contain a typed session outcome")]
-    TypedTerminalOutcomeInLegacySegment,
 }
 
 impl From<io::Error> for StreamError {
@@ -219,6 +154,7 @@ impl ReaderDisposition {
         }
     }
 
+    #[cfg(test)]
     fn decode(encoded: u8) -> Result<Self, StreamError> {
         match encoded {
             1 => Ok(Self::CleanEof),
@@ -280,12 +216,12 @@ impl TerminalOutcome {
         Ok(encoded)
     }
 
-    fn decode(encoded: &[u8], stream_complete: bool) -> Result<Self, StreamError> {
-        if encoded.len() < LEGACY_TERMINAL_OUTCOME_BYTES
-            || encoded.len() > TERMINAL_OUTCOME_BYTES
+    #[cfg(test)]
+    fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
+        if encoded.len() != TERMINAL_OUTCOME_BYTES
             || encoded[0] & !(EXIT_CODE_PRESENT | SIGNAL_PRESENT | TIMED_OUT) != 0
             || encoded[10] > 1
-            || encoded.get(11).is_some_and(|complete| *complete > 1)
+            || encoded[11] > 1
         {
             return Err(StreamError::InvalidTerminalOutcome);
         }
@@ -311,9 +247,7 @@ impl TerminalOutcome {
             timed_out: encoded[0] & TIMED_OUT != 0,
             reader: ReaderDisposition::decode(encoded[9])?,
             cast_complete: encoded[10] != 0,
-            stream_complete: encoded
-                .get(11)
-                .map_or(stream_complete, |complete| *complete != 0),
+            stream_complete: encoded[11] != 0,
         };
         outcome.validate()?;
         Ok(outcome)
@@ -346,28 +280,24 @@ pub(crate) enum RecordKind {
     /// A v3 control record proving display evidence is incomplete, either because output capture
     /// reached its budget or recovery discarded a torn record whose contents are unknowable.
     DisplayIncomplete,
-    /// The empty v1 segment terminator. Versioned session format rejects this representation.
-    LegacyEnd,
     /// The session terminator, including the lifecycle evidence needed to judge replayability.
     End(TerminalOutcome),
 }
 
 impl Record {
     fn encoded_len(&self) -> Result<usize, StreamError> {
-        self.encoded_len_for(RecordFormat::LegacyV1)
-    }
-
-    fn encoded_len_for(&self, format: RecordFormat) -> Result<usize, StreamError> {
         let payload_len = match &self.kind {
             RecordKind::Output(bytes) => bytes.len(),
             RecordKind::Resize { .. } => 2 * size_of::<u16>(),
             RecordKind::InputEvidence { input_seq, .. } => {
                 self.check_input_seq(*input_seq)?;
-                input_evidence_payload_len(format)
+                INPUT_EVIDENCE_PAYLOAD_BYTES
             }
-            RecordKind::DisplayIncomplete => display_incomplete_payload_len(format)?,
-            RecordKind::LegacyEnd => legacy_end_payload_len(format)?,
-            RecordKind::End(outcome) => typed_end_payload_len(outcome, format)?,
+            RecordKind::DisplayIncomplete => 0,
+            RecordKind::End(outcome) => {
+                outcome.validate()?;
+                TERMINAL_OUTCOME_BYTES
+            }
         };
         encoded_record_len(payload_len)
     }
@@ -382,13 +312,9 @@ impl Record {
 
     /// `u32 frame_len` (little-endian), then record bytes, followed by a BLAKE3 checksum of those
     /// record bytes. The record itself uses only explicit little-endian integer encodings.
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, StreamError> {
-        self.encode_for(RecordFormat::LegacyV1)
-    }
-
-    fn encode_for(&self, format: RecordFormat) -> Result<Vec<u8>, StreamError> {
-        let encoded_len = self.encoded_len_for(format)?;
-        let (kind, payload) = self.encode_payload(format)?;
+    fn encode(&self) -> Result<Vec<u8>, StreamError> {
+        let encoded_len = self.encoded_len()?;
+        let (kind, payload) = self.encode_payload()?;
 
         let record_len = FRAME_FIXED_BYTES + payload.len();
         if record_len > MAX_RECORD_BYTES {
@@ -414,8 +340,8 @@ impl Record {
         Ok(encoded)
     }
 
-    /// The kind byte and payload bytes this record's kind writes under `format`.
-    fn encode_payload(&self, format: RecordFormat) -> Result<(u8, Vec<u8>), StreamError> {
+    /// The kind byte and payload bytes this record's kind writes.
+    fn encode_payload(&self) -> Result<(u8, Vec<u8>), StreamError> {
         Ok(match &self.kind {
             RecordKind::Output(bytes) => (OUTPUT_KIND, bytes.clone()),
             RecordKind::Resize { rows, cols } => {
@@ -429,28 +355,15 @@ impl Record {
                 byte_len,
             } => {
                 self.check_input_seq(*input_seq)?;
-                (
-                    INPUT_EVIDENCE_KIND,
-                    encode_input_evidence_payload(*byte_len, format),
-                )
+                (INPUT_EVIDENCE_KIND, byte_len.to_le_bytes().to_vec())
             }
             RecordKind::DisplayIncomplete => (DISPLAY_INCOMPLETE_KIND, Vec::new()),
-            RecordKind::LegacyEnd => (END_KIND, Vec::new()),
-            RecordKind::End(outcome) => {
-                let encoded = outcome.encode()?;
-                (
-                    END_KIND,
-                    encoded[..typed_terminal_outcome_len(format)].to_vec(),
-                )
-            }
+            RecordKind::End(outcome) => (END_KIND, outcome.encode()?.to_vec()),
         })
     }
 
-    pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
-        Self::decode_for(encoded, RecordFormat::LegacyV1)
-    }
-
-    fn decode_for(encoded: &[u8], format: RecordFormat) -> Result<Self, StreamError> {
+    #[cfg(test)]
+    fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
         let record = checked_record_bytes(encoded)?;
         let kind = record[0];
         let record_seq = u64::from_le_bytes(record[1..9].try_into().unwrap());
@@ -465,12 +378,13 @@ impl Record {
             record_seq,
             display_seq,
             input_seq,
-            kind: decode_record_kind(kind, payload, input_seq, format)?,
+            kind: decode_record_kind(kind, payload, input_seq)?,
         })
     }
 }
 
 /// Validate a frame's length prefix, bounds, and checksum; return the record bytes it protects.
+#[cfg(test)]
 fn checked_record_bytes(encoded: &[u8]) -> Result<&[u8], StreamError> {
     if encoded.len() < FRAME_LEN_BYTES + CHECKSUM_BYTES {
         return Err(StreamError::TruncatedFrame);
@@ -493,23 +407,21 @@ fn checked_record_bytes(encoded: &[u8]) -> Result<&[u8], StreamError> {
     Ok(record)
 }
 
-/// Interpret a checked record's kind byte and payload under `format`.
-fn decode_record_kind(
-    kind: u8,
-    payload: &[u8],
-    input_seq: u64,
-    format: RecordFormat,
-) -> Result<RecordKind, StreamError> {
+/// Interpret a checked record's kind byte and payload.
+#[cfg(test)]
+fn decode_record_kind(kind: u8, payload: &[u8], input_seq: u64) -> Result<RecordKind, StreamError> {
     match kind {
         OUTPUT_KIND => Ok(RecordKind::Output(payload.to_vec())),
         RESIZE_KIND => decode_resize_payload(payload),
-        INPUT_EVIDENCE_KIND => decode_input_evidence_payload(payload, input_seq, format),
-        DISPLAY_INCOMPLETE_KIND => decode_display_incomplete_payload(payload, format),
-        END_KIND => decode_end_payload(payload, format),
+        INPUT_EVIDENCE_KIND => decode_input_evidence_payload(payload, input_seq),
+        DISPLAY_INCOMPLETE_KIND if payload.is_empty() => Ok(RecordKind::DisplayIncomplete),
+        DISPLAY_INCOMPLETE_KIND => Err(StreamError::InvalidRecordPayload),
+        END_KIND => decode_end_payload(payload),
         other => Err(StreamError::UnknownRecordKind(other)),
     }
 }
 
+#[cfg(test)]
 fn decode_resize_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
     if payload.len() != 4 {
         return Err(StreamError::InvalidRecordPayload);
@@ -520,108 +432,30 @@ fn decode_resize_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
     })
 }
 
-/// The on-disk width of an input-evidence payload under `format`.
-fn input_evidence_payload_len(format: RecordFormat) -> usize {
-    match format {
-        RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
-        RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
-    }
-}
-
-/// The accepted byte length, followed under v2 only by the retired digest's zeroed slot.
-fn encode_input_evidence_payload(byte_len: u32, format: RecordFormat) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(input_evidence_payload_len(format));
-    payload.extend_from_slice(&byte_len.to_le_bytes());
-    if format == RecordFormat::SessionV2 {
-        // v2's historical digest is retired. This path exists only to keep the frozen
-        // representation explicit; current writers always use v3.
-        payload.extend_from_slice(&[0; CHECKSUM_BYTES]);
-    }
-    payload
-}
-
+/// Input evidence persists only the accepted byte length; its bytes are never stored.
+#[cfg(test)]
 fn decode_input_evidence_payload(
     payload: &[u8],
     input_seq: u64,
-    format: RecordFormat,
 ) -> Result<RecordKind, StreamError> {
-    if payload.len() != input_evidence_payload_len(format) {
-        return Err(StreamError::InvalidRecordPayload);
-    }
-    // v2 appended a keyed content fingerprint after this length. Its key was stored in the same
-    // header, so exposing it preserved offline guess verification. Recover its honest
-    // ordering/length while deliberately discarding the unsafe legacy digest.
+    let byte_len = payload
+        .try_into()
+        .map_err(|_| StreamError::InvalidRecordPayload)?;
     Ok(RecordKind::InputEvidence {
         input_seq,
-        byte_len: u32::from_le_bytes(payload[..4].try_into().unwrap()),
+        byte_len: u32::from_le_bytes(byte_len),
     })
 }
 
-fn decode_display_incomplete_payload(
-    payload: &[u8],
-    format: RecordFormat,
-) -> Result<RecordKind, StreamError> {
-    if format == RecordFormat::SessionV3 && payload.is_empty() {
-        return Ok(RecordKind::DisplayIncomplete);
-    }
-    Err(StreamError::InvalidRecordPayload)
-}
-
-/// `DisplayIncomplete` is a v3 control record and has no representation in any other format.
-fn display_incomplete_payload_len(format: RecordFormat) -> Result<usize, StreamError> {
-    if format == RecordFormat::SessionV3 {
-        return Ok(0);
-    }
-    Err(StreamError::InvalidRecordPayload)
-}
-
-/// The empty v1 terminator; a versioned session format rejects this representation.
-fn legacy_end_payload_len(format: RecordFormat) -> Result<usize, StreamError> {
-    if format == RecordFormat::LegacyV1 {
-        return Ok(0);
-    }
-    Err(StreamError::MissingTerminalOutcome)
-}
-
-/// A typed End's payload width under `format`, after validating the outcome it would carry.
-fn typed_end_payload_len(
-    outcome: &TerminalOutcome,
-    format: RecordFormat,
-) -> Result<usize, StreamError> {
-    if format == RecordFormat::LegacyV1 {
-        return Err(StreamError::TypedTerminalOutcomeInLegacySegment);
-    }
-    outcome.validate()?;
-    Ok(typed_terminal_outcome_len(format))
-}
-
-/// The on-disk width of a typed terminal outcome under a versioned session `format`.
-fn typed_terminal_outcome_len(format: RecordFormat) -> usize {
-    match format {
-        RecordFormat::SessionV2 => LEGACY_TERMINAL_OUTCOME_BYTES,
-        RecordFormat::SessionV3 => TERMINAL_OUTCOME_BYTES,
-        RecordFormat::LegacyV1 => unreachable!(),
-    }
-}
-
-fn decode_end_payload(payload: &[u8], format: RecordFormat) -> Result<RecordKind, StreamError> {
-    if format == RecordFormat::LegacyV1 {
-        return if payload.is_empty() {
-            Ok(RecordKind::LegacyEnd)
-        } else {
-            Err(StreamError::InvalidRecordPayload)
-        };
-    }
+#[cfg(test)]
+fn decode_end_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
     if payload.is_empty() {
         return Err(StreamError::MissingTerminalOutcome);
     }
-    if payload.len() != typed_terminal_outcome_len(format) {
+    if payload.len() != TERMINAL_OUTCOME_BYTES {
         return Err(StreamError::InvalidRecordPayload);
     }
-    Ok(RecordKind::End(TerminalOutcome::decode(
-        payload,
-        format == RecordFormat::SessionV2,
-    )?))
+    Ok(RecordKind::End(TerminalOutcome::decode(payload)?))
 }
 
 fn encoded_record_len(payload_len: usize) -> Result<usize, StreamError> {
@@ -644,488 +478,12 @@ fn encoded_record_len(payload_len: usize) -> Result<usize, StreamError> {
         .ok_or(StreamError::CommittedLengthOverflow)
 }
 
-/// An in-memory, fully committed PTY recording segment. A trailer makes a segment self-validating
-/// before a future writer exposes it on disk: it repeats the format identity and binds every byte
-/// before it, including the header and each per-frame checksum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Segment {
-    pub(crate) records: Vec<Record>,
-}
-
-impl Segment {
-    fn encoded_len(&self) -> Result<usize, StreamError> {
-        validate_records(&self.records)?;
-        self.records
-            .iter()
-            .try_fold(HEADER_LEN + TRAILER_LEN, |len, record| {
-                len.checked_add(record.encoded_len()?)
-                    .ok_or(StreamError::CommittedLengthOverflow)
-            })
-    }
-
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, StreamError> {
-        let counters = validate_records(&self.records)?;
-        let mut encoded = Vec::with_capacity(self.encoded_len()?);
-        encoded.extend_from_slice(&Header { version: VERSION }.encode());
-        for record in &self.records {
-            encoded.extend_from_slice(&record.encode()?);
-        }
-        encoded.extend_from_slice(&trailer_bytes(&encoded, counters));
-        Ok(encoded)
-    }
-
-    pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
-        let trailer_start = validate_segment_trailer(encoded)?;
-        let records = decode_segment_records(encoded, trailer_start)?;
-        let counters = validate_records(&records)?;
-        if decode_trailer_counters(&encoded[trailer_start..]) != counters {
-            return Err(StreamError::InvalidTrailer);
-        }
-        Ok(Self { records })
-    }
-}
-
-/// Check the segment is whole before a byte of it is believed, and answer where the trailer starts.
-///
-/// The trailer repeats the format identity and binds every byte before it, header and per-frame
-/// checksums included, so a segment that passes here cannot have been truncated, re-headed or
-/// edited in place — which is what lets the record walk below trust its own lengths.
-fn validate_segment_trailer(encoded: &[u8]) -> Result<usize, StreamError> {
-    if encoded.len() < HEADER_LEN + TRAILER_LEN {
-        return Err(StreamError::InvalidTrailer);
-    }
-    Header::decode(&encoded[..HEADER_LEN])?;
-    let trailer_start = encoded.len() - TRAILER_LEN;
-    let trailer = &encoded[trailer_start..];
-    if trailer[..TRAILER_VERSION_START] != MAGIC
-        || u16::from_le_bytes(
-            trailer[TRAILER_VERSION_START..TRAILER_COMMITTED_LEN_START]
-                .try_into()
-                .unwrap(),
-        ) != VERSION
-    {
-        return Err(StreamError::InvalidTrailer);
-    }
-    let committed_len = usize::try_from(u64::from_le_bytes(
-        trailer[TRAILER_COMMITTED_LEN_START..TRAILER_RECORD_SEQ_START]
-            .try_into()
-            .unwrap(),
-    ))
-    .map_err(|_| StreamError::InvalidTrailer)?;
-    if committed_len != trailer_start {
-        return Err(StreamError::InvalidTrailer);
-    }
-    if blake3::hash(&encoded[..trailer_start]).as_bytes() != &trailer[TRAILER_DIGEST_START..] {
-        return Err(StreamError::TrailerDigestMismatch);
-    }
-    Ok(trailer_start)
-}
-
-/// Walk the frames between the header and a validated trailer.
-///
-/// Every refusal is `InvalidTrailer` rather than a per-frame error: the trailer has already bound
-/// these exact bytes, so a length that does not fit between the header and the trailer is the
-/// trailer disagreeing with itself, not a torn record.
-fn decode_segment_records(
-    encoded: &[u8],
-    trailer_start: usize,
-) -> Result<Vec<Record>, StreamError> {
-    let mut records = Vec::new();
-    let mut offset = HEADER_LEN;
-    while offset < trailer_start {
-        if trailer_start - offset < FRAME_LEN_BYTES {
-            return Err(StreamError::InvalidTrailer);
-        }
-        let frame_len = u32::from_le_bytes(
-            encoded[offset..offset + FRAME_LEN_BYTES]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        if !(FRAME_FIXED_BYTES..=MAX_RECORD_BYTES).contains(&frame_len) {
-            return Err(StreamError::InvalidTrailer);
-        }
-        let frame_end = offset + FRAME_LEN_BYTES + frame_len + CHECKSUM_BYTES;
-        if frame_end > trailer_start {
-            return Err(StreamError::InvalidTrailer);
-        }
-        records.push(Record::decode(&encoded[offset..frame_end])?);
-        offset = frame_end;
-    }
-    Ok(records)
-}
-
-/// The three terminal counters the trailer claims, to be compared against the ones the records add
-/// up to.
-fn decode_trailer_counters(trailer: &[u8]) -> TrailerCounters {
-    TrailerCounters {
-        record_seq: u64::from_le_bytes(
-            trailer[TRAILER_RECORD_SEQ_START..TRAILER_DISPLAY_SEQ_START]
-                .try_into()
-                .unwrap(),
-        ),
-        display_seq: u64::from_le_bytes(
-            trailer[TRAILER_DISPLAY_SEQ_START..TRAILER_INPUT_SEQ_START]
-                .try_into()
-                .unwrap(),
-        ),
-        input_seq: u64::from_le_bytes(
-            trailer[TRAILER_INPUT_SEQ_START..TRAILER_DIGEST_START]
-                .try_into()
-                .unwrap(),
-        ),
-    }
-}
-
+/// Where the record, display and input sequences stand after the last committed record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TrailerCounters {
     record_seq: u64,
     display_seq: u64,
     input_seq: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RecoveredSegment {
-    pub(crate) end: usize,
-    pub(crate) record_seq: u64,
-    pub(crate) display_seq: u64,
-    pub(crate) input_seq: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Recovery {
-    pub(crate) segments: Vec<RecoveredSegment>,
-    pub(crate) truncate_to: Option<usize>,
-}
-
-trait DurableStorage {
-    fn position(&mut self, offset: u64) -> io::Result<()>;
-    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
-    fn sync_data(&mut self) -> io::Result<()>;
-    fn len(&self) -> io::Result<u64>;
-    fn set_len(&mut self, len: u64) -> io::Result<()>;
-    fn read_all(&mut self) -> io::Result<Vec<u8>>;
-}
-
-impl DurableStorage for File {
-    fn position(&mut self, offset: u64) -> io::Result<()> {
-        self.seek(SeekFrom::Start(offset)).map(|_| ())
-    }
-    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        Write::write_all(self, bytes)
-    }
-    fn sync_data(&mut self) -> io::Result<()> {
-        File::sync_data(self)
-    }
-    fn len(&self) -> io::Result<u64> {
-        Ok(self.metadata()?.len())
-    }
-    fn set_len(&mut self, len: u64) -> io::Result<()> {
-        File::set_len(self, len)
-    }
-    fn read_all(&mut self) -> io::Result<Vec<u8>> {
-        self.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        self.read_to_end(&mut bytes)?;
-        self.seek(SeekFrom::End(0))?;
-        Ok(bytes)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CommitReceipt {
-    pub(crate) committed_len: u64,
-}
-
-struct SegmentWriter<S> {
-    storage: S,
-    committed_len: u64,
-    poisoned: bool,
-}
-
-impl<S: DurableStorage> SegmentWriter<S> {
-    fn new(mut storage: S) -> Result<Self, StreamError> {
-        let committed_len = storage.len()?;
-        storage.position(committed_len)?;
-        Ok(Self {
-            committed_len,
-            storage,
-            poisoned: false,
-        })
-    }
-
-    fn commit(&mut self, segment: &Segment) -> Result<CommitReceipt, StreamError> {
-        if self.poisoned {
-            return Err(StreamError::WriterPoisoned);
-        }
-        let encoded_len = segment.encoded_len()?;
-        let byte_len =
-            u64::try_from(encoded_len).map_err(|_| StreamError::CommittedLengthOverflow)?;
-        let next_committed_len = self
-            .committed_len
-            .checked_add(byte_len)
-            .ok_or(StreamError::CommittedLengthOverflow)?;
-        if next_committed_len > MAX_RECOVERY_BYTES as u64 {
-            return Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES,
-            });
-        }
-        let bytes = segment.encode()?;
-        debug_assert_eq!(bytes.len(), encoded_len);
-        self.storage.position(self.committed_len)?;
-        if let Err(error) = self.storage.write_all(&bytes) {
-            self.poisoned = true;
-            return Err(error.into());
-        }
-        if let Err(error) = self.storage.sync_data() {
-            self.poisoned = true;
-            return Err(error.into());
-        }
-        self.committed_len = next_committed_len;
-        Ok(CommitReceipt {
-            committed_len: self.committed_len,
-        })
-    }
-
-    fn recover_and_repair(&mut self) -> Result<Recovery, StreamError> {
-        // Recovery is the only operation that can clear poison. Keep it set until every validation
-        // and durability step has succeeded, so no failure path can accidentally re-enable writes.
-        self.poisoned = true;
-        if self.storage.len()? > MAX_RECOVERY_BYTES as u64 {
-            return Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES,
-            });
-        }
-        let bytes = self.storage.read_all()?;
-        let recovery = recover(&bytes)?;
-        let recovered_len = match recovery.truncate_to {
-            Some(truncate_to) => {
-                let truncate_to =
-                    u64::try_from(truncate_to).map_err(|_| StreamError::CommittedLengthOverflow)?;
-                self.storage.set_len(truncate_to)?;
-                truncate_to
-            }
-            None => u64::try_from(bytes.len()).map_err(|_| StreamError::CommittedLengthOverflow)?,
-        };
-        self.storage.sync_data()?;
-        self.storage.position(recovered_len)?;
-        self.committed_len = recovered_len;
-        self.poisoned = false;
-        Ok(recovery)
-    }
-}
-
-/// Recover only complete, sequential segments. It deliberately never searches for a later magic
-/// marker: bytes between commits are either the next segment's prefix or corruption.
-pub(crate) fn recover(encoded: &[u8]) -> Result<Recovery, StreamError> {
-    if encoded.len() > MAX_RECOVERY_BYTES {
-        return Err(StreamError::RecoveryTooLarge {
-            max: MAX_RECOVERY_BYTES,
-        });
-    }
-    let mut offset = 0;
-    let mut segments = Vec::new();
-    while offset < encoded.len() {
-        if segments.len() == MAX_SEGMENTS {
-            return Err(StreamError::TooManySegments { max: MAX_SEGMENTS });
-        }
-        match scan_segment(&encoded[offset..])? {
-            Scan::Complete(segment, used) => {
-                let end = offset + used;
-                let last = segment.records.last().expect("validated End record");
-                segments.push(RecoveredSegment {
-                    end,
-                    record_seq: last.record_seq,
-                    display_seq: last.display_seq,
-                    input_seq: last.input_seq,
-                });
-                offset = end;
-            }
-            Scan::Prefix => {
-                if segments.is_empty() {
-                    return Err(StreamError::InvalidTrailer);
-                }
-                return Ok(Recovery {
-                    segments,
-                    truncate_to: Some(offset),
-                });
-            }
-            Scan::MissingTrailer => {
-                if segments.is_empty() {
-                    return Err(StreamError::MissingTrailer);
-                }
-                return Ok(Recovery {
-                    segments,
-                    truncate_to: Some(offset),
-                });
-            }
-        }
-    }
-    Ok(Recovery {
-        segments,
-        truncate_to: None,
-    })
-}
-
-enum Scan {
-    Complete(Segment, usize),
-    Prefix,
-    MissingTrailer,
-}
-
-fn scan_segment(bytes: &[u8]) -> Result<Scan, StreamError> {
-    if bytes.len() < HEADER_LEN {
-        let expected = Header { version: VERSION }.encode();
-        return if bytes == &expected[..bytes.len()] {
-            Ok(Scan::Prefix)
-        } else {
-            Err(StreamError::BadMagic)
-        };
-    }
-    Header::decode(&bytes[..HEADER_LEN])?;
-    let ScannedRecords::Complete { records, offset } = scan_records_to_end(bytes)? else {
-        return Ok(Scan::Prefix);
-    };
-    let counters = validate_records(&records)?;
-    scan_trailer(bytes, offset, counters)
-}
-
-/// What the frame walk found before it ran out of bytes.
-enum ScannedRecords {
-    /// Every record up to and including the legacy End, and where that End left off.
-    Complete { records: Vec<Record>, offset: usize },
-    /// The bytes stop mid-frame, which for a segment being recovered is a torn tail and not a fault.
-    Prefix,
-}
-
-/// Walk frames from the header until the legacy End, or until the bytes run out.
-///
-/// Unlike [`decode_segment_records`], nothing has bound these bytes yet — there may be no trailer at
-/// all — so running out is a prefix rather than a contradiction. A length outside the frame bounds
-/// is still a fault: it cannot be the honest start of any frame a writer would have produced.
-fn scan_records_to_end(bytes: &[u8]) -> Result<ScannedRecords, StreamError> {
-    let mut offset = HEADER_LEN;
-    let mut records = Vec::new();
-    loop {
-        if bytes.len() - offset < FRAME_LEN_BYTES {
-            return Ok(ScannedRecords::Prefix);
-        }
-        let body_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        if !(FRAME_FIXED_BYTES..=MAX_RECORD_BYTES).contains(&body_len) {
-            return Err(StreamError::InvalidTrailer);
-        }
-        let frame_end = offset + FRAME_LEN_BYTES + body_len + CHECKSUM_BYTES;
-        if frame_end > bytes.len() {
-            return Ok(ScannedRecords::Prefix);
-        }
-        let record = Record::decode(&bytes[offset..frame_end])?;
-        let is_end = matches!(&record.kind, RecordKind::LegacyEnd);
-        records.push(record);
-        offset = frame_end;
-        if is_end {
-            return Ok(ScannedRecords::Complete { records, offset });
-        }
-    }
-}
-
-/// What follows a completed record run: nothing, part of a trailer, or a whole segment.
-///
-/// A partial trailer is only a prefix if it is a prefix of *the* trailer these records imply, which
-/// is why the expected bytes are rebuilt here rather than pattern-matched: anything else is a
-/// trailer that was never going to validate.
-fn scan_trailer(
-    bytes: &[u8],
-    offset: usize,
-    counters: TrailerCounters,
-) -> Result<Scan, StreamError> {
-    if bytes.len() == offset {
-        return Ok(Scan::MissingTrailer);
-    }
-    if bytes.len() - offset < TRAILER_LEN {
-        let expected = trailer_bytes(&bytes[..offset], counters);
-        return if bytes[offset..] == expected[..bytes.len() - offset] {
-            Ok(Scan::Prefix)
-        } else {
-            Err(StreamError::InvalidTrailer)
-        };
-    }
-    let used = offset + TRAILER_LEN;
-    let segment = Segment::decode(&bytes[..used])?;
-    Ok(Scan::Complete(segment, used))
-}
-
-fn trailer_bytes(committed: &[u8], counters: TrailerCounters) -> [u8; TRAILER_LEN] {
-    let mut trailer = [0; TRAILER_LEN];
-    trailer[..TRAILER_VERSION_START].copy_from_slice(&MAGIC);
-    trailer[TRAILER_VERSION_START..TRAILER_COMMITTED_LEN_START]
-        .copy_from_slice(&VERSION.to_le_bytes());
-    trailer[TRAILER_COMMITTED_LEN_START..TRAILER_RECORD_SEQ_START]
-        .copy_from_slice(&(committed.len() as u64).to_le_bytes());
-    trailer[TRAILER_RECORD_SEQ_START..TRAILER_DISPLAY_SEQ_START]
-        .copy_from_slice(&counters.record_seq.to_le_bytes());
-    trailer[TRAILER_DISPLAY_SEQ_START..TRAILER_INPUT_SEQ_START]
-        .copy_from_slice(&counters.display_seq.to_le_bytes());
-    trailer[TRAILER_INPUT_SEQ_START..TRAILER_DIGEST_START]
-        .copy_from_slice(&counters.input_seq.to_le_bytes());
-    trailer[TRAILER_DIGEST_START..].copy_from_slice(blake3::hash(committed).as_bytes());
-    trailer
-}
-
-fn validate_records(records: &[Record]) -> Result<TrailerCounters, StreamError> {
-    let mut counters = TrailerCounters {
-        record_seq: 0,
-        display_seq: 0,
-        input_seq: 0,
-    };
-    let mut ended = false;
-    for record in records {
-        if ended {
-            return Err(StreamError::RecordAfterEnd);
-        }
-        let expected_record = counters.record_seq + 1;
-        if record.record_seq != expected_record {
-            return Err(StreamError::RecordSequenceGap {
-                expected: expected_record,
-                actual: record.record_seq,
-            });
-        }
-        counters.record_seq = record.record_seq;
-
-        let advances_display = matches!(
-            &record.kind,
-            RecordKind::Output(_) | RecordKind::Resize { .. }
-        );
-        let expected_display = counters.display_seq + u64::from(advances_display);
-        if record.display_seq != expected_display {
-            return Err(StreamError::DisplaySequenceGap {
-                expected: expected_display,
-                actual: record.display_seq,
-            });
-        }
-        counters.display_seq = record.display_seq;
-
-        let expected_input = counters.input_seq
-            + u64::from(matches!(&record.kind, RecordKind::InputEvidence { .. }));
-        if record.input_seq != expected_input {
-            return Err(StreamError::InputSequenceGap {
-                expected: expected_input,
-                actual: record.input_seq,
-            });
-        }
-        if let RecordKind::InputEvidence { input_seq, .. } = &record.kind
-            && *input_seq != record.input_seq
-        {
-            return Err(StreamError::InputSequenceMismatch);
-        }
-        counters.input_seq = record.input_seq;
-        if matches!(&record.kind, RecordKind::End(_)) {
-            return Err(StreamError::TypedTerminalOutcomeInLegacySegment);
-        }
-        ended = matches!(&record.kind, RecordKind::LegacyEnd);
-    }
-    if !ended {
-        return Err(StreamError::MissingEnd);
-    }
-    Ok(counters)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1181,6 +539,7 @@ impl SessionHeader {
         encoded
     }
 
+    #[cfg(test)]
     fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
         if encoded.len() != SESSION_HEADER_LEN {
             return Err(StreamError::InvalidHeaderLength {
@@ -1199,7 +558,7 @@ impl SessionHeader {
         let mut offset = SESSION_MAGIC.len();
         let version = u16::from_le_bytes(encoded[offset..offset + 2].try_into().unwrap());
         offset += 2;
-        if !matches!(version, LEGACY_SESSION_VERSION | SESSION_VERSION) {
+        if version != SESSION_VERSION {
             return Err(StreamError::UnsupportedVersion(version));
         }
         let initial_cols = u16::from_le_bytes(encoded[offset..offset + 2].try_into().unwrap());
@@ -1218,7 +577,7 @@ impl SessionHeader {
             [offset..offset + PRIVACY_RESERVED_BYTES]
             .try_into()
             .unwrap();
-        if version == SESSION_VERSION && encoded_reserved != [0; PRIVACY_RESERVED_BYTES] {
+        if encoded_reserved != [0; PRIVACY_RESERVED_BYTES] {
             return Err(StreamError::HeaderMismatch);
         }
         Ok(Self {
@@ -1227,12 +586,12 @@ impl SessionHeader {
             initial_rows,
             session_id,
             agent_binding,
-            // Discard v2's historical content-verification key at the decoding boundary.
-            privacy_reserved: [0; PRIVACY_RESERVED_BYTES],
+            privacy_reserved: encoded_reserved,
         })
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRecovery {
     pub(crate) header: SessionHeader,
@@ -1293,20 +652,6 @@ impl PinnedStreamPath {
         Ok(file)
     }
 
-    fn open_existing(&self) -> Result<File, StreamError> {
-        let fd = rustix::fs::openat(
-            &self.parent,
-            &self.name,
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )?;
-        let file = File::from(fd);
-        validate_stream_file(&file)?;
-        lock_writer(&file)?;
-        self.ensure_current(&file)?;
-        Ok(file)
-    }
-
     fn ensure_current(&self, file: &File) -> Result<(), StreamError> {
         let opened = rustix::fs::fstat(file)?;
         let current = rustix::fs::statat(
@@ -1339,60 +684,19 @@ fn validate_stream_file(file: &File) -> Result<(), StreamError> {
     Ok(())
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Fires once, after a refused `flock`, so a test can close the descriptor that owns the lock
-    /// at exactly the step the confirmation below depends on rather than racing a sleep against it.
-    static LOCK_REFUSAL_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn on_lock_refused() {
-    let hook = LOCK_REFUSAL_HOOK.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
-/// How long a refused `flock` is re-offered before `WriterLocked` is believed.
+/// Take the stream's exclusive writer lock without waiting.
 ///
-/// An `flock` belongs to the **open file description**, and `fork` duplicates that description.
-/// `spawn_pty` installs a `pre_exec`, which forces `std::process::Command` down `fork`+`exec`, so
-/// every child this supervisor starts inherits every stream lock it currently holds and keeps that
-/// lock alive until `exec` closes the `O_CLOEXEC` descriptor. Within that window the owning
-/// writer's own `close` releases nothing, and a `create` or crash-recovery `reopen` racing it is
-/// told the stream has a live writer when the only holder was a copy of its own descriptor on its
-/// way out of the process.
-///
-/// So a single instantaneous refusal is not evidence of a competing writer. This is a bound on how
-/// long the refusal is *confirmed* for, not a timing assumption about the answer: a writer that
-/// really is live still holds the lock past any budget and is still refused, and a duplicate on its
-/// way to `exec` is gone in well under this one.
-const WRITER_LOCK_CONFIRM: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// How long to wait between offers while confirming. Short enough that a released lock is taken
-/// promptly, long enough that confirming does not spin a core for half a second.
-const WRITER_LOCK_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(1);
-
+/// The stream is created with `O_EXCL`, so no other writer can already hold this inode's lock; a
+/// refusal is a real conflict, never a stale lock to wait out.
 fn lock_writer(file: &File) -> Result<(), StreamError> {
-    let deadline = std::time::Instant::now() + WRITER_LOCK_CONFIRM;
-    loop {
-        match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => return Ok(()),
-            Err(error) if error == rustix::io::Errno::AGAIN => {
-                #[cfg(test)]
-                on_lock_refused();
-                if std::time::Instant::now() >= deadline {
-                    return Err(StreamError::WriterLocked);
-                }
-                std::thread::sleep(WRITER_LOCK_RETRY_PAUSE);
-            }
-            Err(error) => return Err(StreamError::Storage(error.to_string())),
-        }
+    match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::AGAIN => Err(StreamError::WriterLocked),
+        Err(error) => Err(StreamError::Storage(error.to_string())),
     }
 }
 
+#[cfg(test)]
 pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, StreamError> {
     if encoded.len() < SESSION_HEADER_LEN {
         return Err(StreamError::InvalidHeaderLength {
@@ -1406,7 +710,6 @@ pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, S
         });
     }
     let header = SessionHeader::decode(&encoded[..SESSION_HEADER_LEN])?;
-    let format = RecordFormat::for_session_version(header.version)?;
     let mut records = Vec::new();
     let mut offset = SESSION_HEADER_LEN;
     let mut counters = TrailerCounters {
@@ -1448,7 +751,7 @@ pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, S
                 truncate_to: Some(offset),
             });
         }
-        let record = Record::decode_for(&encoded[offset..frame_end], format)?;
+        let record = Record::decode(&encoded[offset..frame_end])?;
         validate_next_record(&record, &mut counters, &mut display_incomplete)?;
         ended = matches!(record.kind, RecordKind::End(_));
         records.push(record);
@@ -1461,6 +764,7 @@ pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, S
     })
 }
 
+#[cfg(test)]
 fn validate_next_record(
     record: &Record,
     counters: &mut TrailerCounters,
@@ -1481,6 +785,7 @@ fn validate_next_record(
 /// display axis, input evidence the input axis, and every record advances the record axis. A gap on
 /// any of them is a record that was lost between two that survived, which is what recovery exists to
 /// refuse rather than to paper over.
+#[cfg(test)]
 fn validate_record_sequence(
     record: &Record,
     counters: &TrailerCounters,
@@ -1531,6 +836,7 @@ fn validate_record_sequence(
 /// Display completeness is a one-way latch, and these are the three ways a stream could contradict
 /// it: display output after the marker, the marker stated twice, and an End claiming the replay is
 /// complete when the display was already known not to be.
+#[cfg(test)]
 fn validate_display_completeness(
     record: &Record,
     display_incomplete: &mut bool,
@@ -1553,73 +859,12 @@ fn validate_display_completeness(
     Ok(())
 }
 
-/// Read the whole stream file, refusing one larger than recovery is allowed to hold.
-///
-/// Twice, and both are needed: the length says what the file claims before a byte is allocated for
-/// it, and the read is bounded one byte past the limit so a file that grew between the two — or
-/// whose length lied — is still refused rather than read without a ceiling.
-fn read_recovery_bytes(file: &mut File) -> Result<Vec<u8>, StreamError> {
-    if file.metadata()?.len() > MAX_RECOVERY_BYTES as u64 {
-        return Err(StreamError::RecoveryTooLarge {
-            max: MAX_RECOVERY_BYTES,
-        });
-    }
-    let mut encoded = Vec::new();
-    file.take(MAX_RECOVERY_BYTES as u64 + 1)
-        .read_to_end(&mut encoded)?;
-    if encoded.len() > MAX_RECOVERY_BYTES {
-        return Err(StreamError::RecoveryTooLarge {
-            max: MAX_RECOVERY_BYTES,
-        });
-    }
-    Ok(encoded)
-}
-
-/// The recovered file must be this session's, at this geometry, in this version.
-///
-/// The checksum says the header is intact; it does not say it is the header this writer expects.
-/// Appending to a stream whose identity or geometry differs would produce one file describing two
-/// sessions.
-fn ensure_header_matches(
-    recovered: &SessionHeader,
-    expected: &SessionHeader,
-) -> Result<(), StreamError> {
-    if recovered.version != SESSION_VERSION
-        || recovered.initial_cols != expected.initial_cols
-        || recovered.initial_rows != expected.initial_rows
-        || recovered.session_id != expected.session_id
-        || recovered.agent_binding != expected.agent_binding
-    {
-        return Err(StreamError::HeaderMismatch);
-    }
-    Ok(())
-}
-
-/// Where the three counters stand after recovery: at the last surviving record, or at zero for a
-/// file that holds nothing but its header.
-fn recovered_counters(records: &[Record]) -> TrailerCounters {
-    records
-        .last()
-        .map(|record| TrailerCounters {
-            record_seq: record.record_seq,
-            display_seq: record.display_seq,
-            input_seq: record.input_seq,
-        })
-        .unwrap_or(TrailerCounters {
-            record_seq: 0,
-            display_seq: 0,
-            input_seq: 0,
-        })
-}
-
 pub(crate) struct SessionWriter {
     file: File,
-    header: SessionHeader,
     counters: TrailerCounters,
     committed_len: u64,
     output_limit: u64,
     display_incomplete: bool,
-    ended: bool,
     poisoned: bool,
 }
 
@@ -1639,6 +884,7 @@ impl SessionWriter {
         )
     }
 
+    #[cfg(test)]
     fn create_with_session(
         cast_path: &Path,
         agent_id: &AgentId,
@@ -1671,7 +917,6 @@ impl SessionWriter {
         }
         Ok(Self {
             file,
-            header,
             counters: TrailerCounters {
                 record_seq: 0,
                 display_seq: 0,
@@ -1680,107 +925,8 @@ impl SessionWriter {
             committed_len: SESSION_HEADER_LEN as u64,
             output_limit: SESSION_OUTPUT_LIMIT_BYTES as u64,
             display_incomplete: false,
-            ended: false,
             poisoned: false,
         })
-    }
-
-    pub(crate) fn reopen(
-        cast_path: &Path,
-        agent_id: &AgentId,
-        initial_size: super::WinSize,
-        session_id: [u8; SESSION_ID_BYTES],
-    ) -> Result<Self, StreamError> {
-        Self::reopen_prepared(
-            cast_path,
-            agent_id,
-            initial_size,
-            session_id,
-            |file, offset, marker| {
-                file.seek(SeekFrom::Start(offset))?;
-                Write::write_all(file, marker)?;
-                file.sync_data()
-            },
-        )
-    }
-
-    fn reopen_prepared(
-        cast_path: &Path,
-        agent_id: &AgentId,
-        initial_size: super::WinSize,
-        session_id: [u8; SESSION_ID_BYTES],
-        persist_repair: impl FnOnce(&mut File, u64, &[u8]) -> io::Result<()>,
-    ) -> Result<Self, StreamError> {
-        let path = PinnedStreamPath::open(cast_path)?;
-        let mut file = path.open_existing()?;
-        let encoded = read_recovery_bytes(&mut file)?;
-        let recovery = recover_session_bytes(&encoded)?;
-        let expected = SessionHeader::new(agent_id, initial_size, session_id);
-        ensure_header_matches(&recovery.header, &expected)?;
-        path.ensure_current(&file)?;
-        let committed_len = recovery.truncate_to.unwrap_or(encoded.len());
-        let recovered_torn_tail = recovery.truncate_to.is_some();
-        if recovered_torn_tail {
-            file.set_len(committed_len as u64)?;
-            file.sync_data()?;
-        }
-        file.seek(SeekFrom::Start(committed_len as u64))?;
-        path.ensure_current(&file)?;
-        let counters = recovered_counters(&recovery.records);
-        let ended = recovery
-            .records
-            .last()
-            .is_some_and(|record| matches!(record.kind, RecordKind::End(_)));
-        let display_incomplete = recovery
-            .records
-            .iter()
-            .any(|record| matches!(record.kind, RecordKind::DisplayIncomplete));
-        let mut writer = Self {
-            file,
-            header: recovery.header,
-            counters,
-            committed_len: committed_len as u64,
-            output_limit: SESSION_OUTPUT_LIMIT_BYTES as u64,
-            display_incomplete,
-            ended,
-            poisoned: false,
-        };
-        if !writer.ended && !writer.display_incomplete {
-            writer.repair_unended_prefix(persist_repair)?;
-        }
-        writer.file.seek(SeekFrom::Start(writer.committed_len))?;
-        Ok(writer)
-    }
-
-    /// An unended file is crash recovery, even when it ended exactly on a frame boundary: terminal
-    /// bytes may have been lost before they reached a durable Output record. Mark it incomplete
-    /// before admitting new appends.
-    ///
-    /// If marker persistence fails, nothing here is committed: the next reopen sees the same unended
-    /// prefix, or a partial marker it repairs first, and retries.
-    fn repair_unended_prefix(
-        &mut self,
-        persist_repair: impl FnOnce(&mut File, u64, &[u8]) -> io::Result<()>,
-    ) -> Result<(), StreamError> {
-        let marker = self.next_record(RecordKind::DisplayIncomplete)?;
-        let encoded_marker = marker.encode_for(RecordFormat::SessionV3)?;
-        if let Err(error) = persist_repair(&mut self.file, self.committed_len, &encoded_marker) {
-            return Err(error.into());
-        }
-        let repaired_len = self
-            .committed_len
-            .checked_add(encoded_marker.len() as u64)
-            .ok_or(StreamError::CommittedLengthOverflow)?;
-        self.file.set_len(repaired_len)?;
-        self.file.sync_data()?;
-        self.counters = TrailerCounters {
-            record_seq: marker.record_seq,
-            display_seq: marker.display_seq,
-            input_seq: marker.input_seq,
-        };
-        self.committed_len = repaired_len;
-        self.display_incomplete = true;
-        Ok(())
     }
 
     pub(crate) fn append_output(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
@@ -1843,14 +989,11 @@ impl SessionWriter {
         if self.poisoned {
             return Err(StreamError::WriterPoisoned);
         }
-        if self.ended {
-            return Err(StreamError::SessionEnded);
-        }
         let record = self.next_record(kind)?;
         let record_seq = record.record_seq;
         let display_seq = record.display_seq;
         let input_seq = record.input_seq;
-        let encoded_len = record.encoded_len_for(RecordFormat::SessionV3)?;
+        let encoded_len = record.encoded_len()?;
         let encoded_len_u64 =
             u64::try_from(encoded_len).map_err(|_| StreamError::CommittedLengthOverflow)?;
         let next_committed_len = self
@@ -1862,7 +1005,7 @@ impl SessionWriter {
                 max: MAX_RECOVERY_BYTES,
             });
         }
-        let encoded = record.encode_for(RecordFormat::SessionV3)?;
+        let encoded = record.encode()?;
         debug_assert_eq!(encoded.len(), encoded_len);
         if let Err(error) =
             Write::write_all(&mut self.file, &encoded).and_then(|()| self.file.sync_data())
@@ -1877,7 +1020,6 @@ impl SessionWriter {
         };
         self.committed_len = next_committed_len;
         self.display_incomplete |= matches!(record.kind, RecordKind::DisplayIncomplete);
-        self.ended = matches!(record.kind, RecordKind::End(_));
         Ok(())
     }
 
@@ -1907,8 +1049,7 @@ impl SessionWriter {
 
     fn next_encoded_len(&self, kind: &RecordKind) -> Result<u64, StreamError> {
         let record = self.next_record(kind.clone())?;
-        u64::try_from(record.encoded_len_for(RecordFormat::SessionV3)?)
-            .map_err(|_| StreamError::CommittedLengthOverflow)
+        u64::try_from(record.encoded_len()?).map_err(|_| StreamError::CommittedLengthOverflow)
     }
 
     #[cfg(test)]
@@ -1921,29 +1062,6 @@ impl SessionWriter {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
-
-    #[test]
-    fn pty_stream_header_roundtrip() {
-        let encoded = Header { version: VERSION }.encode();
-
-        assert_eq!(&encoded[..MAGIC.len()], &MAGIC);
-        assert_eq!(&encoded[MAGIC.len()..], &VERSION.to_le_bytes());
-        assert_eq!(Header::decode(&encoded), Ok(Header { version: VERSION }));
-    }
-
-    #[test]
-    fn pty_stream_rejects_bad_magic_and_version() {
-        let mut bad_magic = Header { version: VERSION }.encode();
-        bad_magic[0] ^= 1;
-        assert_eq!(Header::decode(&bad_magic), Err(StreamError::BadMagic));
-
-        let mut bad_version = Header { version: VERSION }.encode();
-        bad_version[MAGIC.len()..].copy_from_slice(&(VERSION + 1).to_le_bytes());
-        assert_eq!(
-            Header::decode(&bad_version),
-            Err(StreamError::UnsupportedVersion(VERSION + 1))
-        );
-    }
 
     fn record(kind: RecordKind) -> Record {
         Record {
@@ -1995,91 +1113,36 @@ mod tests {
         encoded
     }
 
-    fn frozen_clean_end_payload(stream_complete: Option<bool>) -> Vec<u8> {
-        let mut payload = vec![0; LEGACY_TERMINAL_OUTCOME_BYTES];
+    /// A clean End outcome missing its final `stream_complete` byte, as v2 wrote it.
+    fn frozen_short_end_payload() -> Vec<u8> {
+        let mut payload = vec![0; TERMINAL_OUTCOME_BYTES - 1];
         payload[0] = EXIT_CODE_PRESENT;
         payload[9] = ReaderDisposition::CleanEof.encode();
         payload[10] = 1;
-        if let Some(stream_complete) = stream_complete {
-            payload.push(u8::from(stream_complete));
-        }
         payload
     }
 
     #[test]
-    fn frozen_v2_session_recovers_retired_input_evidence_and_short_end() {
-        let mut encoded =
-            frozen_session_header(LEGACY_SESSION_VERSION, [0xa5; PRIVACY_RESERVED_BYTES]);
-        let mut input_payload = 7_u32.to_le_bytes().to_vec();
-        input_payload.extend_from_slice(&[0x5a; CHECKSUM_BYTES]);
-        encoded.extend_from_slice(&frozen_record(1, 0, 1, INPUT_EVIDENCE_KIND, &input_payload));
-        encoded.extend_from_slice(&frozen_record(
-            2,
-            0,
-            1,
-            END_KIND,
-            &frozen_clean_end_payload(None),
-        ));
-
-        let recovery = recover_session_bytes(&encoded).unwrap();
-        assert_eq!(recovery.header.version, LEGACY_SESSION_VERSION);
+    fn a_session_header_is_only_ever_v3_with_a_zeroed_reserve() {
         assert_eq!(
-            recovery.records,
-            vec![
-                Record {
-                    record_seq: 1,
-                    display_seq: 0,
-                    input_seq: 1,
-                    kind: RecordKind::InputEvidence {
-                        input_seq: 1,
-                        byte_len: 7,
-                    },
-                },
-                Record {
-                    record_seq: 2,
-                    display_seq: 0,
-                    input_seq: 1,
-                    kind: RecordKind::End(TerminalOutcome {
-                        exit_code: Some(0),
-                        signal: None,
-                        timed_out: false,
-                        reader: ReaderDisposition::CleanEof,
-                        cast_complete: true,
-                        stream_complete: true,
-                    }),
-                },
-            ]
+            recover_session_bytes(&frozen_session_header(2, [0; PRIVACY_RESERVED_BYTES])),
+            Err(StreamError::UnsupportedVersion(2))
         );
-    }
-
-    #[test]
-    fn v2_session_rejects_v3_record_shapes() {
-        let mut short_input =
-            frozen_session_header(LEGACY_SESSION_VERSION, [0xa5; PRIVACY_RESERVED_BYTES]);
-        short_input.extend_from_slice(&frozen_record(
-            1,
-            0,
-            1,
-            INPUT_EVIDENCE_KIND,
-            &7_u32.to_le_bytes(),
-        ));
         assert_eq!(
-            recover_session_bytes(&short_input),
-            Err(StreamError::InvalidRecordPayload)
+            recover_session_bytes(&frozen_session_header(
+                SESSION_VERSION,
+                [0xa5; PRIVACY_RESERVED_BYTES]
+            )),
+            Err(StreamError::HeaderMismatch)
         );
-
-        let mut long_end =
-            frozen_session_header(LEGACY_SESSION_VERSION, [0xa5; PRIVACY_RESERVED_BYTES]);
-        long_end.extend_from_slice(&frozen_record(
-            1,
-            0,
-            0,
-            END_KIND,
-            &frozen_clean_end_payload(Some(true)),
-        ));
-        assert_eq!(
-            recover_session_bytes(&long_end),
-            Err(StreamError::InvalidRecordPayload)
+        assert!(
+            recover_session_bytes(&frozen_session_header(
+                SESSION_VERSION,
+                [0; PRIVACY_RESERVED_BYTES]
+            ))
+            .unwrap()
+            .records
+            .is_empty()
         );
     }
 
@@ -2106,55 +1169,11 @@ mod tests {
             0,
             0,
             END_KIND,
-            &frozen_clean_end_payload(None),
+            &frozen_short_end_payload(),
         ));
         assert_eq!(
             recover_session_bytes(&short_end),
             Err(StreamError::InvalidRecordPayload)
-        );
-    }
-
-    #[test]
-    fn legacy_v1_record_decoder_rejects_v2_record_shapes() {
-        let legacy_input = frozen_record(1, 0, 1, INPUT_EVIDENCE_KIND, &7_u32.to_le_bytes());
-        assert_eq!(
-            Record::decode(&legacy_input),
-            Ok(Record {
-                record_seq: 1,
-                display_seq: 0,
-                input_seq: 1,
-                kind: RecordKind::InputEvidence {
-                    input_seq: 1,
-                    byte_len: 7,
-                },
-            })
-        );
-        assert_eq!(
-            Record::decode(&{
-                let mut retired_input = 7_u32.to_le_bytes().to_vec();
-                retired_input.extend_from_slice(&[0x5a; CHECKSUM_BYTES]);
-                frozen_record(1, 0, 1, INPUT_EVIDENCE_KIND, &retired_input)
-            }),
-            Err(StreamError::InvalidRecordPayload)
-        );
-        assert_eq!(
-            Record::decode(&frozen_record(
-                1,
-                0,
-                0,
-                END_KIND,
-                &frozen_clean_end_payload(None),
-            )),
-            Err(StreamError::InvalidRecordPayload)
-        );
-        assert_eq!(
-            Record::decode(&frozen_record(1, 0, 0, END_KIND, &[])),
-            Ok(Record {
-                record_seq: 1,
-                display_seq: 0,
-                input_seq: 0,
-                kind: RecordKind::LegacyEnd,
-            })
         );
     }
 
@@ -2186,7 +1205,7 @@ mod tests {
 
     #[test]
     fn pty_stream_rejects_unknown_kind_oversize_and_bad_checksum() {
-        let original = record(RecordKind::LegacyEnd);
+        let original = record(RecordKind::Resize { rows: 24, cols: 80 });
         let mut unknown = original.encode().unwrap();
         unknown[FRAME_LEN_BYTES] = 99;
         let checksum_start = unknown.len() - CHECKSUM_BYTES;
@@ -2209,542 +1228,6 @@ mod tests {
             Record::decode(&corrupted),
             Err(StreamError::ChecksumMismatch)
         );
-    }
-
-    fn mixed_segment() -> Segment {
-        Segment {
-            records: vec![
-                Record {
-                    record_seq: 1,
-                    display_seq: 1,
-                    input_seq: 0,
-                    kind: RecordKind::Output(vec![0xff]),
-                },
-                Record {
-                    record_seq: 2,
-                    display_seq: 2,
-                    input_seq: 0,
-                    kind: RecordKind::Resize { rows: 24, cols: 80 },
-                },
-                Record {
-                    record_seq: 3,
-                    display_seq: 2,
-                    input_seq: 1,
-                    kind: RecordKind::InputEvidence {
-                        input_seq: 1,
-                        byte_len: 3,
-                    },
-                },
-                Record {
-                    record_seq: 4,
-                    display_seq: 2,
-                    input_seq: 1,
-                    kind: RecordKind::LegacyEnd,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn pty_stream_segment_roundtrips_mixed_records_and_terminal_counters() {
-        let segment = mixed_segment();
-        let encoded = segment.encode().unwrap();
-        assert_eq!(
-            u64::from_le_bytes(
-                encoded[encoded.len() - TRAILER_LEN + 18..encoded.len() - TRAILER_LEN + 26]
-                    .try_into()
-                    .unwrap()
-            ),
-            4
-        );
-        assert_eq!(
-            u64::from_le_bytes(
-                encoded[encoded.len() - TRAILER_LEN + 26..encoded.len() - TRAILER_LEN + 34]
-                    .try_into()
-                    .unwrap()
-            ),
-            2
-        );
-        assert_eq!(
-            u64::from_le_bytes(
-                encoded[encoded.len() - TRAILER_LEN + 34..encoded.len() - TRAILER_LEN + 42]
-                    .try_into()
-                    .unwrap()
-            ),
-            1
-        );
-        assert_eq!(Segment::decode(&encoded), Ok(segment));
-    }
-
-    #[test]
-    fn pty_stream_segment_rejects_sequence_gaps_and_missing_end() {
-        let mut record_gap = mixed_segment();
-        record_gap.records[1].record_seq = 3;
-        assert!(matches!(
-            record_gap.encode(),
-            Err(StreamError::RecordSequenceGap { .. })
-        ));
-        let mut display_gap = mixed_segment();
-        display_gap.records[1].display_seq = 3;
-        assert!(matches!(
-            display_gap.encode(),
-            Err(StreamError::DisplaySequenceGap { .. })
-        ));
-        let mut input_gap = mixed_segment();
-        input_gap.records[2].input_seq = 2;
-        assert!(matches!(
-            input_gap.encode(),
-            Err(StreamError::InputSequenceGap { .. })
-        ));
-        let mut missing_end = mixed_segment();
-        missing_end.records.pop();
-        assert_eq!(missing_end.encode(), Err(StreamError::MissingEnd));
-    }
-
-    #[test]
-    fn pty_stream_segment_rejects_records_after_end_and_bad_trailer_or_digest() {
-        let mut after_end = mixed_segment();
-        after_end.records.push(Record {
-            record_seq: 5,
-            display_seq: 2,
-            input_seq: 1,
-            kind: RecordKind::LegacyEnd,
-        });
-        assert_eq!(after_end.encode(), Err(StreamError::RecordAfterEnd));
-
-        let encoded = mixed_segment().encode().unwrap();
-        let mut missing_trailer = encoded.clone();
-        missing_trailer.truncate(missing_trailer.len() - TRAILER_LEN);
-        assert_eq!(
-            Segment::decode(&missing_trailer),
-            Err(StreamError::InvalidTrailer)
-        );
-        let mut reordered_trailer = encoded.clone();
-        reordered_trailer[encoded.len() - TRAILER_LEN] ^= 1;
-        assert_eq!(
-            Segment::decode(&reordered_trailer),
-            Err(StreamError::InvalidTrailer)
-        );
-        let mut corrupt_digest = encoded;
-        let digest_start = corrupt_digest.len() - CHECKSUM_BYTES;
-        corrupt_digest[digest_start] ^= 1;
-        assert_eq!(
-            Segment::decode(&corrupt_digest),
-            Err(StreamError::TrailerDigestMismatch)
-        );
-    }
-
-    #[test]
-    fn pty_stream_recovery_reads_two_segments_and_truncates_valid_suffixes() {
-        let first = mixed_segment().encode().unwrap();
-        let second = mixed_segment().encode().unwrap();
-        let mut both = first.clone();
-        both.extend_from_slice(&second);
-        assert_eq!(recover(&both).unwrap().segments.len(), 2);
-
-        for suffix in [
-            &second[..3],
-            &second[..HEADER_LEN + 2],
-            &second[..second.len() - 3],
-        ] {
-            let mut partial = first.clone();
-            partial.extend_from_slice(suffix);
-            assert_eq!(recover(&partial).unwrap().truncate_to, Some(first.len()));
-        }
-        assert_eq!(recover(&second[..3]), Err(StreamError::InvalidTrailer));
-    }
-
-    #[test]
-    fn pty_stream_recovery_rejects_missing_or_corrupt_interior_and_bounds() {
-        let complete = mixed_segment().encode().unwrap();
-        assert_eq!(
-            recover(&complete[..complete.len() - TRAILER_LEN]),
-            Err(StreamError::MissingTrailer)
-        );
-        let mut corrupt = complete.clone();
-        corrupt[HEADER_LEN + FRAME_LEN_BYTES] ^= 1;
-        assert_eq!(recover(&corrupt), Err(StreamError::ChecksumMismatch));
-        assert!(matches!(
-            recover(&vec![0; MAX_RECOVERY_BYTES + 1]),
-            Err(StreamError::RecoveryTooLarge { .. })
-        ));
-        let mut too_many = Vec::new();
-        for _ in 0..=MAX_SEGMENTS {
-            too_many.extend_from_slice(&complete);
-        }
-        assert!(matches!(
-            recover(&too_many),
-            Err(StreamError::TooManySegments { .. })
-        ));
-    }
-
-    #[test]
-    fn pty_stream_recovery_truncates_end_at_eof_only_after_a_prior_commit() {
-        let complete = mixed_segment().encode().unwrap();
-        let without_trailer = &complete[..complete.len() - TRAILER_LEN];
-
-        assert_eq!(recover(without_trailer), Err(StreamError::MissingTrailer));
-
-        let mut concatenated = complete.clone();
-        concatenated.extend_from_slice(without_trailer);
-        let recovery = recover(&concatenated).unwrap();
-        assert_eq!(recovery.segments.len(), 1);
-        assert_eq!(recovery.truncate_to, Some(complete.len()));
-    }
-
-    #[test]
-    fn pty_stream_recovery_rejects_wrong_or_complete_corrupt_trailer_after_prior_commit() {
-        let complete = mixed_segment().encode().unwrap();
-        let record_end = complete.len() - TRAILER_LEN;
-
-        let mut wrong_prefix = complete.clone();
-        wrong_prefix.extend_from_slice(&complete[..record_end]);
-        wrong_prefix.push(MAGIC[0] ^ 1);
-        assert_eq!(recover(&wrong_prefix), Err(StreamError::InvalidTrailer));
-
-        let mut corrupt_complete = complete.clone();
-        corrupt_complete[record_end] ^= 1;
-        let mut concatenated = complete.clone();
-        concatenated.extend_from_slice(&corrupt_complete);
-        assert_eq!(recover(&concatenated), Err(StreamError::InvalidTrailer));
-    }
-
-    #[derive(Default)]
-    struct FakeStorage {
-        bytes: Vec<u8>,
-        cursor: usize,
-        events: Vec<&'static str>,
-        reported_len: Option<u64>,
-        fail_write_after: Option<usize>,
-        fail_sync: bool,
-        fail_set_len: bool,
-        fail_position: bool,
-    }
-    impl DurableStorage for FakeStorage {
-        fn position(&mut self, offset: u64) -> io::Result<()> {
-            if self.fail_position {
-                return Err(io::Error::other("position"));
-            }
-            self.cursor = usize::try_from(offset).map_err(|_| io::Error::other("position"))?;
-            Ok(())
-        }
-        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-            self.events.push("write");
-            let bytes = if let Some(prefix_len) = self.fail_write_after {
-                &bytes[..prefix_len.min(bytes.len())]
-            } else {
-                bytes
-            };
-            let end = self
-                .cursor
-                .checked_add(bytes.len())
-                .ok_or_else(|| io::Error::other("write overflow"))?;
-            self.bytes.resize(self.bytes.len().max(end), 0);
-            self.bytes[self.cursor..end].copy_from_slice(bytes);
-            self.cursor = end;
-            if self.fail_write_after.is_some() {
-                Err(io::Error::other("partial write"))
-            } else {
-                Ok(())
-            }
-        }
-        fn sync_data(&mut self) -> io::Result<()> {
-            self.events.push("sync");
-            if self.fail_sync {
-                Err(io::Error::other("sync"))
-            } else {
-                Ok(())
-            }
-        }
-        fn len(&self) -> io::Result<u64> {
-            Ok(self.reported_len.unwrap_or(self.bytes.len() as u64))
-        }
-        fn set_len(&mut self, len: u64) -> io::Result<()> {
-            self.events.push("set_len");
-            if self.fail_set_len {
-                Err(io::Error::other("set_len"))
-            } else {
-                self.bytes.truncate(len as usize);
-                Ok(())
-            }
-        }
-        fn read_all(&mut self) -> io::Result<Vec<u8>> {
-            self.events.push("read");
-            self.cursor = self.bytes.len();
-            Ok(self.bytes.clone())
-        }
-    }
-
-    #[test]
-    fn pty_stream_writer_syncs_before_publishing_and_does_not_advance_on_failure() {
-        let mut writer = SegmentWriter::new(FakeStorage::default()).unwrap();
-        let receipt = writer.commit(&mixed_segment()).unwrap();
-        assert_eq!(writer.storage.events, ["write", "sync"]);
-        assert_eq!(receipt.committed_len, writer.committed_len);
-
-        let mut failing = SegmentWriter::new(FakeStorage {
-            fail_sync: true,
-            ..FakeStorage::default()
-        })
-        .unwrap();
-        assert!(matches!(
-            failing.commit(&mixed_segment()),
-            Err(StreamError::Storage(_))
-        ));
-        assert_eq!(failing.committed_len, 0);
-        assert_eq!(failing.storage.events, ["write", "sync"]);
-        assert_eq!(
-            failing.commit(&mixed_segment()),
-            Err(StreamError::WriterPoisoned)
-        );
-        assert_eq!(failing.storage.events, ["write", "sync"]);
-    }
-
-    #[test]
-    fn pty_stream_writer_partial_write_poison_prevents_retry_storage_access() {
-        let mut writer = SegmentWriter::new(FakeStorage {
-            fail_write_after: Some(7),
-            ..FakeStorage::default()
-        })
-        .unwrap();
-
-        assert!(matches!(
-            writer.commit(&mixed_segment()),
-            Err(StreamError::Storage(_))
-        ));
-        assert_eq!(writer.committed_len, 0);
-        assert_eq!(writer.storage.bytes.len(), 7);
-        assert_eq!(writer.storage.events, ["write"]);
-
-        assert_eq!(
-            writer.commit(&mixed_segment()),
-            Err(StreamError::WriterPoisoned)
-        );
-        assert_eq!(writer.storage.bytes.len(), 7);
-        assert_eq!(writer.storage.events, ["write"]);
-    }
-
-    #[test]
-    fn pty_stream_writer_successful_repair_clears_poison_and_allows_commit() {
-        let complete = mixed_segment().encode().unwrap();
-        let mut writer = SegmentWriter::new(FakeStorage {
-            bytes: complete.clone(),
-            fail_write_after: Some(7),
-            ..FakeStorage::default()
-        })
-        .unwrap();
-        assert!(matches!(
-            writer.commit(&mixed_segment()),
-            Err(StreamError::Storage(_))
-        ));
-        assert!(writer.poisoned);
-
-        writer.storage.fail_write_after = None;
-        writer.recover_and_repair().unwrap();
-        assert!(!writer.poisoned);
-        writer.commit(&mixed_segment()).unwrap();
-        assert_eq!(recover(&writer.storage.bytes).unwrap().segments.len(), 2);
-    }
-
-    #[test]
-    fn pty_stream_writer_failed_repair_stays_poisoned_before_retry() {
-        let complete = mixed_segment().encode().unwrap();
-        let mut torn = complete.clone();
-        torn.extend_from_slice(&complete[..3]);
-
-        let mut sync_failure = SegmentWriter::new(FakeStorage {
-            bytes: torn.clone(),
-            fail_sync: true,
-            ..FakeStorage::default()
-        })
-        .unwrap();
-        assert!(matches!(
-            sync_failure.recover_and_repair(),
-            Err(StreamError::Storage(_))
-        ));
-        assert!(sync_failure.poisoned);
-        let events = sync_failure.storage.events.clone();
-        assert_eq!(events, ["read", "set_len", "sync"]);
-        assert_eq!(
-            sync_failure.commit(&mixed_segment()),
-            Err(StreamError::WriterPoisoned)
-        );
-        assert_eq!(sync_failure.storage.events, events);
-
-        let mut position_failure = SegmentWriter::new(FakeStorage {
-            bytes: torn,
-            ..FakeStorage::default()
-        })
-        .unwrap();
-        position_failure.storage.fail_position = true;
-        assert!(matches!(
-            position_failure.recover_and_repair(),
-            Err(StreamError::Storage(_))
-        ));
-        assert!(position_failure.poisoned);
-        let events = position_failure.storage.events.clone();
-        assert_eq!(events, ["read", "set_len", "sync"]);
-        assert_eq!(
-            position_failure.commit(&mixed_segment()),
-            Err(StreamError::WriterPoisoned)
-        );
-        assert_eq!(position_failure.storage.events, events);
-    }
-
-    #[test]
-    fn pty_stream_writer_repairs_after_set_len_then_sync_and_real_file_is_truncated() {
-        let complete = mixed_segment().encode().unwrap();
-        let mut fake = FakeStorage {
-            bytes: complete.clone(),
-            ..FakeStorage::default()
-        };
-        fake.bytes.extend_from_slice(&complete[..3]);
-        let mut writer = SegmentWriter::new(fake).unwrap();
-        let repaired = writer.recover_and_repair().unwrap();
-        assert_eq!(repaired.truncate_to, Some(complete.len()));
-        assert_eq!(writer.storage.events, ["read", "set_len", "sync"]);
-
-        let path = std::env::temp_dir().join(format!("marion-pty-stream-{}", std::process::id()));
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        Write::write_all(&mut file, &complete).unwrap();
-        Write::write_all(&mut file, &complete[..3]).unwrap();
-        let mut writer = SegmentWriter::new(file).unwrap();
-        writer.recover_and_repair().unwrap();
-        assert_eq!(writer.storage.read_all().unwrap(), complete);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn pty_stream_writer_reopen_positions_at_eof_before_commit() {
-        let first = mixed_segment().encode().unwrap();
-        let path =
-            std::env::temp_dir().join(format!("marion-pty-stream-reopen-{}", std::process::id()));
-        std::fs::write(&path, &first).unwrap();
-
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        let mut writer = SegmentWriter::new(file).unwrap();
-        writer.commit(&mixed_segment()).unwrap();
-        let bytes = writer.storage.read_all().unwrap();
-
-        assert_eq!(&bytes[..first.len()], first);
-        assert_eq!(recover(&bytes).unwrap().segments.len(), 2);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn pty_stream_writer_repair_positions_at_truncation_before_next_commit() {
-        let complete = mixed_segment().encode().unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "marion-pty-stream-repair-append-{}",
-            std::process::id()
-        ));
-        let mut torn = complete.clone();
-        torn.extend_from_slice(&complete[..3]);
-        std::fs::write(&path, torn).unwrap();
-
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        let mut writer = SegmentWriter::new(file).unwrap();
-        writer.recover_and_repair().unwrap();
-        writer.commit(&mixed_segment()).unwrap();
-        let bytes = writer.storage.read_all().unwrap();
-
-        assert_eq!(bytes.len(), complete.len() * 2);
-        assert_eq!(&bytes[..complete.len()], complete);
-        assert_eq!(recover(&bytes).unwrap().segments.len(), 2);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn pty_stream_writer_rejects_committed_length_overflow_before_writing() {
-        let mut writer = SegmentWriter {
-            storage: FakeStorage::default(),
-            committed_len: u64::MAX,
-            poisoned: false,
-        };
-        assert_eq!(
-            writer.commit(&mixed_segment()),
-            Err(StreamError::CommittedLengthOverflow)
-        );
-        assert!(writer.storage.events.is_empty());
-        assert!(writer.storage.bytes.is_empty());
-    }
-
-    #[test]
-    fn pty_stream_writer_recovery_rejects_oversized_storage_before_reading_it() {
-        let mut writer = SegmentWriter::new(FakeStorage {
-            reported_len: Some(MAX_RECOVERY_BYTES as u64 + 1),
-            ..FakeStorage::default()
-        })
-        .unwrap();
-
-        assert_eq!(
-            writer.recover_and_repair(),
-            Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES
-            })
-        );
-        assert!(writer.storage.events.is_empty());
-        assert!(writer.storage.bytes.is_empty());
-    }
-
-    #[test]
-    fn pty_stream_writer_rejects_aggregate_quota_before_encoding_or_writing() {
-        let mut writer = SegmentWriter::new(FakeStorage {
-            reported_len: Some(MAX_RECOVERY_BYTES as u64),
-            ..FakeStorage::default()
-        })
-        .unwrap();
-
-        assert_eq!(
-            writer.commit(&mixed_segment()),
-            Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES
-            })
-        );
-        assert!(writer.storage.events.is_empty());
-        assert!(writer.storage.bytes.is_empty());
-    }
-
-    #[test]
-    fn incremental_stream_reopen_rejects_an_oversized_sparse_file() {
-        let dir = marion_testsupport::scratch("pty-stream-oversized-reopen");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let stream_path = stream_path_for_cast(&cast_path).unwrap();
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(stream_path)
-            .unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .unwrap();
-        file.set_len(MAX_RECOVERY_BYTES as u64 + 1).unwrap();
-
-        assert!(matches!(
-            SessionWriter::reopen(
-                &cast_path,
-                &AgentId("oversized-reopen".into()),
-                super::super::WinSize::new(80, 24),
-                [0; SESSION_ID_BYTES],
-            ),
-            Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES
-            })
-        ));
     }
 
     #[test]
@@ -2798,7 +1281,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            SessionWriter::reopen(
+            SessionWriter::create_with_session(
                 &cast_path,
                 &AgentId("single-writer".into()),
                 super::super::WinSize::new(80, 24),
@@ -2835,31 +1318,6 @@ mod tests {
         .unwrap();
         let mode = writer.file.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn incremental_stream_reopen_rejects_a_header_mismatch() {
-        let dir = marion_testsupport::scratch("pty-stream-header-mismatch");
-        let cast_path = dir.join("pty.cast");
-        let writer = SessionWriter::create_with_session(
-            &cast_path,
-            &AgentId("expected-agent".into()),
-            super::super::WinSize::new(80, 24),
-            [0x45; SESSION_ID_BYTES],
-        )
-        .unwrap();
-        drop(writer);
-
-        assert_eq!(
-            SessionWriter::reopen(
-                &cast_path,
-                &AgentId("wrong-agent".into()),
-                super::super::WinSize::new(80, 24),
-                [0x45; SESSION_ID_BYTES],
-            )
-            .err(),
-            Some(StreamError::HeaderMismatch)
-        );
     }
 
     #[test]
@@ -3000,225 +1458,6 @@ mod tests {
                 }
             ]
         ));
-    }
-
-    /// Mutation: believe the first non-blocking `flock` answer.
-    ///
-    /// An `flock` belongs to the **open file description**, not to the descriptor and not to the
-    /// process, and `fork` duplicates that description. `spawn_pty` sets `pre_exec`, which forces
-    /// `std::process::Command` down the `fork`+`exec` path, so every child this supervisor starts
-    /// inherits every stream lock the supervisor holds and keeps it alive until `exec` closes the
-    /// `O_CLOEXEC` descriptor. Inside that window the parent's own `close` releases nothing: a
-    /// writer that has just closed its descriptor is refused its own stream with `WriterLocked`,
-    /// and crash recovery through `reopen` fails for a stream no other writer wants.
-    ///
-    /// `try_clone` is that inherited copy exactly — one description, two descriptors — so the race
-    /// is reproduced here without a child process. The hook closes the duplicate at the step the
-    /// refusal happens, so the test is a causal barrier rather than a sleep sized against a budget.
-    #[test]
-    fn a_lock_left_by_a_duplicate_of_a_closed_descriptor_is_not_a_competing_writer() {
-        let dir = marion_testsupport::scratch("pty-stream-lock-confirm");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("lock-confirm".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x44; SESSION_ID_BYTES];
-
-        let writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        let inherited = writer.file.try_clone().unwrap();
-        drop(writer);
-
-        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = std::sync::Arc::clone(&released);
-        LOCK_REFUSAL_HOOK.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new(move || {
-                drop(inherited);
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }));
-        });
-
-        let reopened = SessionWriter::reopen(&cast_path, &agent, size, session_id);
-        assert!(
-            released.load(std::sync::atomic::Ordering::SeqCst),
-            "the duplicate must still own the lock when the first attempt is refused"
-        );
-        assert!(
-            reopened.is_ok(),
-            "a lock released during the confirmation window is not a competing writer: {:?}",
-            reopened.err()
-        );
-        LOCK_REFUSAL_HOOK.with(|slot| *slot.borrow_mut() = None);
-    }
-
-    /// Mutation: derive truncation only from a live SessionWriter field. Reopen would lose the
-    /// state and seal a truncated stream as replay-complete.
-    #[test]
-    fn session_reopen_recovers_persisted_truncation_before_seal() {
-        let dir = marion_testsupport::scratch("pty-stream-reopen-truncation");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("reopen-truncation".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x36; SESSION_ID_BYTES];
-        let mut writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        writer.limit_output_for_test(SESSION_HEADER_LEN);
-        assert!(matches!(
-            writer.append_output(b"past the display quota"),
-            Err(StreamError::OutputBudgetExhausted { .. })
-        ));
-        drop(writer);
-
-        SessionWriter::reopen(&cast_path, &agent, size, session_id)
-            .unwrap()
-            .seal(TerminalOutcome {
-                exit_code: Some(0),
-                signal: None,
-                timed_out: false,
-                reader: ReaderDisposition::CleanEof,
-                cast_complete: true,
-                stream_complete: true,
-            })
-            .unwrap();
-
-        let recovered = recover_session_bytes(
-            &std::fs::read(stream_path_for_cast(&cast_path).unwrap()).unwrap(),
-        )
-        .unwrap();
-        let RecordKind::End(outcome) = recovered.records.last().unwrap().kind else {
-            panic!("sealed session ends with typed terminal evidence")
-        };
-        assert!(!outcome.stream_complete);
-    }
-
-    #[test]
-    fn session_reopen_marks_a_discarded_partial_frame_as_display_incomplete() {
-        let dir = marion_testsupport::scratch("pty-stream-torn-tail-truncation");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("torn-tail-truncation".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x37; SESSION_ID_BYTES];
-        let writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        drop(writer);
-        let stream_path = stream_path_for_cast(&cast_path).unwrap();
-        let torn_output = Record {
-            record_seq: 1,
-            display_seq: 1,
-            input_seq: 0,
-            kind: RecordKind::Output(b"possibly lost display".to_vec()),
-        }
-        .encode_for(RecordFormat::SessionV3)
-        .unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&stream_path)
-            .unwrap();
-        Write::write_all(&mut file, &torn_output[..torn_output.len() - 1]).unwrap();
-        file.sync_data().unwrap();
-        drop(file);
-
-        SessionWriter::reopen(&cast_path, &agent, size, session_id)
-            .unwrap()
-            .seal(TerminalOutcome {
-                exit_code: Some(0),
-                signal: None,
-                timed_out: false,
-                reader: ReaderDisposition::CleanEof,
-                cast_complete: true,
-                stream_complete: true,
-            })
-            .unwrap();
-
-        let recovered = recover_session_bytes(&std::fs::read(stream_path).unwrap()).unwrap();
-        assert!(matches!(
-            recovered.records.as_slice(),
-            [
-                Record {
-                    kind: RecordKind::DisplayIncomplete,
-                    ..
-                },
-                Record {
-                    kind: RecordKind::End(TerminalOutcome {
-                        stream_complete: false,
-                        ..
-                    }),
-                    ..
-                }
-            ]
-        ));
-    }
-
-    #[test]
-    fn failed_discontinuity_repairs_are_retried_on_the_next_reopen() {
-        for failure in ["no-bytes", "partial", "full-before-sync"] {
-            let dir = marion_testsupport::scratch(&format!("pty-stream-retry-repair-{failure}"));
-            let cast_path = dir.join("pty.cast");
-            std::fs::write(&cast_path, b"cast").unwrap();
-            let agent = AgentId(format!("retry-repair-{failure}"));
-            let size = super::super::WinSize::new(80, 24);
-            let session_id = [0x38; SESSION_ID_BYTES];
-            drop(SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap());
-
-            let injection_entered = std::cell::Cell::new(false);
-            let first = SessionWriter::reopen_prepared(
-                &cast_path,
-                &agent,
-                size,
-                session_id,
-                |file, offset, marker| {
-                    injection_entered.set(true);
-                    file.seek(SeekFrom::Start(offset))?;
-                    match failure {
-                        "no-bytes" => {}
-                        "partial" => Write::write_all(file, &marker[..8])?,
-                        "full-before-sync" => Write::write_all(file, marker)?,
-                        _ => unreachable!(),
-                    }
-                    Err(io::Error::other(format!(
-                        "injected {failure} repair failure"
-                    )))
-                },
-            );
-            assert!(
-                matches!(&first, Err(StreamError::Storage(error)) if error.contains(failure)),
-                "{failure}: injection_entered={}; actual={:?}",
-                injection_entered.get(),
-                first.as_ref().err()
-            );
-
-            SessionWriter::reopen(&cast_path, &agent, size, session_id)
-                .unwrap()
-                .seal(TerminalOutcome {
-                    exit_code: Some(0),
-                    signal: None,
-                    timed_out: false,
-                    reader: ReaderDisposition::CleanEof,
-                    cast_complete: true,
-                    stream_complete: true,
-                })
-                .unwrap();
-            let stream_path = stream_path_for_cast(&cast_path).unwrap();
-            let recovered = recover_session_bytes(&std::fs::read(stream_path).unwrap()).unwrap();
-            assert!(matches!(
-                recovered.records.as_slice(),
-                [
-                    Record {
-                        kind: RecordKind::DisplayIncomplete,
-                        ..
-                    },
-                    Record {
-                        kind: RecordKind::End(TerminalOutcome {
-                            stream_complete: false,
-                            ..
-                        }),
-                        ..
-                    }
-                ]
-            ));
-        }
     }
 
     /// Mutation: persist a keyed digest and its key beside low-entropy operator input evidence.
@@ -3412,52 +1651,22 @@ mod tests {
     }
 
     #[test]
-    fn versioned_session_and_legacy_segment_reject_each_others_end_representation() {
+    fn a_session_end_without_a_typed_outcome_is_refused() {
         let header = SessionHeader::new(
-            &AgentId("cross-version-end".into()),
+            &AgentId("untyped-end".into()),
             super::super::WinSize::new(80, 24),
             [0x81; SESSION_ID_BYTES],
         );
         let mut session_bytes = header.encode().to_vec();
-        session_bytes.extend_from_slice(
-            &Record {
-                record_seq: 1,
-                display_seq: 0,
-                input_seq: 0,
-                kind: RecordKind::LegacyEnd,
-            }
-            .encode()
-            .unwrap(),
-        );
+        session_bytes.extend_from_slice(&frozen_record(1, 0, 0, END_KIND, &[]));
         assert_eq!(
             recover_session_bytes(&session_bytes),
             Err(StreamError::MissingTerminalOutcome)
         );
-
-        let outcome = TerminalOutcome {
-            exit_code: Some(0),
-            signal: None,
-            timed_out: false,
-            reader: ReaderDisposition::CleanEof,
-            cast_complete: true,
-            stream_complete: true,
-        };
-        assert_eq!(
-            Segment {
-                records: vec![Record {
-                    record_seq: 1,
-                    display_seq: 0,
-                    input_seq: 0,
-                    kind: RecordKind::End(outcome),
-                }],
-            }
-            .encode(),
-            Err(StreamError::TypedTerminalOutcomeInLegacySegment)
-        );
     }
 
     #[test]
-    fn sealing_commits_one_typed_end_and_reopen_stays_sealed() {
+    fn sealing_commits_one_typed_end() {
         let dir = marion_testsupport::scratch("pty-stream-typed-seal");
         let cast_path = dir.join("pty.cast");
         std::fs::write(&cast_path, b"cast").unwrap();
@@ -3483,12 +1692,6 @@ mod tests {
         assert_eq!(
             recovered.records.last().map(|record| &record.kind),
             Some(&RecordKind::End(outcome))
-        );
-
-        let mut reopened = SessionWriter::reopen(&cast_path, &agent, size, session_id).unwrap();
-        assert_eq!(
-            reopened.append_output(b"after end"),
-            Err(StreamError::SessionEnded)
         );
     }
 }

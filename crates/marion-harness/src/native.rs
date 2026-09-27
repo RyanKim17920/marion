@@ -210,6 +210,19 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                         .push(OsString::from(format!("{k}={v}")));
                 }
             }
+            LiveDeclaration::ArgvRoot {
+                flag,
+                root,
+                file,
+                body,
+            } => {
+                let dir = context.document_dir.join(root);
+                injection.argv_prefix = vec![OsString::from(flag), dir.as_os_str().to_owned()];
+                injection.documents.push(NativeDocument {
+                    path: dir.join(file),
+                    contents: body(context.bridge).into_bytes(),
+                });
+            }
             LiveDeclaration::ArgvInline { flag, body, .. } => {
                 injection.argv_prefix =
                     vec![OsString::from(flag), OsString::from(body(context.bridge))];

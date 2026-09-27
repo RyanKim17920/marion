@@ -29,105 +29,100 @@ use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
 
 fn usage_text() -> String {
+    let native: String = production_native_facades()
+        .enabled_native_commands()
+        .iter()
+        .map(|c| format!("\x20      marion {c} [<its own flags>…]\n"))
+        .collect();
+    let tools = mcp_tool_names();
     format!(
-        "usage: marion                                (interactive: pick harness, model, prompt)\n\
-         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--canned [--base-url <url>]]\n\
-         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
+        "usage: marion                                (interactive: pick agent type, model, prompt)\n\
+         {native}\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
+         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
+         \x20                 [--canned [--base-url <url>]]\n\
+         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
+         \x20      marion doctor [--capabilities|--adapter] [--harness <name>]\n\
+         \x20      marion --version\n\
          \n\
-         agent types: {}, plus any in the repository's .marion/agents.toml\n\
+         marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
+         marion root with marion's MCP server connected. ^] d detaches, ^] s toggles a status row.\n\
          \n\
-         marion tree shows this project's node tree beside a content pane, with each node's\n\
-         capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
-         out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, ! jumps to the next\n\
-         node that needs attention (blocked, failed, or orphaned), s writes a message for the\n\
-         selected node's next turn on the hint row (enter sends it as marion steer would, esc\n\
-         cancels), enter attaches to the selected node, q leaves. It starts no supervisor: with\n\
-         none running there is nothing to show, and an empty forest would read as \"no agents\"\n\
-         rather than as \"wrong project\".\n\
+         agent types: {types}, plus any in the repository's .marion/agents.toml. A plain harness\n\
+         name is that harness's implementer; <harness>-orchestrator is the read-only planner.\n\
          \n\
-         marion list prints the same forest once, one node per line -- glyph, state, agent type,\n\
-         the whole agent id, and its parent's short id -- and exits 0. --attention keeps only the\n\
-         nodes that need an operator: blocked, exited failed / timed out / killed / unreported, or\n\
-         orphaned; the state word is the reason. Like tree, it starts no supervisor.\n\
+         marion tree shows this project's nodes beside a content pane, with each node's\n\
+         capabilities along the bottom (greyed where its harness cannot do them). j/k or the\n\
+         arrows move, tab changes focus, ! jumps to the next node that needs attention, s writes\n\
+         a message for the selected node's next turn (enter sends it, esc cancels), enter\n\
+         attaches, q leaves. It starts no supervisor: with none running there is nothing to show.\n\
          \n\
-         marion steer queues a message for a running node's next turn, as the operator: the\n\
-         node reads it when its current turn ends, not mid-sentence. The node is named by its\n\
-         whole id or by the short id its tree row shows; `-` reads the message from stdin. It\n\
-         exits 0 when the message was queued and says which node takes it, and 1 with the\n\
-         supervisor's own sentence when it was refused -- an ended node, an unknown id, a harness\n\
-         with no measured way to take one. Like list, it starts no supervisor.\n\
+         marion list prints the same forest once, one node per line, and exits 0. --attention\n\
+         keeps only nodes that need an operator (blocked, failed, timed out, unreported, orphaned).\n\
          \n\
-         marion mcp serves marion's own MCP tools — spawn, wait, status, list, steer — over\n\
-         stdio, for an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
-         makes, over the same socket: it starts no agent itself and owns none. Point a client at\n\
-         it with `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. It is not a\n\
-         command to run at a terminal — stdout is JSON-RPC.\n\
+         marion steer queues a message for a running node's next turn, as the operator. The node\n\
+         is named by its whole id or by the short id its tree row shows; `-` reads the message\n\
+         from stdin. It exits 0 when the message was queued and says which node takes it, and 1\n\
+         with the supervisor's own sentence when it was refused. Like list, it starts no\n\
+         supervisor.\n\
          \n\
-         marion with no arguments asks three questions — harness, model, prompt — and then runs\n\
-         exactly what `marion run <answer> --prompt <answer>` would. It asks **only** when stdin\n\
-         is a terminal: in a pipe or under CI there is nobody to answer, so it prints this text\n\
-         and exits non-zero rather than blocking forever on a read nothing will satisfy.\n\
+         marion mcp serves marion's {n} tools — {tool_list} — over stdio, for an MCP client to\n\
+         be configured with (report answers only inside a child marion started). Its spawn\n\
+         creates a root over the same socket `marion run` uses. Point a client at it with\n\
+         `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. stdout is JSON-RPC.\n\
          \n\
-         A run uses the vendor the operator is already logged in to. marion is not a credential\n\
-         store and seeds nothing: no code in it clears a child's environment, so a harness's own\n\
-         login is inherited, and marion simply declines to overlay a base URL and a placeholder\n\
-         key on top of it. That is the default because it is what a person at a terminal means,\n\
-         and it makes real model calls that cost real money.\n\
+         marion with no arguments asks three questions and then runs what `marion run` would.\n\
+         It asks only when stdin is a terminal; in a pipe it prints this text and exits non-zero.\n\
          \n\
-         --canned points the node at marion's own canned provider ({CANNED_BASE_URL}) instead.\n\
-         It is the fixture the test suite runs against: it costs nothing, and it answers nothing\n\
-         useful. `--live` is still accepted and now does nothing — real auth is the default it\n\
-         used to have to ask for.\n\
+         A run uses the login you already have for each harness and makes real model calls that\n\
+         cost real money. marion stores no credential and starts no login.\n\
          \n\
-         --base-url belongs to --canned and is refused without it. Two different reasons, one\n\
-         remedy. A loopback endpoint aims a real credential at a fake server, which is the one\n\
-         mistake whose blast radius is the operator's account rather than the run. Any other\n\
-         endpoint -- a proxy or a gateway -- is refused because marion does not implement it: no\n\
-         adapter passes an endpoint to a node running on the operator's own login, so the run\n\
-         would reach the vendor directly while looking like it went through the gateway. Pointing\n\
-         a real credential through a proxy is a reasonable thing to want and may land later;\n\
-         marion will not pretend to do it until it does. Pass --canned if the fixture is what was\n\
-         meant.\n\
+         --canned points the node at marion's canned test provider ({CANNED_BASE_URL}) instead:\n\
+         no credential, no cost, and answers nothing useful. Start it first (`marion-canned`,\n\
+         installed from crates/marion-provider); a run refuses at once if nothing listens there.\n\
+         `--live` is still accepted and does nothing: real auth is the default.\n\
          \n\
-         --repo defaults to the enclosing git repository — the nearest ancestor of the working\n\
-         directory holding a `.git` — and to the working directory itself when there is none, so\n\
-         that running marion from a subdirectory still scopes the node to the whole checkout.\n\
+         --base-url belongs to --canned and is refused without it. A loopback endpoint would aim\n\
+         a real credential at a fake server; any other endpoint (a proxy, a gateway) is refused\n\
+         because marion does not implement it, and the run would reach the vendor directly.\n\
          \n\
-         --state-dir defaults to $XDG_STATE_HOME/marion, else ~/.local/state/marion. It is\n\
-         deliberately not repo-local and not a temp directory: §4.3's tree is what survives a run,\n\
-         and a run whose journal vanished with /tmp would have nothing to resume from.\n\
+         --repo defaults to the enclosing git repository, else the working directory.\n\
          \n\
-         --no-change-record tells marion not to snapshot the repository the root runs in. A root\n\
-         runs in the operator's own checkout, not a worktree, so marion takes that working tree as\n\
-         a git tree object at launch and at exit and records the delta -- which is the only record\n\
-         of what the run did. An agent type that declares built-in tools is therefore refused in a\n\
-         directory marion cannot snapshot: a grant with no diff behind it is indistinguishable\n\
-         from a write that escaped. This flag is the way to say that is understood and wanted; the\n\
-         run then launches with no built-in tool at all and journals that marion did not look.\n\
+         --state-dir defaults to $MARION_STATE_DIR, else $XDG_STATE_HOME/marion, else\n\
+         ~/.local/state/marion, for every verb. Use the same one for `marion tree` as for the\n\
+         session it should show.\n\
          \n\
-         --pane runs the root in a terminal marion owns rather than headlessly, so `marion\n\
-         attach <agent-id>` shows its TUI and types into it. It is asked for per run:\n\
-         without it the node is launched from exactly the bytes it was launched from\n\
-         before panes existed, which is what keeps M1's measured path measured. A harness\n\
-         with no interactive shape marion can drive refuses by name rather than quietly\n\
-         launching headless, because a run that asked for a pane is one that is about to\n\
-         attach to it.\n\
+         --no-change-record skips the snapshot marion takes of your checkout at a root's launch\n\
+         and exit. That snapshot is the only record of what a root changed, so a type with file\n\
+         tools is refused where marion cannot take it (outside a git repository); with this flag\n\
+         the root runs with no built-in tool at all instead.\n\
          \n\
-         --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
-         surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
-         and not a wall-clock ceiling, since marion offers a root none; on a LaunchOnly surface\n\
-         (codex, gemini, opencode) there is no `Blocked` state to budget and it is the wall-clock\n\
-         bound instead — which is not optional, because opencode never exits on a provider hang.",
-        builtin_names().join(", ")
+         --pane runs the root in a terminal marion owns, so `marion attach <agent-id>` shows its\n\
+         TUI and types into it.\n\
+         \n\
+         --timeout is the root's bound: on claude, the budget for one blocked permission request;\n\
+         on the other harnesses, a wall-clock limit.",
+        types = builtin_names().join(", "),
+        n = tools.len(),
+        tool_list = tools.join(", "),
     )
+}
+
+/// The tool names `marion mcp` declares in `tools/list`, read off the list itself so `--help`
+/// cannot drift from it.
+fn mcp_tool_names() -> Vec<String> {
+    marion_supervisor::bridge::tools(&AgentTypes::builtins_only())
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 fn usage() -> ! {
@@ -397,7 +392,7 @@ fn resumed_shape(journal: &Path, agent_id: &marion_core::contract::AgentId) -> R
 
 /// The resume's base URL, by [`resolve_base_url`]'s rule; a refusal is its sentence and the code.
 fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
-    resolve_base_url(
+    resolve_reachable_base_url(
         args.canned,
         args.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
@@ -697,18 +692,38 @@ fn resolve_project(
     Some((repo, state))
 }
 
+/// **The one place the CLI resolves a state directory**, for every verb: `--state-dir`, else
+/// `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. The native
+/// facade (`socket::resolve_state_dir`) reads the same variable, so `marion claude` and `marion
+/// tree` in one shell find the same supervisor.
 fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
-    match state_dir(
+    match state_dir_from(
         explicit,
+        std::env::var("MARION_STATE_DIR").ok().as_deref(),
         std::env::var("XDG_STATE_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     ) {
         Some(s) => Some(s),
         None => {
-            eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+            eprintln!(
+                "marion: cannot resolve a state directory (set --state-dir, $MARION_STATE_DIR or \
+                 $HOME)"
+            );
             None
         }
     }
+}
+
+/// [`state_dir_or_report`]'s rule over explicit inputs: the flag wins over the variable, and an
+/// empty value of either counts as unset.
+fn state_dir_from(
+    flag: Option<&str>,
+    marion_state_dir: Option<&str>,
+    xdg_state_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let explicit = flag.filter(|s| !s.is_empty()).or(marion_state_dir);
+    state_dir(explicit, xdg_state_home, home)
 }
 
 /// Hand-rolled, because `run`'s whole surface is one subcommand and six flags.
@@ -910,6 +925,67 @@ fn resolve_base_url(
     }
 }
 
+/// How long `--canned` waits for its provider to accept a connection before refusing the run.
+const CANNED_PROBE: StdDuration = StdDuration::from_secs(1);
+
+/// **Is anything listening at the canned endpoint?** A bounded TCP connect, nothing more.
+///
+/// Measured: `marion run codex --prompt "say hello" --canned` with no provider on :8099 hung
+/// forever — the harness retries a refused connection without end (opencode never exits on one at
+/// all, S13) — and left the root and its supervisor running after the client was killed. A connect
+/// probe turns that into one sentence naming the command that starts the provider. It proves only
+/// that a port is open, not that the listener is marion's provider; that is the operator's to say.
+fn canned_endpoint_listening(url: &str) -> Result<(), String> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let not_listening = |why: &str| {
+        format!(
+            "--canned points at {url}, and {why}. Start marion's canned provider first, from a \
+             marion checkout: `cargo install --path crates/marion-provider` and then \
+             `marion-canned &` (MARION_CANNED_PORT picks the port, default 8099), or pass \
+             --base-url for one that is already running. Drop --canned to run on your own login."
+        )
+    };
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| not_listening("that is not an http:// URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let has_port = match authority.strip_prefix('[') {
+        Some(v6) => v6.contains("]:"),
+        None => authority.contains(':'),
+    };
+    let target = match (has_port, scheme) {
+        (true, _) => authority.to_string(),
+        (false, "https") => format!("{authority}:443"),
+        (false, _) => format!("{authority}:80"),
+    };
+    let addrs: Vec<_> = target
+        .to_socket_addrs()
+        .map_err(|e| not_listening(&format!("its address does not resolve ({e})")))?
+        .collect();
+    if addrs
+        .iter()
+        .any(|a| TcpStream::connect_timeout(a, CANNED_PROBE).is_ok())
+    {
+        return Ok(());
+    }
+    Err(not_listening("nothing is listening there"))
+}
+
+/// [`resolve_base_url`], then [`canned_endpoint_listening`] on the endpoint it chose: one refusal
+/// path for `run`, `resume` and `mcp`, so none of them can hang on a provider that is not there.
+fn resolve_reachable_base_url(
+    canned: bool,
+    explicit: Option<String>,
+    from_env: Option<String>,
+) -> Result<Option<String>, String> {
+    let url = resolve_base_url(canned, explicit, from_env)?;
+    if let Some(u) = &url {
+        canned_endpoint_listening(u)?;
+    }
+    Ok(url)
+}
+
 /// `--repo`'s default: the enclosing git repository, else the working directory itself.
 ///
 /// A `.git` **entry**, not a `.git` directory: a linked worktree and a submodule both carry a
@@ -1001,12 +1077,7 @@ fn run_mcp(args: McpArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let Some(state) = state_dir(
-        args.state_dir.as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) else {
-        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
         return ExitCode::FAILURE;
     };
     let base_url = match resolve_base_url(
@@ -1093,7 +1164,10 @@ fn pick(
     types: &AgentTypes,
 ) -> io::Result<Option<Chosen>> {
     let names = types.names();
-    writeln!(out, "marion — pick a harness:")?;
+    writeln!(
+        out,
+        "marion — pick an agent type (the harness it runs on, and what it may do):"
+    )?;
     for (i, name) in names.iter().enumerate() {
         let desc = types
             .resolve(name)
@@ -1101,10 +1175,10 @@ fn pick(
         writeln!(out, "  {}) {name}{desc}", i + 1)?;
     }
     let agent_type = loop {
-        let Some(answer) = ask(input, out, "harness [1]: ")? else {
+        let Some(answer) = ask(input, out, "agent type [1]: ")? else {
             return Ok(None);
         };
-        // Empty takes the first, which is the root orchestrator — the one a bare `marion` means.
+        // Empty takes the first: plain `claude`, the implementer.
         if answer.is_empty() {
             break names[0].to_string();
         }
@@ -1122,7 +1196,11 @@ fn pick(
         writeln!(out, "  not one of 1..={}, nor a listed name.", names.len())?;
     };
 
-    let default_model = types.resolve(&agent_type).and_then(|t| t.model);
+    // The picker runs on the operator's own login (it has no `--canned`), so the default is the
+    // live one: a canned-plumbing default is not offered.
+    let default_model = types
+        .resolve(&agent_type)
+        .and_then(|t| t.default_model(false));
     let model_hint = default_model
         .clone()
         .unwrap_or_else(|| "the harness's own default".into());
@@ -1605,6 +1683,26 @@ fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
         "result" => render_result(frame, out),
         "system" if subtype == "init" => render_session_init(frame, out),
         "control_request" => render_control_request(frame, out),
+        // The item-stream shape (codex `exec --json`): a finished message or reasoning item is
+        // the root's words, like an `assistant` text or `thinking` block. Other items keep the
+        // generic one-line name below.
+        "item.completed" if frame["item"]["type"] == "agent_message" => say(
+            out,
+            "root",
+            frame["item"]["text"].as_str().unwrap_or_default(),
+        ),
+        "item.completed" if frame["item"]["type"] == "reasoning" => say(
+            out,
+            "think",
+            &format!(
+                "({} characters of reasoning)",
+                frame["item"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .count()
+            ),
+        ),
         // Never its body: the `initialize` reply alone is ~30 kB of session catalogue.
         "control_response" => say(
             out,
@@ -1661,7 +1759,7 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
             out,
             "PERMIT",
             &format!(
-                "{} — marion has nobody to ask (§9); it will be denied when the Blocked bound expires",
+                "{} — nobody is attached to answer it; it will be denied when its wait runs out",
                 frame["request"]["tool_name"]
                     .as_str()
                     .unwrap_or("(unnamed tool)")
@@ -2110,22 +2208,21 @@ fn detach_report(
             let _ = writeln!(
                 out,
                 "marion: this project's supervisor is still running ({reason:?}); it holds work \
-                 this run did not finish, and the next marion will find it rather than start one \
-                 (§5.7)"
+                 this run did not finish, and the next marion will find it rather than start one"
             );
         }
         marion_core::proto::SupervisorDisposition::Exiting => {
             let _ = writeln!(
                 out,
-                "marion: nothing in §5.7's exclusion list holds this project's supervisor, so it \
-                 is leaving and journaling that it did"
+                "marion: nothing holds this project's supervisor any more, so it is leaving and \
+                 journaling that it did"
             );
         }
     }
     if !reaped.is_empty() {
         let _ = writeln!(
             out,
-            "marion: reaped and resumable: {} (§7.2: transcript intact, ownership retained)",
+            "marion: reaped and resumable: {} (transcript intact; `marion resume <id>` continues it)",
             reaped.join(", ")
         );
     }
@@ -2148,7 +2245,7 @@ fn detach_report(
                 out,
                 "marion: unattended at a permission gate: {} — each one \
                  that asks burns its bound and is denied, and the far side sees an is_error \
-                 tool_result rather than a question (§7.3.2, §11 item 22)",
+                 tool_result rather than a question",
                 names(gate_exposed)
             );
         }
@@ -2299,6 +2396,10 @@ fn legacy_main() -> ExitCode {
         println!("{}", usage_text());
         return ExitCode::SUCCESS;
     }
+    if matches!(argv.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("marion {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     // **The whole of the second verb's dispatch.** A `match` on argv[0] would read better and
     // would mean restructuring the bare-picker branch ([`pick_args`]), which is `run`'s and has
     // its own stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
@@ -2317,6 +2418,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("steer") {
         return steer_main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("doctor") {
+        return doctor_main(&argv[1..]);
+    }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
     // the protocol stream and leave the client parsing prose.
@@ -2326,7 +2430,36 @@ fn legacy_main() -> ExitCode {
             None => usage(),
         };
     }
+    // Every verb is matched above and `run` is the one left; any other first word is a typo or a
+    // command marion does not have, and a screen of usage text would bury what went wrong.
+    if let Some(word) = argv.first().filter(|w| *w != "run" && !w.starts_with('-')) {
+        eprintln!(
+            "marion: unknown command `{word}`; `marion run <agent-type> --prompt <text>` runs an \
+             agent, and `marion --help` lists every command"
+        );
+        return ExitCode::from(2);
+    }
     run_main(&argv)
+}
+
+/// `marion doctor …` is `marion-supervisor doctor …`: the supervisor owns the probes, and this
+/// replaces the process with it so its output, exit code and signals are the doctor's own.
+fn doctor_main(args: &[String]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let supervisor = supervisor_binary();
+    let mut doctor = std::process::Command::new(&supervisor);
+    doctor.arg("doctor").args(args);
+    // So the doctor reports this marion, not whichever one it would find on its own.
+    if let Ok(me) = std::env::current_exe() {
+        doctor.env(marion_supervisor::preflight::CLIENT_EXE_ENV, me);
+    }
+    let e = doctor.exec();
+    eprintln!(
+        "marion: cannot run {} doctor: {e}. marion-supervisor is installed with marion and must \
+         sit in the same directory",
+        supervisor.display()
+    );
+    ExitCode::FAILURE
 }
 
 /// The bare verb — `marion [<agent-type> <prompt> …]`, or the picker with no argv at all: start a
@@ -2433,15 +2566,10 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
         );
         return Err(ExitCode::FAILURE);
     };
-    let Some(state) = state_dir(
-        args.state_dir.as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) else {
-        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
         return Err(ExitCode::FAILURE);
     };
-    let base_url = match resolve_base_url(
+    let base_url = match resolve_reachable_base_url(
         args.canned,
         args.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
@@ -2703,9 +2831,12 @@ fn report_watched(
             return Err(ExitCode::FAILURE);
         }
     };
-    for frame in &watched.transcript {
-        println!("{frame}");
-    }
+    // A closed stdout (`marion run … | head -1`) is the reader's decision, not a failure.
+    let _ = write_transcript(
+        &watched.transcript,
+        &mut io::stdout().lock(),
+        io::stdout().is_terminal(),
+    );
     // Every permission marion refused this root, read back from the journal it was recorded in
     // (§9: a root has no contract, so the journal is the only place these live). Best effort by
     // construction: it is a summary of a fact the node was already told, printed in its transcript
@@ -2721,6 +2852,21 @@ fn report_watched(
         );
     }
     Ok(run_verdict(watched.terminal, blocked_bound))
+}
+
+/// The root's frames, one JSON line each, onto `out` — **unless `out` is a terminal.**
+///
+/// stdout is `marion run`'s machine surface (`tests/launch_only_root.rs` parses it), so a pipe gets
+/// every frame. A terminal already watched the same frames rendered on stderr by the live view;
+/// printing them again raw dumped ~20 KB of stream-json over the screen when a picker run ended.
+fn write_transcript(frames: &[Value], out: &mut dyn Write, is_terminal: bool) -> io::Result<()> {
+    if is_terminal {
+        return Ok(());
+    }
+    for frame in frames {
+        writeln!(out, "{frame}")?;
+    }
+    Ok(())
 }
 
 /// Dial the supervisor this run may start, and split its connection for reading. Either failure
@@ -2910,6 +3056,11 @@ fn run_verdict(terminal: Terminal_, blocked_bound: StdDuration) -> ExitCode {
                 eprintln!("marion: {}", exit.description);
                 return ExitCode::FAILURE;
             }
+            // A root that answered without delegating is a success, and says so rather than
+            // ending in silence (`root::ANSWERED_WITHOUT_DELEGATING`).
+            if exit.description.contains(root::ANSWERED_WITHOUT_DELEGATING) {
+                eprintln!("marion: note: {}", root::ANSWERED_WITHOUT_DELEGATING);
+            }
             match exit.code {
                 Some(0) => ExitCode::SUCCESS,
                 _ => ExitCode::FAILURE,
@@ -3019,7 +3170,7 @@ fn watch_the_root(
                 // bound). It is not lost: `events.jsonl` carries it on the record, which is where a
                 // reader who wants to know *which* rule looks.
                 Payload::Withheld { key, bytes, .. } => self.show(StreamEvent::Unparsed(&format!(
-                    "[withheld: a `{key}` frame of {bytes} bytes, body not kept (§5.2)]"
+                    "[withheld: a `{key}` frame of {bytes} bytes, body not kept]"
                 ))),
                 Payload::Oversized { was, bytes } => self.show(StreamEvent::Unparsed(&format!(
                     "[marion shortened a {was:?} frame of {bytes} bytes]"
@@ -3129,6 +3280,78 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// **Raw frames reach stdout only when stdout is not a terminal.** The live view already
+    /// rendered every frame on stderr; printing the transcript again on a terminal dumped ~20 KB of
+    /// stream-json over it when the picker's run ended. Piped, stdout stays the machine surface.
+    #[test]
+    fn the_transcript_is_written_to_a_pipe_and_never_to_a_terminal() {
+        let frames = vec![serde_json::json!({"type": "result"})];
+        let mut piped = Vec::new();
+        write_transcript(&frames, &mut piped, false).unwrap();
+        assert_eq!(String::from_utf8(piped).unwrap(), "{\"type\":\"result\"}\n");
+        let mut tty = Vec::new();
+        write_transcript(&frames, &mut tty, true).unwrap();
+        assert!(tty.is_empty());
+    }
+
+    /// **`--canned` against a port nobody listens on is refused at once, naming how to start the
+    /// provider**, instead of the run hanging forever on a provider that will never answer (the
+    /// README's first command did exactly that). A listening port passes.
+    #[test]
+    fn a_canned_endpoint_that_is_not_listening_is_refused_fast_with_the_command_to_start_one() {
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = dead.local_addr().unwrap().port();
+        drop(dead);
+        let url = format!("http://127.0.0.1:{port}/v1");
+        let started = std::time::Instant::now();
+        let e = canned_endpoint_listening(&url).expect_err("nothing listens there");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "bounded"
+        );
+        assert!(e.contains(&url), "{e}");
+        assert!(
+            e.contains("marion-canned"),
+            "it names the provider binary: {e}"
+        );
+        assert!(e.contains("MARION_CANNED_PORT"), "and how to aim it: {e}");
+
+        let live = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/v1", live.local_addr().unwrap().port());
+        assert_eq!(canned_endpoint_listening(&url), Ok(()));
+        assert!(
+            canned_endpoint_listening("not a url").is_err(),
+            "an unreadable endpoint is refused, not probed as a guess"
+        );
+    }
+
+    /// **`$MARION_STATE_DIR` is honoured by every verb, and `--state-dir` still wins over it.**
+    ///
+    /// `marion claude` read it (through `socket::resolve_state_dir`) while `run`, `tree`, `list`,
+    /// `attach`, `resume`, `mcp` and the picker passed `None` in its place, so a session started
+    /// natively under a custom state dir was invisible to `marion tree` in the same shell.
+    #[test]
+    fn the_state_dir_is_the_flag_then_marion_state_dir_then_xdg_then_home() {
+        use std::path::PathBuf;
+        let all = |flag| state_dir_from(flag, Some("/m"), Some("/x"), Some("/h"));
+        assert_eq!(all(Some("/f")), Some(PathBuf::from("/f")));
+        assert_eq!(all(None), Some(PathBuf::from("/m")));
+        assert_eq!(
+            all(Some("")),
+            Some(PathBuf::from("/m")),
+            "an empty flag is no flag"
+        );
+        assert_eq!(
+            state_dir_from(None, Some(""), Some("/x"), Some("/h")),
+            Some(PathBuf::from("/x/marion")),
+            "an empty variable is unset"
+        );
+        assert_eq!(
+            state_dir_from(None, None, None, Some("/h")),
+            Some(PathBuf::from("/h/.local/state/marion"))
+        );
+    }
 
     /// **The second verb exists and is not `run`.**
     ///
@@ -3419,6 +3642,27 @@ mod tests {
             .lines()
             .map(|l| l.trim_end().to_string())
             .collect()
+    }
+
+    /// **A root's answer is shown as its words**, on the item-stream shape too (codex `exec
+    /// --json`): `marion run codex --prompt "say hello"` rendered "frame item.completed" and never
+    /// the "Hello!" the root said. Other item kinds keep their one-line name.
+    #[test]
+    fn an_item_stream_message_is_rendered_as_the_roots_words() {
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"Hello!"}}"#
+            ),
+            ["root      Hello!"]
+        );
+        assert_eq!(
+            shown(r#"{"type":"item.completed","item":{"id":"i","type":"reasoning","text":"abc"}}"#),
+            ["think     (3 characters of reasoning)"]
+        );
+        assert_eq!(
+            shown(r#"{"type":"turn.started"}"#),
+            ["frame     turn.started"]
+        );
     }
 
     /// The event a person runs `marion run` to watch: the root stopping working alone. It is marked
@@ -4546,6 +4790,17 @@ mod tests {
         );
     }
 
+    /// **The list is agent types, and the title says so**; an empty answer takes the first, which
+    /// is plain `claude`, the implementer.
+    #[test]
+    fn the_picker_is_titled_for_agent_types_and_defaults_to_the_first() {
+        let (chosen, shown) = run_picker("\n\nship it\n");
+        assert!(shown.starts_with("marion — pick an agent type"), "{shown}");
+        assert!(!shown.contains("pick a harness"), "{shown}");
+        assert!(shown.contains("agent type [1]: "), "{shown}");
+        assert_eq!(chosen.unwrap().agent_type, builtin_names()[0]);
+    }
+
     /// The list is `builtin_names()`, never a literal, so a fifth built-in is offered the day it
     /// exists. Selecting the last one by its number is what proves the two are the same list.
     #[test]
@@ -4570,13 +4825,19 @@ mod tests {
     /// own default apply — including for the two harnesses whose adapters refuse without one.
     #[test]
     fn an_empty_model_answer_takes_the_agent_types_own_default() {
-        let (chosen, shown) = run_picker("opencode\n\nship it\n");
+        let (chosen, shown) = run_picker("gemini\n\nship it\n");
         let c = chosen.unwrap();
-        assert_eq!(c.model, builtin("opencode").unwrap().model);
+        assert_eq!(c.model, builtin("gemini").unwrap().model);
         assert!(
-            shown.contains(&builtin("opencode").unwrap().model.unwrap()),
+            shown.contains(&builtin("gemini").unwrap().model.unwrap()),
             "the default is shown, so an empty answer is an informed one: {shown}"
         );
+
+        // The picker runs on the operator's own login, so a default naming marion's canned
+        // provider is not offered: opencode then uses the operator's own default model.
+        let (chosen, shown) = run_picker("opencode\n\nship it\n");
+        assert_eq!(chosen.unwrap().model, None);
+        assert!(!shown.contains("marion/default"), "{shown}");
 
         // And where the type states none, an empty answer stays none rather than becoming "".
         let (chosen, shown) = run_picker("claude\n\nship it\n");
@@ -4607,6 +4868,32 @@ mod tests {
             let (chosen, _) = run_picker(input);
             assert_eq!(chosen, None, "EOF after {input:?} must end it");
         }
+    }
+
+    /// **`--help` names the headline commands and the real tool list.** The native `marion
+    /// <harness>` lanes come from the facade registry, so a lane switched on is listed the same
+    /// day; the MCP tools are read off the list `marion mcp` actually declares; and a person
+    /// reading help meets no design-doc section numbers.
+    #[test]
+    fn the_usage_text_lists_the_native_commands_and_the_declared_tools() {
+        let u = usage_text();
+        for command in production_native_facades().enabled_native_commands() {
+            assert!(
+                u.contains(&format!("marion {command} ")),
+                "`marion {command}` is missing from help:\n{u}"
+            );
+        }
+        let declared = mcp_tool_names();
+        assert_eq!(declared.len(), 6, "{declared:?}");
+        assert!(
+            u.contains(&format!(
+                "{} tools — {}",
+                declared.len(),
+                declared.join(", ")
+            )),
+            "{u}"
+        );
+        assert!(!u.contains('§'), "help cites no spec sections:\n{u}");
     }
 
     /// The usage text is the only place the flag semantics are stated to a person, so it has to
@@ -4744,8 +5031,12 @@ mod tests {
             "§7.3.2's stated cost of (b) names the exposed nodes: {report}"
         );
         assert!(
-            report.contains("§11 item 22"),
-            "and cites where the cost is recorded: {report}"
+            report.contains("denied"),
+            "and says what that costs: {report}"
+        );
+        assert!(
+            !report.contains('§'),
+            "a person meets no design-doc section numbers: {report}"
         );
         assert!(
             report.contains("`marion tree`") && report.contains("`marion attach root`"),
@@ -4834,6 +5125,38 @@ mod tests {
         .expect("a reap renders");
         assert!(reaped.contains("reaped and resumable: idle"), "{reaped}");
         assert!(reaped.contains("still running, detached: busy"), "{reaped}");
+        for r in [&report, &reaped] {
+            assert!(!r.contains('§'), "no design-doc section numbers: {r}");
+        }
+        let (_, resident) = detach_report(&marion_core::proto::QuitOutcome::Detached {
+            detached: ids(&["busy"]),
+            gate_exposed: Vec::new(),
+            guidance: guidance(),
+            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode,
+            ),
+        })
+        .expect("a detach renders");
+        assert!(
+            !resident.contains('§'),
+            "no design-doc section numbers: {resident}"
+        );
+    }
+
+    /// **A permission ask a run cannot answer is said in words.** The line used to cite a design
+    /// section to a person who has never read it.
+    #[test]
+    fn an_unanswerable_permission_ask_names_no_spec_section() {
+        let frame = serde_json::json!({
+            "type": "control_request",
+            "request": {"subtype": "can_use_tool", "tool_name": "Bash"},
+        });
+        let mut out = Vec::new();
+        render_control_request(&frame, &mut out).expect("renders");
+        let line = String::from_utf8(out).expect("utf-8");
+        assert!(line.contains("Bash"), "{line}");
+        assert!(line.contains("denied"), "says what happens: {line}");
+        assert!(!line.contains('§'), "{line}");
     }
 
     /// **NC — the idle grace `marion run` asks for is §5.7's, not one this client invented.**

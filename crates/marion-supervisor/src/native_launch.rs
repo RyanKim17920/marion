@@ -1047,7 +1047,7 @@ mod tests {
             OsString::from("--marion-repo"),
             project.as_os_str().to_owned(),
             OsString::from("--marion-agent-type"),
-            OsString::from("codex-impl"),
+            OsString::from("codex"),
         ];
         expected_args.extend(tail);
         assert_eq!(prepared.invocation.args, expected_args);

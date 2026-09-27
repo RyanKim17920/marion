@@ -56,6 +56,11 @@ pub type MessageId = String;
 pub trait DeliveryPort: Send + Sync {
     /// A message is waiting. Called after it is queued, outside the inbox's lock.
     fn wake(&self);
+
+    /// This port will never be woken again: its node's inbox closed, or a reopen of the same id
+    /// replaced it. A driver that holds a thread for the port lets it go here. Called once,
+    /// outside the inbox's lock; a no-op for a driver with nothing to release.
+    fn closed(&self) {}
 }
 
 /// **One node's inbox, as that node's driver holds it** — the same queue as [`Inboxes`], bound
@@ -355,23 +360,31 @@ impl Inboxes {
     /// same id — gets a fresh, unsealed inbox: its old lifetime's queue was already resolved when
     /// that lifetime was closed.
     pub fn open(&self, agent: &AgentId) {
-        self.lock().insert(agent.clone(), Inbox::default());
+        let replaced = self.lock().insert(agent.clone(), Inbox::default());
+        if let Some(port) = replaced.and_then(|old| old.port) {
+            port.closed();
+        }
     }
 
     /// The node's driver is up: it will be woken for every message queued from now on, and once
-    /// now if any are already waiting.
-    pub fn attach_port(&self, agent: &AgentId, port: Arc<dyn DeliveryPort>) {
-        let waiting = {
+    /// now if any are already waiting. `false`, and the port left untouched, for a node with no
+    /// open inbox — a driver that started a thread for it releases the thread itself.
+    pub fn attach_port(&self, agent: &AgentId, port: Arc<dyn DeliveryPort>) -> bool {
+        let (waiting, replaced) = {
             let mut boxes = self.lock();
-            let Some(inbox) = boxes.get_mut(agent) else {
-                return;
+            let Some(inbox) = boxes.get_mut(agent).filter(|b| !b.sealed) else {
+                return false;
             };
-            inbox.port = Some(Arc::clone(&port));
-            !inbox.queue.is_empty()
+            let replaced = inbox.port.replace(Arc::clone(&port));
+            (!inbox.queue.is_empty(), replaced)
         };
+        if let Some(old) = replaced {
+            old.closed();
+        }
         if waiting {
             port.wake();
         }
+        true
     }
 
     /// Accept `text` for `agent`'s next turn, or say why not. On success `MessageQueued` is
@@ -536,18 +549,20 @@ impl Inboxes {
     /// The node's process ended: seal its inbox and drop every message still waiting, each with
     /// `reason`. A no-op for a node with no inbox.
     pub fn close(&self, agent: &AgentId, reason: &str) {
-        let stranded: Vec<Message> = {
+        let (port, stranded): (Option<Arc<dyn DeliveryPort>>, Vec<Message>) = {
             let mut boxes = self.lock();
             let Some(inbox) = boxes.get_mut(agent) else {
                 return;
             };
             inbox.sealed = true;
-            inbox.port = None;
             inbox.owed = 0;
-            inbox.queue.drain(..).collect()
+            (inbox.port.take(), inbox.queue.drain(..).collect())
         };
         for m in stranded {
             self.dropped(agent, &m.id, reason);
+        }
+        if let Some(port) = port {
+            port.closed();
         }
     }
 
@@ -811,12 +826,45 @@ pub(crate) mod tests {
             .enqueue(&a, TYPED, Source::Operator, "early".into())
             .unwrap();
         let port = Arc::new(Counting(AtomicUsize::new(0)));
-        inboxes.attach_port(&a, port.clone());
+        assert!(inboxes.attach_port(&a, port.clone()));
         assert_eq!(port.0.load(Ordering::SeqCst), 1, "a message was waiting");
         inboxes
             .enqueue(&a, TYPED, Source::Operator, "late".into())
             .unwrap();
         assert_eq!(port.0.load(Ordering::SeqCst), 2);
+    }
+
+    struct Closing(AtomicUsize);
+    impl DeliveryPort for Closing {
+        fn wake(&self) {}
+        fn closed(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// **A port is told when it will never be woken again** — its node closed, or a reopen of the
+    /// same id replaced its inbox — so a driver holding a thread for it can let it go. A port for
+    /// a node with no inbox is refused, and told nothing: it was never attached.
+    #[test]
+    fn a_port_is_told_when_its_inbox_closes_or_is_replaced() {
+        let (inboxes, _) = recording();
+        let a = id("a");
+        let orphan = Arc::new(Closing(AtomicUsize::new(0)));
+        assert!(
+            !inboxes.attach_port(&a, orphan.clone()),
+            "no inbox, no attach"
+        );
+        inboxes.open(&a);
+        let first = Arc::new(Closing(AtomicUsize::new(0)));
+        assert!(inboxes.attach_port(&a, first.clone()));
+        inboxes.open(&a);
+        assert_eq!(first.0.load(Ordering::SeqCst), 1, "a reopen replaced it");
+        let second = Arc::new(Closing(AtomicUsize::new(0)));
+        assert!(inboxes.attach_port(&a, second.clone()));
+        inboxes.close(&a, "ended");
+        inboxes.close(&a, "ended again");
+        assert_eq!(second.0.load(Ordering::SeqCst), 1, "closed once");
+        assert_eq!(orphan.0.load(Ordering::SeqCst), 0);
     }
 
     /// A reopened node (a resume under the same id) starts unsealed and empty.

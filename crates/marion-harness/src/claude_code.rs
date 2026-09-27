@@ -18,14 +18,20 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
+    Val, When,
 };
 use crate::surfaces::TypedKind;
 
 /// The `--mcp-config` document's name under the node's own directory — one spelling for
 /// [`SPEC`]'s live declaration and `ClaudeCodeAdapter::config_files`.
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
+
+/// The `--settings` overlay every node marion launches carries: the operator's hooks off, their
+/// settings otherwise as they wrote them. Not on the native facade, where the operator drives
+/// their own claude.
+pub const HOOKS_OFF_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 
 /// [`mcp_config_json`] as the bytes `--mcp-config` reads: the live declaration's body.
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
@@ -70,6 +76,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // `--setting-sources=user`. A live node runs on the operator's settings as they wrote them.
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
+        // None of the operator's hooks, user or plugin, run in a node marion launches: a blocking
+        // `Stop` hook (a review gate) would hold or loop a node no one is watching. `--settings`
+        // merges this one key over their layers, so the credential keys the line above keeps
+        // (`apiKeyHelper`, the `env` block) still apply — measured on 2.1.283 (MILESTONES,
+        // verified harness facts). Both modes: redundant under canned, where the exclusion above
+        // already keeps hooks out. Hook callbacks marion registers in `initialize` still fire.
+        Arg::Lit("--settings"),
+        Arg::Lit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
     ],
@@ -83,6 +97,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
+        Arg::Lit("--settings"),
+        Arg::Lit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
         Arg::PosIfNonEmpty(Field::Prompt),
@@ -163,6 +179,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the headless row above carries no flag. The name is what 2.1.268 sends in `initialize`'s
     // `clientInfo.name`.
     push: Push::ClaudeChannel,
+    // `--allowedTools` is the list 2.1.220 checks a call against; marion's verbs are on it, and a
+    // call to anything off it asks over `--permission-prompt-tool stdio` (S9).
+    approval: Approval::AllowedToolsArg {
+        flag: "--allowedTools",
+        note: "S9 on 2.1.220: an allowlisted marion verb runs, an unlisted tool asks over \
+               can_use_tool; s14 for --allowedTools as the permission axis",
+    },
     client_name: Some("claude-code"),
     delivery: Deliveries {
         // S31 `p0a/b3`, `p0a/b`, `p0a/b2` (2.1.280, repeated on 2.1.276).
@@ -253,6 +276,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+        resumes_in_place: false,
     }),
     // Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
     // S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while
@@ -440,6 +464,8 @@ mod tests {
         );
     }
 
+    /// The hooks-off overlay is the one token with a `"` in it, and its quotes are JSON syntax
+    /// that claude parses, not shell quoting around a value.
     #[test]
     fn nothing_is_shell_quoted_because_nothing_reaches_a_shell() {
         let inv = compile(&root());
@@ -447,6 +473,7 @@ mod tests {
         assert!(
             inv.args
                 .iter()
+                .filter(|a| *a != HOOKS_OFF_SETTINGS)
                 .all(|a| !a.contains('\'') && !a.contains('"'))
         );
     }

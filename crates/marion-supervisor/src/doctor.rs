@@ -62,6 +62,7 @@ use std::time::{Duration, Instant};
 use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_core::proto::{HarnessReport, ProbeMode};
+use marion_harness::spec::Approval;
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
     LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, adapter_for_type, static_caps,
@@ -225,11 +226,10 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
         }
     }
     Ok(Options {
-        // §8 names `--capabilities` first and calls the other the one that matters more. Neither is
-        // the default: they cost differently by orders of magnitude — one reads a version string,
-        // the other spawns an agent and spends a model call — so choosing for the operator is
-        // choosing how much their `doctor` costs.
-        mode: mode.ok_or("marion doctor needs a mode: --capabilities or --adapter")?,
+        // The two cost differently by orders of magnitude — one reads a version string, the
+        // other spawns an agent and spends a model call — so the default is the one that costs
+        // nothing, and a model call is only ever made when `--adapter` asks for it.
+        mode: mode.unwrap_or(ProbeMode::Capabilities),
         harness,
         model,
         acp_command,
@@ -283,6 +283,10 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         Err(e) => return vec![adapter_refused_row(h, opts, &e, started)],
     };
     let surfaces = adapter.surfaces();
+    notes.push(approval_note(
+        adapter.spec().approval,
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    ));
 
     let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
     let identity = identify(
@@ -324,6 +328,92 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             )
         })
         .collect()
+}
+
+/// **The row's approval grant, as doctor reports it** — one line per row, whatever the shape.
+///
+/// Where marion compiles the grant into the launch the line says so and names it. Where only the
+/// operator can grant it ([`Approval::OperatorAllowlist`]) the line is a read of the operator's
+/// own settings under `home` — never a write: marion does not edit an operator's profile, so a
+/// missing grant is reported with the exact line to add. A file that is absent, or holds no such
+/// entry, is `MISSING`; one doctor cannot read or parse, or no `HOME` at all, is "cannot tell",
+/// because guessing either way would be a finding about a file nobody read.
+fn approval_note(approval: Approval, home: Option<&Path>) -> String {
+    let kind = approval.kind();
+    match approval {
+        Approval::AllowedToolsArg { flag, .. } => {
+            format!("approval: {kind} — marion lists its tools on `{flag}` at every launch")
+        }
+        Approval::DeclarationKey { key, .. } => {
+            format!("approval: {kind} — marion's own server declaration carries `{key}`")
+        }
+        Approval::CliFlag { flag, scope, .. } => {
+            format!("approval: {kind} — marion passes `{flag}`, which approves {scope}")
+        }
+        Approval::EnvVar {
+            key, value, scope, ..
+        } => format!("approval: {kind} — marion sets `{key}={value}`, which approves {scope}"),
+        Approval::SessionMode { category, .. } => format!(
+            "approval: {kind} — marion's client answers the protocol's permission requests; an \
+             agent type's `approval_mode` sets the session's `{category}` select"
+        ),
+        Approval::None { .. } => {
+            format!("approval: {kind} — the harness asks nothing for an MCP tool")
+        }
+        Approval::OperatorAllowlist {
+            file,
+            pointer,
+            rule,
+            ..
+        } => operator_grant(kind, home, file, pointer, rule),
+    }
+}
+
+/// [`Approval::OperatorAllowlist`]'s line: whether `rule` is in the array at `pointer` of
+/// `<home>/<file>`, read and never written.
+fn operator_grant(
+    kind: &str,
+    home: Option<&Path>,
+    file: &str,
+    pointer: &str,
+    rule: &str,
+) -> String {
+    let (parent, leaf) = pointer.rsplit_once('/').unwrap_or(("", pointer));
+    let key = parent.trim_start_matches('/');
+    let line = format!(r#""{key}": {{"{leaf}": ["{rule}"]}}"#);
+    let missing = || {
+        format!(
+            "approval: {kind} — MISSING: headless runs are denied marion's tools until the \
+             operator adds {line} to ~/{file} (marion never edits it)"
+        )
+    };
+    let Some(home) = home else {
+        return format!("approval: {kind} — cannot tell: no HOME to find ~/{file} under");
+    };
+    let path = home.join(file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return missing(),
+        Err(e) => return format!("approval: {kind} — cannot tell: {}: {e}", path.display()),
+    };
+    let doc: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            return format!(
+                "approval: {kind} — cannot tell: {} is not JSON: {e}",
+                path.display()
+            );
+        }
+    };
+    let granted = doc
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|rules| rules.iter().any(|r| r.as_str() == Some(rule)));
+    if granted {
+        format!("approval: {kind} — granted: `{rule}` is in ~/{file}")
+    } else {
+        missing()
+    }
 }
 
 /// The one row a harness gets when no adapter could be bound to it at all.
@@ -420,7 +510,7 @@ fn identify(
     };
     let version = match agent {
         Some(_) => handshake.as_ref().map(AgentHandshake::key),
-        None => resolved.and_then(|p| read_version(p, notes)),
+        None => resolved.and_then(|p| read_version(p, adapter.harness(), notes)),
     };
     Identity { handshake, version }
 }
@@ -1402,14 +1492,25 @@ fn wait_bounded(
 }
 
 /// `<program> --version`, and the version token out of it.
-fn read_version(program: &Path, notes: &mut Vec<String>) -> Option<String> {
-    let started = Instant::now();
+/// `<program> --version`, carrying the harness row's no-self-update variable. Without it copilot
+/// 1.0.83 downloads a newer build and answers with *that* version, which is neither the build
+/// marion's nodes run (they carry the variable) nor one it should have fetched.
+fn version_command(program: &Path, harness: Harness) -> Command {
     let mut command = Command::new(program);
     command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some((key, value)) = marion_harness::adapter::harness_spec(harness).updates.env() {
+        command.env(key, value);
+    }
+    command
+}
+
+fn read_version(program: &Path, harness: Harness, notes: &mut Vec<String>) -> Option<String> {
+    let started = Instant::now();
+    let mut command = version_command(program, harness);
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)
         .map_err(|e| notes.push(format!("version: FAILED — {e}")))
@@ -1591,7 +1692,139 @@ fn probe_ctx() -> SpawnCtx {
 }
 
 /// The report an operator reads.
-pub fn render(rows: &[Row]) -> String {
+/// The newest version of each harness marion's own suite was last verified against:
+/// `(harness, program, version)`. **Not a second table** — it is the newest entry of
+/// `marion_testsupport::PINNED_HARNESSES` per program, which the shipped binary cannot link, and
+/// `tests::the_verified_versions_are_the_newest_the_pin_table_admits` fails the day the two
+/// disagree. Read only to *note* a newer installed version; it never blocks a run.
+const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
+    (Harness::ClaudeCode, "claude", "2.1.283"),
+    (Harness::Codex, "codex", "0.155.1"),
+    (Harness::Gemini, "gemini", "0.53.0"),
+    (Harness::OpenCode, "opencode", "1.18.32"),
+    (Harness::Copilot, "copilot", "1.0.83"),
+    (Harness::Goose, "goose", "1.52.0"),
+    (Harness::Cline, "cline", "3.0.61"),
+    (Harness::Qwen, "qwen", "0.23.0"),
+    (Harness::Antigravity, "agy", "1.2.8"),
+];
+
+/// The newest version marion verified `h` against, if it keeps one (an ACP agent's version is the
+/// agent's, and has no entry).
+fn last_verified(h: Harness) -> Option<&'static str> {
+    VERIFIED_HARNESSES
+        .iter()
+        .find(|(v, _, _)| *v == h)
+        .map(|(_, _, version)| *version)
+}
+
+/// Dotted versions, compared numerically part by part (`1.18.30` > `1.18.4`); a non-numeric part
+/// compares as zero.
+fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a).cmp(&parts(b))
+}
+
+/// The closing verdict: one `ready:` line per harness (its node row; a pane row is the same
+/// binary) and one overall. A harness is ready when its binary answered with a version and, under
+/// `--adapter`, its micro-contract passed. A version newer than [`VERIFIED_HARNESSES`] is noted
+/// and stays ready: harnesses update themselves, and marion keeps running on them.
+///
+/// It opens with the machine's own checks (`crate::preflight`); any failed check makes the overall
+/// verdict no.
+pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
+    let node_rows: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.role == SurfaceRole::Node)
+        .collect();
+    let mut s = String::from("summary\n");
+    for c in environment {
+        s.push_str(&c.line());
+    }
+    let failed = environment
+        .iter()
+        .filter(|c| c.level == crate::preflight::Level::Fail)
+        .count();
+    let mut ready = 0;
+    for r in &node_rows {
+        let label = row_label(r);
+        let version = r.report.harness_version.as_deref();
+        let head = match version {
+            Some(v) => format!("{label} {v}"),
+            None => label,
+        };
+        let why_not = match (version, r.report.adapter_check) {
+            (_, Some(false)) => Some("adapter check failed".to_string()),
+            (None, _) => Some(
+                r.report
+                    .notes
+                    .iter()
+                    .find(|n| {
+                        n.contains("not found")
+                            || n.contains("FAILED")
+                            || n.starts_with("adapter:")
+                            || n.contains("refused")
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| "its version could not be read".into()),
+            ),
+            (Some(_), _) => None,
+        };
+        match why_not {
+            Some(why) => s.push_str(&format!("  {head}: ready: no — {why}\n")),
+            None => {
+                ready += 1;
+                s.push_str(&format!("  {head}: ready: yes"));
+                let newer = version
+                    .zip(last_verified(r.report.harness))
+                    .filter(|(v, known)| cmp_versions(v, known).is_gt());
+                if let Some((_, known)) = newer {
+                    s.push_str(&format!(
+                        " — unmeasured: newer than the last version marion verified ({known}); \
+                         it should work, and anything that does not is worth reporting"
+                    ));
+                }
+                s.push('\n');
+            }
+        }
+    }
+    if node_rows.iter().all(|r| r.report.adapter_check.is_none()) {
+        // `--capabilities` ran no turn: "ready" here is "installed and answering".
+        s.push_str("  (ready = installed and answering; --adapter also runs one live turn each)\n");
+    }
+    let failed_note = match failed {
+        0 => String::new(),
+        1 => ", 1 check failed".to_string(),
+        n => format!(", {n} checks failed"),
+    };
+    s.push_str(&format!(
+        "overall: ready: {} ({ready} of {} ready{failed_note})\n",
+        if ready > 0 && failed == 0 {
+            "yes"
+        } else {
+            "no"
+        },
+        node_rows.len()
+    ));
+    s
+}
+
+/// A row's harness, and for an ACP row the agent it probed (`acp agent: \`<id>\` …`).
+fn row_label(r: &Row) -> String {
+    let agent = r
+        .report
+        .notes
+        .iter()
+        .find_map(|n| n.strip_prefix("acp agent: `"))
+        .and_then(|rest| rest.split('`').next());
+    match agent {
+        Some(a) => format!("{} {a}", r.report.harness),
+        None => r.report.harness.to_string(),
+    }
+}
+
+/// The whole report: every row, then [`verdict`] with the machine's checks at its head.
+pub fn render(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
     let mut s = String::new();
     for r in rows {
         // The whole key on the header line, `role` included. A reader who takes one line out of
@@ -1619,6 +1852,7 @@ pub fn render(rows: &[Row]) -> String {
             r.report.elapsed.0.as_millis()
         ));
     }
+    s.push_str(&verdict(rows, environment));
     s
 }
 
@@ -1626,6 +1860,68 @@ pub fn render(rows: &[Row]) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// **Every row's approval grant is reported, and a grant only the operator can give is read
+    /// from their own settings and never written.** The file is a scratch one handed in as
+    /// `home`: nothing here reads the real operator profile, and no harness runs.
+    #[test]
+    fn every_row_reports_its_approval_grant_and_a_missing_operator_grant_names_the_line() {
+        for h in Harness::ALL {
+            let row = marion_harness::adapter::harness_spec(h);
+            let note = approval_note(row.approval, None);
+            assert!(
+                note.starts_with(&format!("approval: {}", row.approval.kind())),
+                "{h}: {note}"
+            );
+        }
+
+        let grant = Approval::OperatorAllowlist {
+            file: ".tool/settings.json",
+            pointer: "/permissions/allow",
+            rule: "mcp(marion/*)",
+            note: "a scratch row",
+        };
+        let home = marion_testsupport::scratch("doctor-approval");
+        let line = r#""permissions": {"allow": ["mcp(marion/*)"]}"#;
+        let settings = home.join(".tool/settings.json");
+
+        let absent = approval_note(grant, Some(&*home));
+        assert!(
+            absent.contains("MISSING") && absent.contains(line) && absent.contains("~/.tool"),
+            "no file is a missing grant, and the note names the line: {absent}"
+        );
+        assert!(
+            !settings.exists(),
+            "doctor writes nothing into the operator's profile"
+        );
+
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"trustedWorkspaces":["/w"],"permissions":{"allow":["command(ls)"]}}"#,
+        )
+        .unwrap();
+        let other = approval_note(grant, Some(&*home));
+        assert!(other.contains("MISSING") && other.contains(line), "{other}");
+
+        std::fs::write(
+            &settings,
+            r#"{"permissions":{"allow":["command(ls)","mcp(marion/*)"]}}"#,
+        )
+        .unwrap();
+        let granted = approval_note(grant, Some(&*home));
+        assert!(
+            granted.contains("granted") && !granted.contains("MISSING"),
+            "{granted}"
+        );
+
+        std::fs::write(&settings, "not json").unwrap();
+        let unreadable = approval_note(grant, Some(&*home));
+        assert!(unreadable.contains("cannot tell"), "{unreadable}");
+
+        let no_home = approval_note(grant, None);
+        assert!(no_home.contains("cannot tell"), "{no_home}");
+    }
 
     /// **A live turn that could not authenticate says so, in the harness's own words.** Measured:
     /// gemini on a personal login writes nothing to stdout, exits 55, and puts the whole diagnosis
@@ -1668,8 +1964,11 @@ mod tests {
         assert!(auth < shape, "the cause comes first: {notes:#?}");
     }
 
+    /// Both modes parse, and with neither `doctor` runs the free one: `--capabilities` reads
+    /// version strings and spends nothing, while `--adapter` spends a model call and is only ever
+    /// asked for.
     #[test]
-    fn a_mode_is_required_and_both_of_section_8s_modes_parse() {
+    fn both_modes_parse_and_the_free_one_is_the_default() {
         assert_eq!(
             parse_args(&["--capabilities".into()]).unwrap().mode,
             ProbeMode::Capabilities
@@ -1678,8 +1977,13 @@ mod tests {
             parse_args(&["--adapter".into()]).unwrap().mode,
             ProbeMode::Adapter
         );
-        // Neither is the default: the two differ by orders of magnitude in cost.
-        assert!(parse_args(&[]).unwrap_err().contains("needs a mode"));
+        assert_eq!(parse_args(&[]).unwrap().mode, ProbeMode::Capabilities);
+        assert_eq!(
+            parse_args(&["--harness".into(), "codex".into()])
+                .unwrap()
+                .mode,
+            ProbeMode::Capabilities
+        );
     }
 
     #[test]
@@ -1746,6 +2050,170 @@ mod tests {
         }
     }
 
+    fn row(h: Harness, version: Option<&str>, notes: &[&str], check: Option<bool>) -> Row {
+        Row {
+            report: HarnessReport {
+                harness: h,
+                harness_version: version.map(str::to_string),
+                adapter_check: check,
+                notes: notes.iter().map(|n| n.to_string()).collect(),
+                elapsed: Millis(Duration::ZERO),
+            },
+            role: SurfaceRole::Node,
+            surfaces: ExecutionSurfaces::opaque(),
+            capabilities: Capabilities::NONE,
+        }
+    }
+
+    /// **Doctor ends with a verdict**: one `ready:` line per harness and one overall, so an
+    /// operator does not have to read 150 lines to learn whether anything will run.
+    #[test]
+    fn the_report_ends_with_a_ready_line_per_harness_and_an_overall_verdict() {
+        let rows = [
+            row(
+                Harness::Codex,
+                Some("0.147.0"),
+                &["binary: codex (/bin/codex)"],
+                None,
+            ),
+            row(
+                Harness::Gemini,
+                None,
+                &["binary: `gemini` not found on $PATH"],
+                None,
+            ),
+        ];
+        let v = verdict(&rows, &[]);
+        assert!(v.contains("codex 0.147.0: ready: yes"), "{v}");
+        assert!(
+            v.contains("gemini: ready: no — binary: `gemini` not found on $PATH"),
+            "{v}"
+        );
+        assert!(
+            v.trim_end().ends_with("overall: ready: yes (1 of 2 ready)"),
+            "{v}"
+        );
+        assert!(
+            render(&rows, &[]).ends_with(&v),
+            "render ends with the verdict"
+        );
+
+        let none = verdict(&rows[1..], &[]);
+        assert!(
+            none.trim_end()
+                .ends_with("overall: ready: no (0 of 1 ready)"),
+            "{none}"
+        );
+        // Under --adapter a failed micro-contract is not ready, whatever the version.
+        let failed = verdict(
+            &[row(Harness::Codex, Some("0.147.0"), &[], Some(false))],
+            &[],
+        );
+        assert!(
+            failed.contains("ready: no — adapter check failed"),
+            "{failed}"
+        );
+    }
+
+    /// **A version newer than the last one marion verified is noted, never blocking**: the user's
+    /// harness updates on its own, and marion must keep working on it.
+    #[test]
+    fn a_harness_newer_than_the_last_verified_version_is_ready_with_a_note() {
+        let newest = last_verified(Harness::Codex).expect("codex has a verified version");
+        let v = verdict(&[row(Harness::Codex, Some("99.0.0"), &[], None)], &[]);
+        assert!(v.contains("codex 99.0.0: ready: yes"), "{v}");
+        assert!(
+            v.contains(&format!(
+                "newer than the last version marion verified ({newest})"
+            )),
+            "{v}"
+        );
+        assert!(
+            v.contains("unmeasured"),
+            "a newer version is named unmeasured: {v}"
+        );
+        let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)], &[]);
+        assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **The version probe runs the build marion's nodes run.** Each row's no-self-update
+    /// variable rides the `--version` call too: copilot answers a bare `--version` by fetching and
+    /// running a newer build, so doctor both reported a version no node uses and triggered the
+    /// download.
+    #[test]
+    fn the_version_probe_carries_each_rows_no_self_update_variable() {
+        for h in Harness::ALL {
+            let command = version_command(Path::new("/bin/x"), h);
+            let got: Vec<(String, String)> = command
+                .get_envs()
+                .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+                .collect();
+            let want: Vec<(String, String)> = marion_harness::adapter::harness_spec(h)
+                .updates
+                .env()
+                .into_iter()
+                .collect();
+            assert_eq!(got, want, "{h}");
+        }
+        let copilot = version_command(Path::new("/bin/copilot"), Harness::Copilot);
+        assert!(
+            copilot
+                .get_envs()
+                .any(|(k, v)| k == "COPILOT_AUTO_UPDATE" && v == Some("false".as_ref())),
+            "the case that was measured"
+        );
+    }
+
+    /// **The summary opens with the machine's own checks**, and one failing check makes the
+    /// overall verdict no, however many harnesses answered.
+    #[test]
+    fn the_summary_opens_with_the_environment_checks_and_a_failure_fails_it() {
+        use crate::preflight::{Check, Level};
+        let rows = [row(Harness::Codex, Some("0.147.0"), &[], None)];
+        let ok = [Check {
+            level: Level::Ok,
+            text: "macOS".into(),
+        }];
+        let v = verdict(&rows, &ok);
+        assert!(v.starts_with("summary\n  ok: macOS\n  codex"), "{v}");
+        assert!(v.contains("overall: ready: yes"), "{v}");
+        let failed = [Check {
+            level: Level::Fail,
+            text: "state dir /s is not writable".into(),
+        }];
+        let v = verdict(&rows, &failed);
+        assert!(v.contains("  FAIL: state dir /s is not writable\n"), "{v}");
+        assert!(
+            v.trim_end()
+                .ends_with("overall: ready: no (1 of 1 ready, 1 check failed)"),
+            "{v}"
+        );
+    }
+
+    /// **The verified-versions table is the test suite's, not a second opinion.** Each entry must
+    /// be the newest version `marion_testsupport::PINNED_HARNESSES` admits for that program, so
+    /// `scripts/admit-harness.sh` widening the pin table without this one fails here.
+    #[test]
+    fn the_verified_versions_are_the_newest_the_pin_table_admits() {
+        for pinned in marion_testsupport::PINNED_HARNESSES {
+            let newest = pinned
+                .accepted
+                .iter()
+                .copied()
+                .max_by(|a, b| cmp_versions(a, b))
+                .unwrap();
+            let h = VERIFIED_HARNESSES
+                .iter()
+                .find(|(_, program, _)| *program == pinned.program)
+                .unwrap_or_else(|| panic!("{} is missing from VERIFIED_HARNESSES", pinned.program));
+            assert_eq!(h.2, newest, "{}", pinned.program);
+        }
+        assert_eq!(
+            VERIFIED_HARNESSES.len(),
+            marion_testsupport::PINNED_HARNESSES.len()
+        );
+    }
+
     fn caps_rows(harness: Option<Harness>) -> Vec<Row> {
         run(&Options {
             mode: ProbeMode::Capabilities,
@@ -1807,7 +2275,7 @@ mod tests {
             generic.report.harness_version.as_deref(),
             Some("fake-acp-agent 0.1.0"),
             "the row is keyed on the agent's own `initialize`: {}",
-            render(&rows)
+            render(&rows, &[])
         );
         assert_eq!(generic.surfaces, acp::surfaces());
 
@@ -1944,7 +2412,7 @@ mod tests {
         assert!(
             !answered.is_empty(),
             "no installed ACP agent answered `initialize`, so this proved nothing: {}",
-            render(&rows)
+            render(&rows, &[])
         );
         // The version on an ACP row is the **agent's** identity, not a binary's `--version`: that
         // is the middle third of §3.3's key arriving from the handshake.
@@ -1969,7 +2437,7 @@ mod tests {
                 a.capabilities.granted().contains(f) != b.capabilities.granted().contains(f)
             })
             .collect();
-        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows));
+        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows, &[]));
         assert!(
             a.capabilities.fork && a.capabilities.resume,
             "`opencode acp` advertises sessionCapabilities {{close, fork, list, resume}}, and it \
@@ -2026,7 +2494,7 @@ mod tests {
         );
 
         // And the operator reads the difference rather than inferring it.
-        let out = render(&rows);
+        let out = render(&rows, &[]);
         assert!(out.contains("[node]") && out.contains("[pane]"), "{out}");
     }
 
@@ -2125,7 +2593,7 @@ mod tests {
         // And the report's side: the row prints the words rather than an empty column.
         let mut row = caps_rows(Some(Harness::Codex)).remove(0);
         row.report.harness_version = None;
-        let out = render(&[row]);
+        let out = render(&[row], &[]);
         assert!(
             out.contains("version undetermined"),
             "an unread version must be named in the header, not left blank: {out}"
@@ -2207,7 +2675,7 @@ mod tests {
     #[test]
     fn every_row_names_the_surfaces_its_capability_answer_is_keyed_on() {
         let rows = caps_rows(None);
-        let out = render(&rows);
+        let out = render(&rows, &[]);
         for r in &rows {
             let stage_one = static_caps(
                 r.report.harness,

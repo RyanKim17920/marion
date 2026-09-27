@@ -135,7 +135,7 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             "Delegate the task to a child.",
             "--repo",
@@ -146,7 +146,7 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
             "--base-url",
             // Nothing dials it: the stub makes no model call. It is here because --base-url is
             // what keeps a real credential out of this run.
-            "http://127.0.0.1:9/v1",
+            &marion_testsupport::silent_canned_endpoint(),
             "--timeout",
             "30",
         ])
@@ -293,7 +293,7 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
          operator redirects into a file\nstdout:\n{stdout}"
     );
     assert!(
-        stderr.contains("body not kept (§5.2)"),
+        stderr.contains("body not kept]"),
         "a withheld frame must be *said*, or a shortened stream is indistinguishable from a quiet \
          one\nstderr:\n{stderr}"
     );
@@ -364,7 +364,7 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             "Delegate the task to a child.",
             "--repo",
@@ -373,7 +373,7 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
             &state.to_string_lossy(),
             "--canned",
             "--base-url",
-            "http://127.0.0.1:9/v1",
+            &marion_testsupport::silent_canned_endpoint(),
             "--timeout",
             "30",
         ])

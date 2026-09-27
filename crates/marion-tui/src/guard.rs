@@ -52,7 +52,6 @@ unsafe extern "C" {
         termios_p: *const Termios,
     ) -> std::ffi::c_int;
     fn cfmakeraw(termios_p: *mut Termios);
-    fn isatty(fd: std::ffi::c_int) -> std::ffi::c_int;
     fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
     fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
     fn poll(fds: *mut PollFd, nfds: NfdsT, timeout_ms: std::ffi::c_int) -> std::ffi::c_int;
@@ -185,12 +184,6 @@ fn set_termios(fd: RawFd, t: &Termios) -> bool {
     // SAFETY: `t` is a blob this process obtained from `tcgetattr` on some descriptor, so it is a
     // valid `struct termios` prefix; `tcsetattr` reads and does not write through the pointer.
     unsafe { tcsetattr(fd, TCSAFLUSH, t) == 0 }
-}
-
-/// Is this descriptor a terminal?
-pub fn is_tty(fd: RawFd) -> bool {
-    // SAFETY: a pure query on an integer descriptor.
-    unsafe { isatty(fd) == 1 }
 }
 
 /// Raw mode on one descriptor, and the settings to put back.
@@ -801,7 +794,6 @@ mod tests {
     #[test]
     fn raw_mode_changes_a_real_terminal_and_puts_back_exactly_what_it_found() {
         let tty = Tty::open();
-        assert!(is_tty(tty.fd()), "a pty slave is a terminal");
         let before = get_termios(tty.fd()).expect("tcgetattr on a pty slave");
 
         let raw = RawMode::enable(tty.fd()).expect("raw mode on a pty slave");
@@ -856,7 +848,6 @@ mod tests {
     fn a_descriptor_that_is_not_a_terminal_is_not_an_error() {
         // `marion attach < /dev/null` has nothing to put into raw mode and must still render.
         assert!(RawMode::enable(-1).is_none());
-        assert!(!is_tty(-1));
         assert!(get_termios(-1).is_none());
     }
 

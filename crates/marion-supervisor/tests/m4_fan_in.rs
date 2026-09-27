@@ -377,7 +377,8 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         .filter(|i| i["parent_id"].as_str() == Some(root_id.as_str()))
         .map(|i| {
             assert_eq!(i["harness"], json!("claude-code"), "{i}");
-            assert_eq!(i["agent_type"], json!("claude-impl"), "{i}");
+            // The journal records the canonical name; `claude-impl` is its alias.
+            assert_eq!(i["agent_type"], json!("claude"), "{i}");
             assert_eq!(i["depth"], json!(1), "{i}");
             (
                 i["agent_id"].as_str().unwrap().to_string(),

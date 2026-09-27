@@ -18,6 +18,7 @@ use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::harness::Harness;
 
 use crate::acp;
+use crate::antigravity;
 pub use crate::auth::Auth;
 use crate::claude_code;
 use crate::cline;
@@ -534,6 +535,13 @@ pub trait HarnessAdapter {
         spec::delivery_for(self.spec(), shape)
     }
 
+    /// Why a run that resumed session `resumed` did not continue it — the row's
+    /// [`grammar::resume_refusal`], where its stream grammar measured a resume naming its own
+    /// session. `None` for a fresh run, and on every row where no such check was measured.
+    fn resume_refusal(&self, stdout: &str, resumed: Option<&str>) -> Option<String> {
+        grammar::resume_refusal(self.spec().stream?, stdout, resumed?)
+    }
+
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
     ///
@@ -794,6 +802,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Goose => &goose::SPEC,
         Harness::Cline => &cline::SPEC,
         Harness::Qwen => &qwen::SPEC,
+        Harness::Antigravity => &antigravity::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1112,7 +1121,14 @@ pub struct OpenCodeAdapter;
 impl OpenCodeAdapter {
     /// The `provider/model` pair, which both argv and the generated config name. Parsed once so
     /// they cannot disagree.
-    fn model_ref(spec: &LaunchSpec) -> Result<opencode::ModelRef, HarnessError> {
+    ///
+    /// `Ok(None)` only on a live node with no model: opencode then uses the operator's own default
+    /// model, as it uses their login. A canned node always needs one, because the provider block
+    /// marion generates names it.
+    fn model_ref(spec: &LaunchSpec) -> Result<Option<opencode::ModelRef>, HarnessError> {
+        if spec.model.is_none() && spec.auth == Auth::Inherited {
+            return Ok(None);
+        }
         let m = spec.model.as_deref().ok_or(HarnessError::MissingInput {
             harness: Harness::OpenCode,
             what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
@@ -1127,17 +1143,18 @@ impl OpenCodeAdapter {
         if spec.auth == Auth::Inherited && m == marion_core::agent_type::OPENCODE_DEFAULT_MODEL {
             return Err(HarnessError::MissingInput {
                 harness: Harness::OpenCode,
-                what: "the built-in default model `marion/default` names the provider block marion \
-                       generates for its own canned endpoint, and a --live node writes none — so \
-                       it resolves to no provider at all. Name a real provider/model from the \
-                       operator's own opencode config instead (marion run --live -m …)",
+                what: "the model `marion/default` is marion's canned test provider, which a run on \
+                       your own login does not use. Pass a provider/model from your opencode \
+                       config (-m provider/model), or pass none to use opencode's own default",
             });
         }
-        opencode::ModelRef::parse(m).ok_or(HarnessError::MissingInput {
-            harness: Harness::OpenCode,
-            what: "the model must be in `provider/model` form, which is the only spelling `-m` \
-                   accepts and the one the generated provider block has to repeat",
-        })
+        opencode::ModelRef::parse(m)
+            .map(Some)
+            .ok_or(HarnessError::MissingInput {
+                harness: Harness::OpenCode,
+                what: "the model must be in `provider/model` form, which is the only spelling `-m` \
+                       accepts and the one the generated provider block has to repeat",
+            })
     }
 }
 
@@ -1165,7 +1182,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         // the row reads the result — see `Self::tool_name` for why a declaration here compiles
         // nothing.
         let mut f = neutral_fields(spec, self.axes(spec)?);
-        f.model = Some(Self::model_ref(spec)?.qualified());
+        f.model = Self::model_ref(spec)?.map(|m| m.qualified());
         // Any stable string suppresses the title-generation call; the node's own id makes the
         // session identifiable in `opencode session list` without leaking the prompt.
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
@@ -1197,7 +1214,12 @@ impl HarnessAdapter for OpenCodeAdapter {
         let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
         let json = opencode::config_json(
             &opencode::ConfigSpec {
-                model: Self::model_ref(spec)?,
+                // Canned always resolves one: `model_ref` answers `None` only under `Inherited`,
+                // which returned above.
+                model: Self::model_ref(spec)?.ok_or(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "a canned node needs a provider/model for the generated provider block",
+                })?,
                 base_url: base_url.to_string(),
                 api_key: spec.api_key.clone(),
             },
@@ -1318,9 +1340,9 @@ impl HarnessAdapter for CopilotAdapter {
                 if spec.model.as_deref() == Some(agent_type::COPILOT_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Copilot,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real Copilot model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real Copilot model \
+                               (-m <model>), or none to use Copilot's own default",
                     });
                 }
             }
@@ -1412,9 +1434,9 @@ impl HarnessAdapter for GooseAdapter {
                 if spec.model.as_deref() == Some(agent_type::GOOSE_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Goose,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
                     });
                 }
             }
@@ -1511,9 +1533,9 @@ impl HarnessAdapter for ClineAdapter {
                 if spec.model.as_deref() == Some(agent_type::CLINE_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Cline,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …), or none to use providers.json's own",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use providers.json's own",
                     });
                 }
             }
@@ -1618,9 +1640,9 @@ impl HarnessAdapter for QwenAdapter {
                 if spec.model.as_deref() == Some(agent_type::QWEN_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
                         harness: Harness::Qwen,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …)",
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
                     });
                 }
             }
@@ -1650,6 +1672,76 @@ impl HarnessAdapter for QwenAdapter {
             qwen::settings_path(&spec.config_dir),
             serde_json::to_string_pretty(&qwen::settings_json(bridge.as_ref()))
                 .expect("a Value always serialises"),
+        )])
+    }
+}
+
+/// agy 1.2.8, headless `-p` (fixture `tests/fixtures/s32/`). See [`antigravity`]'s module docs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AntigravityAdapter;
+
+impl HarnessAdapter for AntigravityAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Antigravity
+    }
+
+    /// A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
+    /// and agy's default otherwise — under which a headless edit is auto-denied (s32).
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| antigravity::is_edit_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| antigravity::ACCEPT_EDITS_MODE.to_string()),
+        })
+    }
+
+    /// The refusal this harness owes, the root, and the working-directory preamble.
+    ///
+    /// **Canned is refused by name.** agy has no measured way to point it at marion's canned
+    /// provider (an API-key route would need the operator's profile relocated, which loses the
+    /// keychain login), so a "canned" node would spend the operator's real quota under a mode
+    /// that promises it spends nothing.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if spec.auth == Auth::Canned {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Antigravity,
+                what: "agy has no canned provider route: it runs only on the operator's own \
+                       login, so launch it live (marion run --live)",
+            });
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        if spec.mcp == McpDeclaration::Marion {
+            let root = antigravity::root_dir(&spec.config_dir);
+            f.prompt = format!(
+                "{}{}",
+                antigravity::working_directory_preamble(&spec.cwd, &root),
+                f.prompt
+            );
+            f.mcp_config = Some(root.to_string_lossy().into_owned());
+        }
+        Ok(f)
+    }
+
+    /// The root's one document, where a declaration was asked for — the row's live declaration,
+    /// byte for byte.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.mcp == McpDeclaration::None {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(
+            antigravity::root_dir(&spec.config_dir).join(antigravity::MCP_CONFIG_FILE),
+            antigravity::mcp_config_document(&bridge_env(spec, ctx)),
         )])
     }
 }
@@ -1862,8 +1954,8 @@ impl HarnessAdapter for AcpAdapter {
                     harness: Harness::Acp,
                     what: "ACP names no provider, base URL or credential at any point in its \
                            handshake, and marion has never measured a way to point this \
-                           particular agent at one. Run it against the operator's own login \
-                           (`--live`), or pick an agent whose canned recipe is measured",
+                           particular agent at one. Run it without --canned, on your own login, \
+                           or pick an agent whose canned recipe is measured",
                 });
             }
         };
@@ -2099,6 +2191,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Goose => Ok(Box::new(GooseAdapter)),
         Harness::Cline => Ok(Box::new(ClineAdapter)),
         Harness::Qwen => Ok(Box::new(QwenAdapter)),
+        Harness::Antigravity => Ok(Box::new(AntigravityAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -2417,6 +2510,17 @@ mod tests {
         }
     }
 
+    /// agy runs only live: there is no canned route (the adapter refuses one by name).
+    fn agy_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: Some(agent_type::AGY_DEFAULT_MODEL.into()),
+            ..codex_spec()
+        }
+    }
+
     /// The two things an ACP launch needs that no other harness does: an agent named by the
     /// operator, and the operator's own login — see `AcpAdapter::compile`, which refuses both by
     /// name rather than defaulting either.
@@ -2550,6 +2654,8 @@ mod tests {
                     "/state/x/config/mcp.json",
                     "--setting-sources",
                     "",
+                    "--settings",
+                    r#"{"disableAllHooks":true}"#,
                     "--model",
                     "haiku",
                 ],
@@ -3352,6 +3458,8 @@ mod tests {
                     "/state/x/config/mcp.json",
                     "--setting-sources",
                     "",
+                    "--settings",
+                    r#"{"disableAllHooks":true}"#,
                     "--model",
                     "haiku",
                 ]
@@ -3534,6 +3642,7 @@ mod tests {
             Harness::Goose => goose_spec(),
             Harness::Cline => cline_spec(),
             Harness::Qwen => qwen_spec(),
+            Harness::Antigravity => agy_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -3902,6 +4011,73 @@ mod tests {
                 .expect("canned keeps the operator's settings out");
             assert_eq!(inv.args[i + 1], "");
         }
+    }
+
+    /// **A claude node marion launches runs none of the operator's hooks, while still reading the
+    /// settings its login may live in.** Loading the operator's settings (the test above) also
+    /// loads their hooks and their plugins' hooks, and a `Stop` hook that blocks — a review gate —
+    /// would hold or loop a headless node no one is watching. `--settings '{"disableAllHooks":
+    /// true}'` merges one key over their layers: measured on 2.1.283 with a config dir whose
+    /// `settings.json` carried an `env` credential (and, separately, an `apiKeyHelper`) plus user
+    /// `SessionStart`/`UserPromptSubmit`/`Stop` hooks and an installed plugin's `SessionStart`/`Stop`
+    /// hooks, no hook fired and the request still reached the endpoint with the settings' key.
+    /// Control-protocol hook callbacks registered in `initialize` still fire under it.
+    ///
+    /// Every shape marion launches carries it, headless and pane, live and canned (where
+    /// `--setting-sources ""` already keeps the hooks out, so it is redundant, not different).
+    /// The native facade does not: there the operator drives their own claude, hooks and all.
+    #[test]
+    fn a_claude_node_marion_launches_runs_no_operator_hooks_but_the_native_facade_does() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..claude_spec()
+        };
+        for (shape, inv) in [
+            ("live headless", ClaudeCodeAdapter.compile(&live, &ctx())),
+            ("live pane", ClaudeCodeAdapter.compile_pane(&live, &ctx())),
+            (
+                "canned headless",
+                ClaudeCodeAdapter.compile(&claude_spec(), &ctx()),
+            ),
+            (
+                "canned pane",
+                ClaudeCodeAdapter.compile_pane(&claude_spec(), &ctx()),
+            ),
+        ] {
+            let args = inv.unwrap().args;
+            let i = args
+                .iter()
+                .position(|a| a == "--settings")
+                .unwrap_or_else(|| panic!("{shape}: no hooks-off overlay: {args:?}"));
+            let overlay: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+            assert_eq!(
+                overlay,
+                serde_json::json!({"disableAllHooks": true}),
+                "{shape}: the overlay turns hooks off and adds nothing else"
+            );
+        }
+
+        let native = native_adapter(Harness::ClaudeCode).unwrap();
+        let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
+        let injection = native
+            .prepare_native(&NativeNodeContext {
+                bridge: &bridge_env(&live, &ctx()),
+                document_dir: &PathBuf::from("/state/agents/019f-root"),
+                allowed_marion_tools: &["spawn", "wait", "status"],
+                environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+            })
+            .unwrap();
+        assert!(
+            !injection.argv_prefix.iter().any(|a| a == "--settings"),
+            "the operator's own claude keeps their hooks: {:?}",
+            injection.argv_prefix
+        );
     }
 
     /// **Canned mode is byte-identical to what it produced before the auth axis existed**, on all
@@ -4719,6 +4895,98 @@ mod tests {
         );
     }
 
+    /// **A live opencode node with no model runs on the operator's own default.** marion passes no
+    /// `-m` rather than refusing, because the operator's opencode config already names one and
+    /// marion inherits the login and the choice together.
+    #[test]
+    fn a_live_opencode_node_with_no_model_passes_no_model_flag() {
+        let live = LaunchSpec {
+            model: None,
+            ..opencode_live_spec()
+        };
+        let inv = OpenCodeAdapter
+            .compile(&live, &ctx())
+            .expect("no model is the operator's default, not an error");
+        assert!(!inv.args.iter().any(|a| a == "-m"), "{:?}", inv.args);
+        // Canned still needs one: the generated provider block names it.
+        assert!(
+            OpenCodeAdapter
+                .compile(
+                    &LaunchSpec {
+                        model: None,
+                        ..opencode_spec()
+                    },
+                    &ctx()
+                )
+                .is_err()
+        );
+    }
+
+    /// **The canned-default refusals speak to a person**: no spec sections, and no `--live` flag,
+    /// which no longer exists as a choice (real auth is the default).
+    #[test]
+    fn the_live_canned_default_refusals_name_no_spec_section_and_no_live_flag() {
+        let cases: Vec<(Box<dyn HarnessAdapter>, LaunchSpec)> = vec![
+            (
+                Box::new(OpenCodeAdapter),
+                LaunchSpec {
+                    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                    ..opencode_live_spec()
+                },
+            ),
+            (
+                Box::new(CopilotAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::COPILOT_DEFAULT_MODEL.into()),
+                    ..copilot_spec()
+                },
+            ),
+            (
+                Box::new(GooseAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::GOOSE_DEFAULT_MODEL.into()),
+                    ..goose_spec()
+                },
+            ),
+            (
+                Box::new(ClineAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::CLINE_DEFAULT_MODEL.into()),
+                    ..cline_spec()
+                },
+            ),
+            (
+                Box::new(QwenAdapter),
+                LaunchSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    api_key: None,
+                    model: Some(agent_type::QWEN_DEFAULT_MODEL.into()),
+                    ..qwen_spec()
+                },
+            ),
+        ];
+        for (adapter, spec) in cases {
+            let e = adapter.compile(&spec, &ctx()).unwrap_err().to_string();
+            assert!(!e.contains("--live"), "{}: {e}", adapter.harness());
+            assert!(!e.contains('§'), "{}: {e}", adapter.harness());
+            assert!(
+                e.contains("-m"),
+                "{}: it must say what to pass: {e}",
+                adapter.harness()
+            );
+        }
+    }
+
     /// **`marion/default` names marion's own generated plumbing, and a live node generates none.**
     /// It would resolve to no provider at all — S13 measured that as
     /// `Error: {"name":"UnknownError",…}`, exit 1 — so it is refused by name at compile time
@@ -5469,6 +5737,10 @@ mod tests {
                 // S27's `content_start`: the arguments arrive parsed under `event.input`.
                 Harness::Cline => format!(
                     r#"{{"type":"agent_event","event":{{"type":"content_start","contentType":"tool","toolName":"{tool}","toolCallId":"c1","input":{args}}}}}"#
+                ),
+                // s32: a `call_mcp_tool` step, the arguments under `parameters.Arguments`.
+                Harness::Antigravity => format!(
+                    r#"{{"event":"step_update","step_update":{{"step_index":3,"state":"DONE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{{"parameters":{{"ServerName":"marion","ToolName":"report","Arguments":{args}}},"output":"ok"}}}}}}"#
                 ),
                 // S25: Claude Code's `assistant` `tool_use`, frame for frame.
                 Harness::Qwen => format!(
@@ -6422,6 +6694,17 @@ mod tests {
                 "`{}`: got {e}",
                 agent.id
             );
+            let said = e.to_string();
+            assert!(
+                !said.contains("--live") && !said.contains('§'),
+                "`{}`: the refusal names no retired flag and no spec section: {said}",
+                agent.id
+            );
+            assert!(
+                said.contains("--canned"),
+                "`{}`: says what to drop: {said}",
+                agent.id
+            );
             // And live mode is not refused for the same agent, or this would be a refusal of the
             // agent rather than of the mode.
             let live = LaunchSpec {
@@ -7202,6 +7485,32 @@ mod tests {
         );
     }
 
+    /// [`LiveDeclaration::ArgvRoot`]: the same document under the same root, and the root named
+    /// on argv the way the live launch names it.
+    fn assert_argv_root(h: Harness, d: &Injected, m: &Managed, flag: &str, root: &str, file: &str) {
+        let dir = m.document_dir.join(root);
+        let path = dir.join(file);
+        let body = String::from_utf8(d.documents[0].contents.clone()).unwrap();
+        assert_eq!(
+            m.files,
+            vec![(path.clone(), body)],
+            "{h}: the native document is not the live launch's"
+        );
+        assert_eq!(d.documents.len(), 1, "{h}");
+        assert_eq!(d.documents[0].path, path, "{h}");
+        assert_eq!(
+            d.prefix,
+            vec![flag.to_string(), dir.display().to_string()],
+            "{h}"
+        );
+        assert!(d.overlay.iter().all(|(k, _)| k.starts_with("AGY_")), "{h}");
+        assert!(
+            m.inv.args.windows(2).any(|w| w == d.prefix.as_slice()),
+            "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+            m.inv.args
+        );
+    }
+
     /// [`LiveDeclaration::EnvDocument`]: the same file, byte for byte, named by the same variable.
     fn assert_env_document(h: Harness, d: &Injected, m: &Managed, key: &str, file: &str) {
         let path = m.document_dir.join(file);
@@ -7322,6 +7631,9 @@ mod tests {
             LiveDeclaration::EnvInline { key, .. } => assert_env_inline(h, d, m, key),
             LiveDeclaration::ArgvPairs { flag, key, .. } => assert_argv_pairs(h, d, m, flag, key),
             LiveDeclaration::ArgvInline { flag, key, .. } => assert_argv_inline(h, d, m, flag, key),
+            LiveDeclaration::ArgvRoot {
+                flag, root, file, ..
+            } => assert_argv_root(h, d, m, flag, root, file),
         }
     }
 
@@ -7546,6 +7858,13 @@ mod tests {
         "--data-dir",
     ];
 
+    /// The one value a live launch may pass a [`CONFIG_EXCLUDING_FLAGS`] switch, allowed
+    /// deliberately: claude's `--settings` *merges* over the operator's layers, and this overlay
+    /// adds only `disableAllHooks`. Turning hooks off hides no credential — measured on 2.1.283,
+    /// a settings `env` key and an `apiKeyHelper` both still reached the endpoint under it.
+    /// Spelled out rather than borrowed from the row, so widening the row's overlay fails here.
+    const HOOKS_ONLY_OVERLAY: (&str, &str) = ("--settings", r#"{"disableAllHooks":true}"#);
+
     /// Keys that select an auth route, a provider or a credential, in any declaration document or
     /// inline override marion writes.
     const AUTH_SELECTING_KEYS: &[&str] = &[
@@ -7573,8 +7892,13 @@ mod tests {
             );
         }
         for flag in CONFIG_EXCLUDING_FLAGS {
+            let excluding = |(i, a): (usize, &String)| {
+                a == flag
+                    && (*flag, args.get(i + 1).map(String::as_str))
+                        != (HOOKS_ONLY_OVERLAY.0, Some(HOOKS_ONLY_OVERLAY.1))
+            };
             assert!(
-                !args.iter().any(|a| a == flag),
+                !args.iter().enumerate().any(excluding),
                 "{who}: a live launch carries {flag}, which hides the operator's own \
                  configuration: {args:?}"
             );
@@ -7618,12 +7942,16 @@ mod tests {
         let ctx = ctx();
         for h in Harness::ALL {
             let row = harness_spec(h);
+            // A row with no canned route (agy) carries no endpoint of its own; it is handed the
+            // codex spec's, so every row is seen dropping one.
             let live = LaunchSpec {
                 auth: Auth::Inherited,
                 model: match h {
                     Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
                     _ => spec_for(h).model,
                 },
+                base_url: spec_for(h).base_url.or(codex_spec().base_url),
+                api_key: spec_for(h).api_key.or(codex_spec().api_key),
                 ..spec_for(h)
             };
             assert!(
@@ -7764,6 +8092,11 @@ mod tests {
         let a = launch_adapter(h).unwrap();
         let mut launches: Vec<Launch> = Vec::new();
         for auth in [Auth::Canned, Auth::Inherited] {
+            // agy has no canned route, and refuses one by name
+            // (`agy_refuses_a_canned_launch_by_name`): there is no canned launch to render.
+            if h == Harness::Antigravity && auth == Auth::Canned {
+                continue;
+            }
             let launch = LaunchSpec {
                 auth,
                 model: match h {
@@ -8069,6 +8402,8 @@ mod tests {
             (Harness::Goose, "none", "none"),
             (Harness::Cline, "none", "none"),
             (Harness::Qwen, "continuation", "none"),
+            // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
+            (Harness::Antigravity, "continuation", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(
@@ -8231,6 +8566,227 @@ mod tests {
         }
         let generic = AcpAdapter::bound(acp::Binding::resolve("my-agent --acp").unwrap());
         assert_eq!(mid(&generic), MidTurn::Queue);
+    }
+
+    /// agy's measured launch (s32): the prompt headed by the working directory, stream-json, the
+    /// model, the cwd **and** marion's root as workspaces, and `--mode accept-edits` only where a
+    /// write is declared; one document at `<config_dir>/agy-root/.agents/mcp_config.json`.
+    #[test]
+    fn the_agy_adapter_compiles_the_measured_invocation() {
+        let a = AntigravityAdapter;
+        let spec = LaunchSpec {
+            prompt: "do the task".into(),
+            ..agy_spec()
+        };
+        let inv = a.compile(&spec, &ctx()).unwrap();
+        let root = "/state/x/config/agy-root";
+        assert_eq!(inv.program, "agy");
+        assert_eq!(
+            inv.args,
+            vec![
+                "-p".to_string(),
+                format!(
+                    "Your working directory is /wt; every relative path below is relative to it. \
+                     {root} is marion's configuration directory, not a place for your work.\n\n\
+                     do the task"
+                ),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--model".into(),
+                agent_type::AGY_DEFAULT_MODEL.into(),
+                "--add-dir".into(),
+                "/wt".into(),
+                "--add-dir".into(),
+                root.into(),
+            ]
+        );
+        assert_eq!(
+            inv.env,
+            vec![("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into())]
+        );
+        let files = a.config_files(&spec, &ctx()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].0,
+            PathBuf::from(format!("{root}/.agents/mcp_config.json"))
+        );
+        assert!(
+            !files[0].1.contains("mcp(marion"),
+            "marion grants nothing itself"
+        );
+        assert_eq!(a.compiled_permissions(&spec).unwrap(), vec!["mode:default"]);
+
+        let writer = LaunchSpec {
+            tools: vec![agent_type::TOOL_READ.into(), agent_type::TOOL_WRITE.into()],
+            ..spec.clone()
+        };
+        let inv = a.compile(&writer, &ctx()).unwrap();
+        assert!(
+            inv.args
+                .windows(2)
+                .any(|w| w == ["--mode", antigravity::ACCEPT_EDITS_MODE]),
+            "a write is auto-denied headless without accept-edits: {:?}",
+            inv.args
+        );
+        assert_eq!(
+            a.compiled_permissions(&writer).unwrap(),
+            vec!["mode:accept-edits"]
+        );
+
+        let resumed = LaunchSpec {
+            resume: Some("66e0c65e".into()),
+            ..spec
+        };
+        let inv = a.compile(&resumed, &ctx()).unwrap();
+        assert_eq!(&inv.args[..2], ["--conversation", "66e0c65e"]);
+    }
+
+    /// A resume is checked only where the row measured one naming its own session, and never on a
+    /// fresh run: the same stream reads as a refusal only for the agy row asked to resume another id.
+    #[test]
+    fn only_a_row_that_measured_an_in_place_resume_checks_one() {
+        let fresh = r#"{"event":"init","conversation_id":"new-id","init":{}}"#;
+        let agy = AntigravityAdapter;
+        assert!(agy.resume_refusal(fresh, Some("old-id")).is_some());
+        assert_eq!(agy.resume_refusal(fresh, Some("new-id")), None);
+        assert_eq!(agy.resume_refusal(fresh, None), None);
+        for h in Harness::ALL {
+            let a = launch_adapter(h).unwrap();
+            let checks = a
+                .spec()
+                .stream
+                .and_then(|g| g.session.as_ref())
+                .is_some_and(|s| s.resumes_in_place);
+            assert_eq!(
+                checks,
+                h == Harness::Antigravity,
+                "{h}: measured on agy alone"
+            );
+        }
+    }
+
+    #[test]
+    fn agy_refuses_a_canned_launch_by_name() {
+        let canned = LaunchSpec {
+            auth: Auth::Canned,
+            ..agy_spec()
+        };
+        assert!(matches!(
+            AntigravityAdapter.compile(&canned, &ctx()),
+            Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
+                if what.contains("no canned provider route")
+        ));
+    }
+
+    /// **Every row states how a headless node is let call marion's tools, and the launch carries
+    /// exactly that grant.** A headless node has no operator to answer a prompt, and each harness
+    /// was measured denying, cancelling or classifier-declining an unapproved marion call at exit 0
+    /// — the silent success §6.1 step 8 exists to refuse. The grant is one of a few shapes
+    /// ([`spec::Approval`]): a per-tool allow list on argv, a key on marion's own server
+    /// declaration, a launch-wide switch whose reach the row states, a protocol answer, or the
+    /// operator's own allow list — which marion never writes, so the sweep checks the rule appears
+    /// in nothing a launch carries, and `marion doctor` reports whether the operator granted it.
+    #[test]
+    fn every_row_states_how_its_headless_node_is_approved_to_call_marions_tools() {
+        use crate::spec::{Approval, MCP_ALIAS};
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        for h in Harness::ALL {
+            let approval = harness_spec(h).approval;
+            assert!(
+                !approval.note().trim().is_empty(),
+                "{h}: an approval without the measurement behind it"
+            );
+            for (name, inv, files) in rendered_launches(h, &document_dir) {
+                if !name.ends_with("headless") {
+                    continue;
+                }
+                let in_documents = |needle: &str| files.iter().any(|(_, c)| c.contains(needle));
+                let on_argv = |needle: &str| inv.args.iter().any(|a| a.contains(needle));
+                let in_env = |needle: &str| inv.env.iter().any(|(_, v)| v.contains(needle));
+                match approval {
+                    Approval::AllowedToolsArg { flag, .. } => {
+                        let at = inv
+                            .args
+                            .iter()
+                            .position(|a| a == flag || a.starts_with(&format!("{flag}=")))
+                            .unwrap_or_else(|| panic!("{h} ({name}): no `{flag}`: {:?}", inv.args));
+                        let granted = if inv.args[at] == flag {
+                            inv.args.get(at + 1)
+                        } else {
+                            inv.args.get(at)
+                        };
+                        assert!(
+                            granted.is_some_and(|g| g.contains(MCP_ALIAS)),
+                            "{h} ({name}): `{flag}` must name marion's server: {:?}",
+                            inv.args
+                        );
+                    }
+                    Approval::DeclarationKey { key, .. } => assert!(
+                        in_documents(key) || on_argv(key) || in_env(key),
+                        "{h} ({name}): marion's declaration must carry `{key}`"
+                    ),
+                    Approval::CliFlag { flag, .. } => assert!(
+                        inv.args.iter().any(|a| a == flag),
+                        "{h} ({name}): no `{flag}`: {:?}",
+                        inv.args
+                    ),
+                    Approval::EnvVar { key, value, .. } => assert!(
+                        inv.env.iter().any(|(k, v)| k == key && v == value),
+                        "{h} ({name}): no `{key}={value}`: {:?}",
+                        inv.env
+                    ),
+                    Approval::SessionMode { category, .. } => {
+                        assert_eq!(h, Harness::Acp, "a session mode is a protocol's answer");
+                        assert_eq!(
+                            category,
+                            crate::acp::MODE_CATEGORY,
+                            "the select an approval_mode rides is the driver's own"
+                        );
+                    }
+                    Approval::OperatorAllowlist {
+                        file,
+                        pointer,
+                        rule,
+                        ..
+                    } => {
+                        assert!(
+                            !file.starts_with('/') && pointer.starts_with('/'),
+                            "{h}: the file is under the operator's HOME and the pointer is JSON"
+                        );
+                        assert!(
+                            rule.contains(MCP_ALIAS),
+                            "{h}: the rule must name marion's server"
+                        );
+                        assert!(
+                            !in_documents(rule) && !on_argv(rule) && !in_env(rule),
+                            "{h} ({name}): marion must never grant the operator's rule itself"
+                        );
+                    }
+                    Approval::None { .. } => {}
+                }
+            }
+        }
+        let kinds: Vec<(&str, &str)> = Harness::ALL
+            .iter()
+            .map(|h| (h.as_str(), harness_spec(*h).approval.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("claude-code", "allowed-tools-arg"),
+                ("codex", "declaration-key"),
+                ("gemini", "declaration-key"),
+                ("opencode", "none"),
+                ("copilot", "allowed-tools-arg"),
+                ("goose", "env-var"),
+                ("cline", "cli-flag"),
+                ("qwen", "cli-flag"),
+                ("agy", "operator-allowlist"),
+                ("acp", "session-mode"),
+            ],
+            "each row's measured grant, named one at a time so a new row cannot copy a neighbour"
+        );
     }
 
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to

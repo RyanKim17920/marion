@@ -597,7 +597,9 @@ impl<'a> NativeFacadeRegistry<'a> {
             })
     }
 
-    /// Resolves a canonical primary command without choosing a lane.
+    /// Resolves a canonical primary command without choosing a lane. Only the registry's own
+    /// tests bind by primary command; clients resolve through [`Self::resolve`].
+    #[cfg(test)]
     pub fn resolve_primary(&self, command: &str) -> Option<ResolvedNativeFacade<'_>> {
         self.entries
             .iter()
@@ -613,20 +615,6 @@ impl<'a> NativeFacadeRegistry<'a> {
         self.entries
             .iter()
             .filter(|entry| entry.descriptor.native.is_some_and(|lane| lane.enabled()))
-            .map(|entry| entry.descriptor.command)
-            .collect()
-    }
-
-    /// Primary commands whose static structured-lane policy is enabled.
-    pub fn enabled_structured_commands(&self) -> Vec<&'a str> {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .descriptor
-                    .structured
-                    .is_some_and(|lane| lane.enabled())
-            })
             .map(|entry| entry.descriptor.command)
             .collect()
     }
@@ -861,6 +849,19 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         native: Some(Lane::new(
             false,
             NativeLane::new("qwen", "qwen", NativeAdapterId::new("qwen")),
+        )),
+        structured: None,
+    },
+    // Disabled 2026-09-22: the `--add-dir` root that carries the declaration was measured on the
+    // headless `-p` surface (s32); in the TUI marion's tools were seen appearing only after the
+    // first turn had started (the MCP-visibility race), so the lane stays dark until measured.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("agy"),
+        command: "agy",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("agy", "agy", NativeAdapterId::new("agy")),
         )),
         structured: None,
     },
@@ -1273,7 +1274,6 @@ mod tests {
              (`tests/native_facade_e2e.rs`); `gemini`'s settings merge was measured per key \
              (`tests/fixtures/s30/`), so it is among them"
         );
-        assert!(registry.enabled_structured_commands().is_empty());
         for word in RESERVED_COMMANDS
             .iter()
             .copied()
@@ -1308,7 +1308,8 @@ mod tests {
             identity: VendorIdentity::new("codex"),
             command: "codex-native",
             aliases: &[],
-            native: Some(native(true, "codex", "codex")),
+            // Spelled by its alias, so the assertion below is about canonicalisation.
+            native: Some(native(true, "codex", "codex-impl")),
             structured: None,
         };
         let descriptors = [descriptor];
@@ -1322,7 +1323,7 @@ mod tests {
                 .unwrap()
                 .agent_type()
                 .name,
-            "codex-impl"
+            "codex"
         );
     }
 

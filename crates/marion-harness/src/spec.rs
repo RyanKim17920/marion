@@ -110,6 +110,13 @@ pub struct HarnessSpec {
     /// Rendered by the one renderer into the pane shape and the native prefix only ([`Push`]
     /// says why never headless), so no interactive launch can forget the flag that enables it.
     pub push: Push,
+    /// How a **headless** node is let call marion's tools with no operator there to answer a
+    /// prompt — the grant, as one of a few measured shapes. Every harness was measured denying,
+    /// cancelling or classifier-declining an unapproved marion call at exit 0, so a row that
+    /// forgot its grant would launch nodes that report nothing and say nothing. Rendered by the
+    /// row's own argv, env and documents where marion compiles it; reported by `marion doctor`
+    /// where the operator must ([`Approval::OperatorAllowlist`]).
+    pub approval: Approval,
     /// The `clientInfo.name` this harness sends in MCP `initialize`, where it is measured — so a
     /// bridge the harness started itself (`marion mcp` in an operator's own MCP configuration,
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
@@ -150,8 +157,10 @@ pub enum Push {
     /// on every row that carries it: it is what the protocol lets any server send, and what a
     /// client may show, log or drop. No launch flag.
     McpLog,
-    /// Nothing is pushed. ACP: the declaration is a `session/new` request after launch, so
-    /// there is no stdio pipe of marion's to push on.
+    /// Nothing is pushed, or nothing pushed was **measured delivered**. ACP: the declaration is a
+    /// `session/new` request after launch, so there is no stdio pipe of marion's to push on. agy
+    /// 1.2.8: a `notifications/message` pushed after a call reached the pipe and the harness
+    /// surfaced it nowhere, headless or in its TUI (s32).
     None,
 }
 
@@ -284,6 +293,97 @@ pub fn delivery_for(row: &HarnessSpec, shape: NodeShape) -> TurnDelivery {
     match shape {
         NodeShape::Headless => row.delivery.headless,
         NodeShape::Interactive => row.delivery.interactive,
+    }
+}
+
+/// **How a headless node is let call marion's tools** — the grant a launch needs where no operator
+/// is there to answer a prompt, as one of a small closed set of measured shapes.
+///
+/// A statement about the launch, not a second copy of it: where marion compiles the grant, the
+/// row's own [`Arg`]s, [`Env`]s and declaration documents render it and the sweep
+/// `every_row_states_how_its_headless_node_is_approved_to_call_marions_tools` holds them to this
+/// value; where the operator must grant it, marion writes nothing and `marion doctor` reports
+/// whether the grant is there. Every variant carries the `note` naming the measurement, and the
+/// launch-wide switches carry a `scope` saying how much **more** than marion's tools they approve,
+/// because that is the reach an operator is agreeing to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// A per-tool allow list on argv naming marion's tools — claude's `--allowedTools`,
+    /// copilot's `--allow-tool=marion(report)`. The narrowest shape: nothing else is approved.
+    AllowedToolsArg {
+        flag: &'static str,
+        note: &'static str,
+    },
+    /// A key on marion's **own** server declaration approves that server's tools and nothing
+    /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
+    DeclarationKey {
+        key: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide flag on argv — qwen's `--yolo`, cline's `--auto-approve`.
+    CliFlag {
+        flag: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide environment variable — goose's `GOOSE_MODE=auto`.
+    EnvVar {
+        key: &'static str,
+        value: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A protocol's own permission surface, answered by marion's client — ACP's
+    /// `session/request_permission`, which the ACP driver answers itself with the agent's own
+    /// allow option. An operator who wants the agent to stop asking names one of its modes as the
+    /// agent type's `approval_mode`, which the driver sets on the session's `category` select
+    /// (`acp::MODE_CATEGORY`) through the same `acp::SelectChannel` a model rides, refusing a
+    /// session that does not offer it. The modes are the agent's own strings, read off its
+    /// `session/new` answer; the row states only the select's category, never a second list.
+    SessionMode {
+        category: &'static str,
+        note: &'static str,
+    },
+    /// Only the **operator's own settings** can grant it, and marion never edits them: `rule`
+    /// in the JSON array at `pointer` of `file`, a path under the operator's `HOME`. No flag,
+    /// environment variable or marion-owned document was measured approving marion's tools
+    /// without also approving everything else, so the grant is the operator's to add, once, and
+    /// `marion doctor` names the line when it is missing.
+    OperatorAllowlist {
+        file: &'static str,
+        pointer: &'static str,
+        rule: &'static str,
+        note: &'static str,
+    },
+    /// The harness asks nothing headless for an MCP tool: its default is allow.
+    None { note: &'static str },
+}
+
+impl Approval {
+    /// The measurement behind the row's grant.
+    pub const fn note(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { note, .. }
+            | Approval::DeclarationKey { note, .. }
+            | Approval::CliFlag { note, .. }
+            | Approval::EnvVar { note, .. }
+            | Approval::SessionMode { note, .. }
+            | Approval::OperatorAllowlist { note, .. }
+            | Approval::None { note } => note,
+        }
+    }
+
+    /// The shape's stable name, for `marion doctor` and for the sweep that pins each row's.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { .. } => "allowed-tools-arg",
+            Approval::DeclarationKey { .. } => "declaration-key",
+            Approval::CliFlag { .. } => "cli-flag",
+            Approval::EnvVar { .. } => "env-var",
+            Approval::SessionMode { .. } => "session-mode",
+            Approval::OperatorAllowlist { .. } => "operator-allowlist",
+            Approval::None { .. } => "none",
+        }
     }
 }
 
@@ -800,6 +900,7 @@ impl Surfaces {
 /// | copilot 1.0.83 | `marion-report` | s24 |
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
 /// | goose 1.49.0, cline 3.0.61 | `marion__report` | S26, S27 |
+/// | agy 1.2.8 | `call_mcp_tool{ServerName: marion, ToolName: report}`, shown as `marion/report` | s32 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
@@ -814,6 +915,10 @@ pub enum ToolSpelling {
     McpDotted,
     /// `<server>__<tool>` — the `mcp__` form without its prefix.
     ServerDoubleUnderscoreTool,
+    /// `<server>/<tool>` — agy's own name for an MCP tool, in its TUI and its permission rules
+    /// (`mcp(marion/report)`). The model calls it through the generic `call_mcp_tool` with the
+    /// two halves as separate arguments, so a stream is read by server and verb, not this string.
+    ServerSlashTool,
 }
 
 impl ToolSpelling {
@@ -825,6 +930,7 @@ impl ToolSpelling {
             Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
             Self::ServerDoubleUnderscoreTool => format!("{MCP_ALIAS}__{tool}"),
+            Self::ServerSlashTool => format!("{MCP_ALIAS}/{tool}"),
         }
     }
 }
@@ -888,6 +994,16 @@ pub enum LiveDeclaration {
         key: &'static str,
         body: fn(&BridgeEnv) -> String,
     },
+    /// `<flag> <dir>/<root>` on argv, naming a **directory** the harness reads a document out of:
+    /// the document is written to `<root>/<file>` under the node's own directory — agy's
+    /// `--add-dir <root>`, which loads `<root>/.agents/mcp_config.json` as a workspace's own MCP
+    /// declaration (s32). The root is marion's and holds nothing else.
+    ArgvRoot {
+        flag: &'static str,
+        root: &'static str,
+        file: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
 }
 
 impl LiveDeclaration {
@@ -895,9 +1011,9 @@ impl LiveDeclaration {
     /// carries it.
     pub fn route(self) -> McpRoute {
         match self {
-            LiveDeclaration::ArgvDocument { .. } | LiveDeclaration::EnvDocument { .. } => {
-                McpRoute::Document
-            }
+            LiveDeclaration::ArgvDocument { .. }
+            | LiveDeclaration::EnvDocument { .. }
+            | LiveDeclaration::ArgvRoot { .. } => McpRoute::Document,
             LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
             LiveDeclaration::ArgvPairs { key, .. } | LiveDeclaration::ArgvInline { key, .. } => {
                 McpRoute::Argv(key)

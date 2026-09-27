@@ -17,8 +17,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -145,6 +145,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // On marion's own `mcpServers.marion` entry: without it the tool is dropped from the request
+    // body at exit 0 (S12). `--yolo` is the only other route, and an admin can veto it.
+    approval: Approval::DeclarationKey {
+        key: "trust",
+        note: "S12 on 0.53.0: `trust: true` puts marion's tool in the request body; without it \
+               the tool is omitted, no prompt, exit 0",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::None {
@@ -240,6 +247,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+        resumes_in_place: false,
     }),
     // The terminal `result` frame's `stats` (`s12/README.md`) totals the run. **Unmeasured past
     // that one README line**, whose `cached` is 0: that `input_tokens` counts cached tokens (and

@@ -310,7 +310,7 @@ mod tests {
         let selection = select_native_facade(&registry, LaunchIntent::native(authorized)).unwrap();
         let native = selection.into_native().unwrap();
 
-        assert_eq!(native.native_lane().agent_type().name, "codex-impl");
+        assert_eq!(native.native_lane().agent_type().name, "codex");
     }
 
     #[test]

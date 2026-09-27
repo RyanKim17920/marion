@@ -819,11 +819,19 @@ pub(crate) mod at_contract_write {
 /// codex, whose `exec` surface takes no model argument. And, as with `allowed_tools`, the contract
 /// records **the compiled value, not the asked-for one**: `TaskContract.child.model` is read off
 /// the compiled `Invocation`, so a codex contract records `None` however loudly a caller asked.
+///
+/// On a live run the type's default is [`AgentType::default_model`]'s: one that names marion's
+/// canned plumbing is dropped, so the harness uses the operator's own default model.
+///
+/// [`AgentType::default_model`]: marion_core::agent_type::AgentType::default_model
 fn resolve_model(
     req: &SpawnRequest,
     agent_type: &marion_core::agent_type::AgentType,
+    auth: Auth,
 ) -> Option<String> {
-    req.model.clone().or_else(|| agent_type.model.clone())
+    req.model
+        .clone()
+        .or_else(|| agent_type.default_model(auth == Auth::Canned))
 }
 
 /// The `request_id` a node's `initialize` goes out with — **one derivation, three readers**.
@@ -1692,11 +1700,15 @@ pub fn run_spawn_watched(
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
     // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
-    let outcome = ChildOutcome::from_stream(
-        adapter.parse_stream(&run.stdout, run.exit),
-        run.exit,
-        run.stderr.clone(),
-    );
+    let mut parsed = adapter.parse_stream(&run.stdout, run.exit);
+    // A resume the harness answered with a fresh session (agy's unknown `--conversation`, exit 0)
+    // is a run with none of the resumed node's history: the more specific claim, so it wins.
+    if let Some(why) =
+        adapter.resume_refusal(&run.stdout, req.resume.as_ref().map(|r| r.session.as_str()))
+    {
+        parsed.failure = Some(why);
+    }
+    let outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
@@ -1989,7 +2001,7 @@ fn child_launch_spec(
         // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
         // resolved and dispatched — and then refused at `compile`, since both adapters make an
         // explicit model a MUST. See `resolve_model`.
-        model: resolve_model(req, agent_type),
+        model: resolve_model(req, agent_type, env.auth),
         // §6.1 step 8: on a typed control plane the prompt is a frame written **after** the
         // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
         // string — the neutral vocabulary's own signal for "written after launch".
@@ -3352,7 +3364,7 @@ mod tests {
         // The orchestrator type through the same path: unchanged, which is what keeps this
         // additive.
         let orchestrator = LaunchSpec {
-            tools: builtin("claude").unwrap().tools,
+            tools: builtin("claude-orchestrator").unwrap().tools,
             ..spec
         };
         let args = adapter.compile(&orchestrator, &launch_ctx()).unwrap().args;
@@ -3360,7 +3372,7 @@ mod tests {
         assert_eq!(
             args[i + 1],
             "",
-            "a `claude` child is read-only as it always was"
+            "a `claude-orchestrator` child is read-only, as plain `claude` used to be"
         );
     }
 
@@ -3458,7 +3470,7 @@ mod tests {
     fn the_new_harnesses_now_compile_because_their_agent_types_carry_a_model() {
         for name in ["gemini", "opencode"] {
             let t = builtin(name).unwrap();
-            let model = resolve_model(&request(name, None), &t);
+            let model = resolve_model(&request(name, None), &t, Auth::Canned);
             assert!(
                 model.is_some(),
                 "{name}: its adapter refuses without one, so its built-in must state one"
@@ -3507,20 +3519,51 @@ mod tests {
     fn the_request_overrides_the_agent_types_default_and_absence_stays_absence() {
         let gemini = builtin("gemini").unwrap();
         assert_eq!(
-            resolve_model(&request("gemini", Some("gemini-2.5-pro")), &gemini).as_deref(),
+            resolve_model(
+                &request("gemini", Some("gemini-2.5-pro")),
+                &gemini,
+                Auth::Canned
+            )
+            .as_deref(),
             Some("gemini-2.5-pro"),
         );
         assert_eq!(
-            resolve_model(&request("gemini", None), &gemini).as_deref(),
+            resolve_model(&request("gemini", None), &gemini, Auth::Canned).as_deref(),
             Some("gemini-2.5-flash"),
         );
         for name in ["codex-impl", "claude"] {
             assert_eq!(
-                resolve_model(&request(name, None), &builtin(name).unwrap()),
+                resolve_model(&request(name, None), &builtin(name).unwrap(), Auth::Canned),
                 None,
                 "{name}: a default here would change an argv that is measured, for nothing"
             );
         }
+    }
+
+    /// **A live child of a type whose default names marion's canned plumbing runs on the
+    /// operator's own default model**: `marion/default` names a provider block only a canned run
+    /// writes, so passing it live made every opencode child fail at launch.
+    #[test]
+    fn a_live_spawn_does_not_inherit_a_canned_plumbing_default_model() {
+        let opencode = builtin("opencode").unwrap();
+        assert_eq!(
+            resolve_model(&request("opencode", None), &opencode, Auth::Inherited),
+            None
+        );
+        assert_eq!(
+            resolve_model(&request("opencode", None), &opencode, Auth::Canned).as_deref(),
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL)
+        );
+        assert_eq!(
+            resolve_model(
+                &request("opencode", Some("a/b")),
+                &opencode,
+                Auth::Inherited
+            )
+            .as_deref(),
+            Some("a/b"),
+            "an explicit model is always honoured"
+        );
     }
 
     /// **The contract records the wire, not the ask** — the same rule that made `child.harness`
@@ -3529,7 +3572,11 @@ mod tests {
     #[test]
     fn a_model_asked_for_on_a_harness_that_takes_none_is_never_recorded_as_used() {
         let t = builtin("codex-impl").unwrap();
-        let asked = resolve_model(&request("codex-impl", Some("gpt-5.6-sol")), &t);
+        let asked = resolve_model(
+            &request("codex-impl", Some("gpt-5.6-sol")),
+            &t,
+            Auth::Canned,
+        );
         assert_eq!(
             asked.as_deref(),
             Some("gpt-5.6-sol"),
@@ -3959,7 +4006,7 @@ mod tests {
             "a child of a depth-1 caller is at depth 2, and its bridge must be told so:\n{config}"
         );
         assert!(
-            config.contains(r#"MARION_AGENT_TYPE = "codex-impl""#),
+            config.contains(r#"MARION_AGENT_TYPE = "codex""#),
             "and told its own canonical type, whose max_depth its own spawns are gated on:\n{config}"
         );
     }

@@ -436,7 +436,9 @@ fn marion_run_works_end_to_end_with_no_git_anywhere() {
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "claude",
+                // The orchestrator, because plain `claude` is an implementer and marion will not
+                // give a root file tools in a directory whose changes it cannot record.
+                "claude-orchestrator",
                 "--prompt",
                 "Delegate the marker-file task to a codex child in this directory.",
                 "--repo",

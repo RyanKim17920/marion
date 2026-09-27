@@ -23,8 +23,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -224,6 +225,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // opencode's default permission for an MCP tool is allow, measured; marion compiles nothing
+    // into `OPENCODE_PERMISSION`, which would narrow every node (S13).
+    approval: Approval::None {
+        note: "S13 on 1.17.3: with no `permission` entry for marion's tool the call runs; \
+               `ask` auto-rejects at exit 0, so marion states no permission at all",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
@@ -293,6 +300,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/sessionID",
+        resumes_in_place: false,
     }),
     // One `step_finish` per model step (`s13/README.md`), each that step's spend. **README-only**:
     // every captured step reports zeros, so that `tokens.input` excludes `tokens.cache` is the

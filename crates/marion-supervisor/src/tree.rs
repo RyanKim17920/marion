@@ -436,8 +436,10 @@ fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), 
     if crate::socket::nobody_is_serving(&paths) {
         // One line. Why marion will not start a supervisor here is `run`'s doc comment.
         return Err(format!(
-            "no supervisor is serving `{}`; run `marion run <agent-type> --pane` here first",
-            key.display()
+            "no supervisor is serving `{}` under state dir `{}`; start a session here first \
+             (`marion <harness>` or `marion run`) with the same --state-dir / $MARION_STATE_DIR",
+            key.display(),
+            state_dir.display()
         ));
     }
     let stream = UnixStream::connect(paths.socket())
@@ -1968,13 +1970,19 @@ mod tests {
                 .map_or(0, |d| d.as_nanos())
         ));
         std::fs::create_dir_all(&dir).expect("a scratch dir");
-        let refusal = run(&dir, &dir).expect_err("nobody is serving a fresh directory");
+        let state = dir.join("state");
+        let refusal = run(&dir, &state).expect_err("nobody is serving a fresh directory");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(refusal.lines().count(), 1, "{refusal}");
         assert!(refusal.contains("no supervisor is serving"), "{refusal}");
-        assert!(refusal.contains("`marion run"), "{refusal}");
+        // The state dir it looked in, because a supervisor started under another one (a different
+        // `$MARION_STATE_DIR`) is the likeliest reason nothing answers.
+        assert!(refusal.contains(&state.display().to_string()), "{refusal}");
+        // Any run starts a supervisor; `--pane` is not what makes one appear.
+        assert!(!refusal.contains("--pane"), "{refusal}");
+        assert!(refusal.contains("`marion "), "{refusal}");
         assert!(
-            refusal.len() < dir.display().to_string().len() + 100,
+            refusal.len() < 2 * state.display().to_string().len() + 170,
             "{} chars is a paragraph, not a hint: {refusal}",
             refusal.len()
         );

@@ -429,11 +429,11 @@ fn run_marion_as(
         &repo.to_string_lossy(),
         "--state-dir",
         &state.to_string_lossy(),
-        // Nothing listens there. The stub is the whole model side of the run, and `--canned` is
+        // Listening but silent. The stub is the whole model side of the run, and `--canned` is
         // what makes that legible to the binary.
         "--canned",
         "--base-url",
-        "http://127.0.0.1:9/v1",
+        &marion_testsupport::silent_canned_endpoint(),
         "--timeout",
         timeout_secs,
     ]);

@@ -381,6 +381,9 @@ pub struct RootNode {
     /// reach the root as a turn after its first. `None` on the pane and `LaunchOnly` paths, which
     /// have no typed channel to carry one.
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// The harness session this launch resumes, where it resumes one — what the stream is checked
+    /// against ([`marion_harness::HarnessAdapter::resume_refusal`]).
+    pub resumed: Option<String>,
 }
 
 /// What the root's run produced.
@@ -407,7 +410,18 @@ pub struct RootOutcome {
     /// failing with exit 1 and an empty stderr. `None` never means "it succeeded" — only that the
     /// stream itself claimed nothing (see [`marion_harness::StreamOutcome::failure`]).
     pub failure: Option<String>,
+    /// A `LaunchOnly` root that answered and exited cleanly **without calling any marion tool** —
+    /// a legitimate run (a prompt that needed no delegation), reported as `Ok` with
+    /// [`ANSWERED_WITHOUT_DELEGATING`] in its exit description. Set only by the post-hoc check,
+    /// the one place that can tell; `false` everywhere else.
+    pub bridge_unused: bool,
 }
+
+/// The note an `Ok` root's exit description carries when it answered without calling any marion
+/// tool. `marion run` prints it, so a run that delegated nothing still says so rather than
+/// ending in silence.
+pub const ANSWERED_WITHOUT_DELEGATING: &str =
+    "the root answered without calling any marion tool, so nothing was delegated";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RootError {
@@ -835,6 +849,7 @@ pub fn prepare_watched(
         },
         session_declaration: session,
         acp_agent: agent_type.acp_agent.clone(),
+        resumed: spec.resume.as_ref().map(|(_, session)| session.clone()),
     })
 }
 
@@ -1386,6 +1401,10 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
         Some(f) => format!("{description}; the root's stream reported: {f}"),
         None => description,
     };
+    let description = match outcome.bridge_unused && status == ExitStatus::Ok {
+        true => format!("{description}; {ANSWERED_WITHOUT_DELEGATING}"),
+        false => description,
+    };
     (
         status,
         ProcessExit {
@@ -1855,11 +1874,15 @@ fn launch_only(
         // a refused call, not the run failing. Measured live (2026-09-22): an opencode root's
         // refused `report` read as "the child's marion_report call ended in error" and failed a run
         // whose child finished `Ok`. A root has no `TaskContract` to record the claim in, so its
-        // only destination is the refusal below and `roots_exit`.
-        failure: adapter.stream_failure(&stdout),
+        // only destination is the refusal below and `roots_exit`. A resume the harness answered
+        // with a fresh session is the more specific claim.
+        failure: adapter
+            .resume_refusal(&stdout, node.resumed.as_deref())
+            .or_else(|| adapter.stream_failure(&stdout)),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
+        bridge_unused: false,
     };
     // Evaluated **after** the transcript is assembled and before anything is returned, so the
     // refusal is the run's outcome rather than a warning printed beside a success.
@@ -1868,8 +1891,11 @@ fn launch_only(
     // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
     // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
     // other claim about the same run.
+    let mut outcome = outcome;
     if !outcome.timed_out {
-        assert_the_root_delegated(node.harness, &outcome, started_a_child(node))?;
+        let delegated = started_a_child(node);
+        assert_the_root_delegated(node.harness, &outcome, delegated)?;
+        outcome.bridge_unused = !delegated && outcome.marion_calls.is_empty();
     }
     Ok(outcome)
 }
@@ -1921,6 +1947,7 @@ fn launch_acp(
         // nothing — the same reading `run_spawn`'s ACP arm records.
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2196,6 +2223,7 @@ fn launch_terminal(
         stderr: String::new(),
         denied_permissions: vec![],
         timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2245,6 +2273,19 @@ fn launch_terminal(
 /// closing that needs a recording, not a cleverer predicate.
 fn assert_a_verb_was_answered(harness: Harness, outcome: &RootOutcome) -> Result<(), RootError> {
     if outcome.marion_calls.iter().any(|c| c.outcome.is_answered()) {
+        return Ok(());
+    }
+    // **A plain answer is a normal run.** No marion call, a clean exit, a stream with frames in
+    // it and no failure claim: the root answered a prompt that needed no delegation (measured
+    // live: `marion run codex --prompt "say hello"` → "Hello!"). It is `Ok` with a note
+    // ([`ANSWERED_WITHOUT_DELEGATING`]) rather than silent, which is what §6.1 step 8 forbids.
+    // The loud refusal below is kept for what a broken bridge actually looks like: no frame at
+    // all, a non-zero exit, or the stream's own failure claim.
+    if outcome.marion_calls.is_empty()
+        && outcome.exit_code == Some(0)
+        && outcome.failure.is_none()
+        && !outcome.transcript.is_empty()
+    {
         return Ok(());
     }
     // Pre-formatted once, so both variants below quote the run's own words the same way.
@@ -2360,6 +2401,7 @@ fn launch_duplex(
         // for a stream failure claim to be read from here.
         failure: None,
         timed_out: out.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -3129,7 +3171,7 @@ mod tests {
             "marion must never compile --disallowedTools (§3.1)"
         );
 
-        let (tools, allowed) = axis("claude");
+        let (tools, allowed) = axis("claude-orchestrator");
         assert_eq!(
             tools, "",
             "an orchestrator type declares nothing and must still get the flag, empty"
@@ -3265,7 +3307,7 @@ mod tests {
         }
 
         // 2. Nothing declared, same directory: unchanged, and that is the co-extensive half.
-        let a = prepare(&root_spec(&outside, "claude"))
+        let a = prepare(&root_spec(&outside, "claude-orchestrator"))
             .expect("a root that declares no tool still runs outside a repository");
         match &a.change_base {
             RootChangeBase::Unavailable { reason } => assert!(
@@ -3400,7 +3442,7 @@ mod tests {
             stderr: String::new(),
         };
         let dir = temp("refused-after-spawned");
-        let ran = prepare(&root_spec(&dir, "claude")).unwrap();
+        let ran = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(ran.project.journal()).unwrap());
         let n = tree.get(&ran.agent_id).unwrap();
@@ -3418,7 +3460,7 @@ mod tests {
         ));
 
         let never_dir = temp("refused-before-spawned");
-        let never = prepare(&root_spec(&never_dir, "claude")).unwrap();
+        let never = prepare(&root_spec(&never_dir, "claude-orchestrator")).unwrap();
         let unstarted = RootError::UnaccountableNode { why: "full".into() };
         journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
@@ -3431,11 +3473,11 @@ mod tests {
     #[test]
     fn a_roots_scope_is_a_ceiling_with_no_request_beside_it() {
         let dir = temp("scope");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         match &node.scope {
             RootScope::CeilingOnly { ceiling } => assert_eq!(
                 ceiling,
-                &builtin("claude").unwrap().scope_ceiling,
+                &builtin("claude-orchestrator").unwrap().scope_ceiling,
                 "the agent type's own ceiling, not a copy that could drift"
             ),
             other => panic!("{other:?}"),
@@ -3551,8 +3593,25 @@ mod tests {
         marion_testsupport::fixture_repo(&dir);
         let mut acp_roots = 0;
         for name in marion_core::agent_type::builtin_names() {
-            let node = prepare(&root_spec(&dir, name))
-                .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
+            // agy has no canned route and refuses one by name; its root is prepared live.
+            let agy = builtin(name).unwrap().harness == Harness::Antigravity;
+            let spec = if agy {
+                let canned = prepare(&root_spec(&dir, name)).err().map(|e| e.to_string());
+                assert!(
+                    canned
+                        .as_deref()
+                        .is_some_and(|e| e.contains("no canned provider route")),
+                    "{name}: {canned:?}"
+                );
+                RootSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    ..root_spec(&dir, name)
+                }
+            } else {
+                root_spec(&dir, name)
+            };
+            let node = prepare(&spec).unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge here — in a document, or, on goose,
             // as the one `--with-extension marion:…` argv token its row routes through
             // (`McpRoute::Argv`), which `verify` has already checked the argv for. An ACP root's
@@ -3573,7 +3632,12 @@ mod tests {
                     node.invocation.args
                 ),
             }
-            let in_argv = node.invocation.args.iter().any(|a| a == "delegate it");
+            // Verbatim, or (agy) headed by the working-directory preamble its adapter states.
+            let in_argv = node
+                .invocation
+                .args
+                .iter()
+                .any(|a| a == "delegate it" || a.ends_with("\n\ndelegate it"));
             match node.path {
                 RootPath::LaunchOnly => {
                     assert!(
@@ -3662,10 +3726,10 @@ mod tests {
         use marion_harness::ControlTransport;
 
         let dir = temp("pane-selection");
-        let headless = prepare(&root_spec(&dir, "claude")).expect("a claude root");
+        let headless = prepare(&root_spec(&dir, "claude-orchestrator")).expect("a claude root");
         let paned = prepare(&RootSpec {
             pane: true,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .expect("a claude root with a pane");
 
@@ -3786,7 +3850,13 @@ mod tests {
     fn asking_for_a_pane_a_harness_does_not_have_is_refused_rather_than_downgraded() {
         let dir = temp("pane-refusal");
         let mut refused = 0;
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let has_pane = adapter_for(builtin(name).unwrap().harness)
                 .unwrap()
                 .pane_surfaces()
@@ -3829,7 +3899,13 @@ mod tests {
     #[test]
     fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
         let dir = temp("depth");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let doc = std::fs::read_to_string(node.mcp_config.as_ref().unwrap()).unwrap();
             assert!(
@@ -3895,7 +3971,13 @@ mod tests {
         // Distinctive enough that it cannot collide with an id, a path or a model name.
         const TOKEN: &str = "root-node-token-8f1c-4a20-b7de";
         let dir = temp("node-token");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
@@ -3921,7 +4003,12 @@ mod tests {
     #[test]
     fn only_the_duplex_root_carries_the_anthropic_env_pair() {
         let dir = temp("token");
-        for name in ["claude", "codex", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let has = |k: &str| node.invocation.env.iter().any(|(n, _)| n == k);
             assert_eq!(
@@ -3954,7 +4041,7 @@ mod tests {
         let node = prepare(&RootSpec {
             base_url: None,
             auth: Auth::Inherited,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .unwrap();
         for k in [
@@ -4045,7 +4132,7 @@ mod tests {
     #[test]
     fn a_canned_root_still_carries_the_pair_exactly_where_it_always_did() {
         let dir = temp("canned-auth");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         let get = |k: &str| {
             node.invocation
                 .env
@@ -4110,33 +4197,55 @@ mod tests {
         }
     }
 
-    /// **§6.1 step 8's post-hoc assertion, and the failure it exists for.** A `LaunchOnly` root that
-    /// never reached marion's bridge exited 0 having done nothing — the §12 shape — so it must be a
-    /// refusal that *names the cause*, never a success.
+    /// **A root that answered plainly and exited cleanly is a normal run, not a refusal.**
+    ///
+    /// Measured live: `marion run codex --prompt "say hello"` printed "Hello!" and marion exited 1
+    /// with "the root never reached marion's bridge". A prompt that needs no delegation is a
+    /// legitimate use, so the run is `Ok` and carries a note saying nothing was delegated — the
+    /// note is what keeps it from being the silent success §6.1 step 8 refuses.
     #[test]
-    fn a_launch_only_root_that_never_reached_the_bridge_is_a_refusal_not_an_exit_zero() {
-        let clean_looking = ran(&[], 3, Some(0), "");
-        let err = assert_a_verb_was_answered(Harness::Codex, &clean_looking)
-            .expect_err("a run with no marion call must not be reported as a success");
-        let msg = err.to_string();
-        assert!(msg.contains("codex"), "it must name the harness: {msg}");
+    fn a_launch_only_root_that_answered_without_marion_is_ok_with_a_note() {
+        let answered = ran(&[], 3, Some(0), "");
+        assert!(assert_a_verb_was_answered(Harness::Codex, &answered).is_ok());
+        let (status, exit) = roots_exit(&RootOutcome {
+            bridge_unused: true,
+            ..answered
+        });
+        assert_eq!(status, ExitStatus::Ok);
         assert!(
-            msg.contains("never reached marion's bridge"),
-            "it must name the cause, not just fail: {msg}"
+            exit.description.contains(ANSWERED_WITHOUT_DELEGATING),
+            "{}",
+            exit.description
         );
-        assert!(
-            msg.contains("Some(0)"),
-            "and it must say that the exit code looked clean, which is the whole trap: {msg}"
-        );
-        assert!(matches!(
-            err,
-            RootError::BridgeNeverReached {
-                harness: Harness::Codex,
-                frames: 3,
-                exit: Some(0),
-                ..
-            }
-        ));
+        // A root that did call marion gets no such note.
+        let (_, delegated) = roots_exit(&ran(&["spawn"], 3, Some(0), ""));
+        assert!(!delegated.description.contains(ANSWERED_WITHOUT_DELEGATING));
+    }
+
+    /// **What still guards a genuinely broken run**: no marion call *and* no answer (no frame at
+    /// all), a non-zero exit, or a stream that reported a failure is still the loud refusal.
+    #[test]
+    fn a_launch_only_root_that_never_reached_the_bridge_and_did_not_answer_is_a_refusal() {
+        for (label, o) in [
+            ("no frame", ran(&[], 0, Some(0), "")),
+            ("non-zero exit", ran(&[], 3, Some(1), "")),
+            (
+                "stream failure",
+                RootOutcome {
+                    failure: Some("APIError".into()),
+                    ..ran(&[], 3, Some(0), "")
+                },
+            ),
+        ] {
+            let err = assert_a_verb_was_answered(Harness::Codex, &o)
+                .expect_err(label)
+                .to_string();
+            assert!(
+                err.contains("never reached marion's bridge"),
+                "{label}: {err}"
+            );
+            assert!(err.starts_with("codex: "), "{label}: {err}");
+        }
     }
 
     /// **The refusal must carry the harness's own words when the exit code has none.** Measured
@@ -4236,7 +4345,10 @@ mod tests {
         let refused = || CallOutcome::Refused("§5.4 rejects `report` on a root".into());
         // (label, the run's marion calls, does the gate pass)
         let cases = [
-            ("no call at all", vec![], false),
+            // A clean exit with frames and no call is a plain answer, passed with a note; see
+            // `a_launch_only_root_that_answered_without_marion_is_ok_with_a_note`. The failing
+            // no-call shapes are in the test beside that one.
+            ("no call at all, a plain answer", vec![], true),
             (
                 "one answered call",
                 vec![("spawn", CallOutcome::Answered)],

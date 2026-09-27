@@ -170,7 +170,7 @@ struct Node {
 }
 
 const CLAUDE: Node = Node {
-    agent_type: "claude",
+    agent_type: "claude-orchestrator",
     // Claude Code's `--model` is legitimately omissible and the canned provider ignores it, so no
     // vendor id is pinned here that marion has no basis for.
     model: None,
@@ -190,7 +190,7 @@ const CODEX: Node = Node {
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     harness: Harness::Gemini,
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
     model: Some("gemini-2.5-flash"),
@@ -291,6 +291,7 @@ fn script(node: &Node) -> Script {
         Harness::Goose => unreachable!("no cell of this matrix names `goose` yet"),
         Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
         Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
+        Harness::Antigravity => unreachable!("no cell names `agy`: it has no canned route"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

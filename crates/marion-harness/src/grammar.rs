@@ -115,6 +115,12 @@ pub struct RecentActivity {
 pub struct SessionId {
     pub at: Where,
     pub path: &'static str,
+    /// A resumed launch was **measured** naming the session it resumed in this same unit, so a
+    /// different id is a fresh session the harness started instead — agy 1.2.8 answers an unknown
+    /// `--conversation` that way, at exit 0 (s32). `false` where that was not measured, and no
+    /// resume is checked: a harness that mints a new id per resumed turn would otherwise fail
+    /// every resume it ever ran.
+    pub resumes_in_place: bool,
 }
 
 /// A set of JSON units inside a stream: frames of a shape, or elements of an array in them.
@@ -193,6 +199,19 @@ pub enum Verdict {
         err: &'static str,
         words: &'static [&'static str],
         fallback: &'static str,
+    },
+    /// [`Self::Terminal`], except that `ok` **answers only when the unit also carries `output`**.
+    /// agy 1.2.8 marks a call it auto-denied headless either `ERROR` with a message or `DONE` with
+    /// no output at all (s32), so the state alone is not an answer: `ok` without `output` is a
+    /// refusal spelled `silent`.
+    TerminalWithOutput {
+        path: &'static str,
+        ok: &'static str,
+        err: &'static str,
+        output: &'static str,
+        words: &'static [&'static str],
+        fallback: &'static str,
+        silent: &'static str,
     },
     /// A boolean: `true` is answered, `false` a refusal with `words` (or `fallback`), missing is
     /// unknown.
@@ -417,6 +436,30 @@ fn read_terminal(
     }
 }
 
+/// [`Verdict::TerminalWithOutput`]: [`read_terminal`], with an `ok` that carries no `output`
+/// read as the `silent` refusal.
+fn read_terminal_with_output(unit: &Value, v: &TerminalRead<'_>) -> CallOutcome {
+    match text(unit, v.path) {
+        Some(s) if s == v.ok && unit.pointer(v.output).is_some_and(|o| !o.is_null()) => {
+            CallOutcome::Answered
+        }
+        Some(s) if s == v.ok => CallOutcome::Refused(v.silent.to_string()),
+        Some(s) if s == v.err => refused(unit, v.words, v.fallback),
+        _ => CallOutcome::Unknown,
+    }
+}
+
+/// [`Verdict::TerminalWithOutput`]'s fields, borrowed, so its reader takes one argument.
+struct TerminalRead<'a> {
+    path: &'a str,
+    ok: &'a str,
+    err: &'a str,
+    output: &'a str,
+    words: &'a [&'a str],
+    fallback: &'a str,
+    silent: &'a str,
+}
+
 /// [`Verdict::Success`]: `true` is answered, `false` a refusal, missing unknown.
 fn read_success(unit: &Value, path: &str, words_at: &[&str], fallback: &str) -> CallOutcome {
     match unit.pointer(path).and_then(Value::as_bool) {
@@ -451,6 +494,26 @@ impl Verdict {
                 words: w,
                 fallback,
             } => read_terminal(unit, path, ok, err, w, fallback),
+            Verdict::TerminalWithOutput {
+                path,
+                ok,
+                err,
+                output,
+                words: w,
+                fallback,
+                silent,
+            } => read_terminal_with_output(
+                unit,
+                &TerminalRead {
+                    path,
+                    ok,
+                    err,
+                    output,
+                    words: w,
+                    fallback,
+                    silent,
+                },
+            ),
             Verdict::Success {
                 path,
                 words: w,
@@ -661,6 +724,22 @@ pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityIte
         }
     }
     items
+}
+
+/// Why a launch that resumed `resumed` did not: the stream's first session unit names another
+/// session, on a row whose [`SessionId::resumes_in_place`] was measured. `None` on every other row,
+/// and on a stream that named no session at all — that is no claim either way.
+pub fn resume_refusal(g: &StreamGrammar, stdout: &str, resumed: &str) -> Option<String> {
+    g.session.as_ref().filter(|s| s.resumes_in_place)?;
+    let started = json_frames(stdout)
+        .iter()
+        .find_map(|frame| session_id(g, frame))?;
+    (started != resumed).then(|| {
+        format!(
+            "asked to resume session {resumed}, the harness started session {started} instead: \
+             the resumed session was not found, and the run is a fresh one with none of its history"
+        )
+    })
 }
 
 /// Every call to one of marion's verbs the stream shows, with what came of each — in

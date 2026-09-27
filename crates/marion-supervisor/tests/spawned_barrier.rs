@@ -135,17 +135,17 @@ fn marion_run(dir: &Path, model: &str, lingers: bool) -> Run {
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "gemini",
+                "gemini-orchestrator",
                 "--prompt",
                 "delegate one thing",
                 "--repo",
                 &repo.to_string_lossy(),
                 "--state-dir",
                 &state.to_string_lossy(),
-                // Nothing listens here; the stub is the whole model side of this run.
+                // Listening but silent; the stub is the whole model side of this run.
                 "--canned",
                 "--base-url",
-                "http://127.0.0.1:9/v1",
+                &marion_testsupport::silent_canned_endpoint(),
                 "--timeout",
                 "30",
                 "--model",

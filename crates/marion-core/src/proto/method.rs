@@ -104,13 +104,6 @@ impl Method {
         Method::ALL.into_iter().find(|m| m.as_str() == s)
     }
 
-    /// **The only method that can end the supervisor** (§2). A predicate rather than a comment,
-    /// because a dispatcher that must special-case the one lifetime-ending verb should ask the
-    /// protocol rather than match on a name.
-    pub const fn can_end_the_supervisor(self) -> bool {
-        matches!(self, Method::SessionQuit)
-    }
-
     /// Type the JSON body of a response, given the method its `id` was pending on.
     ///
     /// The `Err` cases are the two honest ones: a `policy/set` result that cannot exist, and a body
@@ -652,15 +645,6 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.kind(), Some(crate::proto::FailureKind::Unimplemented));
         assert!(e.message.contains("accept-and-ignore"));
-    }
-
-    #[test]
-    fn only_session_quit_can_end_the_supervisor() {
-        let enders: Vec<Method> = Method::ALL
-            .into_iter()
-            .filter(|m| m.can_end_the_supervisor())
-            .collect();
-        assert_eq!(enders, vec![Method::SessionQuit], "§2");
     }
 
     #[test]

@@ -46,8 +46,9 @@ use serde_json::{Value, json};
 
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -179,6 +180,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // `--yolo`: without it every call costs a classifier request and is declined at exit 0 (s25).
+    approval: Approval::CliFlag {
+        flag: "--yolo",
+        scope: "every tool --core-tools offers, which is marion's verbs and the declared builtins",
+        note: "s25 on 0.23.0: without --yolo the report call is declined at exit 0",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {

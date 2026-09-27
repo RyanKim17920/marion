@@ -189,16 +189,6 @@ impl ExecutionSurfaces {
     pub fn has_typed_control_plane(&self) -> bool {
         matches!(self.control, ControlTransport::Typed(_))
     }
-
-    /// §3.4: a **degenerate** `ControlPlane` — read-only `events()` — when control is not typed
-    /// but some source other than `TerminalBytes` exists. This is what M1's codex child gets.
-    pub fn has_degenerate_control_plane(&self) -> bool {
-        !self.has_typed_control_plane()
-            && self
-                .observations
-                .iter()
-                .any(|o| *o != ObservationSource::TerminalBytes)
-    }
 }
 
 #[cfg(test)]
@@ -275,17 +265,9 @@ mod tests {
         let codex = ExecutionSurfaces::launch_only_with_protocol_events();
         assert!(!codex.has_display_plane(), "no pty");
         assert!(!codex.has_typed_control_plane(), "LaunchOnly cannot steer");
-        assert!(
-            codex.has_degenerate_control_plane(),
-            "its JSONL stream is an event source, so events() exists"
-        );
 
         let opaque = ExecutionSurfaces::opaque();
         assert!(opaque.has_display_plane());
-        assert!(
-            !opaque.has_degenerate_control_plane(),
-            "TerminalBytes alone is Payload::Raw read straight from the pty, not a ControlPlane"
-        );
 
         let headless = ExecutionSurfaces::headless(TypedKind::StreamJson);
         assert!(headless.has_typed_control_plane());

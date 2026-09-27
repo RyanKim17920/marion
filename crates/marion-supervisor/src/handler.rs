@@ -1465,8 +1465,12 @@ fn root_spec_from_spawn(
         base_url: env.base_url.clone(),
         bridge: env.bridge.clone(),
         // §3.1's precedence, the same one a child's spawn gets: the stated model, else the agent
-        // type's own `model` key.
-        model: p.model.clone().or_else(|| agent_type.model.clone()),
+        // type's own `model` key — dropped on a live run when it names marion's canned plumbing
+        // (`AgentType::default_model`).
+        model: p
+            .model
+            .clone()
+            .or_else(|| agent_type.default_model(env.auth == marion_harness::Auth::Canned)),
         // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
         no_change_record: p.no_change_record.unwrap_or(false),
         auth: env.auth,
@@ -2098,7 +2102,19 @@ impl RegistryHandle {
     /// a pane registered for a node the journal does not know about is unattachable — `node_attach`
     /// resolves the node from the registry *before* it looks here, so the journal stays the
     /// authority on what exists.
+    ///
+    /// A newly published terminal is also where turn delivery starts for a row that takes turns
+    /// by pasting ([`Self::attach_paste_delivery`]): a pane and a native session both arrive here,
+    /// so one call covers both, and a replacement host gets a fresh injector.
     pub fn register_pane(&self, id: &AgentId, host: Arc<crate::pty::PtyHost>) {
+        if self.publish_pane(id, Arc::clone(&host)) {
+            self.attach_paste_delivery(id, &host);
+        }
+    }
+
+    /// `register_pane`'s table half: `true` when `host` became the node's live pane, `false` when
+    /// it already was (idempotent) or a newer registration superseded it mid-replacement.
+    fn publish_pane(&self, id: &AgentId, host: Arc<crate::pty::PtyHost>) -> bool {
         self.prune_completed_panes();
         let _replacement = lock(&self.pane_replacement);
         let replacement = Arc::clone(&host);
@@ -2107,12 +2123,12 @@ impl RegistryHandle {
             if let Some(existing) = panes.hosts.get(id) {
                 if Arc::ptr_eq(existing.host(), &replacement) {
                     // Live is idempotent; lifecycle states never move backwards through register.
-                    return;
+                    return false;
                 }
             } else {
                 panes.hosts.insert(id.clone(), PaneEntry::Live(host));
                 let _ = panes.assign_host_generation(id);
-                return;
+                return true;
             }
             panes.revoke_native_launch(id);
             let old = panes.replace(id.clone(), PaneEntry::Replacing(Arc::clone(&replacement)));
@@ -2153,6 +2169,7 @@ impl RegistryHandle {
             replacement.clear_legacy_listeners();
             replacement.invalidate_pane_streams();
         }
+        published
     }
 
     #[allow(

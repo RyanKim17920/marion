@@ -3981,8 +3981,19 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     credential answered `Not logged in` with `--setting-sources ""` and took the settings' route
     with `--setting-sources=user`. An `Auth::Inherited` node runs on the operator's own
     credential, wherever they configured it, so it omits the flag and loads their settings —
-    plugins and hooks included, the price of never hiding a login. `--strict-mcp-config` stays in
-    both modes: MCP servers carry no credential of the node's own.
+    plugins included, the price of never hiding a login. `--strict-mcp-config` stays in both
+    modes: MCP servers carry no credential of the node's own.
+
+    **Hooks stay off in every node marion launches (2026-09-27).** Loading the operator's settings
+    would also run their hooks and their plugins' hooks, and a blocking `Stop` hook (a review gate)
+    would hold or loop a node no one is watching. Every headless and pane launch therefore carries
+    `--settings '{"disableAllHooks":true}'`, which merges one key over the operator's layers: on
+    2.1.283 no user or plugin hook fired under it while a settings `env` credential and an
+    `apiKeyHelper` both still reached the endpoint, and hook callbacks marion registers in
+    `initialize` still fired. Redundant under canned, where `--setting-sources ""` already keeps
+    hooks out. The native facade does not carry it: there the operator drives their own claude.
+    Plugins themselves still load live; no supported switch disables them without either naming
+    each one or (`--safe-mode`) dropping marion's own `--mcp-config` servers.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
     `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not

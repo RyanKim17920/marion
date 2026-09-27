@@ -85,6 +85,8 @@ fn resume_is_dispatched_and_starts_a_supervisor_when_none_serves() {
             "--state-dir",
             dir.to_str().expect("utf-8"),
             "--canned",
+            "--base-url",
+            &marion_testsupport::silent_canned_endpoint(),
         ])
         .output()
         .expect("the marion binary runs");

@@ -514,8 +514,67 @@ claude-agent-acp `Fold`, codex-acp and copilot `Queue`
 (`a_typed_turns_mid_turn_behaviour_is_the_rows_and_an_acp_agent_refines_it`). Every other
 strategy delivers at a turn boundary. Pinned by
 `adapter::tests::every_row_resolves_one_turn_delivery_per_shape_as_s31_measured` and the sweep
-`every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). **Row
-data only**: nothing delivers through it yet.
+`every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). The
+`TerminalPaste` rows now deliver (next paragraph); the other strategies are still row data here.
+
+**A queued message is typed into an interactive node's terminal (`TerminalPaste`, 2026-09-27).**
+A pane or a native `marion codex|opencode|copilot` session whose row pastes gets a
+`paste::PasteInjector` the moment `register_pane` publishes its pty (a replacement host gets a
+fresh one): the inbox's `node/steer` messages and background children's ends are written as one
+`ESC[200~…ESC[201~` (every control but newline and tab stripped, so a quoted `ESC[201~` cannot end
+it early), then `\r` 50 ms later, under the same write lock the operator's keys take, and
+journaled `MessageDelivered { via: "pty:paste" }`; the cast carries an `m` marker naming the
+message ahead of marion's `i` records. It types only when the node has DECSET 2004 on (dropped by
+name after 30 s without it), the operator's composer is presumed empty (their last key was Enter,
+or none) and they have been quiet 1.5 s. **Before the first paste the TUI must also have booted**
+— drawn text under bracketed paste, then the row's `OutputQuiet{1500}` of silence: copilot 1.0.83
+turns 2004 on in its first write and then drew nothing for ~20 s, and a paste in that window was
+journaled delivered and discarded (measured in the E2E below). Past boot the busy TUI is typed into
+at once, as S31 measured safe. Proved by `paste::tests` (framing, delay, operator-quiet and
+composer holds observed through the injector's decisions, 2004-off drop, boot hold, cast marker,
+8 KiB byte-exact), `handler::steer::tests` (a steer into a registered codex pane is pasted; a
+replaced pane gets it; a claude pane, whose row is its channel, is never typed into) and
+`native_facade_e2e::a_steer_and_a_background_childs_end_reach_every_native_paste_lane_as_user_turns`:
+on codex (pinned 0.147.0), opencode 1.18.32 and copilot 1.0.83 against the canned provider through
+the operator's own home, the steer arrives in the provider log as a user message, and on codex the
+pasted turn backgrounds a canned codex child whose end then arrives as the root's next user turn.
+**Not covered:** interactive claude stays on its MCP channel (refused under API-key auth; no paste
+fallback yet), and a message held by an injector whose pane is replaced is dropped rather than
+handed to the new one.
+
+**agy — Google's Antigravity CLI — is a row (s32, 2026-09-22, agy 1.2.8, `tests/fixtures/s32/`,
+the operator's own keychain login, `gemini-3.6-flash-low`).** Measured headless: `-p <prompt>
+--output-format stream-json --model <slug>`; no ACP, no MCP-config flag. **Declaration:** `--add-dir
+<root>` with `<root>/.agents/mcp_config.json` loads marion's server (the row's new
+`LiveDeclaration::ArgvRoot`, root `<config_dir>/agy-root`). **Workspace order is lexicographic:**
+with two `--add-dir` roots the model takes the first-sorting one as "the current directory" (5/5
+runs), and with none it does not know its cwd; the launch therefore names the cwd with `--add-dir`
+too and the adapter heads the prompt with the working directory, measured landing the write in the
+cwd with marion's root sorting first. **Approval:** headless auto-denies every tool it would prompt
+for at exit 0, `status: SUCCESS`, `denied_actions` and an `auto-denied` stderr line. None of
+`--mode accept-edits` (which does approve `write_to_file`, so a `write` compiles it), `--sandbox`,
+`ANTIGRAVITY_PERM_GRANTS=mcp(marion/*)`, or a `PreToolUse` hook in marion's root (`allow` leaves
+the call `DONE` with no output; `ask` + `permissionOverrides` is still denied) approves marion's
+tools, and no settings-path flag or variable exists; only `--dangerously-skip-permissions`
+(everything) or the operator's `"permissions": {"allow": ["mcp(marion/*)"]}` in
+`~/.gemini/antigravity-cli/settings.json` does. The row states `Approval::OperatorAllowlist`,
+marion never writes it, and `marion doctor` reports it granted or MISSING with the line. The rule
+was added to this machine's settings on 2026-09-22 with the operator's authorization (backup
+`settings.json.marion-backup`). **Stream:** a marion call is a `call_mcp_tool` `step_update` whose
+`parameters.ServerName` is `marion`; `DONE` answers only with an `output`
+(`Verdict::TerminalWithOutput`), `ERROR` carries the denial. **Resume:** `--conversation <id>`
+continues under the same id; an unknown id starts a new conversation at exit 0 with only a stderr
+warning. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is the only update switch; a pushed
+`notifications/message` is surfaced nowhere (`Push::None`); `clientInfo.name` is
+`antigravity-client`. **No canned route** (an API-key route would need the profile relocated): the
+adapter refuses a canned launch by name, so no canned matrix cell names agy. Built-ins `agy` (the
+implementer; `agy-impl` is its alias) and `agy-orchestrator`; the native lane ships disabled. **Verified live end to end (2026-09-27, agy 1.2.8,
+`gemini-3.6-flash-low`):** `MARION_LIVE_AGY=1 cargo test -p marion-supervisor --test agy_live` ran
+one `agy-impl` (now `agy`) child through `run_spawn` on the operator's login; it wrote `agy-live.txt` in its
+worktree, its `report` was approved by the operator rule (narrative the child's own), the parent's
+`grep -qx` verification passed in the worktree, and the file landed on `marion/agy-live`. A
+verification line mutated to expect other content failed the same run `Failed` (`1 of 1 commands
+did not exit 0`).
 
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
@@ -937,6 +996,49 @@ flag set, `system/init` still listed 15 slash commands, 5 agents and 15 skills, 
 no user hooks**. That is the pair that matters for isolation and cost, and MCP tools and the turn
 were unaffected — but the design doc previously implied a clean sweep. **The counts are this
 machine's configuration and are illustrative**; the durable finding is qualitative.
+
+**`--settings '{"disableAllHooks":true}'` turns off every operator hook and keeps their settings
+credential; nothing turns off their plugins as generically.** *(Claude Code 2.1.283, macOS darwin
+25.5.0, measured 2026-09-27 against a throwaway `CLAUDE_CONFIG_DIR` and a local fake Messages
+endpoint, no real account.)* The config dir's `settings.json` carried the credential (an `env` block
+with `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`; separately, an `apiKeyHelper`), user
+`SessionStart`/`UserPromptSubmit`/`Stop` hooks that touch marker files, and one installed plugin
+with its own `SessionStart`/`Stop` hooks and a skill. Results, headless `-p` with
+`--strict-mcp-config`:
+
+| extra flags | hooks fired | plugin loaded | request reached the fake with the settings' key |
+|---|---|---|---|
+| none | all five | yes | yes |
+| `--settings '{"disableAllHooks":true}'` | **none** | yes (skill listed) | **yes** (env key; `apiKeyHelper` too, as `Bearer`) |
+| `--safe-mode` | none | listed, skill gone | yes, but **`--mcp-config` servers dropped** (`mcp_servers: []`, no `mcp__` tool in the request) and CLAUDE.md unread |
+| `--settings` with `enabledPlugins: {}` | none | yes | yes: `{}` merges, it does not clear |
+| `--settings` with `enabledPlugins: {"<name>": false}` | none | no | yes, but needs each plugin's name |
+| `--setting-sources ""` | none | no | **no**: `Not logged in` |
+
+`--settings` merges over the operator's layers even when their own `settings.json` says
+`"disableAllHooks": false`. Hook callbacks registered in the stream-json `initialize` request still
+fire under the overlay (`UserPromptSubmit` and `Stop` callbacks both arrived), so a future
+control-protocol `Stop` re-prompt (§7.6) is unaffected. An interactive run (pty, trust accepted)
+behaves the same: without the overlay the user and plugin `SessionStart` hooks fire, with it none
+do. `--safe-mode` is unusable for marion because it drops marion's own MCP declaration; no
+`--no-plugins` flag or `CLAUDE_CODE_*` switch exists in `--help`. So every claude node marion
+launches (headless and pane, both auth modes) carries the overlay, and the native facade, where the
+operator drives their own claude, does not. The operator's plugin skills, agents and commands still
+load in a live node; `--strict-mcp-config` keeps plugin MCP servers out.
+
+**opencode has no switch that stops the operator's plugins but keeps a plugin-supplied login, so a
+live opencode node still runs them.** *(opencode 1.18.32, macOS darwin 25.5.0, measured 2026-09-27
+against throwaway `XDG_*` dirs and the same fake endpoint.)* The config dir's `opencode.json` named
+a local `file://` plugin that touches one marker on load and another from its `chat.params` hook,
+and an `anthropic` provider block with the key and base URL. Plain `run`: both markers, request
+sent with the config's key. `OPENCODE_CONFIG_CONTENT='{"plugin":[]}'`: **both markers still** (the
+`plugin` list concatenates across config layers; an empty one removes nothing). `--pure` (same as
+`OPENCODE_PURE=1`): no marker, request still sent. But `--pure` is exactly the switch the
+inherit-auth change made canned-only: an opencode plugin is one object carrying both its hooks and
+its `auth` provider, so dropping the user's plugin list drops any plugin that logs in, and the
+binary has no per-plugin or hooks-only disable (`OPENCODE_DISABLE_DEFAULT_PLUGINS` skips the
+built-in ones only). The row is left as it is; on this machine the operator's one plugin is
+`superpowers`, which supplies no auth.
 
 **`codex exec` resends the conversation: the Responses `input` grows with prior turns** — measured
 `ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
