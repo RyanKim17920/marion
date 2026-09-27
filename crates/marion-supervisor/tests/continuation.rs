@@ -19,6 +19,9 @@
 //! 4. **The wall clock is the node's, not the generation's.** A wedged generation two is killed
 //!    when the *original* bound runs out, so the node ends `TimedOut` inside its one bound.
 //!
+//! 5. **A `LaunchOnly` root is continued the same way**: a `marion run codex` root that
+//!    backgrounds a codex child is relaunched with the child's end as its second generation.
+//!
 //! The bed is `descendant_gate.rs`'s: a detached supervisor, a `codex` shim ahead of the real
 //! binary on its `PATH`, the root and grandchild blocked on gate files, and every wait a fact in
 //! the journal.
@@ -692,4 +695,123 @@ fn a_continuation_runs_on_what_is_left_of_the_nodes_own_wall_clock() {
         json!("TimedOut"),
         "generation two was killed on the node's bound: {completion}"
     );
+}
+
+// ---- the root site --------------------------------------------------------------------------------
+
+const ROOT_PUSH_MARKER: &str = "MARION-CONTINUATION-ROOT-PUSH-81c3";
+const ROOT_CHILD_MARKER: &str = "MARION-CONTINUATION-ROOT-CHILD-81c3";
+const ROOT_TOOK_THE_END: &str = "Took my child's end as my second turn.";
+
+/// **A `LaunchOnly` root is continued the same way**: a codex root under `marion run` backgrounds
+/// a codex child and ends its turn; marion holds the root while the child's end is owed, relaunches
+/// it under its thread with the rendered end as the prompt, journals the message delivered by that
+/// second generation, and only then ends the run.
+#[test]
+fn a_codex_roots_background_childs_end_is_its_second_generation() {
+    assert!(
+        on_path("codex"),
+        "this test drives a REAL codex root; put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let dir = scratch("continuation-root");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let reqlog = dir.join("provider-requests.jsonl");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog.clone(),
+        script: Script {
+            // Latest turn first: the root's second request replays its first.
+            nodes: vec![
+                NodeScript {
+                    marker: PUSH_MARKER.into(),
+                    call_prefix: "call_continuation_root_push".into(),
+                    turns: vec![],
+                    final_text: ROOT_TOOK_THE_END.into(),
+                },
+                NodeScript {
+                    marker: ROOT_CHILD_MARKER.into(),
+                    call_prefix: "call_continuation_root_child".into(),
+                    turns: vec![ScriptedCall::new(
+                        "report",
+                        json!({"narrative": "the root's child reported"}),
+                    )],
+                    final_text: "Reported.".into(),
+                },
+                NodeScript {
+                    marker: ROOT_PUSH_MARKER.into(),
+                    call_prefix: "call_continuation_root".into(),
+                    turns: vec![ScriptedCall::new(
+                        "spawn",
+                        json!({
+                            "agent_type": "codex-impl",
+                            "prompt": format!("{ROOT_CHILD_MARKER}: report at once"),
+                            "acceptance_criteria": ["it reported"],
+                            "writable_scope": ["src/**"],
+                            "timeout_secs": CHILD_TIMEOUT_SECS,
+                            "background": true,
+                        }),
+                    )],
+                    final_text: "Backgrounded a child; ending my turn.".into(),
+                },
+            ],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+
+    let out = marion_supervisor::run::run_bounded(
+        std::process::Command::new(env!("CARGO_BIN_EXE_marion"))
+            .args([
+                "run",
+                "codex",
+                "--prompt",
+                &format!("{ROOT_PUSH_MARKER}: background a child, then stop."),
+                "--repo",
+                &repo.to_string_lossy(),
+                "--state-dir",
+                &state.to_string_lossy(),
+                "--canned",
+                "--base-url",
+                &server.base_url(),
+                "--timeout",
+                "120",
+            ])
+            .current_dir(&dir),
+        BOUND,
+    )
+    .expect("marion run starts");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.timed_out, "marion run hung\nstderr:\n{stderr}");
+    assert_eq!(out.code, Some(0), "stderr:\n{stderr}");
+
+    let journal = ProjectDir::new(&state, &project_root(&repo)).journal();
+    let replay = tree(&journal);
+    let root = replay
+        .nodes()
+        .iter()
+        .find(|n| n.depth() == Some(0))
+        .cloned()
+        .expect("a root");
+    assert_eq!(root.spawn_generation, 2, "{root:#?}");
+    let thread = root
+        .harness_session
+        .clone()
+        .expect("codex named its thread");
+    let pushed = requests_carrying(&reqlog, PUSH_MARKER);
+    assert!(
+        !pushed.is_empty(),
+        "the root's second generation read the end"
+    );
+    assert!(
+        pushed
+            .iter()
+            .all(|r| r["body"].to_string().contains("call_continuation_root_00")),
+        "on thread {thread}, replaying the first generation's turn"
+    );
+    let delivered = deliveries(&journal, &root.agent_id);
+    assert_eq!(delivered.len(), 1, "{delivered:#?}");
+    assert_eq!(delivered[0].1, "continuation:gen2");
 }

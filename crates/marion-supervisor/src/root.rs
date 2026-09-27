@@ -376,14 +376,28 @@ pub struct RootNode {
     /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
     /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
     pub acp_agent: Option<String>,
-    /// The root's inbox and its row's mid-turn behaviour, for a typed root whose owner keeps one
-    /// (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's end
-    /// reach the root as a turn after its first. `None` on the pane and `LaunchOnly` paths, which
-    /// have no typed channel to carry one.
+    /// The root's inbox and its row's mid-turn behaviour, for a headless root whose owner keeps
+    /// one (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's
+    /// end reach the root as a turn after its first: through the typed driver on the duplex and
+    /// ACP paths, as a continuation ([`Self::relaunch`]) on the `LaunchOnly` one. `None` on the
+    /// pane, which takes its turns from a human.
     pub turns: Option<crate::inbox::TurnFeed>,
     /// The harness session this launch resumes, where it resumes one — what the stream is checked
     /// against ([`marion_harness::HarnessAdapter::resume_refusal`]).
     pub resumed: Option<String>,
+    /// What a `LaunchOnly` root's next generation is compiled from — the launch and context its
+    /// first was, which a continuation resumes under the observed session with the message as the
+    /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
+    /// no measured continuation (`TurnDelivery::Continuation`).
+    pub relaunch: Option<RootRelaunch>,
+}
+
+/// The inputs of a `LaunchOnly` root's compile, kept for its continuations. See
+/// [`RootNode::relaunch`].
+#[derive(Debug, Clone)]
+pub struct RootRelaunch {
+    launch: LaunchSpec,
+    ctx: SpawnCtx,
 }
 
 /// What the root's run produced.
@@ -819,18 +833,31 @@ pub fn prepare_watched(
         root_grant_record(&agent_id, &change_base, &launch.tools),
     );
 
-    // Bound before `agent_id` moves into the node. Headless, since only a typed path takes it.
-    let turns = matches!(path, RootPath::Duplex | RootPath::Acp)
-        .then(|| observer.turn_source(&agent_id))
-        .flatten()
-        .map(|source| {
-            crate::inbox::TurnFeed::new(
-                source,
-                adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
-            )
-        });
+    // Bound before `agent_id` moves into the node. Headless, since a pane takes no queued turn.
+    let turns = matches!(
+        path,
+        RootPath::Duplex | RootPath::Acp | RootPath::LaunchOnly
+    )
+    .then(|| observer.turn_source(&agent_id))
+    .flatten()
+    .map(|source| {
+        crate::inbox::TurnFeed::new(
+            source,
+            adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        )
+    });
+    // Only where the row measured a resume that continues the session (`TurnDelivery::Continuation`).
+    let continues = matches!(
+        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        marion_harness::spec::TurnDelivery::Continuation { .. }
+    );
+    let relaunch = (path == RootPath::LaunchOnly && continues).then(|| RootRelaunch {
+        launch: launch.clone(),
+        ctx: ctx.clone(),
+    });
     Ok(RootNode {
         turns,
+        relaunch,
         agent_id,
         project,
         agent_dir,
@@ -1265,7 +1292,14 @@ fn launch_inner(
         // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
-        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started, &session),
+        RootPath::LaunchOnly => launch_only(
+            node,
+            bound,
+            events.as_mut(),
+            &started,
+            &unaccountable,
+            &session,
+        ),
         // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
         // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
         // the byte-level record is `AgentDir::pty_cast()`.
@@ -1832,9 +1866,177 @@ fn launch_only(
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
     on_started: &dyn Fn(i32),
+    unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
     session: &crate::session_watch::SessionWatch<'_>,
 ) -> Result<RootOutcome, RootError> {
-    let inv = &node.invocation;
+    let adapter = adapter_for(node.harness)?;
+    let deadline = std::time::Instant::now() + bound;
+    // **The root's inbox, on the continuation lane** (`crate::continuation`): attached before the
+    // first launch, so a message queued while it runs is waiting at its stop.
+    let turns = node
+        .relaunch
+        .as_ref()
+        .and(node.turns.as_ref())
+        .map(|feed| crate::continuation::Turns::attach(std::sync::Arc::clone(&feed.source)));
+    let mut outcome = launch_only_generation(
+        node,
+        &node.invocation,
+        bound,
+        events.as_deref_mut(),
+        on_started,
+        session,
+        adapter.as_ref(),
+    )?;
+    // **Every stop is a turn boundary.** A root has no §7.6 gate of its own (it has no contract
+    // to hold), so its only hold is the inbox's: while a background child's end is owed it waits
+    // for it on its own clock, and a message waiting or arriving is its next generation — the same
+    // launch resumed under the session its stream named, with the message as the prompt.
+    let mut generation = 1u32;
+    loop {
+        let stop = crate::spawn::ChildOutcome {
+            exit_code: outcome.exit_code,
+            timed_out: outcome.timed_out,
+            failure: outcome.failure.clone(),
+            ..Default::default()
+        };
+        let mut gate =
+            |_: &crate::spawn::ChildOutcome,
+             _: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+                crate::descendant_gate::Waited::Settled(crate::descendant_gate::Gated::default())
+            };
+        let (message, resume) = match crate::continuation::boundary(
+            turns.as_ref(),
+            &stop,
+            session.session().as_deref(),
+            deadline,
+            &mut gate,
+        ) {
+            crate::continuation::Turn::Last(_) => break,
+            crate::continuation::Turn::Next { message, session } => (message, session),
+        };
+        let (Some(turns), Some(relaunch)) = (turns.as_ref(), node.relaunch.as_ref()) else {
+            unreachable!("a next turn is only ever taken from a LaunchOnly root's inbox")
+        };
+        generation += 1;
+        let via = format!("continuation:gen{generation}");
+        let launch = LaunchSpec {
+            resume: Some(resume),
+            prompt: crate::inbox::render(&message),
+            ..relaunch.launch.clone()
+        };
+        let inv = adapter
+            .config_files(&launch, &relaunch.ctx)
+            .map_err(RootError::from)
+            .and_then(|files| crate::run::write_config_documents(files).map_err(RootError::from))
+            .and_then(|_| compile_root(adapter.as_ref(), false, &launch, &relaunch.ctx));
+        let inv = match inv {
+            Ok(inv) => inv,
+            Err(e) => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it could not be compiled: {e}"),
+                );
+                continue;
+            }
+        };
+        // Delivered at the instant the process that carries it exists and is journaled — the
+        // generation's own `Spawned`, through the first generation's confirmation.
+        let carried = std::cell::Cell::new(false);
+        let started = |pid: i32| {
+            on_started(pid);
+            let failed = unaccountable.take();
+            if failed.is_none() {
+                turns.delivered(&message.id, &via);
+                carried.set(true);
+            }
+            unaccountable.set(failed);
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let next = launch_only_generation(
+            node,
+            &inv,
+            left,
+            events.as_deref_mut(),
+            &started,
+            session,
+            adapter.as_ref(),
+        );
+        match next {
+            Ok(later) => outcome = fold_generations(outcome, later),
+            Err(e) if !carried.get() => turns.dropped(
+                &message.id,
+                &format!("the continuation that would carry it did not start: {e}"),
+            ),
+            Err(e) => return Err(e),
+        }
+        // A generation marion could not journal is killed; `launch_inner` reports it as such.
+        if !carried.get() && unaccountable_is_set(unaccountable) {
+            turns.dropped(
+                &message.id,
+                "the continuation's process could not be journaled",
+            );
+            break;
+        }
+    }
+    // Evaluated **after** the transcript is assembled and before anything is returned, so the
+    // refusal is the run's outcome rather than a warning printed beside a success — over every
+    // generation's calls, since a resumed turn need not call marion again.
+    //
+    // A root marion killed on its own bound also reached no bridge, trivially — but "it never got
+    // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
+    // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
+    // other claim about the same run.
+    if !outcome.timed_out {
+        let delegated = started_a_child(node);
+        assert_the_root_delegated(node.harness, &outcome, delegated)?;
+        outcome.bridge_unused = !delegated && outcome.marion_calls.is_empty();
+    }
+    Ok(outcome)
+}
+
+fn unaccountable_is_set(cell: &std::cell::Cell<Option<crate::journal::JournalError>>) -> bool {
+    let failed = cell.take();
+    let set = failed.is_some();
+    cell.set(failed);
+    set
+}
+
+/// **A root's outcome after one more generation**: the process facts (exit, expiry, the stream's
+/// failure claim) are the last generation's, and what was said and called accumulates in order.
+fn fold_generations(earlier: RootOutcome, later: RootOutcome) -> RootOutcome {
+    let mut transcript = earlier.transcript;
+    transcript.extend(later.transcript);
+    let mut marion_calls = earlier.marion_calls;
+    marion_calls.extend(later.marion_calls);
+    let mut denied_permissions = earlier.denied_permissions;
+    denied_permissions.extend(later.denied_permissions);
+    RootOutcome {
+        exit_code: later.exit_code,
+        transcript,
+        stderr: match (earlier.stderr.is_empty(), later.stderr.is_empty()) {
+            (_, true) => earlier.stderr,
+            (true, false) => later.stderr,
+            (false, false) => format!("{}\n{}", earlier.stderr, later.stderr),
+        },
+        denied_permissions,
+        marion_calls,
+        timed_out: later.timed_out,
+        failure: later.failure,
+        bridge_unused: false,
+    }
+}
+
+/// One process of a `LaunchOnly` root: `inv` run under `bound`, its stream watched for the session
+/// and recorded whole, read into an outcome.
+fn launch_only_generation(
+    node: &RootNode,
+    inv: &Invocation,
+    bound: StdDuration,
+    events: Option<&mut crate::events::EventSink>,
+    on_started: &dyn Fn(i32),
+    session: &crate::session_watch::SessionWatch<'_>,
+    adapter: &dyn HarnessAdapter,
+) -> Result<RootOutcome, RootError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
@@ -1861,11 +2063,10 @@ fn launch_only(
     // a recording built from `transcript` would drop exactly those — rendering a root that printed
     // a stack trace as an unexplained silence, which is the failure `duplex::StreamEvent` has two
     // variants to prevent.
-    if let Some(es) = events.as_mut() {
+    if let Some(es) = events {
         es.record_capture(&stdout);
     }
-    let adapter = adapter_for(node.harness)?;
-    let outcome = RootOutcome {
+    Ok(RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),
         marion_calls: adapter.marion_calls(&stdout),
@@ -1883,21 +2084,7 @@ fn launch_only(
         denied_permissions: vec![],
         timed_out: out.timed_out,
         bridge_unused: false,
-    };
-    // Evaluated **after** the transcript is assembled and before anything is returned, so the
-    // refusal is the run's outcome rather than a warning printed beside a success.
-    //
-    // A root marion killed on its own bound also reached no bridge, trivially — but "it never got
-    // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
-    // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
-    // other claim about the same run.
-    let mut outcome = outcome;
-    if !outcome.timed_out {
-        let delegated = started_a_child(node);
-        assert_the_root_delegated(node.harness, &outcome, delegated)?;
-        outcome.bridge_unused = !delegated && outcome.marion_calls.is_empty();
-    }
-    Ok(outcome)
+    })
 }
 
 /// The ACP root: one driven turn, with every agent line teed live to `tee` as it arrives.

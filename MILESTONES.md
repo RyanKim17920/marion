@@ -170,7 +170,7 @@ Not measured: `-p` never enqueues the event, so the headless shape carries no fl
 parent still calls `wait`; every other row pushes MCP's `notifications/message`, which no harness has
 been observed to show the model. Claude Code auto-backgrounds a blocking `spawn` past ~2 min itself.
 
-**Turn delivery — `node/steer` queues (2026-09-22; typed lanes deliver since 2026-09-27, below).** Push and steer are one
+**Turn delivery — `node/steer` queues (2026-09-22; typed and continuation lanes deliver since 2026-09-27, below).** Push and steer are one
 mechanism: a message for a node's next turn. The supervisor keeps one inbox per node it owns
 (`inbox.rs`: opened at claim, sealed with every waiting message dropped when the node ends;
 `take_or_seal` closes the late-steer race under one lock), and `node/steer` is answered
@@ -181,8 +181,8 @@ ended node is refused pointing at `node/resume`, a spawning one says retry, and 
 `TurnDelivery` is `None` for the node's shape is `Unsupported`, quoting the row. The result is
 `queued: true` with a `message_id`; the journal gets `MessageQueued`/`Delivered`/`Dropped` with the
 length and SHA-256 only, and a restarted supervisor drops what its predecessor left queued
-(`restart::drop_undelivered`, reason `supervisor restarted`). The typed lanes (duplex, ACP) now
-deliver (next paragraph); the continuation, pty and bridge lanes are later phases, so on those an
+(`restart::drop_undelivered`, reason `supervisor restarted`). The typed lanes (duplex, ACP) and the
+continuation lane now deliver (next paragraphs); the pty and bridge lanes are later phases, so on those an
 accepted steer still waits and is dropped, journaled, when its node ends; a node this supervisor's `agent/spawn` did not launch
 (a native session, or one an earlier supervisor launched) has no inbox and is refused
 `Unimplemented`. `node/prompt` stays `Unimplemented` and points at `node/steer`.
@@ -263,7 +263,39 @@ model). First run on claude 2.1.280 (the release S31 measured) from the installe
 2026-09-27 the file goes through the suite's pin gate like every other real-harness suite, so it
 runs on the admitted release and each admission re-runs it — the installer had pruned 2.1.280,
 and the file skipped. Not
-yet: the continuation, pane and bridge lanes; `node/prompt`.
+yet: the pane and bridge lanes; `node/prompt`.
+
+**Turn delivery — the continuation lane delivers (2026-09-27).** A supervisor-owned `LaunchOnly`
+node whose row's headless `TurnDelivery` is `Continuation` (codex, opencode, copilot, qwen) takes
+its next turn as a **relaunch of the same node**: at each stop of its process
+(`continuation::boundary`) a message already queued, or one arriving while §7.6 holds the node for
+its descendants (`descendant_gate::gate_or_woken`), or while a background child's end is owed
+(`TurnSource::held`, waited on the inbox's latched port and bounded by the node's clock), is
+compiled into the same `LaunchSpec` with `resume` set to the session the node's stream named and
+the rendered message as the prompt (`run::declare_and_compile`, the path the first generation
+takes), and launched on what is left of the node's one wall clock. Its `Spawned` is the node's next
+generation (replay's `spawn_generation`, as `node/resume`'s), and the message is delivered
+`continuation:gen<N>` once that record is on disk. The report is the last one any generation made
+(`continuation::fold`); exit, expiry and the stream's failure are the last generation's; every
+generation's stdout goes to the event capture; the §7.6 verdict, `changed_paths`, the diff and
+verification are taken once, at the final stop. A death takes no further turn; a node whose stream
+named no session drops the message with that reason; a spent clock drops it too. Children
+(`run_spawn_watched`) and roots (`root::launch_only`, which has no §7.6 gate, only the inbox's hold)
+take the same boundary. Witnesses: `continuation::tests` (a waiting message, no session, a spent
+clock, a death, a message during the hold, an owed message waited for and not past the clock, the
+fold), and end to end with a real codex (the admitted release on `PATH`) behind the canned provider
+(`tests/continuation.rs`, $0): an operator steer during a §7.6 hold resumes the codex child as
+generation two — `exec … resume <thread>` with the rendered steer on argv, every generation-two
+request replaying the first turn's calls, delivered once `continuation:gen2` — and the
+grandchild's later end is generation three, with the contract carrying generation two's report; a
+grandchild's end during the hold resumes its codex parent, which reads and reports; a steer for a
+child whose stream named no thread is `MessageDropped` naming the session; a wedged continuation is
+killed on the first generation's bound (`TimedOut` inside it); a `marion run codex` root that
+backgrounds a codex child is relaunched with the child's end as generation two. All five RED with
+the lane unwired (one generation; the steer never delivered). opencode, copilot and qwen take the
+same code through their rows' measured resume spellings (S31) but are not driven end to end here.
+The canned run declares marion in codex's config document, which every generation re-reads; a live
+resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`).
 
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
