@@ -65,15 +65,33 @@ pub enum Effect {
     Recheck,
     /// Leave the screen, open the project's agents file in `$EDITOR`, come back and validate it.
     EditTypes,
+    /// Leave the screen, run `marion login <credential id>` (which reads the key itself, echo off),
+    /// come back and list the keys again. Only ever an operator's keypress: nothing else starts it.
+    Login(String),
+    /// Leave the screen, run `marion logout <credential id>`, come back. Destructive: after a `y`.
+    Logout(String),
+    /// Work out what the form's draft does to the agents file: the session reads the file, applies
+    /// the draft, holds the result to the spawn path's loader, and shows the diff for a `y`.
+    PreviewType(types_form::Draft),
+    /// Write the previewed file. Destructive (it replaces the operator's file): after a `y`.
+    WriteTypes {
+        text: String,
+        draft: types_form::Draft,
+    },
 }
 
 impl Effect {
     /// The command line this effect is, for the box to show and for the operator to learn. `None`
-    /// for [`Effect::None`] and [`Effect::Quit`], which are not commands.
+    /// for [`Effect::None`] and [`Effect::Quit`], which are not commands, and for the form's
+    /// preview and write, which the box and the diff describe instead.
     pub fn argv(&self) -> Option<Vec<String>> {
         let v = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
         Some(match self {
-            Effect::None | Effect::Quit => return None,
+            Effect::None | Effect::Quit | Effect::PreviewType(_) | Effect::WriteTypes { .. } => {
+                return None;
+            }
+            Effect::Login(id) => v(&["marion", "login", id]),
+            Effect::Logout(id) => v(&["marion", "logout", id]),
             Effect::Run {
                 agent_type,
                 model,
@@ -109,7 +127,10 @@ impl Effect {
 
     /// Whether this effect ends or discards something, and so waits for a `y`.
     pub fn destructive(&self) -> bool {
-        matches!(self, Effect::Cancel(_))
+        matches!(
+            self,
+            Effect::Cancel(_) | Effect::Logout(_) | Effect::WriteTypes { .. }
+        )
     }
 }
 
@@ -149,6 +170,67 @@ pub enum Mode {
     },
     /// A destructive effect waiting for `y`.
     Confirm(Effect),
+    /// Typing the credential id (`<provider>[:<label>]`) to hand to `marion login`.
+    Login {
+        text: String,
+    },
+    /// Filling in the agent-type form.
+    Form(Form),
+}
+
+/// The agent-type form: the draft, the field being edited, and why the last preview was refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Form {
+    pub draft: types_form::Draft,
+    pub field: usize,
+    pub error: Option<String>,
+}
+
+/// One field of the form, in the order it shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Name,
+    Harness,
+    Model,
+    Description,
+    Tools,
+    Provider,
+}
+
+impl Field {
+    pub const ALL: [Field; 6] = [
+        Field::Name,
+        Field::Harness,
+        Field::Model,
+        Field::Description,
+        Field::Tools,
+        Field::Provider,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Name => "name",
+            Field::Harness => "harness",
+            Field::Model => "model",
+            Field::Description => "description",
+            Field::Tools => "tools",
+            Field::Provider => "provider",
+        }
+    }
+
+    /// Picked with ←→ rather than typed.
+    pub fn is_choice(self) -> bool {
+        matches!(self, Field::Harness | Field::Tools)
+    }
+}
+
+/// One stored provider key, by credential id — the only thing about a key the home screen holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLogin {
+    pub provider: String,
+    pub id: String,
+    /// Why the store could not say, when it could not.
+    pub note: Option<String>,
 }
 
 /// Start's choices.
@@ -199,10 +281,21 @@ impl Default for Watch {
 /// Setup's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Setup {
+    /// Into the harnesses, then on into [`Setup::logins`].
     pub cursor: usize,
     pub expanded: bool,
     /// The last validation of the agents file: passed, and its one line.
     pub validation: Option<(bool, String)>,
+    /// The stored provider keys, as `marion login --list` finds them.
+    pub logins: Vec<StoredLogin>,
+    /// The provider ids that take a key: what `a` accepts before handing off.
+    pub providers: Vec<String>,
+    /// Where keys are kept (the store's own one line), once listed.
+    pub store: Option<String>,
+    /// Why the keys could not be listed, when they could not.
+    pub logins_error: Option<String>,
+    /// The previewed change to the agents file, while it waits for a `y`.
+    pub preview: Vec<types_form::DiffLine>,
 }
 
 /// The whole home screen's state.
@@ -374,11 +467,48 @@ impl Home {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Confirm(effect) => {
                 if key == Key::Char('y') {
+                    self.setup.preview.clear();
                     return effect;
                 }
-                self.notice = Some("not cancelled".into());
+                match effect {
+                    Effect::WriteTypes { draft, .. } => {
+                        self.setup.preview.clear();
+                        self.mode = Mode::Form(Form {
+                            draft,
+                            field: 0,
+                            error: None,
+                        });
+                        self.notice = Some("not written; still editing".into());
+                    }
+                    Effect::Logout(_) => self.notice = Some("key kept".into()),
+                    _ => self.notice = Some("not cancelled".into()),
+                }
                 Effect::None
             }
+            Mode::Login { mut text } => match key {
+                Key::Enter => self.login(text),
+                Key::Esc | Key::Ctrl('c') => Effect::None,
+                Key::Backspace => {
+                    text.pop();
+                    self.mode = Mode::Login { text };
+                    Effect::None
+                }
+                Key::Char(c) => {
+                    push_bounded(&mut text, &c.to_string());
+                    self.mode = Mode::Login { text };
+                    Effect::None
+                }
+                Key::Paste(p) => {
+                    push_bounded(&mut text, p.trim());
+                    self.mode = Mode::Login { text };
+                    Effect::None
+                }
+                _ => {
+                    self.mode = Mode::Login { text };
+                    Effect::None
+                }
+            },
+            Mode::Form(form) => self.form_key(form, key),
             Mode::Compose { target, mut text } => match key {
                 Key::Enter if !text.trim().is_empty() => Effect::Steer(target, text),
                 Key::Enter | Key::Esc | Key::Ctrl('c') => Effect::None,
@@ -587,17 +717,186 @@ impl Home {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.tab = Tab::Help,
             Key::Char('j') | Key::Down => {
-                let n = self.harnesses.len();
+                let n = self.harnesses.len() + self.setup.logins.len();
                 self.setup.cursor = (self.setup.cursor + 1).min(n.saturating_sub(1));
             }
             Key::Char('k') | Key::Up => self.setup.cursor = self.setup.cursor.saturating_sub(1),
             Key::Enter => self.setup.expanded = !self.setup.expanded,
             Key::Char('r') => return Effect::Recheck,
             Key::Char('e') => return Effect::EditTypes,
+            Key::Char('n') => {
+                self.mode = Mode::Form(Form {
+                    draft: types_form::Draft {
+                        harness: self.harness_choices().first().cloned().unwrap_or_default(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            }
+            Key::Char('a') => {
+                let text = self
+                    .selected_login()
+                    .map(|l| l.provider.clone())
+                    .unwrap_or_default();
+                self.mode = Mode::Login { text };
+            }
+            Key::Char('x') => match self.selected_login() {
+                Some(l) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
+                None => self.notice = Some("select a stored key to remove it".into()),
+            },
             _ => {}
         }
         Effect::None
     }
+
+    /// The stored key under Setup's cursor, when the cursor is past the harnesses.
+    pub fn selected_login(&self) -> Option<&StoredLogin> {
+        let i = self.setup.cursor.checked_sub(self.harnesses.len())?;
+        self.setup.logins.get(i)
+    }
+
+    /// The harnesses an agents file can name, in doctor's order: the rows whose name is a harness
+    /// spelling the file's loader accepts.
+    pub fn harness_choices(&self) -> Vec<String> {
+        self.harnesses
+            .iter()
+            .filter(|h| h.name.parse::<marion_core::harness::Harness>().is_ok())
+            .map(|h| h.name.clone())
+            .collect()
+    }
+
+    /// Enter in the login box: `marion login <text>` when its provider is one marion knows.
+    fn login(&mut self, text: String) -> Effect {
+        let text = text.trim().to_string();
+        let provider = text.split(':').next().unwrap_or("");
+        if text.is_empty() {
+            self.notice = Some("type a provider id, then enter".into());
+            return Effect::None;
+        }
+        if !self.setup.providers.iter().any(|p| p == provider) {
+            self.notice = Some(format!(
+                "no provider named `{provider}`; `marion login --list` shows them"
+            ));
+            return Effect::None;
+        }
+        Effect::Login(text)
+    }
+
+    fn form_key(&mut self, mut form: Form, key: Key) -> Effect {
+        let field = Field::ALL[form.field.min(Field::ALL.len() - 1)];
+        let step = |form: &mut Form, by: isize| {
+            let n = Field::ALL.len() as isize;
+            form.field = (form.field as isize + by).rem_euclid(n) as usize;
+        };
+        match key {
+            Key::Esc | Key::Ctrl('c') => return Effect::None,
+            Key::Tab | Key::Down => step(&mut form, 1),
+            Key::BackTab | Key::Up => step(&mut form, -1),
+            Key::Left | Key::Right if field.is_choice() => {
+                let by = if key == Key::Right { 1 } else { -1 };
+                match field {
+                    Field::Harness => {
+                        let choices = self.harness_choices();
+                        form.draft.harness = cycle(&choices, &form.draft.harness, by);
+                    }
+                    _ => {
+                        let at = types_form::Tools::ALL
+                            .iter()
+                            .position(|t| *t == form.draft.tools)
+                            .unwrap_or(0) as isize;
+                        let n = types_form::Tools::ALL.len() as isize;
+                        form.draft.tools = types_form::Tools::ALL[(at + by).rem_euclid(n) as usize];
+                    }
+                }
+            }
+            Key::Enter => {
+                let d = &form.draft;
+                let missing: Vec<&str> = [
+                    ("name", &d.name),
+                    ("harness", &d.harness),
+                    ("description", &d.description),
+                ]
+                .into_iter()
+                .filter(|(_, v)| v.trim().is_empty())
+                .map(|(n, _)| n)
+                .collect();
+                if !missing.is_empty() {
+                    form.error = Some(format!("needs a {}", missing.join(", a ")));
+                    self.mode = Mode::Form(form);
+                    return Effect::None;
+                }
+                form.error = None;
+                let draft = form.draft.clone();
+                self.mode = Mode::Form(form);
+                return Effect::PreviewType(draft);
+            }
+            Key::Backspace => {
+                if let Some(t) = text_of(&mut form.draft, field) {
+                    t.pop();
+                }
+            }
+            Key::Char(c) => {
+                if let Some(t) = text_of(&mut form.draft, field) {
+                    push_bounded(t, &c.to_string());
+                }
+            }
+            Key::Paste(p) => {
+                if let Some(t) = text_of(&mut form.draft, field) {
+                    push_bounded(t, &p.replace(['\n', '\r'], " "));
+                }
+            }
+            _ => {}
+        }
+        self.mode = Mode::Form(form);
+        Effect::None
+    }
+
+    /// The session's answer to [`Effect::PreviewType`]: the file it would write and the change,
+    /// which now waits for a `y`.
+    pub fn show_preview(&mut self, text: String, diff: Vec<types_form::DiffLine>) {
+        let draft = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Form(f) => f.draft,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.setup.preview = diff;
+        self.mode = Mode::Confirm(Effect::WriteTypes { text, draft });
+    }
+
+    /// The session's answer to [`Effect::PreviewType`] when the result would not load: the form
+    /// stays open and says why, in the loader's words.
+    pub fn form_refused(&mut self, why: String) {
+        if let Mode::Form(f) = &mut self.mode {
+            f.error = Some(why);
+        }
+    }
+}
+
+/// The text field `field` edits in `d`, or `None` for a field picked with ←→.
+fn text_of(d: &mut types_form::Draft, field: Field) -> Option<&mut String> {
+    match field {
+        Field::Name => Some(&mut d.name),
+        Field::Model => Some(&mut d.model),
+        Field::Description => Some(&mut d.description),
+        Field::Provider => Some(&mut d.provider),
+        Field::Harness | Field::Tools => None,
+    }
+}
+
+/// The choice `by` steps from `current` in `choices`, wrapping; the first when `current` is not one.
+fn cycle(choices: &[String], current: &str, by: isize) -> String {
+    if choices.is_empty() {
+        return current.to_string();
+    }
+    let n = choices.len() as isize;
+    let at = choices.iter().position(|c| c == current);
+    let next = match at {
+        Some(i) => (i as isize + by).rem_euclid(n),
+        None => 0,
+    };
+    choices[next as usize].clone()
 }
 
 /// The largest prompt or steer the box takes: `node/steer`'s own bound.

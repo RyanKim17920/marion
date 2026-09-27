@@ -106,6 +106,22 @@ fn fill(row: &mut Table, d: &Draft) {
     }
 }
 
+/// Replace the agents file at `path` with `text` through a temp file beside it and a rename, so a
+/// spawn reading it concurrently sees the old file or the new one, never half of either. The file
+/// holds no secret (a type names a provider, never a key), so it keeps the default mode.
+pub fn write(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("has no parent directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".agents.toml.{}", std::process::id()));
+    let written = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// One line of a diff: `+` added, `-` removed, ` ` kept for context.
 pub type DiffLine = (char, String);
 
@@ -187,6 +203,22 @@ mod tests {
     fn a_file_that_is_not_toml_is_refused_rather_than_rewritten() {
         assert!(apply("[[agent]\nname =", &draft("x")).is_err());
         assert!(apply("agent = 3\n", &draft("x")).is_err());
+    }
+
+    #[test]
+    fn write_replaces_the_file_and_leaves_no_temp_file_behind() {
+        let dir = std::env::temp_dir().join(format!("marion-form-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(".marion").join("agents.toml");
+        write(&path, "one\n").unwrap();
+        write(&path, "two\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("agents.toml")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

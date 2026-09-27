@@ -54,6 +54,9 @@ enum Handoff {
     Shell(PathBuf),
     Diff(String),
     EditTypes,
+    /// `marion login <credential id>` / `marion logout <credential id>`, in the foreground.
+    Login(String),
+    Logout(String),
 }
 
 /// What the side threads report.
@@ -61,6 +64,8 @@ enum Report {
     /// Doctor's rows for one harness.
     Doctor(Vec<doctor::Row>),
     DoctorDone,
+    /// The stored keys, as `marion login --list` finds them, and the store's name; or why not.
+    Logins(Result<(Vec<crate::login::ProviderLogins>, String), String>),
     /// A `marion run` finished: whether it started, its last line, and the root it named.
     Ran {
         ok: bool,
@@ -111,6 +116,8 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 s.foreground(c, "editor");
                 s.validate_types();
             }
+            Handoff::Login(id) => s.credential("login", &id),
+            Handoff::Logout(id) => s.credential("logout", &id),
         }
     }
 }
@@ -127,6 +134,8 @@ struct Session {
     last_detail: Option<Instant>,
     /// A root a run just started, to select once the forest shows it.
     pending_select: Option<String>,
+    /// The agents file as the form's preview read it: a write goes ahead only onto the same text.
+    preview_base: Option<String>,
     reports: Receiver<Report>,
     tx: Sender<Report>,
     tick: usize,
@@ -161,12 +170,14 @@ impl Session {
             last_dial: None,
             last_detail: None,
             pending_select: None,
+            preview_base: None,
             reports,
             tx,
             tick: 0,
         };
         s.load_types();
         s.recheck();
+        s.load_logins();
         s
     }
 
@@ -234,6 +245,16 @@ impl Session {
             Effect::Shell(dir) => Some(Handoff::Shell(dir)),
             Effect::Diff(branch) => Some(Handoff::Diff(branch)),
             Effect::EditTypes => Some(Handoff::EditTypes),
+            Effect::Login(id) => Some(Handoff::Login(id)),
+            Effect::Logout(id) => Some(Handoff::Logout(id)),
+            Effect::PreviewType(draft) => {
+                self.preview_type(&draft);
+                None
+            }
+            Effect::WriteTypes { text, draft } => {
+                self.write_types(&text, &draft.name);
+                None
+            }
             Effect::Steer(id, text) => {
                 self.home.notice = Some(
                     match crate::courier::steer(&self.socket, &id, &text, None) {
@@ -406,6 +427,86 @@ impl Session {
         }
     }
 
+    /// `marion login|logout <id>` with the terminal, then the keys listed again. Not
+    /// [`Session::marion`]: login takes no project flags, and its key prompt reads the terminal
+    /// itself with echo off, so the key never passes through this process.
+    fn credential(&mut self, verb: &str, id: &str) {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
+        let mut c = std::process::Command::new(exe);
+        c.args([verb, id]);
+        self.foreground(c, &format!("marion {verb}"));
+        if self.home.notice.is_none() {
+            self.home.notice = Some(format!("marion {verb} {id}: done"));
+        }
+        self.load_logins();
+    }
+
+    /// List the stored keys on a thread: the Keychain answers one `security` call per id, which is
+    /// too slow for a frame.
+    fn load_logins(&mut self) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Report::Logins(crate::login::user_logins()));
+        });
+    }
+
+    /// The form's draft applied to the agents file as it is now, held to the spawn path's loader,
+    /// and shown as a diff waiting for `y` — or the loader's refusal, back on the form.
+    fn preview_type(&mut self, draft: &super::types_form::Draft) {
+        let path = self.repo.join(crate::run::AGENT_TYPES_FILE);
+        let old = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return self.home.form_refused(format!("reading it: {e}")),
+        };
+        let new = match super::types_form::apply(&old, draft) {
+            Ok(t) => t,
+            Err(e) => return self.home.form_refused(e),
+        };
+        if let Err(e) = crate::run::agent_types_text(path, &new) {
+            return self.home.form_refused(e.to_string());
+        }
+        let diff = super::types_form::diff(&old, &new);
+        if diff.is_empty() {
+            return self
+                .home
+                .form_refused("the file already says exactly this".into());
+        }
+        self.preview_base = Some(old);
+        self.home.show_preview(new, diff);
+    }
+
+    /// Write the previewed file — only if it is still the file the preview was made from, and only
+    /// if the loader still takes the result — then validate and reload the types as `e` does.
+    fn write_types(&mut self, text: &str, name: &str) {
+        let path = self.repo.join(crate::run::AGENT_TYPES_FILE);
+        let base = self.preview_base.take();
+        let now = match std::fs::read_to_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+            Err(_) => None,
+        };
+        if base.is_none() || now != base {
+            self.home.notice = Some(format!(
+                "{} changed since the preview; nothing written — press n and preview again",
+                crate::run::AGENT_TYPES_FILE
+            ));
+            return;
+        }
+        if let Err(e) = crate::run::agent_types_text(path.clone(), text) {
+            self.home.notice = Some(format!("not written: {e}"));
+            return;
+        }
+        match super::types_form::write(&path, text) {
+            Ok(()) => {
+                self.validate_types();
+                self.home.notice =
+                    Some(format!("wrote {name} to {}", crate::run::AGENT_TYPES_FILE));
+            }
+            Err(e) => self.home.notice = Some(format!("not written: {e}")),
+        }
+    }
+
     fn load_types(&mut self) {
         match crate::run::agent_types(&self.repo) {
             Ok(types) => {
@@ -502,6 +603,27 @@ impl Session {
                     }
                 }
                 Report::DoctorDone => self.home.checking = false,
+                Report::Logins(Ok((providers, store))) => {
+                    let s = &mut self.home.setup;
+                    s.providers = providers
+                        .iter()
+                        .filter(|p| p.needs_key)
+                        .map(|p| p.id.clone())
+                        .collect();
+                    s.logins = providers
+                        .iter()
+                        .flat_map(|p| {
+                            p.stored.iter().map(|k| super::StoredLogin {
+                                provider: p.id.clone(),
+                                id: k.id.clone(),
+                                note: k.unreadable.clone(),
+                            })
+                        })
+                        .collect();
+                    s.store = Some(store);
+                    s.logins_error = None;
+                }
+                Report::Logins(Err(e)) => self.home.setup.logins_error = Some(e),
                 Report::Ran { ok, line, root } => {
                     self.home.notice = Some(line);
                     if ok {
