@@ -16,14 +16,17 @@
 //! criterion and does not imply it: a naive `killpg` satisfies that while every `setsid`-ed
 //! tool-call process keeps running, reparented to pid 1.
 //!
+//! The same criterion runs on a **real `opencode run`** child, whose tool call is opencode's own
+//! `bash` running the same case-B script (s36's opencode parity work).
+//!
 //! # Running it
 //!
 //! ```sh
 //! cargo test -p marion-supervisor --test timeout_kill
 //! ```
 //!
-//! It needs a real `codex` on `PATH` at a version [`marion_testsupport::PINNED_HARNESSES`]
-//! accepts, and it is not `#[ignore]`d: like `m1_hop`, a
+//! It needs a real `codex` and `opencode` on `PATH` at versions
+//! [`marion_testsupport::PINNED_HARNESSES`] accepts, and it is not `#[ignore]`d: like `m1_hop`, a
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
 
@@ -33,7 +36,7 @@ use std::time::{Duration, Instant};
 use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
-use marion_provider::{CannedServer, Config, Script};
+use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::kill::last_kill_sweep;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{alive, fixture_repo, kill_hard, on_path, pinned_version, scratch};
@@ -114,8 +117,70 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         "M1's sixth acceptance criterion is about a REAL codex child; put `codex` ({}) on PATH",
         pinned_version("codex")
     );
+    // `model: None`, exactly as before this field existed: `codex exec` takes no model argument,
+    // so this criterion's invocation is byte-identical to the one it has always measured.
+    a_timed_out_child_leaves_no_surviving_tool_call_descendant(
+        "s7-timeout",
+        "codex-impl",
+        None,
+        "Start the long-running command and keep it running.",
+        |runaway, pidfile| Script {
+            child_exec_js: Some(case_b_js(runaway, pidfile)),
+            ..Script::default()
+        },
+    );
+}
 
-    let root_dir = scratch("s7-timeout");
+/// The prompt marker an opencode child's canned turn is keyed on.
+const OPENCODE_MARKER: &str = "MARION-TIMEOUT-OPENCODE-5b21";
+
+/// **The same criterion on a real `opencode run` child.** Its one tool call is opencode's own
+/// `bash` running the same case-B script — a sleeper backgrounded and a second one `exec`'d, so
+/// the call never returns — and the child's bound expires with the call in flight. opencode starts
+/// a `bash` command as its own process tree, so what is asserted is marion's sweep reaching it,
+/// exactly as for codex's `setsid`'d `exec_command`.
+#[test]
+fn a_timed_out_opencode_child_leaves_no_surviving_tool_call_descendant() {
+    assert!(
+        on_path("opencode"),
+        "this cell drives a REAL opencode child; put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    a_timed_out_child_leaves_no_surviving_tool_call_descendant(
+        "s7-timeout-opencode",
+        "opencode",
+        Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+        &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
+        |runaway, pidfile| Script {
+            nodes: vec![NodeScript {
+                marker: OPENCODE_MARKER.into(),
+                call_prefix: "octimeout".into(),
+                turns: vec![ScriptedCall::new(
+                    "bash",
+                    serde_json::json!({
+                        "command": format!("/bin/sh {} {}", runaway.display(), pidfile.display()),
+                        "description": "Start the long-running command",
+                        "timeout": RUNAWAY_SECS * 1000,
+                    }),
+                )],
+                final_text: "The command finished.".into(),
+            }],
+            ..Script::default()
+        },
+    );
+}
+
+/// One child of `agent_type`, given `script` for its provider and a short bound, whose tool call is
+/// still running when the bound expires: every process marion's step 1 enumerated, and every pid
+/// the tool call recorded, must be gone, and the contract must say the child timed out.
+fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
+    tag: &str,
+    agent_type: &str,
+    model: Option<String>,
+    prompt: &str,
+    script: impl FnOnce(&Path, &Path) -> Script,
+) {
+    let root_dir = scratch(tag);
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -126,10 +191,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
     let server = CannedServer::start(Config {
         addr: ([127, 0, 0, 1], 0).into(),
         reqlog: root_dir.join("provider-requests.jsonl"),
-        script: Script {
-            child_exec_js: Some(case_b_js(&runaway, &pidfile)),
-            ..Script::default()
-        },
+        script: script(&runaway, &pidfile),
     })
     .expect("the canned provider binds");
 
@@ -142,16 +204,14 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
-        agent_type: "codex-impl".into(),
-        prompt: "Start the long-running command and keep it running.".into(),
+        agent_type: agent_type.into(),
+        prompt: prompt.into(),
         repo: repo.clone(),
         acceptance_criteria: vec!["the command is running".into()],
         verification: vec![],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
-        // None, exactly as before this field existed: `codex exec` takes no model argument, so
-        // this criterion's invocation is byte-identical to the one it has always measured.
-        model: None,
+        model,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
@@ -162,7 +222,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         "root",
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
     );
-    let contract = run_spawn(&env, &req, &TaskId("s7-timeout".into()), &caller)
+    let contract = run_spawn(&env, &req, &TaskId(tag.into()), &caller)
         .expect("the spawn path runs to a contract");
     let elapsed = started.elapsed();
 
@@ -191,7 +251,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
     assert_eq!(
         recorded.len(),
         2,
-        "the codex tool call did not record its runaway pids in {} within {elapsed:?}, so this \
+        "the {agent_type} tool call did not record its runaway pids in {} within {elapsed:?}, so this \
          run never reached case B and the criterion would be vacuous. Got {recorded:?}",
         pidfile.display()
     );
