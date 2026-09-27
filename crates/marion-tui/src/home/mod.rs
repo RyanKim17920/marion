@@ -21,6 +21,7 @@
 //! plan.
 
 pub mod help;
+pub mod keys;
 pub mod setup;
 pub mod start;
 pub mod text;
