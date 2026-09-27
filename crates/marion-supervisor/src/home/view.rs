@@ -9,8 +9,9 @@ use marion_core::proto::result::{ActionKind, ActionLine, NodeDetail};
 use marion_tui::home::help::KeyRow;
 use marion_tui::home::text::shell_line;
 use marion_tui::home::{
-    AgentTypeRow, Body, Expanded, HarnessRow, HelpView, Hint, Input, MessageView, NodeRow, Ready,
-    RecentRow, ResultView, SetupView, StartView, StreamLine, Tab, TaskView, TokenView, WatchView,
+    AgentTypeRow, Body, Expanded, FeedRow, HarnessRow, HelpView, Hint, Input, MessageView, NodeRow,
+    Ready, RecentRow, ResultView, SetupView, StartView, StreamLine, Tab, TaskView, TokenView,
+    WatchView,
 };
 use marion_tui::tree::Tone;
 
@@ -226,7 +227,16 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
         expanded: home.selected().map(|n| expanded(home, n)),
         running: crate::tree::running(&w.nodes),
         attention: crate::tree::attention_count(&w.nodes),
-        feed: Vec::new(),
+        feed: w
+            .feed
+            .iter()
+            .map(|f| FeedRow {
+                clock: local_clock(f.at),
+                tone: f.tone,
+                short: f.short.clone(),
+                text: f.text.clone(),
+            })
+            .collect(),
         filter: None,
     }
 }
@@ -295,12 +305,25 @@ fn clock(at: &str, with_seconds: bool) -> String {
     clock_in(at, offset, with_seconds)
 }
 
+/// `hh:mm` of a moment, in local time.
+fn local_clock(at: std::time::SystemTime) -> String {
+    let secs = at
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    clock_of(secs, local_offset(secs), false)
+}
+
 /// `hh:mm[:ss]` of `at` shifted by `offset` seconds east of UTC; `at` itself when it is not a
 /// timestamp marion recorded.
 pub fn clock_in(at: &str, offset: i64, with_seconds: bool) -> String {
-    let Some(secs) = epoch_secs(at) else {
-        return at.to_string();
-    };
+    match epoch_secs(at) {
+        Some(secs) => clock_of(secs, offset, with_seconds),
+        None => at.to_string(),
+    }
+}
+
+/// `hh:mm[:ss]` of `secs` since the epoch, `offset` seconds east of UTC.
+fn clock_of(secs: i64, offset: i64, with_seconds: bool) -> String {
     let day = (secs + offset).rem_euclid(86_400);
     let (h, m, s) = (day / 3600, day % 3600 / 60, day % 60);
     if with_seconds {

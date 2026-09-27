@@ -561,3 +561,38 @@ fn the_expanded_node_draws_per_turn_tokens_and_the_diff_it_landed() {
     let r = e.result.unwrap();
     assert_eq!((r.added, r.removed, r.files), (84, 12, 3));
 }
+
+/// The activity feed is what changed in the forest while the screen watched it, newest first:
+/// a node appearing, needing the operator, ending. The snapshot a screen opens on is where it
+/// starts, not a flood of "started" lines.
+#[test]
+fn the_feed_records_what_changed_while_the_screen_watched() {
+    let mut h = home();
+    h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    assert!(h.watch.feed.is_empty(), "the opening snapshot is not news");
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        node("kid", Some("root"), NodeState::Running),
+    ]);
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        node("kid", Some("root"), NodeState::Exited(ExitStatus::Failed)),
+    ]);
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        node("kid", Some("root"), NodeState::Exited(ExitStatus::Failed)),
+    ]);
+    let texts: Vec<(&str, &str)> = h
+        .watch
+        .feed
+        .iter()
+        .map(|f| (f.short.as_str(), f.text.as_str()))
+        .collect();
+    assert_eq!(
+        texts,
+        [("kid", "failed"), ("kid", "spawned by root · codex")]
+    );
+    let f = view::frame(&h, &view::Places::default());
+    assert_eq!(f.watch.feed.len(), 2);
+    assert_eq!(f.watch.feed[0].tone, marion_tui::tree::Tone::Failed);
+}

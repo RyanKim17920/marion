@@ -180,7 +180,22 @@ pub struct Watch {
     pub next: Option<u64>,
     /// Lines up from the newest the stream window is scrolled; 0 follows.
     pub scroll: usize,
+    /// What changed in the forest while the screen watched it, newest first, at most
+    /// [`FEED_MAX`].
+    pub feed: Vec<FeedItem>,
 }
+
+/// One change in the forest, as the feed shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedItem {
+    pub at: std::time::SystemTime,
+    pub tone: marion_tui::tree::Tone,
+    pub short: String,
+    pub text: String,
+}
+
+/// The most feed lines kept: more than any screen shows.
+pub const FEED_MAX: usize = 50;
 
 impl Default for Watch {
     fn default() -> Self {
@@ -192,6 +207,7 @@ impl Default for Watch {
             stream: Vec::new(),
             next: None,
             scroll: 0,
+            feed: Vec::new(),
         }
     }
 }
@@ -331,6 +347,13 @@ impl Home {
 
     /// A new snapshot of the forest, keeping the selection where the node survives.
     pub fn set_nodes(&mut self, nodes: Vec<NodeSummary>) {
+        if self.watch.supervisor {
+            let now = std::time::SystemTime::now();
+            for item in feed_items(&self.watch.nodes, &nodes) {
+                self.watch.feed.insert(0, FeedItem { at: now, ..item });
+            }
+            self.watch.feed.truncate(FEED_MAX);
+        }
         let keep = self.watch.tree.selected().map(|n| n.id.clone());
         self.watch.tree = crate::tree::build(&nodes, keep.as_deref());
         self.watch.nodes = nodes;
@@ -609,6 +632,42 @@ impl Home {
         }
         Effect::None
     }
+}
+
+/// What moved between two snapshots, oldest first: a node that appeared, and a node that came
+/// to need the operator or ended. Other moves (spawning to running, a turn starting) are the row's
+/// to show, not news.
+fn feed_items(old: &[NodeSummary], new: &[NodeSummary]) -> Vec<FeedItem> {
+    use crate::tree::{attention_of, row, short_id};
+    use marion_core::node::NodeState;
+    let mut out = Vec::new();
+    for n in new {
+        let item = |text: String| FeedItem {
+            at: std::time::UNIX_EPOCH,
+            tone: row(n).tone,
+            short: short_id(&n.agent_id.0).to_string(),
+            text,
+        };
+        match old.iter().find(|o| o.agent_id == n.agent_id) {
+            None => out.push(item(match &n.parent_id {
+                Some(p) => format!("spawned by {} · {}", short_id(&p.0), n.agent_type),
+                None => format!("started · {}", n.agent_type),
+            })),
+            Some(o) if o.state != n.state => {
+                let text = match n.state {
+                    NodeState::Exited(marion_core::contract::ExitStatus::Ok) => {
+                        Some("done".to_string())
+                    }
+                    NodeState::Exited(s) => Some(format!("{s:?}").to_lowercase()),
+                    NodeState::Blocked(_) => attention_of(n),
+                    _ => None,
+                };
+                out.extend(text.map(item));
+            }
+            Some(_) => {}
+        }
+    }
+    out
 }
 
 /// The largest prompt or steer the box takes: `node/steer`'s own bound.
