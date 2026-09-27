@@ -109,6 +109,36 @@ to another harness is refused by name. `prompt_prefix` is applied once, at resol
 contract records the prefixed prompt. Witnesses: `agent_type.rs` unit tests, `run.rs`/`handler.rs`
 unit tests, `mcp_conformance.rs`, and `tests/user_agent_types.rs` (a real codex child, $0.00).
 
+**Profiles (2026-09-27).** One login per directory, several per harness, all the operator's own:
+`$XDG_CONFIG_HOME/marion/profiles.toml` (`[default] <harness> = "<name>"`, `[[profile]] name,
+harness, dir`, the dir stored as the exact exported string) and `marion profile add|list|use|remove`
+(`profile_cli.rs`). Each `HarnessSpec` states a `ProfileCarrier` or `None` (`profile.rs`, sweep
+`every_row_states_its_profile_carrier_or_why_not`): claude `CLAUDE_CONFIG_DIR` with
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` removed, codex `CODEX_HOME`, opencode `XDG_DATA_HOME`, gemini
+`GEMINI_CLI_HOME`; copilot `None` — measured on 1.0.83 that a fresh empty `COPILOT_HOME` still reached
+the authenticated model check, so the login is not per home; goose, cline, qwen and ACP `None`,
+unmeasured. Measured the same day: a fresh `CLAUDE_CONFIG_DIR` answers `claude auth status --json`
+`loggedIn: false` on 2.1.283 and a fresh `CODEX_HOME` answers `codex login status` `Not logged in` on
+0.155.1; a profile with `settings.json`, `CLAUDE.md`, `skills`, `agents`, `commands` linked from
+`~/.claude` stays logged out, leaves the links in place and the linked settings unchanged. pi (0.80.2)
+relocates its whole config dir, `auth.json` included, with `PI_CODING_AGENT_DIR`; pi has no row here,
+so no carrier. Selection: the run's choice (`marion run --profile`, `agent/spawn`'s root-only
+`profile`, refused beside a caller; `MARION_PROFILE` for a native session), then the agent type's
+`profile` (one name or a list), then `[default]`; unknown, mismatched and missing-directory profiles
+are refused before the node exists. The profile rides `SessionObserved` and a resume uses it.
+Failure causes (`marion_harness::auth::failure_cause`, precedence usage limit > auth > outage, read
+only from stderr and error-shaped stream frames) land on `Completion::failure_cause`; a usage limit
+is a notice leading the exit description plus a reading kept for `profile list` and **never** a
+relaunch or a failover; a refused login on an unreported child relaunches it on the next listed
+profile, journaled `ProfileFailover`; a root takes its first profile only. The usage window is read
+off streams by row data (`StreamGrammar::rate_limit`; claude's `rate_limit_event` is the one measured
+frame). Witnesses: `auth.rs`, `profile.rs`, `profiles.rs`, `profile_cli.rs` unit tests and
+`tests/profiles.rs` (fake claude and codex shims, no real login: exact directory and cleared override,
+untouched environment without a profile, limit without failover, auth failover, resume on the recorded
+profile, root selection and the caller refusal, `profile add` running nothing, `profile list` reading
+the probe and the stored reading). Not built: subscription-account rotation of any kind (out of scope
+below) and API-key rotation.
+
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
 relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
 mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares
@@ -4066,6 +4096,9 @@ completely by the time you want your own execution semantics.
   requiring each node's test be observed failing before the work and passing after. Good idea,
   separate product, would consume this one. The task contract is shaped so it can attach later.
 - Arbitrary agent-to-agent mesh routing.
+- **Switching subscription accounts to keep working past a usage limit**, automatic or one keypress.
+  A limit is a notice (see Profiles above); only an expired or refused login fails over, and only to
+  a profile the agent type listed.
 - Remote hosting. Local-first; remote falls out of the supervisor split later.
 - Windows. The current hand-rolled PTY supports macOS and Linux only; a Windows
   ConPTY/`portable-pty` bridge remains deferred.

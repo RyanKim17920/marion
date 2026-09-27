@@ -96,6 +96,40 @@ marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
 
 Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 
+## Profiles: more than one login per harness
+
+A profile is a directory you logged into with the harness's own login, so a node can run on your work account while another runs on your personal one. marion never logs in, never copies, links or reads a credential, and never runs the login command; it only points the harness at the directory.
+
+```sh
+marion profile add claude work              # makes the directory and prints the login to run yourself:
+                                            #   CLAUDE_CONFIG_DIR='…/marion/profiles/claude-code/work' claude auth login
+marion profile add claude old --dir ~/.claude-work   # or adopt a directory you already use, exactly as you export it
+marion profile list                         # logged in or out (the harness's own status probe), last used, last limit reading
+marion profile use claude work              # make it the default for claude nodes
+marion profile remove old [--purge]         # --purge deletes only a directory marion made
+marion run claude --prompt "…" --profile work
+MARION_PROFILE=work marion claude           # a native session
+```
+
+Profiles live in `$XDG_CONFIG_HOME/marion/profiles.toml`, directories under `$XDG_DATA_HOME/marion/profiles/<harness>/<name>/`. An agent type in `.marion/agents.toml` names one with `profile = "work"`, or a list, `profile = ["work", "personal"]`. Resolution is the run's own choice (`--profile`, `MARION_PROFILE`), then the agent type, then `[default]`, then the harness's own default login. An unknown profile, a profile of another harness, and a directory that is gone are each refused before anything starts, naming `marion profile add`. A node's children run on their agent type's profile; a node cannot pick one.
+
+What happens when a run fails depends on why:
+
+- **Usage limit** (`You've hit your session limit`, `usage_limit_exceeded`, a rejected `rate_limit_event`, a 429): a notice — "profile `work` (claude) hit its session limit; resets 7:50pm" — leads the contract, the parent's `wait` and a backgrounded child's announcement, the node needs attention in the tree, and `profile list` shows the reading. Nothing is relaunched and no other account is suggested.
+- **Expired or refused login** (`Invalid API key`, `Not logged in`, a 401) on a child that reported nothing: marion relaunches it fresh on the next profile its agent type listed and journals a `ProfileFailover`. A root takes its first profile only.
+- **Vendor outage** (`overloaded_error`, a 529 or 5xx): recorded as the cause; the profile is never changed.
+
+A resume continues on the profile its session was recorded under. Profiles apply to live runs only; `--canned` runs keep marion's own isolation.
+
+| harness | profile variable | status probe | shared from the default directory |
+|---|---|---|---|
+| `claude` | `CLAUDE_CONFIG_DIR` (and `CLAUDE_SECURESTORAGE_CONFIG_DIR` removed) | `claude auth status --json` | `settings.json`, `CLAUDE.md`, `skills`, `agents`, `commands`, `keybindings.json` (links) |
+| `codex` | `CODEX_HOME` | `codex login status` | `config.toml`, `AGENTS.md` (links; never `auth.json`) |
+| `opencode` | `XDG_DATA_HOME` | `opencode/auth.json` exists | — |
+| `gemini` | `GEMINI_CLI_HOME` | `.gemini/oauth_creds.json` exists | — |
+| `copilot` | none: a fresh `COPILOT_HOME` still authenticates (1.0.83), so a directory cannot choose an account | | |
+| `goose`, `cline`, `qwen`, `acp:` | none yet: unmeasured | | |
+
 ## Where a child's work lands
 
 A child spawned with `isolation: "worktree"` works in its own git worktree on the branch `marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch — authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks and signing skipped — removes the worktree directory, and keeps the branch. The contract records the branch and commit (`completion.branch`, `completion.commit`), and `marion run` prints them under the child's `CHILD` line as `changes on branch marion/<task_id> (<sha>); merge with: git merge marion/<task_id>`. marion never merges into your branch; review and merge it yourself:
