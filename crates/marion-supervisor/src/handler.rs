@@ -4185,39 +4185,7 @@ impl RegistryHandle {
 
         let mut killed = Vec::with_capacity(targets.len());
         for node in targets {
-            self.journal_append(RecordKind::KillIntent(KillIntent {
-                agent_id: node.agent_id.clone(),
-                was: node.state,
-            }))
-            .map_err(journal_failure_before_signal)?;
-            let signal = node.reap_state != ReapState::ReapedIdle;
-            if signal
-                && !self.runtime.kill_process_tree_and_wait(
-                    node.pid.expect("preflight required a signal target PID"),
-                )
-            {
-                return Err(RpcError::internal(format!(
-                    "marion journaled the kill intent for `{}` and signalled its per-node process \
-                     tree, but could not observe its PID dead; the intent remains unconfirmed and \
-                     the supervisor will not exit (§6.7, §5.7)",
-                    node.agent_id.0
-                )));
-            }
-            self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
-                agent_id: node.agent_id.clone(),
-                exit: ProcessExit {
-                    code: None,
-                    signal: signal.then_some(9),
-                    description: if signal {
-                        "marion sent SIGKILL for confirmed session/quit KillTree".into()
-                    } else {
-                        "confirmed session/quit retired an already ReapedIdle node; no process \
-                         existed to signal"
-                            .into()
-                    },
-                },
-            }))
-            .map_err(journal_failure_after_signal)?;
+            self.kill_node(node, KillBy::QuitKillTree)?;
             killed.push(KilledNode {
                 agent_id: node.agent_id.clone(),
                 was: node.state,
@@ -4230,6 +4198,55 @@ impl RegistryHandle {
                 supervisor: SupervisorDisposition::Exiting,
             },
         })
+    }
+
+    /// **§6.7's kill of one node**: the intent made durable, the per-node process tree signalled
+    /// and observed dead, the confirmation made durable — and nothing else. Shared by
+    /// `session/quit`'s KillTree, which runs it per confirmed node, and, next, by `node/kill`; each caller
+    /// owns its own preflight, and neither the supervisor's exit nor any other node is this
+    /// function's business.
+    ///
+    /// A `ReapedIdle` node is retired rather than signalled: §7.2 already ended its process, and
+    /// its recorded pid may name something else by now. The confirmation then records no signal,
+    /// because marion sent none.
+    ///
+    /// The caller has checked that a node to be signalled has a recorded pid.
+    fn kill_node(
+        &self,
+        node: &marion_core::registry::ReplayedNode,
+        by: KillBy,
+    ) -> Result<(), RpcError> {
+        self.journal_append(RecordKind::KillIntent(KillIntent {
+            agent_id: node.agent_id.clone(),
+            was: node.state,
+        }))
+        .map_err(|e| journal_failure_before_signal_in(by.verb(), e))?;
+        let signal = node.reap_state != ReapState::ReapedIdle;
+        if signal
+            && !self.runtime.kill_process_tree_and_wait(
+                node.pid.expect("preflight required a signal target PID"),
+            )
+        {
+            return Err(RpcError::internal(format!(
+                "marion journaled the kill intent for `{}` and signalled its per-node process \
+                 tree, but could not observe its PID dead; the intent remains unconfirmed and \
+                 the supervisor will not exit (§6.7, §5.7)",
+                node.agent_id.0
+            )));
+        }
+        self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
+            agent_id: node.agent_id.clone(),
+            exit: ProcessExit {
+                code: None,
+                signal: signal.then_some(9),
+                description: if signal {
+                    by.signalled().into()
+                } else {
+                    by.retired().into()
+                },
+            },
+        }))
+        .map_err(|e| journal_failure_after_signal_in(by.verb(), e))
     }
 
     fn reap_idle_detach_busy(&self) -> Result<SessionQuitResult, RpcError> {
@@ -4378,17 +4395,57 @@ fn attach_io_failure(
 }
 
 fn journal_failure_before_signal(error: crate::journal::JournalError) -> RpcError {
-    RpcError::internal(format!(
-        "session/quit could not durably journal its intent, so it refused before signalling the \
-         node: {error}"
-    ))
+    journal_failure_before_signal_in("session/quit", error)
 }
 
 fn journal_failure_after_signal(error: crate::journal::JournalError) -> RpcError {
+    journal_failure_after_signal_in("session/quit", error)
+}
+
+fn journal_failure_before_signal_in(verb: &str, error: crate::journal::JournalError) -> RpcError {
     RpcError::internal(format!(
-        "session/quit changed a process but could not durably journal its confirmation; its intent \
+        "{verb} could not durably journal its intent, so it refused before signalling the node: \
+         {error}"
+    ))
+}
+
+fn journal_failure_after_signal_in(verb: &str, error: crate::journal::JournalError) -> RpcError {
+    RpcError::internal(format!(
+        "{verb} changed a process but could not durably journal its confirmation; its intent \
          remains for restart recovery and the supervisor will not exit: {error}"
     ))
+}
+
+/// Which operator act a [`RegistryHandle::kill_node`] carries out — what its journal records say
+/// marion did, and which verb its failures name. §6.7 wants the description to record marion as
+/// the sender; the act is what tells a reader why.
+#[derive(Clone, Copy)]
+enum KillBy {
+    /// §7.3.2's disposition (a), one confirmed node at a time.
+    QuitKillTree,
+}
+
+impl KillBy {
+    fn verb(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => "session/quit",
+        }
+    }
+
+    fn signalled(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => "marion sent SIGKILL for confirmed session/quit KillTree",
+        }
+    }
+
+    fn retired(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => {
+                "confirmed session/quit retired an already ReapedIdle node; no process existed to \
+                 signal"
+            }
+        }
+    }
 }
 
 impl Handle for RegistryHandle {
