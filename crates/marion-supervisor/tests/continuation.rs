@@ -344,6 +344,7 @@ fn params(
         isolation: None,
         allow_concurrent_writes: None,
         notify_parent: false,
+        profile: None,
     }
 }
 

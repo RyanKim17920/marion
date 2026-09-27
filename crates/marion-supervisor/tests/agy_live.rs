@@ -97,6 +97,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
+        profile: None,
     };
     let caller = Caller::root(
         "root",

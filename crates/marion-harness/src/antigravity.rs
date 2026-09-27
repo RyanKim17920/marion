@@ -240,6 +240,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             joins: true,
         }],
     }),
+    // Not measured: no usage-window reading was recorded for this harness.
+    rate_limit: None,
 };
 
 /// The root's declaration document: marion's server under `mcpServers`, the bridge's contract

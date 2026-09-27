@@ -250,6 +250,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             joins: false,
         }],
     }),
+    // Not measured: no usage-window reading was recorded for this harness.
+    rate_limit: None,
 };
 
 /// Relocates `auth.json`, `models.json`, `settings.json`, `sessions/` and extension discovery.
