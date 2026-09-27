@@ -419,7 +419,7 @@ fn identify(
     };
     let version = match agent {
         Some(_) => handshake.as_ref().map(AgentHandshake::key),
-        None => resolved.and_then(|p| read_version(p, notes)),
+        None => resolved.and_then(|p| read_version(p, adapter.harness(), notes)),
     };
     Identity { handshake, version }
 }
@@ -1401,14 +1401,25 @@ fn wait_bounded(
 }
 
 /// `<program> --version`, and the version token out of it.
-fn read_version(program: &Path, notes: &mut Vec<String>) -> Option<String> {
-    let started = Instant::now();
+/// `<program> --version`, carrying the harness row's no-self-update variable. Without it copilot
+/// 1.0.83 downloads a newer build and answers with *that* version, which is neither the build
+/// marion's nodes run (they carry the variable) nor one it should have fetched.
+fn version_command(program: &Path, harness: Harness) -> Command {
     let mut command = Command::new(program);
     command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some((key, value)) = marion_harness::adapter::harness_spec(harness).updates.env() {
+        command.env(key, value);
+    }
+    command
+}
+
+fn read_version(program: &Path, harness: Harness, notes: &mut Vec<String>) -> Option<String> {
+    let started = Instant::now();
+    let mut command = version_command(program, harness);
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
         .spawn(&mut command)
         .map_err(|e| notes.push(format!("version: FAILED — {e}")))
@@ -1969,6 +1980,34 @@ mod tests {
         );
         let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)], &[]);
         assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **The version probe runs the build marion's nodes run.** Each row's no-self-update
+    /// variable rides the `--version` call too: copilot answers a bare `--version` by fetching and
+    /// running a newer build, so doctor both reported a version no node uses and triggered the
+    /// download.
+    #[test]
+    fn the_version_probe_carries_each_rows_no_self_update_variable() {
+        for h in Harness::ALL {
+            let command = version_command(Path::new("/bin/x"), h);
+            let got: Vec<(String, String)> = command
+                .get_envs()
+                .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+                .collect();
+            let want: Vec<(String, String)> = marion_harness::adapter::harness_spec(h)
+                .updates
+                .env()
+                .into_iter()
+                .collect();
+            assert_eq!(got, want, "{h}");
+        }
+        let copilot = version_command(Path::new("/bin/copilot"), Harness::Copilot);
+        assert!(
+            copilot
+                .get_envs()
+                .any(|(k, v)| k == "COPILOT_AUTO_UPDATE" && v == Some("false".as_ref())),
+            "the case that was measured"
+        );
     }
 
     /// **The summary opens with the machine's own checks**, and one failing check makes the
