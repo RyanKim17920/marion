@@ -180,4 +180,11 @@ fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(staging).expect("staging dir");
     std::fs::rename(staging, dir).expect("move transcripts into place");
+    // A probe refused before its process started wrote nothing; an empty transcript says less
+    // than its absence beside the summary's reason.
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.metadata().is_ok_and(|m| m.len() == 0) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
