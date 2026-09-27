@@ -197,7 +197,6 @@ struct Signal {
 pub struct PasteInjector {
     signal: Mutex<Signal>,
     wake: Condvar,
-    #[cfg_attr(not(test), expect(dead_code, reason = "joined only by tests"))]
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
