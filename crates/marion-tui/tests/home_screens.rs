@@ -1009,7 +1009,14 @@ fn setup_expanded_harness() {
 fn setup_folds_the_harnesses_that_are_not_installed() {
     let mut v = setup_view(false);
     v.expanded = false;
-    for name in ["goose", "cline", "qwen", "acp kilo", "acp vibe", "acp vtcode"] {
+    for name in [
+        "goose",
+        "cline",
+        "qwen",
+        "acp kilo",
+        "acp vibe",
+        "acp vtcode",
+    ] {
         v.harnesses.push(harness(
             name,
             None,
