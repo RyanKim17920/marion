@@ -307,7 +307,7 @@ impl Extra {
         Extra {
             started_at,
             ended_at,
-            tokens: tallies.total(&n.agent_id),
+            tokens: tokens_of(n, tallies),
         }
     }
 }
@@ -1746,6 +1746,9 @@ impl RegistryHandle {
                 r.tree()
                     .nodes()
                     .iter()
+                    // An ended node that recorded its spend is answered from the journal, so its
+                    // stream is never read again — after a restart, not even once.
+                    .filter(|n| crate::node_detail::recorded_usage(n).is_none())
                     .filter(|n| !n.state.is_exited() || !self.tallies.settled(&n.agent_id))
                     .filter_map(|n| {
                         let i = crate::node_detail::inputs(n)?;
@@ -5084,8 +5087,16 @@ fn summarize_spent(
     tallies: &crate::usage_tally::Tallies,
 ) -> Result<NodeSummary, Unprojectable> {
     let mut s = summarize(n, pane)?;
-    s.tokens = tallies.total(&n.agent_id);
+    s.tokens = tokens_of(n, tallies);
     Ok(s)
+}
+
+/// A node's token total for its row: the journal's figure once it has ended and recorded one,
+/// else its stream's running tally — read from memory either way, no file.
+fn tokens_of(n: &ReplayedNode, tallies: &crate::usage_tally::Tallies) -> Option<u64> {
+    crate::node_detail::recorded_usage(n)
+        .map(|u| u.total())
+        .or_else(|| tallies.total(&n.agent_id))
 }
 
 /// The rule a node's usage is read by, from its adapter: no harness is named here.
@@ -5276,6 +5287,47 @@ mod tests {
 
     fn node_of(records: &[Vec<u8>], agent: &str) -> ReplayedNode {
         replay_of(records).get(&id(agent)).unwrap().clone()
+    }
+
+    /// **An ended node's row total is the journal's, with no tally ever taken** — what a restarted
+    /// supervisor shows for it before, and instead of, reading its stream; a node still running
+    /// shows its tally, whatever an earlier run recorded.
+    #[test]
+    fn an_ended_nodes_row_total_is_its_recorded_usage_without_a_tally() {
+        let usage = marion_core::contract::TokenUsage {
+            input: 90,
+            output: 20,
+            cache_read: 10,
+            cache_write: 0,
+            reasoning: Some(5),
+        };
+        let recorded = line(
+            1,
+            2,
+            RecordKind::UsageRecorded(marion_core::journal::UsageRecorded {
+                agent_id: id("child"),
+                usage,
+            }),
+        );
+        let intent = line(0, 1, intent("child", Some("root"), "codex-impl", 1));
+        let ended = line(
+            2,
+            3,
+            RecordKind::Exited(marion_core::journal::Exited {
+                agent_id: id("child"),
+                status: ExitStatus::Ok,
+                exit: marion_core::contract::ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "exited 0".into(),
+                },
+            }),
+        );
+        let none = crate::usage_tally::Tallies::default();
+        let n = node_of(&[intent.clone(), recorded.clone(), ended], "child");
+        assert_eq!(tokens_of(&n, &none), Some(120));
+        let running = node_of(&[intent, recorded], "child");
+        assert_eq!(tokens_of(&running, &none), None, "no tally was taken yet");
     }
 
     /// The projection, on a node the journal fully describes — including the two fields

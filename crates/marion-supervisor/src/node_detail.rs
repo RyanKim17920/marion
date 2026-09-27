@@ -10,7 +10,7 @@
 
 use marion_core::agent_type;
 use marion_core::contract::Oid;
-use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
+use marion_core::contract::{AgentId, TaskContract, TaskId, TokenUsage, Workspace};
 use marion_core::harness::Harness;
 use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
@@ -30,6 +30,17 @@ pub struct Inputs {
     pub task_id: Option<TaskId>,
     /// Where it was launched, for a node with no contract to say (a root).
     pub launch_workspace: Option<Workspace>,
+    /// What it spent, as the journal recorded it once it ended ([`recorded_usage`]).
+    pub recorded_usage: Option<TokenUsage>,
+}
+
+/// **An ended node's spend as the journal recorded it** (`ReplayedNode::usage`): the figure a view
+/// shows once the node is over, which needs no read of its stream and survives a restart through
+/// the registry fold. `None` while it runs — a resumed node's earlier runs are not the whole of it
+/// then, and its stream's running tally is — and for a node that recorded none (a harness stating
+/// no usage, a journal older than the record), where a view falls back to the tally.
+pub fn recorded_usage(node: &ReplayedNode) -> Option<TokenUsage> {
+    node.usage.filter(|_| node.state.is_exited())
 }
 
 /// [`Inputs`] from a replayed node, or `None` for one whose spawn intent was never read — there is
@@ -46,14 +57,16 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
             .map(|c| c.task_id.clone())
             .or_else(|| intent.task_id.clone()),
         launch_workspace: node.launch_workspace.clone(),
+        recorded_usage: recorded_usage(node),
     })
 }
 
 /// The detail for node `id`, read from its files under `project`, with a page of its activity
 /// stream from `cursor` when one was asked for.
 ///
-/// Usage and per-turn spend come from `tallies`, which reads only what the stream appended since
-/// the last question: a watcher asking once a second costs the new bytes, not the whole file.
+/// Usage is the journal's figure once the node has ended and recorded one; otherwise, and for the
+/// per-turn spend, it comes from `tallies`, which reads only what the stream appended since the
+/// last question: a watcher asking once a second costs the new bytes, not the whole file.
 pub fn read(
     project: &ProjectDir,
     id: &AgentId,
@@ -77,7 +90,7 @@ pub fn read(
         task: contract.as_ref().map(task_sent).or_else(|| root_task(&dir)),
         messages: messages(&project.journal(), id),
         stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
-        usage: spent.usage,
+        usage: i.recorded_usage.or(spent.usage),
         workspace: contract
             .as_ref()
             .map(|c| c.workspace.clone())
@@ -387,7 +400,82 @@ mod tests {
             launch_workspace: Some(Workspace::SharedCwd {
                 path: "/checkout".into(),
             }),
+            recorded_usage: None,
         }
+    }
+
+    /// **An ended node's recorded spend is its usage, with no stream to read** — the state a
+    /// restarted supervisor is in for a node whose `events.jsonl` is gone or was never kept — and
+    /// only once it has ended: a running node's figure is its stream's tally, and one that recorded
+    /// nothing falls back to that tally too.
+    #[test]
+    fn an_ended_nodes_recorded_usage_answers_without_its_stream() {
+        let (p, id) = project("detail-recorded");
+        let spent = TokenUsage {
+            input: 90,
+            output: 20,
+            cache_read: 10,
+            cache_write: 0,
+            reasoning: Some(5),
+        };
+        let with = |exited| Inputs {
+            recorded_usage: Some(spent),
+            ..inputs(exited, None)
+        };
+        let d = read(&p, &id, &with(true), None, &Default::default());
+        assert_eq!(d.usage, Some(spent), "no events.jsonl exists: {d:?}");
+        assert_eq!(
+            read(&p, &id, &inputs(true, None), None, &Default::default()).usage,
+            None,
+            "no record and no stream is no claim"
+        );
+
+        // Off the replayed journal: recorded, then ended.
+        let replayed = |kinds: Vec<RecordKind>| {
+            let mut bytes = Vec::new();
+            for (seq, kind) in kinds.into_iter().enumerate() {
+                bytes.extend(
+                    journal::encode(&JournalRecord {
+                        writer: marion_core::journal::WriterId("w".into()),
+                        seq: seq as u64,
+                        ts: SystemTime::from_unix_millis(1_790_000_000_000),
+                        mono_ns: 0,
+                        provenance: marion_core::ir::Provenance::marion(),
+                        src_seq: None,
+                        kind,
+                    })
+                    .unwrap(),
+                );
+            }
+            marion_core::registry::replay(&bytes)
+                .get(&id)
+                .cloned()
+                .unwrap()
+        };
+        let recorded = RecordKind::UsageRecorded(marion_core::journal::UsageRecorded {
+            agent_id: id.clone(),
+            usage: spent,
+        });
+        let running = replayed(vec![recorded.clone()]);
+        assert_eq!(running.usage, Some(spent));
+        assert_eq!(
+            recorded_usage(&running),
+            None,
+            "a node still running shows its tally"
+        );
+        let ended = replayed(vec![
+            recorded,
+            RecordKind::Exited(marion_core::journal::Exited {
+                agent_id: id.clone(),
+                status: marion_core::contract::ExitStatus::Ok,
+                exit: marion_core::contract::ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "exited 0".into(),
+                },
+            }),
+        ]);
+        assert_eq!(recorded_usage(&ended), Some(spent));
     }
 
     /// A landed child: its task, its stream's usage, its worktree, and a completion naming the
