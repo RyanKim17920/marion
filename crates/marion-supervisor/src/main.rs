@@ -10,7 +10,7 @@
 //! `bin/marion.rs` refuses every argv[0] but `run`, a refusal that is pinned by a test and that
 //! this change deliberately leaves standing. `detach.rs` owns all three of its stages.
 
-use marion_supervisor::{detach, doctor, mcp};
+use marion_supervisor::{detach, doctor, mcp, preflight};
 
 fn usage() -> ! {
     eprintln!("usage: marion-supervisor <mcp|serve|doctor|--version>");
@@ -35,10 +35,19 @@ fn main() {
         Some("doctor") => match doctor::parse_args(&argv[1..]) {
             Ok(opts) => {
                 let rows = doctor::run(&opts);
-                print!("{}", doctor::render(&rows));
+                let environment = preflight::checks(&preflight::gather());
+                print!("{}", doctor::render(&rows, &environment));
+                // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
+                // the doctor in either mode; a warning never does.
+                if environment
+                    .iter()
+                    .any(|c| c.level == preflight::Level::Fail)
+                {
+                    std::process::exit(1);
+                }
                 // A non-zero exit for a failing `--adapter`, so §8's "Run `--adapter` in CI" is a
-                // gate rather than a log. `--capabilities` cannot fail: it reports what is
-                // installed, and nothing being installed is an answer, not an error.
+                // gate rather than a log. A harness missing under `--capabilities` is not a
+                // failure: nothing being installed is an answer, not an error.
                 if rows.iter().any(|r| r.report.adapter_check == Some(false)) {
                     std::process::exit(1);
                 }

@@ -2447,10 +2447,13 @@ fn legacy_main() -> ExitCode {
 fn doctor_main(args: &[String]) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let supervisor = supervisor_binary();
-    let e = std::process::Command::new(&supervisor)
-        .arg("doctor")
-        .args(args)
-        .exec();
+    let mut doctor = std::process::Command::new(&supervisor);
+    doctor.arg("doctor").args(args);
+    // So the doctor reports this marion, not whichever one it would find on its own.
+    if let Ok(me) = std::env::current_exe() {
+        doctor.env(marion_supervisor::preflight::CLIENT_EXE_ENV, me);
+    }
+    let e = doctor.exec();
     eprintln!(
         "marion: cannot run {} doctor: {e}. marion-supervisor is installed with marion and must \
          sit in the same directory",

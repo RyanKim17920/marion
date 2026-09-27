@@ -90,6 +90,8 @@ mod native_tty;
 mod pane_client;
 /// Turn delivery into an interactive node: a bracketed paste into its pty.
 pub mod paste;
+/// `doctor`'s checks of the machine itself: the two binaries, the OS, the state dir, git.
+pub mod preflight;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;

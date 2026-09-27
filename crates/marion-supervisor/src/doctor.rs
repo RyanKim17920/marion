@@ -1627,12 +1627,22 @@ fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// binary) and one overall. A harness is ready when its binary answered with a version and, under
 /// `--adapter`, its micro-contract passed. A version newer than [`VERIFIED_HARNESSES`] is noted
 /// and stays ready: harnesses update themselves, and marion keeps running on them.
-pub fn verdict(rows: &[Row]) -> String {
+///
+/// It opens with the machine's own checks (`crate::preflight`); any failed check makes the overall
+/// verdict no.
+pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
     let node_rows: Vec<&Row> = rows
         .iter()
         .filter(|r| r.role == SurfaceRole::Node)
         .collect();
     let mut s = String::from("summary\n");
+    for c in environment {
+        s.push_str(&c.line());
+    }
+    let failed = environment
+        .iter()
+        .filter(|c| c.level == crate::preflight::Level::Fail)
+        .count();
     let mut ready = 0;
     for r in &node_rows {
         let label = row_label(r);
@@ -1668,8 +1678,8 @@ pub fn verdict(rows: &[Row]) -> String {
                     .filter(|(v, known)| cmp_versions(v, known).is_gt());
                 if let Some((_, known)) = newer {
                     s.push_str(&format!(
-                        " — note: newer than the last version marion verified ({known}); it \
-                         should work, and anything that does not is worth reporting"
+                        " — unmeasured: newer than the last version marion verified ({known}); \
+                         it should work, and anything that does not is worth reporting"
                     ));
                 }
                 s.push('\n');
@@ -1680,9 +1690,18 @@ pub fn verdict(rows: &[Row]) -> String {
         // `--capabilities` ran no turn: "ready" here is "installed and answering".
         s.push_str("  (ready = installed and answering; --adapter also runs one live turn each)\n");
     }
+    let failed_note = match failed {
+        0 => String::new(),
+        1 => ", 1 check failed".to_string(),
+        n => format!(", {n} checks failed"),
+    };
     s.push_str(&format!(
-        "overall: ready: {} ({ready} of {} ready)\n",
-        if ready > 0 { "yes" } else { "no" },
+        "overall: ready: {} ({ready} of {} ready{failed_note})\n",
+        if ready > 0 && failed == 0 {
+            "yes"
+        } else {
+            "no"
+        },
         node_rows.len()
     ));
     s
@@ -1702,7 +1721,8 @@ fn row_label(r: &Row) -> String {
     }
 }
 
-pub fn render(rows: &[Row]) -> String {
+/// The whole report: every row, then [`verdict`] with the machine's checks at its head.
+pub fn render(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
     let mut s = String::new();
     for r in rows {
         // The whole key on the header line, `role` included. A reader who takes one line out of
@@ -1730,7 +1750,7 @@ pub fn render(rows: &[Row]) -> String {
             r.report.elapsed.0.as_millis()
         ));
     }
-    s.push_str(&verdict(rows));
+    s.push_str(&verdict(rows, environment));
     s
 }
 
@@ -1891,7 +1911,7 @@ mod tests {
                 None,
             ),
         ];
-        let v = verdict(&rows);
+        let v = verdict(&rows, &[]);
         assert!(v.contains("codex 0.147.0: ready: yes"), "{v}");
         assert!(
             v.contains("gemini: ready: no — binary: `gemini` not found on $PATH"),
@@ -1901,16 +1921,22 @@ mod tests {
             v.trim_end().ends_with("overall: ready: yes (1 of 2 ready)"),
             "{v}"
         );
-        assert!(render(&rows).ends_with(&v), "render ends with the verdict");
+        assert!(
+            render(&rows, &[]).ends_with(&v),
+            "render ends with the verdict"
+        );
 
-        let none = verdict(&rows[1..]);
+        let none = verdict(&rows[1..], &[]);
         assert!(
             none.trim_end()
                 .ends_with("overall: ready: no (0 of 1 ready)"),
             "{none}"
         );
         // Under --adapter a failed micro-contract is not ready, whatever the version.
-        let failed = verdict(&[row(Harness::Codex, Some("0.147.0"), &[], Some(false))]);
+        let failed = verdict(
+            &[row(Harness::Codex, Some("0.147.0"), &[], Some(false))],
+            &[],
+        );
         assert!(
             failed.contains("ready: no — adapter check failed"),
             "{failed}"
@@ -1922,7 +1948,7 @@ mod tests {
     #[test]
     fn a_harness_newer_than_the_last_verified_version_is_ready_with_a_note() {
         let newest = last_verified(Harness::Codex).expect("codex has a verified version");
-        let v = verdict(&[row(Harness::Codex, Some("99.0.0"), &[], None)]);
+        let v = verdict(&[row(Harness::Codex, Some("99.0.0"), &[], None)], &[]);
         assert!(v.contains("codex 99.0.0: ready: yes"), "{v}");
         assert!(
             v.contains(&format!(
@@ -1930,8 +1956,38 @@ mod tests {
             )),
             "{v}"
         );
-        let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)]);
+        assert!(
+            v.contains("unmeasured"),
+            "a newer version is named unmeasured: {v}"
+        );
+        let same = verdict(&[row(Harness::Codex, Some(newest), &[], None)], &[]);
         assert!(!same.contains("newer than"), "{same}");
+    }
+
+    /// **The summary opens with the machine's own checks**, and one failing check makes the
+    /// overall verdict no, however many harnesses answered.
+    #[test]
+    fn the_summary_opens_with_the_environment_checks_and_a_failure_fails_it() {
+        use crate::preflight::{Check, Level};
+        let rows = [row(Harness::Codex, Some("0.147.0"), &[], None)];
+        let ok = [Check {
+            level: Level::Ok,
+            text: "macOS".into(),
+        }];
+        let v = verdict(&rows, &ok);
+        assert!(v.starts_with("summary\n  ok: macOS\n  codex"), "{v}");
+        assert!(v.contains("overall: ready: yes"), "{v}");
+        let failed = [Check {
+            level: Level::Fail,
+            text: "state dir /s is not writable".into(),
+        }];
+        let v = verdict(&rows, &failed);
+        assert!(v.contains("  FAIL: state dir /s is not writable\n"), "{v}");
+        assert!(
+            v.trim_end()
+                .ends_with("overall: ready: no (1 of 1 ready, 1 check failed)"),
+            "{v}"
+        );
     }
 
     /// **The verified-versions table is the test suite's, not a second opinion.** Each entry must
@@ -2019,7 +2075,7 @@ mod tests {
             generic.report.harness_version.as_deref(),
             Some("fake-acp-agent 0.1.0"),
             "the row is keyed on the agent's own `initialize`: {}",
-            render(&rows)
+            render(&rows, &[])
         );
         assert_eq!(generic.surfaces, acp::surfaces());
 
@@ -2156,7 +2212,7 @@ mod tests {
         assert!(
             !answered.is_empty(),
             "no installed ACP agent answered `initialize`, so this proved nothing: {}",
-            render(&rows)
+            render(&rows, &[])
         );
         // The version on an ACP row is the **agent's** identity, not a binary's `--version`: that
         // is the middle third of §3.3's key arriving from the handshake.
@@ -2181,7 +2237,7 @@ mod tests {
                 a.capabilities.granted().contains(f) != b.capabilities.granted().contains(f)
             })
             .collect();
-        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows));
+        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows, &[]));
         assert!(
             a.capabilities.fork && a.capabilities.resume,
             "`opencode acp` advertises sessionCapabilities {{close, fork, list, resume}}, and it \
@@ -2238,7 +2294,7 @@ mod tests {
         );
 
         // And the operator reads the difference rather than inferring it.
-        let out = render(&rows);
+        let out = render(&rows, &[]);
         assert!(out.contains("[node]") && out.contains("[pane]"), "{out}");
     }
 
@@ -2337,7 +2393,7 @@ mod tests {
         // And the report's side: the row prints the words rather than an empty column.
         let mut row = caps_rows(Some(Harness::Codex)).remove(0);
         row.report.harness_version = None;
-        let out = render(&[row]);
+        let out = render(&[row], &[]);
         assert!(
             out.contains("version undetermined"),
             "an unread version must be named in the header, not left blank: {out}"
@@ -2419,7 +2475,7 @@ mod tests {
     #[test]
     fn every_row_names_the_surfaces_its_capability_answer_is_keyed_on() {
         let rows = caps_rows(None);
-        let out = render(&rows);
+        let out = render(&rows, &[]);
         for r in &rows {
             let stage_one = static_caps(
                 r.report.harness,
