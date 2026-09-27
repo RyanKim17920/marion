@@ -578,6 +578,7 @@ dependencies = [
  "marion-term",
  "ratatui",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

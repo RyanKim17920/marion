@@ -52,6 +52,7 @@
 pub mod backend;
 pub mod cast;
 pub mod guard;
+pub mod home;
 pub mod keys;
 pub mod mouse;
 pub mod redraw;
