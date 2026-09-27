@@ -1587,6 +1587,14 @@ ever runs a real login.
   `MARION_CREDENTIAL_STORE=file` forces the file. A key file other users can read is refused.
   Custom providers load from the **user-level** `providers.toml` only. The Keychain round trip ran
   green once with `MARION_KEYCHAIN_TEST=1`; it is skipped by default.
+- **`marion login` — built.** `marion login <provider>` (terminal prompt with echo off, offering
+  the provider's own env var with a y/N consent), `--stdin`, `--from-env`, `--list` (id, name,
+  wires, stored or not — never the key), `marion logout <provider>`, and `marion login custom <id>
+  --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
+  refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
+  `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
+  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
+  on another branch.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

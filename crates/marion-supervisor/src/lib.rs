@@ -60,6 +60,7 @@ pub mod journal;
 /// The kill a bound sends at expiry: the `ps` walk that finds every descendant group first, and
 /// the observed-dead confirmation §6.7 asks for after it.
 pub mod kill;
+pub mod login;
 /// **marion's MCP surface**, shared by `marion-supervisor mcp` (the per-child bridge) and
 /// `marion mcp` (the top-level entry point). One dispatch, so there is one spawn path, and it
 /// goes over the socket.
