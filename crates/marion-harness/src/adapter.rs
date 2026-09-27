@@ -151,6 +151,8 @@ pub struct Extras {
     /// provider's URL would point a grandchild's canned overlay at a third party.
     pub tree_auth: Option<Auth>,
     pub tree_base_url: Option<String>,
+    /// The header an [`Auth::Endpoint`] node's provider reads its key from; `None` is Bearer.
+    pub key_header: Option<marion_core::provider::KeyHeader>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -761,6 +763,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         config_dir: spec.config_dir.clone(),
         auth: spec.auth,
         wire: spec.wire,
+        key_header: spec.extra.key_header,
         prompt: spec.prompt.clone(),
         model: spec.model.clone(),
         base_url,
@@ -818,6 +821,17 @@ fn render_row(
             harness: row.harness,
             what: "an endpoint launch must name a wire this harness has a recipe for; endpoint \
                    resolution chooses one from the row's `wires`",
+        },
+        spec::Refusal::NoKeyRecipe(header) => HarnessError::Unspellable {
+            harness: row.harness,
+            what: format!(
+                "the provider reads its key from `{}`, and this harness's recipe for the wire \
+                 cannot present it there",
+                match header {
+                    marion_core::provider::KeyHeader::Bearer => "Authorization: Bearer",
+                    marion_core::provider::KeyHeader::XApiKey => "x-api-key",
+                }
+            ),
         },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
@@ -1286,6 +1300,7 @@ impl HarnessAdapter for OpenCodeAdapter {
                 })?,
                 base_url: base_url.to_string(),
                 api_key: spec.api_key.clone(),
+                key_header: spec.extra.key_header.unwrap_or_default(),
             },
             bridge.as_ref(),
         );
@@ -2198,6 +2213,7 @@ impl HarnessAdapter for AcpAdapter {
                                 model,
                                 base_url,
                                 api_key: spec.api_key.clone(),
+                                key_header: Default::default(),
                             },
                             // **No `mcp` block.** marion's bridge is declared in `session/new`, and
                             // declaring it here as well would start a second copy of it.
@@ -3794,6 +3810,7 @@ mod tests {
                 model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
                 base_url: "http://127.0.0.1:8099/v1".into(),
                 api_key: None,
+                key_header: Default::default(),
             },
             Some(&BridgeEnv {
                 bridge: "/bin/marion-supervisor".into(),
@@ -3959,6 +3976,94 @@ mod tests {
                 Harness::Acp | Harness::Antigravity | Harness::Pi => &[],
             };
             assert_eq!(wires, want, "{h}");
+        }
+    }
+
+    /// `h`'s endpoint launch on `wire`, presenting its key in `header`, rendered to env.
+    fn keyed_env(
+        h: Harness,
+        wire: marion_core::provider::Wire,
+        header: marion_core::provider::KeyHeader,
+    ) -> Result<Vec<(String, String)>, HarnessError> {
+        let mut spec = endpoint(spec_for(h), "m-1", h);
+        spec.wire = Some(wire);
+        spec.extra.key_header = Some(header);
+        launch_adapter(h)?.compile(&spec, &ctx()).map(|i| i.env)
+    }
+
+    fn var<'e>(env: &'e [(String, String)], k: &str) -> Option<&'e str> {
+        env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+    }
+
+    /// **The provider's key header reaches the harness through the recipe, as data**: Claude
+    /// Code sends `ANTHROPIC_API_KEY` as `x-api-key` and `ANTHROPIC_AUTH_TOKEN` as a Bearer
+    /// token; copilot sends its API key as `x-api-key` on the anthropic type and its bearer token
+    /// as `Authorization`. Each recipe renders the one the provider reads, and blanks the other.
+    #[test]
+    fn each_recipe_presents_the_key_in_the_header_its_provider_reads() {
+        use marion_core::provider::{KeyHeader, Wire};
+        let key = "sk-endpoint-test";
+        let e = keyed_env(
+            Harness::ClaudeCode,
+            Wire::AnthropicMessages,
+            KeyHeader::XApiKey,
+        )
+        .unwrap();
+        assert_eq!(var(&e, "ANTHROPIC_API_KEY"), Some(key));
+        assert_eq!(var(&e, "ANTHROPIC_AUTH_TOKEN"), Some(""));
+        let e = keyed_env(
+            Harness::ClaudeCode,
+            Wire::AnthropicMessages,
+            KeyHeader::Bearer,
+        )
+        .unwrap();
+        assert_eq!(var(&e, "ANTHROPIC_AUTH_TOKEN"), Some(key));
+        assert_eq!(var(&e, "ANTHROPIC_API_KEY"), Some(""));
+        let e = keyed_env(
+            Harness::Copilot,
+            Wire::AnthropicMessages,
+            KeyHeader::XApiKey,
+        )
+        .unwrap();
+        assert_eq!(var(&e, copilot::PROVIDER_API_KEY_ENV), Some(key));
+        assert_eq!(var(&e, copilot::PROVIDER_BEARER_TOKEN_ENV), None);
+        let e = keyed_env(Harness::Copilot, Wire::AnthropicMessages, KeyHeader::Bearer).unwrap();
+        assert_eq!(var(&e, copilot::PROVIDER_BEARER_TOKEN_ENV), Some(key));
+        assert_eq!(var(&e, copilot::PROVIDER_API_KEY_ENV), Some(""));
+        let e = keyed_env(Harness::Copilot, Wire::OpenAiChat, KeyHeader::Bearer).unwrap();
+        assert_eq!(var(&e, copilot::PROVIDER_API_KEY_ENV), Some(key));
+    }
+
+    /// **A header a recipe cannot present is refused by name**, never sent in the other one.
+    #[test]
+    fn a_key_header_the_recipe_cannot_present_is_refused_naming_it() {
+        use marion_core::provider::{KeyHeader, Wire};
+        let err = keyed_env(Harness::Codex, Wire::OpenAiResponses, KeyHeader::XApiKey)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("x-api-key"), "{err}");
+        // With no header stated, a launch presents its key the default way.
+        let mut spec = endpoint(spec_for(Harness::Codex), "m-1", Harness::Codex);
+        spec.extra.key_header = None;
+        assert!(CodexAdapter.compile(&spec, &ctx()).is_ok());
+    }
+
+    /// **Every recipe states the headers it can present**, each noted, none twice, and Bearer —
+    /// every OpenAI-compatible server's — among them.
+    #[test]
+    fn every_recipe_states_the_key_headers_it_can_present() {
+        use marion_core::provider::KeyHeader;
+        for h in Harness::ALL {
+            for r in launch_adapter(h).unwrap().spec().wires {
+                let headers: Vec<KeyHeader> = r.keys.iter().map(|k| k.header).collect();
+                assert!(headers.contains(&KeyHeader::Bearer), "{h} {:?}", r.wire);
+                let mut d = headers.clone();
+                d.dedup();
+                assert_eq!(d.len(), headers.len(), "{h} {:?}: a header twice", r.wire);
+                for k in r.keys {
+                    assert!(!k.note.trim().is_empty(), "{h} {:?} {:?}", r.wire, k.header);
+                }
+            }
         }
     }
 
@@ -4598,6 +4703,7 @@ mod tests {
                         model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
                         base_url: "http://127.0.0.1:8099/v1".into(),
                         api_key: Some("sk-fake".into()),
+                        key_header: Default::default(),
                     },
                     Some(&BridgeEnv {
                         bridge: "/bin/marion-supervisor".into(),

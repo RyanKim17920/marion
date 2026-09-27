@@ -179,6 +179,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.",
     }],
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \

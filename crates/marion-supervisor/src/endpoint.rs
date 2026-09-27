@@ -13,7 +13,7 @@
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
-use marion_core::provider::{CredentialId, Registry, Wire};
+use marion_core::provider::{CredentialId, KeyHeader, Registry, Wire};
 use marion_harness::{Auth, LaunchSpec};
 
 use crate::credentials::{CredentialStore, Secret};
@@ -36,6 +36,8 @@ pub struct Endpoint {
     pub fallbacks: Vec<CredentialId>,
     /// The model id the provider is asked for, prefix removed.
     pub model: String,
+    /// The header the provider reads the key from — the provider row's, handed to the recipe.
+    pub key_header: KeyHeader,
 }
 
 /// Why a node naming a provider cannot run on it. No variant carries a key.
@@ -214,6 +216,7 @@ pub fn resolve_endpoint_with(
         credential,
         fallbacks,
         model,
+        key_header: provider.key_header,
     }))
 }
 
@@ -259,6 +262,7 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     launch.model = Some(ep.model.clone());
     launch.wire = Some(ep.wire);
     launch.provider = Some(ep.provider.clone());
+    launch.extra.key_header = Some(ep.key_header);
 }
 
 /// The model a resumed node asks for: its journaled provider back in front of the provider's model
@@ -498,6 +502,7 @@ mod tests {
             credential: CredentialId::default_for("groq"),
             fallbacks: vec![],
             model: "llama".into(),
+            key_header: KeyHeader::XApiKey,
         };
         apply(&mut launch, &ep);
         assert_eq!(launch.auth, Auth::Endpoint);
@@ -509,6 +514,7 @@ mod tests {
         assert_eq!(launch.model.as_deref(), Some("llama"));
         assert_eq!(launch.wire, Some(Wire::OpenAiChat));
         assert_eq!(launch.provider.as_deref(), Some("groq"));
+        assert_eq!(launch.extra.key_header, Some(KeyHeader::XApiKey));
         assert_eq!(launch.extra.tree_auth, Some(Auth::Canned));
         assert_eq!(
             launch.extra.tree_base_url.as_deref(),
@@ -625,6 +631,24 @@ mod tests {
             err.contains("openrouter:work, openrouter:personal") && err.contains("marion login"),
             "{err}"
         );
+    }
+
+    /// **The provider's key header rides the endpoint**: Anthropic's own row reads `x-api-key`,
+    /// OpenRouter's Anthropic route a Bearer key — the same wire, told apart by row data alone.
+    #[test]
+    fn the_endpoint_carries_the_header_its_provider_reads_the_key_from() {
+        let reg = Registry::seed();
+        let claude = ty(Harness::ClaudeCode, None, None);
+        let store = MemStore::with("anthropic", "sk-ant-test-1");
+        let ep = resolve_endpoint(Some("anthropic:m"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.key_header, KeyHeader::XApiKey);
+        let store = MemStore::with("openrouter", "sk-or-test-key");
+        let ep = resolve_endpoint(Some("openrouter:m"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.key_header, KeyHeader::Bearer);
     }
 
     #[test]

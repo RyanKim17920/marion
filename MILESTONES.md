@@ -1753,6 +1753,18 @@ ever runs a real login.
   Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
   with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
   is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
+- **Key header — built.** Which header a provider reads its key from is a provider column,
+  `key_header` (`bearer`, the default, or `x-api-key`; settable per custom provider in
+  `providers.toml`). The `anthropic` seed row states `x-api-key` — what Anthropic's SDKs send for an
+  API key; Anthropic's API docs (checked 2026-09-27) also accept `Authorization: Bearer <key>` and
+  call `x-api-key` the legacy fallback, still supported — while the Anthropic-compatible gateways
+  document Bearer. Each wire recipe lists the headers it can present (`keys`, a sweep holds every
+  recipe to state Bearer and a note per header); a header a recipe cannot present is refused by
+  name. Claude Code: Bearer through `ANTHROPIC_AUTH_TOKEN`, `x-api-key` through `ANTHROPIC_API_KEY`
+  (docs; not run, version gate). Copilot's anthropic type: `x-api-key` through its API key, Bearer
+  through `COPILOT_PROVIDER_BEARER_TOKEN` with the API key blanked (measured on 1.0.88: left set,
+  it is sent as a second credential). opencode: `x-api-key` as a provider-block header with no
+  `apiKey`. Canned cells green on 2026-09-27: copilot anthropic Bearer, opencode Chat `x-api-key`.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

@@ -39,7 +39,8 @@ fn fixture() -> &'static Fixture {
         write_owner_only(
             &config.join("credentials.json"),
             &format!(
-                "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\"}}}}\n"
+                "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\", \
+                 \"canned-anthropic-bearer\": \"{KEY}\", \"canned-chat-xkey\": \"{KEY}\"}}}}\n"
             ),
         );
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has read the
@@ -68,7 +69,9 @@ fn write_owner_only(path: &Path, body: &str) {
 
 /// Hold the cell lock and point the fixture providers at `base_url`: `canned-test` serving all
 /// four wires, `canned-chat` serving Chat Completions alone, `canned-anthropic` serving Anthropic
-/// Messages alone, `canned-nokey` with no stored key.
+/// Messages alone and reading its key from `x-api-key` as Anthropic's own API does,
+/// `canned-anthropic-bearer` the same wire reading a Bearer key as the gateways do, `canned-nokey`
+/// with no stored key, `canned-chat-xkey` serving Chat Completions and reading `x-api-key`.
 fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
     static CELLS: Mutex<()> = Mutex::new(());
     let guard = CELLS.lock().unwrap_or_else(|p| p.into_inner());
@@ -81,7 +84,11 @@ fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
              [providers.canned-chat]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\n\
              [providers.canned-nokey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\", \
              \"openai-responses\"]\n\n\
-             [providers.canned-anthropic]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n",
+             [providers.canned-anthropic]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n\
+             key_header = \"x-api-key\"\n\n\
+             [providers.canned-anthropic-bearer]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n\n\
+             [providers.canned-chat-xkey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\
+             key_header = \"x-api-key\"\n",
             // An Anthropic base is the root, as the seed rows spell it: the SDK appends `/v1`.
             root = base_url.trim_end_matches("/v1")
         ),
@@ -494,6 +501,56 @@ fn a_copilot_child_takes_its_anthropic_recipe_when_the_provider_serves_only_that
         },
         compiled_model: MODEL,
         wire: "anthropic",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+/// **The key header is the provider's, and the recipe honors it**: the same copilot anthropic
+/// recipe, against a provider that reads a Bearer key, presents `Authorization: Bearer` through
+/// `COPILOT_PROVIDER_BEARER_TOKEN` instead of the `x-api-key` the cell above sees.
+#[test]
+fn a_copilot_child_presents_a_bearer_key_to_an_anthropic_provider_that_reads_one() {
+    assert!(
+        on_path("copilot"),
+        "put `copilot` ({}) on PATH",
+        pinned_version("copilot")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-anthropic-bearer",
+        agent_type: "copilot",
+        script: Script {
+            root_tool: "marion-report".into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "anthropic",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+/// **An OpenAI-wire provider that reads `x-api-key`**: opencode's generated provider block carries
+/// the key as a header and sends no Bearer beside it.
+#[test]
+fn an_opencode_child_presents_an_x_api_key_to_a_chat_provider_that_reads_one() {
+    assert!(
+        on_path("opencode"),
+        "put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    let cell = Cell {
+        presents: Presents::XApiKey,
+        provider: "canned-chat-xkey",
+        agent_type: "opencode",
+        script: Script {
+            openai_report_tool: "marion_report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: "marion/endpoint-model-7",
+        wire: "openai",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }

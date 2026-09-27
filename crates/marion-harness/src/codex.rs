@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiResponses,
         env: &[],
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "OpenAI Responses alone: `wire_api = \"chat\"` was removed from codex, and the generated provider names `responses`.",
     }],
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
