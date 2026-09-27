@@ -50,7 +50,8 @@ use serde_json::Value;
 
 mod shim;
 pub use shim::{
-    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, process_shim,
+    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, installed_version,
+    process_shim,
 };
 
 // --- waiting ------------------------------------------------------------------------------------

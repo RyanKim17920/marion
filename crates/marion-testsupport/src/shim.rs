@@ -397,6 +397,26 @@ fn version_probe(pin: &PinnedHarness, path: &OsStr) -> Command {
     probe
 }
 
+/// The version of `pin.program` first on this process's `PATH`, read exactly as the gate reads it
+/// (the row's no-self-update env, the same parser) — but **not** through the shim and not judged
+/// against the table. `Err` says why there is no version: absent, failed, or unreadable.
+///
+/// For the nightly canary's drift report (`examples/harness_drift.rs`), which asks what is
+/// installed rather than whether a test may drive it.
+pub fn installed_version(pin: &PinnedHarness) -> Result<String, String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let out = version_probe(pin, &path)
+        .output()
+        .map_err(|e| format!("not runnable: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("`--version` exited {}", out.status));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_version(&stdout)
+        .map(str::to_string)
+        .ok_or_else(|| format!("no version in {:?}", stdout.trim()))
+}
+
 /// The env var `scripts/cargo-runner.sh` sets to the per-process shim directory it made.
 pub const SHIM_DIR_VAR: &str = "MARION_HARNESS_SHIM";
 
