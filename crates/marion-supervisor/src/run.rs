@@ -1690,6 +1690,10 @@ pub fn run_spawn_watched(
     let launched_at = Instant::now();
     let (launch, inv, mut run, version) = loop {
         let attempt_bound = bound.saturating_sub(launched_at.elapsed());
+        // The live stream is scrubbed of every key this node has been launched on, as it arrives.
+        if let (Some(es), Some(key)) = (&events, endpoint.as_ref().and_then(|e| e.key.as_ref())) {
+            es.scrub_key(key.expose());
+        }
         let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep);

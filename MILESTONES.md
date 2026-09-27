@@ -1744,7 +1744,9 @@ ever runs a real login.
   gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
   per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
   provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
-  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  is redacted of the key, and so is the live event stream: the node's `EventSink` scrubs every key
+  it has been launched on (a rotated child adds its next) from each frame and raw line before it is
+  written (unit-tested; the duplex claude cell cannot run here, version gate).
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
   Node config documents are now written `0600` (they carry the node token and, on opencode and
   cline endpoint nodes, the key).
