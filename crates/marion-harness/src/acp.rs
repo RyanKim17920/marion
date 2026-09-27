@@ -223,6 +223,12 @@ pub struct AgentHandshake {
     /// §6.4 forbids marion from making for the operator, and therefore one it must be able to
     /// *name*.
     pub auth_methods: Vec<String>,
+    /// `agentCapabilities.mcpCapabilities`' keys whose value is `true` — the MCP transports this
+    /// agent takes **beyond stdio**, which ACP requires of every agent (`http`, `sse`). Read, not
+    /// tabled: the protocol advertises it, so no refinement row restates it. An advertised `false`
+    /// (S33: `goose acp` sends `sse: false`) is not a transport, and an absent object is none.
+    /// Carried like [`Self::prompt_content_types`] and mapped to no [`Capabilities`] field.
+    pub mcp_transports: BTreeSet<String>,
 }
 
 impl AgentHandshake {
@@ -277,6 +283,16 @@ impl AgentHandshake {
                     ms.iter()
                         .filter_map(|m| m.get("id").and_then(Value::as_str))
                         .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mcp_transports: agent
+                .and_then(|a| a.get("mcpCapabilities"))
+                .and_then(Value::as_object)
+                .map(|o| {
+                    o.iter()
+                        .filter(|(_, on)| on.as_bool() == Some(true))
+                        .map(|(k, _)| k.clone())
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -2348,6 +2364,50 @@ mod tests {
             g_as_if.caps(&s),
             o.caps(&s),
             "prompt content types must contribute nothing to §3.3's ten fields"
+        );
+    }
+
+    /// S33's captures: the agent's own `initialize` answer for every agent probed on 2026-09-27.
+    const S33: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s33-acp-agents"
+    );
+
+    /// One S33 capture's frame by JSON-RPC id: `0` is `initialize`, `1` is `session/new`.
+    fn s33_frame(file: &str, id: u64) -> String {
+        let p = format!("{S33}/{file}.jsonl");
+        let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        text.lines()
+            .find(|l| {
+                serde_json::from_str::<Value>(l)
+                    .is_ok_and(|v| v.get("id").and_then(Value::as_u64) == Some(id))
+            })
+            .unwrap_or_else(|| panic!("{p} carries no frame with id {id}"))
+            .to_string()
+    }
+
+    /// **Which MCP transports an agent takes is advertised, so it is read, never tabled.** ACP's
+    /// `agentCapabilities.mcpCapabilities` names the transports beyond stdio (which every agent
+    /// must take) as booleans, and S33 measured all three shapes: both on (`kilo`), one on and one
+    /// explicitly off (`goose`: `http: true, sse: false`), and the object absent (`auggie`).
+    #[test]
+    fn the_mcp_transports_an_agent_advertises_are_read_off_its_handshake() {
+        let read = |file: &str| {
+            AgentHandshake::parse(&s33_frame(file, 0))
+                .unwrap()
+                .mcp_transports
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read("kilo"), ["http", "sse"]);
+        assert_eq!(
+            read("goose"),
+            ["http"],
+            "an advertised `false` is not a transport"
+        );
+        assert!(
+            read("auggie").is_empty(),
+            "no object, no transport beyond stdio"
         );
     }
 

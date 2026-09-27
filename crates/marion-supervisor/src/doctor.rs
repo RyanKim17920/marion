@@ -1211,6 +1211,15 @@ fn acp_handshake(
                     h.auth_methods.join(", ")
                 ));
             }
+            // Advertised, so read here rather than tabled on a refinement row: stdio is the one
+            // transport ACP requires of every agent, and `mcpCapabilities` names the rest.
+            notes.push(format!(
+                "mcp transports advertised: stdio{}",
+                h.mcp_transports
+                    .iter()
+                    .map(|t| format!(", {t}"))
+                    .collect::<String>()
+            ));
             Some(h)
         }
         Err(e) => {
@@ -2279,6 +2288,17 @@ mod tests {
             render(&rows, &[])
         );
         assert_eq!(generic.surfaces, acp::surfaces());
+        // Read off the same handshake, never off a table: the fake advertises no
+        // `mcpCapabilities`, so it takes the one transport ACP requires of every agent.
+        assert!(
+            generic
+                .report
+                .notes
+                .iter()
+                .any(|n| n == "mcp transports advertised: stdio"),
+            "{:?}",
+            generic.report.notes
+        );
 
         for bad in ["", "   "] {
             let e = parse_args(&argv(&["--capabilities", "--acp-command", bad])).unwrap_err();
