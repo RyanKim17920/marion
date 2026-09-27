@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true},"sessionCapabilities":{"list":{}}},"agentInfo":{"name":"auggie","title":"Auggie Agent","version":"0.36.0 (commit 7c61e5bb)"},"authMethods":[]}}
+{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Authentication required: Auggie does not currently support authenticating over ACP. Please run `auggie login` from your terminal then try again."}}

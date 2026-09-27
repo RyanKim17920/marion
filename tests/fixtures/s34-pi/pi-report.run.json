@@ -1,0 +1,22 @@
+{
+ "argv": [
+  "pi",
+  "-p",
+  "--mode",
+  "json",
+  "--no-extensions",
+  "--provider",
+  "marion",
+  "--model",
+  "canned-1",
+  "--tools",
+  "read,write,edit,mcp__marion__report",
+  "-e",
+  "<RUN-DIR>/marion-pi.js",
+  "do the task"
+ ],
+ "exit": 0,
+ "wall_s": 1.4,
+ "requests": 2,
+ "stderr": ""
+}

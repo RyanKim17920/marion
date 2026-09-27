@@ -31,6 +31,7 @@ use crate::grammar;
 use crate::invocation::Invocation;
 use crate::mcp_bridge::BridgeEnv;
 use crate::opencode;
+use crate::pi;
 use crate::qwen;
 use crate::spec::{self, Constraint, Spelling};
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
@@ -840,6 +841,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Cline => &cline::SPEC,
         Harness::Qwen => &qwen::SPEC,
         Harness::Antigravity => &antigravity::SPEC,
+        Harness::Pi => &pi::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1809,6 +1811,113 @@ impl HarnessAdapter for AntigravityAdapter {
     }
 }
 
+/// pi 0.80.2, headless `-p --mode json` (fixture `tests/fixtures/s34-pi/`).
+///
+/// qwen's arrangement of the axes — `--tools` is both what the model is offered and all it may run,
+/// since pi has no approval surface — with a declaration that is marion's own extension file. See
+/// [`pi`]'s module docs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PiAdapter;
+
+impl HarnessAdapter for PiAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Pi
+    }
+
+    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    /// built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
+    /// (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(self.native_tools(spec)?);
+        Ok(spec::Axes {
+            allowed: tools.clone(),
+            tools,
+            mode: None,
+        })
+    }
+
+    /// The refusals this harness owes, and the extension path.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                if spec.base_url.is_none() || spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Pi,
+                        what: "a canned node needs a provider base URL and an explicit model: \
+                               both are fields of the models.json marion writes, and marion will \
+                               not write a provider that points nowhere or names no model",
+                    });
+                }
+            }
+            Auth::Endpoint => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::Pi,
+                    what: "pi has no measured endpoint recipe: launch it canned or on your own \
+                           login",
+                });
+            }
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::PI_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Pi,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real model instead \
+                               (marion run --live -m …), or none to keep pi's own default",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
+            pi::extension_path(&spec.config_dir)
+                .to_string_lossy()
+                .into_owned()
+        });
+        Ok(f)
+    }
+
+    /// The extension first, where a declaration was asked for — it is what
+    /// [`McpRoute::Document`] checks — then, under `Canned`, the `models.json` the relocated agent
+    /// dir reads. Both are marion's own files under marion's own directory, so live mode writes the
+    /// extension too and nothing of the operator's.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let mut files = Vec::new();
+        if spec.mcp == McpDeclaration::Marion {
+            files.push((
+                pi::extension_path(&spec.config_dir),
+                pi::extension_source(&bridge_env(spec, ctx)),
+            ));
+        }
+        if spec.auth == Auth::Canned {
+            let missing = HarnessError::MissingInput {
+                harness: Harness::Pi,
+                what: "a canned models.json needs a base URL, a key and a model",
+            };
+            let (Some(url), Some(model)) = (spec.base_url.as_deref(), spec.model.as_deref()) else {
+                return Err(missing);
+            };
+            // pi lists a model only when its provider has a key; the canned endpoint ignores it.
+            let key = spec.api_key.as_deref().unwrap_or("marion-canned");
+            files.push((
+                pi::models_path(&spec.config_dir),
+                serde_json::to_string_pretty(&pi::models_json(url, key, model))
+                    .expect("a Value always serialises"),
+            ));
+        }
+        Ok(files)
+    }
+}
+
 /// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
 ///
 /// # What the surfaces are, and why
@@ -2255,6 +2364,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Cline => Ok(Box::new(ClineAdapter)),
         Harness::Qwen => Ok(Box::new(QwenAdapter)),
         Harness::Antigravity => Ok(Box::new(AntigravityAdapter)),
+        Harness::Pi => Ok(Box::new(PiAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -2584,6 +2694,16 @@ mod tests {
             base_url: None,
             api_key: None,
             model: Some(agent_type::AGY_DEFAULT_MODEL.into()),
+            ..codex_spec()
+        }
+    }
+
+    /// qwen's shape: a model because `models.json` names one, and marion's verb on the list.
+    fn pi_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            allowed_tools: vec!["mcp__marion__report".into()],
             ..codex_spec()
         }
     }
@@ -3712,6 +3832,7 @@ mod tests {
             Harness::Cline => cline_spec(),
             Harness::Qwen => qwen_spec(),
             Harness::Antigravity => agy_spec(),
+            Harness::Pi => pi_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -3835,7 +3956,7 @@ mod tests {
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]
                 }
-                Harness::Acp | Harness::Antigravity => &[],
+                Harness::Acp | Harness::Antigravity | Harness::Pi => &[],
             };
             assert_eq!(wires, want, "{h}");
         }
@@ -5838,8 +5959,9 @@ mod tests {
     /// end.
     ///
     /// So each built-in is bound the way a launch binds it, and the ACP ones are additionally
-    /// required to have a *measured* spelling: `agent::tools` is `None` on `gemini --acp`, and a
-    /// built-in pointed there would be s14 with marion holding the wrong end.
+    /// required to name an agent that opened a session (S33), bound to its measured spelling where
+    /// one was watched and to the generic reading otherwise. `gemini --acp` refused `session/new`,
+    /// so a built-in pointed there would be a type that cannot run.
     #[test]
     fn every_builtin_agent_type_binds_an_adapter_a_launch_could_use() {
         let mut acp = 0;
@@ -5859,15 +5981,18 @@ mod tests {
                                            registry — the type and the registry have drifted"
                 )
             });
+            // Every ACP built-in's agent opened a session when probed (S33); a guessed spelling is
+            // never compiled for it.
             assert!(
-                agent.tools.is_some(),
-                "`{name}` names `{id}`, which marion has never watched call a tool: a node of this \
-                 type would be handed a guessed spelling, which s14 measured as silently ignored"
+                matches!(agent.reach, acp::Reach::Opened { .. }),
+                "`{name}` names `{id}`, which never opened a session: a type for it could not run"
             );
-            // And the adapter it bound compiles *that* agent's spelling, not a neighbour's.
+            // The adapter it bound spells *that* agent's measured name, not a neighbour's — or,
+            // where no call was watched, reads it generically and spells the baseline, which on
+            // ACP reaches no model (the prompt rides `session/prompt`; `Reading::Generic`).
             assert_eq!(
                 a.marion_tool_name("report"),
-                agent.tools.unwrap().spell("report"),
+                agent.tools.unwrap_or(acp::GENERIC_SPELLING).spell("report"),
                 "`{name}`"
             );
         }
@@ -6125,6 +6250,10 @@ mod tests {
                 // S25: Claude Code's `assistant` `tool_use`, frame for frame.
                 Harness::Qwen => format!(
                     r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"c1","name":"{tool}","input":{args}}}]}}}}"#
+                ),
+                // S34's `tool_execution_start`: the arguments arrive parsed under `args`.
+                Harness::Pi => format!(
+                    r#"{{"type":"tool_execution_start","toolCallId":"c1","toolName":"{tool}","args":{args}}}"#
                 ),
                 // Two frames, because ACP is the one wire where the verb and the arguments never
                 // arrive together: S21's opening `tool_call` carries the title and an empty
@@ -8784,6 +8913,7 @@ mod tests {
             (Harness::Qwen, "continuation", "none"),
             // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
             (Harness::Antigravity, "continuation", "paste"),
+            (Harness::Pi, "continuation", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(
@@ -9165,6 +9295,7 @@ mod tests {
                 ("cline", "cli-flag"),
                 ("qwen", "cli-flag"),
                 ("agy", "operator-allowlist"),
+                ("pi", "none"),
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"

@@ -24,6 +24,7 @@ pub mod invocation;
 pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;
+pub mod pi;
 pub mod qwen;
 pub mod spec;
 pub mod stream;
@@ -33,7 +34,7 @@ pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
     AcpAdapter, AntigravityAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, CopilotAdapter,
     Extras, GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
-    McpRoute, OpenCodeAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
+    McpRoute, OpenCodeAdapter, PiAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
 };
 pub use auth::{Auth, auth_failure_line};
 pub use caps::{Capabilities, advertised, static_caps};

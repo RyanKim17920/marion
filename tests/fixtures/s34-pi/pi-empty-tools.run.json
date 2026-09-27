@@ -1,0 +1,20 @@
+{
+ "argv": [
+  "pi",
+  "-p",
+  "--mode",
+  "json",
+  "--no-extensions",
+  "--provider",
+  "marion",
+  "--model",
+  "canned-1",
+  "--tools",
+  "",
+  "do the task"
+ ],
+ "exit": 0,
+ "wall_s": 0.7,
+ "requests": 1,
+ "stderr": ""
+}

@@ -505,7 +505,7 @@ fn identify(
                     .map(|spec| child_shaped(adapter, spec))
                     .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
             )
-            .and_then(|(p, inv)| acp_handshake(p, &inv, notes)),
+            .and_then(|(p, inv)| acp_handshake(p, &inv, agent, notes)),
         None => None,
     };
     let version = match agent {
@@ -1058,7 +1058,17 @@ struct AcpChild {
     pid: i32,
     stdin: Option<std::process::ChildStdin>,
     frames: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Set by the stdout reader when the pipe closes: the agent has exited (or closed stdout), so
+    /// no answer can arrive and waiting out a budget would only delay the report.
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The agent's stderr, the last [`STDERR_TAIL`] lines of it — where an agent that exits at
+    /// startup says why (S33: `vtcode acp` "integration is disabled", `fast-agent-acp` "No model
+    /// configured").
+    stderr: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 }
+
+/// How many trailing stderr lines an ACP probe keeps.
+const STDERR_TAIL: usize = 8;
 
 impl AcpChild {
     fn spawn(program: &Path, inv: &Invocation) -> std::io::Result<Self> {
@@ -1067,7 +1077,7 @@ impl AcpChild {
             .current_dir(&inv.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         for (k, v) in &inv.env {
             cmd.env(k, v);
         }
@@ -1075,13 +1085,31 @@ impl AcpChild {
         let pid = child.id() as i32;
         let stdin = child.stdin.take();
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stderr = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
         if let Some(out) = child.stdout.take() {
             let sink = std::sync::Arc::clone(&frames);
+            let done = std::sync::Arc::clone(&closed);
             // Detached: the reader ends when the pipe closes, which the kill in `Drop` guarantees.
             std::thread::spawn(move || {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
                     sink.lock().expect("frame sink").push(line);
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        if let Some(err) = child.stderr.take() {
+            let tail = std::sync::Arc::clone(&stderr);
+            // Drained, never left to fill: an agent blocked on a full stderr pipe answers nothing.
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                    let mut t = tail.lock().expect("stderr tail");
+                    if t.len() == STDERR_TAIL {
+                        t.pop_front();
+                    }
+                    t.push_back(line);
                 }
             });
         }
@@ -1090,6 +1118,8 @@ impl AcpChild {
             pid,
             stdin,
             frames,
+            closed,
+            stderr,
         })
     }
 
@@ -1107,9 +1137,14 @@ impl AcpChild {
     /// It matches on the **id**, not on arrival order: S21 measured `session/update` notifications
     /// interleaved with, and arriving before, the response they belong to, so "the next line" is
     /// not the answer to anything.
+    ///
+    /// Also `None`, at once, when the agent's stdout has closed with no such frame on it: nothing
+    /// more can arrive, and [`Self::silence`] then says so in the agent's own words.
     fn response(&self, id: u64, budget: Duration) -> Option<String> {
         let deadline = Instant::now() + budget;
         while Instant::now() < deadline {
+            // Read before the scan, so a frame written just before the close is still seen.
+            let closed = self.closed.load(std::sync::atomic::Ordering::SeqCst);
             let seen = self.frames.lock().expect("frame sink").clone();
             for line in &seen {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
@@ -1121,9 +1156,31 @@ impl AcpChild {
                     return Some(line.clone());
                 }
             }
+            if closed {
+                return None;
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         None
+    }
+
+    /// Why [`Self::response`] came back empty: the agent exited first — quoting the last thing it
+    /// wrote to stderr, which is where an agent that refuses to start says why — or the budget ran
+    /// out on a live one.
+    fn silence(&self, budget: Duration) -> String {
+        if !self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return format!("no answer within {budget:?}");
+        }
+        // The stderr reader may trail the stdout one by a moment; give it that moment.
+        std::thread::sleep(Duration::from_millis(100));
+        let tail = self.stderr.lock().expect("stderr tail");
+        match tail.iter().rev().find(|l| !l.trim().is_empty()) {
+            Some(last) => format!(
+                "the agent exited before answering; its stderr ends: {}",
+                last.trim()
+            ),
+            None => "the agent exited before answering, and wrote nothing to stderr".to_string(),
+        }
     }
 
     fn stdout(&self) -> String {
@@ -1168,6 +1225,7 @@ const SESSION_BUDGET: Duration = Duration::from_secs(60);
 fn acp_handshake(
     program: &Path,
     inv: &Invocation,
+    binding: Option<&acp::Binding>,
     notes: &mut Vec<String>,
 ) -> Option<AgentHandshake> {
     let started = Instant::now();
@@ -1183,13 +1241,15 @@ fn acp_handshake(
         return None;
     }
     let frame = agent.response(0, HANDSHAKE_BUDGET);
-    let clean = agent.finish();
     let Some(frame) = frame else {
         notes.push(format!(
-            "initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"
+            "initialize: FAILED — {}",
+            agent.silence(HANDSHAKE_BUDGET)
         ));
+        agent.finish();
         return None;
     };
+    let clean = agent.finish();
     match AgentHandshake::parse(&frame) {
         Ok(h) => {
             notes.push(format!(
@@ -1211,6 +1271,17 @@ fn acp_handshake(
                     h.auth_methods.join(", ")
                 ));
             }
+            // Advertised, so read here rather than tabled on a refinement row: stdio is the one
+            // transport ACP requires of every agent, and `mcpCapabilities` names the rest.
+            notes.push(format!(
+                "mcp transports advertised: stdio{}",
+                h.mcp_transports
+                    .iter()
+                    .map(|t| format!(", {t}"))
+                    .collect::<String>()
+            ));
+            // Who the agent says it is, against the row the command was bound to (or none).
+            notes.extend(binding.and_then(|b| acp::identity_note(b, &h)));
             Some(h)
         }
         Err(e) => {
@@ -1316,7 +1387,7 @@ fn acp_initialize_step(
         Some(Err(e)) => Err((false, format!("initialize: FAILED — {e}"))),
         None => Err((
             false,
-            format!("initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"),
+            format!("initialize: FAILED — {}", agent.silence(HANDSHAKE_BUDGET)),
         )),
     }
 }
@@ -1335,7 +1406,7 @@ fn acp_session_step(
     match agent.response(marion_harness::adapter::SESSION_NEW_ID, SESSION_BUDGET) {
         None => Err((
             false,
-            format!("session/new: FAILED — no answer within {SESSION_BUDGET:?}"),
+            format!("session/new: FAILED — {}", agent.silence(SESSION_BUDGET)),
         )),
         Some(f) => match acp::session_id(&f) {
             Ok(id) => {
@@ -1708,6 +1779,7 @@ const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
     (Harness::Cline, "cline", "3.0.61"),
     (Harness::Qwen, "qwen", "0.23.0"),
     (Harness::Antigravity, "agy", "1.2.8"),
+    (Harness::Pi, "pi", "0.80.2"),
 ];
 
 /// The newest version marion verified `h` against, if it keeps one (an ACP agent's version is the
@@ -2279,6 +2351,26 @@ mod tests {
             render(&rows, &[])
         );
         assert_eq!(generic.surfaces, acp::surfaces());
+        // Read off the same handshake, never off a table: the fake advertises no
+        // `mcpCapabilities`, so it takes the one transport ACP requires of every agent.
+        assert!(
+            generic
+                .report
+                .notes
+                .iter()
+                .any(|n| n == "mcp transports advertised: stdio"),
+            "{:?}",
+            generic.report.notes
+        );
+        // An agent no row knows is the generic path, with nothing to say about identity; and
+        // every table row that answered still answers as the agent it was measured as.
+        for row in &rows {
+            assert!(
+                !row.report.notes.iter().any(|n| n.starts_with("identity")),
+                "{:?}",
+                row.report.notes
+            );
+        }
 
         for bad in ["", "   "] {
             let e = parse_args(&argv(&["--capabilities", "--acp-command", bad])).unwrap_err();
@@ -2288,6 +2380,46 @@ mod tests {
             parse_args(&argv(&["--capabilities", "--acp-command"]))
                 .unwrap_err()
                 .contains("--acp-command needs")
+        );
+    }
+
+    /// **An agent that exits before answering is reported at once, in its own words.** S33 met
+    /// two installed agents that print one line to stderr and exit at startup (`vtcode acp` with
+    /// its ACP integration off, `fast-agent-acp` with no model configured); the probe used to wait
+    /// out the whole 30 s handshake budget on each and then say "no answer", which names neither
+    /// the cause nor the fix. The agent here is a two-line script doing exactly that.
+    #[test]
+    fn an_acp_agent_that_exits_before_answering_is_reported_at_once_with_its_stderr() {
+        let dir = std::env::temp_dir().join(format!("marion-doctor-exit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("exits-at-startup");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'integration is disabled; set X=1' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let opts = Options {
+            mode: ProbeMode::Capabilities,
+            harness: Some(Harness::Acp),
+            model: None,
+            acp_command: Some(acp::Binding::resolve(script.to_str().unwrap()).unwrap()),
+        };
+        let started = Instant::now();
+        let rows = probe_one(Harness::Acp, &opts, opts.acp_command.as_ref());
+        assert!(
+            started.elapsed() < HANDSHAKE_BUDGET / 2,
+            "waited {:?} on an agent that had already exited",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let notes = &rows[0].report.notes;
+        assert!(
+            notes.iter().any(|n| n.starts_with("initialize: FAILED")
+                && n.contains("exited before answering")
+                && n.contains("integration is disabled; set X=1")),
+            "{notes:?}"
         );
     }
 
@@ -2648,6 +2780,7 @@ mod tests {
             Harness::Goose,
             Harness::Cline,
             Harness::Qwen,
+            Harness::Pi,
         ] {
             let rows = caps_rows(Some(h));
             let notes = rows[0].report.notes.join("\n");

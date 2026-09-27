@@ -51,6 +51,7 @@ says **not recorded** rather than guessing.
 | **S28** | *"The installed ACP agents nobody had driven, and the fourth spelling of one tool"* — can a fifth agent marion has no row for be read at all? | copilot 1.0.83, qwen 0.23.0, goose 1.49.0, gemini 0.53.0 | 2026-09-05 | fixtures only — `tests/fixtures/s28/` | measured with fixtures |
 | **S29** | *"Where `-C` goes on a `codex exec resume`"* | codex-cli 0.147.0 | 2026-09-06 | fixtures only — `tests/fixtures/s29/` | measured with fixtures |
 | **S30** | *"Does gemini's system-settings layer merge `mcpServers` per key, or replace it?"* | Gemini CLI 0.53.0, node 26.8.2 | 2026-09-10 | fixtures only — `tests/fixtures/s30/` | measured; the native-facade `gemini` lane is enabled on it |
+| **S34/pi** | *"Can a harness with no MCP client be a full marion node?"* — pi through a per-run extension that is an MCP client, its JSON stream, rpc mode and TUI | pi 0.80.2 | 2026-09-27 | driver `spikes/s34/` + `tests/fixtures/s34-pi/` | measured; the `pi` row and native lane stand on it |
 
 ---
 
