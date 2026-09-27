@@ -967,6 +967,20 @@ launches (headless and pane, both auth modes) carries the overlay, and the nativ
 operator drives their own claude, does not. The operator's plugin skills, agents and commands still
 load in a live node; `--strict-mcp-config` keeps plugin MCP servers out.
 
+**opencode has no switch that stops the operator's plugins but keeps a plugin-supplied login, so a
+live opencode node still runs them.** *(opencode 1.18.32, macOS darwin 25.5.0, measured 2026-09-27
+against throwaway `XDG_*` dirs and the same fake endpoint.)* The config dir's `opencode.json` named
+a local `file://` plugin that touches one marker on load and another from its `chat.params` hook,
+and an `anthropic` provider block with the key and base URL. Plain `run`: both markers, request
+sent with the config's key. `OPENCODE_CONFIG_CONTENT='{"plugin":[]}'`: **both markers still** (the
+`plugin` list concatenates across config layers; an empty one removes nothing). `--pure` (same as
+`OPENCODE_PURE=1`): no marker, request still sent. But `--pure` is exactly the switch the
+inherit-auth change made canned-only: an opencode plugin is one object carrying both its hooks and
+its `auth` provider, so dropping the user's plugin list drops any plugin that logs in, and the
+binary has no per-plugin or hooks-only disable (`OPENCODE_DISABLE_DEFAULT_PLUGINS` skips the
+built-in ones only). The row is left as it is; on this machine the operator's one plugin is
+`superpowers`, which supplies no auth.
+
 **`codex exec` resends the conversation: the Responses `input` grows with prior turns** — measured
 `ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
 from `tests/fixtures/s6/`, whose request log is reduced and strips `input`.
