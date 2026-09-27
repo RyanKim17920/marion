@@ -484,3 +484,80 @@ fn only_a_moving_screen_asks_for_a_clock() {
     h.tab = Tab::Start;
     assert!(h.animating());
 }
+
+#[test]
+fn elapsed_time_is_worded_short_and_widens_only_as_it_grows() {
+    use view::elapsed_word;
+    assert_eq!(elapsed_word(0), "0s");
+    assert_eq!(elapsed_word(45), "45s");
+    assert_eq!(elapsed_word(137), "2m17s");
+    assert_eq!(elapsed_word(724), "12m04s");
+    assert_eq!(elapsed_word(3900), "1h05m");
+    assert_eq!(elapsed_word(2 * 86_400 + 3 * 3600), "2d03h");
+}
+
+/// A row carries its elapsed time and its token total from the summary — for every node, not
+/// only the selected one whose detail was read.
+#[test]
+fn every_row_shows_its_elapsed_time_and_tokens() {
+    use marion_core::encoding::SystemTime;
+    let t0 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+    let mut running = node("a", None, NodeState::Running);
+    running.started_at = Some(SystemTime(t0));
+    running.tokens = Some(88_000);
+    let mut unstarted = node("b", None, NodeState::Running);
+    unstarted.started_at = None;
+    let mut h = home();
+    h.set_nodes(vec![running, unstarted]);
+    let now = t0 + std::time::Duration::from_secs(137);
+    let f = view::frame_at(&h, &view::Places::default(), now);
+    let a = &f.watch.rows[0];
+    assert_eq!((a.elapsed.as_str(), a.tokens), ("2m17s", Some(88_000)));
+    let b = &f.watch.rows[1];
+    assert_eq!(
+        (b.elapsed.as_str(), b.tokens),
+        ("", None),
+        "unknown is blank, never 0"
+    );
+}
+
+#[test]
+fn the_expanded_node_draws_per_turn_tokens_and_the_diff_it_landed() {
+    use marion_core::proto::result::DiffStat;
+    let mut h = home();
+    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
+    h.absorb_detail(
+        AgentId("a".into()),
+        NodeDetail {
+            usage: Some(marion_core::contract::TokenUsage {
+                input: 10,
+                output: 5,
+                cache_read: 0,
+                cache_write: 0,
+            }),
+            turns: vec![3, 12],
+            completion: Some(CompletionSummary {
+                status: ExitStatus::Ok,
+                narrative: None,
+                branch: Some("marion/t-1".into()),
+                commit: None,
+                changed_paths: 3,
+                exit: String::new(),
+                diff: Some(DiffStat {
+                    added: 84,
+                    removed: 12,
+                    files: 3,
+                }),
+            }),
+            ..Default::default()
+        },
+    );
+    let e = view::frame(&h, &view::Places::default())
+        .watch
+        .expanded
+        .unwrap();
+    let t = e.tokens.unwrap();
+    assert_eq!((t.rate, t.window.as_str()), (vec![3, 12], "turn"));
+    let r = e.result.unwrap();
+    assert_eq!((r.added, r.removed, r.files), (84, 12, 3));
+}

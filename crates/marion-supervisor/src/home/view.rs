@@ -45,11 +45,16 @@ impl Frame {
     }
 }
 
-/// One frame of `home`.
+/// One frame of `home`, now.
 pub fn frame(home: &Home, places: &Places) -> Frame {
+    frame_at(home, places, std::time::SystemTime::now())
+}
+
+/// One frame of `home` as of `now`, which elapsed times are worded against.
+pub fn frame_at(home: &Home, places: &Places, now: std::time::SystemTime) -> Frame {
     Frame {
         start: start(home),
-        watch: watch(home),
+        watch: watch(home, now),
         setup: setup(home, places),
         help: help(),
         input: input(home),
@@ -181,7 +186,7 @@ fn outcome_word(n: &NodeSummary) -> String {
 
 // ---------------------------------------------------------------------------------- Watch
 
-fn watch(home: &Home) -> WatchView {
+fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
     let w = &home.watch;
     let mut rows = Vec::new();
     let mut cursor = 0;
@@ -207,8 +212,10 @@ fn watch(home: &Home) -> WatchView {
             kind: n.name.clone().unwrap_or_else(|| kind_of(n)),
             short: short_id(&n.agent_id.0).to_string(),
             tone: tnode.tone,
-            elapsed: String::new(),
-            tokens: detail.and_then(|d| d.usage).map(|u| u.total()),
+            elapsed: row_time(n, now),
+            tokens: n
+                .tokens
+                .or_else(|| detail.and_then(|d| d.usage).map(|u| u.total())),
             doing: doing(n, detail, selected.then_some(&w.stream[..])),
         });
     }
@@ -221,6 +228,31 @@ fn watch(home: &Home) -> WatchView {
         attention: crate::tree::attention_count(&w.nodes),
         feed: Vec::new(),
         filter: None,
+    }
+}
+
+/// The row's time: how long a live node has been running. Blank where no start was recorded.
+fn row_time(n: &NodeSummary, now: std::time::SystemTime) -> String {
+    let Some(started) = n.started_at else {
+        return String::new();
+    };
+    if n.state.is_exited() {
+        return String::new();
+    }
+    now.duration_since(started.0)
+        .map(|d| elapsed_word(d.as_secs()))
+        .unwrap_or_default()
+}
+
+/// A duration as few characters as it needs: `45s`, `2m17s`, `12m04s`, `1h05m`, `2d03h`. The
+/// unit below the largest is zero-padded so a ticking column does not jitter.
+pub fn elapsed_word(secs: u64) -> String {
+    let (d, h, m, s) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    match (d, h, m) {
+        (0, 0, 0) => format!("{s}s"),
+        (0, 0, _) => format!("{m}m{s:02}s"),
+        (0, _, _) => format!("{h}h{m:02}m"),
+        _ => format!("{d}d{h:02}h"),
     }
 }
 
@@ -378,8 +410,9 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
             input: u.input,
             output: u.output,
             cached: u.cache_read,
-            rate: Vec::new(),
-            window: String::new(),
+            // Per turn where the harness reports usage per turn; empty draws no sparkline.
+            rate: d.turns.clone(),
+            window: "turn".into(),
             context_permille: None,
         }),
         result: d.completion.as_ref().map(|c| {
@@ -397,9 +430,12 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
                 summary,
                 tone: Some(tone),
                 branch: c.branch.clone(),
-                added: 0,
-                removed: 0,
-                files: u32::try_from(c.changed_paths).unwrap_or(u32::MAX),
+                added: c.diff.map_or(0, |d| d.added),
+                removed: c.diff.map_or(0, |d| d.removed),
+                files: c.diff.map_or_else(
+                    || u32::try_from(c.changed_paths).unwrap_or(u32::MAX),
+                    |d| d.files,
+                ),
                 merge: c.branch.as_ref().map(|b| format!("git merge --no-ff {b}")),
             }
         }),
