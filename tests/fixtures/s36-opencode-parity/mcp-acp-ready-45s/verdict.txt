@@ -1,0 +1,3 @@
+session/new declares slow (initialize held 45 s); no timeout configured
+session/new answered at ~33 s, the prompt request carried no slow_report
+FAIL: after ~30 s the session opens without the server and nothing says so

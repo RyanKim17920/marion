@@ -60,3 +60,23 @@ Running a probe: `probes/mkenv.sh` expects `probes/sb-warm/`, a sandbox in which
 `opencode run` has already completed (the first run in a fresh `HOME` installs
 `@opencode-ai/plugin` into the config dir, which took minutes under load). Close stdin
 (`</dev/null`): with a pipe on stdin, `opencode run` waits for it to reach EOF before it starts.
+
+## `mcp-acp-*` — the same questions over `opencode acp`
+
+`probes/drive_acp.py` is a minimal ACP client (`initialize`, `session/new` declaring
+`probes/slowmcp.py` in `mcpServers`, one `session/prompt`, `allow_once` on any permission ask);
+`acp-client.jsonl` is every frame both ways with its time.
+
+| probe | server | config | verdict |
+|---|---|---|---|
+| `mcp-acp-ready-8s` | `initialize` held 8 s | — | **PASS** — `session/new` answered only after the server was up |
+| `mcp-acp-ready-45s` | `initialize` held 45 s | — | **FAIL** — `session/new` answered at ~33 s and the session ran without the tool |
+| `mcp-acp-ready-45s-experimental` | `initialize` held 45 s | `experimental.mcp_timeout` 86400000 | **FAIL** — the startup limit is not that key |
+| `mcp-acp-call-75s` | `tools/call` held 75 s | — | **FAIL** — `tool_call_update` `failed` at 60 s, `MCP error -32001: Request timed out` |
+| `mcp-acp-call-75s-experimental` | `tools/call` held 75 s | `experimental.mcp_timeout` 86400000 | **PASS** |
+
+ACP's `mcpServers` entry has no timeout field, so a `session/new` server takes opencode's
+fallback, `experimental.mcp_timeout`. marion now sets it on every `opencode acp` node through
+`OPENCODE_CONFIG_CONTENT` (`opencode::acp_session_document`), under both modes. The ~30 s startup
+limit remains: marion's bridge must answer `initialize` inside it, which it does in well under a
+second when the machine is not saturated.

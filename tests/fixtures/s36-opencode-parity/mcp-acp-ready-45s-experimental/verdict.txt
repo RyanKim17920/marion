@@ -1,0 +1,3 @@
+as mcp-acp-ready-45s with experimental.mcp_timeout = 86400000
+session/new answered at ~33 s, the prompt request carried no slow_report
+FAIL: experimental.mcp_timeout does not lift the ~30 s startup limit for a session/new server

@@ -1836,14 +1836,15 @@ impl HarnessAdapter for AcpAdapter {
         // it.
         f.resume = None;
         (f.extra_env, f.model) = match (spec.auth, binding.canned()) {
-            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
-            // `session/set_config_option` and refuses the run by name where the agent offers no
-            // such model, so recording it here names what ran.
-            (Auth::Inherited, _) => (Vec::new(), spec.model.clone()),
-            // opencode's own isolation rows, over the same binary: the relocations, the hygiene
-            // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
-            // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
-            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+            // opencode's own rows, over the same binary, under **both** modes — they gate
+            // themselves on auth, exactly as they do for `opencode run`: canned, the relocations,
+            // the hygiene and `PWD` (placement, not isolation — S13 measured a child re-entering
+            // `$PWD` whatever it was `chdir`'d to); live, the hygiene and `PWD` only, so the
+            // operator's own login and config stay where opencode finds them. The inline document
+            // is the ACP one ([`opencode::acp_session_document`]): the bridge rides `session/new`,
+            // and only its call timeout has to be carried beside it.
+            (_, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+                f.inline_config = Some(opencode::acp_session_document());
                 let mut env = spec::render_env(opencode::SPEC.env, &f);
                 // And opencode's no-self-update switch, which is that row's policy rather than one
                 // of its `Env` rows — the same binary, one subcommand over, updates itself the same
@@ -1851,6 +1852,10 @@ impl HarnessAdapter for AcpAdapter {
                 env.extend(opencode::SPEC.updates.env());
                 (env, spec.model.clone())
             }
+            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
+            // `session/set_config_option` and refuses the run by name where the agent offers no
+            // such model, so recording it here names what ran.
+            (Auth::Inherited, None) => (Vec::new(), spec.model.clone()),
             // **Refused by name, per agent — and this is the one thing the baseline cannot do.**
             // The protocol has no provider channel anywhere in its handshake, so a generic agent
             // has no canned recipe by construction, and most refinement rows have none measured
@@ -6433,6 +6438,66 @@ mod tests {
         }
     }
 
+    /// **An `opencode acp` node carries what an `opencode run` node carries, under both modes** —
+    /// the row's hygiene, its no-self-update switch and its placement, each gated by the row
+    /// itself, so a live node keeps the operator's `HOME` and `XDG_*` roots and loses only what
+    /// `--live` removes. And the MCP timeout: s36 measured `opencode acp` 1.18.32 abandoning a
+    /// `tools/call` to a `session/new`-declared server at 60 s, and completing a 75 s one once
+    /// `experimental.mcp_timeout` was set — the one channel that reaches a server the config does
+    /// not itself declare. It rides `OPENCODE_CONFIG_CONTENT`, which merges over whatever config
+    /// the node reads, and it shadows none of the operator's provider settings.
+    #[test]
+    fn an_opencode_acp_node_carries_the_run_rows_env_and_outlasts_the_sixty_second_call_limit() {
+        for (mode, spec) in [("live", acp_spec()), ("canned", canned_acp_spec())] {
+            let inv = acp_adapter().compile(&spec, &ctx()).unwrap();
+            let env: std::collections::BTreeMap<&str, &str> = inv
+                .env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            for (k, v) in [
+                ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+                ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+                ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
+                ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+                ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+                ("OPENCODE_DISABLE_SHARE", "1"),
+            ] {
+                assert_eq!(env.get(k).copied(), Some(v), "{mode}: {k} in {env:?}");
+            }
+            assert_eq!(
+                env.get("PWD").copied(),
+                Some(spec.cwd.to_string_lossy().as_ref()),
+                "{mode}: placement, not isolation"
+            );
+            let content: serde_json::Value = serde_json::from_str(
+                env.get(opencode::CONFIG_CONTENT_ENV)
+                    .unwrap_or_else(|| panic!("{mode}: no inline config in {env:?}")),
+            )
+            .unwrap();
+            assert_eq!(
+                content["experimental"]["mcp_timeout"],
+                serde_json::json!(opencode::MCP_TIMEOUT_MS),
+                "{mode}: a spawn or wait longer than 60 s would fail at opencode's side"
+            );
+            for shadowing in ["provider", "model", "small_model", "mcp"] {
+                assert!(content.get(shadowing).is_none(), "{mode}: {shadowing}");
+            }
+        }
+        let live = acp_adapter().compile(&acp_spec(), &ctx()).unwrap();
+        for relocation in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "OPENCODE_DISABLE_PROJECT_CONFIG",
+        ] {
+            assert!(
+                !live.env.iter().any(|(k, _)| k == relocation),
+                "live: {relocation} would hide the operator's login or config"
+            );
+        }
+    }
+
     /// The canned document's `model` key is **the only channel that reaches an ACP session**, so a
     /// canned launch without one is refused rather than run at whatever the agent defaults to.
     ///
@@ -6560,8 +6625,9 @@ mod tests {
              the run without), so the record names it while argv does not"
         );
         assert!(
-            inv.env.is_empty(),
-            "no credential and no overlay: {:?}",
+            !inv.env.iter().any(|(k, _)| is_credential_or_relocation(k)),
+            "no credential and no relocation — only the opencode row's hygiene, update switch, \
+             placement and call timeout: {:?}",
             inv.env
         );
         assert!(

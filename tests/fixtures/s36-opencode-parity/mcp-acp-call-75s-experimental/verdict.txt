@@ -1,0 +1,3 @@
+as mcp-acp-call-75s with experimental.mcp_timeout = 86400000
+tool_call_update completed at 75 s
+PASS: experimental.mcp_timeout reaches a session/new server's calls

@@ -534,6 +534,20 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
     config
 }
 
+/// The document [`CONFIG_CONTENT_ENV`] carries on an **`opencode acp`** node, under both modes:
+/// `experimental.mcp_timeout`, and nothing else.
+///
+/// Under ACP marion's server is declared in `session/new`, not in any `mcp.<name>` entry, so
+/// [`mcp_block`]'s per-server `timeout` cannot reach it; opencode falls back to
+/// `experimental.mcp_timeout` for such a server. s36 measured 1.18.32 abandoning a 75 s
+/// `tools/call` at 60 s without it and completing it with it (`mcp-acp-call-*`). The ~30 s
+/// `initialize` limit on a `session/new` server was **not** lifted by it. This is the one key
+/// marion sets over an operator's own config that reaches their other MCP servers too — as the
+/// fallback only, where they named no timeout of their own.
+pub fn acp_session_document() -> String {
+    json!({ "experimental": { "mcp_timeout": MCP_TIMEOUT_MS } }).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

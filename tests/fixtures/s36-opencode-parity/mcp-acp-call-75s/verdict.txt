@@ -1,0 +1,3 @@
+tools/call to the session/new server held 75 s; no timeout configured
+tool_call_update failed at 60 s: MCP error -32001: Request timed out
+FAIL: the long call was abandoned
