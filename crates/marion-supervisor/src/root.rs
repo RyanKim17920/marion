@@ -2391,6 +2391,12 @@ fn launch_terminal(
         stdin,
         Some(on_started),
     )?);
+    // A boot dialog (folder trust) is marion's to answer only in a worktree marion created for
+    // this node; in the operator's own directory it is the operator's. Before `opened`, so the
+    // paste driver that publication starts reads it.
+    if inv.cwd.starts_with(node.agent_dir.worktree()) {
+        host.license_boot_dialog_answers();
+    }
     // **After the process exists, never before.** See this function's doc, point 3.
     if let Some(owner) = pane {
         owner.opened(&node.agent_id, std::sync::Arc::clone(&host));

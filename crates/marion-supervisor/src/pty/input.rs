@@ -16,6 +16,8 @@
 
 use std::time::Instant;
 
+use marion_harness::spec::BootDialog;
+
 /// Longest parameter list kept for one private-mode CSI. Real mode sets are a handful of short
 /// numbers; anything longer is not one marion needs to read, and a bound keeps a hostile stream
 /// from growing this.
@@ -23,6 +25,12 @@ const MAX_PARAMS: usize = 64;
 
 /// The DEC private mode for bracketed paste.
 const BRACKETED_PASTE: &[u8] = b"2004";
+
+/// Most screen text kept for recognising a boot dialog. The longest measured first screen with a
+/// dialog carries about 1.5 KiB of text (copilot 1.0.83, banner and box included); a TUI that
+/// keeps drawing past this without a key has moved past its dialog. Past the cap the oldest half
+/// goes, so the cost per byte stays constant.
+pub(crate) const SCREEN_TEXT_CAP: usize = 8192;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Scan {
@@ -53,6 +61,21 @@ pub(crate) struct ModeScan {
     bracketed_paste: bool,
     drawn: bool,
     last_output: Option<Instant>,
+    /// The row's boot dialogs this scan recognises ([`Self::showing`]).
+    dialogs: &'static [BootDialog],
+    /// The visible text written since anyone last typed, words joined by one space — what a
+    /// dialog's needle is matched against. Kept from the first byte, because a TUI can draw its
+    /// dialog before a paste driver is attached, and dropped for good at [`Self::boot_over`].
+    screen: Vec<u8>,
+    /// A space, a line break or a cursor move came after the last visible byte.
+    gap: bool,
+    /// Bit `i`: `dialogs[i]` was drawn since anyone last typed. Latched rather than re-read from
+    /// [`Self::screen`], because a TUI that animates behind its dialog (codex's welcome art)
+    /// writes past the cap while the dialog, drawn once, stays on screen.
+    seen: u64,
+    /// Visible text arrived since the last look for needles.
+    fresh: bool,
+    boot_over: bool,
 }
 
 impl ModeScan {
@@ -72,6 +95,91 @@ impl ModeScan {
         self.last_output
     }
 
+    /// Recognise `dialogs` on the screen from now on — over what was drawn already, too.
+    pub(crate) fn watch(&mut self, dialogs: &'static [BootDialog]) {
+        // One bit per dialog; a row lists two or three.
+        self.dialogs = &dialogs[..dialogs.len().min(64)];
+        self.seen = 0;
+        self.look();
+    }
+
+    /// **The first of the watched dialogs on the screen**, in the row's order: its needle was
+    /// drawn since anyone last typed. `None` once boot is over.
+    pub(crate) fn showing(&self) -> Option<&'static BootDialog> {
+        self.dialogs
+            .iter()
+            .enumerate()
+            .find(|(i, _)| self.seen & (1 << i) != 0)
+            .map(|(_, d)| d)
+    }
+
+    /// Latch every watched needle the kept text now holds.
+    fn look(&mut self) {
+        self.fresh = false;
+        for (i, d) in self.dialogs.iter().enumerate() {
+            let needle = d.needle.as_bytes();
+            if self.seen & (1 << i) == 0
+                && !needle.is_empty()
+                && self.screen.windows(needle.len()).any(|w| w == needle)
+            {
+                self.seen |= 1 << i;
+            }
+        }
+    }
+
+    /// The operator typed: a key is what dismisses a dialog, and one that survives it redraws.
+    pub(crate) fn operator_typed(&mut self) {
+        self.screen.clear();
+        self.gap = false;
+        self.seen = 0;
+    }
+
+    /// Marion typed: as [`Self::operator_typed`], and the drawn screen is forgotten too, so a
+    /// first paste after marion answered a dialog waits for the TUI to redraw.
+    pub(crate) fn marion_typed(&mut self) {
+        self.operator_typed();
+        self.drawn = false;
+    }
+
+    /// The first paste landed: no dialog is looked for again, and no screen text is kept.
+    pub(crate) fn boot_over(&mut self) {
+        self.boot_over = true;
+        self.dialogs = &[];
+        self.seen = 0;
+        self.screen = Vec::new();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn screen_len(&self) -> usize {
+        self.screen.len()
+    }
+
+    fn visible(&mut self, b: u8) {
+        if self.boot_over {
+            return;
+        }
+        if self.screen.len() >= SCREEN_TEXT_CAP {
+            // Every needle is far shorter than the half kept, so one still being drawn survives
+            // the drain whole, and one already drawn is latched before it goes.
+            self.look();
+            self.screen.drain(..SCREEN_TEXT_CAP / 2);
+        }
+        self.fresh = true;
+        if self.gap && !self.screen.is_empty() {
+            self.screen.push(b' ');
+        }
+        self.gap = false;
+        self.screen.push(b);
+    }
+
+    /// A CSI ended with `fin`: anything but a colour change moves the cursor or clears, which on
+    /// the screen separates words (claude draws every space as `CSI n G`).
+    fn csi_end(&mut self, fin: u8) {
+        if fin != b'm' {
+            self.gap = true;
+        }
+    }
+
     /// One chunk of the node's output, read at `now`.
     pub(crate) fn feed(&mut self, chunk: &[u8], now: Instant) {
         if !chunk.is_empty() {
@@ -79,6 +187,9 @@ impl ModeScan {
         }
         for &b in chunk {
             self.step(b);
+        }
+        if self.fresh && !self.dialogs.is_empty() {
+            self.look();
         }
     }
 
@@ -98,6 +209,9 @@ impl ModeScan {
                 // Text: printable ASCII past the space, or any byte of a UTF-8 sequence.
                 if b > 0x20 && b != 0x7f {
                     self.drawn |= self.bracketed_paste;
+                    self.visible(b);
+                } else {
+                    self.gap = true;
                 }
                 Scan::Ground
             }
@@ -108,6 +222,7 @@ impl ModeScan {
                 b'c' => {
                     self.bracketed_paste = false;
                     self.drawn = false;
+                    self.operator_typed();
                     Scan::Ground
                 }
                 _ => Scan::Ground,
@@ -118,7 +233,10 @@ impl ModeScan {
                     self.overflowed = false;
                     Scan::Private
                 }
-                0x40..=0x7e => Scan::Ground,
+                0x40..=0x7e => {
+                    self.csi_end(b);
+                    Scan::Ground
+                }
                 _ => Scan::Ignore,
             },
             Scan::Private => match b {
@@ -145,12 +263,18 @@ impl ModeScan {
                     }
                     Scan::Ground
                 }
-                0x40..=0x7e => Scan::Ground,
+                0x40..=0x7e => {
+                    self.csi_end(b);
+                    Scan::Ground
+                }
                 // An intermediate (`$` in DECRQM, `CSI ? 2004 $ p`) makes it another command.
                 _ => Scan::Ignore,
             },
             Scan::Ignore => match b {
-                0x40..=0x7e => Scan::Ground,
+                0x40..=0x7e => {
+                    self.csi_end(b);
+                    Scan::Ground
+                }
                 _ => Scan::Ignore,
             },
             Scan::Str => match b {
@@ -176,6 +300,9 @@ pub struct InputState {
     pub screen_drawn: bool,
     /// When the node last wrote anything — `None` before its first byte.
     pub last_output: Option<Instant>,
+    /// The row's boot dialog drawn since anyone last typed, before the first paste
+    /// ([`ModeScan::showing`]).
+    pub boot_dialog: Option<&'static BootDialog>,
 }
 
 /// The operator's typing, as far as the host saw it. See [`InputState`].
@@ -284,6 +411,7 @@ fn csi_key(params: &[u8], fin: u8) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_harness::spec::DialogAnswer;
 
     fn scan_of(chunks: &[&str]) -> ModeScan {
         let mut scan = ModeScan::default();
@@ -430,6 +558,134 @@ mod tests {
         );
         assert!(!scanned(&[b"\x1b[?20\x1804h"]), "cancelled");
         assert!(scanned(&[b"\x1b]0;title\x07\x1b[?2004h"]), "after an OSC");
+    }
+
+    const HELD: BootDialog = BootDialog {
+        needle: "No, exit Yes, I trust this folder",
+        answer: DialogAnswer::Hold,
+        note: "test",
+    };
+
+    fn watching(chunks: &[&[u8]]) -> ModeScan {
+        let mut scan = ModeScan::default();
+        scan.watch(std::slice::from_ref(&HELD));
+        for c in chunks {
+            scan.feed(c, Instant::now());
+        }
+        scan
+    }
+
+    /// **A dialog is recognised as drawn, not as sent**: claude writes the spaces between words
+    /// as cursor moves (`No,` `ESC[8G` `exit`) and a line break between options, colours inside
+    /// a word, and a read boundary can fall anywhere — all of it reads as the row's needle.
+    #[test]
+    fn a_needle_is_read_through_cursor_moves_colours_and_read_boundaries() {
+        let drawn: &[u8] =
+            b"\x1b[2G\x1b[38;2;1;2;3m\xe2\x9d\xaf\x1b[4GNo,\x1b[8Gexit\x1b[39m\r\r\n\x1b[4GYes,\
+              \x1b[9GI\x1b[11Gtr\x1b[1mu\x1b[22mst\x1b[17Gthis\x1b[22Gfolder";
+        for at in 0..=drawn.len() {
+            assert_eq!(
+                watching(&[&drawn[..at], &drawn[at..]]).showing(),
+                Some(&HELD),
+                "split at {at}"
+            );
+        }
+        assert_eq!(watching(&[b"No, exit Yes, I trust"]).showing(), None);
+        assert_eq!(
+            watching(&[b"\x1b]0;No, exit Yes, I trust this folder\x07"]).showing(),
+            None,
+            "a control string's payload is not on the screen"
+        );
+    }
+
+    /// **A key clears what the scan holds**: a dialog is on screen if it was drawn since anyone
+    /// last typed, because a key is what dismisses one, and a dialog that survives it redraws.
+    /// Marion's own keys also clear the drawn screen, so a boot waits for the TUI to redraw.
+    #[test]
+    fn a_key_forgets_the_screen_and_marions_key_also_forgets_the_drawing() {
+        let dialog: &[u8] = b"\x1b[?2004hNo, exit\r\nYes, I trust this folder";
+        let mut scan = watching(&[dialog]);
+        scan.operator_typed();
+        assert_eq!(scan.showing(), None);
+        assert!(
+            scan.drawn(),
+            "an operator key leaves the drawn screen alone"
+        );
+        scan.feed(dialog, Instant::now());
+        assert_eq!(scan.showing(), Some(&HELD), "a redraw shows it again");
+        scan.marion_typed();
+        assert_eq!(scan.showing(), None);
+        assert!(!scan.drawn(), "marion's key waits for a redraw");
+    }
+
+    /// **The scan is bounded and ends with boot**: text past the cap drops its oldest half — a
+    /// dialog seen before stays seen until a key — and once boot is over nothing is kept or
+    /// matched at all.
+    #[test]
+    fn the_screen_text_is_bounded_and_dropped_once_boot_is_over() {
+        let mut scan = watching(&[b"No, exit Yes, I trust this folder"]);
+        let filler = vec![b'x'; SCREEN_TEXT_CAP];
+        scan.feed(&filler, Instant::now());
+        assert!(scan.screen_len() <= SCREEN_TEXT_CAP);
+        assert_eq!(
+            scan.showing(),
+            Some(&HELD),
+            "a dialog drawn once stays on screen while the TUI draws past the bound behind it"
+        );
+        scan.boot_over();
+        scan.feed(b" No, exit Yes, I trust this folder", Instant::now());
+        assert_eq!((scan.showing(), scan.screen_len()), (None, 0));
+    }
+
+    /// **Every row's needle is on the screen it was measured on** (`tests/fixtures/
+    /// s37-boot-dialogs/`), and every measured screen shows some row's dialog — the row data and
+    /// the recordings cannot drift apart silently.
+    #[test]
+    fn every_rows_boot_dialog_is_found_on_its_measured_first_screen() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/s37-boot-dialogs");
+        let screens: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+            .expect("the fixture dir")
+            .map(|e| e.unwrap().path())
+            .map(|p| (p.display().to_string(), std::fs::read(&p).unwrap()))
+            .collect();
+        assert!(!screens.is_empty());
+        let shows = |dialogs: &'static [BootDialog], bytes: &[u8]| {
+            let mut scan = ModeScan::default();
+            scan.watch(dialogs);
+            scan.feed(bytes, Instant::now());
+            scan.showing()
+        };
+        let mut matched = vec![false; screens.len()];
+        for h in marion_core::harness::Harness::ALL {
+            let dialogs = marion_harness::adapter::harness_spec(h)
+                .boot_dialogs
+                .dialogs;
+            for d in dialogs {
+                let found = screens
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, bytes))| shows(std::slice::from_ref(d), bytes).is_some());
+                let mut any = false;
+                for (i, _) in found {
+                    matched[i] = true;
+                    any = true;
+                }
+                assert!(any, "{h}: {:?} is on no measured screen", d.needle);
+            }
+            // The row's own order decides: on its screen, the first needle it lists wins.
+            if let Some(first) = dialogs.first() {
+                assert!(
+                    screens
+                        .iter()
+                        .any(|(_, b)| shows(dialogs, b) == Some(first)),
+                    "{h}: its first dialog never wins on a measured screen"
+                );
+            }
+        }
+        for ((name, _), m) in screens.iter().zip(matched) {
+            assert!(m, "{name} shows no row's dialog");
+        }
     }
 
     /// A parameter list past the bound is dropped whole rather than read truncated.
