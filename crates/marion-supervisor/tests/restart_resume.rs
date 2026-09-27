@@ -38,7 +38,8 @@
 //! The lost-child arc runs again on an **opencode** root and child (s36): the second life is
 //! `opencode run --session <ses_…>` over the session store the first life left in its own
 //! directory, and it is parked one request later than codex's, because opencode names its session
-//! only on a frame of its first response.
+//! only on a frame of its first response. And once more on an **`opencode acp`** child, whose
+//! session is its `session/new` answer's and whose second life reopens it with `session/load`.
 //!
 //! It needs a real `codex` and `opencode` on `PATH`. Every model call is the CannedServer's: no
 //! paid tokens.
@@ -155,13 +156,23 @@ fn codex_script() -> Script {
 /// An opencode root that spawns an opencode child, both answered by the canned provider on the
 /// Chat Completions wire: the child writes the marker through opencode's own `write`, then reports.
 fn opencode_script() -> Script {
+    opencode_root_script("opencode")
+}
+
+/// The same opencode root, spawning an `opencode acp` child: the same binary, the same wire and
+/// the same tool spellings, driven over ACP.
+fn acp_opencode_script() -> Script {
+    opencode_root_script("acp-opencode")
+}
+
+fn opencode_root_script(child_type: &str) -> Script {
     let mut s = Script {
         root: Some(RootScript {
             marker: ROOT_MARKER.into(),
             turn: RootTurn {
                 tool: "marion_spawn".into(),
                 args: json!({
-                    "agent_type": "opencode",
+                    "agent_type": child_type,
                     "prompt": "Add the marker file under src/ and report back.",
                     "acceptance_criteria": ["a file exists under src/ containing the marker"],
                     "writable_scope": ["src/**"],
@@ -210,6 +221,17 @@ const OPENCODE_TREE: Tree = Tree {
     wire: "openai",
     hold_from: 3,
     script: opencode_script,
+};
+
+/// An `opencode acp` child names its session in the `session/new` answer, before any request, so
+/// holding from the third request parks it with its session journaled whichever of its title
+/// request and first turn comes first.
+const ACP_OPENCODE_TREE: Tree = Tree {
+    program: "opencode",
+    root_type: "opencode",
+    wire: "openai",
+    hold_from: 3,
+    script: acp_opencode_script,
 };
 
 /// A codex root and its codex child, both with **live processes**, parked on the child's first
@@ -586,6 +608,14 @@ fn a_lost_opencode_child_resumes_its_own_session_under_its_parent_and_takes_its_
     a_lost_child_resumes(&OPENCODE_TREE, "restart-resume-oc-child-e2e");
 }
 
+/// **And on an `opencode acp` child**: its session is the `session/new` answer's `sessionId`, and
+/// its second life opens it again with `session/load` before prompting.
+#[test]
+#[ignore = "drives a real opencode binary and a detached supervisor; run deliberately"]
+fn a_lost_acp_opencode_child_loads_its_own_session_under_its_parent_and_takes_its_next_turn() {
+    a_lost_child_resumes(&ACP_OPENCODE_TREE, "restart-resume-acp-oc-child-e2e");
+}
+
 fn a_lost_child_resumes(tree: &Tree, tag: &str) {
     let dir = scratch(tag);
     let repo = fixture_repo(&dir);
@@ -791,7 +821,14 @@ fn a_lost_child_resumes(tree: &Tree, tag: &str) {
         .as_ref()
         .and_then(|i| i.task_id.clone())
         .expect("a child runs under a task");
-    let contracts = marion_testsupport::persisted_contracts(&state).expect("contracts enumerate");
+    // Walked until one walk completes: the root is still running here, and its own worktree reap
+    // can remove a directory between a walk's listing and its read.
+    let mut walked = None;
+    until(|| {
+        walked = marion_testsupport::persisted_contracts(&state).ok();
+        walked.is_some()
+    });
+    let contracts = walked.expect("contracts enumerate");
     let wanted = format!("{}.json", task.0);
     let found: Vec<&serde_json::Value> = marion_testsupport::judge(&contracts)
         .into_iter()

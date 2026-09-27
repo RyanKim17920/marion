@@ -1637,7 +1637,7 @@ pub fn run_spawn_watched(
         .map(|r| ChildRun {
             stdout: r.stdout,
             stderr: r.stderr,
-            exit: r.exit,
+            exit: crate::acp_child::turn_exit(r.exit),
             capture_truncated: r.capture_truncated,
             // ACP has a permission surface (`session/request_permission`) and marion answers it
             // permissively in the driver, so nothing is denied on this path yet. An empty vector
