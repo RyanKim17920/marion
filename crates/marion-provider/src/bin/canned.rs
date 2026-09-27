@@ -11,7 +11,24 @@ use std::process::ExitCode;
 
 use marion_provider::server::{CannedServer, Config};
 
+const USAGE: &str = "usage: marion-canned\n\
+    \n\
+    Serves marion's canned test provider on 127.0.0.1 until killed, for `marion run --canned`.\n\
+    It answers from a fixed script: no credential, no cost, nothing useful.\n\
+    \n\
+    MARION_CANNED_PORT    port to listen on (default 8099, which --canned points at)\n\
+    MARION_CANNED_REQLOG  file every request is appended to (default in the temp dir)";
+
 fn main() -> ExitCode {
+    // It takes no arguments; anything typed is a question about it, never a reason to serve.
+    if let Some(arg) = std::env::args().nth(1) {
+        if arg == "--help" || arg == "-h" {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("marion-canned: unknown argument `{arg}`\n{USAGE}");
+        return ExitCode::from(2);
+    }
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
