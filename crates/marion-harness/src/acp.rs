@@ -54,7 +54,7 @@ use crate::grammar::{
 };
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
-    MidTurn, Push, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
+    MidTurn, Push, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -138,6 +138,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // None: ACP has no provider channel in its handshake, and the per-agent canned recipes are not endpoint recipes yet. An endpoint launch of an ACP type is refused by name.
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "ACP has no interactive shape",
     },
     wires: &[],

@@ -37,8 +37,8 @@ use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Remembers, Resume, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -139,6 +139,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // recipe (a models.json naming the operator's provider and key) was never tried.
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "S37 0.80.2, fresh directory, --no-extensions: the first screen is the composer. \
                An operator's own extension may draw a `Press any key to continue` splash; that \
                is the operator's configuration, not the harness",

@@ -27,8 +27,8 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -252,6 +252,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "S37 1.18.32, fresh directory, the operator's login: the first screen is the \
                composer, no dialog",
     },

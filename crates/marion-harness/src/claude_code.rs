@@ -22,8 +22,9 @@ pub use crate::mcp_bridge::{
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Relocation, Remembers,
+    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -252,6 +253,22 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                        does not",
             },
         ],
+        // 2.1.283, measured 2026-09-27: folder trust is written to `<config>/.claude.json`'s
+        // `projects` map (`~/.claude.json` with no `CLAUDE_CONFIG_DIR`) under the directory's
+        // path, and a canned launch leaves that file the operator's. A fresh `CLAUDE_CONFIG_DIR`
+        // answers `auth status --json` `loggedIn: false`; beside `CLAUDE_SECURESTORAGE_CONFIG_DIR=`
+        // (empty) it answers `true`, `claude.ai`, the operator's own subscription — the binary
+        // names the default keychain entry when that variable is defined and empty. A fresh dir
+        // opens on the theme picker; seeded with `hasCompletedOnboarding` it opens on folder
+        // trust, and trusting writes the seeded file while `~/.claude.json`'s projects stay
+        // byte-identical.
+        remembers: Remembers::OperatorConfig(Relocation {
+            config: "CLAUDE_CONFIG_DIR",
+            store: "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+            seed: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
+            note: "2.1.283 (2026-09-27): trust lands in `<CLAUDE_CONFIG_DIR>/.claude.json`; an \
+                   empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the operator's claude.ai login",
+        }),
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
                onboarding done: folder trust, then (pane shape, claude.ai login) the development \
                channels warning",

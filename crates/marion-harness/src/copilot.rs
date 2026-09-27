@@ -42,8 +42,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -225,6 +225,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 note: "the same dialog with a selection S37 did not measure",
             },
         ],
+        remembers: Remembers::Nothing,
         note: "S37 1.0.83, fresh directory, the operator's login under COPILOT_AUTO_UPDATE=false: \
                folder trust is the only dialog before the composer",
     },

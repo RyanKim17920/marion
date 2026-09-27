@@ -28,7 +28,7 @@
 //! measured_it` is the invariant: every row renders byte-for-byte what the hand-written adapter it
 //! replaced compiled.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
@@ -350,7 +350,80 @@ pub enum IdleSignal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootDialogs {
     pub dialogs: &'static [BootDialog],
+    /// Where the TUI keeps an answer marion gives with a dialog's [`DialogAnswer::Keys`].
+    pub remembers: Remembers,
     pub note: &'static str,
+}
+
+/// **Where a TUI keeps the answer to one of its boot dialogs** — folder trust, above all, which a
+/// harness writes down keyed by the directory's path. A test that answers it must not leave that
+/// behind in the operator's own config, so the row says where it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remembers {
+    /// Nowhere past the session, or marion answers none of the row's dialogs.
+    Nothing,
+    /// Under the harness home a canned launch already relocates onto marion's config dir (codex's
+    /// `CODEX_HOME`): the answer lands in marion's scratch and goes with it.
+    CannedHome,
+    /// In the operator's own config, which a canned launch leaves in place because the login sits
+    /// beside it. A test moves the config with [`Relocation`] before it lets anything answer.
+    OperatorConfig(Relocation),
+}
+
+/// **How a test moves a harness's config off the operator's while keeping their login**: `config`
+/// names the directory the harness reads and writes its config in, `store` the one its login is
+/// looked up under. Setting `config` alone would log the harness out (claude keys its keychain
+/// entry on a hash of `CLAUDE_CONFIG_DIR`); `store` points the lookup back at the operator's own
+/// entry, which is only read — nothing is copied, and no login is started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Relocation {
+    pub config: &'static str,
+    pub store: &'static str,
+    /// Files written into a new config dir, `(name, contents)`, so the TUI opens as it does for the
+    /// operator (past first-run onboarding) rather than on a screen they never see. Never a
+    /// credential or an account.
+    pub seed: &'static [(&'static str, &'static str)],
+    pub note: &'static str,
+}
+
+impl Relocation {
+    /// The value `store` takes: the operator's own `store` when set, else their `config` (a login
+    /// made under a custom config dir is keyed on it), else empty — which names the default entry,
+    /// the one a harness with neither variable set uses.
+    pub fn operator_store(&self, operator: impl Fn(&str) -> Option<String>) -> String {
+        operator(self.store)
+            .or_else(|| operator(self.config))
+            .unwrap_or_default()
+    }
+
+    /// **Move the config into `dir`**: create it, write any [`Self::seed`] file not already there
+    /// (0600, like the config the harness writes), and return the variables a launch carries so
+    /// the harness reads and writes there while still finding the operator's login.
+    pub fn apply(
+        &self,
+        dir: &Path,
+        operator: impl Fn(&str) -> Option<String>,
+    ) -> std::io::Result<Vec<(String, String)>> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(dir)?;
+        for (name, body) in self.seed {
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(dir.join(name));
+            match opened {
+                Ok(mut f) => f.write_all(body.as_bytes())?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(vec![
+            (self.config.to_string(), dir.display().to_string()),
+            (self.store.to_string(), self.operator_store(operator)),
+        ])
+    }
 }
 
 /// **One dialog a TUI can show before its composer**, recognised by `needle`: text on the screen

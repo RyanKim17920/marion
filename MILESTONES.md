@@ -1803,6 +1803,15 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
 - goose keeps `GOOSE_MODE=auto` (`tests/fixtures/s37-goose-mode/`): unset, a write-granted child
   writes on a fresh config, but `GOOSE_MODE: approve` in an operator's config.yaml (read by a live
   node) aborts at exit 1 and the env overrides it.
+- Each row's `boot_dialogs.remembers` states where an answered dialog is kept: codex under the
+  `CODEX_HOME` a canned launch relocates, copilot nowhere past the session, claude in the
+  operator's own `~/.claude.json` `projects` map, which a canned launch leaves in place. Every
+  P-tui and pane test run had been adding its scratch path there (254 entries removed 2026-09-27).
+  Measured on claude 2.1.283: a fresh `CLAUDE_CONFIG_DIR` is logged out, but beside an empty
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` it answers `auth status` `loggedIn: true` on the operator's
+  claude.ai login (the binary names the default keychain entry when that variable is empty); seeded
+  with `hasCompletedOnboarding` it opens on folder trust, and trusting writes the seeded file with
+  `~/.claude.json` untouched. That pair is the row's `Relocation`, which tests apply.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

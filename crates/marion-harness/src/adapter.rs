@@ -10057,6 +10057,124 @@ mod tests {
         }
     }
 
+    /// **A row that answers a boot dialog says where the answer is kept, and the claim holds.**
+    /// `CannedHome`: the canned pane carries the row's profile variable at marion's config dir, so
+    /// the answer lands there. `OperatorConfig`: the canned pane does not (which is why a test must
+    /// relocate), and the relocation moves the very directory the profile carrier names and sets
+    /// a variable that carrier clears as an override of its login lookup — two measurements of one
+    /// fact that must agree. A row that answers nothing claims nothing.
+    ///
+    /// Mutation: mark claude `CannedHome`, or codex `OperatorConfig`, or rename the relocation's
+    /// `store`. Each fails.
+    #[test]
+    fn a_row_that_answers_a_boot_dialog_says_where_the_answer_is_kept() {
+        use crate::spec::{DialogAnswer, Remembers};
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let answers = row
+                .boot_dialogs
+                .dialogs
+                .iter()
+                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)));
+            let remembers = row.boot_dialogs.remembers;
+            if !answers {
+                assert_eq!(remembers, Remembers::Nothing, "{h}: answers no dialog");
+                continue;
+            }
+            let pane_env = || {
+                let spec = spec_for(h);
+                let inv = launch_adapter(h)
+                    .unwrap()
+                    .compile_pane(&spec, &ctx())
+                    .expect("a row that answers a boot dialog has a pane");
+                (inv.env, spec.config_dir)
+            };
+            match remembers {
+                Remembers::Nothing => {}
+                Remembers::CannedHome => {
+                    let carrier = row.profile.expect("a relocated home is a profile variable");
+                    let (env, config_dir) = pane_env();
+                    assert!(
+                        env.iter().any(|(k, v)| k == carrier.env
+                            && std::path::Path::new(v).starts_with(&config_dir)),
+                        "{h}: the canned pane leaves {} the operator's: {env:?}",
+                        carrier.env
+                    );
+                }
+                Remembers::OperatorConfig(r) => {
+                    let carrier = row
+                        .profile
+                        .expect("a relocated config is a profile variable");
+                    assert_eq!(r.config, carrier.env, "{h}");
+                    assert!(carrier.clear.contains(&r.store), "{h}: {}", r.store);
+                    let (env, _) = pane_env();
+                    assert!(
+                        !env.iter().any(|(k, _)| k == r.config),
+                        "{h}: the canned pane relocates {} already; say CannedHome",
+                        r.config
+                    );
+                    for (name, body) in r.seed {
+                        let lower = format!("{name}{body}").to_ascii_lowercase();
+                        assert!(
+                            !["token", "key", "secret", "credential", "oauth"]
+                                .iter()
+                                .any(|w| lower.contains(w)),
+                            "{h}: seed {name} looks like a credential"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **A relocation keeps the operator's login**: `store` takes the operator's own value, then
+    /// their `config`'s (a login made under a custom config dir is keyed on it), then empty — the
+    /// default entry. Seeds are written 0600 and an existing file is left as it is.
+    #[test]
+    fn a_relocation_points_its_store_at_the_operators_login_and_seeds_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = crate::spec::Relocation {
+            config: "CFG",
+            store: "STORE",
+            seed: &[("seed.json", "{}")],
+            note: "test",
+        };
+        let op = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(r.operator_store(op(&[])), "");
+        assert_eq!(r.operator_store(op(&[("CFG", "/work")])), "/work");
+        assert_eq!(
+            r.operator_store(op(&[("CFG", "/work"), ("STORE", "/store")])),
+            "/store"
+        );
+        assert_eq!(r.operator_store(op(&[("STORE", "")])), "");
+
+        let dir = std::env::temp_dir().join(format!("marion-relocation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let env = r.apply(&dir.join("cfg"), op(&[])).unwrap();
+        assert_eq!(
+            env,
+            [
+                ("CFG".to_string(), dir.join("cfg").display().to_string()),
+                ("STORE".to_string(), String::new()),
+            ]
+        );
+        let seed = dir.join("cfg/seed.json");
+        assert_eq!(std::fs::read_to_string(&seed).unwrap(), "{}");
+        let mode = std::fs::metadata(&seed).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::write(&seed, "kept").unwrap();
+        r.apply(&dir.join("cfg"), op(&[])).unwrap();
+        assert_eq!(std::fs::read_to_string(&seed).unwrap(), "kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **A claude node that took two turns spent both turns' tokens.** Measured on 2.1.280
     /// (S31 `p0a/out/a`, two stream-json turns in one process): each `result` frame's `usage` is
     /// that turn's alone (10 in / 5 out, twice) while `modelUsage` and `total_cost_usd` run

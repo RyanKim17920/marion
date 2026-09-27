@@ -37,7 +37,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
-    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling, Surfaces,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
@@ -83,6 +83,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // own login, and an endpoint launch is refused like a canned one.
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "agy's first screen was not measured for dialogs, and its native lane ships disabled",
     },
     wires: &[],

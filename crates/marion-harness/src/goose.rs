@@ -45,8 +45,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces, TokenCarrier, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -192,6 +192,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "goose's TUI was not measured",
     },
     wires: &[WireRecipe {

@@ -22,8 +22,9 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling,
+    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -239,6 +240,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 note: "the same dialog with a selection S37 did not measure",
             },
         ],
+        remembers: Remembers::CannedHome,
         note: "S37 0.155.1, fresh CODEX_HOME and directory: directory trust is the only dialog \
                before the composer",
     },

@@ -52,8 +52,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -189,6 +189,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],
+        remembers: Remembers::Nothing,
         note: "cline is not installed; its first screen was not measured",
     },
     wires: &[WireRecipe {

@@ -20,8 +20,8 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -175,6 +175,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             answer: DialogAnswer::Hold,
             note: "S37 0.53.0 folder trust; its answer persists and was not measured",
         }],
+        remembers: Remembers::Nothing,
         note: "S37 0.53.0, fresh directory, the operator's login, terminal queries answered: \
                folder trust before the composer",
     },
