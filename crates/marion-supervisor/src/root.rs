@@ -686,6 +686,11 @@ pub fn prepare_watched(
         prompt: crate::run::prefixed_prompt(&agent_type, &spec.prompt),
         ..spec.clone()
     };
+    // Kept for a watcher to show as the root's task, as delivered: a root has no contract to hold
+    // it (§9). A resume's prompt is its next message, not the task, and leaves the file alone.
+    if spec.resume.is_none() {
+        crate::node_detail::persist_root_prompt(&agent_dir, &spec.prompt);
+    }
     let harness = agent_type.harness;
     // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
     // protocol, and the agent type's `acp_agent` names the agent.

@@ -1245,8 +1245,11 @@ fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
         "a running LaunchOnly root's events.jsonl did not hold the frame it printed, recorded \
          live:\n{recorded}"
     );
-    let final_record =
-        std::fs::read_to_string(events_file(&state).expect("an events file")).unwrap();
+    let events = events_file(&state).expect("an events file");
+    let prompt = std::fs::read_to_string(events.with_file_name("prompt.txt"))
+        .expect("a root keeps the prompt it was launched with, for a watcher to show");
+    assert!(prompt.contains("Delegate the task."), "{prompt}");
+    let final_record = std::fs::read_to_string(&events).unwrap();
     assert_eq!(
         final_record.matches("mcp_tool_call").count(),
         1,

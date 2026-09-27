@@ -72,7 +72,8 @@ pub fn read(
         .map(|rule| tallies.read(id, &events, rule))
         .unwrap_or_default();
     NodeDetail {
-        task: contract.as_ref().map(task_sent),
+        // A child's task is its contract's; a root has none (§9), so its kept prompt.
+        task: contract.as_ref().map(task_sent).or_else(|| root_task(&dir)),
         messages: messages(&project.journal(), id),
         stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
         usage: spent.usage,
@@ -93,6 +94,39 @@ pub fn read(
             }),
         turns: spent.turns,
     }
+}
+
+/// Keep the prompt a root was launched with beside its stream, owner-only, for [`read`] to show
+/// as its task. Best-effort by the same policy as its event record: a viewer never fails a run, so
+/// a write that fails is said on stderr and the run goes on.
+pub fn persist_root_prompt(dir: &marion_core::paths::AgentDir, prompt: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = dir.prompt();
+    let written = std::fs::create_dir_all(dir.path()).and_then(|()| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        // `mode` applies only to a file this call creates.
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(prompt.as_bytes())
+    });
+    if let Err(e) = written {
+        eprintln!(
+            "marion: cannot keep the root's prompt at {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// A root's kept prompt as its task, when there is one.
+fn root_task(dir: &marion_core::paths::AgentDir) -> Option<TaskSent> {
+    let prompt = std::fs::read_to_string(dir.prompt()).ok()?;
+    Some(task_of(&prompt, Vec::new(), Vec::new()))
 }
 
 /// The contract's task as the node received it.
@@ -322,6 +356,30 @@ mod tests {
         let c = d.completion.expect("a completion");
         assert_eq!(c.branch.as_deref(), Some("marion/t-1"));
         assert_eq!(c.commit, Some(Oid("0123456789abcdef".into())));
+    }
+
+    /// **A root's task is the prompt it was launched with**, kept 0600 beside its stream because
+    /// a root has no contract to hold it; the prompt is shown, marion's own suffix split off as on
+    /// a child.
+    #[test]
+    fn a_root_shows_the_prompt_it_was_launched_with() {
+        let (p, id) = project("detail-root-prompt");
+        let dir = p.agent(&id);
+        persist_root_prompt(&dir, "list the limiter files");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.prompt())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the prompt is the operator's words: owner-only"
+        );
+        let d = read(&p, &id, &inputs(false, None), None, &Default::default());
+        let t = d.task.expect("a root with a kept prompt has a task");
+        assert_eq!(t.prompt, "list the limiter files");
+        assert!(t.acceptance.is_empty() && t.verification.is_empty());
     }
 
     /// A running node with no contract (a root): its stream page, the launch workspace, nothing
