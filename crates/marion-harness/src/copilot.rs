@@ -36,8 +36,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -337,6 +337,31 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             ok: "0",
             words: &[],
             label: "copilot's result frame reported exitCode ",
+        },
+    ],
+    // S37 (`copilot-1.0.83/p-errors-*.jsonl`): each failed provider call is a
+    // `model.call_failure` with `data.statusCode` and the provider's body, and the run's end a
+    // `session.error` with `data.statusCode` and copilot's sentence.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "model.call_failure")],
+                each: None,
+                unit: &[],
+            },
+            status: Some("/data/statusCode"),
+            kind: None,
+            words: &["/data/errorMessage"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "session.error")],
+                each: None,
+                unit: &[],
+            },
+            status: Some("/data/statusCode"),
+            kind: None,
+            words: &["/data/message", "/data/errorType"],
         },
     ],
     file_changes: None,

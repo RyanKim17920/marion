@@ -15,8 +15,8 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -294,6 +294,33 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &["/error/message"],
         fallback: "the child's stream carried a turn.failed frame",
     }],
+    // S37 (`codex-0.155.1/p-errors-*.jsonl`): every provider fault is a `type: error` frame in
+    // codex's words (`Reconnecting... 1/5 (unexpected status 401 …)`, `exceeded retry limit,
+    // last status: 429 …`, a 500 as `We’re currently experiencing high demand …`), then
+    // `turn.failed`.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            // `usage_limit_exceeded` / `usage_limit_reached` on an account's spent window.
+            kind: Some("/codex_error_info"),
+            words: &["/message"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "turn.failed")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/error/message"],
+        },
+    ],
     file_changes: Some(PathList {
         at: Where {
             frame: &[Cond::Eq("/item/type", "file_change")],

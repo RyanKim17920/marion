@@ -36,8 +36,8 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
-    UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
@@ -229,7 +229,57 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     },
     refused_report: OnRefusedReport::Fail,
-    failures: &[],
+    failures: &[
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/error"],
+            fallback: "the child's stream carried an error frame",
+        },
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message")],
+                each: Some("/message/content"),
+                unit: &[
+                    Cond::Eq("/type", "text"),
+                    Cond::Prefix("/text", "Ran into this error: "),
+                ],
+            },
+            words: &["/text"],
+            fallback: "goose ran into a provider error",
+        },
+    ],
+    // S37 (`goose-1.52.0/p-errors-*.jsonl`, s26): a refused key is a `type: error` frame; a 429
+    // or 500 is an assistant `text` block opening `Ran into this error: `, at exit 0 — goose
+    // gives up after ~7 s and says so nowhere else.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/error"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message")],
+                each: Some("/message/content"),
+                unit: &[
+                    Cond::Eq("/type", "text"),
+                    Cond::Prefix("/text", "Ran into this error: "),
+                ],
+            },
+            status: None,
+            kind: None,
+            words: &["/text"],
+        },
+    ],
     file_changes: None,
     session: None,
     // The terminal `complete` frame (`s26/*.stdout.jsonl`) totals the run at the top level, with
@@ -639,13 +689,23 @@ mod tests {
         assert!(out.failure.is_some(), "a refused report fails the run");
     }
 
-    /// No frame claims a failure; the report simply never comes.
+    /// **A provider fault is goose's own sentence, and the run's failure claim**: goose gives up
+    /// at exit 0 with an assistant text block opening `Ran into this error: ` (s26, S37), the only
+    /// place its stream says the turn failed — and a line the failure classifier reads.
     #[test]
-    fn a_provider_fault_is_the_report_that_never_came() {
+    fn a_provider_fault_is_a_failure_claim_in_goose_s_words() {
         let out = parse_stream(PROVIDER_500);
         assert_eq!(out.narrative, None);
         assert!(marion_calls(PROVIDER_500).is_empty());
-        assert_eq!(out.failure, None, "the stream has no error frame to read");
+        let failure = out.failure.expect("the fault is claimed");
+        assert!(
+            failure.starts_with("Ran into this error: Server error"),
+            "{failure}"
+        );
+        assert_eq!(
+            crate::grammar::error_lines(&STREAM, PROVIDER_500),
+            vec![failure]
+        );
     }
 
     /// `chat` mode answers the request from inside goose: a `toolResponse` with no `isError`.

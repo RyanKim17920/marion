@@ -30,8 +30,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -215,6 +215,34 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &["/errorMessage"],
         fallback: "pi's last turn ended in error",
     }],
+    // s34 (`pi-provider-500.stdout.jsonl`): each retry is an `auto_retry_start` naming the
+    // error, and the failed turn's `message_end` carries `stopReason: error` and `errorMessage`
+    // (`500 canned failure`, `401 canned failure`).
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "auto_retry_start")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/errorMessage"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "message_end"),
+                    Cond::Eq("/message/stopReason", "error"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/message/errorMessage"],
+        },
+    ],
     file_changes: None,
     session: Some(SessionId {
         at: Where {

@@ -189,6 +189,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &[],
         label: "agy result status: ",
     }],
+    // agy has no canned route, so no provider fault was ever put in front of it.
+    errors: &[],
     file_changes: None,
     session: Some(SessionId {
         at: Where {

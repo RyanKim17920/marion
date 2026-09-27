@@ -13,8 +13,8 @@ use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -270,6 +270,19 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             fallback: "the child's stream carried an error body",
         },
     ],
+    // S37 (`gemini-0.53.0/p-errors-401.jsonl`): the result's `error.message` quotes the
+    // provider's body, status included (`{"error":{"code":401,…}}`). A 429 or 500 is retried with
+    // its status on stderr only (`Attempt 1 failed with status 429`).
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[Cond::Has("/error")],
+            each: None,
+            unit: &[],
+        },
+        status: None,
+        kind: None,
+        words: &["/error/message", "/message"],
+    }],
     file_changes: None,
     // The first `stream-json` frame (`s12/README.md`): `init` carries `session_id`. Recorded even
     // though the row's `resume` is `None` — the id is a fact about the run, and what 0.53.0 cannot

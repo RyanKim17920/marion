@@ -19,8 +19,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -321,6 +321,18 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         words: &["/error/data/message", "/error/name"],
         fallback: "the child's stream carried an error frame",
+    }],
+    // S37 (`opencode-1.18.32/p-errors-401.jsonl`): the `error` frame carries the provider's
+    // status at `error.data.statusCode`. A 429 or 500 is retried with nothing on stdout.
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "error")],
+            each: None,
+            unit: &[],
+        },
+        status: Some("/error/data/statusCode"),
+        kind: None,
+        words: &["/error/data/message", "/error/name"],
     }],
     file_changes: None,
     // `sessionID` (`ses_` + 26 chars) is on **every** event (`s13/README.md`), so the first frame

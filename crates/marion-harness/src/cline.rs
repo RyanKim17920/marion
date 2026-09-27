@@ -46,8 +46,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
-    UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -271,6 +271,20 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             label: "cline's run_result finishReason: ",
         },
     ],
+    // s27 (`cline-provider-500.stdout.jsonl`): the provider fault is the error `agent_event`.
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[
+                Cond::Eq("/type", "agent_event"),
+                Cond::Eq("/event/type", "error"),
+            ],
+            each: None,
+            unit: &[],
+        },
+        status: None,
+        kind: None,
+        words: &["/event/error/message"],
+    }],
     file_changes: None,
     // No frame carries the session id (s27 item 7): `hook_event.taskId` is a conversation id, and
     // the session id is a directory name.

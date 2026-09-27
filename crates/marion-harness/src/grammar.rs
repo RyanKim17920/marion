@@ -47,6 +47,13 @@ pub struct StreamGrammar {
     /// under [`OnRefusedReport::Fail`] / [`OnRefusedReport::FailWithoutNarrative`] overrides it,
     /// because the most specific claim about marion's own call is the one worth recording.
     pub failures: &'static [Failure],
+    /// Where the harness reports a **provider's** error — a refused key, a rate limit, a server
+    /// fault — whether or not the run then fails, read by [`error_lines`] for the one failure
+    /// classifier. Distinct from [`Self::failures`]: a retry the harness announces (claude's
+    /// `system/api_retry`, codex's `Reconnecting... 1/5`) is not the run failing, but it is the
+    /// only place the provider's status is said while the harness retries (S37,
+    /// `tests/fixtures/conformance/*/p-errors-*.jsonl`).
+    pub errors: &'static [ErrorRule],
     /// Where the harness announces the files it changed, if it does. Corroboration only.
     pub file_changes: Option<PathList>,
     /// Where the harness names its own session — the id its `resume` grammar
@@ -182,6 +189,10 @@ pub enum Cond {
     Eq(&'static str, &'static str),
     /// Something sits at the pointer, whatever it is — gemini's untyped `{"error":{…}}` body.
     Has(&'static str),
+    /// The text at the pointer starts with the value — for a harness that reports a provider
+    /// error as ordinary text with a fixed opening (qwen's `[API Error: `, goose's `Ran into this
+    /// error: `), where nothing structural marks it.
+    Prefix(&'static str, &'static str),
 }
 
 /// Where marion's verb is read from.
@@ -300,6 +311,30 @@ pub enum Failure {
     },
 }
 
+/// One shape of provider-error report: each unit of `at` is one, with the provider's HTTP status
+/// at `status` and the harness's own code for the error at `kind` where the unit carries them as
+/// fields (claude's `error_status` and `error: "authentication_failed"`), and the harness's words
+/// at the first non-empty of `words` (where a status the unit does not carry as a field is usually
+/// spelled out).
+#[derive(Debug)]
+pub struct ErrorRule {
+    pub at: Where,
+    pub status: Option<&'static str>,
+    pub kind: Option<&'static str>,
+    pub words: &'static [&'static str],
+}
+
+/// **One provider error a stream reported**: `line`, the harness's words with its status and code
+/// made explicit (`HTTP 401 authentication_failed`), and the frame it came from — for the signals
+/// only a frame carries (a usage window's reset instant). What the failure classifier reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorReport {
+    pub line: String,
+    /// The harness's own sentence in the unit, where it wrote one — what a notice quotes.
+    pub words: Option<String>,
+    pub frame: Value,
+}
+
 /// Where a harness lists the paths it changed: the array at `list` in each unit of `at`, each
 /// element's path at `path`.
 #[derive(Debug)]
@@ -409,6 +444,7 @@ fn matches(v: &Value, conds: &[Cond]) -> bool {
     conds.iter().all(|c| match c {
         Cond::Eq(ptr, want) => text(v, ptr).as_deref() == Some(*want),
         Cond::Has(ptr) => v.pointer(ptr).is_some(),
+        Cond::Prefix(ptr, start) => text(v, ptr).is_some_and(|t| t.starts_with(start)),
     })
 }
 
@@ -803,6 +839,62 @@ pub fn stream_failure(g: &StreamGrammar, stdout: &str) -> Option<String> {
     first_failure_claim(g, &json_frames(stdout))
 }
 
+/// Most error lines [`error_lines`] returns. A harness retrying one fault writes the same report
+/// ten times over (claude's `api_retry`); the classifier needs the distinct ones, not the count.
+pub const MAX_ERROR_LINES: usize = 16;
+
+/// **The provider errors the stream reports**, in stream order, distinct by line, at most
+/// [`MAX_ERROR_LINES`] — read with the row's [`StreamGrammar::errors`], so only frames the row
+/// measured as error reports count, never an assistant's prose. Each line is
+/// `HTTP <status> <kind>: <words>`, with whichever parts the unit carries.
+pub fn error_reports(g: &StreamGrammar, stdout: &str) -> Vec<ErrorReport> {
+    frame_error_reports(g, &json_frames(stdout))
+}
+
+/// [`error_reports`]' lines alone.
+pub fn error_lines(g: &StreamGrammar, stdout: &str) -> Vec<String> {
+    error_reports(g, stdout)
+        .into_iter()
+        .map(|r| r.line)
+        .collect()
+}
+
+/// [`error_reports`] over frames already parsed — a live reader's one frame at a time.
+pub fn frame_error_reports(g: &StreamGrammar, frames: &[Value]) -> Vec<ErrorReport> {
+    let mut out: Vec<ErrorReport> = Vec::new();
+    for frame in frames {
+        for rule in g.errors {
+            for unit in units(std::slice::from_ref(frame), &rule.at) {
+                let head: Vec<String> = [
+                    rule.status
+                        .and_then(|p| text(unit, p))
+                        .map(|s| format!("HTTP {s}")),
+                    rule.kind.and_then(|p| text(unit, p)),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let head = head.join(" ");
+                let said = words(unit, rule.words);
+                let line = match (head.is_empty(), &said) {
+                    (false, Some(w)) => format!("{head}: {w}"),
+                    (false, None) => head,
+                    (true, Some(w)) => w.clone(),
+                    (true, None) => continue,
+                };
+                if out.len() < MAX_ERROR_LINES && out.iter().all(|r| r.line != line) {
+                    out.push(ErrorReport {
+                        line,
+                        words: said,
+                        frame: frame.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Stream order, every rule per frame: the first claim the stream makes is the one recorded.
 fn first_failure_claim(g: &StreamGrammar, frames: &[Value]) -> Option<String> {
     frames
@@ -868,6 +960,36 @@ mod tests {
             cache_read,
             cache_write: 0,
         }
+    }
+
+    /// **An error line names what the unit carries, once**: status and code as fields where the
+    /// rule points at them, the words otherwise; a retried fault's repeats collapse to one line,
+    /// the list stops at its cap, and a unit with nothing to say makes no line.
+    #[test]
+    fn error_lines_state_status_code_and_words_once_each() {
+        let g = &crate::claude_code::STREAM;
+        let retry = |n: u32, status: u16, code: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"api_retry","attempt":{n},"error":"{code}","error_status":{status}}}"#
+            )
+        };
+        let stdout = [
+            retry(1, 401, "authentication_failed"),
+            retry(2, 401, "authentication_failed"),
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"HTTP 500 is fine"}]}}"#.into(),
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 401"}"#.into(),
+        ]
+        .join("\n");
+        assert_eq!(
+            error_lines(g, &stdout),
+            ["HTTP 401 authentication_failed", "API Error: 401"],
+            "repeats collapse, and an assistant's prose is not a report"
+        );
+        let many: String = (0..40)
+            .map(|i| retry(i, 500 + i as u16, "server_error"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(error_lines(g, &many).len(), MAX_ERROR_LINES);
     }
 
     #[test]
