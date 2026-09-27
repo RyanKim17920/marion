@@ -10,10 +10,16 @@
 //! `report` is deliberately **absent** from [`root::ROOT_VERBS`] — §9 rejects `report` on a
 //! node with no contract, and a root has none. So pointing the canned root at
 //! `mcp__marion__report` gives the exact situation `root.rs` warns about ("omitting a *reachable*
-//! verb would deny calls that then block until the root's bound expires") with **no argv surgery**:
-//! marion's own production invocation, its own bridge, its own allowlist. The CLI offers the tool
+//! verb would deny calls that then block until the root's bound expires"). The CLI offers the tool
 //! (MCP tools are the availability axis) and refuses to run it unasked (the permission axis), so it
 //! asks — over stdout, as a `control_request`.
+//!
+//! **One edit makes the tool reachable**: since 2026-09-22 the bridge no longer *lists* `report`
+//! to a node whose declared `MARION_DEPTH` is the root's (`bridge::report_is_offered`), so a
+//! correctly declared root never asks about it. The bridge still lists it to a node whose depth it
+//! cannot read, so [`Target::MarionReport`] drops that key from the root's `--mcp-config`
+//! declaration — the broken launch the listing is kept for, and the one a root can still reach
+//! `report` through. Everything else is marion's production invocation, bridge and allowlist.
 //!
 //! **What marion answers that ask with is now two different things**, and the split is §5.4's: a
 //! root's `report` is refused by a rule marion can evaluate on arrival, so it is denied at once with
@@ -73,7 +79,9 @@ fn recording() -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
     /// marion's own `report` verb: real, served by marion's own bridge, and absent from
-    /// `ROOT_VERBS`. **No argv surgery** — this is marion's production invocation.
+    /// `ROOT_VERBS`. One declared edit: the root's `--mcp-config` loses `MARION_DEPTH`, since a
+    /// bridge that knows it serves a root does not list `report` at all
+    /// ([`drop_depth_from_the_declaration`]).
     MarionReport,
     /// A built-in `Bash` call touching a path outside the root's cwd. Needs one argv edit
     /// (`--tools ""` → `--tools Bash`), since a `claude` root is compiled with no built-ins at
@@ -203,6 +211,9 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
     })
     .expect("the root node prepares");
 
+    if target == Target::MarionReport {
+        drop_depth_from_the_declaration(&node);
+    }
     if target == Target::BuiltinBash {
         // The availability axis, not the permission one (§5.2). marion sets it empty; this probe
         // is the one place in the suite that does not, and it is deliberately explicit about it.
@@ -220,6 +231,32 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
         server,
         node,
     }
+}
+
+/// Removes `MARION_DEPTH` from the root's written `--mcp-config` declaration, so its bridge lists
+/// `report` ([`Target::MarionReport`]).
+///
+/// Needed since the bridge stopped listing `report` to a node it knows is a root (2026-09-22):
+/// claude then reports `No such tool available` and never asks, so none of this file's `report`
+/// probes reach the control channel. A bridge that cannot read the depth keeps the verb listed so
+/// the call reaches its refusal; that is the one root shape that can still ask about `report`.
+fn drop_depth_from_the_declaration(node: &root::RootNode) {
+    let args = &node.invocation.args;
+    let at = args
+        .iter()
+        .position(|a| a == "--mcp-config")
+        .expect("a claude root declares marion's server through --mcp-config");
+    let path = PathBuf::from(&args[at + 1]);
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let env = doc
+        .pointer_mut("/mcpServers/marion/env")
+        .and_then(Value::as_object_mut)
+        .expect("the declaration carries the bridge's env");
+    assert!(
+        env.remove(marion_harness::DEPTH_ENV).is_some(),
+        "the declaration named no depth, so this edit is no longer what lists report"
+    );
+    std::fs::write(&path, doc.to_string()).unwrap();
 }
 
 fn wait_for_ready(path: &Path, timeout: Duration) -> bool {
@@ -900,7 +937,10 @@ fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denia
 /// contract, so there is nothing a report could be recorded against.
 ///
 /// That refusal is still the proof the allow arrived: **only marion's own bridge can produce that
-/// sentence**, and it is not a string the CLI has any way to invent. Before the refusal existed the
+/// sentence**, and it is not a string the CLI has any way to invent. The probe's root has no
+/// readable `MARION_DEPTH` ([`Target::MarionReport`]), so the bridge's sentence is the one for a
+/// broken declaration rather than `bridge::REPORT_ON_A_ROOT`; both are refusals, and neither is
+/// a receipt. Before the refusal existed the
 /// same proof was the words `report recorded`, which was a receipt for a payload nothing staged.
 ///
 /// **The committed `can-use-tool-allow` recording predates the refusal and still carries the old
@@ -921,10 +961,11 @@ fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_r
     let tr = cap.tool_result();
     assert_eq!(
         tr["is_error"], true,
-        "§5.4 rejects `report` on a root, and a refusal is an error result: {tr}"
+        "a bridge that cannot establish the caller's depth refuses `report`, and a refusal is an \
+         error result: {tr}"
     );
     assert!(
-        tr.to_string().contains("self only"),
+        tr.to_string().contains("MARION_DEPTH is not set"),
         "the tool really ran: this sentence is marion's own bridge's, so the allow answer reached \
          the MCP server and not merely the CLI: {tr}"
     );

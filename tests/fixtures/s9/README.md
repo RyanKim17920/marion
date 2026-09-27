@@ -35,8 +35,14 @@ run omitted `--permission-prompt-tool stdio`. These four do; that is the entire 
 with no contract, and a root has none) while being a real tool marion's own bridge serves. So the
 canned provider simply aims the root's first turn at `mcp__marion__report`. The CLI *offers* the
 tool — MCP tools are the availability axis — and refuses to run it unasked — `--allowedTools` is
-the permission axis — so it asks. **No argv surgery**: marion's production invocation, bridge and
-allowlist, unmodified.
+the permission axis — so it asks. **No argv surgery** when recorded: marion's production
+invocation, bridge and allowlist, unmodified.
+
+Since 2026-09-22 the bridge no longer lists `report` to a node whose declared `MARION_DEPTH` is the
+root's, so a correctly declared root is never offered it and never asks. The probes now drop
+`MARION_DEPTH` from the root's `--mcp-config` declaration, the one root shape whose bridge still
+lists the verb; the ask itself is unchanged, and the allow run's answer is the bridge's
+broken-declaration refusal rather than the root one.
 
 The `builtin` capture is the one exception and says so: it rewrites `--tools ""` to `--tools Bash`,
 because marion's root is compiled with no built-in tools at all.
