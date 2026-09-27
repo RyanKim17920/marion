@@ -2194,7 +2194,7 @@ impl HarnessAdapter for AcpAdapter {
         // [`Self::session_declaration`] then leaves the session block empty, so a version that one
         // day honours `mcpServers` does not start a second bridge. The generic path never reaches
         // this arm: it has no row, so it has only the protocol's channel.
-        if let (acp::Declaration::Argv(flag), McpDeclaration::Marion) =
+        if let (acp::Declaration::Argv { flag, .. }, McpDeclaration::Marion) =
             (binding.declaration(), spec.mcp)
         {
             f.agent_args.push(flag.to_string());
@@ -2351,7 +2351,7 @@ impl HarnessAdapter for AcpAdapter {
             (McpDeclaration::None, _) => Vec::new(),
             // Declared on argv by `fields`; an entry here too would be the second bridge the
             // `Declaration::Argv` doc names.
-            (McpDeclaration::Marion, acp::Declaration::Argv(_)) => Vec::new(),
+            (McpDeclaration::Marion, acp::Declaration::Argv { .. }) => Vec::new(),
             (McpDeclaration::Marion, acp::Declaration::Session) => vec![acp::McpServerDecl {
                 name: acp::MCP_SERVER_NAME.into(),
                 command: ctx.bridge.clone(),
@@ -2379,6 +2379,16 @@ impl HarnessAdapter for AcpAdapter {
         }
     }
 
+    /// The protocol row's carrier — the token rides `session/new` beside the node's identity —
+    /// except on a binding whose refinement declares the bridge on argv, whose own carrier then
+    /// withholds it. An unresolvable binding answers for the protocol; `compile` refuses it anyway.
+    fn token_carrier(&self, spec: &LaunchSpec) -> spec::TokenCarrier {
+        match self.binding(spec).map(acp::Binding::declaration) {
+            Ok(acp::Declaration::Argv { token, .. }) => token,
+            Ok(acp::Declaration::Session) | Err(_) => self.spec().token.for_auth(spec.auth),
+        }
+    }
+
     /// The row's route — `session/new`'s block — except on a binding whose refinement measured the
     /// bridge reaching the agent on argv, where it is that flag, verified against the compiled argv
     /// exactly as codex's `-c` overrides are. The unbound adapter answers for the protocol.
@@ -2390,7 +2400,7 @@ impl HarnessAdapter for AcpAdapter {
             .unwrap_or(acp::Declaration::Session);
         match (spec.mcp, declaration) {
             (McpDeclaration::None, _) => McpRoute::None,
-            (McpDeclaration::Marion, acp::Declaration::Argv(flag)) => McpRoute::Argv(flag),
+            (McpDeclaration::Marion, acp::Declaration::Argv { flag, .. }) => McpRoute::Argv(flag),
             (McpDeclaration::Marion, acp::Declaration::Session) => {
                 McpRoute::Session(acp::MCP_SERVERS_KEY)
             }
@@ -7396,6 +7406,53 @@ mod tests {
     /// version that honours the protocol channel does not start two bridges. The route says argv,
     /// and verifies against argv. The same program named as a *command* has no row and gets the
     /// protocol's channel, which on this version is the difference between a report and silence.
+    #[test]
+    fn the_copilot_refinements_argv_document_carries_no_token_and_its_environment_does() {
+        let row = AcpAdapter::for_agent(acp::COPILOT);
+        let spec = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some(acp::COPILOT.id.into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        let minted = SpawnCtx {
+            node_token: Some("tok-SENTINEL-acp-9f30".into()),
+            ..ctx()
+        };
+        let inv = row.compile(&spec, &minted).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&inv.args[2]).expect("one JSON document");
+        let env = &doc["mcpServers"]["marion"]["env"];
+        assert_eq!(env[mcp_bridge::AGENT_ID_ENV], "019f-root", "{doc}");
+        assert!(env.get(mcp_bridge::NODE_TOKEN_ENV).is_none(), "{doc}");
+        assert!(
+            !inv.args.iter().any(|a| a.contains("SENTINEL")),
+            "the token is on argv: {:?}",
+            inv.args
+        );
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_ENV && v == "tok-SENTINEL-acp-9f30"),
+            "{:?}",
+            inv.env
+        );
+        // The protocol's own channel is marion's pipe, so a session-declared agent keeps the token
+        // in its `session/new` block and adds nothing to its environment.
+        let session = acp_adapter().compile(&acp_spec(), &minted).unwrap();
+        assert!(
+            !session
+                .env
+                .iter()
+                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+        );
+        let decl = acp_adapter()
+            .session_declaration(&acp_spec(), &minted)
+            .unwrap()
+            .unwrap();
+        assert!(decl.to_string().contains("tok-SENTINEL-acp-9f30"));
+    }
+
     #[test]
     fn the_copilot_refinement_declares_the_bridge_on_argv_and_nothing_on_the_session() {
         let row = AcpAdapter::for_agent(acp::COPILOT);

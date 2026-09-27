@@ -4075,7 +4075,7 @@ mod tests {
                                     decl.to_string(),
                                 )
                             }
-                            (None, marion_harness::acp::Declaration::Argv(flag)) => {
+                            (None, marion_harness::acp::Declaration::Argv { flag, .. }) => {
                                 let args = &node.invocation.args;
                                 let at = args.iter().position(|a| a == flag).unwrap_or_else(|| {
                                     panic!("{name}: no `{flag}` on argv: {args:?}")

@@ -608,8 +608,12 @@ pub enum Declaration {
     /// The agent's own argv flag, taking one JSON document in the shape of copilot's
     /// `~/.copilot/mcp-config.json` ([`crate::copilot::mcp_config_json`]) — and the session block
     /// is then left **empty**, so that a version which one day honours the protocol channel does
-    /// not start a second bridge.
-    Argv(&'static str),
+    /// not start a second bridge. Argv is readable through `ps`, so the document never carries the
+    /// node token: `token` states how the agent passes it on instead, and must withhold it.
+    Argv {
+        flag: &'static str,
+        token: crate::spec::TokenCarrier,
+    },
 }
 
 /// The flag copilot takes its per-session MCP document on. S28 measured it, and measured that the
@@ -762,7 +766,14 @@ pub const COPILOT: Agent = Agent {
     argv: &["copilot", "--acp"],
     tools: Some(ToolSpelling::ServerHyphenTool),
     canned: None,
-    declaration: Declaration::Argv(COPILOT_MCP_FLAG),
+    declaration: Declaration::Argv {
+        flag: COPILOT_MCP_FLAG,
+        token: crate::spec::TokenCarrier::InheritedEnv {
+            note: "copilot 1.0.83 `--acp` (2026-09-27, stub MCP server declared by \
+                   `--additional-mcp-config` with no `env`): the server's environment is \
+                   copilot's own, `MARION_NODE_TOKEN` included",
+        },
+    },
     // S31 `p0a/acp-copilot` (1.0.87): the second prompt supersedes the first, which returns an
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
@@ -2475,8 +2486,15 @@ mod tests {
         );
         assert_eq!(
             Binding::resolve("copilot").unwrap().declaration(),
-            Declaration::Argv(COPILOT_MCP_FLAG)
+            COPILOT.declaration
         );
+        assert!(matches!(
+            COPILOT.declaration,
+            Declaration::Argv {
+                flag: COPILOT_MCP_FLAG,
+                ..
+            }
+        ));
         assert_eq!(generic.selector(), "copilot --acp --allow-all-tools");
         assert!(generic.describe().contains("no refinement row"));
         for empty in ["", "   ", "\t"] {
