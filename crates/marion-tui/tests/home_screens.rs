@@ -15,9 +15,9 @@
 //! `[symbol, fg, bg, flags]` per cell — for a rasteriser to turn into dark- and light-theme images.
 
 use marion_tui::home::{
-    self, AgentTypeRow, Body, Expanded, FeedRow, HarnessRow, HelpView, Hint, Input, KeyRow,
-    MessageView, NodeRow, Ready, RecentRow, ResultView, Screen, SetupView, StartView, StreamLine,
-    TaskView, Theme, TokenView, WatchView,
+    self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint,
+    Input, KeyRow, LoginRow, MessageView, NodeRow, Ready, RecentRow, ResultView, Screen, SetupView,
+    StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -444,7 +444,63 @@ fn setup_view(checking: bool) -> SetupView {
         ],
         agents_file: s(".marion/agents.toml"),
         validation: Some((true, s(".marion/agents.toml: 2 types, valid"))),
-        logins: None,
+        logins: vec![
+            login("anthropic", "anthropic"),
+            login("openrouter", "openrouter"),
+            login("openrouter", "openrouter:work"),
+        ],
+        logins_note: s("keys in the macOS Keychain · `a` adds one · `x` removes the selected"),
+        profiles: None,
+        form: None,
+    }
+}
+
+fn login(provider: &str, id: &str) -> LoginRow {
+    LoginRow {
+        provider: s(provider),
+        id: s(id),
+        note: None,
+    }
+}
+
+fn form_view(preview: bool) -> FormView {
+    let f = |label: &str, value: &str, choice: bool, hint: &str| FormField {
+        label: s(label),
+        value: s(value),
+        choice,
+        hint: s(hint),
+    };
+    FormView {
+        title: s("New agent type"),
+        fields: vec![
+            f("name", "reviewer", false, "letters, digits, - and _"),
+            f("harness", "codex", true, ""),
+            f("model", "", false, "the harness's default"),
+            f(
+                "description",
+                "Reviews a diff and reports",
+                false,
+                "one line",
+            ),
+            f("tools", "read", true, ""),
+            f("provider", "", false, "optional: an endpoint provider id"),
+        ],
+        field: if preview { 5 } else { 3 },
+        error: None,
+        file: s(".marion/agents.toml"),
+        preview: if preview {
+            vec![
+                (' ', s("description = \"Moves data.\"")),
+                (' ', s("")),
+                ('+', s("[[agent]]")),
+                ('+', s("name = \"reviewer\"")),
+                ('+', s("harness = \"codex\"")),
+                ('+', s("description = \"Reviews a diff and reports\"")),
+                ('+', s("tools = [\"read\"]")),
+            ]
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -508,7 +564,16 @@ fn hints(tab: &str) -> Vec<Hint> {
             ("j/k", "move"),
             ("enter", "expand"),
             ("r", "re-check"),
-            ("e", "edit types"),
+            ("n", "new type"),
+            ("a", "add key"),
+            ("x", "remove key"),
+        ]),
+        "confirm" => h(&[("y", "yes"), ("any key", "no")]),
+        "form" => h(&[
+            ("tab", "next field"),
+            ("←→", "choose"),
+            ("enter", "preview"),
+            ("esc", "close"),
         ]),
         _ => h(&[("tab", "back")]),
     }
@@ -951,6 +1016,45 @@ fn setup_doctor_checking() {
     let v = setup_view(true);
     let input = command("marion doctor", "checking…");
     insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+}
+
+#[test]
+fn setup_logins_listed() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.cursor = v.harnesses.len() + 2;
+    let input = command("marion logout openrouter:work", "x");
+    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
+}
+
+#[test]
+fn setup_profiles_placeholder_and_no_keys() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.cursor = v.harnesses.len() - 1;
+    v.logins.clear();
+    v.logins_note = s("no keys stored · `a` adds one with `marion login <provider>`");
+    let input = command("marion doctor", "r");
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+}
+
+#[test]
+fn setup_form_open() {
+    let mut v = setup_view(false);
+    v.form = Some(form_view(false));
+    let input = command(".marion/agents.toml", "enter previews");
+    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "form")));
+}
+
+#[test]
+fn setup_form_diff_waits_for_y() {
+    let mut v = setup_view(false);
+    v.form = Some(form_view(true));
+    let input = Input::Confirm {
+        question: s("Write reviewer to .marion/agents.toml?"),
+        command: s("+5 lines"),
+    };
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "confirm"), 100, 30));
 }
 
 #[test]

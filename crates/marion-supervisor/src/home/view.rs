@@ -365,7 +365,12 @@ fn setup(home: &Home, places: &Places) -> SetupView {
             .collect(),
         agents_file: crate::run::AGENT_TYPES_FILE.into(),
         validation: home.setup.validation.clone(),
-        logins: None,
+        logins: Vec::new(),
+        logins_note: "API keys: `marion login <provider>`; subscription logins stay with each \
+                      harness's own CLI"
+            .into(),
+        profiles: None,
+        form: None,
     }
 }
 

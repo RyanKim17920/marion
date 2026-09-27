@@ -1,0 +1,137 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  NEW AGENT TYPE   .marion/agents.toml
+
+  name          reviewer
+  harness       ‹ codex ›
+  model         the harness's default
+❯ description   Reviews a diff and reports▏
+  tools         ‹ read ›
+  provider      optional: an endpoint provider id
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ .marion/agents.toml                                       enter previews │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  tab next field · ←→ choose · enter preview · esc close           ? shortcuts
+--- styles ---
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
+   26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+  433  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
+    2  Style::new().yellow().bg(Color::Reset)  "◐2"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NEW AGENT TYPE   .marion/agents.toml
+
+  name          reviewer
+  harness       ‹ codex ›
+  model         the harness's default
+❯ description   Reviews a diff and reports▏
+  tools         ‹ read ›
+  provider      optional: an endpoint provider id
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ .marion/agents.toml                                                           enter previews │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  tab next field · ←→ choose · enter preview · esc close                               ? shortcuts
+--- styles ---
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
+   26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+  493  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
+    2  Style::new().yellow().bg(Color::Reset)  "◐2"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NEW AGENT TYPE   .marion/agents.toml
+
+  name          reviewer
+  harness       ‹ codex ›
+  model         the harness's default
+❯ description   Reviews a diff and reports▏
+  tools         ‹ read ›
+  provider      optional: an endpoint provider id
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ .marion/agents.toml                                                                                                                       enter previews │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  tab next field · ←→ choose · enter preview · esc close                                                                                           ? shortcuts
+--- styles ---
+   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
+   26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+  673  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+    2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
+    2  Style::new().yellow().bg(Color::Reset)  "◐2"
