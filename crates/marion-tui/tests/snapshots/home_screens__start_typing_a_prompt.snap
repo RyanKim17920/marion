@@ -8,12 +8,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-❯ ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
-  ○ agy       —         not installed
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
 
   TYPE      claude edits in a worktree   claude-orchestrator read-only, deleg…
   MODEL     default   opus   sonnet
@@ -44,12 +44,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-❯ ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
-  ○ agy       —         not installed
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
 
   TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
   MODEL     default   opus   sonnet
@@ -86,12 +86,12 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-❯ ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
-  ○ agy       —         not installed
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
 
   TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
   MODEL     default   opus   sonnet

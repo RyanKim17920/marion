@@ -8,17 +8,17 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
 
   HARNESSES   2 of 6 ready · checking…
 
-  ● claude    2.1.268   ready                       headless · pane · channel push
-  ● codex     0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini    0.9.1     sign-in needed              headless · pane
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
     └ BINARY   /usr/local/bin/gemini
       VERSION  0.9.1
       AUTH     not signed in
       FIX      run gemini once and sign in
                marion uses your login, never its own
-  ⠸ opencode  —         checking…                   headless · pane · ACP
-  ⠼ copilot   —         checking…                   headless · ACP
-  ⠴ agy       —         checking…                   —
+  ⠸ opencode     —         checking…                   headless · pane · ACP
+  ⠼ copilot      —         checking…                   headless · ACP
+  ⠴ agy          —         checking…                   —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml

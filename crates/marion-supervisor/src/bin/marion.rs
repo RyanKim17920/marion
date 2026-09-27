@@ -36,17 +36,18 @@ fn usage_text() -> String {
         .collect();
     let tools = mcp_tool_names();
     format!(
-        "usage: marion                                (interactive: pick agent type, model, prompt)\n\
+        "usage: marion                                (the home screen: start, watch, set up)\n\
          {native}\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
-         \x20                 [--pane] [--canned [--base-url <url>]]\n\
-         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
+         \x20                 [--pane | --detach] [--canned [--base-url <url>]]\n\
+         \x20      marion ls [<agent-id|short-id>] [--repo <path>] [--state-dir <path>]\n\
          \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
          \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
+         \x20      marion cancel <agent-id|short-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \x20      marion doctor [--capabilities|--adapter] [--harness <name>]\n\
          \x20      marion --version\n\
@@ -57,11 +58,19 @@ fn usage_text() -> String {
          agent types: {types}, plus any in the repository's .marion/agents.toml. A plain harness\n\
          name is that harness's implementer; <harness>-orchestrator is the read-only planner.\n\
          \n\
-         marion tree shows this project's nodes beside a content pane, with each node's\n\
-         capabilities along the bottom (greyed where its harness cannot do them). j/k or the\n\
-         arrows move, tab changes focus, ! jumps to the next node that needs attention, s writes\n\
-         a message for the selected node's next turn (enter sends it, esc cancels), enter\n\
-         attaches, q leaves. It starts no supervisor: with none running there is nothing to show.\n\
+         marion with no arguments, on a terminal, opens the home screen. Start lists each\n\
+         harness's readiness (what marion doctor finds) and runs a task: pick the harness,\n\
+         the type (^o for the read-only flavour), the model and headless or pane (^p), type\n\
+         the prompt, enter. Watch is the forest: the selected node opens in place with what\n\
+         marion sent it, its steers, a live stream of what it runs, its tokens and the branch\n\
+         it landed; enter attaches, s steers, x cancels (asking first), u resumes, c copies the\n\
+         merge, ! jumps to what needs you. Setup shows the harness checks with their fixes and\n\
+         the agent types (e edits them). The box at the bottom shows the command each key is.\n\
+         Tab changes screen, ^c quits. In a pipe it prints this text and exits non-zero.\n\
+         \n\
+         marion ls opens the home screen on Watch; without a terminal it prints marion list's\n\
+         lines. marion ls <id> prints one node's detail. marion tree is its old name. None of\n\
+         these start a supervisor.\n\
          \n\
          marion list prints the same forest once, one node per line, and exits 0. --attention\n\
          keeps only nodes that need an operator (blocked, failed, timed out, unreported, orphaned).\n\
@@ -77,8 +86,8 @@ fn usage_text() -> String {
          creates a root over the same socket `marion run` uses. Point a client at it with\n\
          `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. stdout is JSON-RPC.\n\
          \n\
-         marion with no arguments asks three questions and then runs what `marion run` would.\n\
-         It asks only when stdin is a terminal; in a pipe it prints this text and exits non-zero.\n\
+         marion cancel ends a running node, as the operator: it is recorded as cancelled, and\n\
+         its children keep running. It asks nothing; a typed command is the confirmation.\n\
          \n\
          A run uses the login you already have for each harness and makes real model calls that\n\
          cost real money. marion stores no credential and starts no login.\n\
@@ -95,7 +104,7 @@ fn usage_text() -> String {
          --repo defaults to the enclosing git repository, else the working directory.\n\
          \n\
          --state-dir defaults to $MARION_STATE_DIR, else $XDG_STATE_HOME/marion, else\n\
-         ~/.local/state/marion, for every verb. Use the same one for `marion tree` as for the\n\
+         ~/.local/state/marion, for every verb. Use the same one for `marion ls` as for the\n\
          session it should show.\n\
          \n\
          --no-change-record skips the snapshot marion takes of your checkout at a root's launch\n\
@@ -104,7 +113,9 @@ fn usage_text() -> String {
          the root runs with no built-in tool at all instead.\n\
          \n\
          --pane runs the root in a terminal marion owns, so `marion attach <agent-id>` shows its\n\
-         TUI and types into it.\n\
+         TUI and types into it. Like --detach, it returns as soon as the root has started.\n\
+         \n\
+         --detach starts a headless root and returns instead of watching it; marion ls watches.\n\
          \n\
          --timeout is the root's bound: on claude, the budget for one blocked permission request;\n\
          on the other harnesses, a wall-clock limit.",
@@ -452,41 +463,172 @@ fn resume_refused(session: &mut SupervisorSession, started: bool, reason: &str) 
     ExitCode::FAILURE
 }
 
-/// `marion tree [--repo <path>] [--state-dir <path>]` — §5.6's tree pane, and the screen §9's M5
-/// clause 3 asks to grey.
+/// `marion ls [<agent-id|short-id>] [--repo <path>] [--state-dir <path>]`.
 ///
-/// It reuses [`parse_attach`] with the agent id absent, because the flags are the same two and for
-/// the same reason: §2 keys a supervisor on the git common dir, so a tree has to resolve the same
-/// project a run did or it will list a different supervisor's forest. A third parser would be a
-/// third place `--state-dir`'s default could drift.
-fn tree_main(argv: &[String]) -> ExitCode {
-    let mut args = AttachArgs {
-        agent_id: String::new(),
-        repo: None,
-        state_dir: None,
-    };
+/// With no node, on a terminal: the home screen on its Watch tab. With no node and no terminal —
+/// a pipe, a script — the forest one node per line, as `marion list` prints it, because there is
+/// nobody to press a key. With a node: that node's detail as text (what marion sent it, its
+/// messages, its tokens, where it works and how it ended), which is what the Watch tab's expansion
+/// shows. Like `list` it starts no supervisor.
+fn ls_main(argv: &[String]) -> ExitCode {
+    let mut target = None;
+    let (mut repo, mut state_dir) = (None, None);
     let mut rest = argv[1..].iter();
-    while let Some(flag) = rest.next() {
-        let value = rest.next();
-        match (flag.as_str(), value) {
-            ("--repo", Some(v)) => args.repo = Some(PathBuf::from(v)),
-            ("--state-dir", Some(v)) => args.state_dir = Some(v.clone()),
-            // An unknown flag is a refusal here for `parse_attach`'s reason: a mistyped
-            // `--state-dir` that fell through would list the forest under `$HOME`, which is empty,
-            // and report the operator's own agents as absent.
+    while let Some(word) = rest.next() {
+        match word.as_str() {
+            "--repo" => match rest.next() {
+                Some(v) => repo = Some(PathBuf::from(v)),
+                None => usage(),
+            },
+            "--state-dir" => match rest.next() {
+                Some(v) => state_dir = Some(v.clone()),
+                None => usage(),
+            },
+            // An unknown flag is a refusal, for `parse_attach`'s reason.
+            f if f.starts_with('-') => usage(),
+            id if target.is_none() => target = Some(id.to_string()),
             _ => usage(),
         }
     }
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+    let Some((repo, state)) = resolve_project(repo, state_dir.as_deref()) else {
         return ExitCode::FAILURE;
     };
-    match marion_supervisor::tree::run(&repo, &state) {
+    match target {
+        Some(id) => ls_one(&id, &repo, &state),
+        None if io::stdin().is_terminal() && io::stdout().is_terminal() => {
+            home_on(marion_tui::home::Tab::Watch, repo, state)
+        }
+        None => list_lines(&repo, &state, false),
+    }
+}
+
+/// Bare `marion`: the home screen on Start, for the repository of the working directory.
+fn home_main() -> ExitCode {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        usage()
+    }
+    let Some((repo, state)) = resolve_project(None, None) else {
+        return ExitCode::FAILURE;
+    };
+    home_on(marion_tui::home::Tab::Start, repo, state)
+}
+
+fn home_on(tab: marion_tui::home::Tab, repo: PathBuf, state: PathBuf) -> ExitCode {
+    let opts = marion_supervisor::home::session::Options { repo, state, tab };
+    match marion_supervisor::home::session::run(&opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("marion: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// `marion ls <id>`: one node's detail, as text.
+fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
+    use marion_supervisor::tree;
+    let found = tree::snapshot(repo, state).and_then(|nodes| {
+        let id = tree::resolve_target(target, &nodes)?;
+        let node = nodes
+            .iter()
+            .find(|n| n.agent_id == id)
+            .cloned()
+            .ok_or_else(|| format!("no node `{target}` in this project's forest"))?;
+        let sock = socket::socket_paths(state, &socket::project_root(repo), socket::own_uid());
+        let got = marion_supervisor::courier::node_get_with(
+            sock.socket(),
+            &id,
+            Some(marion_core::proto::params::ActivityCursor::Tail),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok((node, got.detail))
+    });
+    match found {
+        Ok((node, detail)) => {
+            print!("{}", detail_text(&node, &detail));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A node and its detail as the lines `marion ls <id>` prints. Tokens only, never a price.
+fn detail_text(
+    node: &marion_core::proto::NodeSummary,
+    d: &marion_core::proto::result::NodeDetail,
+) -> String {
+    use marion_core::contract::Workspace;
+    let mut out = format!(
+        "{}
+",
+        marion_supervisor::tree::list_line(node)
+    );
+    let mut kv = |k: &str, v: &str| {
+        out.push_str(&format!(
+            "  {k:<10} {v}
+"
+        ))
+    };
+    if let Some(t) = &d.task {
+        for (i, line) in t.prompt.lines().enumerate() {
+            kv(if i == 0 { "task" } else { "" }, line);
+        }
+        for a in &t.acceptance {
+            kv("accept", a);
+        }
+        for v in &t.verification {
+            kv("verify", v);
+        }
+    }
+    for m in &d.messages {
+        kv(
+            "message",
+            &format!("{} {} · {} bytes · {}", m.at, m.from, m.len, m.outcome),
+        );
+    }
+    if let Some(u) = d.usage {
+        kv(
+            "tokens",
+            &format!(
+                "{} in · {} out · {} cached",
+                u.input, u.output, u.cache_read
+            ),
+        );
+    }
+    if let Some(w) = &d.workspace {
+        let (path, branch) = match w {
+            Workspace::Worktree { path, branch } => (path, Some(branch)),
+            Workspace::SharedCwd { path } => (path, None),
+        };
+        kv("workspace", &path.display().to_string());
+        if let Some(b) = branch {
+            kv("branch", b);
+        }
+    }
+    if let Some(c) = &d.completion {
+        kv("result", &format!("{:?}", c.status).to_lowercase());
+        if let Some(n) = &c.narrative {
+            kv("said", n.lines().next().unwrap_or(""));
+        }
+        if let Some(b) = &c.branch {
+            kv("merge", &format!("git merge --no-ff {b}"));
+        }
+    }
+    if let Some(page) = &d.stream {
+        if let Some(why) = &page.unread {
+            kv("activity", why);
+        }
+        for l in &page.lines {
+            kv(
+                "",
+                &format!("{}  {}", l.at.get(11..19).unwrap_or(&l.at), l.text),
+            );
+        }
+    }
+    out
 }
 
 /// `marion list [--attention] [--repo <path>] [--state-dir <path>]`.
@@ -523,14 +665,20 @@ fn parse_list(argv: &[String]) -> Option<ListArgs> {
 /// [`marion_supervisor::tree::attention_of`] under `--attention`. Refuses like `tree` when nobody
 /// is serving; an empty answer is exit 0, because nothing needing attention is an answer.
 fn list_main(argv: &[String]) -> ExitCode {
-    use marion_supervisor::tree;
     let Some(args) = parse_list(argv) else {
         usage()
     };
     let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
         return ExitCode::FAILURE;
     };
-    let nodes = match tree::snapshot(&repo, &state) {
+    list_lines(&repo, &state, args.attention)
+}
+
+/// The forest, one [`marion_supervisor::tree::list_line`] per node, filtered to the nodes that
+/// need the operator under `attention`: `marion list`, and `marion ls` without a terminal.
+fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
+    use marion_supervisor::tree;
+    let nodes = match tree::snapshot(repo, state) {
         Ok(nodes) => nodes,
         Err(e) => {
             eprintln!("marion: {e}");
@@ -540,7 +688,7 @@ fn list_main(argv: &[String]) -> ExitCode {
     let mut out = io::stdout().lock();
     for node in nodes
         .iter()
-        .filter(|n| !args.attention || tree::attention_of(n).is_some())
+        .filter(|n| !attention || tree::attention_of(n).is_some())
     {
         if writeln!(out, "{}", tree::list_line(node)).is_err() {
             // A closed stdout — `marion list | head -1` — is the reader's decision, not a failure.
@@ -1173,114 +1321,6 @@ fn run_mcp(args: McpArgs) -> ExitCode {
         ),
     )));
     ExitCode::SUCCESS
-}
-
-/// What the three questions produce. Everything else keeps its default: the picker exists to make
-/// the common run typable, not to grow a second copy of the flag surface.
-#[derive(Debug, PartialEq, Eq)]
-struct Chosen {
-    agent_type: String,
-    /// `None` means "whatever the agent type itself defaults to", which is the same precedence
-    /// `--model`'s absence gets. An empty answer is that absence, not an empty model id.
-    model: Option<String>,
-    prompt: String,
-}
-
-/// One question. `Ok(None)` is EOF — Ctrl-D at any prompt ends the session, it does not loop.
-fn ask(
-    input: &mut impl BufRead,
-    out: &mut impl Write,
-    question: &str,
-) -> io::Result<Option<String>> {
-    write!(out, "{question}")?;
-    out.flush()?;
-    let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
-        writeln!(out)?;
-        return Ok(None);
-    }
-    Ok(Some(line.trim().to_string()))
-}
-
-/// The interactive picker, over any reader and writer so its logic is testable without a terminal.
-///
-/// The list is `types.names()` rather than a literal — the built-ins, then the repository's own
-/// `.marion/agents.toml` rows — so a fifth built-in or a new row is offered the day it exists and
-/// cannot be forgotten here. `Ok(None)` is EOF at any question.
-fn pick(
-    input: &mut impl BufRead,
-    out: &mut impl Write,
-    types: &AgentTypes,
-) -> io::Result<Option<Chosen>> {
-    let names = types.names();
-    writeln!(
-        out,
-        "marion — pick an agent type (the harness it runs on, and what it may do):"
-    )?;
-    for (i, name) in names.iter().enumerate() {
-        let desc = types
-            .resolve(name)
-            .map_or(String::new(), |t| format!("  {}", t.description));
-        writeln!(out, "  {}) {name}{desc}", i + 1)?;
-    }
-    let agent_type = loop {
-        let Some(answer) = ask(input, out, "agent type [1]: ")? else {
-            return Ok(None);
-        };
-        // Empty takes the first: plain `claude`, the implementer.
-        if answer.is_empty() {
-            break names[0].to_string();
-        }
-        if let Some(n) = answer
-            .parse::<usize>()
-            .ok()
-            .filter(|n| (1..=names.len()).contains(n))
-        {
-            break names[n - 1].to_string();
-        }
-        // A name typed out is the same answer as its number; refusing it would be pedantry.
-        if let Some(name) = names.iter().find(|n| **n == answer) {
-            break (*name).to_string();
-        }
-        writeln!(out, "  not one of 1..={}, nor a listed name.", names.len())?;
-    };
-
-    // The picker runs on the operator's own login (it has no `--canned`), so the default is the
-    // live one: a canned-plumbing default is not offered.
-    let default_model = types
-        .resolve(&agent_type)
-        .and_then(|t| t.default_model(false));
-    let model_hint = default_model
-        .clone()
-        .unwrap_or_else(|| "the harness's own default".into());
-    // Free text, not a menu: marion has no model catalogue and inventing one would go stale the
-    // week a vendor ships an id it does not list.
-    let Some(model) = ask(input, out, &format!("model [{model_hint}]: "))? else {
-        return Ok(None);
-    };
-    let model = if model.is_empty() {
-        default_model
-    } else {
-        Some(model)
-    };
-
-    let prompt = loop {
-        let Some(answer) = ask(input, out, "prompt: ")? else {
-            return Ok(None);
-        };
-        if !answer.is_empty() {
-            break answer;
-        }
-        // A root with no turn does nothing, so an empty answer re-asks rather than launching a
-        // run whose only outcome is a wasted process.
-        writeln!(out, "  a run needs a prompt.")?;
-    };
-
-    Ok(Some(Chosen {
-        agent_type,
-        model,
-        prompt,
-    }))
 }
 
 // --- the live view ------------------------------------------------------------------------------
@@ -2283,7 +2323,7 @@ fn detach_report(
         // stated: nodes that can be denied at a permission gate while nobody is attached.
         let _ = writeln!(
             out,
-            "marion: still running, detached: {}; `marion tree` to watch, `marion attach {}` for a \
+            "marion: still running, detached: {}; `marion ls` to watch, `marion attach {}` for a \
              pane node; to stop the fleet: {}",
             names(detached),
             detached[0].0,
@@ -2455,8 +2495,14 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("attach") {
         return attach_main(&argv);
     }
-    if argv.first().map(String::as_str) == Some("tree") {
-        return tree_main(&argv);
+    // Bare `marion`: the home screen, on a terminal. Anywhere else there is nobody to press a
+    // key, so it prints usage and fails rather than drawing into a pipe.
+    if argv.is_empty() {
+        return home_main();
+    }
+    // `ls` is the home screen on its Watch tab; `tree` is kept as its old name.
+    if matches!(argv.first().map(String::as_str), Some("ls" | "tree")) {
+        return ls_main(&argv);
     }
     if argv.first().map(String::as_str) == Some("list") {
         return list_main(&argv);
@@ -2526,57 +2572,12 @@ fn run_main(argv: &[String]) -> ExitCode {
     }
 }
 
-/// The run's arguments: parsed from argv, or picked interactively when there is none.
+/// The run's arguments, parsed from argv. Bare `marion` never reaches here: it opens the home
+/// screen (or prints usage without a terminal) before the run parser is consulted.
 fn run_args(argv: &[String]) -> Result<Args, ExitCode> {
-    if argv.is_empty() {
-        return pick_args();
-    }
     match parse_args(argv) {
         Some(a) => Ok(a),
         None => usage(),
-    }
-}
-
-/// The bare-picker branch, which is `run`'s and has its own stdin-is-a-terminal rule.
-fn pick_args() -> Result<Args, ExitCode> {
-    // **Only** with a terminal on the other end. A picker that read from a pipe would block
-    // forever on input nothing is going to send, which is a hang, not a prompt.
-    if !io::stdin().is_terminal() {
-        usage()
-    }
-    // The picker has no `--repo`, so its table is the one `run` will resolve without one: the
-    // repository of the current directory. Its file's refusal is the same sentence `run` prints.
-    let repo = default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let types = match marion_supervisor::run::agent_types(&repo) {
-        Ok(types) => types,
-        Err(e) => {
-            eprintln!("marion: {e}");
-            return Err(ExitCode::FAILURE);
-        }
-    };
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let mut out = io::stderr();
-    match pick(&mut input, &mut out, &types) {
-        Ok(Some(chosen)) => Ok(Args {
-            agent_type: chosen.agent_type,
-            prompt: chosen.prompt,
-            repo: None,
-            state_dir: None,
-            base_url: None,
-            model: chosen.model,
-            timeout_secs: None,
-            no_change_record: false,
-            pane: false,
-            detach: false,
-            canned: false,
-        }),
-        // EOF: the operator changed their mind, which is not an error.
-        Ok(None) => Err(ExitCode::SUCCESS),
-        Err(e) => {
-            eprintln!("marion: {e}");
-            Err(ExitCode::FAILURE)
-        }
     }
 }
 
@@ -2873,7 +2874,7 @@ fn root_follow(pane: bool) -> RootFollow {
 fn pane_started_line(root_id: &marion_core::contract::AgentId, agent_type: &str) -> String {
     format!(
         "marion: root {} ({}, pane) started; `marion attach {}` to open, `^] d` to detach, \
-         `marion tree` for the forest",
+         `marion ls` for the forest",
         root_id.0, agent_type, root_id.0
     )
 }
@@ -3638,39 +3639,39 @@ mod tests {
     /// without spawning the binary — and a test that spawned it would be asserting the same string
     /// through a slower door. Deleting the arm must fail *something*, and this is that something.
     #[test]
-    fn the_tree_screen_is_reachable_from_this_binary() {
-        // 1. Discoverable: a subcommand nobody can find does not exist for the operator who needs it.
+    fn the_watch_screen_is_reachable_from_this_binary() {
+        // 1. Discoverable: `ls` is in the usage text, and bare `marion` is described as the home
+        //    screen.
         let text = usage_text();
         assert!(
-            text.contains("marion tree ["),
-            "usage does not name `tree`:\n{text}"
+            text.contains("marion ls ["),
+            "usage does not name `ls`:\n{text}"
+        );
+        assert!(
+            text.contains("home screen"),
+            "usage does not describe bare `marion`:\n{text}"
         );
 
-        // 2. Dispatched: `main` routes the verb, and routes it *before* the run parser for the
-        //    reason `mcp` is routed early — a fall-through would print usage instead of a screen.
-        //
-        //    **Only the production half of the file is searched.** `include_str!` pulls in this
-        //    test too, and the needles below appear here as literals — so searching the whole file
-        //    would make the assertion satisfy itself and pass with the arm deleted. It did, before
-        //    a mutation said so.
+        // 2. Dispatched, before the run parser, for `ls`, for its old name `tree`, and for bare
+        //    `marion`. **Only the production half of the file is searched**: `include_str!` pulls
+        //    in this test too, and the needles below appear here as literals.
         let src = include_str!("marion.rs");
         let (production, _tests) = src
             .split_once("\n#[cfg(test)]\n")
             .expect("this file has a test module, and the split is what keeps this honest");
         assert!(
-            production.contains(r#"== Some("tree") {"#)
-                && production.contains("return tree_main(&argv);"),
-            "`main` no longer dispatches `tree`, so the screen is unreachable"
+            production.contains(r#"Some("ls" | "tree")"#)
+                && production.contains("return ls_main(&argv);")
+                && production.contains("return home_main();"),
+            "`main` no longer dispatches the home screen"
         );
 
-        // 3. Wired: `tree_main` resolves a project and hands it to the screen, rather than being a
-        //    stub. An unresolvable repo must fail *there*, which is only observable if the call
-        //    happens at all.
+        // 3. Wired: `ls_main` resolves a project, so an unresolvable repo fails there.
         assert_eq!(
-            tree_main(&[
-                "tree".to_string(),
+            ls_main(&[
+                "ls".to_string(),
                 "--repo".to_string(),
-                "/nonexistent-marion-tree-smoke".to_string(),
+                "/nonexistent-marion-ls-smoke".to_string(),
             ]),
             ExitCode::FAILURE
         );
@@ -4524,6 +4525,60 @@ mod tests {
         assert!(!b.detach);
     }
 
+    /// **Every home-screen effect is the command its box echoes**: each effect's `argv`, parsed
+    /// back through this binary's own parsers, names the same node, text, type and model. An
+    /// effect that drifted from its echo would teach the operator a command that does something
+    /// else.
+    #[test]
+    fn every_home_effect_parses_back_to_itself() {
+        use marion_core::contract::AgentId;
+        use marion_supervisor::home::Effect;
+        let verb = |e: &Effect| -> Vec<String> {
+            let a = e.argv().expect("a command");
+            assert_eq!(a[0], "marion", "{a:?}");
+            a[1..].to_vec()
+        };
+        let id = AgentId("01a093dc-0e28-7854-bffe-f07bc4483c33".into());
+        for (model, prompt, pane) in [
+            (None, "add a limiter", false),
+            (Some("opus"), "--looks like a flag, and \"quotes\"", true),
+        ] {
+            let run = Effect::Run {
+                agent_type: "claude-orchestrator".into(),
+                model: model.map(str::to_string),
+                prompt: prompt.into(),
+                pane,
+            };
+            let a = parse_args(&verb(&run)).expect("the run echo parses");
+            assert_eq!(a.agent_type, "claude-orchestrator");
+            assert_eq!(a.prompt, prompt);
+            assert_eq!(a.model.as_deref(), model);
+            assert_eq!(a.pane, pane);
+            // Either way it returns once the root exists: home never watches a run itself.
+            assert!(a.detach || a.pane);
+        }
+        let attach = parse_attach(&verb(&Effect::Attach(id.clone()))).unwrap();
+        assert_eq!(attach.agent_id, id.0);
+        let cancel = parse_attach(&verb(&Effect::Cancel(id.clone()))).unwrap();
+        assert_eq!(cancel.agent_id, id.0);
+        let resume = parse_resume(&verb(&Effect::Resume(id.clone()))).unwrap();
+        assert_eq!(resume.agent_id, id.0);
+        for text in ["use a deque", "-starts with a dash", "  two  spaces  "] {
+            let steer = parse_steer(&verb(&Effect::Steer(id.clone(), text.into()))).unwrap();
+            assert_eq!(steer.target, id.0);
+            assert_eq!(steer.text, SteerText::Words(text.into()));
+        }
+        // The verbs the echoes name are the verbs this binary dispatches.
+        let production = include_str!("marion.rs");
+        let production = &production[..production.find("#[cfg(test)]").unwrap()];
+        for v in ["attach", "cancel", "resume", "steer"] {
+            assert!(
+                production.contains(&format!("== Some(\"{v}\")")),
+                "`marion {v}` is echoed and not dispatched"
+            );
+        }
+    }
+
     #[test]
     fn run_takes_the_agent_type_positionally_and_the_prompt_as_a_flag() {
         let a = parse_args(&argv(&["run", "claude", "--prompt", "delegate it"])).unwrap();
@@ -4808,150 +4863,6 @@ mod tests {
         assert_eq!(default_repo(&dir), dir, "a fallback, never a failure");
     }
 
-    fn run_picker(input: &str) -> (Option<Chosen>, String) {
-        run_picker_over(input, &AgentTypes::builtins_only())
-    }
-
-    fn run_picker_over(input: &str, types: &AgentTypes) -> (Option<Chosen>, String) {
-        let mut reader = io::Cursor::new(input.as_bytes().to_vec());
-        let mut out: Vec<u8> = Vec::new();
-        let chosen = pick(&mut reader, &mut out, types).expect("a Cursor cannot fail to read");
-        (chosen, String::from_utf8(out).expect("prompts are utf-8"))
-    }
-
-    /// A `.marion/agents.toml` row is offered after the built-ins, by number and by name, with
-    /// its description beside it and its own `model` as the model default — the picker reads the
-    /// same table `marion run <type>` resolves, so the two can never offer different lists.
-    #[test]
-    fn the_picker_offers_a_user_defined_type_after_the_builtins() {
-        let types = AgentTypes::parse(
-            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\nmodel = \"gpt-5-codex\"\n\
-             description = \"Reviews a diff.\"\n",
-        )
-        .unwrap();
-        let n = builtin_names().len() + 1;
-        let (chosen, shown) = run_picker_over(&format!("{n}\n\nreview it\n"), &types);
-        assert!(
-            shown.contains(&format!("{n}) reviewer  Reviews a diff.")),
-            "{shown}"
-        );
-        assert_eq!(
-            chosen,
-            Some(Chosen {
-                agent_type: "reviewer".into(),
-                model: Some("gpt-5-codex".into()),
-                prompt: "review it".into(),
-            })
-        );
-        let (chosen, _) = run_picker_over("reviewer\n\nreview it\n", &types);
-        assert_eq!(chosen.unwrap().agent_type, "reviewer");
-    }
-
-    #[test]
-    fn the_picker_offers_every_builtin_by_number_and_selects_by_it() {
-        // Looked up rather than hardcoded, for the reason the test below states: the offered list
-        // *is* `builtin_names()`, so an ordinal written as a literal here would silently start
-        // naming a different type the day a built-in is added — which is exactly what adding
-        // `claude-impl` and `gemini-impl` did to the literal `4` that used to sit here.
-        let n = builtin_names()
-            .iter()
-            .position(|n| *n == "gemini")
-            .expect("gemini is a built-in")
-            + 1;
-        let (chosen, shown) = run_picker(&format!("{n}\ngemini-9.9-pro\nport the parser\n"));
-        for name in builtin_names() {
-            assert!(shown.contains(name), "{name} must be offered: {shown}");
-        }
-        assert_eq!(
-            chosen,
-            Some(Chosen {
-                agent_type: "gemini".into(),
-                model: Some("gemini-9.9-pro".into()),
-                prompt: "port the parser".into(),
-            })
-        );
-    }
-
-    /// **The list is agent types, and the title says so**; an empty answer takes the first, which
-    /// is plain `claude`, the implementer.
-    #[test]
-    fn the_picker_is_titled_for_agent_types_and_defaults_to_the_first() {
-        let (chosen, shown) = run_picker("\n\nship it\n");
-        assert!(shown.starts_with("marion — pick an agent type"), "{shown}");
-        assert!(!shown.contains("pick a harness"), "{shown}");
-        assert!(shown.contains("agent type [1]: "), "{shown}");
-        assert_eq!(chosen.unwrap().agent_type, builtin_names()[0]);
-    }
-
-    /// The list is `builtin_names()`, never a literal, so a fifth built-in is offered the day it
-    /// exists. Selecting the last one by its number is what proves the two are the same list.
-    #[test]
-    fn the_last_offered_number_is_the_last_builtin_whatever_that_becomes() {
-        let n = builtin_names().len();
-        let (chosen, _) = run_picker(&format!("{n}\n\nship it\n"));
-        assert_eq!(chosen.unwrap().agent_type, *builtin_names().last().unwrap());
-    }
-
-    #[test]
-    fn a_harness_may_also_be_typed_by_name_and_a_bad_answer_re_asks() {
-        let (chosen, shown) = run_picker("nope\n99\n0\nopencode\n\nship it\n");
-        assert_eq!(chosen.as_ref().unwrap().agent_type, "opencode");
-        assert_eq!(
-            shown.matches("not one of").count(),
-            3,
-            "each bad answer is told so and re-asked, not silently taken: {shown}"
-        );
-    }
-
-    /// An empty model answer is the *absence* of `--model`, which is what makes the agent type's
-    /// own default apply — including for the two harnesses whose adapters refuse without one.
-    #[test]
-    fn an_empty_model_answer_takes_the_agent_types_own_default() {
-        let (chosen, shown) = run_picker("gemini\n\nship it\n");
-        let c = chosen.unwrap();
-        assert_eq!(c.model, builtin("gemini").unwrap().model);
-        assert!(
-            shown.contains(&builtin("gemini").unwrap().model.unwrap()),
-            "the default is shown, so an empty answer is an informed one: {shown}"
-        );
-
-        // The picker runs on the operator's own login, so a default naming marion's canned
-        // provider is not offered: opencode then uses the operator's own default model.
-        let (chosen, shown) = run_picker("opencode\n\nship it\n");
-        assert_eq!(chosen.unwrap().model, None);
-        assert!(!shown.contains("marion/default"), "{shown}");
-
-        // And where the type states none, an empty answer stays none rather than becoming "".
-        let (chosen, shown) = run_picker("claude\n\nship it\n");
-        assert_eq!(chosen.unwrap().model, None);
-        assert!(shown.contains("the harness's own default"), "{shown}");
-    }
-
-    #[test]
-    fn a_prompt_is_free_text_and_keeps_its_spaces() {
-        let (chosen, _) = run_picker("1\n\n  delegate the parser rewrite  \n");
-        assert_eq!(chosen.unwrap().prompt, "delegate the parser rewrite");
-    }
-
-    /// An empty prompt re-asks rather than launching: a root with no turn does nothing, and
-    /// spending a process to discover that is the opposite of helpful.
-    #[test]
-    fn an_empty_prompt_re_asks_rather_than_launching_an_empty_run() {
-        let (chosen, shown) = run_picker("1\n\n\n   \nfinally\n");
-        assert_eq!(chosen.unwrap().prompt, "finally");
-        assert_eq!(shown.matches("a run needs a prompt").count(), 2);
-    }
-
-    /// Ctrl-D at any question ends the session. Not a panic, and — the failure mode that matters —
-    /// not a loop that re-asks a closed stdin forever.
-    #[test]
-    fn eof_at_any_question_ends_the_picker_cleanly() {
-        for input in ["", "1\n", "1\n\n", "1\nsonnet\n", "nope\n"] {
-            let (chosen, _) = run_picker(input);
-            assert_eq!(chosen, None, "EOF after {input:?} must end it");
-        }
-    }
-
     /// **`--help` names the headline commands and the real tool list.** The native `marion
     /// <harness>` lanes come from the facade registry, so a lane switched on is listed the same
     /// day; the MCP tools are read off the list `marion mcp` actually declares; and a person
@@ -5121,7 +5032,7 @@ mod tests {
             "a person meets no design-doc section numbers: {report}"
         );
         assert!(
-            report.contains("`marion tree`") && report.contains("`marion attach root`"),
+            report.contains("`marion ls`") && report.contains("`marion attach root`"),
             "how to get back: {report}"
         );
         assert!(
@@ -5158,7 +5069,7 @@ mod tests {
         );
         let fleet = lines[1];
         assert!(fleet.contains("still running, detached: root"), "{fleet}");
-        assert!(fleet.contains("`marion tree`"), "how to get back: {fleet}");
+        assert!(fleet.contains("`marion ls`"), "how to get back: {fleet}");
         assert!(
             fleet.contains("`marion attach root`"),
             "how to get back: {fleet}"

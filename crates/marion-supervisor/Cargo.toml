@@ -26,6 +26,8 @@ name = "marion"
 path = "src/bin/marion.rs"
 
 [dependencies]
+# The home screen's copy-to-clipboard: OSC 52 carries its text base64-encoded.
+base64.workspace = true
 blake3 = "1"
 getrandom = "0.4"
 marion-core = { path = "../marion-core" }

@@ -56,6 +56,10 @@ pub struct Expanded {
     pub result: Option<ResultView>,
     /// Where it works: its worktree, or the operator's checkout for a root.
     pub workspace: Option<String>,
+    /// What its harness can be asked to do on its surfaces, each with whether marion has measured
+    /// it there: the unmeasured ones are drawn in [`crate::tree::greyed`], never hidden — M5's
+    /// "greying out what they cannot do", decided by the supervisor as the tree screen's strip was.
+    pub caps: Vec<(String, bool)>,
 }
 
 /// The task as the node received it.
@@ -491,6 +495,22 @@ fn expanded_rows<'a>(
             ]);
         }
         push_block(&mut rows, "Result", block);
+    }
+
+    if !e.caps.is_empty() {
+        let mut l = Vec::new();
+        for (i, (name, on)) in e.caps.iter().enumerate() {
+            if i > 0 {
+                l.push(Span::raw("  "));
+            }
+            let style = if *on {
+                Style::default()
+            } else {
+                crate::tree::greyed()
+            };
+            l.push(span(name.clone(), style));
+        }
+        push_block(&mut rows, "Can", vec![l]);
     }
 
     if let Some(ws) = e.workspace.as_ref().filter(|_| !compact) {

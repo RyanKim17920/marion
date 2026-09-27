@@ -8,17 +8,17 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 
   HARNESSES   3 of 6 ready
 
-  ● claude    2.1.268   ready                       headless · pane · channel…
-  ● codex     0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini    0.9.1     sign-in needed              headless · pane
+  ● claude       2.1.268   ready                       headless · pane · chan…
+  ● codex        0.61.0    ready                       headless · pane · ACP
+❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
     └ BINARY   /usr/local/bin/gemini
       VERSION  0.9.1
       AUTH     not signed in
       FIX      run gemini once and sign in
                marion uses your login, never its own
-  ● opencode  1.2.3     ready                       headless · pane · ACP
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350    headless · ACP
-  ○ agy       —         not installed               —
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.…
@@ -31,7 +31,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
    47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  518  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  515  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
     3  Style::new().green().bg(Color::Reset)  "●●●"
@@ -44,17 +44,17 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 
   HARNESSES   3 of 6 ready
 
-  ● claude    2.1.268   ready                       headless · pane · channel push
-  ● codex     0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini    0.9.1     sign-in needed              headless · pane
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
     └ BINARY   /usr/local/bin/gemini
       VERSION  0.9.1
       AUTH     not signed in
       FIX      run gemini once and sign in
                marion uses your login, never its own
-  ● opencode  1.2.3     ready                       headless · pane · ACP
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350    headless · ACP
-  ○ agy       —         not installed               —
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
@@ -86,17 +86,17 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
 
   HARNESSES   3 of 6 ready
 
-  ● claude    2.1.268   ready                       headless · pane · channel push
-  ● codex     0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini    0.9.1     sign-in needed              headless · pane
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
     └ BINARY   /usr/local/bin/gemini
       VERSION  0.9.1
       AUTH     not signed in
       FIX      run gemini once and sign in
                marion uses your login, never its own
-  ● opencode  1.2.3     ready                       headless · pane · ACP
-  ✗ copilot   0.0.339   too old, needs ≥ 0.0.350    headless · ACP
-  ○ agy       —         not installed               —
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml

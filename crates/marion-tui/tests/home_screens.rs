@@ -310,6 +310,18 @@ fn landed() -> Expanded {
             merge: Some(s("git merge --no-ff marion/t-3c33")),
         }),
         workspace: Some(s("~/.local/state/marion/9f3e/worktrees/t-3c33")),
+        caps: [
+            "steer",
+            "interrupt",
+            "fork",
+            "resume",
+            "view",
+            "permissions",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (s(c), i % 2 == 0))
+        .collect(),
     }
 }
 
@@ -809,6 +821,36 @@ fn watch_task_block_shows_what_marion_sent() {
     );
     assert!(task_rows[4].contains("✓ cargo test passes"), "{text}");
     assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
+}
+
+/// **The greying survives the move from the tree screen**: an unmeasured capability is drawn in
+/// the tree's own grey, a measured one is not, and both are on screen.
+#[test]
+fn unmeasured_capabilities_are_greyed_not_hidden() {
+    let v = watch_view(4, Some(landed()));
+    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 160, 50);
+    let grey = tree::greyed().fg.unwrap();
+    let text = rows_of(&buf).join("\n");
+    let (y, row) = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("CAN"))
+        .unwrap_or_else(|| panic!("no capability row:\n{text}"));
+    let x_of = |word: &str| {
+        row.find(word)
+            .map(|i| row[..i].chars().count() as u16)
+            .unwrap()
+    };
+    assert_ne!(
+        buf[(x_of("steer"), y as u16)].fg,
+        grey,
+        "steer is measured: {row}"
+    );
+    assert_eq!(
+        buf[(x_of("interrupt"), y as u16)].fg,
+        grey,
+        "interrupt is not: {row}"
+    );
 }
 
 /// A notice replaces the hints until the next key, and says so in bold.

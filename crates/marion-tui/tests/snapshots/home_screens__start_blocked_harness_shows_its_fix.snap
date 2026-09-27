@@ -8,13 +8,13 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-  ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+  ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
-  ○ agy       —         not installed
+  ○ agy          —         not installed
 
   TYPE      copilot edits in a worktree
   MODEL     default
@@ -44,13 +44,13 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-  ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+  ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
-  ○ agy       —         not installed
+  ○ agy          —         not installed
 
   TYPE      copilot edits in a worktree
   MODEL     default
@@ -86,13 +86,13 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
 
   HARNESS   3 of 6 ready
 
-  ● claude    2.1.268   ready
-  ● codex     0.61.0    ready
-  ◐ gemini    0.9.1     sign-in needed
-  ● opencode  1.2.3     ready
-❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+  ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+❯ ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
     └ FIX  brew upgrade copilot-cli, then r to re-check
-  ○ agy       —         not installed
+  ○ agy          —         not installed
 
   TYPE      copilot edits in a worktree
   MODEL     default

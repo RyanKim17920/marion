@@ -47,6 +47,8 @@ pub mod facade_cli;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
+/// The home screen bare `marion` opens: Start, Watch, Setup and help.
+pub mod home;
 /// Turn delivery's queue: one inbox per node, the renderer every message arrives through, and the
 /// journal records that audit it.
 pub mod inbox;

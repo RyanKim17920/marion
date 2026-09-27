@@ -8,7 +8,6 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
   NODES   6 · 2 running · 2 need you
 
-  ├─ ● codex impl a1f0           ⠸   2m17s   editing src/limits/bucket.rs
   ├─ ◐ codex impl 91cd               3m02s   asks to write .github/workflows/…
   ├─ ✗ codex impl 7b2e               4m50s   exit 101: 3 tests failed
 ❯ └─ ✓ codex impl 3c33               6m41s   landed marion/t-3c33
@@ -22,19 +21,21 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
                           git merge --no-ff marion/t-3c33   c copies
+         CAN              steer  interrupt  fork  resume  view  permissions
 
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
 --- styles ---
-  137  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodexcodex✓impl3c33"
+  145  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   42  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
-  616  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
-   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸2m17s━━━━━━━"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
+  579  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   26  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interruptresumepermissio"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆━━━━━━━"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯Kc❯"
-    4  Style::new().green().bg(Color::Reset)  "●+84"
+    3  Style::new().green().bg(Color::Reset)  "+84"
    24  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed−12"
    33  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
 
@@ -52,16 +53,16 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
        └ TASK             Add token-bucket limiter to /v1/orders
                           ✓ 2 criteria · $ 1 check
          STEERS           14:27  operator · 41 bytes · delivered via turn
-         RAN              14:24:28  apply_patch(src/routes/orders.rs +18 -9)
-                          14:24:35  command_execution(cargo build -q)
+         RAN              14:24:35  command_execution(cargo build -q)
                           14:25:42  command_execution(cargo test -q limits)
                           14:25:49  “142 passed; committing.”
                           14:25:56  command_execution(git commit -am limiter)
-                          ↑ 4 earlier   K scrolls back
+                          ↑ 5 earlier   K scrolls back
          TOKENS           184k in · 12.9k out · 151k cached
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
                           git merge --no-ff marion/t-3c33   c copies
+         CAN              steer  interrupt  fork  resume  view  permissions
   ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
 
 
@@ -70,10 +71,11 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
 --- styles ---
-  255  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  230  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   43  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
-  803  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
+  795  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   26  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interruptresumepermissio"
    21  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s━━━━━━━"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯Kc❯"
     5  Style::new().green().bg(Color::Reset)  "●●+84"
@@ -111,6 +113,7 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
                           ━━━━━━━━━━━━━━━━  41% of context
          RESULT           marion/t-3c33  +84 −12 · 3 files
                           git merge --no-ff marion/t-3c33   c copies
+         CAN              steer  interrupt  fork  resume  view  permissions
          WORKSPACE        ~/.local/state/marion/9f3e/worktrees/t-3c33
   ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
 
@@ -126,16 +129,16 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
 
 
 
-
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ❯ marion attach 01a093dc-3c33                                                                                                                same as enter │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                   ? shortcuts
 --- styles ---
-  418  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  431  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   60  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
+   63  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKSTEERSRANTOKENS"
  1473  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   26  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interruptresumepermissio"
    37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯c❯"
     7  Style::new().green().bg(Color::Reset)  "●●+84●●"

@@ -62,7 +62,7 @@ pub struct StartView {
 }
 
 /// The harness name and version columns.
-const NAME_W: usize = 10;
+const NAME_W: usize = 13;
 const VERSION_W: usize = 10;
 /// Labels of the choice rows (`TYPE`, `MODEL`, `OPTIONS`).
 const CHOICE_W: usize = 10;

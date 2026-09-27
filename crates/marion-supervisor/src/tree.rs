@@ -1,4 +1,4 @@
-//! `marion tree` — §5.6's tree pane, and **M5 clause 3's greying** (§9, §3.3).
+//! The forest's projection — §5.6's tree pane, and **M5 clause 3's greying** (§9, §3.3).
 //!
 //! # The two halves, and where the seam is
 //!
@@ -25,21 +25,16 @@
 //!   which is precisely the defect clause 3 names. [`marion_core::proto::NodeSummary::pane`] is how the
 //!   third component reaches a client.
 //!
-//! # Navigation, and why attaching is not reimplemented here
+//! # Where the screen went
 //!
-//! `↑`/`↓`/`j`/`k` move the cursor, `!` jumps it to the next node [`attention_of`] names, `s` opens
-//! a one-line compose on the hint row whose Enter sends `node/steer` as the operator (Esc cancels,
-//! the answer lands in the detail pane's notice), `Tab`
-//! moves focus between the tree and the content pane, `q` (or the pane's own `^]`) leaves. **`Enter` runs [`crate::attach::run`]** — the same function
-//! `marion attach <agent-id>` calls, reached by leaving this screen first and re-entering it when
-//! the attach returns. A tree that spoke `node/attach` itself would be a second attach client with
-//! a second write-lease story and a second `SIGWINCH` handler, and §5.3's one-writer rule is
-//! exactly the kind of invariant two implementations diverge on.
-//!
-//! The cost is that this screen's socket and the attach's socket are two connections. That is
-//! correct rather than merely tolerable: §5.3 leases the write half **per connection**, and an
-//! attach that shared this one would hold the keyboard for a node the operator had already
-//! navigated away from.
+//! The screen that drew this projection is now the home screen's Watch tab
+//! ([`crate::home`]), which `marion ls` and `marion tree` open. What stays here is the part both it
+//! and the line-oriented verbs (`list`, `steer`, `cancel`, `ls <id>`) read: the projection of a
+//! [`NodeSummary`] into a row, its greying, its attention reason, short ids, and [`Subscription`] —
+//! one live `tree/subscribe` kept current. Enter still runs [`crate::attach::run`] after leaving
+//! the screen, for the reason this module always gave: a second attach client would be a second
+//! write-lease story, and §5.3's one-writer rule is exactly the kind of invariant two
+//! implementations diverge on.
 //!
 //! # What is not here
 //!
@@ -56,9 +51,7 @@ use marion_core::harness::Harness;
 use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
 use marion_harness::{Capabilities, ExecutionSurfaces};
-use marion_tui::tree::{self, Action, Focus, Nav, Tone, Tree};
-use marion_tui::{Screen, ScreenBackend, Sticky};
-use ratatui::Terminal;
+use marion_tui::tree::{self, Action, Tone, Tree};
 
 use crate::doctor::{SurfaceRole, capabilities_at, surfaces_at};
 
@@ -267,109 +260,6 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
     }
 }
 
-/// Why `!` did not move. Shown on the hint row, for [`NO_PANE`]'s reason.
-const CALM: &str = "nothing needs attention";
-
-/// **`!`: the cursor to the next node that needs the operator**, by [`attention_of`] and in the
-/// order the tree draws, wrapping. The refusal is the hint-row sentence when there is none.
-fn next_attention(tree: &mut Tree, nodes: &[NodeSummary]) -> Result<(), &'static str> {
-    let wanted = |id: &str| {
-        nodes
-            .iter()
-            .any(|n| n.agent_id.0 == id && attention_of(n).is_some())
-    };
-    if tree.cycle_to(wanted) {
-        Ok(())
-    } else {
-        Err(CALM)
-    }
-}
-
-/// Why `Tab` did not move. Shown on the hint row, because a key that silently does nothing is
-/// indistinguishable from a key that is broken.
-const NO_PANE: &str = "no pane to focus";
-
-/// **What `Tab` means for this selection**, as a decision rather than an unconditional flip.
-///
-/// The content pane only ever holds a terminal for a node that has one. `Tab` used to move focus
-/// regardless, so on a headless selection the keyboard went somewhere with nothing in it and the
-/// key looked dead. Focus cycles only among panes that exist, and the refusal carries its reason.
-fn focus_after_tab(focus: Focus, selected: Option<&NodeSummary>) -> Result<Focus, &'static str> {
-    match focus {
-        // Leaving is always possible: the tree is always there.
-        Focus::Content => Ok(Focus::Tree),
-        Focus::Tree if selected.is_some_and(|n| n.pane) => Ok(Focus::Content),
-        Focus::Tree => Err(NO_PANE),
-    }
-}
-
-/// How many of a node's watched state changes the pane keeps.
-const TAIL: usize = 3;
-
-/// **The state changes this screen has watched, per node.**
-///
-/// `tree/subscribe` pushes a `node/state` for every transition and [`Session::absorb`] folds each
-/// into one `state` field, which is the right thing for a tree row and throws the history away. A
-/// headless node has no terminal to show, so its transitions are the only thing the content pane
-/// can show *happening*; `tree/subscribe` carries no per-node event tail of its own, so this is
-/// what the screen has watched since it opened rather than the journal's whole story.
-///
-/// Bounded twice: [`TAIL`] entries per node, and [`Self::retain`] drops nodes that have left the
-/// forest, so a screen left open for a day cannot accumulate one entry per node ever seen.
-#[derive(Default)]
-struct Events {
-    per_node: std::collections::HashMap<String, Vec<String>>,
-}
-
-impl Events {
-    fn record(&mut self, id: &str, state: &str) {
-        let tail = self.per_node.entry(id.to_string()).or_default();
-        if tail.last().is_some_and(|last| last == state) {
-            return;
-        }
-        tail.push(state.to_string());
-        if tail.len() > TAIL {
-            tail.remove(0);
-        }
-    }
-
-    fn tail(&self, id: &str) -> &[String] {
-        self.per_node.get(id).map_or(&[], Vec::as_slice)
-    }
-
-    fn retain(&mut self, live: &[NodeSummary]) {
-        self.per_node
-            .retain(|id, _| live.iter().any(|n| n.agent_id.0 == *id));
-    }
-}
-
-/// Fold one window measurement into `size`, saying whether it moved.
-///
-/// `None` — a pipe, or a tty the kernel has not sized — leaves the last geometry in place: a frame
-/// sized to what the operator was last known to be looking at beats one sized to a guess.
-/// One non-blocking glance at the operator's keyboard: how many bytes were already there, or
-/// `None` if stdin closed. A timeout or a read error is zero bytes, not the end of the tree.
-fn glance_at_keyboard(
-    stdin: &mut marion_tui::guard::Keyboard,
-    buf: &mut [u8; 256],
-) -> Option<usize> {
-    match stdin.read_within(buf, std::time::Duration::ZERO) {
-        Ok(Some(0)) => None,
-        Ok(Some(n)) => Some(n),
-        Ok(None) | Err(_) => Some(0),
-    }
-}
-
-fn geometry_changed(size: &mut (u16, u16), measured: Option<(u16, u16)>) -> bool {
-    match measured {
-        Some(now) if now != *size => {
-            *size = now;
-            true
-        }
-        _ => false,
-    }
-}
-
 /// Build the flattened tree from a snapshot, preserving the selection where the node survives.
 pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
     let mut t = Tree::new(nodes.iter().map(row).collect());
@@ -383,17 +273,6 @@ pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
 /// `String`: one exit code, one shape of message, one caller that prints it.
 type Refusal = String;
 
-/// `marion tree [--repo <path>] [--state-dir <path>]`.
-///
-/// Dials the supervisor the same way an attach does — §2 keys one on the git common dir — and, like
-/// an attach, **refuses to start one**. A supervisor started here would answer `tree/subscribe`
-/// with an empty forest, which reads as "no agents are running" rather than as "marion is not
-/// looking where you think".
-pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
-    let (stream, shown, socket) = dial(repo, state_dir)?;
-    Session::open(stream, shown, socket)?.pump(repo, state_dir)
-}
-
 /// **One `tree/subscribe` snapshot, and nothing kept open** — what `marion list` prints.
 ///
 /// The screen's own dial and the screen's own subscribe, so the list and the tree cannot disagree
@@ -401,8 +280,7 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
 /// before the answer are folded exactly as the screen folds them. Refuses as [`run`] does, for
 /// [`run`]'s reason, when nobody is serving.
 pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refusal> {
-    let (stream, shown, socket) = dial(repo, state_dir)?;
-    Ok(Session::open(stream, shown, socket)?.nodes)
+    Ok(Subscription::open(repo, state_dir)?.nodes)
 }
 
 /// **One node as one `marion list` line**: `<glyph> <state> <agent_type> <agent_id>`, then
@@ -510,73 +388,47 @@ pub(crate) fn fold_tree_event(nodes: &mut Vec<NodeSummary>, event: &Event) -> bo
     }
 }
 
-/// One `marion tree` screen.
-struct Session {
-    stream: UnixStream,
+/// **A live `tree/subscribe`**: the snapshot, kept current from the subscription's notifications.
+///
+/// What a screen that watches the forest needs and nothing else — the home screen's Watch tab
+/// holds one. Its connection carries only the subscription; an errand (a steer, a kill, a
+/// `node/get`) dials its own through [`crate::courier`], so an answer never has to be told apart
+/// from the notifications around it.
+pub struct Subscription {
     lines: BufReader<UnixStream>,
-    /// The snapshot, kept current from the subscription rather than re-fetched: §2's
-    /// `tree/node-added` exists precisely so a client is not polling for nodes being created.
-    nodes: Vec<NodeSummary>,
-    tree: Tree,
-    focus: Focus,
-    /// The project key, for the status row.
-    repo: String,
-    /// The last refused `Enter`, shown in the detail pane until the cursor moves.
-    notice: Option<String>,
-    /// Why the last `Tab` did not move, shown on the hint row until the cursor moves.
-    hint: Option<&'static str>,
-    /// The state changes this screen has watched, per node.
-    events: Events,
-    /// §2's socket, which a steer dials on a connection of its own ([`crate::courier::steer`]):
-    /// this one is a subscription, and an answer in its stream would have to be told apart from
-    /// the notifications around it.
-    socket: PathBuf,
-    /// The steer being typed after `s`, and the node it is for — fixed when `s` was pressed, so
-    /// the message goes where the operator was looking when they began it.
-    compose: Option<(AgentId, tree::Compose)>,
+    /// The forest as of the last notification folded.
+    pub nodes: Vec<NodeSummary>,
+    /// The project as the operator recognises it: the worktree, not its `.git`.
+    pub shown: String,
+    /// §2's socket, for the errands.
+    pub socket: PathBuf,
 }
 
-impl Session {
-    fn open(stream: UnixStream, repo: String, socket: PathBuf) -> Result<Session, Refusal> {
-        let lines = BufReader::new(
-            stream
-                .try_clone()
-                .map_err(|e| format!("cloning the supervisor socket: {e}"))?,
-        );
-        let mut s = Session {
-            stream,
-            lines,
-            nodes: Vec::new(),
-            tree: Tree::new(Vec::new()),
-            focus: Focus::Tree,
-            repo,
-            notice: None,
-            hint: None,
-            events: Events::default(),
-            socket,
-            compose: None,
-        };
-        s.subscribe()?;
-        Ok(s)
-    }
-
-    fn subscribe(&mut self) -> Result<(), Refusal> {
+impl Subscription {
+    /// Dial this project's supervisor and subscribe. Refuses, as `marion tree` does, when nobody is
+    /// serving: a supervisor started here would have an empty forest to show.
+    pub fn open(repo: &Path, state_dir: &Path) -> Result<Subscription, Refusal> {
+        let (mut stream, shown, socket) = dial(repo, state_dir)?;
         let frame = Frame::Request(marion_core::proto::Request::new(
             RequestId::Number(1),
             Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
         ));
-        self.stream
+        stream
             .write_all(frame.to_line().as_bytes())
-            .and_then(|()| self.stream.flush())
+            .and_then(|()| stream.flush())
             .map_err(|e| format!("sending tree/subscribe: {e}"))?;
+        let mut sub = Subscription {
+            lines: BufReader::new(stream),
+            nodes: Vec::new(),
+            shown,
+            socket,
+        };
+        let mut early = Vec::new();
         let response = loop {
-            match self.next_frame()? {
+            match sub.frame()? {
                 Some(Frame::Response(r)) => break r,
-                Some(other) => {
-                    self.absorb(other);
-                    continue;
-                }
-                None => continue,
+                Some(Frame::Notification(n)) => early.push(n.event),
+                Some(_) | None => continue,
             }
         };
         let body = match response.outcome {
@@ -596,42 +448,26 @@ impl Session {
                 "the supervisor answered tree/subscribe with another method's result".into(),
             );
         };
-        self.nodes = snapshot.nodes;
-        self.rebuild();
-        Ok(())
-    }
-
-    /// Fold one notification into the snapshot. **Unknown events are ignored and known ones are
-    /// never inferred**: a `node/state` for a node this client has not been told about is dropped
-    /// rather than used to invent a summary, because a summary invented here would have a fabricated
-    /// harness and would then be greyed from the wrong row of doctor's table.
-    fn absorb(&mut self, frame: Frame) {
-        let Frame::Notification(n) = frame else {
-            return;
-        };
-        if !fold_tree_event(&mut self.nodes, &n.event) {
-            return;
+        sub.nodes = snapshot.nodes;
+        for event in &early {
+            fold_tree_event(&mut sub.nodes, event);
         }
-        if let Event::NodeState {
-            agent_id,
-            state,
-            reap_state,
-            ..
-        } = &n.event
-        {
-            let label = state_label(*state, *reap_state);
-            self.events.record(&agent_id.0, &label);
+        Ok(sub)
+    }
+
+    /// Wait up to the socket's read bound for one notification and fold it. `Ok(Some(event))` when
+    /// it changed the forest, `Ok(None)` when nothing arrived or nothing changed, and `Err` when
+    /// the supervisor went away.
+    pub fn poll(&mut self) -> Result<Option<Event>, Refusal> {
+        match self.frame()? {
+            Some(Frame::Notification(n)) if fold_tree_event(&mut self.nodes, &n.event) => {
+                Ok(Some(n.event))
+            }
+            _ => Ok(None),
         }
-        self.rebuild();
     }
 
-    fn rebuild(&mut self) {
-        let keep = self.tree.selected().map(|n| n.id.clone());
-        self.tree = build(&self.nodes, keep.as_deref());
-        self.events.retain(&self.nodes);
-    }
-
-    fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
+    fn frame(&mut self) -> Result<Option<Frame>, Refusal> {
         let mut line = String::new();
         match self.lines.read_line(&mut line) {
             Ok(0) => Err("the supervisor closed the connection".into()),
@@ -647,464 +483,6 @@ impl Session {
                 Ok(None)
             }
             Err(e) => Err(format!("reading from the supervisor: {e}")),
-        }
-    }
-
-    /// The loop: paint, poll the socket, read the keyboard, repeat.
-    ///
-    /// **Single-threaded, unlike an attach's**, and that is what makes `Enter` work. An attach reads
-    /// stdin on its own thread because it has to forward every byte; this screen consumes a handful
-    /// of keys, and a reader thread here would still be blocked in `read(2)` while the attach it
-    /// launched was trying to read the same fd — stealing the operator's first keystroke into a
-    /// pane. A bounded `poll` of stdin on this one thread has no such window — and it is a `poll`,
-    /// not `O_NONBLOCK`, because that flag lives on the tty description stdout shares and would
-    /// make the paint fail on a full pty buffer instead of waiting.
-    fn pump(&mut self, repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
-        loop {
-            // Re-measured each pass: an attach the operator just left may have been resized, and
-            // `marion attach` forwards its own geometry to the node rather than this screen's.
-            let (cols, rows) = marion_tui::guard::window_size(0).unwrap_or((80, 24));
-            let screen = Screen::enter(std::io::stdout(), 0, &Sticky::initial(cols, rows))
-                .map_err(|e| format!("entering the terminal: {e}"))?;
-            let opened = self.draw_loop(screen, cols, rows)?;
-            let Some(agent) = opened else { return Ok(()) };
-            // The attach owns the terminal from here until the operator detaches with `^] d`. Its
-            // refusal — a lease another client holds, say — comes back as the pane's notice rather
-            // than ending the session or going to a stderr the next frame erases.
-            if let Err(e) = crate::attach::run(&agent, repo, state_dir) {
-                self.notice = Some(format!("attach refused: {e}"));
-            }
-        }
-    }
-
-    /// One pass of the screen, returning the node to attach to if the operator chose one.
-    fn draw_loop(
-        &mut self,
-        screen: Screen,
-        cols: u16,
-        rows: u16,
-    ) -> Result<Option<String>, Refusal> {
-        // Before the renderer, so a refused keyboard leaves through `screen`'s own drop.
-        let mut stdin = marion_tui::guard::Keyboard::open(0)
-            .map_err(|e| format!("watching the tree's keyboard: {e}"))?;
-        let mut terminal = Terminal::new(ScreenBackend::new(screen, cols, rows))
-            .map_err(|e| format!("starting the tree's renderer: {e}"))?;
-        // **The terminal is restored on every exit from this function**, including the one that
-        // hands stdin to an attach. `ScreenBackend` owns the guard and `Drop` would do it — but the
-        // order matters on the way out for the same reason `attach::Session::drop` says: an error
-        // printed onto the alternate screen disappears with it.
-        let leave = |t: &Terminal<ScreenBackend>| t.backend().screen().leave();
-        let mut buf = [0u8; 256];
-        let mut size = (cols, rows);
-        loop {
-            // The window is re-measured every pass rather than on `SIGWINCH`: this loop already
-            // wakes every `POLL` to glance at the keyboard, and one `TIOCGWINSZ` per wake is cheaper
-            // than a handler. `Terminal::draw` reads the backend's size back and clears on change.
-            if geometry_changed(&mut size, marion_tui::guard::window_size(0)) {
-                terminal.backend_mut().set_size(size.0, size.1);
-            }
-            self.paint(&mut terminal);
-            if !self.poll_supervisor() {
-                leave(&terminal);
-                return Ok(None);
-            }
-            // The socket read above is the pacing; the keyboard is only glanced at, so a key that
-            // is not already there waits for the next pass rather than holding up a frame.
-            let Some(n) = glance_at_keyboard(&mut stdin, &mut buf) else {
-                leave(&terminal);
-                return Ok(None);
-            };
-            if let Some(chosen) = self.keys(&buf[..n]) {
-                leave(&terminal);
-                return Ok(chosen);
-            }
-        }
-    }
-
-    /// One pass over the supervisor's stream. `false` when the supervisor went away, which closes
-    /// the tree and is not a failure of it.
-    fn poll_supervisor(&mut self) -> bool {
-        match self.next_frame() {
-            Ok(Some(frame)) => {
-                self.absorb(frame);
-                true
-            }
-            Ok(None) => true,
-            Err(_) => false,
-        }
-    }
-
-    /// One chunk of the keyboard: to the compose line while one is open, as navigation otherwise.
-    /// A line that ends mid-chunk hands the rest back to navigation, and `s` mid-chunk hands the
-    /// rest to the line it opens — so typed-ahead keys land where the operator meant them.
-    fn keys(&mut self, mut bytes: &[u8]) -> Option<Option<String>> {
-        while !bytes.is_empty() {
-            if let Some((_, line)) = self.compose.as_mut() {
-                let (ended, used) = line.feed(bytes)?;
-                bytes = &bytes[used..];
-                let (target, _) = self.compose.take().expect("composing");
-                if let tree::Composed::Send(text) = ended {
-                    self.notice = Some(steer_notice(crate::courier::steer(
-                        &self.socket,
-                        &target,
-                        &text,
-                        None,
-                    )));
-                }
-            } else {
-                let (actions, used) = tree::nav_prefix(bytes);
-                bytes = &bytes[used..];
-                for action in actions {
-                    if let Some(chosen) = self.apply_nav(action) {
-                        return Some(chosen);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Open the compose line for the selected node, or say why there is none.
-    fn start_steer(&mut self) {
-        match self.selected_summary() {
-            Some(n) => {
-                let target = n.agent_id.clone();
-                self.notice = None;
-                self.hint = None;
-                self.compose = Some((
-                    target,
-                    tree::Compose::with_limit(marion_core::proto::params::MAX_STEER_BYTES),
-                ));
-            }
-            None => self.hint = Some("nothing selected to steer"),
-        }
-    }
-
-    /// The hint row: the compose line while one is open, the screen's keys otherwise, with the
-    /// reason the last key did nothing after them.
-    fn hint_row(&self) -> String {
-        if let Some((target, line)) = &self.compose {
-            let who = self
-                .nodes
-                .iter()
-                .find(|n| n.agent_id == *target)
-                .map_or_else(|| short_id(&target.0).to_string(), label_of);
-            return format!(
-                "enter send  esc cancel  ·  steer {who}: {}▏",
-                tail(&line.text(), COMPOSE_SHOWN)
-            );
-        }
-        match self.hint {
-            Some(hint) => format!("{}  ·  {hint}", keys_for(self.selected_summary())),
-            None => keys_for(self.selected_summary()),
-        }
-    }
-
-    /// One navigation key. `Some` ends the pass: `Some(Some(id))` hands the terminal to an attach,
-    /// `Some(None)` closes the tree.
-    fn apply_nav(&mut self, action: Nav) -> Option<Option<String>> {
-        match action {
-            Nav::Quit => Some(None),
-            Nav::ToggleFocus => {
-                self.toggle_focus();
-                None
-            }
-            Nav::Up if self.focus == Focus::Tree => {
-                self.notice = None;
-                self.hint = None;
-                self.tree.move_by(-1);
-                None
-            }
-            Nav::Down if self.focus == Focus::Tree => {
-                self.notice = None;
-                self.hint = None;
-                self.tree.move_by(1);
-                None
-            }
-            Nav::NextAttention if self.focus == Focus::Tree => {
-                self.notice = None;
-                self.hint = next_attention(&mut self.tree, &self.nodes).err();
-                None
-            }
-            Nav::Steer if self.focus == Focus::Tree => {
-                self.start_steer();
-                None
-            }
-            Nav::Up | Nav::Down | Nav::NextAttention | Nav::Steer => None,
-            Nav::Open => self.open_selected().map(Some),
-        }
-    }
-
-    fn toggle_focus(&mut self) {
-        match focus_after_tab(self.focus, self.selected_summary()) {
-            Ok(focus) => {
-                self.focus = focus;
-                self.hint = None;
-            }
-            Err(why) => self.hint = Some(why),
-        }
-    }
-
-    /// The node `Open` chose, if it has one to attach to.
-    ///
-    /// Decided here, from the summary, before the terminal changes hands: an attach would refuse
-    /// a headless node too, but onto a screen the next frame erases.
-    fn open_selected(&mut self) -> Option<String> {
-        match self.selected_summary().map(open_target) {
-            Some(Ok(id)) => Some(id.to_string()),
-            Some(Err(refusal)) => {
-                self.notice = Some(refusal);
-                None
-            }
-            None => None,
-        }
-    }
-
-    fn paint(&mut self, terminal: &mut Terminal<ScreenBackend>) {
-        let tree = &self.tree;
-        let focus = self.focus;
-        let selected = self.selected_summary();
-        let status = tree::Status {
-            repo: &self.repo,
-            nodes: self.nodes.len(),
-            running: running(&self.nodes),
-            attention: attention_count(&self.nodes),
-        };
-        let notice = self.notice.as_deref();
-        let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
-        let parent = selected.and_then(|n| parent_label(&self.nodes, n));
-        // A key that did nothing says why, on the row that lists the keys.
-        let keys = self.hint_row();
-        let _ = terminal.draw(|f| {
-            let panes = tree::split(f.area());
-            f.render_widget(status, panes.status);
-            f.render_widget(
-                tree::TreeView {
-                    tree,
-                    focused: focus == Focus::Tree,
-                },
-                panes.tree,
-            );
-            f.render_widget(tree::Hints { keys: &keys }, panes.hints);
-            f.render_widget(
-                tree::ActionBar {
-                    node: tree.selected(),
-                },
-                panes.actions,
-            );
-            f.render_widget(
-                Detail {
-                    node: selected,
-                    notice,
-                    events,
-                    parent,
-                },
-                panes.content,
-            );
-        });
-    }
-
-    /// The wire summary under the cursor. The tree row is a projection of it; the detail pane
-    /// wants the whole thing.
-    fn selected_summary(&self) -> Option<&NodeSummary> {
-        let id = &self.tree.selected()?.id;
-        self.nodes.iter().find(|n| n.agent_id.0 == *id)
-    }
-}
-
-/// What the content pane shows before anything is attached: **the selected node, spelled out.**
-///
-/// The tree row is a state and a short label, and that is all a 44-column sidebar can carry. The
-/// rest of the [`NodeSummary`] — the harness and the version the greying is keyed on, whether the
-/// node has a display plane `Enter` can open, its depth, parent, bound and whole id — is here, in
-/// the pane that has the width. The whole id is the one line an operator copies: `marion attach`
-/// takes it.
-///
-/// Still not a terminal. §5.6's content pane is a node's grid, and this screen deliberately does
-/// not open one until `Enter`: two panes both feeding a `marion_term::Term` would hold two
-/// [`marion_tui::MAX_SCROLLBACK`] budgets for a node the operator is only browsing past.
-struct Detail<'a> {
-    /// `None` on an empty forest, which is a real state and is said as one.
-    node: Option<&'a NodeSummary>,
-    /// One line this screen wants the operator to read — a refused `Enter`, for instance. Drawn
-    /// here rather than printed, because a `eprintln!` under the alternate screen is erased by the
-    /// next frame before anyone sees it.
-    notice: Option<&'a str>,
-    /// The state changes this screen has watched the node make, oldest first. Empty until it makes
-    /// one — an empty section would read as one more thing that failed to draw.
-    events: &'a [String],
-    /// The parent as the operator sees it in the tree — its row's label — or its raw id when the
-    /// parent is not in this snapshot. See [`parent_label`].
-    parent: Option<String>,
-}
-
-/// **The parent, named the way its own row is.** The pane used to print the parent's whole UUID
-/// beside a tree of short ids, so placing a node under its parent meant comparing the second
-/// group of one against the sidebar. A parent the snapshot does not contain (§4.2's compaction)
-/// keeps its id: a name marion cannot look up is not one it should invent.
-fn parent_label(nodes: &[NodeSummary], node: &NodeSummary) -> Option<String> {
-    let parent = node.parent_id.as_ref()?;
-    Some(
-        nodes
-            .iter()
-            .find(|n| n.agent_id == *parent)
-            .map_or_else(|| parent.0.clone(), label_of),
-    )
-}
-
-/// The screen's bottom-left row: every key this screen answers to, and what `Enter` will and will
-/// not open. Rendered into [`marion_tui::tree::Panes::hints`], which is full width and starts at
-/// the left margin — inside the content pane it began at `TREE_COLUMN + 2` and read as the selected
-/// node's business rather than the screen's.
-///
-/// No `^] d detach`: that is the pane's chord, and on this screen `^]` quits and `d` does nothing,
-/// so listing it here taught a first-time operator a key that did not exist yet.
-const KEYS: &str = "j/k move  tab focus  ! next attention  s steer  q quit";
-
-/// How much of a compose line the hint row shows: its end, where the cursor is.
-const COMPOSE_SHOWN: usize = 60;
-
-/// The last `n` characters of `text`, with `…` where the front was cut.
-fn tail(text: &str, n: usize) -> String {
-    let count = text.chars().count();
-    if count <= n {
-        return text.to_string();
-    }
-    let kept: String = text.chars().skip(count - (n - 1)).collect();
-    format!("…{kept}")
-}
-
-/// **What a steer sent from the tree says in the notice**: the courier's acceptance sentence, or
-/// the refusal — the supervisor's own sentence where it gave one — after `steer refused:`.
-fn steer_notice(r: Result<crate::courier::Steered, crate::spawn::SpawnError>) -> String {
-    match r {
-        Ok(steered) => format!("steer: {}", steered.sentence()),
-        Err(e) => format!("steer refused: {e}"),
-    }
-}
-
-/// The hint row for one selection.
-///
-/// `Enter`'s hint is **per node**, because what `Enter` does is per node. A fixed *"enter open pane
-/// nodes only"* states a rule and leaves the operator to apply it, so the only way to learn whether
-/// this selection was one of those nodes was to press the key and read the refusal. An empty forest
-/// keeps the pane-node wording: there is nothing selected to call headless.
-fn keys_for(selected: Option<&NodeSummary>) -> String {
-    let enter = match selected {
-        Some(n) if !n.pane => "enter (headless: no pane)",
-        _ => "enter attach",
-    };
-    format!("{enter}  {KEYS}")
-}
-
-/// Why the right-hand half of the screen is facts and then nothing.
-///
-/// §5.6's content pane is a node's grid, and a headless node has no grid — so on a headless
-/// selection the pane is correct and looks broken. Said in the pane rather than left to be inferred.
-const HEADLESS: &str = "headless node: no terminal to show; its events are in the journal";
-
-/// What fills an empty forest. The same command the no-supervisor refusal names, so the two
-/// screens an operator can meet before any node exists give one answer.
-const EMPTY_NEXT_STEP: &str = "start one with `marion run <agent-type> --prompt \"…\"`";
-
-impl Detail<'_> {
-    fn lines(node: &NodeSummary, events: &[String], parent: Option<&str>) -> Vec<String> {
-        let version = node.harness_version.as_deref().unwrap_or("version unknown");
-        let surface = if node.pane {
-            "pane (Enter attaches)"
-        } else {
-            "headless (no display plane)"
-        };
-        let parent = parent.unwrap_or("none (root)");
-        let mut out = Vec::with_capacity(9);
-        // The pane's title, and **the same string the tree row carries** — see [`label_of`]. It is
-        // the line that says the short id in the sidebar and the whole id below name one node.
-        out.push(label_of(node));
-        out.push(String::new());
-        out.push(format!("type     {}", node.agent_type));
-        out.push(format!("harness  {} {version}", node.harness));
-        // The reap state only where it adds a fact: `(reap: live)` on every live node was noise,
-        // and `orphaned  (reap: orphaned)` said one thing twice.
-        let state = state_label(node.state, node.reap_state);
-        let reap = format!("{:?}", node.reap_state).to_lowercase();
-        if node.reap_state == ReapState::Live || reap == state {
-            out.push(format!("state    {state}"));
-        } else {
-            out.push(format!("state    {state}  (reap: {reap})"));
-        }
-        out.push(format!("surface  {surface}"));
-        out.push(format!("depth    {}   parent  {parent}", node.depth));
-        out.push(format!("timeout  {}s", node.timeout.0.as_secs()));
-        out.push(format!("id       {}", node.agent_id.0));
-        if !events.is_empty() {
-            out.push(format!("recent   {}", events.join("  →  ")));
-        }
-        if !node.pane {
-            out.push(String::new());
-            out.push(HEADLESS.to_string());
-        }
-        out
-    }
-}
-
-impl ratatui::widgets::Widget for Detail<'_> {
-    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        if area.height == 0 {
-            return;
-        }
-        let style = ratatui::style::Style::default;
-        // The pane's left edge, every row: without it the only thing separating the tree from
-        // its detail was the cursor bar's right end, on the one row that had one.
-        let edge = style().add_modifier(ratatui::style::Modifier::DIM);
-        for y in 0..area.height {
-            buf.set_stringn(
-                area.x,
-                area.y.saturating_add(y),
-                "│",
-                area.width as usize,
-                edge,
-            );
-        }
-        let width = area.width.saturating_sub(2) as usize;
-        let put = |buf: &mut ratatui::buffer::Buffer, y: u16, text: &str, style| {
-            buf.set_stringn(
-                area.x.saturating_add(2),
-                area.y.saturating_add(y),
-                tree::clip(text, width),
-                width,
-                style,
-            );
-        };
-        let mut lines = match self.node {
-            Some(n) => Self::lines(n, self.events, self.parent.as_deref()),
-            // An empty forest is a real state, and the one a first-time operator meets first:
-            // say what fills it, rather than leave a screen of hints for keys with nothing to act on.
-            None => vec![
-                "no nodes in this forest".into(),
-                String::new(),
-                EMPTY_NEXT_STEP.into(),
-            ],
-        };
-        if let Some(notice) = self.notice {
-            lines.push(String::new());
-            lines.push(notice.to_string());
-        }
-        // Every row is the node's. The key hints are the *screen's* and live in their own
-        // full-width row at the bottom left — see [`marion_tui::tree::Panes::hints`].
-        for (i, line) in lines.iter().enumerate() {
-            let Ok(y) = u16::try_from(i) else { break };
-            if y >= area.height {
-                break;
-            }
-            // The title, and the notice: the line that says which node this is and the line that
-            // says why the last keypress did nothing.
-            let bold = i == 0 || (self.notice.is_some() && i + 1 == lines.len());
-            let s = if bold {
-                style().add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                style()
-            };
-            put(buf, y, line, s);
         }
     }
 }
@@ -1355,578 +733,6 @@ mod tests {
         assert_eq!(short_id(uuid), "5b04");
     }
 
-    fn painted(area: ratatui::layout::Rect, w: impl ratatui::widgets::Widget) -> Vec<String> {
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        w.render(area, &mut buf);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
-
-    /// **The pane has an edge, and a line that does not fit says so.** At 80 columns the detail
-    /// pane is 36 wide, and `state    exited:failed  (reap: live)` was cut to `(reap: liv` with
-    /// nothing to say it had been; the tree's right end was marked only by the cursor bar.
-    #[test]
-    fn the_detail_pane_is_edged_and_clips_with_an_ellipsis() {
-        let n = summary(
-            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
-            Harness::ClaudeCode,
-            false,
-            None,
-        );
-        let area = ratatui::layout::Rect::new(0, 0, 30, 12);
-        let rows = painted(
-            area,
-            Detail {
-                node: Some(&n),
-                notice: None,
-                events: &[],
-                parent: None,
-            },
-        );
-        for (i, row) in rows.iter().enumerate() {
-            assert!(row.starts_with('│'), "row {i} has no edge: {row:?}");
-            assert!(
-                row.chars().count() <= 30,
-                "row {i} runs past the pane: {row:?}"
-            );
-        }
-        let id = rows.iter().find(|r| r.contains("id ")).expect("the id row");
-        assert!(id.ends_with('…'), "a clipped id says so: {id:?}");
-        assert!(
-            !rows
-                .iter()
-                .any(|r| r.ends_with("5c4a-73ac-88f8-7df80dc5095c")),
-            "the whole id cannot fit in 28 columns"
-        );
-    }
-
-    /// **The content pane carries every fact the row cannot.** A row is a state and a short label;
-    /// the harness, its version, the surface, the depth, the parent, the bound and the whole id —
-    /// which is what `marion attach` wants typed — are all in `NodeSummary` and were shown nowhere.
-    /// The key hints are **not** among them: they are the screen's row, at the bottom left, and
-    /// `the_hints_are_the_screens_row_and_not_the_panes` is where they are asserted.
-    #[test]
-    fn the_detail_pane_names_every_fact_the_row_cannot_carry() {
-        let mut n = summary(
-            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
-            Harness::ClaudeCode,
-            false,
-            Some("2.1.261 (Claude Code)"),
-        );
-        n.parent_id = Some(AgentId("01a07275-5b04-78d7-8f77-ad154316f985".into()));
-        n.depth = 1;
-        n.agent_type = "claude-impl".into();
-        let area = ratatui::layout::Rect::new(0, 0, 76, 12);
-        let parent = summary(
-            "01a07275-5b04-78d7-8f77-ad154316f985",
-            Harness::Codex,
-            false,
-            None,
-        );
-        let rows = painted(
-            area,
-            Detail {
-                node: Some(&n),
-                notice: None,
-                events: &[],
-                parent: parent_label(&[parent.clone(), n.clone()], &n),
-            },
-        );
-        let text = rows.join("\n");
-        for fact in [
-            "claude-impl",
-            "claude-code 2.1.261 (Claude Code)",
-            "idle",
-            "headless",
-            "depth    1",
-            "parent  codex-impl 5b04",
-            "900s",
-            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
-        ] {
-            assert!(text.contains(fact), "`{fact}` is not in the pane:\n{text}");
-        }
-        assert!(
-            !text.contains("(reap: live)"),
-            "a live node's reap state is not a fact, it is the absence of one:\n{text}"
-        );
-        // The parent is named the way its row is, and only its id when it is not in the snapshot.
-        assert_eq!(
-            parent_label(&[n.clone()], &n).as_deref(),
-            Some("01a07275-5b04-78d7-8f77-ad154316f985"),
-            "a parent the snapshot lacks keeps its id rather than an invented name"
-        );
-        assert_eq!(
-            parent_label(std::slice::from_ref(&parent), &parent),
-            None,
-            "a root has no parent"
-        );
-        assert!(
-            !text.contains("j/k move"),
-            "the key hints are the screen's row, not a fact about this node:\n{text}"
-        );
-
-        // The version that was never read is said, not blanked.
-        n.harness_version = None;
-        n.pane = true;
-        let text = painted(
-            area,
-            Detail {
-                node: Some(&n),
-                notice: None,
-                events: &[],
-                parent: None,
-            },
-        )
-        .join("\n");
-        assert!(text.contains("version unknown"), "{text}");
-        assert!(text.contains("pane"), "{text}");
-
-        // An empty forest is a sentence rather than a blank pane.
-        let rows = painted(
-            area,
-            Detail {
-                node: None,
-                notice: None,
-                events: &[],
-                parent: None,
-            },
-        );
-        assert!(rows[0].contains("no nodes"), "{rows:?}");
-        assert!(
-            rows.iter().any(|r| r.contains("marion run")),
-            "an empty forest says what fills it: {rows:?}"
-        );
-    }
-
-    /// **The row and the pane name the same node in the same words.**
-    ///
-    /// The tree row says `codex-impl 8ea3` and the pane's facts started at `type codex-impl`, with
-    /// the four hex digits appearing nowhere in it and the whole UUID seven rows down: nothing on
-    /// screen said the `8ea3` in the sidebar and the `01a091ba-8ea3-…` in the pane were one node.
-    /// The pane's first line is now the row's own label, and the row's short id is a prefix of the
-    /// pane's full one.
-    #[test]
-    fn the_detail_panes_title_is_the_tree_rows_own_label() {
-        let mut n = summary(
-            "01a091ba-8ea3-7f8a-9b87-b8ad0e7b38a1",
-            Harness::Codex,
-            false,
-            Some("0.147.0"),
-        );
-        n.agent_type = "codex-impl".into();
-        let title = |n: &NodeSummary| {
-            painted(
-                ratatui::layout::Rect::new(0, 0, 76, 12),
-                Detail {
-                    node: Some(n),
-                    notice: None,
-                    events: &[],
-                    parent: None,
-                },
-            )[0]
-            .trim_start_matches('│')
-            .trim()
-            .to_string()
-        };
-        assert_eq!(title(&n), "codex-impl 8ea3");
-        assert_eq!(
-            title(&n),
-            row(&n).label,
-            "the row and the pane must not drift"
-        );
-        assert!(
-            n.agent_id.0.contains(short_id(&n.agent_id.0)),
-            "the short id in the title is part of the whole id in the pane"
-        );
-
-        // A renamed node is its name in both places, for the same reason.
-        n.name = Some("collector".into());
-        assert_eq!(title(&n), "collector");
-        assert_eq!(title(&n), row(&n).label);
-    }
-
-    /// **A pane with no terminal in it must say so, and `Tab` must not pretend there is one.**
-    ///
-    /// A first-time viewer read the tree screen on a headless selection as broken twice over: the
-    /// right-hand pane carried facts and then stopped, with no line saying a headless node has no
-    /// terminal to draw; and `Tab` moved focus into that emptiness, so the key appeared to do
-    /// nothing at all. The explanation is a line of the pane, and `Tab` refuses with a reason
-    /// instead of moving.
-    #[test]
-    fn a_headless_selection_explains_the_empty_pane_and_tab_refuses_to_enter_it() {
-        let headless = summary("h", Harness::ClaudeCode, false, None);
-        let paned = summary("p", Harness::Codex, true, None);
-
-        let text = |n: &NodeSummary| {
-            painted(
-                ratatui::layout::Rect::new(0, 0, 90, 16),
-                Detail {
-                    node: Some(n),
-                    notice: None,
-                    events: &[],
-                    parent: None,
-                },
-            )
-            .join("\n")
-        };
-        let said = text(&headless);
-        assert!(
-            said.contains("headless node: no terminal to show; its events are in the journal"),
-            "the empty half of the screen is unexplained:\n{said}"
-        );
-        assert!(
-            !text(&paned).contains("no terminal to show"),
-            "a pane node has a terminal and must not be told it has none"
-        );
-
-        // Tab, as a decision about the selection rather than an unconditional flip.
-        assert_eq!(
-            focus_after_tab(Focus::Tree, Some(&paned)),
-            Ok(Focus::Content)
-        );
-        assert_eq!(focus_after_tab(Focus::Tree, Some(&headless)), Err(NO_PANE));
-        assert_eq!(
-            focus_after_tab(Focus::Tree, None),
-            Err(NO_PANE),
-            "an empty forest has no pane either"
-        );
-        assert_eq!(
-            focus_after_tab(Focus::Content, Some(&headless)),
-            Ok(Focus::Tree),
-            "leaving the content pane is always allowed, whatever is selected now"
-        );
-    }
-
-    /// **The state changes this screen has already watched are shown, not thrown away.**
-    ///
-    /// `tree/subscribe` pushes `node/state` for every transition, and the screen was folding each
-    /// one into a single `state` field and discarding the history — so a headless node that had
-    /// gone `spawning → running → idle` under the operator's eyes showed one word and no story.
-    /// The tail is bounded and per node, and it is dropped when the node leaves the forest so a
-    /// long-lived screen cannot accumulate one entry per node ever seen.
-    #[test]
-    fn the_watched_state_changes_are_kept_per_node_bounded_and_pruned() {
-        let mut events = Events::default();
-        for s in ["spawning", "running", "idle", "running", "exited:ok"] {
-            events.record("h", s);
-        }
-        events.record("other", "spawning");
-        assert_eq!(
-            events.tail("h"),
-            ["idle", "running", "exited:ok"],
-            "the tail is the last {TAIL} changes, oldest dropped"
-        );
-        assert_eq!(events.tail("never-seen"), Vec::<String>::new());
-
-        // A node that left the forest takes its tail with it.
-        let live = vec![summary("h", Harness::Codex, false, None)];
-        events.retain(&live);
-        assert_eq!(events.tail("h").len(), 3);
-        assert_eq!(events.tail("other"), Vec::<String>::new());
-
-        // And the pane shows them under the explanation, newest last.
-        let rows = painted(
-            ratatui::layout::Rect::new(0, 0, 90, 20),
-            Detail {
-                node: Some(&live[0]),
-                notice: None,
-                events: events.tail("h"),
-                parent: None,
-            },
-        );
-        let text = rows.join("\n");
-        assert!(text.contains("recent   idle"), "{text}");
-        assert!(text.contains("exited:ok"), "{text}");
-    }
-
-    /// **The hint row answers for the node under the cursor, not for the screen in general.**
-    ///
-    /// `enter open pane nodes only` is a rule the operator has to apply themselves: it does not say
-    /// whether *this* selection is one of those nodes, so the only way to find out was to press
-    /// Enter and read the refusal. The affordance moves with the cursor instead — `enter attach` on
-    /// a node that has a pane, `enter (headless: no pane)` on one that does not — so a first-time viewer can
-    /// see what the key will do before pressing it.
-    #[test]
-    fn the_hint_row_says_what_enter_will_do_to_this_selection() {
-        let paned = summary("p", Harness::Codex, true, None);
-        let headless = summary("h", Harness::ClaudeCode, false, None);
-
-        assert!(keys_for(Some(&paned)).starts_with("enter attach"));
-        assert!(keys_for(Some(&headless)).starts_with("enter (headless: no pane)"));
-        assert!(
-            !keys_for(Some(&headless)).contains("enter attach"),
-            "a headless node must not be offered an attach"
-        );
-        for keys in [
-            keys_for(Some(&paned)),
-            keys_for(Some(&headless)),
-            keys_for(None),
-        ] {
-            for rest in [
-                "j/k move",
-                "tab focus",
-                "! next attention",
-                "s steer",
-                "q quit",
-            ] {
-                assert!(keys.contains(rest), "`{rest}` left the hint row: {keys}");
-            }
-            assert!(
-                !keys.contains("detach"),
-                "`^] d` is the pane's chord and does nothing on this screen: {keys}"
-            );
-        }
-    }
-
-    /// **`!` jumps to the next node that needs the operator**, by [`attention_of`]'s rule and in
-    /// the order the tree draws, wrapping; with nothing to jump to it leaves the cursor where it
-    /// was and says why on the hint row, because a key that silently does nothing looks broken.
-    #[test]
-    fn bang_cycles_through_the_nodes_that_need_attention() {
-        use marion_core::contract::ExitStatus;
-        use marion_core::node::BlockReason;
-        let with = |id: &str, state: NodeState, reap: ReapState| NodeSummary {
-            state,
-            reap_state: reap,
-            ..summary(id, Harness::Codex, false, None)
-        };
-        let nodes = vec![
-            with("fine", NodeState::Running, ReapState::Live),
-            with(
-                "failed",
-                NodeState::Exited(ExitStatus::Failed),
-                ReapState::Live,
-            ),
-            with("done", NodeState::Exited(ExitStatus::Ok), ReapState::Live),
-            with(
-                "asking",
-                NodeState::Blocked(BlockReason::Permission),
-                ReapState::Live,
-            ),
-            with("lost", NodeState::Idle, ReapState::Orphaned),
-        ];
-        let mut t = build(&nodes, None);
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            assert_eq!(next_attention(&mut t, &nodes), Ok(()));
-            seen.push(t.selected().unwrap().id.clone());
-        }
-        assert_eq!(seen, ["failed", "asking", "lost", "failed"]);
-
-        let calm = vec![
-            with("fine", NodeState::Running, ReapState::Live),
-            with("done", NodeState::Exited(ExitStatus::Ok), ReapState::Live),
-        ];
-        let mut t = build(&calm, Some("done"));
-        assert_eq!(
-            next_attention(&mut t, &calm),
-            Err("nothing needs attention")
-        );
-        assert_eq!(t.selected().unwrap().id, "done", "the cursor stays put");
-    }
-
-    /// A screen over a socket pair, with `socket` as where a steer would dial — nothing listens
-    /// there, so a sent steer comes back as the courier's refusal.
-    fn session(nodes: Vec<NodeSummary>, socket: &str) -> Session {
-        let (stream, _peer) = UnixStream::pair().unwrap();
-        let lines = BufReader::new(stream.try_clone().unwrap());
-        let mut s = Session {
-            stream,
-            lines,
-            nodes,
-            tree: Tree::new(Vec::new()),
-            focus: Focus::Tree,
-            repo: "/repo".into(),
-            socket: socket.into(),
-            notice: None,
-            hint: None,
-            events: Events::default(),
-            compose: None,
-        };
-        s.rebuild();
-        s
-    }
-
-    /// **`s` opens a compose line for the selected node; the keys typed then are the message.**
-    /// `q` inside it is a letter, not a quit; Esc closes it having sent nothing; the hint row shows
-    /// the line and names the node it is for.
-    #[test]
-    fn s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it() {
-        let mut s = session(
-            vec![summary("n-1", Harness::Codex, false, None)],
-            "/nowhere",
-        );
-        assert_eq!(s.keys(b"squit"), None, "`q` is text once composing");
-        let (target, line) = s.compose.as_ref().expect("composing");
-        assert_eq!(target.0, "n-1");
-        assert_eq!(line.text(), "quit");
-        let hint = s.hint_row();
-        assert!(hint.contains("steer codex-impl n-1: quit"), "{hint}");
-        assert!(hint.starts_with("enter send  esc cancel"), "{hint}");
-
-        assert_eq!(
-            s.keys(b"\x1bq"),
-            Some(None),
-            "Esc closes it; the `q` after quits"
-        );
-        assert!(s.compose.is_none());
-        assert_eq!(
-            s.notice, None,
-            "a cancelled line sends nothing and says nothing"
-        );
-
-        let mut empty = session(Vec::new(), "/nowhere");
-        assert_eq!(empty.keys(b"s"), None);
-        assert!(
-            empty.compose.is_none(),
-            "nothing selected, nothing to steer"
-        );
-        assert_eq!(empty.hint, Some("nothing selected to steer"));
-    }
-
-    /// **Enter sends the line and the answer lands in the notice** — here the courier's refusal,
-    /// since nothing listens on the socket; a supervisor's refusal arrives the same way, verbatim.
-    #[test]
-    fn enter_sends_the_steer_and_its_refusal_lands_in_the_notice() {
-        let mut s = session(
-            vec![summary("n-1", Harness::Codex, false, None)],
-            "/tmp/marion-no-such-supervisor.sock",
-        );
-        assert_eq!(s.keys(b"suse v2\r"), None);
-        assert!(s.compose.is_none(), "Enter closes the line");
-        let notice = s.notice.clone().expect("the answer is on the screen");
-        assert!(notice.starts_with("steer refused: "), "{notice}");
-        assert!(
-            notice.contains("marion-no-such-supervisor.sock"),
-            "{notice}"
-        );
-
-        assert_eq!(
-            steer_notice(Err(crate::spawn::SpawnError::SupervisorRefused(
-                "the node has ended".into()
-            ))),
-            "steer refused: the node has ended"
-        );
-    }
-
-    /// **The hints belong to the screen, at the bottom left, above the caps strip.**
-    ///
-    /// Drawn as the content pane's last row they started at `TREE_COLUMN + 2` — forty-six columns
-    /// in on a wide terminal — so the one row that tells a first-time operator which keys exist
-    /// floated in the middle of the screen and read as part of the node's detail. This walks the
-    /// whole painted frame and asserts the row's position, not merely its presence.
-    #[test]
-    fn the_hints_are_the_screens_row_and_not_the_panes() {
-        let screen = ratatui::layout::Rect::new(0, 0, 120, 20);
-        let panes = tree::split(screen);
-        assert_eq!(
-            panes.hints.x, 0,
-            "the hints start at the screen's left margin"
-        );
-        assert_eq!(
-            panes.hints.y + panes.hints.height,
-            panes.actions.y,
-            "the caps strip is the last line and the hints sit directly above it"
-        );
-
-        let mut buf = ratatui::buffer::Buffer::empty(screen);
-        ratatui::widgets::Widget::render(
-            marion_tui::tree::Hints {
-                keys: &keys_for(None),
-            },
-            panes.hints,
-            &mut buf,
-        );
-        let row: String = (0..screen.width)
-            .map(|x| buf[(x, panes.hints.y)].symbol())
-            .collect();
-        assert!(row.starts_with("enter"), "{row:?}");
-        assert!(row.contains("q quit"), "{row:?}");
-    }
-
-    /// **`Enter` on a headless node is refused on the screen, not on stderr.** The old path ran
-    /// `attach::run`, which refused correctly and `eprintln!`ed the reason under the alternate
-    /// screen — where the next frame erased it, so the operator saw a flicker and nothing else. The
-    /// decision is made here from `NodeSummary::pane`, before the terminal is handed over, and the
-    /// reason is drawn in the detail pane until the cursor moves.
-    #[test]
-    fn enter_on_a_headless_node_is_refused_in_the_pane_and_a_pane_node_opens() {
-        let headless = summary("h", Harness::ClaudeCode, false, None);
-        let refusal = open_target(&headless).expect_err("a headless node has nothing to open");
-        assert!(refusal.contains("headless"), "{refusal}");
-        assert!(refusal.contains("pane nodes only"), "{refusal}");
-
-        let paned = summary("p", Harness::Codex, true, None);
-        assert_eq!(open_target(&paned), Ok("p"));
-
-        // And the refusal is on the screen, in the pane, emphasised.
-        let area = ratatui::layout::Rect::new(0, 0, 90, 14);
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        ratatui::widgets::Widget::render(
-            Detail {
-                node: Some(&headless),
-                notice: Some(&refusal),
-                events: &[],
-                parent: None,
-            },
-            area,
-            &mut buf,
-        );
-        let rows = painted(
-            area,
-            Detail {
-                node: Some(&headless),
-                notice: Some(&refusal),
-                events: &[],
-                parent: None,
-            },
-        );
-        let (y, _) = rows
-            .iter()
-            .enumerate()
-            .find(|(_, r)| r.contains("pane nodes only") && !r.contains("j/k"))
-            .unwrap_or_else(|| panic!("the refusal is not in the pane: {rows:?}"));
-        let y = u16::try_from(y).unwrap();
-        assert!(
-            buf[(2, y)]
-                .style()
-                .add_modifier
-                .contains(ratatui::style::Modifier::BOLD),
-            "a refusal must stand out from the facts"
-        );
-    }
-
-    /// **A resize reaches the tree screen while it is up.** The loop measured the window once per
-    /// screen entry, so a tree dragged from 120x40 to 80x24 kept painting a 120-column frame into
-    /// 80 columns until the operator left and came back. The geometry is re-read every pass; a
-    /// window that answers nothing — a pipe — keeps the last known size rather than inventing one.
-    #[test]
-    fn a_resize_is_applied_on_the_next_pass_and_a_pipe_keeps_the_last_geometry() {
-        let mut size = (120, 40);
-        assert!(
-            !geometry_changed(&mut size, Some((120, 40))),
-            "unchanged is not a resize"
-        );
-        assert!(geometry_changed(&mut size, Some((80, 24))));
-        assert_eq!(
-            size,
-            (80, 24),
-            "the new geometry is what the next frame is sized to"
-        );
-        assert!(
-            !geometry_changed(&mut size, None),
-            "no answer is not a resize"
-        );
-        assert_eq!(size, (80, 24));
-    }
-
     /// A node whose version was never read is greyed at the conservative key, and the strip says
     /// so rather than leaving ten greyed words to be read as "this harness can do nothing".
     #[test]
@@ -1971,7 +777,9 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("a scratch dir");
         let state = dir.join("state");
-        let refusal = run(&dir, &state).expect_err("nobody is serving a fresh directory");
+        let refusal = Subscription::open(&dir, &state)
+            .err()
+            .expect("nobody is serving a fresh directory");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(refusal.lines().count(), 1, "{refusal}");
         assert!(refusal.contains("no supervisor is serving"), "{refusal}");
@@ -1988,8 +796,8 @@ mod tests {
         );
     }
 
-    /// **A one-shot snapshot refuses exactly as the screen does** when nobody is serving: it dials
-    /// the same way and, like the screen, starts no supervisor — an empty forest from a supervisor
+    /// **A one-shot snapshot refuses exactly as the home screen's subscription does** when nobody
+    /// is serving: it dials the same way and, like the screen, starts no supervisor — an empty forest from a supervisor
     /// started here would read as "nothing needs attention" rather than "wrong project".
     #[test]
     fn a_snapshot_with_no_supervisor_refuses_with_the_screens_sentence() {
@@ -2002,7 +810,9 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("a scratch dir");
         let from_snapshot = snapshot(&dir, &dir).expect_err("nobody is serving a fresh directory");
-        let from_screen = run(&dir, &dir).expect_err("nobody is serving a fresh directory");
+        let from_screen = Subscription::open(&dir, &dir)
+            .err()
+            .expect("nobody is serving a fresh directory");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(from_snapshot, from_screen);
         assert!(
