@@ -422,6 +422,15 @@ impl NativeNodeRecorder for NativeNodeJournal {
             (None, Some(signal)) => format!("native node was terminated by signal {signal}"),
             (None, None) => "native node exit status was unavailable".to_string(),
         };
+        // **A native node an operator ended with `node/kill`** already has its terminal record
+        // coming — the kill's `KillConfirmed`, §6.7's `Exited(Cancelled)` — so this recorder writes
+        // no `Exited` over it, the same attribution a managed node's thread asks for
+        // (`SpawnObserver::process_ended`). The table entry still closes, or §5.7 would read the
+        // ended session as running.
+        if self.handle.process_ended(&self.agent_id) {
+            self.handle.finished_native(&self.agent_id, Ok(()));
+            return;
+        }
         self.record(RecordKind::Exited(Exited {
             agent_id: self.agent_id.clone(),
             status: if code == Some(0) {

@@ -715,14 +715,20 @@ fn note_truncated_capture(description: &str) -> String {
 /// is how it came to be the wrong way round. Named, it can also be tested, which the inline version
 /// could not be: the difference between the right order and the wrong one is purely temporal, so the
 /// only way to see it is from inside the window (see [`at_contract_write`]).
+///
+/// **`ended_by_kill` leaves the terminal record to the kill.** A node marion ended on an operator's
+/// kill already has one coming — the killer's `KillConfirmed`, §6.7's `Exited(Cancelled)` — and an
+/// `Exited` written here as well would be a second terminal record for one end, folding in over the
+/// confirmation in whichever order the two happened to land. See [`SpawnObserver::process_ended`].
 fn persist_contract_then_record_exit(
     project_dir: &ProjectDir,
     agent_dir: &AgentDir,
     agent_id: &AgentId,
     contract: &TaskContract,
+    ended_by_kill: bool,
 ) -> Result<TaskContract, SpawnError> {
     let persisted = persist_then_cap(agent_dir, contract);
-    if let Some(completion) = contract.completion.as_ref() {
+    if let Some(completion) = contract.completion.as_ref().filter(|_| !ended_by_kill) {
         crate::journal::record(
             project_dir,
             RecordKind::Exited(Exited {
@@ -1186,6 +1192,19 @@ pub trait SpawnObserver: Sync {
     /// until the descendants are terminal or the node's bound expires, which is §7.6 step 3.
     fn live_descendants(&self, _agent_id: &AgentId) -> Option<Vec<AgentId>> {
         None
+    }
+    /// **Asked once, the instant the node's process has ended and before anything terminal is
+    /// written: did marion end it on an operator's kill?** `true` is the same kind of fact as the
+    /// driver's own `timed_out` — marion's attributed act, known to marion rather than read off the
+    /// exit — except that the kill came from outside this thread (`node/kill`, or `session/quit`'s
+    /// KillTree). The node then ends `Cancelled` (§6.7), and its terminal record is the killer's
+    /// `KillConfirmed`, never an `Exited` of this thread's.
+    ///
+    /// Asking also settles the race the other way: once this has answered `false`, the owner
+    /// refuses a kill of the node rather than signalling a process already reaped. Defaulted to
+    /// `false` for an owner that cannot be asked to kill anything.
+    fn process_ended(&self, _agent_id: &AgentId) -> bool {
+        false
     }
 }
 
@@ -1679,6 +1698,17 @@ pub fn run_spawn_watched(
             why: why.to_string(),
         });
     }
+    // **The process has ended; nothing terminal is written yet.** The one instant at which "did
+    // marion end this on a kill?" can be asked and answered for good — see
+    // [`SpawnObserver::process_ended`].
+    let ended_by_kill = observer.process_ended(&agent_id);
+    // A driver that failed because the kill landed before its first turn (the node died before
+    // `initialize`, say) is a node marion *did* decide the fate of: the kill's `KillConfirmed` is
+    // its terminal record, so the abort guard must not add a `SpawnAborted` beside it. The error
+    // still goes back to the caller as the driver reported it.
+    if run.is_err() && ended_by_kill {
+        resolution.armed = false;
+    }
     let run = run?;
     record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
@@ -1713,14 +1743,21 @@ pub fn run_spawn_watched(
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
     // verdict is applied to the contract below once `build_contract` has assembled it.
-    let gated = crate::descendant_gate::gate(
-        observer,
-        &agent_id,
-        &env.project_dir,
-        &outcome,
-        spawned_at.0,
-        bound,
-    );
+    //
+    // A node marion killed did not *stop*: it was ended, and holding it for its descendants would
+    // hold a cancellation the operator asked for. It is exempt the way a timeout is.
+    let gated = if ended_by_kill {
+        crate::descendant_gate::Gated::default()
+    } else {
+        crate::descendant_gate::gate(
+            observer,
+            &agent_id,
+            &env.project_dir,
+            &outcome,
+            spawned_at.0,
+            bound,
+        )
+    };
 
     // **§6.7's honest degradation, and the `Option` is the whole of it.**
     //
@@ -1762,7 +1799,13 @@ pub fn run_spawn_watched(
     // result. The request itself is always recorded (`verification_commands`), so the contract
     // says what was asked even where `verification_evidence` decides nothing ran.
     let verification = verification_commands(&req.verification, &wt);
-    let evidence = verification_evidence(&outcome, &verification);
+    // Nothing runs over a killed node's workspace, for `verification_evidence`'s own reason about a
+    // timed-out one: it is whatever the kill left.
+    let evidence = if ended_by_kill {
+        vec![]
+    } else {
+        verification_evidence(&outcome, &verification)
+    };
     let mut contract = build_contract(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
@@ -1823,6 +1866,9 @@ pub fn run_spawn_watched(
     // `died_before_gate` and the live set — written onto the completion before it reaches disk.
     gated.apply(&mut contract);
     landed.apply(&mut contract);
+    if ended_by_kill {
+        record_cancelled(&mut contract);
+    }
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
@@ -1830,6 +1876,7 @@ pub fn run_spawn_watched(
         &contract,
         events.as_ref(),
         &req.agent_type,
+        ended_by_kill,
     )?;
     // §4.3: the journal records **that a contract exists and how it ended**, never its contents —
     // the file is the contract (§6.7), and copying it here would be a second source of truth.
@@ -1858,6 +1905,20 @@ pub fn run_spawn_watched(
         cleanup(&req.repo, path);
     }
     Ok(returned)
+}
+
+/// **§6.7's classification of a child marion ended on an operator's kill**: `Cancelled`, whatever
+/// the stream or the exit code would have made of the signalled process — the same precedence a
+/// timeout has in `build_contract`, because both are marion's own attributed act. The description
+/// keeps what marion observed of the process and names marion as the sender first, as §6.7 asks.
+fn record_cancelled(contract: &mut TaskContract) {
+    if let Some(completion) = contract.completion.as_mut() {
+        completion.status = ExitStatus::Cancelled;
+        completion.exit.description = format!(
+            "marion ended this node on the operator's kill (node/kill or session/quit KillTree); {}",
+            completion.exit.description
+        );
+    }
 }
 
 /// The scope a child asked for, in §5.4's vocabulary: an empty `writable_scope` is the whole
@@ -2201,9 +2262,15 @@ fn persist_contract_and_close_stream(
     contract: &TaskContract,
     events: Option<&crate::events::EventSink>,
     requested_agent_type: &str,
+    ended_by_kill: bool,
 ) -> Result<TaskContract, SpawnError> {
-    let persisted =
-        persist_contract_then_record_exit(&env.project_dir, agent_dir, agent_id, contract);
+    let persisted = persist_contract_then_record_exit(
+        &env.project_dir,
+        agent_dir,
+        agent_id,
+        contract,
+        ended_by_kill,
+    );
     let returned = match persisted {
         Ok(returned) => returned,
         Err(e) => {
@@ -2445,7 +2512,7 @@ mod tests {
             seen.store(exited, std::sync::atomic::Ordering::SeqCst);
         });
 
-        persist_contract_then_record_exit(&project, &agent_dir, &agent_id, &contract)
+        persist_contract_then_record_exit(&project, &agent_dir, &agent_id, &contract, false)
             .expect("the contract is written to a directory this test owns");
 
         assert!(
