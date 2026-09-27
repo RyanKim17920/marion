@@ -1,0 +1,4 @@
+config mcp.slow.timeout = 90000; initialize held 45 s
+mcp start +7.0s, initialize answered +52.0s
+first model request +53.9s tools=['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'slow_report', 'task', 'todowrite', 'webfetch', 'write']
+PASS: first request waited for the MCP server and carried its tool

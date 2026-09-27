@@ -33,3 +33,30 @@ reasoning; see MILESTONES.
 
 Redaction: the session id is the stable fake `ses_s36fake0000000000000000001` (same length as the
 real one). Part and message ids are per-run and kept.
+
+## `mcp-ready-run-*`, `mcp-call-*` — does `opencode run` wait for marion's MCP server?
+
+`probes/slowmcp.py` is a stdio MCP server that holds its `initialize` answer (`SLOW_DELAY`) or a
+`tools/call` answer (`SLOW_CALL`) and logs when it did (`mcp-server.jsonl`); `probes/prov.py` logs
+each model request's time and tool names (`provider-requests.summary.jsonl`, bodies dropped) and,
+given a tool name, calls it once. Each directory has the run's `stdout.jsonl` and a `verdict.txt`.
+
+| probe | server | `mcp.slow.timeout` | verdict |
+|---|---|---|---|
+| `mcp-ready-run-8s` | `initialize` held 8 s | unset | **PASS** — first request after the answer, carrying `slow_report` |
+| `mcp-ready-run-45s` | `initialize` held 45 s | unset | **FAIL** — first request at ~34 s after the server started, **without** its tool, no warning on stdout |
+| `mcp-ready-run-45s-timeout` | `initialize` held 45 s | 90000 | **PASS** — waited, request carried the tool |
+| `mcp-call-330s` | `tools/call` held 330 s | unset | **FAIL** — the call failed at 60.0 s: `MCP error -32001: Request timed out` |
+| `mcp-call-90s-timeout` | `tools/call` held 90 s | 600000 | **PASS** |
+| `mcp-call-65s-day-timeout` | `initialize` 3 s, `tools/call` 65 s | 86400000 | **PASS** — a one-day value does not overflow |
+
+So `opencode run` does wait for its MCP servers before the first model request (unlike codex's
+app-server, which sends without tools after ~1 s), but only for ~30 s, and it abandons any call
+longer than 60 s. marion's `spawn` (foreground) and `wait` block for a child's whole run, so the
+row now gives marion's server `"timeout": 86400000` (`opencode::MCP_TIMEOUT_MS`), on the canned
+document, the live inline document and the native injection alike.
+
+Running a probe: `probes/mkenv.sh` expects `probes/sb-warm/`, a sandbox in which one
+`opencode run` has already completed (the first run in a fresh `HOME` installs
+`@opencode-ai/plugin` into the config dir, which took minutes under load). Close stdin
+(`</dev/null`): with a pipe on stdin, `opencode run` waits for it to reach EOF before it starts.

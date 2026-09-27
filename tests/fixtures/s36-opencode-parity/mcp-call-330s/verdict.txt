@@ -1,0 +1,3 @@
+no mcp timeout configured; tools/call held 330 s
+tool_use status=error after 60.0s error='MCP error -32001: Request timed out' output='None'
+FAIL: the long call was abandoned

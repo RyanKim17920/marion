@@ -357,6 +357,19 @@ pub const PROVIDER_TIMEOUT_MS: u64 = 120_000;
 /// which is the knob a connection that never answers actually trips.
 pub const PROVIDER_HEADER_TIMEOUT_MS: u64 = 30_000;
 
+/// `mcp.<alias>.timeout`, ms: how long opencode waits on marion's server — for its `initialize`
+/// before the first model request, and for every `tools/call` after. One day.
+///
+/// Measured on 1.18.32 (`tests/fixtures/s36-opencode-parity/mcp-*`): unset, a `tools/call` is
+/// abandoned at **60 s** with `MCP error -32001: Request timed out`, and a server still starting at
+/// ~30 s is dropped — the first request goes out without its tools and nothing says so. marion's
+/// `spawn` (foreground) and `wait` block for a child's whole run, bounded by the child's own
+/// `timeout_secs` (default 900), so the default would fail every delegation longer than a minute.
+/// With the key set, a 45 s `initialize` and a 90 s call both completed, and a one-day value was
+/// honoured (JS timers wrap to immediate past `i32::MAX` ms, which this stays far below). The run
+/// itself is still bounded — by marion's own wall clock, not by this.
+pub const MCP_TIMEOUT_MS: u64 = 86_400_000;
+
 /// A `provider/model` pair, which is the only form `-m` accepts and the form the config `model`
 /// key repeats. Split once so the provider block and the argv can never name different providers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,6 +513,7 @@ fn mcp_block(b: &BridgeEnv) -> Value {
         "command": command,
         "environment": b.env_json(),
         "enabled": true,
+        "timeout": MCP_TIMEOUT_MS,
     })
 }
 
@@ -741,6 +755,31 @@ mod tests {
         );
         assert!(m["env"].is_null());
         assert_eq!(m["enabled"], json!(true));
+    }
+
+    /// **marion's server is given a timeout that outlasts every blocking call marion makes.**
+    /// s36 measured opencode 1.18.32 abandoning a `tools/call` at 60 s (`MCP error -32001: Request
+    /// timed out`) — a foreground `spawn` or a `wait` blocks for the child's whole run — and
+    /// sending its first request **without** the server's tools once `initialize` had taken ~30 s.
+    /// The per-server `timeout` lifted both. Same block on every route: the canned document, the
+    /// live inline document, and so the native injection.
+    #[test]
+    fn marions_server_outlasts_the_sixty_second_call_and_thirty_second_startup_defaults() {
+        let live = live_config_json(Some(&bridge()));
+        for (route, v) in [
+            ("canned", config_json(&cfg(), Some(&bridge()))),
+            ("live", live),
+        ] {
+            assert_eq!(
+                v["mcp"]["marion"]["timeout"],
+                json!(MCP_TIMEOUT_MS),
+                "{route}: without it a spawn or wait longer than 60 s fails at opencode's side"
+            );
+        }
+        assert!(
+            MCP_TIMEOUT_MS >= 3600 * 1000 && MCP_TIMEOUT_MS < i32::MAX as u64,
+            "long enough for a child's whole bound, short of the JS timer's wrap to immediate"
+        );
     }
 
     #[test]

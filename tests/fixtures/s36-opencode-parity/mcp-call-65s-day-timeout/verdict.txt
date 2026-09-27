@@ -1,0 +1,3 @@
+config mcp.slow.timeout = 86400000 (one day); initialize held 3 s, tools/call held 65 s
+tool_use slow_report status=completed
+PASS: a one-day timeout is honoured (no timer overflow) and the long call completed

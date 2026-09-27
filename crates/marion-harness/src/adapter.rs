@@ -2716,7 +2716,8 @@ mod tests {
                 "claude" => 491,
                 "codex" => 1275,
                 "gemini" => 718,
-                "opencode" => 962,
+                // +27: `"timeout": 86400000` on marion's server (s36).
+                "opencode" => 989,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
                 "copilot" => 529,
                 _ => unreachable!(),

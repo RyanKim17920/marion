@@ -1,0 +1,4 @@
+no mcp timeout configured; initialize held 8 s
+mcp start +6.0s, initialize answered +14.0s
+first model request +16.0s tools=['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'slow_report', 'task', 'todowrite', 'webfetch', 'write']
+PASS: first request waited for the MCP server and carried its tool
