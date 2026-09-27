@@ -9,7 +9,8 @@
 //! ```
 //!
 //! **Opt-in, by name.** `MARION_CONFORMANCE` selects rows (`all`, or a comma list of the matrix's
-//! row names: `claude-code`, `codex`, `opencode`, `acp:opencode`, …). Unset, the test announces
+//! row names: `claude-code`, `codex`, `opencode`, `acp:opencode`, … — or a program, which names
+//! every row that runs it: `opencode` is both `opencode` and `acp:opencode`). Unset, the test announces
 //! its skip and passes: the battery drives real harnesses for minutes each and belongs to
 //! admission (`scripts/admit-harness.sh`) and the nightly canary, not to every `cargo test`.
 //!
@@ -63,7 +64,13 @@ fn battery() {
     let mut results = Vec::new();
     let mut skipped = Vec::new();
     for (selector, built) in target::all() {
-        if !all && !wanted.contains(&selector) {
+        // A row is named by its matrix name, or by its program — what admission knows it by, and
+        // `opencode` names both the `run` row and the ACP agent behind the same binary.
+        let program = built.as_ref().ok().and_then(target::Target::program);
+        let named = all
+            || wanted.contains(&selector)
+            || program.as_ref().is_some_and(|p| wanted.contains(p));
+        if !named {
             continue;
         }
         let t = match built {
@@ -85,7 +92,15 @@ fn battery() {
             scratch: scratch.join(selector.replace(':', "-")),
             report_answered: None,
         };
-        let (version, outcomes) = probes::run_all(&mut ctx);
+        let (version, mut outcomes) = probes::run_all(&mut ctx);
+        let scrub = report::Scrub::new(&scratch);
+        for o in &mut outcomes {
+            o.observed = scrub.text(&o.observed);
+            o.expected = scrub.text(&o.expected);
+            if let report::Status::Unsupported(why) = &mut o.status {
+                *why = scrub.text(why);
+            }
+        }
         let dir = probes::fixture_dir(&out, &selector, &version);
         replace_fixture_dir(&out, &selector, &staging, &dir);
         let result = report::TargetResult {
@@ -138,10 +153,7 @@ fn battery() {
 /// Why a row's binary cannot be run here, or `None` when it can. Read off the launch marion would
 /// compile, so the program name comes from the row and nowhere else.
 fn not_installed(t: &target::Target) -> Option<String> {
-    let program = match t.acp_agent() {
-        Some(a) => a.argv.first().map(|s| s.to_string()),
-        None => t.spec.program.map(str::to_string),
-    }?;
+    let program = t.program()?;
     let found = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(&program).is_file()))
         .unwrap_or(false);

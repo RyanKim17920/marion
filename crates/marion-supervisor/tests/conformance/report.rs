@@ -175,6 +175,10 @@ impl Log {
         let _ = writeln!(f, "{line}");
     }
 
+    pub fn scrub(&self) -> &Scrub {
+        &self.scrub
+    }
+
     pub fn note(&self, s: impl AsRef<str>) {
         self.w("note", &json!(s.as_ref()));
     }

@@ -337,6 +337,10 @@ pub struct Node {
     prompt_ids: Vec<u64>,
 }
 
+/// The id the driver's ACP `initialize` goes out with — clear of the id marion's compiled
+/// `session/new` carries, so the two answers cannot be mistaken for each other.
+pub const ACP_INIT_ID: u64 = 900;
+
 /// How long a harness has to come up before a probe calls it unresponsive.
 pub const BOOT: Duration = Duration::from_secs(60);
 
@@ -418,8 +422,8 @@ impl Node {
                 node.prompt(prompt)?;
             }
             LaunchPath::Acp => {
-                node.proc.send(&acp::initialize_request(1));
-                node.await_response(1, BOOT)
+                node.proc.send(&acp::initialize_request(ACP_INIT_ID));
+                node.await_response(ACP_INIT_ID, BOOT)
                     .ok_or("no answer to ACP initialize")?;
                 let session = launch
                     .session

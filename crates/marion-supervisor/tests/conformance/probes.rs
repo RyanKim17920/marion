@@ -150,7 +150,19 @@ pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
         p_errors,
         p_tui,
     ];
-    for probe in probes {
+    // `MARION_CONFORMANCE_PROBES=P-tui,P-errors` runs only those (a probe under development); the
+    // rest are recorded as not run, so such a run is for a scratch `--out`, not the fixtures.
+    let only: Option<Vec<String>> = std::env::var("MARION_CONFORMANCE_PROBES")
+        .ok()
+        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
+    for (name, probe) in PROBES[1..].iter().zip(probes) {
+        if only.as_ref().is_some_and(|o| !o.iter().any(|p| p == name)) {
+            outcomes.push(Outcome::unsupported(
+                name,
+                "not run (MARION_CONFORMANCE_PROBES)",
+            ));
+            continue;
+        }
         let o = probe(c);
         eprintln!(
             "conformance: {} {} {}: {}",
@@ -189,7 +201,13 @@ fn p_version(c: &mut Ctx<'_>) -> (String, Outcome) {
         .iter()
         .find(|p| p.program == launch.inv.program)
         .map(|p| match &version {
-            Some(v) if p.accepted.contains(&v.as_str()) => "admitted in PINNED_HARNESSES".into(),
+            // An ACP agent's reading is `<name> <version>`.
+            Some(v)
+                if p.accepted
+                    .contains(&v.split_whitespace().last().unwrap_or("")) =>
+            {
+                "admitted in PINNED_HARNESSES".into()
+            }
             _ => format!("NOT admitted (PINNED_HARNESSES accepts {:?})", p.accepted),
         })
         .unwrap_or_else(|| "no PINNED_HARNESSES entry".into());
@@ -798,13 +816,15 @@ fn p_midturn(c: &mut Ctx<'_>) -> Outcome {
     };
     let s = c.session(P, "");
     let (a, b) = ("CONFMIDA", "CONFMIDB");
+    // Two tool rounds, held after the first: the write lands while the turn still has a tool
+    // result to send, which is where S31 saw a fold happen (written during the turn's *last*
+    // request, the same harness queues it instead).
     s.provider
         .hold
-        .add_turn(c.turn(a, 1, "conformance first done"));
+        .add_turn(c.turn(a, 2, "conformance first done"));
     s.provider
         .hold
         .add_turn(c.turn(b, 0, "conformance second done"));
-    // Hold the request that follows `report`'s result — the turn is mid-flight, one tool round in.
     s.provider.hold.park(a, 1);
     let launch = match c.compile(&s, &prompt(a), &Knobs::default()) {
         Ok(l) => l,
@@ -864,8 +884,12 @@ fn p_midturn(c: &mut Ctx<'_>) -> Outcome {
         _ => ends >= 1,
     };
     let observed = format!(
-        "{fate}; {} prompt answer(s){}{}",
-        answers.len(),
+        "{fate}{}{}{}",
+        if c.t.path == LaunchPath::Acp {
+            format!("; {} prompt answer(s)", answers.len())
+        } else {
+            String::new()
+        },
         if lost.is_empty() {
             String::new()
         } else {
@@ -1025,7 +1049,7 @@ fn p_resume(c: &mut Ctx<'_>) -> Outcome {
         let loads = first.proc.with(|io| {
             io.frames
                 .iter()
-                .find(|f| f["id"] == 1)
+                .find(|f| f["id"] == driver::ACP_INIT_ID)
                 .map(|f| f["result"]["agentCapabilities"]["loadSession"] == true)
         });
         if loads != Some(true) {
@@ -1305,35 +1329,59 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
         crate::tty::has(b, b"\x1b[?2004h")
     });
     let quiet = Duration::from_millis(1500);
-    tty.quiet(quiet, BOOT);
-    let first_screen = tty.screen();
-    s.log.note(format!("first screen: {first_screen:?}"));
-    tty.write(format!("\x1b[200~{}\x1b[201~", prompt(marker)).as_bytes());
-    std::thread::sleep(Duration::from_millis(50));
-    tty.write(b"\r");
-    let submitted = s.provider.hold.wait(Duration::from_secs(30), |seen, _| {
-        seen.iter()
-            .any(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
-    });
-    let settled = submitted && tty.quiet(quiet, TURN);
-    let after = tty.screen();
-    s.log.note(format!("screen after the turn: {after:?}"));
-    tty.write(b"\x1b[200~/mcp\x1b[201~");
-    std::thread::sleep(Duration::from_millis(50));
-    tty.write(b"\r");
+    // A splash that animates never goes quiet; the bound is the first paint's, not the turn's.
+    let painted = tty.quiet(quiet, Duration::from_secs(20));
+    let first_screen: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
+    s.log.w(
+        "note",
+        &json!({"first screen": first_screen, "quiet": painted}),
+    );
+    let paste = |text: &str| {
+        tty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+        std::thread::sleep(Duration::from_millis(50));
+        tty.write(b"\r");
+    };
+    let asked = |bound: Duration| {
+        s.provider.hold.wait(bound, |seen, _| {
+            seen.iter()
+                .any(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
+        })
+    };
+    paste(&prompt(marker));
+    let submitted = asked(Duration::from_secs(20));
+    // No row names a first-paint dialog, so the probe cannot answer one; it records it. A dialog
+    // that takes the CR (a trust prompt's default) swallows the first paste, and a second one
+    // shows whether the composer behind it submits.
+    let retried = !submitted && {
+        tty.quiet(quiet, Duration::from_secs(10));
+        s.log.w(
+            "note",
+            &json!({"screen after an unsubmitted paste": tty.screen()}),
+        );
+        paste(&prompt(marker));
+        asked(Duration::from_secs(30))
+    };
+    let settled = (submitted || retried) && tty.quiet(quiet, TURN);
+    s.log
+        .w("note", &json!({"screen after the turn": tty.screen()}));
+    paste("/mcp");
     tty.quiet(quiet, Duration::from_secs(15));
-    let mcp_screen = tty.screen();
-    s.log.note(format!("/mcp screen: {mcp_screen:?}"));
+    // Scrubbed first: the scratch path itself says `marion`.
+    let mcp_screen: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
+    s.log.w("note", &json!({"/mcp screen": mcp_screen}));
     let mcp_listed = mcp_screen.iter().any(|l| l.contains("marion"));
     let observed = format!(
         "DECSET 2004 at boot: {decset}; first screen {:?}; bracketed paste + CR submitted: \
-         {submitted}; output quiet {} ms after the turn: {settled}; `/mcp` screen names marion: \
+         {}; output quiet {} ms after the turn: {settled}; `/mcp` screen names marion: \
          {mcp_listed}",
-        first_screen
-            .iter()
-            .filter(|l| !l.trim().is_empty())
-            .take(6)
-            .collect::<Vec<_>>(),
+        tail(&first_screen, 6),
+        if submitted {
+            "on the first paste"
+        } else if retried {
+            "only on a second paste — the first-paint screen (above) swallowed the first"
+        } else {
+            "NO"
+        },
         quiet.as_millis(),
     );
     Outcome::judged(
@@ -1343,6 +1391,16 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
          (IdleSignal::OutputQuiet) once the turn is done",
         observed,
     )
+}
+
+/// The last `n` non-blank lines of a screen — where a dialog's question and options sit.
+fn tail(screen: &[String], n: usize) -> Vec<&str> {
+    let lines: Vec<&str> = screen
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(n)..].to_vec()
 }
 
 /// Where a harness's fixtures go: `<out>/<selector>-<version>/`, selector made path-safe.

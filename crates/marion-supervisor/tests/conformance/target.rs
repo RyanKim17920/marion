@@ -37,6 +37,14 @@ impl Target {
         self.adapter.marion_tool_name("report")
     }
 
+    /// The program the row launches: its own, or the ACP agent's first argv word.
+    pub fn program(&self) -> Option<String> {
+        match self.acp_agent() {
+            Some(a) => a.argv.first().map(|s| s.to_string()),
+            None => self.spec.program.map(str::to_string),
+        }
+    }
+
     pub fn acp_agent(&self) -> Option<acp::Agent> {
         self.agent_type.acp_agent.as_deref().and_then(acp::agent)
     }
@@ -194,8 +202,10 @@ pub fn compile(
         // A pane opens at its composer; the probe types the prompt itself.
         spec.prompt = String::new();
     }
+    // The duplex gate's marker. A pane gets one too: an adapter whose headless prompt is written
+    // after launch refuses to declare its bridge without it, and on a pane nobody waits on it.
     let ready_file =
-        (!knobs.pane && matches!(t.path, LaunchPath::Duplex)).then(|| w.config.join("mcp-ready"));
+        (knobs.pane || matches!(t.path, LaunchPath::Duplex)).then(|| w.config.join("mcp-ready"));
     if let Some(f) = &ready_file {
         let _ = std::fs::remove_file(f);
     }
