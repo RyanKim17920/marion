@@ -550,8 +550,8 @@ pub struct Agent {
     /// overriding the row's [`MidTurn::Queue`]; `None` where it was not measured.
     pub mid_turn: Option<MidTurn>,
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
-    /// which is how a binary behind any command line is recognised as this row. Held to the row's
-    /// S33 capture by the sweep test.
+    /// which is how a binary behind any command line is recognised as this row
+    /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
     pub agent_info: &'static str,
     /// The user-level command that installs it, quoted where the binary is missing.
     pub install: &'static str,
@@ -1090,6 +1090,38 @@ pub enum BindError {
         AGENTS.iter().map(|a| a.id).collect::<Vec<_>>().join(", ")
     )]
     NoProgram,
+}
+
+/// What an agent's `initialize` identity says about its binding, where it says anything: the
+/// **runtime** half of recognising an agent, because a command line names a program and only the
+/// handshake names the agent behind it.
+///
+/// * A generic binding (`acp:<command>`) whose agent answers with a row's [`Agent::agent_info`]:
+///   name the row, so the operator can select it by id and get what was measured for it.
+/// * A refined binding whose agent answers under another name: the row's argv now reaches a
+///   different agent, and its measurements are stale.
+///
+/// `None` otherwise — an agent no row knows is simply the generic path, and a row whose binary
+/// still answers as measured has nothing to report.
+pub fn identity_note(binding: &Binding, handshake: &AgentHandshake) -> Option<String> {
+    match binding.refinement() {
+        Some(row) if row.agent_info != handshake.name => Some(format!(
+            "identity drift: row `{}` was measured answering `initialize` as `{}`, and this \
+             binary answers as `{}` — the row's refinements may not apply",
+            row.id, row.agent_info, handshake.name
+        )),
+        Some(_) => None,
+        None => AGENTS
+            .iter()
+            .find(|a| a.agent_info == handshake.name)
+            .map(|row| {
+                format!(
+                    "identity: answers `initialize` as `{}`, the agent of refinement row `{}` — \
+                     select it by that id for what was measured on it",
+                    handshake.name, row.id
+                )
+            }),
+    }
 }
 
 /// One stdio MCP server, in `session/new`'s own shape. S21 sent exactly this and the agent
@@ -2692,6 +2724,37 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// **An agent's identity is what it says on the wire, and the doctor holds a row to it.**
+    ///
+    /// Two ways a command line and a row can disagree, both only visible after `initialize`: an
+    /// operator's `acp:<command>` that turns out to be an agent marion has a row for (then say
+    /// which, so they can select it by id and get its refinements), and a row's own argv that now
+    /// launches something answering under another name (then say the row is stale). An agent no
+    /// row knows, and a row whose binary still answers as measured, need no note.
+    #[test]
+    fn the_handshake_identity_names_a_matching_row_or_a_drifted_one() {
+        let kilo = AgentHandshake::parse(&s33_frame("kilo", 0)).unwrap();
+        let generic = Binding::resolve("/opt/bin/kilo acp").unwrap();
+        let note = identity_note(&generic, &kilo).expect("a generic binding answering as a row");
+        assert!(note.contains("`kilo`") && note.contains("Kilo"), "{note}");
+
+        assert_eq!(identity_note(&Binding::refined(KILO), &kilo), None);
+
+        let drifted = identity_note(&Binding::refined(VIBE), &kilo).expect("a stale row");
+        assert!(
+            drifted.contains("`vibe`")
+                && drifted.contains("@mistralai/mistral-vibe")
+                && drifted.contains("Kilo"),
+            "{drifted}"
+        );
+
+        let stranger = AgentHandshake::parse(
+            r#"{"result":{"protocolVersion":1,"agentInfo":{"name":"nobody-knows"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(identity_note(&generic, &stranger), None);
     }
 
     /// **Each row launches the argv its capture was taken with, and states nothing unmeasured.**

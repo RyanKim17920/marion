@@ -505,7 +505,7 @@ fn identify(
                     .map(|spec| child_shaped(adapter, spec))
                     .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
             )
-            .and_then(|(p, inv)| acp_handshake(p, &inv, notes)),
+            .and_then(|(p, inv)| acp_handshake(p, &inv, agent, notes)),
         None => None,
     };
     let version = match agent {
@@ -1225,6 +1225,7 @@ const SESSION_BUDGET: Duration = Duration::from_secs(60);
 fn acp_handshake(
     program: &Path,
     inv: &Invocation,
+    binding: Option<&acp::Binding>,
     notes: &mut Vec<String>,
 ) -> Option<AgentHandshake> {
     let started = Instant::now();
@@ -1279,6 +1280,8 @@ fn acp_handshake(
                     .map(|t| format!(", {t}"))
                     .collect::<String>()
             ));
+            // Who the agent says it is, against the row the command was bound to (or none).
+            notes.extend(binding.and_then(|b| acp::identity_note(b, &h)));
             Some(h)
         }
         Err(e) => {
@@ -2358,6 +2361,15 @@ mod tests {
             "{:?}",
             generic.report.notes
         );
+        // An agent no row knows is the generic path, with nothing to say about identity; and
+        // every table row that answered still answers as the agent it was measured as.
+        for row in &rows {
+            assert!(
+                !row.report.notes.iter().any(|n| n.starts_with("identity")),
+                "{:?}",
+                row.report.notes
+            );
+        }
 
         for bad in ["", "   "] {
             let e = parse_args(&argv(&["--capabilities", "--acp-command", bad])).unwrap_err();
