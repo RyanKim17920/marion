@@ -26,7 +26,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -243,8 +243,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 361 ms; no structured turn-end signal",
         ),
     },
-    // Chat Completions: the generated provider block is `@ai-sdk/openai-compatible`. opencode bundles an Anthropic SDK too, but the row renders only this one.
-    endpoint_wires: &[Wire::OpenAiChat],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: the generated provider block is `@ai-sdk/openai-compatible`. opencode bundles an Anthropic SDK too, but the row renders only this one.",
+    }],
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",

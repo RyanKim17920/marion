@@ -695,7 +695,7 @@ pub fn prepare_watched(
     let endpoint = crate::endpoint::resolve_for_launch(
         spec.model.as_deref(),
         &agent_type,
-        adapter.endpoint_wires(),
+        &adapter.endpoint_wires(),
     )?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
     // harness; the pane is a fact about the run. Selecting here — once, before anything is

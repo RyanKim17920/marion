@@ -21,7 +21,7 @@ pub use crate::mcp_bridge::{
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When,
+    Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -220,8 +220,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    (p0b/tui/claude) and is the fallback a later phase may add",
         },
     },
-    // Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.
-    endpoint_wires: &[Wire::AnthropicMessages],
+    wires: &[WireRecipe {
+        wire: Wire::AnthropicMessages,
+        env: &[],
+        note: "Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.",
+    }],
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

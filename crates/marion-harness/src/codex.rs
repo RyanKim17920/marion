@@ -22,7 +22,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -201,8 +201,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
         ),
     },
-    // OpenAI Responses alone: `wire_api = "chat"` was removed from codex, and the generated provider names `responses`.
-    endpoint_wires: &[Wire::OpenAiResponses],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiResponses,
+        env: &[],
+        note: "OpenAI Responses alone: `wire_api = \"chat\"` was removed from codex, and the generated provider names `responses`.",
+    }],
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

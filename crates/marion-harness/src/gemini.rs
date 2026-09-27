@@ -20,6 +20,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -163,8 +164,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
         },
     },
-    // Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.
-    endpoint_wires: &[Wire::Gemini],
+    wires: &[WireRecipe {
+        wire: Wire::Gemini,
+        env: &[],
+        note: "Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.",
+    }],
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",

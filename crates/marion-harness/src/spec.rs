@@ -128,14 +128,26 @@ pub struct HarnessSpec {
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
     /// surfaces_can_carry` checks each strategy against the rest of the row.
     pub delivery: Deliveries,
-    /// The wires this harness can be pointed at in **endpoint mode**, in its order of preference
-    /// — only ones this row's overlay actually renders, so a provider serving a wire the harness
-    /// could speak but the row cannot yet aim it at is refused rather than half-configured.
-    /// Endpoint resolution takes the first one the provider serves natively; empty refuses every
-    /// endpoint launch of this harness by name.
-    pub endpoint_wires: &'static [Wire],
+    /// The wires this harness can be pointed at in **endpoint mode**, as recipes, in its order of
+    /// preference — only ones this row can actually render, so a provider serving a wire the
+    /// harness could speak but the row cannot yet aim it at is refused rather than half-configured.
+    /// Endpoint resolution takes the first one the provider serves natively, and the renderer
+    /// applies that recipe; empty refuses every endpoint launch of this harness by name.
+    pub wires: &'static [WireRecipe],
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
+    pub note: &'static str,
+}
+
+/// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that
+/// selects it on top of the row's own overlay rows — empty where the overlay already speaks it,
+/// a switch such as copilot's `COPILOT_PROVIDER_WIRE_API` where the harness speaks several. A
+/// variable the recipe names replaces the overlay row's value of the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireRecipe {
+    pub wire: Wire,
+    pub env: &'static [(&'static str, &'static str)],
+    /// **Mandatory**: how the recipe was established, as for a row's own `note`.
     pub note: &'static str,
 }
 
@@ -627,6 +639,9 @@ pub struct Fields {
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
     pub auth: Auth,
+    /// The wire an endpoint launch speaks — `LaunchSpec::wire`, seeded neutrally — whose
+    /// [`WireRecipe`] the renderer applies. `None` on canned and live launches.
+    pub wire: Option<Wire>,
     /// The program, where the row's is `None`.
     pub program: Option<String>,
     pub prompt: String,
@@ -748,6 +763,8 @@ pub enum Refusal {
     /// The launch asks to resume a session and this shape of this harness has no measured way to
     /// name one.
     NoResume,
+    /// An endpoint launch names a wire this row has no [`WireRecipe`] for — or names none.
+    NoWireRecipe,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -840,6 +857,22 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
     }
 }
 
+/// The row's recipe for `wire`, where it has one.
+pub fn recipe_for(spec: &HarnessSpec, wire: Option<Wire>) -> Option<&'static WireRecipe> {
+    let wire = wire?;
+    spec.wires.iter().find(|r| r.wire == wire)
+}
+
+/// A recipe's variables over the overlay's: a name both carry takes the recipe's value, in place.
+fn apply_recipe(env: &mut Vec<(String, String)>, recipe: &WireRecipe) {
+    for (k, v) in recipe.env {
+        match env.iter_mut().find(|(n, _)| n == k) {
+            Some(slot) => slot.1 = v.to_string(),
+            None => env.push((k.to_string(), v.to_string())),
+        }
+    }
+}
+
 /// argv + env for one shape of one row, or the [`Refusal`] the row states.
 pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation, Refusal> {
     let argv = match shape {
@@ -863,6 +896,12 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         args.extend(render_arg(*arg, spec, f));
     }
     let mut env = render_env(spec.env, f);
+    if f.auth == Auth::Endpoint {
+        apply_recipe(
+            &mut env,
+            recipe_for(spec, f.wire).ok_or(Refusal::NoWireRecipe)?,
+        );
+    }
     env.extend(spec.updates.env());
     env.extend(f.extra_env.iter().cloned());
     Ok(Invocation {

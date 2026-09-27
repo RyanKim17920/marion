@@ -132,7 +132,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     },
     // None: ACP has no provider channel in its handshake, and the per-agent canned recipes are not endpoint recipes yet. An endpoint launch of an ACP type is refused by name.
-    endpoint_wires: &[],
+    wires: &[],
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \

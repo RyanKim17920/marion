@@ -450,10 +450,10 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
 
-    /// The wires this harness can be pointed at in endpoint mode, in preference order — the row's
-    /// [`spec::HarnessSpec::endpoint_wires`].
-    fn endpoint_wires(&self) -> &'static [Wire] {
-        self.spec().endpoint_wires
+    /// The wires this harness can be pointed at in endpoint mode, in preference order — the
+    /// wires of the row's [`spec::HarnessSpec::wires`] recipes.
+    fn endpoint_wires(&self) -> Vec<Wire> {
+        self.spec().wires.iter().map(|r| r.wire).collect()
     }
 
     /// The provider's model id behind an endpoint node's compiled model — the inverse of whatever
@@ -759,6 +759,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         cwd: spec.cwd.clone(),
         config_dir: spec.config_dir.clone(),
         auth: spec.auth,
+        wire: spec.wire,
         prompt: spec.prompt.clone(),
         model: spec.model.clone(),
         base_url,
@@ -811,6 +812,11 @@ fn render_row(
         spec::Refusal::NoProgram => HarnessError::MissingInput {
             harness: row.harness,
             what: "the launch named no program and the row carries none",
+        },
+        spec::Refusal::NoWireRecipe => HarnessError::MissingInput {
+            harness: row.harness,
+            what: "an endpoint launch must name a wire this harness has a recipe for; endpoint \
+                   resolution chooses one from the row's `wires`",
         },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
@@ -3723,6 +3729,7 @@ mod tests {
             };
             let endpoint = LaunchSpec {
                 auth: Auth::Endpoint,
+                wire: adapter.endpoint_wires().first().copied(),
                 ..spec_for(h)
             };
             let keys = |spec: &LaunchSpec| -> Result<Vec<String>, HarnessError> {
@@ -3745,6 +3752,13 @@ mod tests {
                 .filter(|e| e.when == crate::spec::When::Endpoint)
                 .map(|e| e.key)
                 .collect();
+            if adapter.endpoint_wires().is_empty() {
+                assert!(
+                    keys(&endpoint).is_err(),
+                    "{h}: no recipe, so no endpoint launch"
+                );
+                continue;
+            }
             match (keys(&canned), keys(&endpoint)) {
                 (Ok(c), Ok(mut e)) => {
                     e.retain(|k| !endpoint_only.contains(&k.as_str()));
@@ -3766,6 +3780,43 @@ mod tests {
         }
     }
 
+    /// **Every row's endpoint recipes are well-formed data**: a note on each, no wire twice, and
+    /// no recipe variable that is also an isolation row's — a recipe selects a wire, it never moves
+    /// where the harness keeps its state.
+    #[test]
+    fn every_rows_wire_recipes_are_noted_distinct_and_touch_no_isolation() {
+        for h in Harness::ALL {
+            let row = launch_adapter(h).unwrap().spec();
+            let mut seen = Vec::new();
+            for r in row.wires {
+                assert!(!r.note.trim().is_empty(), "{h}: {:?} has no note", r.wire);
+                assert!(!seen.contains(&r.wire), "{h}: {:?} twice", r.wire);
+                seen.push(r.wire);
+                for (k, _) in r.env {
+                    let isolation = row
+                        .env
+                        .iter()
+                        .any(|e| e.key == *k && matches!(e.val, crate::spec::Val::Under(_)));
+                    assert!(!isolation, "{h}: recipe variable {k} relocates state");
+                }
+            }
+        }
+    }
+
+    /// **An endpoint launch with no recipe for its wire is refused, never rendered half-aimed.**
+    #[test]
+    fn an_endpoint_launch_on_a_wire_the_row_cannot_render_is_refused() {
+        for wire in [None, Some(marion_core::provider::Wire::Gemini)] {
+            let spec = LaunchSpec {
+                auth: Auth::Endpoint,
+                wire,
+                ..codex_spec()
+            };
+            let err = CodexAdapter.compile(&spec, &ctx()).unwrap_err().to_string();
+            assert!(err.contains("recipe"), "{wire:?}: {err}");
+        }
+    }
+
     /// **Every harness but the ACP protocol row can be pointed at an endpoint**, on the wire its
     /// canned overlay already renders — the row states it rather than a resolver guessing it.
     #[test]
@@ -3773,6 +3824,7 @@ mod tests {
         use marion_core::provider::Wire;
         for h in Harness::ALL {
             let wires = launch_adapter(h).unwrap().endpoint_wires();
+            let wires = wires.as_slice();
             let want: &[Wire] = match h {
                 Harness::ClaudeCode => &[Wire::AnthropicMessages],
                 Harness::Codex => &[Wire::OpenAiResponses],
@@ -3788,9 +3840,12 @@ mod tests {
         }
     }
 
-    fn endpoint(spec: LaunchSpec, model: &str) -> LaunchSpec {
+    /// `spec` as an endpoint launch of `h`, on the first wire its row has a recipe for — what
+    /// endpoint resolution chooses against a provider serving every wire.
+    fn endpoint(spec: LaunchSpec, model: &str, h: Harness) -> LaunchSpec {
         LaunchSpec {
             auth: Auth::Endpoint,
+            wire: launch_adapter(h).unwrap().endpoint_wires().first().copied(),
             base_url: Some("https://provider.example/v1".into()),
             api_key: Some("sk-endpoint-test".into()),
             model: Some(model.into()),
@@ -3811,7 +3866,10 @@ mod tests {
     #[test]
     fn a_claude_endpoint_node_routes_its_background_model_to_the_chosen_one() {
         let inv = ClaudeCodeAdapter
-            .compile(&endpoint(claude_spec(), "glm-4.6"), &ctx())
+            .compile(
+                &endpoint(claude_spec(), "glm-4.6", Harness::ClaudeCode),
+                &ctx(),
+            )
             .unwrap();
         for k in [
             "ANTHROPIC_SMALL_FAST_MODEL",
@@ -3837,7 +3895,11 @@ mod tests {
     /// opencode's built-in provider of that name.
     #[test]
     fn an_opencode_endpoint_node_asks_for_the_model_verbatim_under_marions_block() {
-        let spec = endpoint(opencode_spec(), "anthropic/claude-sonnet-4");
+        let spec = endpoint(
+            opencode_spec(),
+            "anthropic/claude-sonnet-4",
+            Harness::OpenCode,
+        );
         let inv = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
         assert_eq!(
             inv.model.as_deref(),
@@ -3859,7 +3921,10 @@ mod tests {
     #[test]
     fn a_codex_endpoint_node_names_its_model_and_its_key() {
         let inv = CodexAdapter
-            .compile(&endpoint(codex_spec(), "gpt-5.1-codex"), &ctx())
+            .compile(
+                &endpoint(codex_spec(), "gpt-5.1-codex", Harness::Codex),
+                &ctx(),
+            )
             .unwrap();
         assert_eq!(inv.model.as_deref(), Some("gpt-5.1-codex"));
         assert!(

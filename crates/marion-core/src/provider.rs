@@ -605,6 +605,34 @@ mod tests {
         assert_eq!(ids.len(), n, "duplicate provider id");
     }
 
+    /// **Every seed row states its wires and its auth as data**: no wire twice, a base of the
+    /// shape its wire's clients take (no trailing slash), and — where it needs a credential — the
+    /// environment variable its own tooling reads, which `marion login --from-env` imports.
+    #[test]
+    fn every_seed_row_states_distinct_wires_and_how_it_is_authenticated() {
+        for p in PROVIDERS {
+            let mut seen = Vec::new();
+            for (w, base) in p.wires {
+                assert!(!seen.contains(w), "{}: {w} twice", p.id);
+                seen.push(*w);
+                assert!(!base.ends_with('/'), "{}: {base}", p.id);
+            }
+            match p.auth {
+                AuthKind::ApiKey => assert!(p.import_env.is_some(), "{}: no import_env", p.id),
+                AuthKind::None => {
+                    assert!(p.import_env.is_none(), "{}", p.id);
+                    assert!(
+                        p.base_url.starts_with("http://127.0.0.1"),
+                        "{}: a key-less \
+                             provider is a local server",
+                        p.id
+                    );
+                }
+                AuthKind::OAuthPkce { .. } => panic!("{}: no seed row uses PKCE yet", p.id),
+            }
+        }
+    }
+
     #[test]
     fn the_seed_table_names_every_provider_the_plan_promised() {
         let reg = Registry::seed();

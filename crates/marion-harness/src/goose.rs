@@ -44,6 +44,7 @@ use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -175,8 +176,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "goose's TUI was not measured (S31), and its native lane ships disabled",
         },
     },
-    // Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.
-    endpoint_wires: &[Wire::OpenAiChat],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.",
+    }],
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \

@@ -53,6 +53,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -185,8 +186,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "cline is not installed for S31 and its native lane ships disabled",
         },
     },
-    // Chat Completions: the generated `providers.json` is `openai-compatible`.
-    endpoint_wires: &[Wire::OpenAiChat],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: the generated `providers.json` is `openai-compatible`.",
+    }],
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

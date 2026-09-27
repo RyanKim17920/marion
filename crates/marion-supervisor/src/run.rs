@@ -1358,9 +1358,9 @@ pub fn run_spawn_watched(
     let endpoint = crate::endpoint::resolve_for_launch(
         req.model.as_deref(),
         &agent_type,
-        adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())
+        &adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())
             .map(|a| a.endpoint_wires())
-            .unwrap_or(&[]),
+            .unwrap_or_default(),
     )?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());

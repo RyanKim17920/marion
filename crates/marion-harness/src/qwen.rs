@@ -49,7 +49,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -197,8 +197,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    and its native lane ships disabled",
         },
     },
-    // Chat Completions, through `OPENAI_BASE_URL`.
-    endpoint_wires: &[Wire::OpenAiChat],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions, through `OPENAI_BASE_URL`.",
+    }],
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

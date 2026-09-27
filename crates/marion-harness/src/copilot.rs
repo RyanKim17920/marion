@@ -43,7 +43,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -205,8 +205,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 336 ms; OSC 9;4;0 also marks the turn end",
         ),
     },
-    // Chat Completions, the row's BYOK default. Copilot can also speak Responses and Anthropic Messages (`COPILOT_PROVIDER_WIRE_API`, `COPILOT_PROVIDER_TYPE`), but the row renders neither yet.
-    endpoint_wires: &[Wire::OpenAiChat],
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "the row's own BYOK overlay (openai type, completions wire)",
+    }],
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",
