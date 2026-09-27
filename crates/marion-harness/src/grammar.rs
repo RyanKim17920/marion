@@ -552,7 +552,12 @@ fn calls(g: &StreamGrammar, frames: &[Value], prefix: &str) -> Vec<Call> {
 /// running — a stream read whole after exit would name the session only of a node that has already
 /// gone. `None` on a row with no measured session unit, and on every frame that is not it.
 pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
-    let s = g.session.as_ref()?;
+    session_in(g.session.as_ref()?, frame)
+}
+
+/// [`session_id`] under one [`SessionId`] rule, for a reader whose stream is not a row's grammar —
+/// ACP's `session/new` answer (`crate::acp::SESSION`).
+pub fn session_in(s: &SessionId, frame: &Value) -> Option<String> {
     units(std::slice::from_ref(frame), &s.at)
         .into_iter()
         .find_map(|u| text(u, s.path).filter(|id| !id.trim().is_empty()))

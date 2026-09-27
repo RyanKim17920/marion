@@ -517,6 +517,14 @@ pub trait HarnessAdapter {
         grammar::usage(rule, frames)
     }
 
+    /// The harness session `frame` names, if it is the frame that names one — read with the row's
+    /// [`grammar::StreamGrammar::session`] rule. `None` for every other frame and for a row with
+    /// no rule. The one question the supervisor's session watch asks, so no caller reads a row's
+    /// grammar for it directly.
+    fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
+        grammar::session_id(self.spec().stream?, frame)
+    }
+
     /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
     /// reading a **root** is judged by, since §9 gives a root no contract and §5.4 refuses its
     /// `report`. A row with no grammar reads as [`Self::parse_stream`] does.
@@ -2081,6 +2089,12 @@ impl HarnessAdapter for AcpAdapter {
     /// whether or not one is bound: spend is a protocol fact, not an agent refinement.
     fn usage(&self, frames: &[serde_json::Value]) -> Option<TokenUsage> {
         grammar::usage(&acp::USAGE, frames)
+    }
+
+    /// The protocol's own `session/new` answer ([`acp::SESSION`]), whatever the agent: where a
+    /// session is named is a protocol fact, as spend is.
+    fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
+        grammar::session_in(&acp::SESSION, frame)
     }
 }
 

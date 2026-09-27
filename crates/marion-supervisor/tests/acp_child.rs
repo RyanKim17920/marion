@@ -147,6 +147,31 @@ fn an_acp_agent_runs_as_a_child_and_reports_through_marions_bridge() {
         comp.scope_enforced,
         "a worktree child affords the diff, so §6.7 records that the check ran"
     );
+
+    // **Recorded as it ran, and resumable.** The child's frames reach its `events.jsonl` while the
+    // turn runs, as every other child's do, and the `sessionId` its `session/new` answered with is
+    // journaled — the id a `marion resume` hands back through `session/load`.
+    let bytes = std::fs::read(fx.env.project_dir.journal()).expect("the journal exists");
+    let replay = marion_core::registry::replay(&bytes);
+    let child = replay
+        .nodes()
+        .iter()
+        .find(|n| n.depth() == Some(1))
+        .expect("the child is journaled");
+    assert!(
+        child
+            .harness_session
+            .as_deref()
+            .is_some_and(|s| s.starts_with("ses_")),
+        "the opencode acp session is journaled for a resume: {:?}",
+        child.harness_session
+    );
+    let events = std::fs::read_to_string(fx.env.project_dir.agent(&child.agent_id).events())
+        .unwrap_or_default();
+    assert!(
+        events.contains("session/update"),
+        "the child's frames are recorded as they arrived: {events:?}"
+    );
 }
 
 /// The negative control the clause needs: **the path is chosen by the agent type's surfaces**, not

@@ -911,8 +911,8 @@ fn launch_only_child(
     }
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
-    // said before the kill. The capture this returns is still whole, and is not recorded again
-    // ([`record_capture_after_the_fact`] skips this path).
+    // said before the kill. The capture this returns is still whole, and is not recorded again:
+    // every child path now records its lines live, so nothing is read back after the fact.
     let on_line = |line: &str| {
         if let Some(es) = events {
             es.record_line(line);
@@ -1480,7 +1480,7 @@ pub fn run_spawn_watched(
     // `Option`, because a viewer may never fail a run: a node that cannot open its event file still
     // runs, and `EventReader::ever_written` is what later tells "nobody recorded this" from "it said
     // nothing" rather than presenting the first as the second.
-    let mut events = crate::events::EventSink::open(
+    let events = crate::events::EventSink::open(
         &agent_dir,
         &agent_id,
         adapter.harness(),
@@ -1616,13 +1616,22 @@ pub fn run_spawn_watched(
         //
         // The declaration is asked of the adapter here rather than rebuilt in the driver, so the
         // frame marion sends and the frame `McpRoute::Session` verified are the same object.
+        // **Recorded as it lands**, as the other two paths are: every line the agent writes reaches
+        // the child's `events.jsonl` while the turn runs, and the session watch reads the
+        // `sessionId` its `session/new` answered with — the id a resume's `session/load` hands
+        // back.
         LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
             inv: &inv,
             session_declaration: adapter.session_declaration(&launch, &ctx)?,
             prompt: &req.prompt,
             bound,
             on_started: &announce_started,
-            on_line: None,
+            on_line: Some(&|line: &str| {
+                if let Some(es) = events.as_ref() {
+                    es.record_line(line);
+                }
+                session.observe_line(line);
+            }),
             turns,
         })
         .map(|r| ChildRun {
@@ -1672,7 +1681,6 @@ pub fn run_spawn_watched(
         });
     }
     let run = run?;
-    record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
@@ -2124,29 +2132,6 @@ fn child_spawned_record(
             // and a wrong identity would be far worse than a missing one.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         },
-    }
-}
-
-/// **The after-the-fact half of §7.3.3's wiring: ACP, and only ACP.**
-///
-/// A `LaunchOnly` child has no channel *into* it, but its stdout is read line by line as it lands
-/// (`run_bounded_watched`'s `on_line`), and [`launch_only_child`] records each line there, live.
-/// The duplex path records live through its sink. Recording either again here would be the
-/// duplicate §7.3.3's seam is stated in ordinals to prevent.
-///
-/// ACP stays after the fact: the driver owns the frame loop for the whole turn and hands the
-/// transcript back at the end, so every event recovered from it is honestly
-/// `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact, which
-/// is why this branches on where the frames came from rather than on `has_typed_control_plane`.
-fn record_capture_after_the_fact(
-    path: LaunchPath,
-    events: Option<&mut crate::events::EventSink>,
-    stdout: &str,
-) {
-    if matches!(path, LaunchPath::Acp)
-        && let Some(es) = events
-    {
-        es.record_capture(stdout);
     }
 }
 

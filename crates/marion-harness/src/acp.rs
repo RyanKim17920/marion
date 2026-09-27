@@ -49,7 +49,7 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
-use crate::grammar::{Cond, UsageFold, UsageRule, Where};
+use crate::grammar::{Cond, SessionId, UsageFold, UsageRule, Where};
 use crate::spec::{
     Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push, Spelling,
     Surfaces, TurnDelivery, UpdatePolicy,
@@ -896,6 +896,19 @@ pub const USAGE: UsageRule = UsageRule {
     reasoning: None,
     input_includes_cache: false,
     fold: UsageFold::Sum,
+};
+
+/// Where an ACP session is named: the `session/new` **response**'s `result.sessionId` — the id
+/// `session/load` takes back (S21 captured it on `opencode acp`, `ses_…`). A `session/load`
+/// answer carries none, since the id was the request's, so a resumed node is never journaled a
+/// second, different session. Protocol-wide, like [`USAGE`]: no agent refines where its id sits.
+pub const SESSION: SessionId = SessionId {
+    at: Where {
+        frame: &[Cond::Has("/result/sessionId")],
+        each: None,
+        unit: &[],
+    },
+    path: "/result/sessionId",
 };
 
 /// `session/prompt`. One text block: §8's micro-contract asserts a *response shape*.
