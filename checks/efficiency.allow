@@ -6,15 +6,14 @@
 # a bounded one-shot wait with a clear deadline may stay, and says so.
 
 # --- tracked: efficiency waves ------------------------------------------------------------------
-crates/marion-supervisor/src/serve.rs:ACCEPT_POLL  tracked: efficiency waves (5 ms accept poll on the supervisor socket)
-crates/marion-supervisor/src/serve.rs:WRITER_POLL  tracked: efficiency waves (20 ms connection-writer tick)
-crates/marion-supervisor/src/serve.rs:run_conn_writer  tracked: efficiency waves (recv_timeout(WRITER_POLL) loop)
-crates/marion-supervisor/src/detach.rs:REGISTRY_POLL  tracked: efficiency waves (10 ms registry poll)
-crates/marion-supervisor/src/detach.rs:ENTITLEMENT_POLL  tracked: efficiency waves (500 ms entitlement poll)
-crates/marion-supervisor/src/detach.rs:watch_entitlement  tracked: efficiency waves (sleep(ENTITLEMENT_POLL) loop)
+crates/marion-supervisor/src/serve.rs:ACCEPT_POLL  poll(2) timeout floor only: the accept loop blocks in poll(2) on the listeners and wakes on a connection or a handle deadline; 5 ms bounds a readable-but-vanished listener (perf-wave1 2da8ea8)
+crates/marion-supervisor/src/serve.rs:run_conn_writer  blocks in recv(); the try_recv loop only drains what is queued after the connection departed, then ends (perf-wave1 74d9b38)
+crates/marion-supervisor/src/detach.rs:REGISTRY_POLL  backstop only: the follower wakes on the journal write notification (kqueue/inotify, wake.rs); a 1 s re-read catches a missed event (perf-wave1 05e8272)
+crates/marion-supervisor/src/detach.rs:ENTITLEMENT_POLL  backstop only: the supervisor lock is watched for changes; a 5 s re-check bounds a missed event (perf-wave1 b5e6fa7)
+crates/marion-supervisor/src/detach.rs:watch_entitlement  waits on the lock files' change watches; sleeps ENTITLEMENT_POLL only on a platform with no watch (perf-wave1 b5e6fa7)
 crates/marion-supervisor/src/detach.rs:DIAL_POLL  tracked: efficiency waves (5 ms dial retry period)
 crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  tracked: efficiency waves (dial-retry sleep loop until a deadline)
-crates/marion-supervisor/src/registry.rs:LiveRegistry::follow  tracked: efficiency waves (REGISTRY_POLL sleep loop)
+crates/marion-supervisor/src/registry.rs:LiveRegistry::follow  waits on the journal write pipe and file watch; sleeps its interval only where neither exists (perf-wave1 05e8272)
 crates/marion-supervisor/src/pty.rs:POLL  tracked: efficiency waves (5 ms pty poll)
 crates/marion-supervisor/src/pty.rs:PtyMaster::write_all  tracked: efficiency waves (sleep-and-retry on a full pty)
 crates/marion-supervisor/src/root.rs:PANE_POLL  tracked: efficiency waves (25 ms pane-exit poll)
@@ -25,13 +24,12 @@ crates/marion-supervisor/src/run.rs:run_bounded_with  tracked: efficiency waves 
 crates/marion-supervisor/src/duplex.rs:watchdog  tracked: efficiency waves (duplex watchdog sleep loop)
 crates/marion-supervisor/src/duplex.rs:wait_for_ready  tracked: efficiency waves (ready-file sleep loop)
 crates/marion-supervisor/src/duplex.rs:run_duplex  tracked: efficiency waves (recv_timeout on a fixed period)
-crates/marion-supervisor/src/descendant_gate.rs:HOLD_POLL  tracked: efficiency waves (100 ms hold poll)
+crates/marion-supervisor/src/descendant_gate.rs:HOLD_POLL  partial: a held node re-reads its subtree only when the registry changed (perf-wave1 95ec1bf); the 100 ms pause remains where no follower reads the journal
 crates/marion-supervisor/src/acp_child.rs:POLL  tracked: efficiency waves (20 ms ACP child poll)
 crates/marion-supervisor/src/acp_child.rs:prompt_session  tracked: efficiency waves (try_wait + sleep(POLL) loop)
 crates/marion-supervisor/src/acp_child.rs:Driver::settle_while  tracked: efficiency waves (try_wait + sleep(POLL) loop)
 crates/marion-supervisor/src/acp_child.rs:Driver::finish  tracked: efficiency waves (sleep(POLL) loop)
 crates/marion-supervisor/src/acp_child.rs:wait_bounded  tracked: efficiency waves (try_wait + sleep loop until a deadline)
-crates/marion-supervisor/src/kill.rs:kill_process_tree_and_wait  tracked: efficiency waves (ps / yield_now spin while the tree dies)
 crates/marion-supervisor/src/native_relay.rs:POLL  tracked: efficiency waves (50 ms native relay tick)
 crates/marion-supervisor/src/native_relay.rs:RawPaneSession::start_keyboard  tracked: efficiency waves (keyboard thread sleep loop)
 crates/marion-supervisor/src/native_relay.rs:RawPaneSession::open_with_io  tracked: efficiency waves (read timeout as the relay tick)
@@ -40,7 +38,7 @@ crates/marion-supervisor/src/attach.rs:run  tracked: efficiency waves (read time
 crates/marion-supervisor/src/attach.rs:Session::open_with_terminal  tracked: efficiency waves (read timeout as the attach tick)
 crates/marion-supervisor/src/tree.rs:POLL  tracked: efficiency waves (50 ms tree poll)
 crates/marion-supervisor/src/tree.rs:dial  tracked: efficiency waves (read timeout as the tree tick)
-crates/marion-supervisor/src/bin/marion.rs:JOURNAL_POLL  tracked: efficiency waves (100 ms journal tail poll)
+crates/marion-supervisor/src/bin/marion.rs:JOURNAL_POLL  backstop only: marion run tails the journal on write notifications; a 1 s re-read bounds a missed event (perf-wave1 bba68e0)
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::wait_for_supervisor_exit  tracked: efficiency waves (sleep loop until the supervisor exits)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
@@ -53,3 +51,5 @@ crates/marion-supervisor/src/socket.rs:acquire_within  untracked: sleep loop acq
 # --- bounded one-shot waits with a clear deadline -----------------------------------------------
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
+crates/marion-supervisor/src/handler.rs:ATTACHED_TICK  tracked: efficiency waves — 5 ms re-read of a followed node's events.jsonl, only while a client is attached to it (the accept loop itself now blocks in poll(2)); remove when a per-node file watch wakes it
+crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
