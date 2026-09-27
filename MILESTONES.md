@@ -233,9 +233,10 @@ claude child held at the provider until its claude parent's first turn is over r
 parent as its next turn, delivered once `stream-json:next-turn`, and the parent's last request
 carries the end exactly once. Both RED with the root's duplex feed unwired (the steer never
 delivered; the end absent from the parent's requests — the channel frame alone did not reach the
-model). **Run on claude 2.1.280** (the release S31 measured, from the installer's version store and
-put first on the run's `PATH`), not on the admitted 2.1.269, which is not installed here; the
-suite's pin gate is not consulted by that file, and it skips loudly without 2.1.280 on disk. Not
+model). First run on claude 2.1.280 (the release S31 measured) from the installer's version store; since
+2026-09-27 the file goes through the suite's pin gate like every other real-harness suite, so it
+runs on the admitted release and each admission re-runs it — the installer had pruned 2.1.280,
+and the file skipped. Not
 yet: the continuation, pane and bridge lanes; `node/prompt`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against

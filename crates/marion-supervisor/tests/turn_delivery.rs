@@ -18,11 +18,9 @@
 //! cargo test -p marion-supervisor --test turn_delivery
 //! ```
 //!
-//! It drives **claude 2.1.280**, the release S31 measured the fold and the queue on
-//! (`tests/fixtures/s31-turn-delivery/`), from the installer's own store
-//! (`~/.local/share/claude/versions/2.1.280`), put first on the run's `PATH`. That release is not in
-//! `PINNED_HARNESSES`' admitted list — widening it is a matrix re-run this file does not do — so the
-//! suite's gate is not consulted; with the release absent the test skips loudly by name.
+//! It drives the installed `claude` through the suite's version gate, so it runs only on a release
+//! `PINNED_HARNESSES` admits. S31 measured the fold and the queue on 2.1.280
+//! (`tests/fixtures/s31-turn-delivery/`); each later admission re-runs this file.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -36,7 +34,7 @@ use marion_core::paths::ProjectDir;
 use marion_core::proto::params::NodeSteerParams;
 use marion_core::proto::{Call, Outcome};
 use marion_provider::{CannedServer, Config, Hold, NodeScript, Script, ScriptedCall};
-use marion_testsupport::{announce_skip, fixture_repo, scratch};
+use marion_testsupport::{fixture_repo, scratch};
 use serde_json::{Value, json};
 
 mod common;
@@ -101,29 +99,14 @@ fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
-/// The claude release S31 measured on.
-const MEASURED_CLAUDE: &str = "2.1.280";
-
-/// A `PATH` whose `claude` is [`MEASURED_CLAUDE`], or `None` (announced) where it is not on disk.
-fn measured_claude_path(dir: &std::path::Path) -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let binary =
-        PathBuf::from(home).join(format!(".local/share/claude/versions/{MEASURED_CLAUDE}"));
-    if !binary.is_file() {
-        announce_skip(
-            &format!("no claude {MEASURED_CLAUDE} at {}", binary.display()),
-            &format!("drives the claude release S31 measured turn delivery on ({MEASURED_CLAUDE})"),
-        );
+/// The run's `PATH`, or `None` on a runner that declared it has no harnesses. The gate panics on a
+/// `claude` outside `PINNED_HARNESSES`' admitted list, so this runs on a release the admission
+/// ritual re-checked — and `scripts/admit-harness.sh` re-runs this file when it admits one.
+fn admitted_claude_path() -> Option<String> {
+    if !marion_testsupport::harness_available("claude") {
         return None;
     }
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(&binary, bin.join("claude")).unwrap();
-    Some(format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    ))
+    Some(std::env::var("PATH").unwrap_or_default())
 }
 
 /// A test bed: a repo, a state dir, and a canned provider holding what `hold` picks.
@@ -136,10 +119,10 @@ struct Bed {
 }
 
 impl Bed {
-    /// `None` (announced) where the measured claude is not on disk.
+    /// `None` (announced) on a runner with no harnesses.
     fn new(tag: &str, nodes: Vec<NodeScript>, hold: Arc<Held>) -> Option<Bed> {
         let dir = scratch(tag);
-        let path = measured_claude_path(&dir)?;
+        let path = admitted_claude_path()?;
         let repo = fixture_repo(&dir);
         let state = dir.join("state");
         std::fs::create_dir_all(&state).unwrap();
