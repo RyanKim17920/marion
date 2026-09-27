@@ -45,17 +45,17 @@
     "type": "function",
     "function": {
      "name": "create",
-     "description": "Tool for creating new files.\n* Creates a new file with the specified content at the given path\n* Cannot be used if the specified path already exists\n* Parent directories must exist before creating the file\n* Path *MUST* be absolute",
+     "description": "<elided>",
      "parameters": {
       "type": "object",
       "properties": {
        "path": {
         "type": "string",
-        "description": "Full absolute path to file to create. File MUST not exist before creating."
+        "description": "<elided>"
        },
        "file_text": {
         "type": "string",
-        "description": "The content of the file to be created."
+        "description": "<elided>"
        }
       },
       "required": [

@@ -26,7 +26,8 @@ for a model named `fake-model`). It appears in no file here.
 
 Redactions: run directories → `<RUN-DIR>` (and their fragments, because `assistant.tool_call_delta`
 splits argument strings mid-path), UUIDs → `<UUID>`, timestamps → `<TS>`, the two built-in skills'
-descriptions → elided, the system prompt → elided with its length.
+descriptions → elided, the system prompt → elided with its length, and copilot's own `create` tool
+descriptions in the provider request → `<elided>`.
 
 ## What was learned, in the order it bit
 

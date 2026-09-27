@@ -150,6 +150,8 @@ opencode's own vocabulary is marion's vocabulary, word for word, for `read`, `ed
   headers with credentials redacted) plus the **verbatim** tool declaration off the wire. For codex
   that is `code_mode_tool_names` plus the `additional_tools` names; for gemini the `tools` array
   with its `functionDeclarations`; for claude and opencode the `tools` array.
+  In the claude captures every `description` string (tool and parameter) is `<elided>`: that text
+  is Claude Code's own, and the evidence here is the tool names and their schemas.
 
 **Full request bodies are deliberately NOT committed.** Every harness on this machine folds the
 operator's own configuration into the system prompt — `~/.claude/CLAUDE.md`, the private memory
