@@ -1307,6 +1307,8 @@ pub fn build_contract(
             harness: marion_core::Harness::Codex,
             version: "unknown".into(),
             model: None,
+            provider: None,
+            route: None,
         },
         repo,
         base_commit: base,

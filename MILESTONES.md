@@ -1617,6 +1617,15 @@ ever runs a real login.
   provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
   is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
+  Node config documents are now written `0600` (they carry the node token and, on opencode and
+  cline endpoint nodes, the key).
+- **Endpoint records and resume — built; tree display not yet.** `provider` and `route`
+  (`native`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
+  default, skipped when absent, so canned and live records are byte-identical to before). A resume
+  re-requests `<provider>:<model>` with the adapter's own spelling undone
+  (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
+  provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
+  `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

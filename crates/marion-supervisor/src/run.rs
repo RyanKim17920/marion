@@ -1601,7 +1601,13 @@ pub fn run_spawn_watched(
     let announce_started = |pid: i32| {
         let appended = crate::journal::confirm_spawned(
             &env.project_dir,
-            child_spawned_record(&agent_id, &version, inv.model.as_deref(), pid),
+            child_spawned_record(
+                &agent_id,
+                &version,
+                inv.model.as_deref(),
+                pid,
+                endpoint.as_ref(),
+            ),
         );
         match appended {
             // **After the append, never before.** The owner's whole reason for wanting this instant
@@ -1953,6 +1959,11 @@ pub fn run_spawn_watched(
     // `None` for codex, whose `exec` surface carries no model argument, even when the request or
     // the agent type named one.
     contract.child.model = inv.model.clone();
+    // Where an endpoint node's requests went, beside the model that went there.
+    contract.child.provider = endpoint.as_ref().map(|e| e.provider.clone());
+    contract.child.route = endpoint
+        .as_ref()
+        .map(|_| crate::endpoint::ROUTE_NATIVE.to_string());
     // **The third field sourced from what ran rather than from what was asked for**, joining
     // `harness` and `model` above (`32ec905`). §6.7's `allowed_tools` records *"the compiled,
     // harness-native constraint — or the harness's coarsest equivalent where it has no per-tool
@@ -2302,6 +2313,7 @@ fn child_spawned_record(
     version: &str,
     model: Option<&str>,
     pid: i32,
+    endpoint: Option<&crate::endpoint::Endpoint>,
 ) -> Spawned {
     Spawned {
         agent_id: agent_id.clone(),
@@ -2318,6 +2330,8 @@ fn child_spawned_record(
             // and a wrong identity would be far worse than a missing one.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         },
+        provider: endpoint.map(|e| e.provider.clone()),
+        route: endpoint.map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
     }
 }
 

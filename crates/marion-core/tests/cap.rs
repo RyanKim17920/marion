@@ -43,6 +43,8 @@ fn contract(comp: Completion) -> TaskContract {
             version: "0.146.0".into(),
             // `codex exec` carries no model argument, so a Codex contract names none.
             model: None,
+            provider: None,
+            route: None,
         },
         repo: RepoIdentity {
             git_common_dir: Some("/repo/.git".into()),

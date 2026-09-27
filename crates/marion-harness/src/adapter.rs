@@ -456,6 +456,13 @@ pub trait HarnessAdapter {
         self.spec().endpoint_wires
     }
 
+    /// The provider's model id behind an endpoint node's compiled model — the inverse of whatever
+    /// this adapter's `fields` did to spell it, so a resume can ask the provider for the same model
+    /// again. The identity everywhere the compiled model *is* the provider's id.
+    fn endpoint_model(&self, compiled: &str) -> String {
+        compiled.to_string()
+    }
+
     /// Which channel this launch's MCP declaration travels on — the row's [`spec::McpRoutes`] for
     /// the launch's auth mode, or [`McpRoute::None`] where no declaration was asked for.
     ///
@@ -1231,6 +1238,16 @@ impl HarnessAdapter for OpenCodeAdapter {
                 .then(|| opencode::live_config_document(&bridge_env(spec, ctx))),
         };
         Ok(f)
+    }
+
+    /// `marion/<model>` back to `<model>`: [`Self::model_ref`] put the provider's id under marion's
+    /// own block.
+    fn endpoint_model(&self, compiled: &str) -> String {
+        compiled
+            .strip_prefix(ENDPOINT_PROVIDER_BLOCK)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(compiled)
+            .to_string()
     }
 
     /// **No file at all under `Inherited`** — see [`HarnessAdapter::mcp_route`], which is what keeps

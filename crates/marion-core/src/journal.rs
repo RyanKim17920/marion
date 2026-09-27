@@ -338,6 +338,15 @@ pub struct Spawned {
     /// *cannot-tell*, which is correct for each.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_id: Option<crate::node::StartId>,
+    /// The provider an **endpoint** node's requests went to, by registry id
+    /// (`marion_core::provider`) — `None` on a canned or live node. Additive: skipped when absent,
+    /// so every record without one is byte-identical to what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// How an endpoint node's requests reached [`Self::provider`]: `native` where the provider
+    /// serves the harness's own wire. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -630,6 +639,8 @@ mod tests {
                 model: Some("gpt-5.4".into()),
                 pid: Some(4242),
                 start_id: None,
+                provider: None,
+                route: None,
             }),
             RecordKind::SpawnAborted(SpawnAborted {
                 agent_id: AgentId("a-1".into()),
@@ -798,6 +809,8 @@ mod tests {
             model: None,
             pid: Some(4242),
             start_id: None,
+            provider: None,
+            route: None,
         };
         let line = serde_json::to_string(&RecordKind::Spawned(without)).unwrap();
         assert_eq!(
@@ -812,6 +825,8 @@ mod tests {
             model: None,
             pid: Some(4242),
             start_id: Some(crate::node::StartId("darwin-p_starttime:ab".into())),
+            provider: None,
+            route: None,
         };
         let line = serde_json::to_string(&RecordKind::Spawned(with.clone())).unwrap();
         assert!(

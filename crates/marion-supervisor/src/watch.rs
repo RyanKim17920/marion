@@ -363,6 +363,8 @@ mod tests {
                     model: None,
                     pid: Some(4242),
                     start_id: None,
+                    provider: None,
+                    route: None,
                 }),
             ),
         );

@@ -234,6 +234,15 @@ pub struct ChildRef {
     /// this field existed still deserializes, with `None` meaning exactly what it means today.
     #[serde(default)]
     pub model: Option<String>,
+    /// The provider an **endpoint** node's requests went to, by registry id
+    /// (`marion_core::provider`) — `None` on a canned or live node. Additive: skipped when absent,
+    /// so every record without one is byte-identical to what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// How an endpoint node's requests reached [`Self::provider`]: `native` where the provider
+    /// serves the harness's own wire. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the

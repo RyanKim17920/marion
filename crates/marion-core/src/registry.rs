@@ -78,6 +78,11 @@ pub struct ReplayedNode {
     /// existed and for a platform that cannot read one; both mean the same thing to a reader, which
     /// is that a live pid proves nothing about this node.
     pub start_id: Option<crate::node::StartId>,
+    /// The provider and route the last `Spawned` recorded — an endpoint node's, `None` on a canned
+    /// or live one. A resume re-resolves the provider from this rather than from the agent type,
+    /// which may have changed since.
+    pub provider: Option<String>,
+    pub route: Option<String>,
     /// The harness's own name for this node's conversation, from the last [`SessionObserved`]
     /// the journal carries — the handle a resume hands back to the harness. `None` is honest and
     /// common: no producer has written the record yet, the harness's first frame never arrived, or
@@ -151,6 +156,8 @@ impl ReplayedNode {
             model: None,
             pid: None,
             start_id: None,
+            provider: None,
+            route: None,
             harness_session: None,
             harness_pane: false,
             launch_workspace: None,
@@ -356,6 +363,8 @@ impl ReplayedNode {
         self.model = s.model;
         self.pid = s.pid;
         self.start_id = s.start_id;
+        self.provider = s.provider;
+        self.route = s.route;
         if self.spawn_generation > 1 {
             self.state = NodeState::Spawning;
             self.exit = None;
@@ -756,6 +765,8 @@ mod tests {
                 model: None,
                 pid: Some(11),
                 start_id: None,
+                provider: None,
+                route: None,
             })),
             next(RecordKind::SpawnIntent(SpawnIntent {
                 agent_id: id("child"),
@@ -773,6 +784,8 @@ mod tests {
                 model: None,
                 pid: Some(12),
                 start_id: None,
+                provider: None,
+                route: None,
             })),
             next(RecordKind::StateChanged(StateChanged {
                 agent_id: id("child"),
@@ -1136,6 +1149,8 @@ mod tests {
                 model: Some("opus".into()),
                 pid: Some(99),
                 start_id: Some(new_start.clone()),
+                provider: None,
+                route: None,
             }),
         )]));
 
@@ -1367,6 +1382,8 @@ mod tests {
                     model: None,
                     pid: Some(1),
                     start_id: None,
+                    provider: None,
+                    route: None,
                 }),
             ),
             at(
@@ -1443,6 +1460,8 @@ mod tests {
                 model: None,
                 pid: None,
                 start_id: None,
+                provider: None,
+                route: None,
             }),
         )];
         let r = replay(&bytes(&j));
@@ -1877,6 +1896,8 @@ mod tests {
             model: None,
             pid: Some(4242),
             start_id: None,
+            provider: None,
+            route: None,
         });
         let mut bytes = Vec::new();
         for (seq, kind) in [intent(), spawned, observed].into_iter().enumerate() {

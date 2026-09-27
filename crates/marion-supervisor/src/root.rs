@@ -357,9 +357,9 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
-    /// An endpoint root's stored key, so what the root writes is redacted before it is kept.
-    /// `None` on a canned or live root, which presents no key of the user's.
-    pub endpoint_key: Option<crate::credentials::Secret>,
+    /// An endpoint root's resolution: its provider for the journal, its key so what the root
+    /// writes is redacted before it is kept. `None` on a canned or live root.
+    pub endpoint: Option<crate::endpoint::Endpoint>,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -884,7 +884,7 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
-        endpoint_key: endpoint.and_then(|e| e.key),
+        endpoint,
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
@@ -1866,6 +1866,11 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
             // resolves to an honest `cannot-tell`.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         }),
+        provider: node.endpoint.as_ref().map(|e| e.provider.clone()),
+        route: node
+            .endpoint
+            .as_ref()
+            .map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
     }
 }
 
@@ -2067,7 +2072,7 @@ fn launch_only_generation(
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     let redact = |bytes: &[u8]| {
         let text = String::from_utf8_lossy(bytes).into_owned();
-        match &node.endpoint_key {
+        match node.endpoint.as_ref().and_then(|e| e.key.as_ref()) {
             Some(key) => crate::endpoint::redact(&text, key.expose()),
             None => text,
         }

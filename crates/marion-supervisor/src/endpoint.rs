@@ -185,6 +185,23 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     launch.provider = Some(ep.provider.clone());
 }
 
+/// The model a resumed node asks for: its journaled provider back in front of the provider's model
+/// id, so the relaunch re-resolves that provider — and re-reads its key — rather than running canned
+/// or live under a provider's model id. A node with no provider asks for its model as recorded.
+pub fn resume_model(
+    model: Option<&str>,
+    provider: Option<&str>,
+    agent_type: &AgentType,
+) -> Option<String> {
+    let adapter =
+        marion_harness::adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref());
+    match (model, provider, adapter) {
+        (Some(m), Some(p), Ok(a)) => Some(format!("{p}:{}", a.endpoint_model(m))),
+        (Some(m), Some(p), Err(_)) => Some(format!("{p}:{m}")),
+        (m, _, _) => m.map(str::to_string),
+    }
+}
+
 /// `text` with every occurrence of `key` replaced by `***` — applied to what an endpoint node
 /// wrote before it is kept anywhere. Keys shorter than eight characters are not searched for:
 /// replacing a short string would mangle ordinary output and such a key protects nothing.
@@ -418,6 +435,48 @@ mod tests {
         assert_eq!(
             launch.extra.tree_base_url.as_deref(),
             Some("http://127.0.0.1:9/v1")
+        );
+    }
+
+    /// **A resumed endpoint node re-resolves its provider**: the model it re-requests carries the
+    /// journaled provider as its prefix, with the adapter's own spelling undone.
+    #[test]
+    fn a_resumed_endpoint_node_asks_for_its_provider_and_model_again() {
+        let opencode = ty(Harness::OpenCode, None, None);
+        assert_eq!(
+            resume_model(
+                Some("marion/anthropic/claude-sonnet-4"),
+                Some("openrouter"),
+                &opencode
+            )
+            .as_deref(),
+            Some("openrouter:anthropic/claude-sonnet-4")
+        );
+        let codex = ty(Harness::Codex, None, None);
+        assert_eq!(
+            resume_model(Some("gpt-5.1-codex"), Some("openai"), &codex).as_deref(),
+            Some("openai:gpt-5.1-codex")
+        );
+        assert_eq!(
+            resume_model(Some("marion/canned-1"), None, &opencode).as_deref(),
+            Some("marion/canned-1"),
+            "a canned node resumes exactly as before"
+        );
+        // And the prefix round-trips through the resolver to the same provider and model.
+        let reg = Registry::seed();
+        let store = MemStore::with("openrouter", "sk-or-test-key");
+        let ep = resolve_endpoint(
+            Some("openrouter:anthropic/claude-sonnet-4"),
+            &opencode,
+            CHAT,
+            &reg,
+            &store,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (ep.provider.as_str(), ep.model.as_str()),
+            ("openrouter", "anthropic/claude-sonnet-4")
         );
     }
 

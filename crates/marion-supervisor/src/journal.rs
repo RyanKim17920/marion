@@ -467,6 +467,8 @@ mod tests {
                 model: None,
                 pid: Some(1),
                 start_id: None,
+                provider: None,
+                route: None,
             }))
             .unwrap();
             j.append(intent("child", Some("root"))).unwrap();
@@ -620,6 +622,8 @@ mod tests {
                 model: None,
                 pid: Some(std::process::id() as i32),
                 start_id: None,
+                provider: None,
+                route: None,
             },
         )
         .expect("the confirmation lands");
