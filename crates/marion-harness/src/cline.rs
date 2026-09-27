@@ -103,17 +103,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: DIR_ENV,
             val: Val::Under(CONFIG_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: DATA_DIR_ENV,
             val: Val::Under(DATA_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Both modes: the one file cline reads from a path its own variable names.
         Env {

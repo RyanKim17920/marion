@@ -102,32 +102,32 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_BASE_URL_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_TYPE_ENV,
             val: Val::Lit(PROVIDER_TYPE),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_WIRE_API_ENV,
             val: Val::Lit(WIRE_API),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: OFFLINE_ENV,
             val: Val::Lit("true"),
-            when: When::Canned,
+            when: When::Overlay,
         },
     ],
     stream: Some(&STREAM),

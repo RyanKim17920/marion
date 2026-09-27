@@ -59,7 +59,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: CLI_HOME_ENV,
             val: Val::Under(""),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: SYSTEM_SETTINGS_PATH_ENV,
@@ -76,19 +76,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: FORCE_FILE_STORAGE_ENV,
             val: Val::Lit("true"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Gated on the mode as well as on the value: a live spec handed an endpoint or a key gets
         // neither pushed, rather than an overlay that quietly outranks the operator's own resolution.
         Env {
             key: BASE_URL_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
     ],
     stream: Some(&STREAM),

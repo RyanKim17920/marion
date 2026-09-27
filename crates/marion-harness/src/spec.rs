@@ -535,8 +535,8 @@ pub enum Arg {
     /// one; nothing where it does not. A shape whose argv has no `Resume` slot, or a row whose
     /// `resume` is `None`, **refuses** a launch that asks for one.
     Resume,
-    /// `<flag> <config_dir>/<child>` **under [`When::Canned`] only** — an isolation flag, the argv
-    /// counterpart of an [`Env`] row whose `val` is [`Val::Under`] and whose `when` is `Canned`.
+    /// `<flag> <config_dir>/<child>` **under [`When::Overlay`] only** — an isolation flag, the argv
+    /// counterpart of an [`Env`] row whose `val` is [`Val::Under`] and whose `when` is `Overlay`.
     /// cline's `--config`/`--data-dir`, which s27 measured as load-bearing *beside* the relocation
     /// variables (flags alone leak `~/.cline/data/db/sessions.db`; variables alone fork a hub
     /// daemon), and which a live node must not carry: pointing them at marion's directory is what
@@ -576,9 +576,9 @@ pub enum Val {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum When {
     Always,
-    /// Only under [`Auth::Canned`] — the isolation and the provider overlay, which is what live
-    /// mode removes (§6.4).
-    Canned,
+    /// Only where marion overlays the provider ([`Auth::overlays`]: canned or endpoint) — the
+    /// isolation and the provider overlay, which is what live mode removes (§6.4).
+    Overlay,
     /// Only when the field carries a value. Claude Code blanks `ANTHROPIC_API_KEY` **beside** a
     /// token, and only beside one.
     Present(Field),
@@ -700,7 +700,7 @@ pub fn render_env(rows: &[Env], f: &Fields) -> Vec<(String, String)> {
 fn env_applies(when: When, f: &Fields) -> bool {
     match when {
         When::Always => true,
-        When::Canned => f.auth == Auth::Canned,
+        When::Overlay => f.auth.overlays(),
         When::Present(field) => f.value(field).is_some(),
     }
 }
@@ -781,9 +781,9 @@ fn arg_each_eq(flag: &str, field: Field, spec: &HarnessSpec, f: &Fields) -> Vec<
         .collect()
 }
 
-/// [`Arg::Isolation`]: the isolation flag, under [`Auth::Canned`] alone.
+/// [`Arg::Isolation`]: the isolation flag, where marion overlays the provider alone.
 fn arg_isolation(flag: &str, child: &str, f: &Fields) -> Vec<String> {
-    if f.auth != Auth::Canned {
+    if !f.auth.overlays() {
         return Vec::new();
     }
     let path = f.config_dir.join(child).to_string_lossy().into_owned();

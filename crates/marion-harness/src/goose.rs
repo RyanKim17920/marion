@@ -79,12 +79,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_ENV,
             val: Val::Lit(PROVIDER),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Present or absent: a live launch that names no model leaves the operator's own.
         Env {
@@ -95,18 +95,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOST_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Together with the host: marion's `…/v1` base plus this is `/v1/chat/completions`.
         Env {
             key: BASE_PATH_ENV,
             val: Val::Lit(BASE_PATH),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated.
         Env {

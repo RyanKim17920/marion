@@ -18,6 +18,14 @@ pub enum Auth {
     /// **absence** of three overlays rather than the presence of a credential store — marion pushes
     /// no key, overrides no base URL, and leaves the harness's own resolution alone.
     Inherited,
+    /// The node talks to a real provider endpoint with a key the **user** stored through `marion
+    /// login` — the same overlays as [`Auth::Canned`] (isolation, base URL, credential), pointed
+    /// somewhere real.
+    ///
+    /// **Per node, never supervisor-wide.** A launch resolves to it when its agent type or model
+    /// names a provider; the supervisor itself still runs canned or inherited, and the bridge a
+    /// node starts is told that mode, never this one ([`Auth::from_wire`] refuses `"endpoint"`).
+    Endpoint,
 }
 
 impl Auth {
@@ -29,7 +37,18 @@ impl Auth {
         match self {
             Auth::Canned => "canned",
             Auth::Inherited => "inherited",
+            // Spelled so a stray declaration is legible, and refused by `from_wire`: no bridge or
+            // supervisor runs in endpoint mode.
+            Auth::Endpoint => "endpoint",
         }
+    }
+
+    /// Whether marion **overlays** this node's provider: its own config dir as the harness's
+    /// isolation, and a base URL and credential of marion's choosing. True of canned and endpoint
+    /// alike — they differ in where the overlay points, never in what it replaces — and false of
+    /// live mode, which is the removal of every overlay.
+    pub const fn overlays(self) -> bool {
+        matches!(self, Auth::Canned | Auth::Endpoint)
     }
 
     /// The inverse, for the bridge reading the declaration marion wrote.
@@ -43,6 +62,7 @@ impl Auth {
         match s.trim() {
             "canned" => Some(Auth::Canned),
             "inherited" => Some(Auth::Inherited),
+            // Endpoint is per node; no process is ever told to run the whole tree in it.
             _ => None,
         }
     }
@@ -103,6 +123,17 @@ fn has_status_401(lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_overlays_like_canned_and_is_never_a_wire_mode() {
+        assert!(Auth::Canned.overlays());
+        assert!(Auth::Endpoint.overlays());
+        assert!(!Auth::Inherited.overlays());
+        assert_eq!(Auth::from_wire(Auth::Endpoint.as_wire()), None);
+        for a in [Auth::Canned, Auth::Inherited] {
+            assert_eq!(Auth::from_wire(a.as_wire()), Some(a));
+        }
+    }
 
     #[test]
     fn the_auth_failure_line_is_found_behind_a_banner_and_ahead_of_a_trace() {

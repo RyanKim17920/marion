@@ -100,27 +100,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: "HOME",
             val: Val::Under(""),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_CONFIG_HOME",
             val: Val::Under(XDG_CONFIG_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_DATA_HOME",
             val: Val::Under("data"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_CACHE_HOME",
             val: Val::Under("cache"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_STATE_HOME",
             val: Val::Under("state"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "OPENCODE_DISABLE_CLAUDE_CODE",

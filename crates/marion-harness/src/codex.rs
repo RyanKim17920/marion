@@ -114,7 +114,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[Env {
         key: "CODEX_HOME",
         val: Val::Under(""),
-        when: When::Canned,
+        when: When::Overlay,
     }],
     stream: Some(&STREAM),
     // `write` → `sandbox:workspace-write`, §3.1's *"coarsest equivalent"* named for this exact
