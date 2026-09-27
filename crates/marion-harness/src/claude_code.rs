@@ -18,6 +18,7 @@ pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
     READY_FILE_ENV,
 };
+use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
@@ -252,6 +253,28 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         note: "Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.",
     }],
+    // Measured on 2.1.283 (2026-09-27): a fresh `CLAUDE_CONFIG_DIR` answers `auth status --json`
+    // with `"loggedIn": false` while the default directory answers `true`, so the login is per
+    // directory. The binary reads `CLAUDE_SECURESTORAGE_CONFIG_DIR` first when it is defined,
+    // which is why a profiled launch removes it.
+    profile: Some(ProfileCarrier {
+        env: "CLAUDE_CONFIG_DIR",
+        clear: &["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
+        status: ProfileStatus::JsonBool {
+            argv: &["auth", "status", "--json"],
+            key: "loggedIn",
+        },
+        login_hint: "auth login",
+        shared: &[
+            "settings.json",
+            "CLAUDE.md",
+            "skills",
+            "agents",
+            "commands",
+            "keybindings.json",
+        ],
+        note: "claude 2.1.283 `auth status --json` on a fresh CLAUDE_CONFIG_DIR: loggedIn false",
+    }),
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

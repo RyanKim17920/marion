@@ -253,6 +253,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    copilot anthropic cell",
         },
     ],
+    // No carrier: measured on 1.0.83 (2026-09-27), a fresh empty `COPILOT_HOME` still reached
+    // the authenticated model check (`Model "…" is not available`), so the GitHub login is held
+    // outside the home and a directory cannot select an account.
+    profile: None,
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

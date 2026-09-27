@@ -134,6 +134,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Not measured: S34 ran pi only against marion's canned models.json provider, and an endpoint
     // recipe (a models.json naming the operator's provider and key) was never tried.
     wires: &[],
+    // No carrier: set by the profiles unification once its carrier is stated.
+    profile: None,
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {

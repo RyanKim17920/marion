@@ -948,10 +948,7 @@ fn launch_only_child(
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
 ) -> Result<ChildRun, SpawnError> {
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd);
+    let mut cmd = inv.command();
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
@@ -1044,10 +1041,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         session,
         turns,
     } = child;
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd);
+    let mut cmd = inv.command();
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
     // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
     // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
@@ -2919,6 +2913,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             model: None,
             session_mode: None,
+            env_remove: vec![],
         };
         let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
         let run = launch_only_child(

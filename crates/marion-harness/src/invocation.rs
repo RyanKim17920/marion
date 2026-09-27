@@ -13,6 +13,9 @@ pub struct Invocation {
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// Variables to **remove** from the inherited environment — a profile's `clear` list
+    /// ([`crate::profile::ProfileCarrier::clear`]). Empty on every launch without a profile.
+    pub env_remove: Vec<String>,
     pub cwd: PathBuf,
     /// The model this invocation actually carries, in the harness's own spelling — or `None` where
     /// the harness takes none at all.
@@ -28,4 +31,19 @@ pub struct Invocation {
     /// offer it — or `None`, the agent's own default. Always `None` off ACP, whose other harnesses
     /// have no session to set one in.
     pub session_mode: Option<String>,
+}
+
+impl Invocation {
+    /// A process builder for this invocation: program, argv, the environment layered on marion's
+    /// own, the removals, the cwd. The one place a spawn site gets the removals from.
+    pub fn command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.program);
+        cmd.args(&self.args)
+            .envs(self.env.iter().cloned())
+            .current_dir(&self.cwd);
+        for key in &self.env_remove {
+            cmd.env_remove(key);
+        }
+        cmd
+    }
 }

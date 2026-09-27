@@ -153,6 +153,9 @@ pub struct Extras {
     pub tree_base_url: Option<String>,
     /// The header an [`Auth::Endpoint`] node's provider reads its key from; `None` is Bearer.
     pub key_header: Option<marion_core::provider::KeyHeader>,
+    /// The profile directory the launch selected, exactly as `profiles.toml` stores it. Read by
+    /// every row through its [`crate::profile::ProfileCarrier`], under live auth only.
+    pub profile_dir: Option<PathBuf>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -772,6 +775,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         output_schema: spec.extra.output_schema.clone(),
         output_last_message: spec.extra.output_last_message.clone(),
         resume: spec.resume.clone(),
+        profile_dir: spec.extra.profile_dir.clone(),
         ..spec::Fields::default()
     }
 }
@@ -2470,6 +2474,7 @@ mod tests {
             program: "x".into(),
             args: vec![],
             env: vec![],
+            env_remove: vec![],
             cwd: "/wt".into(),
             model: None,
             session_mode: None,
@@ -2783,6 +2788,7 @@ mod tests {
                 .map(String::from)
                 .to_vec(),
                 env: vec![("CODEX_HOME".into(), "/state/x/config".into())],
+                env_remove: vec![],
                 cwd: "/wt".into(),
                 model: None,
                 session_mode: None,
@@ -3675,6 +3681,7 @@ mod tests {
                     ("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into()),
                     ("DISABLE_AUTOUPDATER".into(), "1".into()),
                 ],
+                env_remove: vec![],
                 cwd: "/repo".into(),
                 model: Some("haiku".into()),
                 session_mode: None,

@@ -192,6 +192,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions: the generated `providers.json` is `openai-compatible`.",
     }],
+    // No carrier: cline's credential location per directory is unmeasured.
+    profile: None,
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

@@ -55,6 +55,7 @@
 //! stream and its exit.
 
 use std::path::PathBuf;
+#[cfg(test)]
 use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
@@ -2071,10 +2072,7 @@ fn launch_only_generation(
     session: &crate::session_watch::SessionWatch<'_>,
     adapter: &dyn HarnessAdapter,
 ) -> Result<RootOutcome, RootError> {
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd);
+    let mut cmd = inv.command();
     // The one live seam this path has, and the session watch is its one reader: the first frame
     // names the session, and a root lost mid-run never reaches the capture below.
     let on_line = |line: &str| session.observe_line(line);
@@ -2380,10 +2378,8 @@ fn launch_terminal(
     )?);
 
     let inv = &node.invocation;
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd)
+    let mut cmd = inv.command();
+    cmd
         // The harness lays out for the terminal it thinks it is on, and the one it is on is
         // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
         // about the pty this launcher just opened, which no adapter can know.
@@ -2573,10 +2569,7 @@ fn launch_duplex(
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let inv = &node.invocation;
     let out = duplex::run_duplex(
-        SysCommand::new(&inv.program)
-            .args(&inv.args)
-            .envs(inv.env.iter().cloned())
-            .current_dir(&inv.cwd),
+        &mut inv.command(),
         &DuplexSpec {
             ready_file: &ready_file,
             prompt: &node.prompt,

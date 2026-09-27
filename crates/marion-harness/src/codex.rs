@@ -19,6 +19,7 @@ use crate::grammar::{
     TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
@@ -207,6 +208,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "OpenAI Responses alone: `wire_api = \"chat\"` was removed from codex, and the generated provider names `responses`.",
     }],
+    // Measured on 0.155.1 (2026-09-27): a fresh `CODEX_HOME` answers `login status` with
+    // `Not logged in` (exit 1). `auth.json` lives in that directory and is never shared.
+    profile: Some(ProfileCarrier {
+        env: "CODEX_HOME",
+        clear: &[],
+        status: ProfileStatus::TextAbsent {
+            argv: &["login", "status"],
+            text: "Not logged in",
+        },
+        login_hint: "login",
+        shared: &["config.toml", "AGENTS.md"],
+        note: "codex 0.155.1 `login status` on a fresh CODEX_HOME: Not logged in",
+    }),
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
