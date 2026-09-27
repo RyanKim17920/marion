@@ -34,6 +34,29 @@ pub use script::{
 };
 pub use server::{CannedServer, Config};
 
+/// What every canned completion says it spent, on each wire in that wire's own shape: 100 prompt
+/// tokens of which 10 were cache reads, 20 completion tokens of which 5 were reasoning. Non-zero
+/// and distinct per counter, so a test reading a node's recorded usage can tell each counter
+/// arrived where it belongs and that a run of `n` completions recorded `n` times these — a zero
+/// would pass either way.
+pub const USAGE: CannedUsage = CannedUsage {
+    input: 100,
+    cached: 10,
+    output: 20,
+    reasoning: 5,
+};
+
+/// The counters one canned completion reports. See [`USAGE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CannedUsage {
+    /// Prompt tokens, cache reads included, as the OpenAI wires count them.
+    pub input: u64,
+    pub cached: u64,
+    /// Completion tokens, reasoning included.
+    pub output: u64,
+    pub reasoning: u64,
+}
+
 /// What a request is asking for, decided by shape alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {

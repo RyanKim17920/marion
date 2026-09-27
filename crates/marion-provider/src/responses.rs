@@ -8,6 +8,7 @@
 //! canned scripts do not have to synthesise JavaScript** — a plain `function_call` item carrying
 //! `namespace: "mcp__marion"` is executed end to end, which is what `report_call` emits.
 
+use crate::USAGE;
 use serde_json::{Value, json};
 
 fn sse(data: &Value) -> String {
@@ -18,28 +19,7 @@ fn sse(data: &Value) -> String {
     format!("event: {ty}\ndata: {data}\n\n")
 }
 
-/// What every canned response says it spent, in the Responses API's own shape: 100 prompt tokens of
-/// which 10 were cache reads, 20 completion tokens of which 5 were reasoning. Non-zero and distinct
-/// per counter, so a test reading a node's recorded usage can tell each counter arrived where it
-/// belongs and that a run of `n` responses recorded `n` times these — a zero would pass either way.
-pub const USAGE: CannedUsage = CannedUsage {
-    input: 100,
-    cached: 10,
-    output: 20,
-    reasoning: 5,
-};
-
-/// The counters one canned response reports. See [`USAGE`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CannedUsage {
-    /// Prompt tokens, cache reads included, as the Responses API counts them.
-    pub input: u64,
-    pub cached: u64,
-    /// Completion tokens, reasoning included.
-    pub output: u64,
-    pub reasoning: u64,
-}
-
+/// [`crate::USAGE`] in the Responses API's own shape.
 fn usage() -> Value {
     json!({
         "input_tokens": USAGE.input,
