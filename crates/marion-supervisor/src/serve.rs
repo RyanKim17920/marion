@@ -144,10 +144,6 @@ const HEARTBEAT: Duration = Duration::from_secs(1);
 /// configure it; `Server::start` uses it rather than making zero the accidental default.
 pub const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(300);
 
-/// How long a connection's writer waits on its queue before re-checking whether the connection has
-/// departed. See the writer loop for why it cannot simply wait for the channel to close.
-const WRITER_POLL: Duration = Duration::from_millis(20);
-
 /// A connection's identity, for the whole life of the supervisor. Monotonic and never reused, so a
 /// log naming a connection names one connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -437,6 +433,11 @@ pub struct Outbound {
 enum OutboundItem {
     Frame(Vec<u8>),
     Flow(OutboundFlow),
+    /// Carries nothing: queued once, by the first departure, so a writer blocked on an empty queue
+    /// wakes and sees the connection is over. The queue cannot close to say so — every subscription
+    /// holding an [`Outbound`] clone keeps a sender alive — and polling for the departure cost each
+    /// idle connection fifty wakeups a second.
+    Wake,
 }
 
 type OutboundFlow = Box<dyn FnMut() -> Option<Frame> + Send>;
@@ -628,12 +629,15 @@ impl Outbound {
 
     fn record_departure(&self, why: Departure) -> bool {
         let mut slot = lock(&self.departed);
-        if slot.is_none() {
-            *slot = Some(why);
-            true
-        } else {
-            false
+        if slot.is_some() {
+            return false;
         }
+        *slot = Some(why);
+        drop(slot);
+        // A full queue needs no wake: the writer is busy, and checks the departure after every
+        // item it takes.
+        let _ = self.tx.try_send(OutboundItem::Wake);
+        true
     }
 }
 
@@ -642,6 +646,7 @@ fn prepare_outbound_item(
     item: OutboundItem,
 ) -> Option<(Vec<u8>, Option<OutboundFlow>)> {
     match item {
+        OutboundItem::Wake => None,
         OutboundItem::Frame(frame) => Some((frame, None)),
         OutboundItem::Flow(_flow) if out.departed().is_some() => None,
         OutboundItem::Flow(mut flow) => {
@@ -1443,6 +1448,16 @@ impl Drop for PreparedClaimedConn {
     }
 }
 
+/// Drain one connection's queue onto its socket until the connection is over.
+///
+/// **Blocks on the queue, and is woken by the departure.** The queue never closes while a
+/// subscription holds an [`Outbound`] clone, so the end is the departure: [`Outbound::depart`] and
+/// [`Outbound::fail`] queue an [`OutboundItem::Wake`] behind whatever is already waiting. Once the
+/// connection has departed the writer finishes what is queued — a `session/quit` answer queued
+/// before its own `QuitCompleted` departure still goes out — and returns when the queue is empty,
+/// which is what the old 20 ms `recv_timeout` loop did, without its fifty idle wakeups a second.
+/// Nothing is queued after a departure: `send`, `start_flow` and a flow's requeue all refuse once
+/// it is recorded.
 fn run_conn_writer(
     mut write_half: std::os::unix::net::UnixStream,
     rx: std::sync::mpsc::Receiver<OutboundItem>,
@@ -1450,38 +1465,39 @@ fn run_conn_writer(
     frame_write_timeout: Duration,
 ) {
     loop {
-        match rx.recv_timeout(WRITER_POLL) {
-            Ok(item) => {
-                let Some((frame, flow)) = prepare_outbound_item(&out, item) else {
-                    continue;
-                };
-                if let Err(e) =
-                    write_frame_before(&mut write_half, &frame, frame_write_timeout, Instant::now)
-                {
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                    ) {
-                        out.fail(Departure::TooSlow {
-                            queued: OUTBOUND_CAPACITY,
-                        });
-                    } else {
-                        out.fail(Departure::WriteFailed(e.to_string()));
-                    }
-                    break;
-                }
-                if let Some(flow) = flow
-                    && matches!(requeue_flow(&out, flow), FlowRequeue::Fatal)
-                {
-                    break;
-                }
+        let item = if out.departed().is_some() {
+            match rx.try_recv() {
+                Ok(item) => item,
+                Err(_) => break,
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if out.departed().is_some() {
-                    break;
-                }
+        } else {
+            match rx.recv() {
+                Ok(item) => item,
+                Err(_) => break,
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let Some((frame, flow)) = prepare_outbound_item(&out, item) else {
+            continue;
+        };
+        if let Err(e) =
+            write_frame_before(&mut write_half, &frame, frame_write_timeout, Instant::now)
+        {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
+                out.fail(Departure::TooSlow {
+                    queued: OUTBOUND_CAPACITY,
+                });
+            } else {
+                out.fail(Departure::WriteFailed(e.to_string()));
+            }
+            break;
+        }
+        if let Some(flow) = flow
+            && matches!(requeue_flow(&out, flow), FlowRequeue::Fatal)
+        {
+            break;
         }
     }
 }
@@ -1909,6 +1925,52 @@ mod tests {
             self.exiting.store(true, Ordering::SeqCst);
             true
         }
+    }
+
+    /// **A departure wakes an idle writer**, and the writer still sends what was queued before it —
+    /// a `session/quit` answer is queued ahead of its own `QuitCompleted` departure. The queue never
+    /// closes while a subscription holds a clone, so the departure is the only thing that can.
+    #[test]
+    fn a_departure_wakes_an_idle_writer_after_it_drains_what_was_queued() {
+        let (write_half, peer) = UnixStream::pair().unwrap();
+        let (tx, rx) = sync_channel(OUTBOUND_CAPACITY);
+        let out = Outbound {
+            conn: ConnId(9),
+            peer: Peer::Unknown,
+            tx,
+            departed: Arc::new(Mutex::new(None)),
+            shutdown: None,
+        };
+        let subscription = out.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            run_conn_writer(write_half, rx, out, Duration::from_secs(5));
+            let _ = done_tx.send(());
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            done_rx.try_recv().is_err(),
+            "the writer waits for as long as the connection lives"
+        );
+        let answer = Frame::Notification(Notification::new(Event::NodeState {
+            agent_id: marion_core::contract::AgentId("n".into()),
+            state: marion_core::node::NodeState::Running,
+            reap_state: marion_core::node::ReapState::Live,
+            ts: marion_core::encoding::SystemTime::from_unix_millis(0),
+        }));
+        assert!(subscription.send(&answer));
+        subscription.depart(Departure::QuitCompleted);
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the departure did not wake the writer");
+        writer.join().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(peer), &mut line).unwrap();
+        assert_eq!(
+            line,
+            answer.to_line(),
+            "what was queued before the departure went out"
+        );
     }
 
     /// A heartbeat so long that only a wake can explain a pass inside a test's bound.
@@ -2510,9 +2572,8 @@ mod tests {
         // returned true has already queued the flow, so the writer's catch, the shutdown, the
         // writer's exit and `gone` are all work this connection's worker must finish before it
         // returns, and joining it is the release barrier. Timing that chain instead would time the
-        // scheduler — the writer only notices a departure on its next `WRITER_POLL` tick, and under
-        // load the wakeups behind that 20ms floor have outlasted a one-second bound, which read as
-        // a leak the code had not committed.
+        // scheduler — under load the wakeups behind the writer's old 20 ms departure poll outlasted
+        // a one-second bound, which read as a leak the code had not committed.
         let mut tail = String::new();
         assert!(
             matches!(reader.read_line(&mut tail), Ok(0)),
