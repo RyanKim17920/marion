@@ -85,17 +85,17 @@ Everything below is dated. Re-verify before relying on any harness fact.
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
 dated audit under "Status convention" names the test behind each.
 
-**Harnesses.** Nine rows in `Harness::ALL` (`marion-core/src/harness.rs`): eight terminal
-harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen` — as
+**Harnesses.** Ten rows in `Harness::ALL` (`marion-core/src/harness.rs`): nine terminal
+harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `pi` — as
 `HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
-one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `cross_product` 57
+one runs as a child and a root through `run_spawn` (`harness_matrix` 9 cells; `cross_product` 64
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269, 2.1.280 and 2.1.283; codex 0.146.0/0.146.1/0.147.0/0.155.1;
 gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
-qwen 0.23.0.
+qwen 0.23.0; pi 0.80.2.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
 `harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
@@ -113,9 +113,9 @@ unit tests, `mcp_conformance.rs`, and `tests/user_agent_types.rs` (a real codex 
 relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
 mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares
 it beside the node's identity, so `spawn`/`wait`/`status` from the operator's own session are
-authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`.
+authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`, `pi`.
 Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
-row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
+row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen, pi);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
 2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
@@ -1430,6 +1430,57 @@ nothing like gemini's:
 Not measured, and so not claimed: the file-path form of `--mcp-config`, a bare positional prompt in
 place of the deprecated `-p`, the interactive TUI's reading of `--mcp-config` (the native lane ships
 disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices.
+
+**pi runs as a marion child, root and native lane at $0.00. It is the ninth binary and the first
+with no MCP client.** *(pi 0.80.2, npm `@earendil-works/pi-coding-agent` under Homebrew's node,
+macOS darwin 25.5.0, measured 2026-09-27 against the canned provider; fixture
+`tests/fixtures/s34-pi/`, drivers `spikes/s34/pi_{run,rpc,tui}.py`. Witnesses: `harness_matrix`'s
+ninth cell, `cross_product` `zzm`–`zzs` (a pi child of claude, codex and opencode, and a pi root
+over claude, codex, opencode and itself, all green at `RUST_TEST_THREADS=4`), and the pi lane of
+`native_facade_e2e`.)* The facts the row rests on:
+
+- **The declaration is an extension, not an MCP config.** pi's README says "No MCP". `-e <file>`
+  loads an extension for one run, and `--no-extensions` still honours it, so nothing goes into
+  `~/.pi`. marion's declaration is `crates/marion-harness/src/pi_extension.js`: a stdio MCP client
+  for one server, rendered around the node's bridge and written under marion's own directory. It
+  is `LiveDeclaration::ArgvDocument { flag: "-e" }`, the shape claude's `--mcp-config` has, and
+  no supervisor code names pi. The factory is awaited before startup, so marion's tools are in
+  `tools[]` on request one. A bridge that cannot start fails the extension load at exit 1.
+- **One list on both axes, and no approval surface.** `--tools` is an allowlist over built-in and
+  extension tools alike. An empty list offers nothing, and unknown names are dropped silently. pi
+  never asks to run a tool. `read` is `read`, `write` is `write` plus `edit`, and the record is
+  `tools:<name>`. The plain `pi` type carries `[read, write]` and `pi-orchestrator` carries
+  nothing.
+- **The stream.** The `session` header's `id` comes first. A call is `tool_execution_start
+  {toolCallId, toolName, args}`, and its verdict is `tool_execution_end.isError`, paired by
+  `toolCallId`. An MCP `isError` reaches the stream because the extension throws it. Usage sits
+  on each assistant `message_end` (`input` net of cache reads) and is summed.
+- **⚠ Every failure exits 0.** A provider fault is an assistant `stopReason: "error"` with
+  `errorMessage`. Only the `agent_end` whose `willRetry` is false is a claim: a 500 is retried 3
+  times over ~15 s under `willRetry: true`, and a recovered retry leaves no claim. A 401 is not
+  retried.
+- **⚠ stdin is read to EOF when it is not a TTY.** A launch with an open, silent stdin hangs, and
+  the supervisor's `Stdio::null()` is what lets pi start.
+- **Isolation that keeps the login.** A canned node relocates `PI_CODING_AGENT_DIR`, which holds
+  `auth.json`, `models.json`, settings, sessions and extensions, to a `models.json` naming marion's
+  endpoint, and adds `--no-extensions --provider marion`. A live node keeps all of that and adds
+  only `-e`, `--tools` and a named `--model`. `PI_SKIP_VERSION_CHECK=1` is the no-update switch;
+  pi never replaces itself.
+- **Resume and delivery.** `--session <id>` continues the session, and an unknown id exits 1, so
+  headless delivery is `Continuation`. The TUI sets DECSET 2004, submits a bracketed paste plus CR
+  byte-exact, is silent when idle and repaints at ≤ 88 ms when busy, so interactive delivery is
+  `bracketed_paste` and the native lane is enabled. A process-group SIGTERM or SIGKILL takes the
+  extension's bridge down with pi.
+- **`--mode rpc` measured, not yet driven.** It is a JSONL command channel whose `steer` folds after
+  the in-flight tool result into the same turn's next request (S31's `MidTurn::Fold`), whose
+  `follow_up` queues a next turn, and whose `abort` ends the next request `stopReason: "aborted"`.
+  A bare `prompt` mid-turn is refused. marion has no generic typed driver for such a channel, so
+  the row stays `LaunchOnly`/`Continuation`.
+
+Not measured, and so not claimed: a `steer` into a running pi node and a pushed child end reaching a
+pi parent through marion, both of which need the Continuation delivery lane that is not on this
+branch; pi's project-trust prompt for a worktree carrying `.pi/` files; the `journal_wiring`,
+`depth_gate` and `launch_only_root` matrices.
 
 **Live-matrix row corrections (2026-09-22, real logins).** Each measured on the operator's existing
 login with the cheapest model the harness offered.
