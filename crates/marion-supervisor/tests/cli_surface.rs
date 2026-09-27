@@ -40,3 +40,37 @@ fn both_binaries_print_their_version_and_exit_zero() {
         }
     }
 }
+
+/// **`marion doctor` is the supervisor's doctor**, with the same arguments. The README and help
+/// both sent people to `marion doctor`, and marion printed its usage text for it. A flag only the
+/// doctor knows proves the forward without probing a single harness.
+#[test]
+fn marion_doctor_forwards_to_the_supervisors_doctor() {
+    let out = run(env!("CARGO_BIN_EXE_marion"), &["doctor", "--no-such-flag"]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("unknown doctor flag `--no-such-flag`"),
+        "the doctor's own refusal, not marion's usage text: {err}"
+    );
+
+    let out = run(env!("CARGO_BIN_EXE_marion"), &["doctor"]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("--capabilities or --adapter"), "{err}");
+}
+
+/// **An unknown command is one line and a failure**, not a screen of usage text: it names what
+/// was typed and where the list of commands is.
+#[test]
+fn an_unknown_command_fails_with_a_one_line_hint() {
+    let out = run(
+        env!("CARGO_BIN_EXE_marion"),
+        &["frobnicate", "--prompt", "x"],
+    );
+    let err = text(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert_eq!(err.trim_end().lines().count(), 1, "{err}");
+    assert!(err.contains("unknown command `frobnicate`"), "{err}");
+    assert!(err.contains("marion --help"), "{err}");
+}

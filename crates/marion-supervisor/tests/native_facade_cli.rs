@@ -225,7 +225,8 @@ fn registered_selectors_refuse_off_a_terminal_while_reserved_and_unknown_names_k
         );
     }
     // `run`/`attach`/`tree`/`mcp` each have their own legacy argument grammar; the unknown name
-    // is the one that exercises the bare legacy usage path byte for byte.
+    // is the one that exercises the legacy parser's own refusal of a word it does not know, byte
+    // for byte — one line naming the word, never a facade error.
     for selector in ["definitely-not-a-facade", "not-a-harness-either"] {
         let output = Command::new(env!("CARGO_BIN_EXE_marion"))
             .arg(selector)
@@ -239,8 +240,12 @@ fn registered_selectors_refuse_off_a_terminal_while_reserved_and_unknown_names_k
             "{selector:?} no longer takes the legacy refusal path; stderr: {stderr}"
         );
         assert_eq!(
-            output.stderr, canonical_help.stdout,
-            "{selector:?} no longer prints byte-exact legacy usage; stderr: {stderr}"
+            stderr,
+            format!(
+                "marion: unknown command `{selector}`; `marion run <agent-type> --prompt <text>` \
+                 runs an agent, and `marion --help` lists every command\n"
+            ),
+            "{selector:?} no longer prints the legacy parser's byte-exact refusal"
         );
         assert!(
             output.stdout.is_empty(),

@@ -48,6 +48,7 @@ fn usage_text() -> String {
          \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
+         \x20      marion doctor <--capabilities|--adapter> [--harness <name>]\n\
          \x20      marion --version\n\
          \n\
          marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
@@ -2417,6 +2418,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("steer") {
         return steer_main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("doctor") {
+        return doctor_main(&argv[1..]);
+    }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
     // the protocol stream and leave the client parsing prose.
@@ -2426,7 +2430,33 @@ fn legacy_main() -> ExitCode {
             None => usage(),
         };
     }
+    // Every verb is matched above and `run` is the one left; any other first word is a typo or a
+    // command marion does not have, and a screen of usage text would bury what went wrong.
+    if let Some(word) = argv.first().filter(|w| *w != "run" && !w.starts_with('-')) {
+        eprintln!(
+            "marion: unknown command `{word}`; `marion run <agent-type> --prompt <text>` runs an \
+             agent, and `marion --help` lists every command"
+        );
+        return ExitCode::from(2);
+    }
     run_main(&argv)
+}
+
+/// `marion doctor …` is `marion-supervisor doctor …`: the supervisor owns the probes, and this
+/// replaces the process with it so its output, exit code and signals are the doctor's own.
+fn doctor_main(args: &[String]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let supervisor = supervisor_binary();
+    let e = std::process::Command::new(&supervisor)
+        .arg("doctor")
+        .args(args)
+        .exec();
+    eprintln!(
+        "marion: cannot run {} doctor: {e}. marion-supervisor is installed with marion and must \
+         sit in the same directory",
+        supervisor.display()
+    );
+    ExitCode::FAILURE
 }
 
 /// The bare verb — `marion [<agent-type> <prompt> …]`, or the picker with no argv at all: start a
