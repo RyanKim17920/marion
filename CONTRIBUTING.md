@@ -81,7 +81,34 @@ Before pushing, run what CI runs:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --lib
+scripts/three-axis.sh
 ```
+
+## The three axes: generality, efficiency, security
+
+Every change is judged on three axes before it lands, and `scripts/three-axis.sh` automates the
+part a syntax tree can answer. It runs `cargo test -p marion-testsupport --test three_axis`,
+which parses every shipped source file and fails on:
+
+- **Generality** — branching on *which* harness outside the row files
+  (`crates/marion-harness/src/<harness>.rs` and the `Harness` enum's own file): a `Harness::X`
+  pattern or comparison, a harness-name string in a conditional, a baked-in agent-type name like
+  `"codex-impl"`, a vendor env var (`ANTHROPIC_*`), a harness-named strategy variant, or a
+  harness's `impl` living outside its row. Do instead: put the behaviour on the row as data, or
+  in an enumerated strategy every row states, with a sweep test over `Harness::ALL`.
+- **Efficiency** — timer-driven waiting in shipped code: `sleep` in a loop, `try_wait`/
+  `try_recv` or a fixed-period `recv_timeout`/`wait_timeout` in a loop, a fixed read timeout, a
+  `yield_now` spin, a `*_POLL`/`*_TICK` constant. Do instead: wait on the event (poll(2)/kqueue,
+  a condvar, a blocking `recv()`, a pipe), and measure wakeups before and after.
+- **Security** — a secret in a `Debug` derive or `Display` impl, a formatting/logging macro,
+  argv, or a credential-bearing file written without `mode(0o600)`; and any test that spells a
+  login or device flow. Do instead: a secret type with a redacting `Debug`, env instead of argv,
+  `OpenOptionsExt::mode(0o600)`, and a BLOCKED report naming the login command for the user.
+
+Known findings live in `checks/{generality,efficiency,security}.allow` as `path:item  reason`.
+The lists are a ratchet: a new finding fails the check, and so does an entry nothing matches any
+more — a fix deletes its line in the same commit. Add an entry only with a reason a reviewer can
+check (a bounded deadline, a verified false positive, or the tracked wave that removes it).
 
 ## Commits
 

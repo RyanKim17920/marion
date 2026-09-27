@@ -223,6 +223,12 @@ pub struct AgentHandshake {
     /// §6.4 forbids marion from making for the operator, and therefore one it must be able to
     /// *name*.
     pub auth_methods: Vec<String>,
+    /// `agentCapabilities.mcpCapabilities`' keys whose value is `true` — the MCP transports this
+    /// agent takes **beyond stdio**, which ACP requires of every agent (`http`, `sse`). Read, not
+    /// tabled: the protocol advertises it, so no refinement row restates it. An advertised `false`
+    /// (S33: `goose acp` sends `sse: false`) is not a transport, and an absent object is none.
+    /// Carried like [`Self::prompt_content_types`] and mapped to no [`Capabilities`] field.
+    pub mcp_transports: BTreeSet<String>,
 }
 
 impl AgentHandshake {
@@ -277,6 +283,16 @@ impl AgentHandshake {
                     ms.iter()
                         .filter_map(|m| m.get("id").and_then(Value::as_str))
                         .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mcp_transports: agent
+                .and_then(|a| a.get("mcpCapabilities"))
+                .and_then(Value::as_object)
+                .map(|o| {
+                    o.iter()
+                        .filter(|(_, on)| on.as_bool() == Some(true))
+                        .map(|(k, _)| k.clone())
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -533,8 +549,39 @@ pub struct Agent {
     /// What this agent was measured to do with a `session/prompt` sent while one is in flight,
     /// overriding the row's [`MidTurn::Queue`]; `None` where it was not measured.
     pub mid_turn: Option<MidTurn>,
+    /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
+    /// which is how a binary behind any command line is recognised as this row
+    /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
+    pub agent_info: &'static str,
+    /// The user-level command that installs it, quoted where the binary is missing.
+    pub install: &'static str,
+    /// How far `session/new` got on the machine that measured it (S33), held to the capture.
+    pub reach: Reach,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
+}
+
+/// How far an agent's `session/new` got when it was measured — without an account marion made,
+/// a login marion ran, or any `authenticate` request.
+///
+/// **A record, not a gate.** The driver never reads it: what a live session offers is read off
+/// the live answer ([`session_select`]), and a refusal arrives in the agent's own words. The row
+/// carries it so the doctor and the docs can say which agents opened a session and which stop at
+/// an account wall, and the sweep test keeps it true against the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// `session/new` answered with a session.
+    Opened {
+        /// Only once the agent was pointed at a provider through its own env (a dummy key, a
+        /// loopback base URL) — on an operator's machine, their own provider configuration.
+        provider: bool,
+        /// The answer advertised a [`MODEL_CATEGORY`] select.
+        model: bool,
+        /// The answer advertised a [`MODE_CATEGORY`] select (a config option or `modes`).
+        mode: bool,
+    },
+    /// `session/new` was refused — an account wall, or a vendor-side refusal.
+    Refused,
 }
 
 /// The channel marion's bridge is declared on for one agent.
@@ -598,6 +645,13 @@ pub const OPENCODE: Agent = Agent {
     // S31 `p0a/acp-opencode-fold` (opencode 1.18.32): the second prompt is folded into the running
     // loop and both responses arrive when it drains.
     mid_turn: Some(MidTurn::Fold),
+    agent_info: "OpenCode",
+    install: "brew install opencode",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S21: initialize, session/new, session/prompt and a real `marion_report` tool call, \
            against opencode 1.17.3. Its canned recipe is inferred from S13 over the same binary, \
            not measured on the `acp` subcommand",
@@ -617,6 +671,9 @@ pub const GEMINI: Agent = Agent {
     declaration: Declaration::Session,
     // No turn has ever run, so nothing mid-turn was measured.
     mid_turn: None,
+    agent_info: "gemini-cli",
+    install: "npm i -g @google/gemini-cli",
+    reach: Reach::Refused,
     note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
            ineligibility). No turn has run, so no tool spelling has been measured",
 };
@@ -636,8 +693,17 @@ pub const CLAUDE_ACP: Agent = Agent {
     // S31 `p0a/acp-claude-acp-fold`, measured on 0.81.0 rather than this row's pinned 0.66.0: the
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
+    agent_info: "@agentclientprotocol/claude-agent-acp",
+    install: "npm i -g @agentclientprotocol/claude-agent-acp",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
-           `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
+           `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220. S33: \
+           0.66.0 still opens a session; 0.81.2 (the registry's current) starts the declared \
+           bridge at session/new",
 };
 
 /// `@agentclientprotocol/codex-acp` — the second ACP Registry shim, over the local `codex`.
@@ -658,9 +724,17 @@ pub const CODEX_ACP: Agent = Agent {
     // S31 `p0a/acp-codex-acp` (1.13.0): the second prompt is steered into the turn and the first
     // is never answered, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    agent_info: "@agentclientprotocol/codex-acp",
+    install: "npm i -g @agentclientprotocol/codex-acp",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
-           `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
-           (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
+           `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. S33: 1.13.1 \
+           opens a session under the same login and starts the declared bridge at session/new. \
+           Install it rather than relying on `npx -y`",
 };
 
 /// `copilot --acp` — GitHub Copilot CLI's own ACP server, measured to a real `report` call (S28).
@@ -682,15 +756,220 @@ pub const COPILOT: Agent = Agent {
     // S31 `p0a/acp-copilot` (1.0.87): the second prompt supersedes the first, which returns an
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    agent_info: "Copilot",
+    install: "npm i -g @github/copilot",
+    reach: Reach::Opened {
+        provider: false,
+        model: false,
+        mode: true,
+    },
     note: "S28: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
-           this version, so a generic launch of it reaches no bridge",
+           this version, so a generic launch of it reaches no bridge (S33 reconfirmed on 1.0.83 \
+           with COPILOT_AUTO_UPDATE=false: the declared server never started)",
+};
+
+/// `kilo acp` — Kilo Code's CLI, an opencode fork, and the one S33 agent that opened a session
+/// with no account and no configuration at all.
+pub const KILO: Agent = Agent {
+    id: "kilo",
+    argv: &["kilo", "acp"],
+    tools: None,
+    // opencode's config document is likely its shape too, and that is exactly an unmeasured claim.
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "Kilo",
+    install: "npm i -g @kilocode/cli",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
+    note: "S33: kilo 7.8.1 opens a session with no account and starts the stdio bridge declared \
+           in session/new; a prompt needs a Kilo login or a provider in its own config, so no \
+           turn has run",
+};
+
+/// `qwen --acp` — refused by S28 with no provider, opened by S33 with one.
+pub const QWEN: Agent = Agent {
+    id: "qwen",
+    argv: &["qwen", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "qwen-code",
+    install: "npm i -g @qwen-code/qwen-code",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: qwen-code 0.23.0 refuses session/new until a provider is configured (S28), and \
+           with OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL set it opens and runs a turn to \
+           end_turn against a local endpoint. It starts the declared bridge but defers MCP tools \
+           behind its own tool_search, so the model is not offered marion's verbs up front",
+};
+
+/// `goose acp` — Block's goose, opened on the provider its own config names.
+pub const GOOSE: Agent = Agent {
+    id: "goose",
+    argv: &["goose", "acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "goose",
+    install: "brew install block-goose-cli",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: goose 1.52.0 refuses session/new with a bare -32603 until a provider is \
+           configured (GOOSE_PROVIDER, or its own config), then opens and runs a turn to \
+           end_turn against a local endpoint. The declared bridge was not started within 8 s of \
+           session/new",
+};
+
+/// `fast-agent-acp` — fast-agent's ACP entrypoint, measured to a real call on marion's bridge.
+pub const FAST_AGENT: Agent = Agent {
+    id: "fast-agent",
+    argv: &["fast-agent-acp", "-x"],
+    // S33 watched a real `tools/call` reach the bridge, titled `marion/report` — which the generic
+    // reading already reads, so no spelling of its own is recorded.
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "fast-agent-acp",
+    install: "uv tool install fast-agent-acp",
+    reach: Reach::Opened {
+        provider: true,
+        model: false,
+        mode: true,
+    },
+    note: "S33: fast-agent-acp 0.10.37 exits at initialize with no model configured \
+           (FAST_AGENT_MODEL or its own config). Configured, it opens (modes only, no config \
+           options), asks session/request_permission for marion's tool, and a real call reached \
+           the bridge — offered to the model as `marion__report`, titled `marion/report`",
+};
+
+/// `vibe-acp` — Mistral Vibe's ACP entrypoint.
+pub const VIBE: Agent = Agent {
+    id: "vibe",
+    argv: &["vibe-acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "@mistralai/mistral-vibe",
+    install: "uv tool install mistral-vibe",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: mistral-vibe 2.25.8 refuses session/new without MISTRAL_API_KEY, opens with one \
+           and starts the declared bridge; a prompt goes to Mistral's own API, so no turn has run",
+};
+
+/// `vtcode acp` — VT Code, whose ACP server is off until the operator turns it on.
+pub const VTCODE: Agent = Agent {
+    id: "vtcode",
+    argv: &["vtcode", "acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "vtcode",
+    install: "brew install vtcode",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: false,
+    },
+    note: "S33: vtcode 0.169.0 exits \"Agent Client Protocol integration is disabled\" unless \
+           VT_ACP_ENABLED=1 or `[acp]` in its vtcode.toml. Enabled, it opens with no key; its \
+           agent select carries no `mode` category, so an approval_mode finds no select. The \
+           declared bridge was not started at session/new, and a prompt needs a provider key",
+};
+
+/// `auggie --acp` — Augment's CLI, stopped at its account wall.
+pub const AUGGIE: Agent = Agent {
+    id: "auggie",
+    argv: &["auggie", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "auggie",
+    install: "npm i -g @augmentcode/auggie",
+    reach: Reach::Refused,
+    note: "S33: auggie 0.36.0 offers no authMethods and refuses session/new until the operator \
+           runs `auggie login` in a terminal (an Augment account)",
+};
+
+/// `qodercli --acp` — Qoder's CLI, stopped at its account wall.
+pub const QODER: Agent = Agent {
+    id: "qoder",
+    argv: &["qodercli", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "qoder-cli",
+    install: "npm i -g @qoder-ai/qodercli",
+    reach: Reach::Refused,
+    note: "S33: qoder-cli 1.1.64 refuses session/new until the operator runs `qodercli login` \
+           (a Qoder account)",
+};
+
+/// `cline --acp` — the Cline CLI's ACP mode, which wants the protocol's `authenticate` first.
+pub const CLINE: Agent = Agent {
+    id: "cline",
+    argv: &["cline", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "cline",
+    install: "npm i -g cline",
+    reach: Reach::Refused,
+    note: "S33: cline 3.0.61 refuses session/new with \"Call authenticate before starting a \
+           session\" — an `authenticate` request choosing one of its sign-in methods, a choice \
+           marion leaves to the operator",
+};
+
+/// `pi-acp` — the community shim over the `pi` coding agent, refused by a version skew.
+pub const PI_ACP: Agent = Agent {
+    id: "pi-acp",
+    argv: &["pi-acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "pi-acp",
+    install: "npm i -g pi-acp",
+    reach: Reach::Refused,
+    note: "S33: pi-acp 0.0.34 refuses session/new -32603 because it calls \
+           `get_available_thinking_levels`, which the installed pi 0.80.2 does not have — a skew \
+           between the shim and pi, not an account wall",
 };
 
 /// Every ACP agent marion has a refinement row for. Naming one is not having measured it — see
 /// [`Agent::tools`] — and not being named is not being refused: see [`Binding`].
-pub const AGENTS: [Agent; 5] = [OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT];
+///
+/// **Not every probed agent is a row.** Factory's `droid` answers `session/new` without a key by
+/// *starting a device pairing* and printing its code (S33), and the doctor's `--adapter` mode opens
+/// a session on every row — so a row would make a routine probe start a login flow. It stays
+/// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
+pub const AGENTS: [Agent; 15] = [
+    OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE,
+    AUGGIE, QODER, CLINE, PI_ACP,
+];
 
 /// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
 /// [`Binding::resolve`] falls back to the generic path.
@@ -811,6 +1090,38 @@ pub enum BindError {
         AGENTS.iter().map(|a| a.id).collect::<Vec<_>>().join(", ")
     )]
     NoProgram,
+}
+
+/// What an agent's `initialize` identity says about its binding, where it says anything: the
+/// **runtime** half of recognising an agent, because a command line names a program and only the
+/// handshake names the agent behind it.
+///
+/// * A generic binding (`acp:<command>`) whose agent answers with a row's [`Agent::agent_info`]:
+///   name the row, so the operator can select it by id and get what was measured for it.
+/// * A refined binding whose agent answers under another name: the row's argv now reaches a
+///   different agent, and its measurements are stale.
+///
+/// `None` otherwise — an agent no row knows is simply the generic path, and a row whose binary
+/// still answers as measured has nothing to report.
+pub fn identity_note(binding: &Binding, handshake: &AgentHandshake) -> Option<String> {
+    match binding.refinement() {
+        Some(row) if row.agent_info != handshake.name => Some(format!(
+            "identity drift: row `{}` was measured answering `initialize` as `{}`, and this \
+             binary answers as `{}` — the row's refinements may not apply",
+            row.id, row.agent_info, handshake.name
+        )),
+        Some(_) => None,
+        None => AGENTS
+            .iter()
+            .find(|a| a.agent_info == handshake.name)
+            .map(|row| {
+                format!(
+                    "identity: answers `initialize` as `{}`, the agent of refinement row `{}` — \
+                     select it by that id for what was measured on it",
+                    handshake.name, row.id
+                )
+            }),
+    }
 }
 
 /// One stdio MCP server, in `session/new`'s own shape. S21 sent exactly this and the agent
@@ -2348,6 +2659,232 @@ mod tests {
             g_as_if.caps(&s),
             o.caps(&s),
             "prompt content types must contribute nothing to §3.3's ten fields"
+        );
+    }
+
+    /// S33's captures: the agent's own `initialize` answer for every agent probed on 2026-09-27.
+    const S33: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s33-acp-agents"
+    );
+
+    /// One S33 capture's frame by JSON-RPC id: `0` is `initialize`, `1` is `session/new`.
+    fn s33_frame(file: &str, id: u64) -> String {
+        let p = format!("{S33}/{file}.jsonl");
+        let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        text.lines()
+            .find(|l| {
+                serde_json::from_str::<Value>(l)
+                    .is_ok_and(|v| v.get("id").and_then(Value::as_u64) == Some(id))
+            })
+            .unwrap_or_else(|| panic!("{p} carries no frame with id {id}"))
+            .to_string()
+    }
+
+    /// **Every refinement row is a measurement, and this is the sweep that holds it to one.**
+    ///
+    /// Each row in [`AGENTS`] has an S33 capture named for its id, and every per-agent fact the row
+    /// states that the wire can witness is read back off that capture rather than trusted: the
+    /// identity it answers `initialize` with ([`Agent::agent_info`]), whether `session/new` opened
+    /// a session or was refused ([`Agent::reach`]), and — for an opened session — whether the
+    /// answer advertised a `model` and a `mode` select, read with the very [`session_select`] the
+    /// driver uses. A row added without a capture, or a capture that drifts from its row, fails
+    /// here by the row's name.
+    #[test]
+    fn every_refinement_row_matches_its_s33_capture() {
+        for a in AGENTS {
+            let id = a.id;
+            assert!(!a.agent_info.is_empty(), "`{id}` states no agentInfo");
+            assert!(!a.install.is_empty(), "`{id}` states no install command");
+            assert!(!a.note.is_empty(), "`{id}` states no note");
+            let hs = AgentHandshake::parse(&s33_frame(id, 0))
+                .unwrap_or_else(|e| panic!("`{id}`'s capture is no handshake: {e}"));
+            assert_eq!(hs.name, a.agent_info, "`{id}` answers as another agent");
+            let answer = s33_frame(id, 1);
+            match a.reach {
+                Reach::Opened { model, mode, .. } => {
+                    assert!(
+                        session_id(&answer).is_ok(),
+                        "`{id}` is recorded as opening a session: {answer}"
+                    );
+                    assert_eq!(
+                        session_select(&answer, MODEL_CATEGORY).is_some(),
+                        model,
+                        "`{id}`'s model select"
+                    );
+                    assert_eq!(
+                        session_select(&answer, MODE_CATEGORY).is_some(),
+                        mode,
+                        "`{id}`'s mode select"
+                    );
+                }
+                Reach::Refused => assert!(
+                    matches!(session_id(&answer), Err(AcpError::Refused { .. })),
+                    "`{id}` is recorded as refused: {answer}"
+                ),
+            }
+        }
+    }
+
+    /// **An agent's identity is what it says on the wire, and the doctor holds a row to it.**
+    ///
+    /// Two ways a command line and a row can disagree, both only visible after `initialize`: an
+    /// operator's `acp:<command>` that turns out to be an agent marion has a row for (then say
+    /// which, so they can select it by id and get its refinements), and a row's own argv that now
+    /// launches something answering under another name (then say the row is stale). An agent no
+    /// row knows, and a row whose binary still answers as measured, need no note.
+    #[test]
+    fn the_handshake_identity_names_a_matching_row_or_a_drifted_one() {
+        let kilo = AgentHandshake::parse(&s33_frame("kilo", 0)).unwrap();
+        let generic = Binding::resolve("/opt/bin/kilo acp").unwrap();
+        let note = identity_note(&generic, &kilo).expect("a generic binding answering as a row");
+        assert!(note.contains("`kilo`") && note.contains("Kilo"), "{note}");
+
+        assert_eq!(identity_note(&Binding::refined(KILO), &kilo), None);
+
+        let drifted = identity_note(&Binding::refined(VIBE), &kilo).expect("a stale row");
+        assert!(
+            drifted.contains("`vibe`")
+                && drifted.contains("@mistralai/mistral-vibe")
+                && drifted.contains("Kilo"),
+            "{drifted}"
+        );
+
+        let stranger = AgentHandshake::parse(
+            r#"{"result":{"protocolVersion":1,"agentInfo":{"name":"nobody-knows"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(identity_note(&generic, &stranger), None);
+    }
+
+    /// **Every agent that opened a session is a built-in type, named for its row, and no other.**
+    ///
+    /// An operator reaches an agent through an agent *type*, so a row that opened a session and
+    /// has no type is reachable only by typing its command. The rule is mechanical so neither side
+    /// can drift: row `<id>` with [`Reach::Opened`] is built-in `acp-<id>`, bound to that row by
+    /// id; a refused row has no type (it could not run a node); and every `acp-` built-in names a
+    /// row.
+    #[test]
+    fn every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row() {
+        use marion_core::agent_type::{builtin, builtin_names};
+        for a in AGENTS {
+            let name = format!("acp-{}", a.id);
+            match (a.reach, builtin(&name)) {
+                (Reach::Opened { .. }, Some(t)) => {
+                    assert_eq!(t.harness, Harness::Acp, "{name}");
+                    assert_eq!(t.acp_agent.as_deref(), Some(a.id), "{name}");
+                    assert!(
+                        builtin_names().contains(&name.as_str()),
+                        "{name} is not listed"
+                    );
+                }
+                (Reach::Opened { .. }, None) => {
+                    panic!("`{}` opened a session and has no {name}", a.id)
+                }
+                (Reach::Refused, Some(_)) => panic!("`{}` was refused and still has {name}", a.id),
+                (Reach::Refused, None) => {}
+            }
+        }
+        for name in builtin_names().iter().filter(|n| n.starts_with("acp-")) {
+            let id = &name["acp-".len()..];
+            assert!(agent(id).is_some(), "{name} names no refinement row");
+        }
+    }
+
+    /// **Each row launches the argv its capture was taken with, and states nothing unmeasured.**
+    ///
+    /// The argv is the one S33 probed (and S20–S28 before it); a refinement a row does not have
+    /// — a tool spelling nobody watched a model type, a mid-turn answer nobody measured, a canned
+    /// recipe nobody ran — is `None` and leaves the generic path's answer in force, never a
+    /// neighbour's. The table is written out whole so a new row is a line here as well as a line
+    /// in [`AGENTS`].
+    #[test]
+    fn every_row_launches_its_probed_argv_and_claims_only_what_was_measured() {
+        type Row = (
+            &'static str,
+            &'static [&'static str],
+            Option<ToolSpelling>,
+            Option<MidTurn>,
+        );
+        let expected: &[Row] = &[
+            (
+                "opencode",
+                &["opencode", "acp"],
+                Some(ToolSpelling::ServerUnderscoreTool),
+                Some(MidTurn::Fold),
+            ),
+            ("gemini", &["gemini", "--acp"], None, None),
+            (
+                "claude-acp",
+                &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
+                Some(ToolSpelling::McpDoubleUnderscore),
+                Some(MidTurn::Fold),
+            ),
+            (
+                "codex-acp",
+                &["codex-acp"],
+                Some(ToolSpelling::McpDotted),
+                Some(MidTurn::Queue),
+            ),
+            (
+                "copilot",
+                &["copilot", "--acp"],
+                Some(ToolSpelling::ServerHyphenTool),
+                Some(MidTurn::Queue),
+            ),
+            ("kilo", &["kilo", "acp"], None, None),
+            ("qwen", &["qwen", "--acp"], None, None),
+            ("goose", &["goose", "acp"], None, None),
+            ("fast-agent", &["fast-agent-acp", "-x"], None, None),
+            ("vibe", &["vibe-acp"], None, None),
+            ("vtcode", &["vtcode", "acp"], None, None),
+            ("auggie", &["auggie", "--acp"], None, None),
+            ("qoder", &["qodercli", "--acp"], None, None),
+            ("cline", &["cline", "--acp"], None, None),
+            ("pi-acp", &["pi-acp"], None, None),
+        ];
+        let actual: Vec<Row> = AGENTS
+            .iter()
+            .map(|a| (a.id, a.argv, a.tools, a.mid_turn))
+            .collect();
+        assert_eq!(actual, expected);
+        // Only opencode has a measured canned recipe, and only copilot a measured quirk in how the
+        // bridge reaches it; every other row takes the protocol's own channel.
+        for a in AGENTS {
+            assert_eq!(a.canned.is_some(), a.id == "opencode", "`{}`", a.id);
+            assert_eq!(
+                a.declaration != Declaration::Session,
+                a.id == "copilot",
+                "`{}`",
+                a.id
+            );
+        }
+        // The generic path's witness stays outside the table (`tests/fixtures/acp/README.md`).
+        assert!(AGENTS.iter().all(|a| a.agent_info != "fake-acp-agent"));
+    }
+
+    /// **Which MCP transports an agent takes is advertised, so it is read, never tabled.** ACP's
+    /// `agentCapabilities.mcpCapabilities` names the transports beyond stdio (which every agent
+    /// must take) as booleans, and S33 measured all three shapes: both on (`kilo`), one on and one
+    /// explicitly off (`goose`: `http: true, sse: false`), and the object absent (`auggie`).
+    #[test]
+    fn the_mcp_transports_an_agent_advertises_are_read_off_its_handshake() {
+        let read = |file: &str| {
+            AgentHandshake::parse(&s33_frame(file, 0))
+                .unwrap()
+                .mcp_transports
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read("kilo"), ["http", "sse"]);
+        assert_eq!(
+            read("goose"),
+            ["http"],
+            "an advertised `false` is not a transport"
+        );
+        assert!(
+            read("auggie").is_empty(),
+            "no object, no transport beyond stdio"
         );
     }
 

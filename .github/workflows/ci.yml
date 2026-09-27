@@ -66,6 +66,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Harness generality, efficiency and security over every shipped source file, against the
+      # ratchet allowlists in checks/. It only parses source — no harness, no process — so it sits
+      # with the other static checks on one runner. `cargo test --workspace --lib` in the test job
+      # does not reach it: it is an integration target, named here explicitly like every other.
+      - run: test -x scripts/three-axis.sh
+      - name: Three-axis checks (generality, efficiency, security)
+        run: scripts/three-axis.sh
 
   test:
     name: tests (${{ matrix.os }})

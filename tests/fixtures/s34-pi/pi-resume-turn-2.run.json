@@ -1,0 +1,24 @@
+{
+ "argv": [
+  "pi",
+  "-p",
+  "--mode",
+  "json",
+  "--session",
+  "<UUID-7>",
+  "--no-extensions",
+  "--provider",
+  "marion",
+  "--model",
+  "canned-1",
+  "--tools",
+  "read,write,edit,mcp__marion__report",
+  "-e",
+  "<RUN-DIR>/marion-pi.js",
+  "second turn"
+ ],
+ "exit": 0,
+ "wall_s": 0.8,
+ "requests": 1,
+ "stderr": ""
+}

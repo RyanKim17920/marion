@@ -692,3 +692,41 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
     let ev = drive(&cell);
     assert_cell(&cell, &ev);
 }
+
+/// **The ninth binary, on the same wire, and the first with no MCP client of its own.** pi 0.80.2's
+/// provider is a `models.json` the adapter writes under a relocated `PI_CODING_AGENT_DIR`, so the
+/// same `Script` fields drive it. Its tool is spelled `mcp__marion__report`, Claude Code's
+/// spelling, because that is the name marion's own extension registers (s34-pi item 2).
+///
+/// What this cell shows that `tests/fixtures/s34-pi/` alone cannot: marion's **own** bridge is
+/// started by that extension. pi loads the extension with `-e`, from the file
+/// `PiAdapter::config_files` wrote. The bridge answers `tools/list` while the extension loads,
+/// which is before pi's first request, and it answers `tools/call` during the turn. The persisted
+/// contract carries that call's narrative.
+#[test]
+fn a_pi_child_reports_through_marions_bridge_over_the_openai_wire() {
+    assert!(
+        on_path("pi"),
+        "this cell drives a REAL pi child; put `pi` ({}) on PATH",
+        pinned_version("pi")
+    );
+    let cell = Cell {
+        agent_type: "pi-orchestrator",
+        // The model is a field of `models.json`, and the adapter refuses a canned launch without
+        // one rather than writing a provider that names none.
+        model: Some("canned-1"),
+        script: Script {
+            openai_report_tool: "mcp__marion__report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        expected_harness: Harness::Pi,
+        expected_model: Some("canned-1"),
+        // A real allowlist: `--tools` names what the model is offered, extension tools included
+        // (s34-pi item 3). `pi-orchestrator` declares no tools, so marion's own verb is the list.
+        expected_allowed_tools: &["tools:mcp__marion__report"],
+        expected_wire: "openai",
+    };
+    let ev = drive(&cell);
+    assert_cell(&cell, &ev);
+}
