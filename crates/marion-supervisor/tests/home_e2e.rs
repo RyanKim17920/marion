@@ -79,6 +79,36 @@ exit 0
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// This test's own credential store: a file under its scratch directory, never the operator's
+/// Keychain, so Setup's LOGINS section lists what the test stored and nothing of the machine's.
+fn isolated_keys(cmd: &mut Command, dir: &Path) {
+    cmd.env("MARION_CREDENTIAL_STORE", "file")
+        .env("XDG_CONFIG_HOME", dir.join("config"));
+}
+
+/// A key that is not a key, stored the way an operator stores one, for Setup to list by id.
+const FAKE_KEY: &str = "sk-HOMEE2E-never-shown";
+
+fn store_fake_key(dir: &Path, id: &str) {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+    cmd.args(["login", id, "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null());
+    isolated_keys(&mut cmd, dir);
+    let mut child = cmd.spawn().expect("marion login starts");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(FAKE_KEY.as_bytes())
+        .unwrap();
+    assert!(
+        child.wait().unwrap().success(),
+        "marion login --stdin stores it"
+    );
+}
+
 struct Operator {
     host: PtyHost,
     cast: PathBuf,
@@ -104,6 +134,7 @@ impl Operator {
             .env("PATH", path)
             .env("MARION_STATE_DIR", state)
             .env("COPILOT_AUTO_UPDATE", "false");
+        isolated_keys(&mut cmd, dir);
         let witness = marion_harness::ExecutionSurfaces::opaque()
             .display_plane()
             .expect("a display plane");
@@ -371,6 +402,7 @@ impl Drop for Bed {
 #[test]
 fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     let bed = Bed::new("home-e2e-run");
+    store_fake_key(&bed.dir, "openrouter:work");
     let op = Operator::start(&bed.dir, &bed.repo, &bed.state, &bed.path);
 
     // Start: the harness list, with the shim read as ready and the others not installed.
@@ -449,9 +481,16 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
 
     // Setup: the real doctor rows; then the key page.
     op.type_in(b"\t");
-    op.wait_for("Setup with the doctor's answer", |s| {
-        s.contains("HARNESSES") && s.contains("AGENT TYPES") && !s.contains("checking…")
+    let setup = op.wait_for("Setup with the doctor's answer and the stored key", |s| {
+        s.contains("HARNESSES")
+            && s.contains("AGENT TYPES")
+            && !s.contains("checking…")
+            && s.contains("openrouter:work")
     });
+    assert!(
+        !setup.contains("HOMEE2E-never"),
+        "a stored key is listed by its id, never shown: {setup}"
+    );
     op.dump("real-setup");
     op.type_in(b"\t");
     op.wait_for("the key page", |s| {
