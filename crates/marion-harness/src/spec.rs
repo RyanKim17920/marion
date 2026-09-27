@@ -31,6 +31,7 @@
 use std::path::PathBuf;
 
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
@@ -127,6 +128,12 @@ pub struct HarnessSpec {
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
     /// surfaces_can_carry` checks each strategy against the rest of the row.
     pub delivery: Deliveries,
+    /// The wires this harness can be pointed at in **endpoint mode**, in its order of preference
+    /// — only ones this row's overlay actually renders, so a provider serving a wire the harness
+    /// could speak but the row cannot yet aim it at is refused rather than half-configured.
+    /// Endpoint resolution takes the first one the provider serves natively; empty refuses every
+    /// endpoint launch of this harness by name.
+    pub endpoint_wires: &'static [Wire],
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,

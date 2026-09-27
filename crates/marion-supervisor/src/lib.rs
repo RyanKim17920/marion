@@ -44,6 +44,7 @@ pub mod doctor;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;
+pub mod endpoint;
 /// `events.jsonl`, writer and reader side: one node's stream on disk, and §7.3.3's one cursor.
 pub mod events;
 /// First-token native-facade routing, kept ahead of the legacy UTF-8 command parser.

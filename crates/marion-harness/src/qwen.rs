@@ -38,6 +38,7 @@
 //!   (item 15). `QWEN_HOME` relocates settings, sessions, usage and memories; `HOME` still
 //!   contributes the operator's `~/.agents/skills` to the prompt (item 11) and is left alone.
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -196,6 +197,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    and its native lane ships disabled",
         },
     },
+    // Chat Completions, through `OPENAI_BASE_URL`.
+    endpoint_wires: &[Wire::OpenAiChat],
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

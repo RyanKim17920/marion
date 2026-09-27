@@ -7,6 +7,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
@@ -206,6 +207,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    (p0b/tui/claude) and is the fallback a later phase may add",
         },
     },
+    // Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.
+    endpoint_wires: &[Wire::AnthropicMessages],
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

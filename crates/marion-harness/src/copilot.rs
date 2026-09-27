@@ -28,6 +28,7 @@
 //!   marion's canned placeholder does not appear in anything a child prints; a live key is the
 //!   operator's own and is never placed by marion.
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -204,6 +205,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 336 ms; OSC 9;4;0 also marks the turn end",
         ),
     },
+    // Chat Completions, the row's BYOK default. Copilot can also speak Responses and Anthropic Messages (`COPILOT_PROVIDER_WIRE_API`, `COPILOT_PROVIDER_TYPE`), but the row renders neither yet.
+    endpoint_wires: &[Wire::OpenAiChat],
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

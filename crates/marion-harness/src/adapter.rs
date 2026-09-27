@@ -450,6 +450,12 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
 
+    /// The wires this harness can be pointed at in endpoint mode, in preference order — the row's
+    /// [`spec::HarnessSpec::endpoint_wires`].
+    fn endpoint_wires(&self) -> &'static [Wire] {
+        self.spec().endpoint_wires
+    }
+
     /// Which channel this launch's MCP declaration travels on — the row's [`spec::McpRoutes`] for
     /// the launch's auth mode, or [`McpRoute::None`] where no declaration was asked for.
     ///
@@ -3718,6 +3724,28 @@ mod tests {
                 adapter.mcp_route(&endpoint),
                 "{h}: route"
             );
+        }
+    }
+
+    /// **Every harness but the ACP protocol row can be pointed at an endpoint**, on the wire its
+    /// canned overlay already renders — the row states it rather than a resolver guessing it.
+    #[test]
+    fn every_row_but_acp_states_the_endpoint_wire_its_overlay_renders() {
+        use marion_core::provider::Wire;
+        for h in Harness::ALL {
+            let wires = launch_adapter(h).unwrap().endpoint_wires();
+            let want: &[Wire] = match h {
+                Harness::ClaudeCode => &[Wire::AnthropicMessages],
+                Harness::Codex => &[Wire::OpenAiResponses],
+                Harness::Gemini => &[Wire::Gemini],
+                Harness::OpenCode
+                | Harness::Copilot
+                | Harness::Goose
+                | Harness::Cline
+                | Harness::Qwen => &[Wire::OpenAiChat],
+                Harness::Acp => &[],
+            };
+            assert_eq!(wires, want, "{h}");
         }
     }
 

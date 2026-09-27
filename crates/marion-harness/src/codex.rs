@@ -12,6 +12,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::grammar::{
     ActivityRule, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar,
@@ -200,6 +201,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
         ),
     },
+    // OpenAI Responses alone: `wire_api = "chat"` was removed from codex, and the generated provider names `responses`.
+    endpoint_wires: &[Wire::OpenAiResponses],
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

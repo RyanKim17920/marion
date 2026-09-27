@@ -38,6 +38,7 @@
 //!   `cline history --json`. `--id <session-id>` forces interactive mode before anything else and
 //!   exits 1 headless, so the row's `resume` is `None`.
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -184,6 +185,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "cline is not installed for S31 and its native lane ships disabled",
         },
     },
+    // Chat Completions: the generated `providers.json` is `openai-compatible`.
+    endpoint_wires: &[Wire::OpenAiChat],
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

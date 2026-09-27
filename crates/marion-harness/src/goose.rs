@@ -33,6 +33,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::grammar::{
     ActivityRule, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
@@ -174,6 +175,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "goose's TUI was not measured (S31), and its native lane ships disabled",
         },
     },
+    // Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.
+    endpoint_wires: &[Wire::OpenAiChat],
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \

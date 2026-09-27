@@ -9,6 +9,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
@@ -162,6 +163,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
         },
     },
+    // Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.
+    endpoint_wires: &[Wire::Gemini],
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
