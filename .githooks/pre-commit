@@ -3,12 +3,11 @@
 #
 # Install once per clone:  git config core.hooksPath .githooks
 #
-# WHY A HOOK AND NOT CI. Design §8 says L4.5 "gates commits" — commits, not pushes and not pull
-# requests. There is no CI in this repo to extend, and standing one up would move the gate to a
-# place where a broken commit already exists in history by the time it fires. L4.5 is the one
-# layer cheap enough for that literal reading: no processes, no network, no model, ~0.3s. When CI
-# arrives it should run this same target, plus the layers a hook cannot afford; it does not
-# replace this.
+# WHY A HOOK AS WELL AS CI. Design §8 says L4.5 "gates commits" — commits, not pushes and not
+# pull requests. `.github/workflows/ci.yml` runs these same targets on every push, but by then a
+# broken commit already exists in history; the hook catches it before it does. L4.5 is the one
+# layer cheap enough for that literal reading: no processes, no network, no model, ~0.3s. CI adds
+# the layers a hook cannot afford; it does not replace this.
 #
 # WHY NOT L7. Design §8: L7 "must never gate a commit" — it is a VM with a real terminal and real
 # fonts, nightly and opt-in. This hook therefore names its target explicitly rather than running
