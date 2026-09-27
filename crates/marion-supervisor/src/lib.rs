@@ -25,6 +25,9 @@ pub mod background;
 pub mod bridge;
 /// Wall-clock and entropy for minting ids: a leaf both `run` and `journal` stand on.
 pub(crate) mod clock;
+/// Turn delivery's continuation lane: a `LaunchOnly` node's next turn is a relaunch of the same
+/// node under its observed session, decided at each stop of its process.
+pub(crate) mod continuation;
 /// §11 item 28 step 5: the per-child MCP bridge as a **socket client**. It dials §2's socket,
 /// sends `agent/spawn`, and reads the node's own stream back — carrying a request and an answer
 /// rather than owning a process.

@@ -1473,11 +1473,10 @@ pub fn run_spawn_watched(
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    write_config_documents(adapter.config_files(&launch, &ctx)?)?;
     // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the one
     // sentence on this path a reader of the journal needs verbatim, so it is filed for the abort
     // record on the way out rather than replaced by the guard's generic reason.
-    let inv = resolution.filed(adapter.compile(&launch, &ctx).map_err(SpawnError::from))?;
+    let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it
@@ -1597,6 +1596,19 @@ pub fn run_spawn_watched(
             adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
         )
     });
+    // **The same inbox, on the lane whose next turn is a relaunch** (`crate::continuation`): a
+    // `LaunchOnly` node whose row measured a resume that continues its session. Attached before
+    // the first launch, so a message queued while it runs is waiting at its stop. The typed lanes
+    // take their turns inside their own drivers, from `turns`.
+    let continuation = match (
+        path,
+        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+    ) {
+        (LaunchPath::LaunchOnly, marion_harness::spec::TurnDelivery::Continuation { .. }) => turns
+            .as_ref()
+            .map(|feed| crate::continuation::Turns::attach(Arc::clone(&feed.source))),
+        _ => None,
+    };
     let run = match path {
         // **A contracted child does not get a pane, and the refusal is the design rather than a
         // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
@@ -1708,19 +1720,117 @@ pub fn run_spawn_watched(
     {
         parsed.failure = Some(why);
     }
-    let outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
+    let mut outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
+    let mut run = run;
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
     // verdict is applied to the contract below once `build_contract` has assembled it.
-    let gated = crate::descendant_gate::gate(
-        observer,
-        &agent_id,
-        &env.project_dir,
-        &outcome,
-        spawned_at.0,
-        bound,
-    );
+    //
+    // **And every stop is a turn boundary** (`crate::continuation::boundary`): on the
+    // continuation lane a message waiting now, or arriving during the hold, relaunches this same
+    // node under its observed session as its next generation, on what is left of the one `bound`.
+    // The gate runs again at that generation's stop, over the outcome folded so far, and only the
+    // last stop's verdict reaches the contract. Every other lane passes no inbox and gates once.
+    let deadline =
+        Instant::now() + bound.saturating_sub(spawned_at.0.elapsed().unwrap_or_default());
+    let mut generation = 1u32;
+    let gated = loop {
+        let mut gate =
+            |o: &ChildOutcome,
+             wait: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+                crate::descendant_gate::gate_or_woken(
+                    observer,
+                    &agent_id,
+                    &env.project_dir,
+                    o,
+                    spawned_at.0,
+                    bound,
+                    wait,
+                )
+            };
+        let turn = crate::continuation::boundary(
+            continuation.as_ref(),
+            &outcome,
+            session.session().as_deref(),
+            deadline,
+            &mut gate,
+        );
+        let (message, resume) = match turn {
+            crate::continuation::Turn::Last(gated) => break gated,
+            crate::continuation::Turn::Next { message, session } => (message, session),
+        };
+        let Some(turns) = continuation.as_ref() else {
+            unreachable!("a next turn is only ever taken from an inbox")
+        };
+        generation += 1;
+        let via = format!("continuation:gen{generation}");
+        // The same launch, resumed: `node/resume`'s spelling (the row's resume grammar), with the
+        // message as the prompt, compiled and declared exactly as the first generation was.
+        let next_launch = LaunchSpec {
+            resume: Some(resume),
+            prompt: crate::inbox::render(&message),
+            ..launch.clone()
+        };
+        let next_inv = match declare_and_compile(adapter.as_ref(), &next_launch, &ctx) {
+            Ok(inv) => inv,
+            Err(e) => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it could not be compiled: {e}"),
+                );
+                continue;
+            }
+        };
+        // Delivered at the instant the process that carries it exists and is journaled — the
+        // generation's own `Spawned`, through the first generation's confirmation.
+        let carried = std::cell::Cell::new(false);
+        let announce_generation = |pid: i32| {
+            announce_started(pid);
+            let failed = unaccountable.take();
+            if failed.is_none() {
+                turns.delivered(&message.id, &via);
+                carried.set(true);
+            }
+            unaccountable.set(failed);
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        let next = launch_only_child(&next_inv, env.auth, left, &announce_generation, &session);
+        if let Some(why) = unaccountable.take() {
+            turns.dropped(
+                &message.id,
+                "the continuation's process could not be journaled",
+            );
+            return Err(SpawnError::UnaccountableNode {
+                agent_id: agent_id.clone(),
+                why: why.to_string(),
+            });
+        }
+        let next = match next {
+            Ok(next) => next,
+            // A process that never started carried nothing; one that did was already delivered to,
+            // and its failure is the node's outcome of the turn it did not finish.
+            Err(e) if !carried.get() => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it did not start: {e}"),
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        record_capture_after_the_fact(path, events.as_mut(), &next.stdout);
+        let later = ChildOutcome::from_stream(
+            adapter.parse_stream(&next.stdout, next.exit),
+            next.exit,
+            next.stderr.clone(),
+        );
+        outcome = crate::continuation::fold(outcome, later);
+        run = ChildRun {
+            capture_truncated: run.capture_truncated || next.capture_truncated,
+            ..next
+        };
+    };
 
     // **§6.7's honest degradation, and the `Option` is the whole of it.**
     //
@@ -2078,6 +2188,19 @@ fn child_launch_spec(
             ..Extras::default()
         },
     }
+}
+
+/// **One launch of a node, declared and compiled**: the adapter's configuration documents written,
+/// then its invocation compiled from the same spec. A node's first generation and every
+/// continuation of it (`crate::continuation`) go through this one step, so a relaunch is declared
+/// exactly as the launch it resumes was.
+fn declare_and_compile(
+    adapter: &dyn marion_harness::HarnessAdapter,
+    launch: &LaunchSpec,
+    ctx: &SpawnCtx,
+) -> Result<Invocation, SpawnError> {
+    write_config_documents(adapter.config_files(launch, ctx)?)?;
+    Ok(adapter.compile(launch, ctx)?)
 }
 
 /// Write the configuration documents an adapter decided on, creating each document's directory.
