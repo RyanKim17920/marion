@@ -5141,6 +5141,244 @@ mod tests {
         }
     }
 
+    /// **Every row that declares on argv withholds the token from that declaration** — the row data
+    /// half of keeping the token out of `ps`, for every harness row in each auth mode and every ACP
+    /// refinement row. A carrier inside the declaration is fine on a document, a variable or
+    /// marion's own ACP pipe; on argv it is the leak.
+    #[test]
+    fn every_argv_declaration_withholds_the_node_token() {
+        use crate::spec::McpRoute;
+
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            for (mode, route, carrier) in [
+                ("canned", row.mcp.canned, row.token.canned),
+                ("live", row.mcp.live, row.token.live),
+            ] {
+                if matches!(route, McpRoute::Argv(_)) {
+                    assert!(
+                        carrier.withholds(),
+                        "{h} ({mode}): the declaration rides argv and carries the token"
+                    );
+                }
+            }
+            if let Some(declaration) = row.live_declaration {
+                assert_eq!(declaration.route(), row.mcp.live, "{h}");
+            }
+        }
+        for agent in acp::AGENTS {
+            if let acp::Declaration::Argv { token, .. } = agent.declaration {
+                assert!(
+                    token.withholds(),
+                    "acp:{}: the declaration rides argv and carries the token",
+                    agent.id
+                );
+            }
+        }
+    }
+
+    /// The bytes a launch's declaration consists of, **excluding the process environment**: every
+    /// document, the declaring variable, the argv, or the `session/new` request — wherever the
+    /// row's route puts it.
+    fn declaration_without_env(
+        a: &dyn HarnessAdapter,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        inv: &Invocation,
+    ) -> String {
+        use crate::spec::McpRoute;
+
+        match a.mcp_route(spec) {
+            McpRoute::Document => a
+                .config_files(spec, ctx)
+                .unwrap()
+                .into_iter()
+                .map(|(_, c)| c)
+                .collect(),
+            McpRoute::Environment(k) => inv
+                .env
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default(),
+            McpRoute::Argv(_) => inv.args.join(" "),
+            McpRoute::Session(_) => a
+                .session_declaration(spec, ctx)
+                .unwrap()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            McpRoute::None => String::new(),
+        }
+    }
+
+    /// **No launch puts the node token on argv, and every launch still hands it to the bridge** —
+    /// the compiled half, over every harness row in every auth mode and shape it compiles, and every
+    /// ACP refinement row. A carrier that withholds the token leaves it out of the declaration and
+    /// sets it on the environment exactly once; the declaration carrier writes it into the
+    /// declaration and adds nothing to the environment. A launch the row refuses is skipped, but
+    /// every harness must compile at least one, and the argv rows their live launch.
+    #[test]
+    fn no_launch_puts_the_node_token_on_argv_and_every_launch_delivers_it() {
+        const TOKEN: &str = "tok-SENTINEL-sweep-5a0c";
+        let minted = SpawnCtx {
+            node_token: Some(TOKEN.into()),
+            ..ctx()
+        };
+        let check = |who: &str, a: &dyn HarnessAdapter, spec: &LaunchSpec, inv: &Invocation| {
+            assert!(
+                !inv.args.iter().any(|arg| arg.contains(TOKEN)),
+                "{who}: the node token is on argv: {:?}",
+                inv.args
+            );
+            let in_env: Vec<&String> = inv
+                .env
+                .iter()
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .map(|(_, v)| v)
+                .collect();
+            let declaration = declaration_without_env(a, spec, &minted, inv);
+            if a.token_carrier(spec).withholds() {
+                assert_eq!(in_env, [TOKEN], "{who}: the environment carries it once");
+                assert!(
+                    !declaration.contains(TOKEN),
+                    "{who}: the declaration withholds it: {declaration}"
+                );
+            } else {
+                assert!(in_env.is_empty(), "{who}: {:?}", inv.env);
+                assert!(
+                    declaration.contains(TOKEN),
+                    "{who}: the declaration carries it: {declaration}"
+                );
+            }
+        };
+        let live_of = |h: Harness| LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: match h {
+                Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
+                Harness::Copilot | Harness::Goose | Harness::Pi | Harness::Qwen => None,
+                _ => spec_for(h).model,
+            },
+            ..spec_for(h)
+        };
+        for h in Harness::ALL {
+            let a = launch_adapter(h).unwrap();
+            let endpoint = LaunchSpec {
+                auth: Auth::Endpoint,
+                wire: a.endpoint_wires().first().copied(),
+                ..spec_for(h)
+            };
+            let canned = LaunchSpec {
+                auth: Auth::Canned,
+                ..spec_for(h)
+            };
+            let mut compiled = Vec::new();
+            for spec in [canned, endpoint, live_of(h)] {
+                let shapes = [
+                    ("headless", a.compile(&spec, &minted)),
+                    ("pane", a.compile_pane(&spec, &minted)),
+                ];
+                for (shape, inv) in shapes {
+                    let Ok(inv) = inv else { continue };
+                    let who = format!("{h} {:?} {shape}", spec.auth);
+                    check(&who, a.as_ref(), &spec, &inv);
+                    compiled.push((spec.auth, shape));
+                }
+            }
+            assert!(!compiled.is_empty(), "{h}: no launch compiled at all");
+            let row = harness_spec(h);
+            if matches!(row.mcp.live, crate::spec::McpRoute::Argv(_)) {
+                assert!(
+                    compiled.iter().any(|(auth, _)| *auth == Auth::Inherited),
+                    "{h}: its argv route was never compiled: {compiled:?}"
+                );
+            }
+        }
+        for agent in acp::AGENTS {
+            let a = AcpAdapter::for_agent(agent);
+            let spec = LaunchSpec {
+                extra: Extras {
+                    acp_agent: Some(agent.id.into()),
+                    ..Extras::default()
+                },
+                ..acp_spec()
+            };
+            let inv = a
+                .compile(&spec, &minted)
+                .unwrap_or_else(|e| panic!("acp:{}: {e}", agent.id));
+            check(&format!("acp:{}", agent.id), &a, &spec, &inv);
+        }
+    }
+
+    /// The native lane's half: `marion <harness>` puts no token on the operator's harness's argv,
+    /// and hands it to the bridge through the row's live carrier — the process environment where
+    /// the carrier withholds it, the declaration otherwise.
+    #[test]
+    fn no_native_injection_puts_the_node_token_on_argv() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+
+        const TOKEN: &str = "tok-SENTINEL-native-sweep-3d92";
+        let minted = SpawnCtx {
+            node_token: Some(TOKEN.into()),
+            ..ctx()
+        };
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let operator_env: Vec<(OsString, OsString)> = Vec::new();
+        for h in Harness::ALL {
+            let Some(adapter) = native_adapter(h) else {
+                continue;
+            };
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                base_url: None,
+                config_dir: document_dir.clone(),
+                ..spec_for(h)
+            };
+            let bridge = bridge_env(&live, &minted);
+            let injection = adapter
+                .prepare_native(&NativeNodeContext {
+                    bridge: &bridge,
+                    document_dir: &document_dir,
+                    allowed_marion_tools: &["spawn"],
+                    environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+                })
+                .unwrap_or_else(|e| panic!("{h}: {e}"));
+            let lossy = |v: &OsString| v.to_string_lossy().into_owned();
+            assert!(
+                !injection
+                    .argv_prefix
+                    .iter()
+                    .any(|a| lossy(a).contains(TOKEN)),
+                "{h}: the node token is on the native argv: {:?}",
+                injection.argv_prefix
+            );
+            let passed: Vec<String> = injection
+                .bridge_env
+                .iter()
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .map(|(_, v)| lossy(v))
+                .collect();
+            let declared = injection
+                .documents
+                .iter()
+                .any(|d| String::from_utf8_lossy(&d.contents).contains(TOKEN))
+                || injection
+                    .env_overlay
+                    .iter()
+                    .any(|(_, v)| lossy(v).contains(TOKEN));
+            if harness_spec(h).token.live.withholds() {
+                assert_eq!(passed, [TOKEN], "{h}");
+                assert!(!declared, "{h}: the declaration withholds it");
+            } else {
+                assert!(passed.is_empty(), "{h}");
+                assert!(declared, "{h}: the declaration carries it");
+            }
+        }
+    }
+
     /// **The operator's endpoint key never reaches a debug print of a launch.** `LaunchSpec` is
     /// what every refusal and every failing compile assertion has in hand, so a `{:?}` of it
     /// would otherwise print the key `marion login` stored.
