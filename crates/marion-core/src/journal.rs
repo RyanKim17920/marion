@@ -174,6 +174,14 @@ pub enum RecordKind {
     /// §5.7's ordinary exit record. It deliberately carries no node id: the supervisor serves a
     /// forest, and choosing one node would fabricate ownership of a process-wide event.
     SupervisorExited(SupervisorExited),
+    /// **What one run of this node spent**, as its harness's stream reported it: the counters,
+    /// never a frame, written once as the run ends. A root's as much as a child's — a root has no
+    /// contract to carry it — and one per run, so replay **adds** a node's records: a resumed node
+    /// is several runs, each recording its own. No record is no claim, which is not zero.
+    ///
+    /// **Not a barrier**: losing one on the ~50 ms timer costs a usage figure a view falls back to
+    /// reading the node's stream for, never an untracked process.
+    UsageRecorded(UsageRecorded),
     /// A message was accepted for delivery to this node's next turn — the intent half of turn
     /// delivery, resolved by [`Self::MessageDelivered`] or [`Self::MessageDropped`] under the same
     /// `message_id`.
@@ -237,6 +245,7 @@ impl RecordKind {
             RecordKind::RootChanged(r) => Some(&r.agent_id),
             RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
             RecordKind::SessionObserved(r) => Some(&r.agent_id),
+            RecordKind::UsageRecorded(r) => Some(&r.agent_id),
             RecordKind::MessageQueued(r) => Some(&r.agent_id),
             RecordKind::MessageDelivered(r) => Some(&r.agent_id),
             RecordKind::MessageDropped(r) => Some(&r.agent_id),
@@ -399,6 +408,13 @@ pub struct KillConfirmed {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorExited {}
+
+/// See [`RecordKind::UsageRecorded`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageRecorded {
+    pub agent_id: AgentId,
+    pub usage: crate::contract::TokenUsage,
+}
 
 /// See [`RecordKind::SessionObserved`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

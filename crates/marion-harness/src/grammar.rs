@@ -26,6 +26,7 @@
 use std::collections::BTreeMap;
 
 use marion_core::TokenUsage;
+use marion_core::contract::add_usage_claims;
 use serde_json::Value;
 
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
@@ -437,22 +438,13 @@ impl UsageMeter {
     /// The running generation's process has ended: what it spent is settled, and the next frame
     /// belongs to the next generation.
     pub fn end_generation(&mut self) {
-        self.ended = add_claims(self.ended, self.current.take());
+        self.ended = add_usage_claims(self.ended, self.current.take());
     }
 
     /// Everything the node's stream says it spent so far. `None` when no unit was ever read — no
     /// claim, which is not a claim of zero.
     pub fn usage(&self) -> Option<TokenUsage> {
-        add_claims(self.ended, self.current)
-    }
-}
-
-/// Two usage claims added, where either may be absent: an absent claim adds nothing, and only two
-/// absences stay absent.
-pub fn add_claims(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a + b),
-        (a, b) => a.or(b),
+        add_usage_claims(self.ended, self.current)
     }
 }
 
@@ -1148,11 +1140,6 @@ mod tests {
         m.end_generation();
         m.end_generation();
         assert_eq!(m.usage(), Some(TokenUsage::default()));
-        assert_eq!(add_claims(None, None), None);
-        assert_eq!(
-            add_claims(Some(tokens(1, 2, 3)), None),
-            Some(tokens(1, 2, 3))
-        );
     }
 
     /// **A reasoning counter beside output is added in; one within it is only named.** Either way

@@ -347,6 +347,13 @@ pub struct Completion {
     /// capped per string where it was read and elided by cap rules 5(f) and 6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub findings: Option<Findings>,
+    /// **The tokens this task's run spent**, as the child's harness reported them in its stream:
+    /// every process the run took (each continuation generation) added. Harness-sourced and
+    /// unverified, like `narrative`. `None` when the stream stated none — no claim, which is not
+    /// zero — and then absent on the wire, so such a completion is byte-identical to one an earlier
+    /// build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 
 impl Completion {
@@ -420,6 +427,15 @@ impl std::ops::Add for TokenUsage {
                 (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
             },
         }
+    }
+}
+
+/// Two usage claims added, where either may be absent: an absent claim adds nothing, and only two
+/// absences stay absent — no claim is not a claim of zero.
+pub fn add_usage_claims(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
     }
 }
 
@@ -521,6 +537,14 @@ mod tests {
         );
         let back: TokenUsage = serde_json::from_str(&serde_json::to_string(&A).unwrap()).unwrap();
         assert_eq!(back, A);
+    }
+
+    #[test]
+    fn an_absent_usage_claim_adds_nothing_and_two_absences_stay_absent() {
+        assert_eq!(add_usage_claims(None, None), None);
+        assert_eq!(add_usage_claims(Some(A), None), Some(A));
+        assert_eq!(add_usage_claims(None, Some(A)), Some(A));
+        assert_eq!(add_usage_claims(Some(A), Some(A)), Some(A + A));
     }
 
     /// **Reasoning is a part of output, so it moves no total, and its absence is not zero.** Two

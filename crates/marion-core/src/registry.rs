@@ -147,6 +147,11 @@ pub struct ReplayedNode {
     /// The `ts` of the last `Spawned` — when its current process started, which a resume moves.
     /// `None` before any process existed.
     pub spawned_ts: Option<crate::encoding::SystemTime>,
+    /// **What every run of this node spent**, the sum of its [`crate::journal::UsageRecorded`] records — so it
+    /// survives a restart without a read of the node's stream. `None` while no run has recorded
+    /// one: a node still running, a harness that states no usage, or a journal older than the
+    /// record.
+    pub usage: Option<crate::contract::TokenUsage>,
 }
 
 impl ReplayedNode {
@@ -181,6 +186,7 @@ impl ReplayedNode {
             first_ts: None,
             state_ts: None,
             spawned_ts: None,
+            usage: None,
         }
     }
 
@@ -335,6 +341,10 @@ impl ReplayedNode {
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => self.root_grant = Some(g),
             RecordKind::SessionObserved(s) => self.fold_session_observed(s),
+            // One record per run, so a resumed node's runs add.
+            RecordKind::UsageRecorded(u) => {
+                self.usage = crate::contract::add_usage_claims(self.usage, Some(u.usage))
+            }
             // Turn delivery is an audit of messages, not a fact about the node's lifecycle: the
             // records are accepted and counted as mentions, and move nothing. Whether a turn ran
             // is `StateChanged`'s to say.
@@ -1873,6 +1883,49 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
         })
+    }
+
+    /// **A run's usage is one record, and a node's runs add on replay.** The record pins its wire
+    /// shape, rides the timer, and names its node; replayed, a node with two runs (a resume) carries
+    /// their sum, a node that never recorded one carries `None` rather than zero, and a journal
+    /// holding no such record at all — every journal before the record existed — replays exactly
+    /// as it did.
+    #[test]
+    fn usage_records_round_trip_and_a_nodes_runs_add_on_replay() {
+        let spent = |input, output| {
+            RecordKind::UsageRecorded(crate::journal::UsageRecorded {
+                agent_id: id("a-1"),
+                usage: crate::contract::TokenUsage {
+                    input,
+                    output,
+                    ..Default::default()
+                },
+            })
+        };
+        let first = spent(100, 20);
+        assert_eq!(first.agent_id(), Some(&id("a-1")));
+        assert!(
+            !first.is_barrier(),
+            "losing one costs a figure, not a process"
+        );
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            r#"{"UsageRecorded":{"agent_id":"a-1","usage":{"input":100,"output":20,"cache_read":0,"cache_write":0}}}"#,
+        );
+        let r = record(1, first.clone());
+        let line = encode(&r).unwrap();
+        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent(), first, spent(5, 1)].into_iter().enumerate() {
+            bytes.extend(encode(&record(seq as u64, kind)).unwrap());
+        }
+        let node = replay(&bytes).get(&id("a-1")).unwrap().clone();
+        assert_eq!(node.usage.map(|u| (u.input, u.output)), Some((105, 21)));
+        assert_eq!(node.records, 3);
+
+        let silent = replay(&encode(&record(0, intent())).unwrap());
+        assert_eq!(silent.get(&id("a-1")).unwrap().usage, None);
     }
 
     /// **The harness's own name for the conversation**, journaled as its own record. It cannot
