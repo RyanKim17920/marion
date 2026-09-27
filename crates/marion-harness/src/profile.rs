@@ -163,6 +163,10 @@ mod tests {
         (Harness::Cline, "unmeasured"),
         (Harness::Qwen, "unmeasured"),
         (
+            Harness::Antigravity,
+            "agy keeps its login in the keychain, outside any directory it reads (s32)",
+        ),
+        (
             Harness::Acp,
             "one row, many agents, each with its own store",
         ),
