@@ -1753,24 +1753,7 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
             Some(v) => format!("{label} {v}"),
             None => label,
         };
-        let why_not = match (version, r.report.adapter_check) {
-            (_, Some(false)) => Some("adapter check failed".to_string()),
-            (None, _) => Some(
-                r.report
-                    .notes
-                    .iter()
-                    .find(|n| {
-                        n.contains("not found")
-                            || n.contains("FAILED")
-                            || n.starts_with("adapter:")
-                            || n.contains("refused")
-                    })
-                    .cloned()
-                    .unwrap_or_else(|| "its version could not be read".into()),
-            ),
-            (Some(_), _) => None,
-        };
-        match why_not {
+        match why_not_ready(r) {
             Some(why) => s.push_str(&format!("  {head}: ready: no — {why}\n")),
             None => {
                 ready += 1;
@@ -1807,6 +1790,44 @@ pub fn verdict(rows: &[Row], environment: &[crate::preflight::Check]) -> String 
         node_rows.len()
     ));
     s
+}
+
+/// **Why a row's harness is not ready**, or `None` when it is — the one rule [`verdict`] prints
+/// and the home screen's readiness list reads, so the two cannot disagree. Ready is "its binary
+/// answered with a version and, under `--adapter`, its micro-contract passed".
+pub fn why_not_ready(r: &Row) -> Option<String> {
+    match (&r.report.harness_version, r.report.adapter_check) {
+        (_, Some(false)) => Some("adapter check failed".to_string()),
+        (None, _) => Some(
+            r.report
+                .notes
+                .iter()
+                .find(|n| {
+                    n.contains("not found")
+                        || n.contains("FAILED")
+                        || n.starts_with("adapter:")
+                        || n.contains("refused")
+                })
+                .cloned()
+                .unwrap_or_else(|| "its version could not be read".into()),
+        ),
+        (Some(_), _) => None,
+    }
+}
+
+/// Whether a row's binary is missing from `$PATH` altogether — not installed, as opposed to
+/// installed and failing. Read off the same note [`why_not_ready`] reports.
+pub fn not_installed(r: &Row) -> bool {
+    r.report.harness_version.is_none()
+        && r.report
+            .notes
+            .iter()
+            .any(|n| n.starts_with("binary:") && n.contains("not found"))
+}
+
+/// The label a row is shown under: its harness, and for an ACP row the agent it probed.
+pub fn label(r: &Row) -> String {
+    row_label(r)
 }
 
 /// A row's harness, and for an ACP row the agent it probed (`acp agent: \`<id>\` …`).
