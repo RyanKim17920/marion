@@ -245,6 +245,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // An assistant `message`'s content blocks (`s26/goose-report.stdout.jsonl`): `toolRequest` is a
     // call to any extension's tool, `text` the model's words.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

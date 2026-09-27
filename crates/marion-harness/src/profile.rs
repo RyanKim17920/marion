@@ -35,6 +35,9 @@ pub struct ProfileCarrier {
     /// `marion profile add` shows `<env>=<dir> <program> <login_hint>` and stops. Empty where the
     /// harness signs in from its own first screen.
     pub login_hint: &'static str,
+    /// The directory the harness uses when [`Self::env`] is unset, relative to `$HOME` — where
+    /// [`Self::shared`] is linked from.
+    pub home_default: &'static str,
     /// Non-secret files and directories that may be shared from the harness's default directory
     /// into a new profile (settings, instructions, skills). **Never** a credential or an account
     /// file: the sweep refuses any name that looks like one.
@@ -93,6 +96,7 @@ mod tests {
         clear: &["X_STORE"],
         status: Status::FileExists("creds"),
         login_hint: "login",
+        home_default: ".x",
         shared: &[],
         note: "test",
     };
@@ -269,5 +273,38 @@ mod tests {
         .unwrap();
         assert_eq!(values(&inv.env, "CODEX_HOME"), ["/profiles/codex/work"]);
         assert!(inv.env_remove.is_empty());
+    }
+
+    /// The claude row reads its measured `rate_limit_event` (`tests/fixtures/s1/stdout.jsonl`)
+    /// and the fields a refused window adds; nothing else is a reading.
+    #[test]
+    fn the_claude_stream_reads_its_usage_window() {
+        use crate::grammar::{LimitReading, rate_limit};
+        let rule = crate::claude_code::STREAM
+            .rate_limit
+            .as_ref()
+            .expect("claude states one");
+        let measured = serde_json::json!({"type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed", "isUsingOverage": false}});
+        assert_eq!(
+            rate_limit(rule, &measured),
+            Some(LimitReading {
+                status: "allowed".into(),
+                resets_at: None,
+                window: None
+            })
+        );
+        let refused = serde_json::json!({"type": "rate_limit_event", "rate_limit_info":
+            {"status": "rejected", "resetsAt": 1790538000u64, "rateLimitType": "five_hour"}});
+        assert_eq!(
+            rate_limit(rule, &refused),
+            Some(LimitReading {
+                status: "rejected".into(),
+                resets_at: Some(1_790_538_000),
+                window: Some("five_hour".into())
+            })
+        );
+        let other = serde_json::json!({"type": "assistant", "message": {}});
+        assert_eq!(rate_limit(rule, &other), None);
     }
 }

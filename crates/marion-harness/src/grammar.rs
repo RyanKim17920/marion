@@ -61,6 +61,44 @@ pub struct StreamGrammar {
     /// and the words it writes — read by [`recent_activity`] for a peek at a running node. `None`
     /// where no frame was measured carrying either.
     pub activity: Option<ActivityRule>,
+    /// Where the harness states the account's usage window as it runs — read by [`rate_limit`]
+    /// so `marion profile list` can show the last reading per profile without a network call.
+    /// `None` where no frame was measured carrying one.
+    pub rate_limit: Option<RateLimitRule>,
+}
+
+/// A frame that reports the account's usage window: its status (`allowed`, `allowed_warning`,
+/// `rejected`), when the window resets, and which window it is.
+#[derive(Debug)]
+pub struct RateLimitRule {
+    pub at: Where,
+    pub status: &'static str,
+    /// Unix seconds, where the frame carries them.
+    pub resets_at: Option<&'static str>,
+    pub window: Option<&'static str>,
+}
+
+/// One usage-window reading off a stream, in the harness's own words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitReading {
+    pub status: String,
+    pub resets_at: Option<u64>,
+    pub window: Option<String>,
+}
+
+/// The reading `frame` carries under `rule`, or `None` where it is not a rate-limit frame.
+pub fn rate_limit(rule: &RateLimitRule, frame: &Value) -> Option<LimitReading> {
+    if !matches(frame, rule.at.frame) || !matches(frame, rule.at.unit) {
+        return None;
+    }
+    Some(LimitReading {
+        status: text(frame, rule.status)?,
+        resets_at: rule
+            .resets_at
+            .and_then(|p| frame.pointer(p))
+            .and_then(Value::as_u64),
+        window: rule.window.and_then(|p| text(frame, p)),
+    })
 }
 
 /// Where a harness shows a node's own activity: the units that are a call to any tool, and the

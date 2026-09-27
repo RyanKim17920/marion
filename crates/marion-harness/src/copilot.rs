@@ -339,6 +339,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // `tool.execution_start` names every tool it runs, built-in or MCP, and the whole
     // `assistant.message` carries the model's words — empty on a turn that only called tools
     // (`s24/copilot-write-then-report.stdout.jsonl`), which the reader skips.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

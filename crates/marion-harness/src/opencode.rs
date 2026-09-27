@@ -265,6 +265,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         clear: &[],
         status: ProfileStatus::FileExists("opencode/auth.json"),
         login_hint: "auth login",
+        home_default: ".local/share",
         shared: &[],
         note: "opencode 1.17.3: logins in $XDG_DATA_HOME/opencode/auth.json",
     }),
@@ -346,6 +347,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // A `tool_use` frame per finished call, any tool, and a `text` frame per finished text part
     // (`s13/README.md`). No call id is read: opencode emits each call once, terminal only.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

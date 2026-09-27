@@ -11,8 +11,8 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, RateLimitRule, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -265,6 +265,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             key: "loggedIn",
         },
         login_hint: "auth login",
+        home_default: ".claude",
         shared: &[
             "settings.json",
             "CLAUDE.md",
@@ -367,6 +368,19 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // `assistant` frames' content blocks (`s9/can-use-tool-*.stdout.jsonl`): a `tool_use` block is
     // a call to any tool, a `text` block the model's words. qwen shares this row.
+    // Measured on 2.1.268 (`tests/fixtures/s1/stdout.jsonl`: `{"type":"rate_limit_event",
+    // "rate_limit_info":{"status":"allowed",…}}`); `resetsAt` and `rateLimitType` are the fields
+    // 2.1.283's bundle writes beside `status` when it knows them.
+    rate_limit: Some(RateLimitRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "rate_limit_event")],
+            each: None,
+            unit: &[],
+        },
+        status: "/rate_limit_info/status",
+        resets_at: Some("/rate_limit_info/resetsAt"),
+        window: Some("/rate_limit_info/rateLimitType"),
+    }),
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

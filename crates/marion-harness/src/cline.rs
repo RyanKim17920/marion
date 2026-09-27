@@ -288,6 +288,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // A tool's `content_start` and a text block's `content_end`, which carries the finished text
     // (`s27/cline-report-ok.stdout.jsonl`).
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

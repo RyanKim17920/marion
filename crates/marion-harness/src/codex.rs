@@ -218,6 +218,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             text: "Not logged in",
         },
         login_hint: "login",
+        home_default: ".codex",
         shared: &["config.toml", "AGENTS.md"],
         note: "codex 0.155.1 `login status` on a fresh CODEX_HOME: Not logged in",
     }),
@@ -312,6 +313,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
     // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`
     // under one `id`, so the id keeps it one call. The model's words are the `agent_message` item.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[
             ToolUnit {

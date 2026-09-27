@@ -180,6 +180,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         clear: &[],
         status: ProfileStatus::FileExists(".gemini/oauth_creds.json"),
         login_hint: "",
+        home_default: "",
         shared: &[],
         note: "gemini 0.53.0: GEMINI_CLI_HOME roots .gemini/, oauth_creds.json holds the login",
     }),
@@ -288,6 +289,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // `tool_use` frames name every tool; the assistant's words arrive as `message` frames marked
     // `"delta":true` (`s12/README.md`), so consecutive ones are one message.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {
