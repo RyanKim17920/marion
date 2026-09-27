@@ -8,7 +8,9 @@
 # $0: marion's canned provider on loopback, scratch homes, no login. Rows whose binary is not on
 # PATH are skipped by name. Writes <out>/<row>-<version>/ transcripts and <out>/matrix.{json,md}
 # (default out: tests/fixtures/conformance/). With --baseline, a cell that was PASS in that matrix
-# and is not now fails the run.
+# and is not now fails the run. MARION_CONFORMANCE_PROBES=P-errors,P-tui runs only those probes;
+# for a row whose version is unchanged, the matrix and its directory keep every other probe's last
+# cell and transcript, so a single probe can be refreshed in the committed fixtures.
 #
 # Callers: scripts/admit-harness.sh runs it for the admitted programs against the committed matrix.
 # TODO(release-canary): the nightly canary (.github/workflows/canary.yml on branch release-canary,

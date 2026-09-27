@@ -102,7 +102,8 @@ fn battery() {
             }
         }
         let dir = probes::fixture_dir(&out, &selector, &version);
-        replace_fixture_dir(&out, &selector, &staging, &dir);
+        let partial = outcomes.iter().any(|o| o.status == report::Status::NotRun);
+        replace_fixture_dir(&out, &selector, &staging, &dir, partial);
         let result = report::TargetResult {
             selector: selector.clone(),
             version,
@@ -112,14 +113,7 @@ fn battery() {
                 .unwrap_or_default(),
             outcomes,
         };
-        std::fs::write(
-            dir.join("summary.json"),
-            serde_json::to_string_pretty(&json!({"row": selector, "result": result.to_json()}))
-                .expect("summary serialises")
-                + "\n",
-        )
-        .expect("write summary.json");
-        results.push(result);
+        results.push((result, dir));
     }
     for s in &skipped {
         eprintln!("conformance: skipped {s}");
@@ -136,7 +130,21 @@ fn battery() {
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok());
-    let matrix = report::write_matrix(&out, &results, probes::PROBES);
+    let rows: Vec<report::TargetResult> = results.iter().map(|(r, _)| r.clone()).collect();
+    let matrix = report::write_matrix(&out, &rows, probes::PROBES);
+    // Each row's summary is its merged matrix row, so a partial run's summary still names every
+    // probe's last result.
+    for (r, dir) in &results {
+        std::fs::write(
+            dir.join("summary.json"),
+            serde_json::to_string_pretty(
+                &json!({"row": r.selector, "result": matrix["harnesses"][&r.selector]}),
+            )
+            .expect("summary serialises")
+                + "\n",
+        )
+        .expect("write summary.json");
+    }
     if let Some(base) = baseline {
         let (regressions, changes) = report::compare(&base, &matrix);
         for c in &changes {
@@ -162,7 +170,19 @@ fn not_installed(t: &target::Target) -> Option<String> {
 
 /// Move this run's transcripts into `<row>-<version>/`, removing the row's older directories:
 /// git keeps the history, and the matrix names one directory per row.
-fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path) {
+///
+/// `partial`: some probes were not run, so a transcript this run did not write is carried over
+/// from the row's directory for the same version rather than lost with it.
+fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path, partial: bool) {
+    if partial {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let to = staging.join(e.file_name());
+            if !to.exists() {
+                let _ = std::fs::create_dir_all(staging);
+                let _ = std::fs::copy(e.path(), to);
+            }
+        }
+    }
     let prefix = format!("{}-", selector.replace(':', "-"));
     if let Ok(entries) = std::fs::read_dir(out) {
         for e in entries.flatten() {

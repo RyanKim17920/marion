@@ -152,17 +152,14 @@ pub fn run_all(c: &mut Ctx<'_>) -> (String, Vec<Outcome>) {
         p_errors,
         p_tui,
     ];
-    // `MARION_CONFORMANCE_PROBES=P-tui,P-errors` runs only those (a probe under development); the
-    // rest are recorded as not run, so such a run is for a scratch `--out`, not the fixtures.
+    // `MARION_CONFORMANCE_PROBES=P-tui,P-errors` runs only those; the rest are not run, and the
+    // matrix and the row's directory keep their last results for the same version.
     let only: Option<Vec<String>> = std::env::var("MARION_CONFORMANCE_PROBES")
         .ok()
         .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
     for (name, probe) in PROBES[1..].iter().zip(probes) {
         if only.as_ref().is_some_and(|o| !o.iter().any(|p| p == name)) {
-            outcomes.push(Outcome::unsupported(
-                name,
-                "not run (MARION_CONFORMANCE_PROBES)",
-            ));
+            outcomes.push(Outcome::not_run(name));
             continue;
         }
         let o = probe(c);

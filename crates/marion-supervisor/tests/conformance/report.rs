@@ -27,6 +27,9 @@ pub enum Status {
     Pass,
     Fail,
     Unsupported(String),
+    /// Left out by `MARION_CONFORMANCE_PROBES`: the matrix keeps this cell's last result, and the
+    /// row's directory keeps its transcript ([`write_matrix`], `main.rs`).
+    NotRun,
 }
 
 impl Status {
@@ -35,6 +38,7 @@ impl Status {
             Status::Pass => "PASS",
             Status::Fail => "FAIL",
             Status::Unsupported(_) => "UNSUPPORTED",
+            Status::NotRun => "NOT RUN",
         }
     }
 }
@@ -57,6 +61,15 @@ impl Outcome {
             status: Status::Unsupported(why.clone()),
             expected: String::new(),
             observed: why,
+        }
+    }
+
+    pub fn not_run(probe: &'static str) -> Self {
+        Self {
+            probe,
+            status: Status::NotRun,
+            expected: String::new(),
+            observed: "not run (MARION_CONFORMANCE_PROBES)".into(),
         }
     }
 
@@ -231,7 +244,20 @@ pub fn write_matrix(out: &Path, results: &[TargetResult], probes: &[&str]) -> Va
         .and_then(|h| serde_json::from_value(h).ok())
         .unwrap_or_default();
     for r in results {
-        harnesses.insert(r.selector.clone(), r.to_json());
+        let mut row = r.to_json();
+        // A cell this run left out keeps the last one recorded for the same version: a run of
+        // one probe refreshes that probe's cells and nothing else.
+        if let Some(old) = harnesses
+            .get(&r.selector)
+            .filter(|old| old["version"] == row["version"])
+        {
+            for o in r.outcomes.iter().filter(|o| o.status == Status::NotRun) {
+                if let Some(cell) = old["probes"].get(o.probe) {
+                    row["probes"][o.probe] = cell.clone();
+                }
+            }
+        }
+        harnesses.insert(r.selector.clone(), row);
     }
     let matrix = json!({
         "probes": probes,
@@ -342,6 +368,52 @@ pub fn compare(baseline: &Value, now: &Value) -> (Vec<String>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A run of one probe refreshes that probe's cells and keeps the rest** for the same
+    /// version; a new version replaces the row, since the kept cells were about another binary.
+    #[test]
+    fn a_partial_run_keeps_the_cells_it_did_not_run_for_the_same_version() {
+        let out = marion_testsupport::scratch("conformance-merge");
+        let row = |version: &str, outcomes: Vec<Outcome>| TargetResult {
+            selector: "h".into(),
+            version: version.into(),
+            dir: String::new(),
+            outcomes,
+        };
+        write_matrix(
+            &out,
+            &[row(
+                "1",
+                vec![
+                    Outcome::judged("P-x", true, "", "old x"),
+                    Outcome::judged("P-y", false, "", "old y"),
+                ],
+            )],
+            &["P-x", "P-y"],
+        );
+        let m = write_matrix(
+            &out,
+            &[row(
+                "1",
+                vec![
+                    Outcome::not_run("P-x"),
+                    Outcome::judged("P-y", true, "", "new y"),
+                ],
+            )],
+            &["P-x", "P-y"],
+        );
+        let cell = |m: &Value, p: &str| m["harnesses"]["h"]["probes"][p]["observed"].clone();
+        assert_eq!(
+            (cell(&m, "P-x"), cell(&m, "P-y")),
+            (json!("old x"), json!("new y"))
+        );
+        let m = write_matrix(&out, &[row("2", vec![Outcome::not_run("P-x")])], &["P-x"]);
+        assert_eq!(
+            m["harnesses"]["h"]["probes"]["P-x"]["status"],
+            json!("NOT RUN"),
+            "another version keeps nothing"
+        );
+    }
 
     #[test]
     fn a_pass_that_turns_into_anything_else_is_a_regression_and_other_moves_are_changes() {
