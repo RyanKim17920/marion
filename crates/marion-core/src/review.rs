@@ -11,6 +11,8 @@
 //! Pure data and pure functions, like the rest of this crate: running the reviewer node, reading
 //! the diff and re-prompting the author belong to the supervisor.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 /// How severe a finding is. Ordered so that `Critical > High > Medium > Low`.
@@ -138,7 +140,7 @@ impl From<ReviewSpec> for RawReviewSpec {
     }
 }
 
-/// What the reviewer itself concluded. Recorded, never obeyed: see `decide`.
+/// What the reviewer itself concluded. Recorded, never obeyed: see [`decide`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelVerdict {
@@ -155,7 +157,7 @@ pub const RECOMMENDATION_CAP: usize = 512;
 pub const FILE_CAP: usize = 512;
 
 /// One finding, as recorded. `grounded` is marion's, not the reviewer's: true iff `file` is one of
-/// the paths the reviewed change touched (set by `decide`).
+/// the paths the reviewed change touched (set by [`decide`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub severity: Severity,
@@ -173,7 +175,7 @@ pub struct Finding {
 
 /// A reviewer's report: its own verdict, a summary, and its findings.
 ///
-/// `findings_omitted` counts findings dropped by `MAX_FINDINGS`; absent on the wire when zero.
+/// `findings_omitted` counts findings dropped by [`MAX_FINDINGS`]; absent on the wire when zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Findings {
     pub verdict: ModelVerdict,
@@ -312,7 +314,7 @@ fn first_json_fence(text: &str) -> Option<String> {
 /// ```) fenced block as the JSON report, else a first non-empty line beginning `ALLOW:` or
 /// `BLOCK:` (the rest of the line is the summary). Anything else is [`Unparseable`].
 ///
-/// Strings are capped as they are read. Nothing is decided here; see `decide`.
+/// Strings are capped as they are read. Nothing is decided here; see [`decide`].
 pub fn parse(narrative: &str) -> Result<Parsed, Unparseable> {
     let trimmed = narrative.trim();
     let strict = read_report(trimmed);
@@ -355,6 +357,77 @@ pub fn parse(narrative: &str) -> Result<Parsed, Unparseable> {
         _ => "no JSON report, fenced JSON block, or ALLOW:/BLOCK: first line".to_string(),
     };
     Err(Unparseable(reason))
+}
+
+/// The most findings a verdict keeps. The rest are counted in `Findings::findings_omitted`; the
+/// kept ones are the grounded, most severe first, so the cap drops remarks before blockers.
+pub const MAX_FINDINGS: usize = 16;
+
+/// marion's decision on one review round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Decision {
+    Allow,
+    Block,
+}
+
+/// One round's outcome: marion's decision, how many grounded findings met the threshold, and the
+/// report with every finding's `grounded` set and the list capped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Verdict {
+    pub decision: Decision,
+    pub blocking: usize,
+    pub findings: Findings,
+}
+
+/// Whether a reviewer's `file` names one of the change's paths. Only a leading `./` is forgiven;
+/// anything looser (basename matches, suffix matches) could ground a finding about a file the
+/// change never touched.
+fn grounded(file: &str, changed_paths: &[PathBuf]) -> bool {
+    let mut f = file.trim();
+    while let Some(rest) = f.strip_prefix("./") {
+        f = rest;
+    }
+    !f.is_empty() && changed_paths.iter().any(|p| p.as_path() == Path::new(f))
+}
+
+/// Decide a round. **Block iff** a grounded finding (its file is in `changed_paths`) is at least
+/// `block_on`, or the reviewer said block and reported no findings at all. The reviewer's own
+/// verdict is otherwise only recorded: a "block" resting on ungrounded or minor findings allows,
+/// and an "allow" beside a grounded blocker blocks.
+///
+/// Blockers are counted over the full list before the [`MAX_FINDINGS`] cap, so the cap can never
+/// hide one.
+pub fn decide(parsed: Parsed, changed_paths: &[PathBuf], block_on: Severity) -> Verdict {
+    let mut report = parsed.findings;
+    for f in report.findings.iter_mut() {
+        f.grounded = grounded(&f.file, changed_paths);
+    }
+    let blocking = report
+        .findings
+        .iter()
+        .filter(|f| f.grounded && f.severity >= block_on)
+        .count();
+    let bare_block = report.verdict == ModelVerdict::Block
+        && report.findings.is_empty()
+        && report.findings_omitted == 0;
+    let decision = if blocking > 0 || bare_block {
+        Decision::Block
+    } else {
+        Decision::Allow
+    };
+    report
+        .findings
+        .sort_by_key(|f| (std::cmp::Reverse(f.grounded), std::cmp::Reverse(f.severity)));
+    if report.findings.len() > MAX_FINDINGS {
+        report.findings_omitted += report.findings.len() - MAX_FINDINGS;
+        report.findings.truncate(MAX_FINDINGS);
+    }
+    Verdict {
+        decision,
+        blocking,
+        findings: report,
+    }
 }
 
 #[cfg(test)]
@@ -634,5 +707,201 @@ mod tests {
         let json = serde_json::to_string(&omitted).unwrap();
         assert!(json.contains(r#""findings_omitted":3"#), "{json}");
         assert_eq!(serde_json::from_str::<Findings>(&json).unwrap(), omitted);
+    }
+
+    fn report(verdict: ModelVerdict, findings: Vec<Finding>) -> Parsed {
+        Parsed {
+            findings: Findings {
+                verdict,
+                summary: String::new(),
+                findings,
+                findings_omitted: 0,
+            },
+            route: ParseRoute::Json,
+        }
+    }
+
+    fn changed() -> Vec<PathBuf> {
+        vec![PathBuf::from("src/a.rs"), PathBuf::from("docs/b.md")]
+    }
+
+    #[test]
+    fn a_grounded_finding_at_the_threshold_blocks_and_one_below_does_not() {
+        for (sev, want) in [
+            (Severity::Critical, Decision::Block),
+            (Severity::High, Decision::Block),
+            (Severity::Medium, Decision::Allow),
+            (Severity::Low, Decision::Allow),
+        ] {
+            let v = decide(
+                report(ModelVerdict::Block, vec![finding(sev, "src/a.rs")]),
+                &changed(),
+                Severity::High,
+            );
+            assert_eq!(v.decision, want, "{sev:?}");
+            assert_eq!(v.blocking, usize::from(want == Decision::Block));
+        }
+    }
+
+    #[test]
+    fn the_threshold_edges_low_blocks_on_anything_and_critical_only_on_critical() {
+        let low = report(
+            ModelVerdict::Allow,
+            vec![finding(Severity::Low, "src/a.rs")],
+        );
+        assert_eq!(
+            decide(low, &changed(), Severity::Low).decision,
+            Decision::Block
+        );
+        let high = report(
+            ModelVerdict::Block,
+            vec![finding(Severity::High, "src/a.rs")],
+        );
+        assert_eq!(
+            decide(high, &changed(), Severity::Critical).decision,
+            Decision::Allow
+        );
+        let crit = report(
+            ModelVerdict::Block,
+            vec![finding(Severity::Critical, "src/a.rs")],
+        );
+        assert_eq!(
+            decide(crit, &changed(), Severity::Critical).decision,
+            Decision::Block
+        );
+    }
+
+    #[test]
+    fn an_ungrounded_finding_is_recorded_as_such_and_never_blocks() {
+        let v = decide(
+            report(
+                ModelVerdict::Block,
+                vec![finding(Severity::Critical, "src/elsewhere.rs")],
+            ),
+            &changed(),
+            Severity::Low,
+        );
+        assert_eq!(v.decision, Decision::Allow);
+        assert_eq!(v.blocking, 0);
+        assert!(!v.findings.findings[0].grounded);
+        // The reviewer's own verdict is kept on the record even though marion overrode it.
+        assert_eq!(v.findings.verdict, ModelVerdict::Block);
+    }
+
+    #[test]
+    fn grounding_forgives_a_leading_dot_slash_and_nothing_looser() {
+        let cases = [
+            ("./src/a.rs", true),
+            ("././docs/b.md", true),
+            (" src/a.rs ", true),
+            ("a.rs", false),
+            ("/abs/src/a.rs", false),
+            ("src/a.rs.orig", false),
+            ("", false),
+        ];
+        for (file, want) in cases {
+            let v = decide(
+                report(ModelVerdict::Allow, vec![finding(Severity::High, file)]),
+                &changed(),
+                Severity::High,
+            );
+            assert_eq!(v.findings.findings[0].grounded, want, "{file:?}");
+        }
+    }
+
+    #[test]
+    fn a_block_with_no_findings_blocks_and_an_allow_with_none_allows() {
+        let v = decide(
+            report(ModelVerdict::Block, vec![]),
+            &changed(),
+            Severity::High,
+        );
+        assert_eq!((v.decision, v.blocking), (Decision::Block, 0));
+        let v = decide(
+            report(ModelVerdict::Allow, vec![]),
+            &changed(),
+            Severity::High,
+        );
+        assert_eq!(v.decision, Decision::Allow);
+        // The first-line form reaches the same rule.
+        let line = parse("BLOCK: drops the users table").unwrap();
+        assert_eq!(
+            decide(line, &changed(), Severity::High).decision,
+            Decision::Block
+        );
+    }
+
+    #[test]
+    fn a_block_resting_only_on_minor_findings_allows() {
+        let v = decide(
+            report(
+                ModelVerdict::Block,
+                vec![finding(Severity::Low, "src/a.rs")],
+            ),
+            &changed(),
+            Severity::High,
+        );
+        assert_eq!(v.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn an_allow_beside_a_grounded_blocker_blocks() {
+        let v = decide(
+            report(
+                ModelVerdict::Allow,
+                vec![finding(Severity::Critical, "docs/b.md")],
+            ),
+            &changed(),
+            Severity::High,
+        );
+        assert_eq!(v.decision, Decision::Block);
+    }
+
+    #[test]
+    fn the_cap_keeps_grounded_and_severe_findings_and_counts_what_it_drops() {
+        let mut fs: Vec<Finding> = (0..MAX_FINDINGS + 4)
+            .map(|_| finding(Severity::Critical, "not/changed.rs"))
+            .collect();
+        // The one grounded blocker comes last and is below every ungrounded one in severity.
+        fs.push(finding(Severity::High, "src/a.rs"));
+        let n = fs.len();
+        let v = decide(report(ModelVerdict::Allow, fs), &changed(), Severity::High);
+        assert_eq!(v.decision, Decision::Block);
+        assert_eq!(v.blocking, 1);
+        assert_eq!(v.findings.findings.len(), MAX_FINDINGS);
+        assert_eq!(v.findings.findings_omitted, n - MAX_FINDINGS);
+        assert!(v.findings.findings[0].grounded, "grounded first");
+        assert_eq!(v.findings.findings[0].file, "src/a.rs");
+    }
+
+    #[test]
+    fn within_the_cap_findings_are_ordered_grounded_then_by_severity() {
+        let v = decide(
+            report(
+                ModelVerdict::Allow,
+                vec![
+                    finding(Severity::Low, "src/a.rs"),
+                    finding(Severity::Critical, "x.rs"),
+                    finding(Severity::Medium, "src/a.rs"),
+                ],
+            ),
+            &changed(),
+            Severity::Critical,
+        );
+        let order: Vec<_> = v
+            .findings
+            .findings
+            .iter()
+            .map(|f| (f.grounded, f.severity))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (true, Severity::Medium),
+                (true, Severity::Low),
+                (false, Severity::Critical)
+            ]
+        );
+        assert_eq!(v.findings.findings_omitted, 0);
     }
 }
