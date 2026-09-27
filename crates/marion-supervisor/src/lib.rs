@@ -32,6 +32,7 @@ pub(crate) mod continuation;
 /// sends `agent/spawn`, and reads the node's own stream back — carrying a request and an answer
 /// rather than owning a process.
 pub mod courier;
+pub mod credentials;
 pub(crate) mod depth;
 /// §7.6's descendant-gated completion: a child's `Exited` is held while a descendant is live,
 /// unless it reported early or its own bound expires.

@@ -1579,6 +1579,14 @@ ever runs a real login.
   docs, **not measured**; beta or undocumented-by-marion wires are marked unverified on the row.
   User-level custom providers parse from `providers.toml` text; `<provider>:<model>` splits on the
   first colon only when the prefix is a registry id (`ollama:qwen3:32b`).
+- **Credential store — built.** `marion_supervisor::credentials`: a `Secret` whose `Debug` is
+  `***`; the macOS login Keychain through `/usr/bin/security` (service `marion`, account the
+  provider id; writes via `security -i` with the command on stdin so the key never reaches argv;
+  keys and ids validated to characters that need no quoting), or a `0600` JSON file in a `0700`
+  `$XDG_CONFIG_HOME/marion/` replaced through an `O_EXCL` temp file and a rename;
+  `MARION_CREDENTIAL_STORE=file` forces the file. A key file other users can read is refused.
+  Custom providers load from the **user-level** `providers.toml` only. The Keychain round trip ran
+  green once with `MARION_KEYCHAIN_TEST=1`; it is skipped by default.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
