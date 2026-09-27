@@ -20,13 +20,17 @@ tap = "RyanKim17920/homebrew-tap"
 # crate, in crates/marion-supervisor/Cargo.toml).
 npm-scope = "@ryankim17920"
 publish-jobs = ["homebrew", "npm"]
-# macOS and glibc Linux, both architectures. No Windows (marion needs PTYs and Unix sockets) and
-# no musl yet: nothing in CI has linked against it, so shipping it would be shipping a guess.
+# macOS, glibc Linux and musl Linux, both architectures. musl gives a static binary for Alpine and
+# other non-glibc systems; both musl targets were cross-linked with cargo-zigbuild on macOS and are
+# built natively on the release runners. No native Windows (marion needs POSIX PTYs and Unix
+# sockets; see CONTRIBUTING.md, "Windows").
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
 ]
 install-path = "CARGO_HOME"
 # Pull requests get `dist plan` only: it checks this file and the workflow agree without spending

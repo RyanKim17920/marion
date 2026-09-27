@@ -108,8 +108,8 @@ new fixture goes through it before it is committed.
 
 Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`, 0.33.0).
 `dist-workspace.toml` is the configuration; `.github/workflows/release.yml` is generated from it
-by `dist generate` and is never edited by hand. One archive per target (macOS and glibc Linux,
-arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer, a
+by `dist generate` and is never edited by hand. One archive per target (macOS, glibc Linux and
+static musl Linux, each arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer, a
 Homebrew formula named `marion`, and the npm package `@ryankim17920/marion` (plain `marion` is
 taken on npm), whose install step downloads the archive for the platform it runs on.
 
