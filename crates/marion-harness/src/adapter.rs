@@ -583,17 +583,16 @@ pub trait HarnessAdapter {
     }
 
     /// **The refused credential one frame reports**, in the harness's words — `Some` only where
-    /// the row's error rules read an auth failure off it (a 401, a 403, a refused key). No retry
+    /// the row's error rules read the provider's own 401 or 403 off it
+    /// ([`crate::auth::refused_credential`]). No retry
     /// heals one, so a run showing it while the harness retries (claude's ten `api_retry`s) has
     /// failed already. `None` for every other frame, and on a row with no grammar.
     fn auth_refusal(&self, frame: &serde_json::Value) -> Option<String> {
         let g = self.spec().stream?;
-        let reports = grammar::frame_error_reports(g, std::slice::from_ref(frame));
-        match crate::auth::reported_failure_cause("", &reports, crate::auth::Billing::Subscription)?
-        {
-            marion_core::contract::FailureCause::Auth { line } => Some(line),
-            _ => None,
-        }
+        crate::auth::refused_credential(&grammar::frame_error_reports(
+            g,
+            std::slice::from_ref(frame),
+        ))
     }
 
     /// How a message reaches this node's next turn in `shape` — the row's
@@ -2578,6 +2577,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **Only a provider's own refusal ends a run early**: an error frame that merely says
+    /// `unauthorized` about something else — an MCP server of the operator's that refused codex —
+    /// is recorded, not a reason to kill the node; the refusal needs the provider's 401 or 403.
+    #[test]
+    fn an_unauthorized_word_without_a_provider_status_is_no_refused_credential() {
+        let codex = adapter_for(Harness::Codex).unwrap();
+        let mcp = serde_json::json!({"type": "error", "message": "MCP client for `github` failed to start: unauthorized"});
+        assert_eq!(codex.auth_refusal(&mcp), None);
+        let provider = serde_json::json!({"type": "error", "message": "Reconnecting... 1/5 (unexpected status 401 Unauthorized: bad key)"});
+        assert!(codex.auth_refusal(&provider).is_some());
+        let forbidden =
+            serde_json::json!({"type": "error", "message": "unexpected status 403 Forbidden"});
+        assert!(codex.auth_refusal(&forbidden).is_some());
     }
 
     /// **Which frames end a run early is row data, and only an auth failure does**: on every row

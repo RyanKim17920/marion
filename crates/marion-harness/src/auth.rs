@@ -224,6 +224,21 @@ pub fn reported_failure_cause(
     classify(&lines, billing)
 }
 
+/// **A provider's refusal of the credential, among `reports`**: the first report that the one
+/// classifier reads as `Auth` **and** that carries the provider's status, a standalone 401 or 403
+/// — what no retry heals, and so what ends a run early. The words alone (`unauthorized`) are not
+/// enough here: codex reports an operator's MCP server refusing it on the same error frame.
+pub fn refused_credential(reports: &[crate::grammar::ErrorReport]) -> Option<String> {
+    reports.iter().find_map(|r| {
+        let lower = r.line.to_ascii_lowercase();
+        let provider = has_status(&lower, "401") || has_status(&lower, "403");
+        match reported_failure_cause("", std::slice::from_ref(r), Billing::Subscription)? {
+            FailureCause::Auth { line } if provider => Some(line),
+            _ => None,
+        }
+    })
+}
+
 fn stderr_candidates(stderr: &str) -> Vec<Candidate> {
     stderr
         .lines()
