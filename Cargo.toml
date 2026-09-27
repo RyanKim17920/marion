@@ -35,4 +35,13 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 # The profile `dist build` compiles release artifacts with (see dist-workspace.toml).
 [profile.dist]
 inherits = "release"
-lto = "thin"
+# Size and speed of what ships, paid for once at release time: whole-program LTO in one codegen
+# unit, and no symbol table in the binary (a crash report still names the panic site; the message
+# and location are data, not symbols).
+lto = "fat"
+codegen-units = 1
+strip = true
+# Stated rather than inherited, because it is load-bearing: the supervisor catches a panic in a
+# handler, a pane producer or an outbound flow with `catch_unwind` and keeps serving (§5.7).
+# `panic = "abort"` would turn each of those into the supervisor's death.
+panic = "unwind"
