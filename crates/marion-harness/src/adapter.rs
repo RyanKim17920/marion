@@ -9096,6 +9096,7 @@ mod tests {
 
     /// A resume is checked only where the row measured one naming its own session, and never on a
     /// fresh run: the same stream reads as a refusal only for the agy row asked to resume another id.
+    /// agy (s32) and opencode (S31 `p0b/opencode/db1`, `db2`) are the two rows that measured it.
     #[test]
     fn only_a_row_that_measured_an_in_place_resume_checks_one() {
         let fresh = r#"{"event":"init","conversation_id":"new-id","init":{}}"#;
@@ -9112,8 +9113,8 @@ mod tests {
                 .is_some_and(|s| s.resumes_in_place);
             assert_eq!(
                 checks,
-                h == Harness::Antigravity,
-                "{h}: measured on agy alone"
+                matches!(h, Harness::Antigravity | Harness::OpenCode),
+                "{h}: measured on agy and opencode alone"
             );
         }
     }

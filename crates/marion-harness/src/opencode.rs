@@ -299,7 +299,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }],
     file_changes: None,
     // `sessionID` (`ses_` + 26 chars) is on **every** event (`s13/README.md`), so the first frame
-    // of any shape names the session `run --session` takes back.
+    // of any shape names the session `run --session` takes back — once the first response streams:
+    // nothing is printed while the first request is in flight (s36 `held-first/`). A resume keeps
+    // the id (S31 `p0b/opencode/db1`, `db2`: the same `sessionID` on every frame of both runs).
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Has("/sessionID")],
@@ -307,7 +309,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/sessionID",
-        resumes_in_place: false,
+        resumes_in_place: true,
     }),
     // One `step_finish` per model step (`s13/README.md`), each that step's spend. **Measured
     // non-zero on 1.18.32** (`s36-opencode-parity/run-usage.stdout.jsonl`): a provider answer of
@@ -938,6 +940,32 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|w| w == ["--session", "ses_prev"])
+        );
+    }
+
+    /// **A resume continues the same session, so a stream naming another one is a fresh run.** S31
+    /// (`p0b/opencode/db1.jsonl`, `db2.jsonl`): the second `run --session <id>` printed the first
+    /// run's `sessionID` on every frame. So the row states `resumes_in_place`, and a resumed run
+    /// whose stream names a different session is refused as the fresh run it is.
+    #[test]
+    fn a_resumed_run_names_the_session_it_resumed_and_any_other_is_refused() {
+        let resumed = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s31-turn-delivery/p0b/opencode/db2.jsonl"
+        ));
+        let first = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s31-turn-delivery/p0b/opencode/db1.jsonl"
+        ));
+        let id = crate::json_frames(first)
+            .iter()
+            .find_map(|f| crate::grammar::session_id(&STREAM, f))
+            .expect("the first run named its session");
+        assert_eq!(crate::grammar::resume_refusal(&STREAM, resumed, &id), None);
+        assert!(
+            crate::grammar::resume_refusal(&STREAM, resumed, "ses_someotherid0000000000000")
+                .is_some(),
+            "a resume that came back under another session is refused"
         );
     }
 
