@@ -1,0 +1,171 @@
+//! **The harness conformance battery**: every probe written once, driven by row data, run against
+//! every harness row marion has — so a harness gets S36's depth of measurement (the codex
+//! app-server kit: a logging driver, a hold/script provider) the day its row lands.
+//!
+//! ```sh
+//! scripts/conformance.sh --harness opencode          # one row
+//! scripts/conformance.sh --all                       # every row whose binary is installed
+//! MARION_CONFORMANCE=opencode,acp:opencode cargo test -p marion-supervisor --test conformance
+//! ```
+//!
+//! **Opt-in, by name.** `MARION_CONFORMANCE` selects rows (`all`, or a comma list of the matrix's
+//! row names: `claude-code`, `codex`, `opencode`, `acp:opencode`, …). Unset, the test announces
+//! its skip and passes: the battery drives real harnesses for minutes each and belongs to
+//! admission (`scripts/admit-harness.sh`) and the nightly canary, not to every `cargo test`.
+//!
+//! **$0, and nobody's login.** Every model request goes to marion's canned provider on loopback
+//! through the probe's own hold ([`provider`]); every launch is marion's canned launch, whose rows
+//! relocate the harness's config and credential homes into a scratch tree. No probe starts a login.
+//!
+//! **Output.** Per row, `<out>/<row>-<version>/` holds one trimmed transcript per probe (S36's
+//! format, [`report`]) and `summary.json`; `<out>/matrix.json` and `<out>/matrix.md` are the probe ×
+//! harness matrix, merged with the rows not run this time. `<out>` defaults to
+//! `tests/fixtures/conformance/` and is `MARION_CONFORMANCE_OUT` when set. With
+//! `MARION_CONFORMANCE_BASELINE` naming a committed `matrix.json`, a cell that was PASS there and is
+//! not now fails the test (admission's diff); every other change is printed.
+
+mod driver;
+mod probes;
+mod provider;
+mod report;
+mod target;
+mod tty;
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+
+const SELECT: &str = "MARION_CONFORMANCE";
+const OUT: &str = "MARION_CONFORMANCE_OUT";
+const BASELINE: &str = "MARION_CONFORMANCE_BASELINE";
+
+fn default_out() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/conformance")
+}
+
+#[test]
+fn battery() {
+    let Ok(selection) = std::env::var(SELECT) else {
+        // Its own line rather than `announce_skip`, whose wording is the CI no-harness switch's.
+        eprintln!(
+            "SKIPPED ({SELECT} is unset): the harness conformance battery; set it to `all` or a \
+             comma list of rows"
+        );
+        return;
+    };
+    let wanted: Vec<String> = selection.split(',').map(|s| s.trim().to_string()).collect();
+    let all = wanted.iter().any(|w| w == "all");
+    let out = std::env::var(OUT)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_out());
+    let scratch = marion_testsupport::scratch("conformance");
+
+    let mut results = Vec::new();
+    let mut skipped = Vec::new();
+    for (selector, built) in target::all() {
+        if !all && !wanted.contains(&selector) {
+            continue;
+        }
+        let t = match built {
+            Ok(t) => t,
+            Err(e) => {
+                skipped.push(format!("{selector}: {e}"));
+                continue;
+            }
+        };
+        if let Some(why) = not_installed(&t) {
+            skipped.push(format!("{selector}: {why}"));
+            continue;
+        }
+        let staging = out.join(format!(".staging-{}", selector.replace(':', "-")));
+        let _ = std::fs::remove_dir_all(&staging);
+        let mut ctx = probes::Ctx {
+            t: &t,
+            out: staging.clone(),
+            scratch: scratch.join(selector.replace(':', "-")),
+            report_answered: None,
+        };
+        let (version, outcomes) = probes::run_all(&mut ctx);
+        let dir = probes::fixture_dir(&out, &selector, &version);
+        replace_fixture_dir(&out, &selector, &staging, &dir);
+        let result = report::TargetResult {
+            selector: selector.clone(),
+            version,
+            dir: dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            outcomes,
+        };
+        std::fs::write(
+            dir.join("summary.json"),
+            serde_json::to_string_pretty(&json!({"row": selector, "result": result.to_json()}))
+                .expect("summary serialises")
+                + "\n",
+        )
+        .expect("write summary.json");
+        results.push(result);
+    }
+    for s in &skipped {
+        eprintln!("conformance: skipped {s}");
+    }
+    assert!(
+        !results.is_empty() || !skipped.is_empty(),
+        "{SELECT}={selection} names no row; rows are {:?}",
+        target::all()
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>()
+    );
+    let baseline: Option<Value> = std::env::var(BASELINE)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let matrix = report::write_matrix(&out, &results, probes::PROBES);
+    if let Some(base) = baseline {
+        let (regressions, changes) = report::compare(&base, &matrix);
+        for c in &changes {
+            eprintln!("conformance: changed {c}");
+        }
+        assert!(
+            regressions.is_empty(),
+            "conformance regressions against the committed matrix:\n{}",
+            regressions.join("\n")
+        );
+    }
+}
+
+/// Why a row's binary cannot be run here, or `None` when it can. Read off the launch marion would
+/// compile, so the program name comes from the row and nowhere else.
+fn not_installed(t: &target::Target) -> Option<String> {
+    let program = match t.acp_agent() {
+        Some(a) => a.argv.first().map(|s| s.to_string()),
+        None => t.spec.program.map(str::to_string),
+    }?;
+    let found = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(&program).is_file()))
+        .unwrap_or(false);
+    (!found).then(|| format!("`{program}` is not on PATH"))
+}
+
+/// Move this run's transcripts into `<row>-<version>/`, removing the row's older directories:
+/// git keeps the history, and the matrix names one directory per row.
+fn replace_fixture_dir(out: &Path, selector: &str, staging: &Path, dir: &Path) {
+    let prefix = format!("{}-", selector.replace(':', "-"));
+    if let Ok(entries) = std::fs::read_dir(out) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // `<row>-<version>`: the row's prefix followed by a version, never another row's name
+            // that merely starts with this one (`acp-opencode-…` is not `acp-…`'s).
+            let is_row = name.strip_prefix(&prefix).is_some_and(|rest| {
+                rest.chars().next().is_some_and(|c| c.is_ascii_digit()) || rest == "unknown"
+            });
+            if is_row && e.path() != staging {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(staging).expect("staging dir");
+    std::fs::rename(staging, dir).expect("move transcripts into place");
+}
