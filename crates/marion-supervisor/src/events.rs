@@ -253,16 +253,31 @@ impl EventSink {
     /// with, so a line this records as `Raw` is exactly a line the adapter also failed to parse.
     pub fn record_capture(&mut self, stdout: &str) {
         for line in stdout.lines() {
-            let line = line.trim_end_matches('\r');
-            if line.is_empty() {
-                continue;
-            }
-            let draft = match serde_json::from_str::<serde_json::Value>(line) {
-                Ok(v) if v.is_object() => self.draft(StreamEvent::Frame(&v), false),
-                _ => self.draft(StreamEvent::Unparsed(line), false),
-            };
-            self.writer.borrow_mut().record(draft);
+            self.record_text_line(line, false);
         }
+    }
+
+    /// Record one stdout line **as it lands** — the `LaunchOnly` path's live seam
+    /// (`run::run_bounded_watched`'s `on_line`). The same line rule as [`Self::record_capture`],
+    /// `observed_live: true`, so a running node's file already says what it has done — which is
+    /// what `status`'s peek at a running child reads. A path that records live never also records
+    /// the capture, or every frame would be written twice.
+    pub fn record_line(&self, line: &str) {
+        self.record_text_line(line, true);
+    }
+
+    /// One stdout line as a frame when it is a JSON object, else as the raw line; a blank line is
+    /// nothing.
+    fn record_text_line(&self, line: &str, live: bool) {
+        let line = line.trim_end_matches(['\n', '\r']);
+        if line.is_empty() {
+            return;
+        }
+        let draft = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) if v.is_object() => self.draft(StreamEvent::Frame(&v), live),
+            _ => self.draft(StreamEvent::Unparsed(line), live),
+        };
+        self.writer.borrow_mut().record(draft);
     }
 
     /// A lifecycle bookend. Barrier-fsynced before it returns (`Event::is_barrier`), because a lost
@@ -1283,8 +1298,8 @@ mod tests {
     }
 
     /// A capture read after the process died is not a live observation, and §4.1 has an axis that
-    /// says so. The `LaunchOnly` harnesses have no live seam at all — `run_bounded` drains the pipe
-    /// whole — so their events are honestly `observed_live: false` rather than falsely live.
+    /// says so. A path that recovers its frames from a finished capture (ACP's transcript, a
+    /// launch-only root) records them honestly `observed_live: false` rather than falsely live.
     #[test]
     fn events_recovered_from_a_finished_capture_do_not_claim_to_have_been_observed_live() {
         let dir = scratch("events-capture");
@@ -1311,6 +1326,44 @@ mod tests {
         match &events[1].payload {
             Payload::Raw(s) => assert_eq!(s, "Reading additional input from stdin..."),
             other => panic!("a non-JSON line is still something the node said: {other:?}"),
+        }
+    }
+
+    /// **A line recorded as it lands is the same event a capture would have made, marked live.**
+    /// The launch-only child path records through this while the child runs, so its file says what
+    /// the child has done before the child ends — the one line rule, and a trailing CR or LF is not
+    /// part of the frame.
+    #[test]
+    fn a_line_recorded_as_it_lands_is_the_captures_event_observed_live() {
+        let dir = scratch("events-line");
+        let path = dir.join("events.jsonl");
+        {
+            let s = EventSink::new(
+                EventWriter::open_path(&path, &node()).unwrap(),
+                Harness::Codex,
+                "unused".into(),
+            );
+            for line in [
+                "{\"type\":\"thread.started\"}\r",
+                "",
+                "Reading additional input from stdin...\n",
+                "{\"type\":\"turn.completed\"}",
+            ] {
+                s.record_line(line);
+            }
+        }
+        let (log, events) = read(&path);
+        assert_eq!(
+            log.records, 3,
+            "two frames and the raw line; a blank line is nothing"
+        );
+        assert!(events.iter().all(|e| e.provenance.observed_live));
+        match (&events[0].payload, &events[1].payload) {
+            (Payload::Vendor { key, .. }, Payload::Raw(s)) => {
+                assert_eq!(key, "thread.started");
+                assert_eq!(s, "Reading additional input from stdin...");
+            }
+            other => panic!("{other:?}"),
         }
     }
 

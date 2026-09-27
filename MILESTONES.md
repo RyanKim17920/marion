@@ -279,6 +279,11 @@ has no row (its stream is read as code), so it has no activity rule. Witnesses:
 `marion-harness/tests/recent_activity.rs` (one case per row, plus codex's arguments and s7's
 commands), `grammar::tests::{only_the_last_calls_are_kept_oldest_first_and_a_revision_is_not_a_second_call,
 the_text_is_the_last_line_of_the_last_message_and_deltas_join_into_one}`.
+A launch-only child (codex, gemini, opencode, copilot, goose, cline) now records each stdout line
+to its `events.jsonl` as it lands (`EventSink::record_line`, `observed_live: true`) through the
+`on_line` seam `run_bounded_watched` already had for the session watch, instead of recording the
+whole capture after exit; only ACP children and launch-only roots still record after the fact.
+Witness: `events::tests::a_line_recorded_as_it_lands_is_the_captures_event_observed_live`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

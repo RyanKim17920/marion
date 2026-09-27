@@ -900,6 +900,7 @@ fn launch_only_child(
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
+    events: Option<&crate::events::EventSink>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -908,7 +909,16 @@ fn launch_only_child(
     if auth == Auth::Canned {
         cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
     }
-    let on_line = |line: &str| session.observe_line(line);
+    // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
+    // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
+    // said before the kill. The capture this returns is still whole, and is not recorded again
+    // ([`record_capture_after_the_fact`] skips this path).
+    let on_line = |line: &str| {
+        if let Some(es) = events {
+            es.record_line(line);
+        }
+        session.observe_line(line);
+    };
     let output = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     Ok(ChildRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -1589,9 +1599,14 @@ pub fn run_spawn_watched(
         LaunchPath::Terminal => {
             return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
         }
-        LaunchPath::LaunchOnly => {
-            launch_only_child(&inv, env.auth, bound, &announce_started, &session)
-        }
+        LaunchPath::LaunchOnly => launch_only_child(
+            &inv,
+            env.auth,
+            bound,
+            &announce_started,
+            &session,
+            events.as_ref(),
+        ),
         // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
         // children through the single ACP adapter*, and until this arm existed the only thing that
         // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
@@ -2112,16 +2127,15 @@ fn child_spawned_record(
     }
 }
 
-/// **The `LaunchOnly` half of §7.3.3's wiring, and the asymmetry is the harness's, not marion's.**
+/// **The after-the-fact half of §7.3.3's wiring: ACP, and only ACP.**
 ///
-/// codex, gemini and opencode have no live seam at all — the prompt rides argv and `run_bounded`
-/// drains the pipe whole — so their stream can only be recovered from the capture, after the fact,
-/// and every event it produces is honestly `observed_live: false`. Never both: the duplex path
-/// already recorded these frames live, and recording them again here would be the duplicate
-/// §7.3.3's seam is stated in ordinals to prevent.
+/// A `LaunchOnly` child has no channel *into* it, but its stdout is read line by line as it lands
+/// (`run_bounded_watched`'s `on_line`), and [`launch_only_child`] records each line there, live.
+/// The duplex path records live through its sink. Recording either again here would be the
+/// duplicate §7.3.3's seam is stated in ordinals to prevent.
 ///
-/// ACP is here and not on the live side: the driver owns the frame loop for the whole turn and
-/// hands the transcript back at the end, so every event recovered from it is honestly
+/// ACP stays after the fact: the driver owns the frame loop for the whole turn and hands the
+/// transcript back at the end, so every event recovered from it is honestly
 /// `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact, which
 /// is why this branches on where the frames came from rather than on `has_typed_control_plane`.
 fn record_capture_after_the_fact(
@@ -2129,7 +2143,7 @@ fn record_capture_after_the_fact(
     events: Option<&mut crate::events::EventSink>,
     stdout: &str,
 ) {
-    if matches!(path, LaunchPath::LaunchOnly | LaunchPath::Acp)
+    if matches!(path, LaunchPath::Acp)
         && let Some(es) = events
     {
         es.record_capture(stdout);
