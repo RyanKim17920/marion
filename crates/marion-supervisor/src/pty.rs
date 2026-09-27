@@ -3645,6 +3645,7 @@ impl PtyHost {
             last_operator_input: typing.last_operator_input(),
             composer_empty: typing.composer_empty(),
             screen_drawn: modes.drawn(),
+            titled: modes.titled(),
             last_output: modes.last_output(),
             boot_dialog: modes.showing(),
         }

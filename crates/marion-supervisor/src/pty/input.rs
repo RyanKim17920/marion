@@ -9,6 +9,8 @@
 //! turns bracketed paste on in its first write and then spends seconds (twenty, with nobody
 //! answering its terminal queries) before it draws a thing, and a paste in that window is
 //! discarded without a trace — so a first paste waits for text on the screen and a quiet moment.
+//! And whether it has **set its window title** since: codex 0.155.1 draws a provisional composer
+//! that drops Enter while it boots, and only its real one sets the title.
 //!
 //! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
@@ -25,6 +27,9 @@ const MAX_PARAMS: usize = 64;
 
 /// The DEC private mode for bracketed paste.
 const BRACKETED_PASTE: &[u8] = b"2004";
+
+/// Longest OSC command number kept: every command marion reads is one digit.
+const MAX_OSC_DIGITS: usize = 4;
 
 /// Most screen text kept for recognising a boot dialog. The longest measured first screen with a
 /// dialog carries about 1.5 KiB of text (copilot 1.0.83, banner and box included); a TUI that
@@ -44,15 +49,17 @@ enum Scan {
     Private,
     /// Inside a CSI marion does not read; waiting for its final byte.
     Ignore,
+    /// After `ESC ]`, collecting the OSC command number up to its `;`.
+    OscCommand,
     /// Inside a control string (OSC, DCS, APC, PM, SOS): its payload is not text on the screen.
     /// Ended by `BEL`, or by `ESC \` through [`Scan::Escape`].
     Str,
 }
 
-/// **DECSET/DECRST 2004, followed across reads, and whether text has been drawn since.** A small
-/// state machine over the output stream — only the sequences that change the mode are recognised,
-/// control strings are skipped whole, and a read boundary anywhere inside one is carried, because
-/// a `read()` is not a frame (S11).
+/// **DECSET/DECRST 2004, followed across reads, and whether text has been drawn or a window title
+/// set since.** A small state machine over the output stream — only the sequences that change the
+/// mode or set a title are recognised, every other control string is skipped whole, and a read
+/// boundary anywhere inside one is carried, because a `read()` is not a frame (S11).
 #[derive(Debug, Default)]
 pub(crate) struct ModeScan {
     state: Scan,
@@ -60,6 +67,7 @@ pub(crate) struct ModeScan {
     overflowed: bool,
     bracketed_paste: bool,
     drawn: bool,
+    titled: bool,
     last_output: Option<Instant>,
     /// The row's boot dialogs this scan recognises ([`Self::showing`]).
     dialogs: &'static [BootDialog],
@@ -88,6 +96,13 @@ impl ModeScan {
     /// part of an escape sequence or control string — since it last turned bracketed paste on.
     pub(crate) fn drawn(&self) -> bool {
         self.drawn
+    }
+
+    /// Whether the node has set its window title (OSC 0 or OSC 2, any payload) since it last
+    /// turned bracketed paste on. Not cleared by typing: a title belongs to the TUI's real
+    /// screen, and a dialog answered after it is covered by [`Self::drawn`]'s reset.
+    pub(crate) fn titled(&self) -> bool {
+        self.titled
     }
 
     /// When the node last wrote anything at all, `None` before its first byte.
@@ -217,11 +232,16 @@ impl ModeScan {
             }
             Scan::Escape => match b {
                 b'[' => Scan::CsiEntry,
-                b']' | b'P' | b'_' | b'^' | b'X' => Scan::Str,
+                b']' => {
+                    self.params.clear();
+                    Scan::OscCommand
+                }
+                b'P' | b'_' | b'^' | b'X' => Scan::Str,
                 // RIS: a full reset, which clears every DEC private mode.
                 b'c' => {
                     self.bracketed_paste = false;
                     self.drawn = false;
+                    self.titled = false;
                     self.operator_typed();
                     Scan::Ground
                 }
@@ -258,6 +278,7 @@ impl ModeScan {
                         if on && !self.bracketed_paste {
                             // What counts is a screen drawn under this mode, not before it.
                             self.drawn = false;
+                            self.titled = false;
                         }
                         self.bracketed_paste = on;
                     }
@@ -276,6 +297,21 @@ impl ModeScan {
                     Scan::Ground
                 }
                 _ => Scan::Ignore,
+            },
+            Scan::OscCommand => match b {
+                b'0'..=b'9' if self.params.len() < MAX_OSC_DIGITS => {
+                    self.params.push(b);
+                    Scan::OscCommand
+                }
+                b';' => {
+                    // 0 sets the icon name and title, 2 the title alone.
+                    if matches!(self.params.as_slice(), b"0" | b"2") {
+                        self.titled |= self.bracketed_paste;
+                    }
+                    Scan::Str
+                }
+                0x07 => Scan::Ground,
+                _ => Scan::Str,
             },
             Scan::Str => match b {
                 0x07 => Scan::Ground,
@@ -298,6 +334,9 @@ pub struct InputState {
     pub composer_empty: bool,
     /// The node has drawn text since it turned bracketed paste on ([`ModeScan::drawn`]).
     pub screen_drawn: bool,
+    /// The node has set its window title since it turned bracketed paste on
+    /// ([`ModeScan::titled`]).
+    pub titled: bool,
     /// When the node last wrote anything — `None` before its first byte.
     pub last_output: Option<Instant>,
     /// The row's boot dialog drawn since anyone last typed, before the first paste
@@ -686,6 +725,61 @@ mod tests {
         for ((name, _), m) in screens.iter().zip(matched) {
             assert!(m, "{name} shows no row's dialog");
         }
+    }
+
+    fn titled(chunks: &[&[u8]]) -> bool {
+        let mut scan = ModeScan::default();
+        for c in chunks {
+            scan.feed(c, Instant::now());
+        }
+        scan.titled()
+    }
+
+    /// **A window title set under bracketed paste is seen**, OSC 0 or 2, ended by `BEL` or `ST`,
+    /// at every read boundary — and nothing else is a title.
+    #[test]
+    fn a_window_title_under_bracketed_paste_is_seen_at_every_read_boundary() {
+        for set in [
+            &b"\x1b[?2004h> draft\x1b]0;repo\x07"[..],
+            b"\x1b[?2004h\x1b]2;repo\x1b\\",
+        ] {
+            for at in 0..=set.len() {
+                assert!(titled(&[&set[..at], &set[at..]]), "{set:?} split at {at}");
+            }
+        }
+        assert!(
+            titled(&[b"\x1b[?2004h\x1b]0;\x07"]),
+            "an empty title is still a title"
+        );
+        assert!(
+            !titled(&[b"\x1b[?2004h> draft"]),
+            "text alone is not a title"
+        );
+        assert!(
+            !titled(&[b"\x1b]0;early\x07\x1b[?2004h> draft"]),
+            "a title before bracketed paste is not one set under it"
+        );
+        assert!(
+            !titled(&[b"\x1b[?2004h\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]8;;x\x07"]),
+            "colour queries and hyperlinks are not titles"
+        );
+        assert!(
+            !titled(&[b"\x1b[?2004h\x1b]00000;t\x07"]),
+            "an overlong number"
+        );
+        assert!(!titled(&[b"\x1b[?2004h\x1b]0\x07"]), "ended before its `;`");
+        assert!(
+            !titled(&[b"\x1b[?2004h\x1b]0;t\x07\x1b[?2004l\x1b[?2004h"]),
+            "bracketed paste turned on again starts over"
+        );
+        assert!(
+            !titled(&[b"\x1b[?2004h\x1b]0;t\x07\x1bc\x1b[?2004h"]),
+            "RIS resets it"
+        );
+        assert!(
+            scanned(&[b"\x1b[?2004h\x1b]0;t\x07\x1b[?2004l\x1b[?2004h"]),
+            "a title does not disturb the mode"
+        );
     }
 
     /// A parameter list past the bound is dropped whole rather than read truncated.

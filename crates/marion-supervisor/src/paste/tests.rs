@@ -84,6 +84,7 @@ fn state(bracketed: bool, typed: Option<Instant>, empty: bool) -> crate::pty::In
         last_operator_input: typed,
         composer_empty: empty,
         screen_drawn: true,
+        titled: true,
         last_output: Some(Instant::now() - Duration::from_secs(60)),
         boot_dialog: None,
     }
