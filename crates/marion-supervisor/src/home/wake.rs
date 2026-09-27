@@ -132,8 +132,13 @@ mod tests {
         );
     }
 
+    /// The resize flag is process-wide, as a signal handler's state must be: the two tests that
+    /// read it take turns.
+    static RESIZE_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_side_threads_wake_ends_an_unbounded_wait() {
+        let _flag = RESIZE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
         let mut wake = Wake::new().unwrap();
         let waker = wake.waker();
         let t = std::thread::spawn(move || waker.wake());
@@ -152,6 +157,7 @@ mod tests {
             fn getpid() -> i32;
             fn kill(pid: i32, sig: std::ffi::c_int) -> std::ffi::c_int;
         }
+        let _flag = RESIZE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
         let mut wake = Wake::new().unwrap();
         wake.watch_resizes();
         // SAFETY: a signal to this process whose handler was just installed.
