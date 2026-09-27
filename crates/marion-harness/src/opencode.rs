@@ -25,9 +25,9 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -240,6 +240,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found",
         },
         interactive: TurnDelivery::bracketed_paste(
+            BootSignal::FirstDraw,
             "S31 p0b/tui/opencode (1.18.32): bracketed paste + CR submits at 0 ms; busy repaints \
              ≤ 361 ms; no structured turn-end signal",
         ),

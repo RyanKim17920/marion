@@ -36,9 +36,9 @@ use crate::grammar::{
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When,
+    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -166,6 +166,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    way while streaming and runs as a new turn when idle",
         },
         interactive: TurnDelivery::bracketed_paste(
+            BootSignal::FirstDraw,
             "S34 spikes/s34/pi_tui.py (0.80.2): DECSET 2004 on; a bracketed multi-line paste then \
              CR submits and reaches the provider byte-exact; idle output 0 B over 10 s, busy \
              repaints at <= 88 ms gaps; Enter while busy folds as a steer after the tool result",

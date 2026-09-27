@@ -20,8 +20,8 @@
 //!   mid-thought is not interrupted by text appearing under their cursor.
 //!
 //! And before the injector's **first** paste into a terminal, one more: **the TUI has booted** —
-//! it has drawn text since turning bracketed paste on, and then been quiet for the row's
-//! [`IdleSignal`] ([`Hold::Booting`]).
+//! it has shown the row's [`BootSignal`] since turning bracketed paste on (drawn text, or set its
+//! window title), and then been quiet for the row's [`IdleSignal`] ([`Hold::Booting`]).
 //!
 //! # Boot dialogs (S37, `tests/fixtures/s37-boot-dialogs/`)
 //!
@@ -51,6 +51,17 @@
 //! submitted. "Drawn, then quiet" is the moment its composer exists; bracketed paste alone is not.
 //! The match in [`PasteParams::of`] names the signal so a new variant has to decide here.
 //!
+//! Drawn is not always enough: codex 0.155.1 draws a **provisional composer** at once and then
+//! sits quiet while its app server boots — 1.25 s unloaded, well past 1.5 s on a loaded machine.
+//! That composer takes a paste and drops the Enter, so the message sat in the real composer
+//! unsubmitted (`native_facade_e2e`'s codex lane, 3 of 20 runs under load). Its row's
+//! [`BootSignal::WindowTitle`] counts the quiet from the first window title instead, which only
+//! the real composer sets — and a screen drawn since, so a boot dialog marion answered is still
+//! followed by a redraw. The boot dialog wait comes first: no mark opens the gate while a dialog
+//! is on the screen. A codex whose title is configured off (`tui.terminal_title = []`) never shows
+//! the mark, and its messages are refused after the grace with that reason — never typed into a
+//! composer that may drop them.
+//!
 //! # What is journaled
 //!
 //! `MessageDelivered { via: "pty:paste" }` once the paste and its submit reached the master, or
@@ -63,7 +74,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_harness::spec::{
-    BootDialog, DialogAnswer, HarnessSpec, IdleSignal, NodeShape, TurnDelivery,
+    BootDialog, BootSignal, DialogAnswer, HarnessSpec, IdleSignal, NodeShape, TurnDelivery,
 };
 
 use crate::inbox::{DeliveryPort, Inboxes, Message, render};
@@ -108,6 +119,8 @@ pub struct PasteParams {
     /// How long the terminal must be quiet, after drawing its first screen, before the first
     /// paste — the row's [`IdleSignal`], used for boot only. See the module doc.
     pub settle: Duration,
+    /// What marks the row's TUI as booted, before the settle is counted ([`BootSignal`]).
+    pub boot_mark: BootSignal,
     /// The dialogs the row's TUI can show before its composer ([`HarnessSpec::boot_dialogs`]):
     /// the first paste is never typed into one.
     pub dialogs: &'static [BootDialog],
@@ -119,6 +132,7 @@ impl PasteParams {
     pub fn of(delivery: TurnDelivery) -> Option<PasteParams> {
         let TurnDelivery::TerminalPaste {
             idle,
+            boot,
             submit,
             submit_delay_ms,
             note: _,
@@ -136,6 +150,7 @@ impl PasteParams {
             submit,
             submit_delay: Duration::from_millis(u64::from(submit_delay_ms)),
             settle,
+            boot_mark: boot,
             dialogs: &[],
         })
     }
@@ -160,6 +175,7 @@ impl PasteParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Boot {
     pub settle: Duration,
+    pub mark: BootSignal,
     pub answer_dialogs: bool,
 }
 
@@ -194,8 +210,8 @@ pub enum Hold {
     OperatorTyping,
     ComposerNotEmpty,
     NoBracketedPaste,
-    /// Before the first paste: the TUI has not yet drawn a screen under bracketed paste and then
-    /// gone quiet for the row's settle time.
+    /// Before the first paste: the TUI has not yet shown the row's boot mark under bracketed
+    /// paste and then gone quiet for the row's settle time.
     Booting,
     /// Before the first paste: one of the row's boot dialogs is on the screen, and a paste would
     /// answer it.
@@ -250,14 +266,20 @@ pub fn gate(
             *unready_since = None;
             return Gate::Ready;
         }
-        (_, true, Some(Boot { settle, .. })) => match state.last_output.map(|at| at + settle) {
-            Some(quiet_at) if state.screen_drawn && now >= quiet_at => {
-                *unready_since = None;
-                return Gate::Ready;
+        (_, true, Some(Boot { settle, mark, .. })) => {
+            let marked = match mark {
+                BootSignal::FirstDraw => state.screen_drawn,
+                BootSignal::WindowTitle => state.titled && state.screen_drawn,
+            };
+            match state.last_output.map(|at| at + settle) {
+                Some(quiet_at) if marked && now >= quiet_at => {
+                    *unready_since = None;
+                    return Gate::Ready;
+                }
+                Some(quiet_at) if marked => (Hold::Booting, quiet_at),
+                _ => (Hold::Booting, now + policy.recheck),
             }
-            Some(quiet_at) if state.screen_drawn => (Hold::Booting, quiet_at),
-            _ => (Hold::Booting, now + policy.recheck),
-        },
+        }
     };
     let since = *unready_since.get_or_insert(now);
     if now.saturating_duration_since(since) >= policy.paste_mode_grace {
@@ -270,11 +292,17 @@ pub fn gate(
                  it would answer it",
                 d.needle, d.note
             ),
-            (Hold::Booting, _) => format!(
-                "the node's terminal did not finish booting within {grace} s — it never drew a \
-                 screen under bracketed paste and then went quiet — and a paste typed into a TUI \
-                 that is still booting is discarded"
-            ),
+            (Hold::Booting, _) => {
+                let mark = match boot.map(|b| b.mark) {
+                    Some(BootSignal::WindowTitle) => "set its window title",
+                    Some(BootSignal::FirstDraw) | None => "drew a screen",
+                };
+                format!(
+                    "the node's terminal did not finish booting within {grace} s — it never \
+                     {mark} under bracketed paste and then went quiet — and a paste typed into a \
+                     TUI that is still booting is discarded"
+                )
+            }
             _ => format!(
                 "the node's terminal has not enabled bracketed paste (DECSET 2004) for {grace} s, \
                  and marion never types a message unbracketed: a newline in it would submit part \
@@ -429,6 +457,7 @@ impl Worker {
             }
             let boot = (!booted).then(|| Boot {
                 settle: self.params.settle,
+                mark: self.params.boot_mark,
                 answer_dialogs: !answered && host.answers_boot_dialogs(),
             });
             let decision = gate(

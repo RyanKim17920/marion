@@ -642,7 +642,10 @@ mod tests {
                 Inbox,
             ),
             (TurnDelivery::Continuation { note: n }, Inbox),
-            (TurnDelivery::bracketed_paste(n), Inbox),
+            (
+                TurnDelivery::bracketed_paste(marion_harness::spec::BootSignal::FirstDraw, n),
+                Inbox,
+            ),
             (TurnDelivery::McpChannel { note: n }, Pushed),
             (TurnDelivery::None { note: n }, Nowhere),
         ] {
@@ -700,7 +703,8 @@ mod tests {
     }
 
     /// A raw pty whose host is `agent`'s terminal, with the node side already asking for
-    /// bracketed paste and a prompt drawn — what a TUI does at boot. Not registered: the caller does that.
+    /// bracketed paste, a prompt drawn and its window title set — what a TUI does at boot (the
+    /// title is codex's boot mark). Not registered: the caller does that.
     fn pasting_terminal(
         fx: &Fx,
         agent: &str,
@@ -725,7 +729,7 @@ mod tests {
             )
             .unwrap(),
         );
-        slave.write_all(b"\x1b[?2004h> ").unwrap();
+        slave.write_all(b"\x1b[?2004h> \x1b]0;pane\x07").unwrap();
         assert!(marion_testsupport::until(|| host.bracketed_paste()));
         (host, slave)
     }

@@ -275,9 +275,11 @@ pub enum TurnDelivery {
     McpChannel { note: &'static str },
     /// Typed into the node's terminal: `ESC[200~` + text + `ESC[201~` (always bracketed — codex
     /// turns an unbracketed burst's CR into a newline), then `submit` after `submit_delay_ms`,
-    /// once `idle` says the TUI is waiting for input.
+    /// once `idle` says the TUI is waiting for input — and, before the first paste, once `boot`
+    /// says its composer submits at all.
     TerminalPaste {
         idle: IdleSignal,
+        boot: BootSignal,
         submit: &'static [u8],
         submit_delay_ms: u16,
         note: &'static str,
@@ -301,10 +303,12 @@ impl TurnDelivery {
     /// The paste S31 measured on codex, opencode, copilot and claude's TUIs: bracketed, then `\r`
     /// 50 ms later (0 ms submitted on all four; 50 is margin), once the terminal has been quiet
     /// for 1500 ms (busy spinners repaint at ≤ 454 ms, idle output is ~0). One constructor so the
-    /// four rows cannot drift apart on values nobody measured separately.
-    pub const fn bracketed_paste(note: &'static str) -> TurnDelivery {
+    /// four rows cannot drift apart on values nobody measured separately; `boot` is the one value
+    /// each row states for itself.
+    pub const fn bracketed_paste(boot: BootSignal, note: &'static str) -> TurnDelivery {
         TurnDelivery::TerminalPaste {
             idle: IdleSignal::OutputQuiet { ms: 1500 },
+            boot,
             submit: b"\r",
             submit_delay_ms: 50,
             note,
@@ -371,6 +375,22 @@ pub enum DialogAnswer {
     /// measured. The paste waits for someone else to dismiss it, and is dropped by name past the
     /// grace.
     Hold,
+}
+
+/// **What marks a TUI whose composer submits**, before marion's first paste into it: the boot
+/// moment [`IdleSignal`]'s quiet is counted from. A paste typed before it is lost — not refused,
+/// not queued — so the mark has to be the harness's own sign that its real input loop is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootSignal {
+    /// The first text drawn under bracketed paste: the first screen *is* the composer. Copilot
+    /// 1.0.83 turns bracketed paste on and then draws nothing for seconds, discarding a paste in
+    /// that window, so bracketed paste alone is not the mark.
+    FirstDraw,
+    /// The first window title (OSC 0 or 2) set under bracketed paste. For a TUI that draws a
+    /// **provisional composer** while its startup continues — one that takes a paste and drops
+    /// Enter — and sets its title only once the real one is up, so no quiet stretch inside the
+    /// provisional phase can pass for boot.
+    WindowTitle,
 }
 
 /// **The one resolver**: the row's strategy for a node of this shape. No harness is named here —

@@ -41,8 +41,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
     ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
@@ -201,6 +201,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "S31 p0b/copilot (1.0.83): `-p … --resume=<sessionId>` continues the session",
         },
         interactive: TurnDelivery::bracketed_paste(
+            BootSignal::FirstDraw,
             "S31 p0b/tui/copilot (1.0.83): bracketed paste + CR submits at 0 ms; busy repaints \
              ≤ 336 ms; OSC 9;4;0 also marks the turn end",
         ),

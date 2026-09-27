@@ -21,8 +21,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
     ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
@@ -197,9 +197,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read \
                    once before the first request, never mid-run",
         },
+        // 0.155.1 draws a provisional composer (`tui/src/startup_draft.rs`) the moment it starts,
+        // then goes quiet while its app server boots: 1.25 s idle unloaded, longer under load. It
+        // takes a paste and drops Enter and Tab, and carries the text into the real composer
+        // unsubmitted. The real chat widget's constructor sets the window title; the draft never
+        // does, so the title marks boot.
         interactive: TurnDelivery::bracketed_paste(
+            BootSignal::WindowTitle,
             "S31 p0b/tui/codex (0.147.0): bracketed paste + CR submits at 0 ms; unbracketed text \
-             + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
+             + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms. \
+             0.155.1: a paste + CR on the startup draft (first draw, before the window title) is \
+             never submitted; after the title and 1.5 s quiet it is",
         ),
     },
     // S37 first screens (0.155.1, `tests/fixtures/s37-boot-dialogs/codex-0.155.1.raw`): a fresh

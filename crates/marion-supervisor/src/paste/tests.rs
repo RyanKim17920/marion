@@ -13,14 +13,17 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_core::journal::{MessageDelivered, MessageDropped, RecordKind};
-use marion_harness::spec::{BootDialog, DialogAnswer, TurnDelivery};
+use marion_harness::spec::{BootDialog, BootSignal, DialogAnswer, TurnDelivery};
 
 use super::*;
 use crate::inbox::{Inboxes, Source, render};
 use crate::pty::{PtyHost, PtyMaster, WinSize};
 use crate::serve::ConnId;
 
-const PASTE: TurnDelivery = TurnDelivery::bracketed_paste("test row");
+const PASTE: TurnDelivery = TurnDelivery::bracketed_paste(BootSignal::FirstDraw, "test row");
+/// A row whose TUI draws a provisional composer first (codex 0.155.1's startup draft).
+const TITLED_PASTE: TurnDelivery =
+    TurnDelivery::bracketed_paste(BootSignal::WindowTitle, "test row");
 
 fn agent() -> AgentId {
     AgentId("paste-node".into())
@@ -95,6 +98,14 @@ const SETTLE: Duration = Duration::from_millis(1500);
 /// Before the first paste, in a directory marion may not answer dialogs in.
 const BOOT: Option<Boot> = Some(Boot {
     settle: SETTLE,
+    mark: BootSignal::FirstDraw,
+    answer_dialogs: false,
+});
+
+/// [`BOOT`], for a row whose boot mark is its window title.
+const WINDOW_TITLE: Option<Boot> = Some(Boot {
+    settle: SETTLE,
+    mark: BootSignal::WindowTitle,
     answer_dialogs: false,
 });
 
@@ -153,6 +164,7 @@ fn an_answerable_dialog_is_answered_only_in_marions_own_workspace() {
     let p = policy();
     let marions = Some(Boot {
         settle: SETTLE,
+        mark: BootSignal::FirstDraw,
         answer_dialogs: true,
     });
     assert_eq!(
@@ -289,6 +301,72 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
     );
 }
 
+/// **A window-title row's boot is counted from the title, not the first draw.** A drawn screen
+/// that has been quiet for any length of time is still a provisional composer until the title
+/// comes; from the title, the same settle applies; a first-draw row does not care about titles.
+/// A dialog still comes first: a titled screen showing one is held for the dialog. A title that
+/// never comes is refused after the grace, naming the title.
+#[test]
+fn a_window_title_row_boots_on_its_title_and_not_on_its_first_draw() {
+    let now = Instant::now();
+    let p = policy();
+    let mut clock = None;
+    let provisional = crate::pty::InputState {
+        titled: false,
+        ..state(true, None, true)
+    };
+    assert_eq!(
+        gate(&provisional, now, &p, WINDOW_TITLE, &mut clock),
+        Gate::Wait(Hold::Booting, now + p.recheck),
+        "drawn and quiet for a minute, but untitled: still booting"
+    );
+    assert_eq!(
+        gate(&provisional, now, &p, BOOT, &mut None),
+        Gate::Ready,
+        "a first-draw row is booted by the same screen"
+    );
+    let titled_at = now - Duration::from_millis(500);
+    let titled = crate::pty::InputState {
+        titled: true,
+        last_output: Some(titled_at),
+        ..provisional
+    };
+    assert_eq!(
+        gate(&titled, now, &p, WINDOW_TITLE, &mut clock),
+        Gate::Wait(Hold::Booting, titled_at + SETTLE),
+        "the title starts the quiet, as a first draw does"
+    );
+    assert_eq!(
+        gate(&titled, titled_at + SETTLE, &p, WINDOW_TITLE, &mut clock),
+        Gate::Ready
+    );
+    assert_eq!(clock, None, "ready resets the grace");
+    let redrawing = crate::pty::InputState {
+        screen_drawn: false,
+        ..titled
+    };
+    assert_eq!(
+        gate(&redrawing, titled_at + SETTLE, &p, WINDOW_TITLE, &mut None),
+        Gate::Wait(Hold::Booting, titled_at + SETTLE + p.recheck),
+        "titled, but the screen is forgotten after marion answered a dialog: wait for the redraw"
+    );
+    let dialog = crate::pty::InputState {
+        titled: true,
+        ..showing(&TRUST_HELD)
+    };
+    assert_eq!(
+        gate(&dialog, now, &p, WINDOW_TITLE, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck),
+        "a dialog on the screen holds the paste whatever the boot mark says"
+    );
+
+    gate(&provisional, now, &p, WINDOW_TITLE, &mut clock);
+    assert!(matches!(
+        gate(&provisional, now + p.paste_mode_grace, &p, WINDOW_TITLE, &mut clock),
+        Gate::Refuse(reason) if reason.contains("booting") && reason.contains("window title")
+    ));
+}
+
 #[test]
 fn only_a_terminal_paste_row_gets_an_injector() {
     assert!(PasteParams::of(PASTE).is_some());
@@ -303,7 +381,13 @@ fn only_a_terminal_paste_row_gets_an_injector() {
     ] {
         assert!(PasteParams::of(other).is_none(), "{other:?}");
     }
+    assert_eq!(
+        PasteParams::of(TITLED_PASTE).unwrap().boot_mark,
+        BootSignal::WindowTitle,
+        "the row's boot mark is carried as stated"
+    );
     let p = PasteParams::of(PASTE).unwrap();
+    assert_eq!(p.boot_mark, BootSignal::FirstDraw);
     assert_eq!(
         (p.submit, p.submit_delay, p.settle),
         (
@@ -359,6 +443,17 @@ impl Bed {
         dialogs: &'static [BootDialog],
         marions_workspace: bool,
     ) -> Bed {
+        Bed::with_row(tag, policy, PASTE, dialogs, marions_workspace)
+    }
+
+    /// [`Bed::booting`], for a paste row of the caller's.
+    fn with_row(
+        tag: &str,
+        policy: PastePolicy,
+        row: TurnDelivery,
+        dialogs: &'static [BootDialog],
+        marions_workspace: bool,
+    ) -> Bed {
         let dir = marion_testsupport::scratch(tag);
         let cast = dir.join("pty.cast");
         let size = WinSize::new(80, 24);
@@ -397,7 +492,7 @@ impl Bed {
             PasteParams {
                 settle: BED_SETTLE,
                 dialogs,
-                ..PasteParams::of(PASTE).unwrap()
+                ..PasteParams::of(row).expect("a paste row")
             },
             policy,
             tx,
@@ -707,6 +802,42 @@ fn the_first_paste_waits_for_the_tui_to_draw_its_screen_and_go_quiet() {
             "a booted terminal is never held for boot again: {d:?}"
         );
     }
+}
+
+/// **A provisional composer is not boot on a window-title row** — codex 0.155.1 draws one at once
+/// and then sits quiet while it boots, and a paste into it is taken but its Enter dropped. The
+/// message is held however long that quiet lasts, and pasted `settle` after the title the real
+/// composer sets.
+#[test]
+fn a_window_title_row_holds_the_first_paste_through_a_quiet_provisional_screen() {
+    let mut bed = Bed::with_row("paste-provisional", fast(), TITLED_PASTE, &[], false);
+    bed.node_writes(BOOTED);
+    let drawn_at = Instant::now();
+    let id = bed.steer("after the title");
+    // Held well past the settle that would have booted a first-draw row.
+    bed.await_decision(|d| {
+        matches!(d, Gate::Wait(Hold::Booting, _)) && drawn_at.elapsed() >= BED_SETTLE * 4
+    });
+    assert!(
+        !bed.records.lock().unwrap().iter().any(|r| matches!(
+            r,
+            RecordKind::MessageDelivered(_) | RecordKind::MessageDropped(_)
+        )),
+        "nothing was typed into the provisional composer"
+    );
+    bed.node_writes(b"\x1b]0;repo\x07");
+    let titled_at = Instant::now();
+    let want = expected_paste("after the title");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(
+        titled_at.elapsed() >= BED_SETTLE,
+        "the paste came {:?} after the title",
+        titled_at.elapsed()
+    );
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
 }
 
 /// **8 KiB — the steer cap — arrives byte-exact** through the whole path.

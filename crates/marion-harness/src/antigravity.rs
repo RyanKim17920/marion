@@ -36,9 +36,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration,
-    MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
-    UpdatePolicy,
+    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
+    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -135,6 +135,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    same id and remembers the first turn",
         },
         interactive: TurnDelivery::bracketed_paste(
+            BootSignal::FirstDraw,
             "s32 tui/ on 1.2.8: DECSET 2004, bracketed paste + CR submits; the native lane ships \
              disabled",
         ),

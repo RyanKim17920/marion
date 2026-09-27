@@ -9225,7 +9225,7 @@ mod tests {
     /// 1500 ms of output quiet as the idle signal (busy spinners repaint at ≤ 454 ms).
     #[test]
     fn every_row_resolves_one_turn_delivery_per_shape_as_s31_measured() {
-        use crate::spec::{IdleSignal, NodeShape, TurnDelivery, delivery_for};
+        use crate::spec::{BootSignal, IdleSignal, NodeShape, TurnDelivery, delivery_for};
         let table = [
             (Harness::ClaudeCode, "typed", "channel"),
             (Harness::Codex, "continuation", "paste"),
@@ -9246,6 +9246,15 @@ mod tests {
             Harness::ALL.len(),
             "every harness has a row here"
         );
+        // Each paste row's boot mark. Only a TUI measured drawing a provisional composer (codex
+        // 0.155.1's startup draft) waits for its window title.
+        let boots = [
+            (Harness::Codex, BootSignal::WindowTitle),
+            (Harness::OpenCode, BootSignal::FirstDraw),
+            (Harness::Copilot, BootSignal::FirstDraw),
+            (Harness::Antigravity, BootSignal::FirstDraw),
+            (Harness::Pi, BootSignal::FirstDraw),
+        ];
         for (h, headless, interactive) in table {
             let row = harness_spec(h);
             assert_eq!(
@@ -9268,11 +9277,18 @@ mod tests {
             );
             if let TurnDelivery::TerminalPaste {
                 idle,
+                boot,
                 submit,
                 submit_delay_ms,
                 ..
             } = row.delivery.interactive
             {
+                let measured = boots.iter().find(|(b, _)| *b == h).map(|(_, m)| *m);
+                assert_eq!(
+                    Some(boot),
+                    measured,
+                    "{h}: the boot mark its measurement names"
+                );
                 assert_eq!(idle, IdleSignal::OutputQuiet { ms: 1500 }, "{h}");
                 assert_eq!(submit, b"\r", "{h}: CR after the bracketed paste");
                 assert_eq!(submit_delay_ms, 50, "{h}");
