@@ -69,3 +69,24 @@ fn an_unknown_command_fails_with_a_one_line_hint() {
     assert!(err.contains("unknown command `frobnicate`"), "{err}");
     assert!(err.contains("marion --help"), "{err}");
 }
+
+/// **marion-supervisor advertises only what a person types**: `doctor`, which is `marion doctor`,
+/// and `--version`. `mcp` and `serve` are marion's own plumbing and are named as such, and the
+/// doctor's usage line names the command people are told to run.
+#[test]
+fn the_supervisor_advertises_doctor_and_names_its_plumbing_internal() {
+    let out = run(env!("CARGO_BIN_EXE_marion-supervisor"), &[]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("marion-supervisor doctor"), "{err}");
+    assert!(err.contains("`marion doctor`"), "{err}");
+    assert!(err.contains("internal"), "{err}");
+    assert!(!err.contains("<mcp|serve|doctor"), "{err}");
+
+    let out = run(
+        env!("CARGO_BIN_EXE_marion-supervisor"),
+        &["doctor", "--no-such-flag"],
+    );
+    let err = text(&out.stderr);
+    assert!(err.contains("usage: marion doctor "), "{err}");
+}
