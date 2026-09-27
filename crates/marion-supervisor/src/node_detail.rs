@@ -9,12 +9,13 @@
 //! the `node/get` it rides on, because the row itself is still true.
 
 use marion_core::agent_type;
+use marion_core::contract::Oid;
 use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
 use marion_core::harness::Harness;
 use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
-use marion_core::proto::result::{CompletionSummary, MessageLine, NodeDetail, TaskSent};
+use marion_core::proto::result::{CompletionSummary, DiffStat, MessageLine, NodeDetail, TaskSent};
 use marion_core::registry::ReplayedNode;
 use marion_harness::adapter::adapter_for_type;
 use std::path::Path;
@@ -81,19 +82,96 @@ pub fn read(
             .as_ref()
             .map(|c| c.workspace.clone())
             .or_else(|| i.launch_workspace.clone()),
-        completion: contract
-            .and_then(|c| c.completion)
-            .map(|c| CompletionSummary {
+        completion: contract.and_then(|contract| {
+            let diff = landed_diff(&contract);
+            contract.completion.map(|c| CompletionSummary {
                 status: c.status,
                 narrative: c.narrative.map(|n| n.value),
                 branch: c.branch,
                 commit: c.commit,
                 changed_paths: c.changed_paths.len() + c.changed_paths_omitted,
                 exit: c.exit.description,
-                diff: None,
-            }),
+                diff,
+            })
+        }),
         turns: spent.turns,
     }
+}
+
+/// What a contract's landed branch changed against the commit it started from, when it landed
+/// one: `git diff --shortstat <base> <commit>` in the repository's common dir, where the branch's
+/// objects live even once its worktree is gone.
+fn landed_diff(c: &TaskContract) -> Option<DiffStat> {
+    let completion = c.completion.as_ref()?;
+    completion.branch.as_ref()?;
+    diff_stat(
+        c.repo.git_common_dir.as_ref()?,
+        c.base_commit.as_ref()?,
+        completion.commit.as_ref()?,
+    )
+}
+
+/// `git diff --shortstat base commit` against `git_dir`, **once per pair**: both are commits, so
+/// the answer never changes, and a watcher asking about a landed node every second must not run
+/// git every second. `None` when git cannot say (a missing object, no git on `PATH`).
+fn diff_stat(git_dir: &Path, base: &Oid, commit: &Oid) -> Option<DiffStat> {
+    type Key = (std::path::PathBuf, String, String);
+    type Cache = std::collections::HashMap<Key, Option<DiffStat>>;
+    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    let key = (git_dir.to_path_buf(), base.0.clone(), commit.0.clone());
+    if let Some(hit) = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .get(&key)
+    {
+        return *hit;
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .args(["diff", "--no-ext-diff", "--no-color", "--shortstat"])
+        .arg(&base.0)
+        .arg(&commit.0)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Through the spawn gate, as every process this supervisor starts is.
+    let stat = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut cmd)
+        .and_then(|child| child.wait_with_output())
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| parse_shortstat(&String::from_utf8_lossy(&out.stdout)));
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, stat);
+    stat
+}
+
+/// `--shortstat`'s line — ` 3 files changed, 84 insertions(+), 12 deletions(-)`, any clause of
+/// which may be absent — as its three numbers; an empty answer is no change. `None` for a line
+/// that is not one.
+fn parse_shortstat(out: &str) -> Option<DiffStat> {
+    let line = out.trim();
+    let mut stat = DiffStat::default();
+    if line.is_empty() {
+        return Some(stat);
+    }
+    for clause in line.split(',') {
+        let mut words = clause.split_whitespace();
+        let n: u32 = words.next()?.parse().ok()?;
+        match words.next()? {
+            w if w.starts_with("file") => stat.files = n,
+            w if w.starts_with("insertion") => stat.added = n,
+            w if w.starts_with("deletion") => stat.removed = n,
+            _ => return None,
+        }
+    }
+    Some(stat)
 }
 
 /// Keep the prompt a root was launched with beside its stream, owner-only, for [`read`] to show
@@ -380,6 +458,74 @@ mod tests {
         let t = d.task.expect("a root with a kept prompt has a task");
         assert_eq!(t.prompt, "list the limiter files");
         assert!(t.acceptance.is_empty() && t.verification.is_empty());
+    }
+
+    /// **A landed branch's diff stat comes from git**, base to landed commit, and each of
+    /// `--shortstat`'s three clauses may be absent.
+    #[test]
+    fn a_landed_branch_is_measured_against_the_commit_it_started_from() {
+        assert_eq!(
+            parse_shortstat(" 3 files changed, 84 insertions(+), 12 deletions(-)\n"),
+            Some(DiffStat {
+                added: 84,
+                removed: 12,
+                files: 3
+            })
+        );
+        assert_eq!(
+            parse_shortstat(" 1 file changed, 1 deletion(-)"),
+            Some(DiffStat {
+                added: 0,
+                removed: 1,
+                files: 1
+            })
+        );
+        assert_eq!(
+            parse_shortstat(""),
+            Some(DiffStat::default()),
+            "no change is zero, said"
+        );
+        assert_eq!(parse_shortstat("fatal: bad revision"), None);
+
+        let dir = marion_testsupport::scratch("detail-diffstat");
+        let repo = marion_testsupport::fixture_repo(&dir);
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("src/keep.txt"), "kept\nand more\n").unwrap();
+        std::fs::write(repo.join("src/new.txt"), "new\n").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=m@example.invalid",
+            "-c",
+            "user.name=m",
+            "commit",
+            "-qm",
+            "landed",
+        ]);
+        let landed = git(&["rev-parse", "HEAD"]);
+        let common = repo.join(".git");
+        assert_eq!(
+            diff_stat(&common, &Oid(base.clone()), &Oid(landed.clone())),
+            Some(DiffStat {
+                added: 3,
+                removed: 1,
+                files: 2
+            })
+        );
+        assert_eq!(
+            diff_stat(&common, &Oid(base), &Oid("0".repeat(40))),
+            None,
+            "a commit git cannot find is no stat, not zero"
+        );
     }
 
     /// A running node with no contract (a root): its stream page, the launch workspace, nothing
