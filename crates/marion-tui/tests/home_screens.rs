@@ -669,6 +669,7 @@ fn screen<'a>(body: Body<'a>, input: Input, tab: &str) -> Screen<'a> {
         body,
         input,
         hints: hints(tab),
+        notice: None,
         frame: 0,
     }
 }
@@ -808,6 +809,23 @@ fn watch_task_block_shows_what_marion_sent() {
     );
     assert!(task_rows[4].contains("✓ cargo test passes"), "{text}");
     assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
+}
+
+/// A notice replaces the hints until the next key, and says so in bold.
+#[test]
+fn a_notice_takes_the_hint_row() {
+    let v = watch_view(1, None);
+    let mut sc = screen(Body::Watch(&v), command("x", ""), "watch");
+    sc.notice = Some(s(
+        "queued as m-1; reaches codex a1f0 at its next tool round or turn",
+    ));
+    let buf = draw(&sc, 100, 30);
+    let last = rows_of(&buf).pop().unwrap();
+    assert!(
+        last.contains("queued as m-1") && !last.contains("enter attach"),
+        "{last}"
+    );
+    assert!(last.ends_with("? shortcuts"), "{last}");
 }
 
 /// Following the end: a new line appears at the bottom of the window without any key pressed.

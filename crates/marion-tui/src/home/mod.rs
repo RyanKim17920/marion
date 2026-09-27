@@ -128,6 +128,8 @@ pub struct Screen<'a> {
     pub body: Body<'a>,
     pub input: Input,
     pub hints: Vec<Hint>,
+    /// Shown on the hint row in place of the hints: see [`widgets::HintRow::notice`].
+    pub notice: Option<String>,
     /// Animation tick: spinners advance one frame per tick.
     pub frame: usize,
 }
@@ -194,6 +196,10 @@ impl Widget for &Screen<'_> {
             theme: self.theme,
         }
         .render(layout.input, buf);
-        HintRow { hints: &self.hints }.render(layout.hints, buf);
+        HintRow {
+            hints: &self.hints,
+            notice: self.notice.as_deref(),
+        }
+        .render(layout.hints, buf);
     }
 }

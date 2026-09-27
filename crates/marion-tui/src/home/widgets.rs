@@ -284,6 +284,9 @@ impl Widget for InputBox<'_> {
 /// pinned right. Pairs that do not fit are dropped whole from the end.
 pub struct HintRow<'a> {
     pub hints: &'a [Hint],
+    /// One line for the operator — what the last key did, or why it did nothing — shown in place
+    /// of the hints until the next key, because a key that silently does nothing reads as broken.
+    pub notice: Option<&'a str>,
 }
 
 impl Widget for HintRow<'_> {
@@ -308,10 +311,13 @@ impl Widget for HintRow<'_> {
             .collect();
         let right = vec![span("? ", label()), span("shortcuts  ", dim())];
         let mut left = vec![Span::raw("  ")];
-        left.extend(fit_groups(
-            groups,
-            w.saturating_sub(4 + spans_width(&right)),
-        ));
+        match self.notice {
+            Some(n) => left.push(span(n.to_string(), bold())),
+            None => left.extend(fit_groups(
+                groups,
+                w.saturating_sub(4 + spans_width(&right)),
+            )),
+        }
         buf.set_line(area.x, area.y, &lr(left, right, w), area.width);
     }
 }
