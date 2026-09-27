@@ -2,18 +2,7 @@
 #
 # Format: `path:item  one-line reason`. A finding not listed here fails the check; an entry nothing
 # matches fails it too, so a fix deletes its line. Only VERIFIED-SAFE cases belong here, each
-# saying why — plus the `untracked` findings below, listed so the check can gate new code today
-# while they are fixed; those are real and are the first to remove.
-
-# --- untracked: secret-bearing structs that derive Debug (a `{:?}` anywhere prints the secret) ---
-crates/marion-harness/src/adapter.rs:LaunchSpec  untracked: `api_key: Option<String>` (the operator's endpoint key) under derive(Debug)
-crates/marion-harness/src/spec.rs:Fields  untracked: `api_key` string under derive(Debug)
-crates/marion-harness/src/cline.rs:ProviderSpec  untracked: `api_key` string under derive(Debug)
-crates/marion-harness/src/opencode.rs:ConfigSpec  untracked: `api_key` string under derive(Debug)
-crates/marion-harness/src/adapter.rs:SpawnCtx  untracked: per-node bridge `node_token` under derive(Debug)
-crates/marion-harness/src/mcp_bridge.rs:BridgeEnv  untracked: per-node bridge `node_token` under derive(Debug)
-crates/marion-core/src/proto/params.rs:SpawnCaller  untracked: per-node bridge `node_token` under derive(Debug)
-crates/marion-supervisor/src/root.rs:RootNode  untracked: per-run bearer `token` under derive(Debug) (canned endpoint only, still a capability)
+# saying why.
 
 # --- verified safe --------------------------------------------------------------------------------
 crates/marion-harness/src/adapter.rs:AcpAdapter::config_files  safe: `api_key` is a field init inside the opencode config document, written 0600 by run::write_config_documents
