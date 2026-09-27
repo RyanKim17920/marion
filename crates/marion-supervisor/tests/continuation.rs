@@ -755,7 +755,19 @@ fn steer_during_a_hold_is_the_second_generation(row: &Row) {
         "{responses} canned responses across both generations, {} in the second",
         steered.len()
     );
-    assert_eq!(tree(&bed.journal).get(&child).unwrap().usage, Some(usage));
+    let node = tree(&bed.journal).get(&child).cloned().unwrap();
+    assert_eq!(node.usage, Some(usage));
+    assert_eq!(
+        node.turns.iter().sum::<u64>(),
+        usage.total(),
+        "each turn's spend once, a session row's measured from the total before it: {:?}",
+        node.turns
+    );
+    assert!(
+        node.turns.len() >= 2,
+        "a turn in each generation: {:?}",
+        node.turns
+    );
 }
 
 /// **A child's end resumes its held codex parent**: the parent stopped unreported with a

@@ -402,6 +402,8 @@ pub struct RootNode {
     /// What the node's earlier runs recorded spending, where this launch resumes one — the total a
     /// row whose counters run over the session subtracts (`UsageMeter::resumed_from`).
     pub resumed_usage: Option<TokenUsage>,
+    /// Where its sink publishes its live spend: its owner's ([`crate::run::SpawnObserver::spending`]).
+    pub spending: Option<std::sync::Arc<crate::spending::Spending>>,
     /// What a `LaunchOnly` root's next generation is compiled from — the launch and context its
     /// first was, which a continuation resumes under the observed session with the message as the
     /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
@@ -915,6 +917,7 @@ pub fn prepare_watched(
         acp_agent: agent_type.acp_agent.clone(),
         resumed: spec.resume.as_ref().map(|r| r.session.clone()),
         resumed_usage: spec.resume.as_ref().and_then(|r| r.usage),
+        spending: observer.spending(),
     })
 }
 
@@ -1313,6 +1316,7 @@ fn launch_inner(
                 .and_then(|e| e.key.as_ref())
                 .map(|k| k.expose()),
         )
+        .publishing_to(&node.agent_id, node.spending.clone())
     });
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
@@ -1392,7 +1396,7 @@ fn launch_inner(
     crate::journal::record_usage(
         &node.project,
         &node.agent_id,
-        events.as_ref().and_then(|es| es.usage()),
+        events.as_ref().map(|es| es.spent()).unwrap_or_default(),
     );
     journal_the_roots_outcome(
         node,

@@ -138,7 +138,11 @@ fn a_childs_usage_lands_in_its_contract_and_one_journal_record_and_survives_repl
     std::fs::remove_file(env.project_dir.agent(&node.agent_id).events())
         .expect("the node's stream existed");
     let restarted = read_path(&journal).expect("the journal reads again");
-    assert_eq!(restarted.get(&node.agent_id).unwrap().usage, Some(usage));
+    let replayed = restarted.get(&node.agent_id).unwrap();
+    assert_eq!(replayed.usage, Some(usage));
+    // And the per-turn spend a sparkline draws, which adds up to the run.
+    assert!(!replayed.turns.is_empty(), "codex's turns are recorded");
+    assert_eq!(replayed.turns.iter().sum::<u64>(), usage.total());
 }
 
 fn persisted(state: &Path, task: &TaskId) -> TaskContract {

@@ -409,11 +409,19 @@ pub struct KillConfirmed {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorExited {}
 
+/// How many of a run's latest turns [`UsageRecorded::turns`] keeps — what a sparkline draws — so the
+/// record stays O(1) however many turns the run took.
+pub const MAX_RECORDED_TURNS: usize = 64;
+
 /// See [`RecordKind::UsageRecorded`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageRecorded {
     pub agent_id: AgentId,
     pub usage: crate::contract::TokenUsage,
+    /// Each turn's total spend, oldest first, the latest [`MAX_RECORDED_TURNS`] — empty where the
+    /// harness's units are not turns. Absent on the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<u64>,
 }
 
 /// See [`RecordKind::SessionObserved`].

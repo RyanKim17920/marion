@@ -62,7 +62,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_core::contract::{AgentId, TokenUsage};
+use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
 use marion_core::ir::Provenance;
 use marion_core::journal::{
@@ -348,13 +348,14 @@ pub fn record(project: &ProjectDir, kind: RecordKind) {
 /// **What one run of a node spent**, as [`RecordKind::UsageRecorded`] — written only when its
 /// stream stated a figure, since no record is how the journal says "no claim", and zero would be
 /// one. [`record`]'s policy: losing it costs a figure, never the run.
-pub fn record_usage(project: &ProjectDir, agent_id: &AgentId, usage: Option<TokenUsage>) {
-    if let Some(usage) = usage {
+pub fn record_usage(project: &ProjectDir, agent_id: &AgentId, spent: crate::spending::Spent) {
+    if let Some(usage) = spent.usage {
         record(
             project,
             RecordKind::UsageRecorded(UsageRecorded {
                 agent_id: agent_id.clone(),
                 usage,
+                turns: spent.turns,
             }),
         );
     }

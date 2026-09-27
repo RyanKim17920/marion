@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 
 use marion_core::TokenUsage;
 use marion_core::contract::add_usage_claims;
+use marion_core::journal::MAX_RECORDED_TURNS;
 use serde_json::Value;
 
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
@@ -358,10 +359,8 @@ pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
     fold_usage(rule, &usage_units(rule, frames))
 }
 
-/// Every usage unit in `frames` under `rule`, oldest first, each as the counts it states. Units
-/// are read frame by frame, so a caller reading a stream in pieces may read each piece's units and
-/// append them: the run's usage is then [`fold_usage`] over the whole list.
-pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
+/// Every usage unit in `frames` under `rule`, oldest first, each as the counts it states.
+fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
     units(frames, &rule.at)
         .into_iter()
         .map(|unit| {
@@ -396,7 +395,7 @@ pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
 }
 
 /// The run's usage from its units under the row's fold. `None` for no units.
-pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
+fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
     match rule.fold {
         UsageFold::Last | UsageFold::Session => units.last().copied(),
         UsageFold::Sum => units.iter().copied().reduce(|a, b| a + b),
@@ -414,8 +413,13 @@ pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> 
 /// that resumed a session begun by an earlier run spent that less the earlier total
 /// ([`Self::resumed_from`]).
 ///
-/// O(1) state: running folds, never the units, so a long-lived node's meter does not grow.
-#[derive(Debug, Clone, Copy)]
+/// It also keeps each turn's spend, where the row's units are turns or steps between totals (`Sum`
+/// and `Session`; a `Last` unit totals a process whose turns it does not break down) — the latest
+/// [`MAX_RECORDED_TURNS`] only, which is what a sparkline draws and what the journal keeps.
+///
+/// Bounded state: running folds and that window, never the units, so a long-lived node's meter
+/// does not grow.
+#[derive(Debug, Clone)]
 pub struct UsageMeter {
     rule: &'static UsageRule,
     /// Every generation already ended, added (`Last` and `Sum`).
@@ -424,6 +428,8 @@ pub struct UsageMeter {
     current: Option<TokenUsage>,
     /// What the session had spent before this run began: the node's earlier runs, on a resume.
     baseline: Option<TokenUsage>,
+    /// Each turn's total spend, oldest first, the latest [`MAX_RECORDED_TURNS`].
+    turns: std::collections::VecDeque<u64>,
 }
 
 impl UsageMeter {
@@ -433,6 +439,7 @@ impl UsageMeter {
             ended: None,
             current: None,
             baseline: None,
+            turns: std::collections::VecDeque::new(),
         }
     }
 
@@ -446,14 +453,37 @@ impl UsageMeter {
         }
     }
 
-    /// Fold one frame of the running generation in; a frame that is no usage unit changes nothing.
-    pub fn observe(&mut self, frame: &Value) {
-        for unit in usage_units(self.rule, std::slice::from_ref(frame)) {
+    /// Fold one frame of the running generation in, and say whether it moved the figure: a frame
+    /// that is no usage unit changes nothing.
+    pub fn observe(&mut self, frame: &Value) -> bool {
+        let units = usage_units(self.rule, std::slice::from_ref(frame));
+        for &unit in &units {
+            let turn = match self.rule.fold {
+                UsageFold::Sum => Some(unit.total()),
+                UsageFold::Session => {
+                    let before = self.current.or(self.baseline).map_or(0, |u| u.total());
+                    Some(unit.total().saturating_sub(before))
+                }
+                UsageFold::Last => None,
+            };
+            if let Some(t) = turn {
+                if self.turns.len() == MAX_RECORDED_TURNS {
+                    self.turns.pop_front();
+                }
+                self.turns.push_back(t);
+            }
             self.current = Some(match (self.rule.fold, self.current) {
                 (UsageFold::Sum, Some(so_far)) => so_far + unit,
                 _ => unit,
             });
         }
+        !units.is_empty()
+    }
+
+    /// Each turn's total spend this run, oldest first, the latest [`MAX_RECORDED_TURNS`]. Empty for
+    /// a `Last` row, and for a run that took no turn yet.
+    pub fn turns(&self) -> Vec<u64> {
+        self.turns.iter().copied().collect()
     }
 
     /// The running generation's process has ended: what it spent is settled, and the next frame
@@ -472,24 +502,6 @@ impl UsageMeter {
             (UsageFold::Session, Some(before)) => self.current.map(|now| now.since(before)),
             _ => add_usage_claims(self.ended, self.current),
         }
-    }
-}
-
-/// Each turn's (or step's) total spend, oldest first: a `Sum` row's units themselves, and the
-/// steps between a `Session` row's running totals. Empty for a `Last` row, whose final unit totals
-/// a process whose turns it does not break down.
-pub fn turns(rule: &UsageRule, units: &[TokenUsage]) -> Vec<u64> {
-    match rule.fold {
-        UsageFold::Sum => units.iter().map(TokenUsage::total).collect(),
-        UsageFold::Session => {
-            let totals = units.iter().map(TokenUsage::total);
-            let before = std::iter::once(0).chain(units.iter().map(TokenUsage::total));
-            totals
-                .zip(before)
-                .map(|(t, b)| t.saturating_sub(b))
-                .collect()
-        }
-        UsageFold::Last => Vec::new(),
     }
 }
 
@@ -1060,25 +1072,38 @@ mod tests {
         assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
     }
 
-    /// **Per-turn spend is the units themselves, on a row whose units are turns.** A `Sum` row's
-    /// units are each one turn's or step's spend, which is what a sparkline draws; a `Last` row's
-    /// units are running totals, so it has no per-turn series to offer and says so with none.
+    /// **Per-turn spend is kept where the units are turns, and never invented.** A `Sum` row's
+    /// units are each one turn's spend, a `Session` row's turns are the steps between its totals (a
+    /// resumed run's first step measured from the earlier runs' total), and a `Last` row's unit
+    /// totals a process whose turns it does not break down, so it keeps none. The window holds the
+    /// latest [`MAX_RECORDED_TURNS`], dropping the oldest; observing says whether a frame moved
+    /// the figure at all.
     #[test]
-    fn per_turn_spend_is_read_off_a_sum_row_and_never_invented_for_a_last_row() {
+    fn a_meter_keeps_each_turns_spend_where_the_units_are_turns_and_only_the_latest() {
         let frames = [done(10, 1, 2), done(30, 3, 4)];
-        let sum = UsageRule {
-            fold: UsageFold::Sum,
-            ..RULE
+        let turns_of = |rule: &'static UsageRule, prior| {
+            let mut m = UsageMeter::new(rule).resumed_from(prior);
+            frames.iter().for_each(|f| {
+                m.observe(f);
+            });
+            m.turns()
         };
-        let units = usage_units(&sum, &frames);
-        assert_eq!(units, vec![tokens(10, 1, 2), tokens(30, 3, 4)]);
-        assert_eq!(fold_usage(&sum, &units), usage(&sum, &frames));
-        assert_eq!(turns(&sum, &units), vec![13, 37]);
+        assert_eq!(turns_of(&SUM, None), vec![13, 37]);
+        assert_eq!(turns_of(&SESSION, None), vec![13, 24]);
+        assert_eq!(turns_of(&SESSION, Some(tokens(5, 0, 0))), vec![8, 24]);
+        assert_eq!(turns_of(&LAST, None), Vec::<u64>::new());
+
+        let mut m = UsageMeter::new(&SUM);
+        assert!(!m.observe(&serde_json::json!({"type": "other"})));
+        for i in 0..MAX_RECORDED_TURNS as u64 + 3 {
+            assert!(m.observe(&done(i, 0, 0)));
+        }
+        let kept = m.turns();
+        assert_eq!(kept.len(), MAX_RECORDED_TURNS);
         assert_eq!(
-            turns(&RULE, &usage_units(&RULE, &frames)),
-            Vec::<u64>::new()
+            (kept[0], *kept.last().unwrap()),
+            (3, MAX_RECORDED_TURNS as u64 + 2)
         );
-        assert_eq!(fold_usage(&sum, &[]), None, "no unit is no claim, not zero");
     }
 
     #[test]
@@ -1161,9 +1186,6 @@ mod tests {
         );
         resumed.observe(&done(80, 6, 10));
         assert_eq!(resumed.usage(), Some(tokens(30, 1, 1)));
-        let units = usage_units(&SESSION, &[done(20, 2, 4), done(50, 5, 9)]);
-        assert_eq!(turns(&SESSION, &units), vec![26, 38]);
-        assert_eq!(fold_usage(&SESSION, &units), Some(tokens(50, 5, 9)));
         // The other folds' units are the run's own: a baseline moves nothing.
         let mut sum = UsageMeter::new(&SUM).resumed_from(Some(tokens(50, 5, 9)));
         sum.observe(&done(1, 1, 1));
@@ -1180,14 +1202,18 @@ mod tests {
         let gen2 = [done(5, 1, 0)];
         let meter = |rule: &'static UsageRule| {
             let mut m = UsageMeter::new(rule);
-            gen1.iter().for_each(|f| m.observe(f));
+            gen1.iter().for_each(|f| {
+                m.observe(f);
+            });
             assert_eq!(
                 m.usage(),
                 usage(rule, &gen1),
                 "one generation is the plain reading"
             );
             m.end_generation();
-            gen2.iter().for_each(|f| m.observe(f));
+            gen2.iter().for_each(|f| {
+                m.observe(f);
+            });
             m.usage()
         };
         assert_eq!(meter(&LAST), Some(tokens(35, 4, 4)));

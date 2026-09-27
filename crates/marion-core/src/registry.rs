@@ -152,6 +152,9 @@ pub struct ReplayedNode {
     /// one: a node still running, a harness that states no usage, or a journal older than the
     /// record.
     pub usage: Option<crate::contract::TokenUsage>,
+    /// Each turn's spend across those runs, oldest first, the latest
+    /// [`crate::journal::MAX_RECORDED_TURNS`]: what a sparkline draws for an ended node.
+    pub turns: Vec<u64>,
 }
 
 impl ReplayedNode {
@@ -187,6 +190,7 @@ impl ReplayedNode {
             state_ts: None,
             spawned_ts: None,
             usage: None,
+            turns: Vec::new(),
         }
     }
 
@@ -341,10 +345,7 @@ impl ReplayedNode {
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => self.root_grant = Some(g),
             RecordKind::SessionObserved(s) => self.fold_session_observed(s),
-            // One record per run, so a resumed node's runs add.
-            RecordKind::UsageRecorded(u) => {
-                self.usage = crate::contract::add_usage_claims(self.usage, Some(u.usage))
-            }
+            RecordKind::UsageRecorded(u) => self.fold_usage_recorded(u),
             // Turn delivery is an audit of messages, not a fact about the node's lifecycle: the
             // records are accepted and counted as mentions, and move nothing. Whether a turn ran
             // is `StateChanged`'s to say.
@@ -355,6 +356,18 @@ impl ReplayedNode {
                 unreachable!("the process-wide record returned before selecting a node")
             }
         }
+    }
+
+    /// One record per run, so a resumed node's runs add, and their turns follow one another in a
+    /// window as bounded as each record's.
+    fn fold_usage_recorded(&mut self, u: crate::journal::UsageRecorded) {
+        self.usage = crate::contract::add_usage_claims(self.usage, Some(u.usage));
+        self.turns.extend(u.turns);
+        let over = self
+            .turns
+            .len()
+            .saturating_sub(crate::journal::MAX_RECORDED_TURNS);
+        self.turns.drain(..over);
     }
 
     /// First writer wins: §7.5 makes `parent_id` immutable, and a duplicate intent for one agent
@@ -1900,6 +1913,7 @@ mod tests {
                     output,
                     ..Default::default()
                 },
+                turns: vec![input + output],
             })
         };
         let first = spent(100, 20);
@@ -1910,7 +1924,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&first).unwrap(),
-            r#"{"UsageRecorded":{"agent_id":"a-1","usage":{"input":100,"output":20,"cache_read":0,"cache_write":0}}}"#,
+            r#"{"UsageRecorded":{"agent_id":"a-1","usage":{"input":100,"output":20,"cache_read":0,"cache_write":0},"turns":[120]}}"#,
         );
         let r = record(1, first.clone());
         let line = encode(&r).unwrap();
@@ -1922,7 +1936,21 @@ mod tests {
         }
         let node = replay(&bytes).get(&id("a-1")).unwrap().clone();
         assert_eq!(node.usage.map(|u| (u.input, u.output)), Some((105, 21)));
+        assert_eq!(
+            node.turns,
+            vec![120, 6],
+            "the runs' turns follow one another"
+        );
         assert_eq!(node.records, 3);
+
+        // The window across runs is as bounded as each record's.
+        let mut bytes = encode(&record(0, intent())).unwrap();
+        for seq in 1..=crate::journal::MAX_RECORDED_TURNS as u64 + 2 {
+            bytes.extend(encode(&record(seq, spent(seq, 0))).unwrap());
+        }
+        let long = replay(&bytes).get(&id("a-1")).unwrap().turns.clone();
+        assert_eq!(long.len(), crate::journal::MAX_RECORDED_TURNS);
+        assert_eq!(long[0], 3, "the oldest turns go first");
 
         let silent = replay(&encode(&record(0, intent())).unwrap());
         assert_eq!(silent.get(&id("a-1")).unwrap().usage, None);

@@ -1251,6 +1251,12 @@ pub trait SpawnObserver: Sync {
     fn kill_requested(&self, _agent_id: &AgentId) -> bool {
         false
     }
+    /// **Where a node's sink publishes its live spend** ([`crate::spending`]), or `None` for an
+    /// owner that shows no live figures — its node's figure still reaches the contract and the
+    /// journal when it ends.
+    fn spending(&self) -> Option<std::sync::Arc<crate::spending::Spending>> {
+        None
+    }
 }
 
 /// The observer for a caller that owns the node **by holding this call** — which is every caller
@@ -1596,7 +1602,8 @@ pub fn run_spawn_watched(
         &agent_id,
         adapter.harness(),
         init_request_id(&agent_id),
-    );
+    )
+    .map(|es| es.publishing_to(&agent_id, observer.spending()));
     // The opening bookend, before the process exists — the stream begins where marion started
     // watching, not where the node first spoke, so a node that says nothing at all is still
     // distinguishable from one that was never recorded.
@@ -2157,11 +2164,11 @@ pub fn run_spawn_watched(
     }
     // **What the node spent, from the stream as it was recorded** — every generation's, added —
     // into the contract, and into the journal's one record of it, before the terminal records.
-    let usage = events.as_ref().and_then(|es| es.usage());
+    let spent = events.as_ref().map(|es| es.spent()).unwrap_or_default();
     if let Some(completion) = contract.completion.as_mut() {
-        completion.usage = usage;
+        completion.usage = spent.usage;
     }
-    crate::journal::record_usage(&env.project_dir, &agent_id, usage);
+    crate::journal::record_usage(&env.project_dir, &agent_id, spent);
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
