@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::contract::{AgentId, Oid};
 use crate::harness::Harness;
 
 /// How severe a finding is. Ordered so that `Critical > High > Medium > Low`.
@@ -188,6 +187,27 @@ pub struct Findings {
     pub findings: Vec<Finding>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub findings_omitted: usize,
+}
+
+impl Findings {
+    /// Drop every finding and the summary, counting the findings in `findings_omitted`. The
+    /// reviewer's verdict stays. Cap rules 5(f) and 6 use this: reviewer text is foreign, so the
+    /// returned contract must be able to shed it whole.
+    pub fn elide(&mut self) {
+        self.findings_omitted += self.findings.len();
+        self.findings.clear();
+        self.summary.clear();
+    }
+}
+
+impl ReviewRecord {
+    /// [`Findings::elide`] on every round. The outcome and each round's decision, blocker count
+    /// and commit stay: they are marion's, and they are why the work was or was not stopped.
+    pub fn elide_findings(&mut self) {
+        for r in self.rounds.iter_mut() {
+            r.verdict.findings.elide();
+        }
+    }
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -438,12 +458,15 @@ pub fn decide(parsed: Parsed, changed_paths: &[PathBuf], block_on: Severity) -> 
 pub struct ReviewRound {
     /// 1-based; at most [`MAX_ROUNDS_CEILING`].
     pub round: u8,
-    /// The commit reviewed as `base..commit`; `None` when the change was not committed.
+    /// The commit reviewed as `base..commit`; `None` when the change was not committed. Spelled
+    /// as `contract::Oid` is on the wire; a plain string so this module does not depend on the
+    /// contract that embeds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<Oid>,
-    /// The reviewer node, so its own contract and transcript can be found.
+    pub commit: Option<String>,
+    /// The reviewer node's agent id (as `contract::AgentId` spells it), so its own contract and
+    /// transcript can be found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewer: Option<AgentId>,
+    pub reviewer: Option<String>,
     pub verdict: Verdict,
 }
 
@@ -1027,8 +1050,8 @@ mod tests {
     fn round(decision: Decision) -> ReviewRound {
         ReviewRound {
             round: 1,
-            commit: Some(Oid("0123456789abcdef0123456789abcdef01234567".into())),
-            reviewer: Some(AgentId("reviewer-1".into())),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            reviewer: Some("reviewer-1".into()),
             verdict: Verdict {
                 decision,
                 blocking: usize::from(decision == Decision::Block),
@@ -1173,5 +1196,20 @@ mod tests {
         assert_eq!(model_family(Harness::Goose, Some("gptx")), None);
         assert_eq!(model_family(Harness::Goose, Some("gpt4o")), Some("openai"));
         assert_eq!(model_family(Harness::Goose, Some("o4")), Some("openai"));
+    }
+
+    #[test]
+    fn eliding_a_report_counts_its_findings_and_keeps_the_verdicts() {
+        let mut r = ReviewRecord {
+            outcome: ReviewOutcome::Blocked,
+            rounds: vec![round(Decision::Block)],
+        };
+        r.elide_findings();
+        let v = &r.rounds[0].verdict;
+        assert!(v.findings.findings.is_empty() && v.findings.summary.is_empty());
+        assert_eq!(v.findings.findings_omitted, 2 + 1);
+        assert_eq!((v.decision, v.blocking), (Decision::Block, 1));
+        assert_eq!(v.findings.verdict, ModelVerdict::Block);
+        assert_eq!(r.outcome, ReviewOutcome::Blocked);
     }
 }

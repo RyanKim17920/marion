@@ -1289,6 +1289,10 @@ pub fn build_contract(
         // after the contract's measurements and before the worktree is reaped.
         branch: None,
         commit: None,
+        // Set by the review gate once a reviewer has judged the committed work.
+        review: None,
+        // Set only on a reviewer node's own completion, from its parsed reply.
+        findings: None,
     };
     TaskContract {
         task_id,
