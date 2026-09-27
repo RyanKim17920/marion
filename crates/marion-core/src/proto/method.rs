@@ -477,6 +477,7 @@ mod tests {
                     writable_scope: vec!["src/**".into()],
                     timeout_secs: Some(900),
                     model: Some("sonnet".into()),
+                    profile: None,
                 }),
                 MethodResult::AgentSpawn(AgentSpawnResult {
                     agent_id: agent("a"),

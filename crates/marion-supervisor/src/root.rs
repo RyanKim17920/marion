@@ -283,6 +283,10 @@ pub struct RootSpec {
     /// number the launch enforces and the number the journal reports are the same value, so
     /// `marion tree` cannot show a bound the run is not actually keeping to.
     pub bound_secs: u64,
+    /// **The profile this root runs on**, overriding its agent type's `profile` and
+    /// `profiles.toml`'s `[default]` — a caller's own choice, or on a resume the profile the
+    /// session was recorded under. See [`crate::profiles::Launch::for_child`].
+    pub profile: Option<String>,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -374,6 +378,10 @@ pub struct RootNode {
     /// `McpRoute::verify` checked carries marion's bridge, so the frame sent is the frame verified.
     /// `None` on every other path, whose declaration travels at launch.
     pub session_declaration: Option<Value>,
+    /// The profile the root runs on, if any: its name rides the session record and its stream's
+    /// usage readings are kept. A root takes the first profile only — an operator watching a root
+    /// sees a refused login directly.
+    pub profiles: crate::profiles::Launch,
     /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
     /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
     pub acp_agent: Option<String>,
@@ -442,6 +450,9 @@ pub const ANSWERED_WITHOUT_DELEGATING: &str =
 pub enum RootError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A profile the run named cannot be used — refused before anything is written.
+    #[error(transparent)]
+    Profile(#[from] crate::profiles::ProfileError),
     #[error(
         "the harness never fetched marion's tool list within {0:?}: no {1} appeared. \
          The root would have taken its first turn without mcp__marion__spawn, so the run is \
@@ -688,6 +699,16 @@ pub fn prepare_watched(
         ..spec.clone()
     };
     let harness = agent_type.harness;
+    // Which of the operator's own logins the root runs on, refused before any side effect.
+    let mut profiles = crate::profiles::Launch::for_child(
+        spec.auth,
+        &spec.state,
+        harness,
+        spec.profile.as_deref(),
+        spec.resume.is_some(),
+        &agent_type.profiles,
+    )?;
+    profiles.chain.truncate(1);
     // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
     // protocol, and the agent type's `acp_agent` names the agent.
     let adapter = adapter_for_type(harness, agent_type.acp_agent.as_deref())?;
@@ -736,12 +757,14 @@ pub fn prepare_watched(
         Extras {
             acp_agent: agent_type.acp_agent.clone(),
             approval_mode: agent_type.approval_mode.clone(),
+            profile_dir: profiles.dir(0),
             ..Extras::default()
         },
     );
     if let Some(ep) = &endpoint {
         crate::endpoint::apply(&mut launch, ep);
     }
+    profiles.used(0);
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -891,6 +914,7 @@ pub fn prepare_watched(
             ceiling: agent_type.scope_ceiling.clone(),
         },
         session_declaration: session,
+        profiles,
         acp_agent: agent_type.acp_agent.clone(),
         resumed: spec.resume.as_ref().map(|(_, session)| session.clone()),
     })
@@ -1291,7 +1315,8 @@ fn launch_inner(
         &node.agent_id,
         node.harness,
         node.path == RootPath::Terminal,
-    );
+    )
+    .with_profiles(&node.profiles);
     let result = match node.path {
         // The same three readers as the duplex tee, fed from the ACP driver's live line seam.
         RootPath::Acp => {
@@ -3296,6 +3321,7 @@ mod tests {
             // What `blocked_bound_secs(None, <type>)` resolves to for every type this fixture
             // drives — §3.1's default, stated rather than left to a `Default`.
             bound_secs: marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
+            profile: None,
         }
     }
 

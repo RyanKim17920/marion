@@ -723,6 +723,7 @@ mod enabled_launch {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         }));
 
         // `SpawnIntent` is journaled before the spawn's first side effect, so the child is in the

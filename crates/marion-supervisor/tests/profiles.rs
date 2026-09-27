@@ -342,6 +342,7 @@ fn params() -> AgentSpawnParams {
         pane: None,
         isolation: None,
         allow_concurrent_writes: None,
+        profile: None,
     }
 }
 
@@ -642,4 +643,51 @@ fn a_codex_child_gets_its_home_and_a_usage_limit_is_only_a_notice() {
             ..
         })
     ));
+}
+
+/// **A root runs on the profile its client names**, else its agent type's first; and a node may
+/// never choose its children's account — `profile` beside a `caller` is refused by name.
+#[test]
+fn a_root_runs_on_the_named_profile_and_a_node_may_not_choose_one() {
+    let bed = bed("profiles-root", "ok", "ok");
+    let root = |profile: Option<&str>| {
+        bed.spawn(AgentSpawnParams {
+            agent_type: "two-accounts".into(),
+            prompt: "root".into(),
+            repo: Some(bed.repo.clone()),
+            no_change_record: Some(true),
+            profile: profile.map(str::to_string),
+            ..params()
+        })
+    };
+    let wait_for = |n: usize| {
+        let deadline = Instant::now() + BOUND;
+        while bed.invocations("claude").len() < n {
+            assert!(Instant::now() < deadline, "the root never launched");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    root(Some("personal"));
+    wait_for(1);
+    root(None);
+    wait_for(2);
+    let dirs: Vec<String> = bed.invocations("claude").into_iter().map(|r| r.0).collect();
+    assert!(
+        dirs.contains(&bed.dir("claude-code", "personal")),
+        "{dirs:?}"
+    );
+    assert!(dirs.contains(&bed.dir("claude-code", "work")), "{dirs:?}");
+    let refused = bed
+        .call(Call::AgentSpawn(AgentSpawnParams {
+            agent_type: "two-accounts".into(),
+            prompt: "x".into(),
+            caller: Some(SpawnCaller {
+                agent_id: bed.root.clone(),
+                node_token: bed.token.clone(),
+            }),
+            profile: Some("personal".into()),
+            ..params()
+        }))
+        .expect_err("a node does not choose an account");
+    assert!(refused.contains("must not state `profile`"), "{refused}");
 }

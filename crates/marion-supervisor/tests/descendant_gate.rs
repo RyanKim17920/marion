@@ -229,6 +229,7 @@ fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnP
         pane: None,
         isolation: None,
         allow_concurrent_writes: None,
+        profile: None,
     }
 }
 

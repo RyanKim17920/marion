@@ -736,6 +736,25 @@ impl Launch {
     }
 }
 
+/// **An account is the operator's choice, never a node's**: `profile` on a spawn with a `caller`
+/// is refused. A node's children run on their agent type's profile; a node that could pick one
+/// could move its work to another account when its own hit a limit, which marion does not do.
+pub fn check_child_profile(
+    p: &marion_core::proto::params::AgentSpawnParams,
+) -> Result<(), marion_core::proto::RpcError> {
+    if p.caller.is_some() && p.profile.is_some() {
+        return Err(marion_core::proto::RpcError::refused(
+            "profile",
+            "a spawn with a `caller` must not state `profile`: which login a node runs on is the \
+             operator's choice, made on the agent type's `profile` or in profiles.toml, and a node \
+             that could choose its children's account could move work to another account when its \
+             own hit a usage limit. Refused rather than dropped (§11 item 23).",
+            "profiles, §11 item 23",
+        ));
+    }
+    Ok(())
+}
+
 /// A run's cause, from its whole output. One name for the classifier so the failover decision and
 /// the contract read the same answer.
 pub fn classify(stdout: &str, stderr: &str) -> Option<FailureCause> {

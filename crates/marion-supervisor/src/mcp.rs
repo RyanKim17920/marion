@@ -469,6 +469,7 @@ fn spawn_params(
         // them before the environment was consulted.
         isolation: args["isolation"].as_str().and_then(Isolation::from_wire),
         allow_concurrent_writes: args["allow_concurrent_writes"].as_bool(),
+        profile: None,
     }
 }
 

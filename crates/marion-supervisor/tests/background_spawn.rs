@@ -506,6 +506,7 @@ fn fixture(tag: &str) -> Fixture {
             // beside `caller: None` (§6.6, §9).
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         }))
         .expect("the root is created over the socket");
     let MethodResult::AgentSpawn(root) = Method::AgentSpawn
