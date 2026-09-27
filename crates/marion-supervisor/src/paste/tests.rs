@@ -251,14 +251,7 @@ impl Bed {
     }
 
     fn read_slave(&mut self, want: usize) -> Vec<u8> {
-        let mut got = Vec::new();
-        let mut buf = [0u8; 4096];
-        while got.len() < want {
-            let n = self.slave.read(&mut buf).unwrap();
-            assert!(n > 0, "the slave hung up");
-            got.extend_from_slice(&buf[..n]);
-        }
-        got
+        read_slave_within(&mut self.slave, want, Duration::from_secs(20))
     }
 
     /// The next decision the injector reports that is not `want`-irrelevant: skips repeats of
@@ -307,6 +300,45 @@ impl Bed {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect()
     }
+}
+
+/// **Exactly `want` bytes from a pty slave, or a failure naming what did arrive** once `bound`
+/// passes — a paste that never comes fails its test instead of hanging the suite on a blocking
+/// read. Shared with the handler's steer tests, which drive the same path through `register_pane`.
+pub(crate) fn read_slave_within(
+    slave: &mut std::fs::File,
+    want: usize,
+    bound: Duration,
+) -> Vec<u8> {
+    let deadline = Instant::now() + bound;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    while got.len() < want {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "{} of {want} bytes reached the node within {bound:?}: {:?}",
+            got.len(),
+            String::from_utf8_lossy(&got)
+        );
+        let timeout = rustix::event::Timespec {
+            tv_sec: i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
+            tv_nsec: left.subsec_nanos().into(),
+        };
+        let mut fds = [rustix::event::PollFd::new(
+            &*slave,
+            rustix::event::PollFlags::IN,
+        )];
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+            Ok(_) => {}
+            Err(error) => panic!("polling the slave failed: {error}"),
+        }
+        let n = slave.read(&mut buf).expect("the slave reads");
+        assert!(n > 0, "the slave hung up");
+        got.extend_from_slice(&buf[..n]);
+    }
+    got
 }
 
 fn fast() -> PastePolicy {
@@ -460,20 +492,9 @@ fn a_message_at_the_steer_cap_arrives_byte_exact() {
         .map(|i| (b'a' + (i % 26) as u8) as char)
         .collect();
     let want = expected_paste(&text);
-    let mut reader = bed.slave.try_clone().unwrap();
-    let n = want.len();
-    let read = std::thread::spawn(move || {
-        let mut got = Vec::new();
-        let mut buf = [0u8; 4096];
-        while got.len() < n {
-            let k = reader.read(&mut buf).unwrap();
-            assert!(k > 0);
-            got.extend_from_slice(&buf[..k]);
-        }
-        got
-    });
+    // Read while the injector writes: 8 KiB is past the pty's queue, so its writer waits on this.
     let id = bed.steer(&text);
-    assert_eq!(read.join().unwrap(), want);
+    assert_eq!(bed.read_slave(want.len()), want);
     assert!(matches!(
         bed.resolution(&id),
         RecordKind::MessageDelivered(_)
