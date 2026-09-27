@@ -751,6 +751,7 @@ mod tests {
                 },
             },
             NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: vec![],
                 env_overlay: vec![],
                 documents: vec![],
@@ -888,6 +889,7 @@ mod tests {
                 "the declaration must carry the token its owner minted"
             );
             Ok(NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: vec![
                     OsString::from("--marion-mcp"),
                     context.bridge.bridge.as_os_str().to_owned(),
@@ -1159,6 +1161,7 @@ mod tests {
         ) -> Result<NativeInjection, marion_harness::NativeInjectionError> {
             let path = (self.0)(context.document_dir);
             Ok(NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: vec![OsString::from("--mcp-config"), path.as_os_str().to_owned()],
                 env_overlay: vec![],
                 documents: vec![marion_harness::NativeDocument {

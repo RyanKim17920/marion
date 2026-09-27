@@ -47,8 +47,9 @@ fn shim(bin: &Path, gate: &Path) {
 case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0 ;;
 esac
-# What marion launched it with, for the test to find the node's token in (it rides on argv).
-mkdir -p {argv} && echo "$@" > {argv}/$$
+# What marion launched it with, and the node token from its environment — a live codex node's
+# token rides the environment, never argv — for the test to find the node's identity and token in.
+mkdir -p {argv} && printf '%s TOKEN_FROM_ENV="%s"\n' "$*" "${{MARION_NODE_TOKEN-}}" > {argv}/$$
 case "$*" in
   *exec*)
     # The turn's opening frames and its first call, a line at a time; the rest only once the gate
@@ -325,10 +326,10 @@ impl Bed {
     }
 
     fn spawn_child(&self, parent: &AgentId, prompt: &str) -> AgentId {
-        // The token rides on the root's argv, as one of its MCP server's variables, which the
-        // shim wrote down as it started.
+        // The root's identity rides its argv and its token its environment; the shim wrote both
+        // down as it started.
         let want = format!("MARION_AGENT_ID=\"{}\"", parent.0);
-        let key = "MARION_NODE_TOKEN=\"";
+        let key = "TOKEN_FROM_ENV=\"";
         let deadline = Instant::now() + BOUND;
         let token = loop {
             let found = std::fs::read_dir(self.dir.join("argv"))

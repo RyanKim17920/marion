@@ -114,6 +114,7 @@ impl NativeInjectionAdapter for SyntheticAdapter {
             .ok_or_else(|| NativeInjectionError::Adapter("missing SOURCE".into()))?;
 
         Ok(NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![OsString::from_vec(vec![b'p', b'r', b'e', 0xf6])],
             env_overlay: vec![(OsString::from("REPLACE"), source.to_owned())],
             documents: vec![NativeDocument {

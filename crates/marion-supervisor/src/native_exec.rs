@@ -480,6 +480,7 @@ mod tests {
                 },
             },
             NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: Vec::new(),
                 env_overlay: Vec::new(),
                 documents: Vec::new(),

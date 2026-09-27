@@ -5534,6 +5534,127 @@ mod tests {
         assert!(!joined.contains("MARION_BASE_URL"), "{joined}");
     }
 
+    /// **A live codex node's token is never on its argv**, where `ps` shows it to every user: it
+    /// rides codex's environment, and the `-c` pairs name its variable in `env_vars` because codex
+    /// hands a stdio server only an allowlist of its own environment. A canned node's token stays
+    /// in its 0600 `config.toml`, and nothing is added to its environment.
+    #[test]
+    fn a_live_codex_nodes_token_rides_its_environment_and_env_vars_names_it() {
+        let minted = SpawnCtx {
+            node_token: Some("tok-SENTINEL-codex-4b1d".into()),
+            ..ctx()
+        };
+        let token_env = |inv: &Invocation| -> Vec<String> {
+            inv.env
+                .iter()
+                .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+
+        let live = CodexAdapter.compile(&codex_live_spec(), &minted).unwrap();
+        let joined = live.args.join(" ");
+        assert!(
+            !joined.contains("SENTINEL"),
+            "the token is on argv: {joined}"
+        );
+        assert!(
+            !joined.contains(&format!(".env.{}", mcp_bridge::NODE_TOKEN_ENV)),
+            "the declaration names no token value: {joined}"
+        );
+        assert!(
+            joined.contains(r#"-c mcp_servers.marion.env_vars=["MARION_NODE_TOKEN"]"#),
+            "codex is told to pass the variable on: {joined}"
+        );
+        assert_eq!(token_env(&live), ["tok-SENTINEL-codex-4b1d"]);
+
+        let canned = CodexAdapter.compile(&codex_spec(), &minted).unwrap();
+        assert!(token_env(&canned).is_empty(), "{:?}", canned.env);
+        let files = CodexAdapter.config_files(&codex_spec(), &minted).unwrap();
+        assert!(
+            files[0].1.contains("tok-SENTINEL-codex-4b1d"),
+            "the canned document carries it"
+        );
+    }
+
+    /// The native lane reads the same live carrier: `marion codex` puts the same `-c` pairs in
+    /// front of the operator's own flags, and the token reaches the assembled environment — past
+    /// the rule that strips every `MARION_` name the operator's own environment carried.
+    #[test]
+    fn a_native_codex_nodes_token_rides_its_environment_and_never_its_argv() {
+        use std::ffi::OsString;
+
+        use crate::native::{
+            NativeEnvironmentView, NativeNodeContext, NativeProcessBase, NativeTerminalGeometry,
+            assemble_native, native_adapter,
+        };
+
+        let minted = SpawnCtx {
+            node_token: Some("tok-SENTINEL-native-77e2".into()),
+            ..ctx()
+        };
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            ..codex_spec()
+        };
+        let bridge = bridge_env(&live, &minted);
+        let operator_env = vec![(
+            OsString::from(mcp_bridge::NODE_TOKEN_ENV),
+            OsString::from("operator-forged"),
+        )];
+        let injection = native_adapter(Harness::Codex)
+            .unwrap()
+            .prepare_native(&NativeNodeContext {
+                bridge: &bridge,
+                document_dir: std::path::Path::new("/state/agents/019f-root"),
+                allowed_marion_tools: &["spawn"],
+                environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+            })
+            .unwrap();
+        let prepared = assemble_native(
+            NativeProcessBase {
+                program: "codex".into(),
+                user_argv: vec![],
+                env: operator_env.clone(),
+                cwd: "/repo".into(),
+                geometry: NativeTerminalGeometry {
+                    cols: 80,
+                    rows: 24,
+                    xpixel: 0,
+                    ypixel: 0,
+                },
+            },
+            injection,
+        )
+        .unwrap();
+        let argv: Vec<String> = prepared
+            .invocation
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !argv.iter().any(|a| a.contains("SENTINEL")),
+            "the token is on argv: {argv:?}"
+        );
+        assert!(
+            argv.iter()
+                .any(|a| a == r#"mcp_servers.marion.env_vars=["MARION_NODE_TOKEN"]"#),
+            "{argv:?}"
+        );
+        let token: Vec<&OsString> = prepared
+            .invocation
+            .env
+            .iter()
+            .filter(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV)
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(token, [&OsString::from("tok-SENTINEL-native-77e2")]);
+        let printed = format!("{prepared:?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+    }
+
     /// **The contract's `sandbox:workspace-write` is a claim about the launch, so a live launch must
     /// carry it.** A canned node gets it from the generated `config.toml`; a live node reads the
     /// operator's `~/.codex/config.toml`, where an untrusted worktree resolves to `read-only`

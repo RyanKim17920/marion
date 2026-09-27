@@ -119,7 +119,7 @@ fn fake_codex(bin: &Path, log: &Path, gate: &Path, root_argv: &Path) {
 case "$1" in --version) echo "codex-cli 0.155.1"; exit 0 ;; esac
 case "$*" in
   *{root}*)
-    printf '%s\n' "$*" > {root_argv}
+    printf '%s TOKEN_FROM_ENV="%s"\n' "$*" "${{MARION_NODE_TOKEN-}}" > {root_argv}
     waited=0
     while [ ! -e {gate} ]; do
       sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 2400 ] && exit 0
@@ -310,18 +310,20 @@ fn bed(tag: &str, work_mode: &str, cwork_mode: &str) -> Bed {
     bed
 }
 
-/// **The root's capability token, off its argv.** A live codex root carries marion's declaration
-/// on `-c` pairs rather than in a file (`codex::SPEC`'s live route), so the token is read where
-/// the fake root recorded the argv marion gave it.
+/// **The root's capability token, off its environment.** A live codex root carries marion's
+/// declaration on `-c` pairs rather than in a file (`codex::SPEC`'s live route), and the token
+/// rides codex's environment beside it rather than on argv, so the fake root records it from
+/// there.
 fn root_token(root_argv: &Path) -> String {
+    const KEY: &str = "TOKEN_FROM_ENV=\"";
     let deadline = Instant::now() + BOUND;
     loop {
         let argv = std::fs::read_to_string(root_argv).unwrap_or_default();
-        if let Some(at) = argv.find("MARION_NODE_TOKEN") {
-            let rest = &argv[at..];
-            let open = rest.find('"').expect("a quoted token");
-            let rest = &rest[open + 1..];
-            return rest[..rest.find('"').expect("closed")].to_string();
+        if let Some(at) = argv.find(KEY) {
+            let rest = &argv[at + KEY.len()..];
+            let token = &rest[..rest.find('"').expect("closed")];
+            assert!(!token.is_empty(), "the root's environment carries no token");
+            return token.to_string();
         }
         assert!(Instant::now() < deadline, "the root never started: {argv}");
         std::thread::sleep(Duration::from_millis(10));

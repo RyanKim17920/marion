@@ -23,7 +23,7 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -158,7 +158,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: MCP_SERVER_KEY,
         pairs: live_config_overrides,
     }),
-    token: TokenCarriers::DECLARATION,
+    // A canned node's token sits in its 0600 `config.toml`. A live node's declaration is argv,
+    // so its token rides codex's environment and the `-c` pairs name it in `env_vars`
+    // ([`live_config_overrides`]).
+    token: TokenCarriers {
+        canned: TokenCarrier::Declaration,
+        live: TokenCarrier::ForwardedEnv {
+            note: "codex 0.145.0 through 0.155.1 (2026-09-27, stub MCP server): a stdio server \
+                   gets only HOME, LANG, LOGNAME, PATH, SHELL, TERM, TMPDIR, USER of the parent's \
+                   environment, plus the variables `env_vars` names; `-c \
+                   mcp_servers.<name>.env_vars=[…]` is parsed on argv too",
+        },
+    },
     // §3.1's worked example, verbatim: it replaces a hardcoded `["apply_patch", "shell"]` that
     // named tools codex never checked a call against. Constant, because marion compiles that one
     // sandbox mode on every node ([`config_toml`] canned, [`live_sandbox_override`] live).
@@ -532,7 +543,10 @@ pub const PLUGINS_FEATURE_KEY: &str = "features.plugins";
 /// the proof that the key is really parsed and that `approve` is really one of its values.
 ///
 /// The `env` block comes from [`BridgeEnv::pairs`], shared with [`config_toml`], so the live route
-/// and the canned one cannot hand the bridge different sets of variables.
+/// and the canned one cannot hand the bridge different sets of variables — **except the node
+/// token**, which `ps` would show to every user on argv. `env` is the declared bridge, which the
+/// row's live carrier has already stripped of it; the token rides codex's own environment instead,
+/// and `env_vars` names its variable so codex passes it on to the bridge.
 pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
     let args = env
         .args
@@ -563,6 +577,15 @@ pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
     ];
     for (k, v) in env.pairs() {
         out.push((format!("{MCP_SERVER_KEY}.env.{k}"), toml_str(&v)));
+    }
+    let forwarded = SPEC.token.live.forwarded();
+    if !forwarded.is_empty() {
+        let names = forwarded
+            .iter()
+            .map(|n| toml_str(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push((format!("{MCP_SERVER_KEY}.env_vars"), format!("[{names}]")));
     }
     // Measured (S7 / §12): left on, `codex exec` starts a curated-plugin-marketplace clone whose
     // `git fetch` OUTLIVES the process, reparents to pid 1, writes into the agent dir after

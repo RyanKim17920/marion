@@ -33,6 +33,7 @@ fn base_with(
 
 fn empty_injection() -> NativeInjection {
     NativeInjection {
+        bridge_env: Vec::new(),
         argv_prefix: vec![],
         env_overlay: vec![],
         documents: vec![],
@@ -62,6 +63,7 @@ impl NativeInjectionAdapter for PrefixAdapter {
         }
 
         Ok(NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![OsString::from("--marion-prefix")],
             env_overlay: vec![(OsString::from("REPLACE"), replacement.to_owned())],
             documents: vec![NativeDocument {
@@ -161,6 +163,7 @@ fn prefix_is_first_for_empty_and_flag_shaped_user_tails() {
                 "/cwd",
             ),
             NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: vec![OsString::from("prefix")],
                 env_overlay: vec![],
                 documents: vec![],
@@ -190,6 +193,7 @@ fn overlay_replaces_in_place_appends_in_adapter_order_and_preserves_untouched_sl
             "/cwd",
         ),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![],
             env_overlay: vec![
                 (OsString::from("REPLACE"), OsString::from("new")),
@@ -256,6 +260,7 @@ fn adapter_cannot_overlay_a_reserved_marion_identity() {
     let error = assemble_native(
         base_with("program", vec![], vec![], "/cwd"),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![],
             env_overlay: vec![(
                 OsString::from("MARION_FUTURE_IDENTITY"),
@@ -302,6 +307,7 @@ fn duplicate_overlay_names_have_their_own_failure() {
     let error = assemble_native(
         base_with("program", vec![], vec![], "/cwd"),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![],
             env_overlay: vec![
                 (OsString::from("DUP"), OsString::from("one")),
@@ -350,6 +356,7 @@ fn nul_is_refused_in_every_process_value_category() {
     let prefix_error = assemble_native(
         base_with("program", vec![], vec![], "/cwd"),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![OsString::from("pre\0fix")],
             env_overlay: vec![],
             documents: vec![],
@@ -361,6 +368,7 @@ fn nul_is_refused_in_every_process_value_category() {
     let overlay_name_error = assemble_native(
         base_with("program", vec![], vec![], "/cwd"),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![],
             env_overlay: vec![(OsString::from("NA\0ME"), OsString::from("value"))],
             documents: vec![],
@@ -375,6 +383,7 @@ fn nul_is_refused_in_every_process_value_category() {
     let overlay_value_error = assemble_native(
         base_with("program", vec![], vec![], "/cwd"),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![],
             env_overlay: vec![(OsString::from("NAME"), OsString::from("val\0ue"))],
             documents: vec![],
@@ -451,6 +460,7 @@ fn invalid_unix_bytes_survive_every_opaque_slot_and_order_boundary() {
             cwd.clone(),
         ),
         NativeInjection {
+            bridge_env: Vec::new(),
             argv_prefix: vec![OsString::from_vec(vec![b'p', b'r', b'e', 0xf6])],
             env_overlay: vec![
                 (

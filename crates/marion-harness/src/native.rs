@@ -15,16 +15,36 @@ use std::path::{Path, PathBuf};
 use marion_core::harness::Harness;
 
 use crate::adapter::harness_spec;
-use crate::mcp_bridge::BridgeEnv;
+use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_ENV};
 use crate::spec::{HarnessSpec, LiveDeclaration};
 
-#[derive(Debug)]
+/// `Debug` prints the environment's names, never its values: it is the operator's, and carries
+/// whatever credentials the operator keeps there.
 pub struct NativeProcessBase {
     pub program: OsString,
     pub user_argv: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub geometry: NativeTerminalGeometry,
+}
+
+impl std::fmt::Debug for NativeProcessBase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let NativeProcessBase {
+            program,
+            user_argv,
+            env,
+            cwd,
+            geometry,
+        } = self;
+        f.debug_struct("NativeProcessBase")
+            .field("program", program)
+            .field("user_argv", user_argv)
+            .field("env", &EnvNames(env))
+            .field("cwd", cwd)
+            .field("geometry", geometry)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,20 +89,67 @@ pub struct NativeNodeContext<'a> {
     pub environment: NativeEnvironmentView<'a>,
 }
 
-#[derive(Debug)]
+/// `Debug` is hand-written: environment values and document bodies are where the node token and a
+/// provider key travel, so a print names them and shows neither.
 pub struct NativeInjection {
     pub argv_prefix: Vec<OsString>,
     pub env_overlay: Vec<(OsString, OsString)>,
+    /// The bridge's own variables, which the harness passes on to the MCP server it starts: the
+    /// node token, where the row's live [`crate::spec::TokenCarrier`] withholds it from an argv
+    /// declaration. The one way a `MARION_` name enters a native environment, and
+    /// [`assemble_native`] admits [`NODE_TOKEN_ENV`] alone.
+    pub bridge_env: Vec<(OsString, OsString)>,
     pub documents: Vec<NativeDocument>,
 }
 
-#[derive(Debug)]
+impl std::fmt::Debug for NativeInjection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let NativeInjection {
+            argv_prefix,
+            env_overlay,
+            bridge_env,
+            documents,
+        } = self;
+        f.debug_struct("NativeInjection")
+            .field("argv_prefix", argv_prefix)
+            .field("env_overlay", &EnvNames(env_overlay))
+            .field("bridge_env", &EnvNames(bridge_env))
+            .field("documents", documents)
+            .finish()
+    }
+}
+
+/// An environment as its names alone, each shown `NAME=***`.
+struct EnvNames<'a>(&'a [(OsString, OsString)]);
+
+impl std::fmt::Debug for EnvNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(
+                self.0
+                    .iter()
+                    .map(|(k, _)| format!("{}=***", k.to_string_lossy())),
+            )
+            .finish()
+    }
+}
+
+/// `Debug` prints the path and the size, never the body — see [`NativeInjection`].
 pub struct NativeDocument {
     pub path: PathBuf,
     pub contents: Vec<u8>,
 }
 
-#[derive(Debug)]
+impl std::fmt::Debug for NativeDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeDocument")
+            .field("path", &self.path)
+            .field("bytes", &self.contents.len())
+            .finish()
+    }
+}
+
+/// `Debug` prints the environment's names, never its values — see [`NativeProcessBase`].
 pub struct NativeInvocation {
     pub program: OsString,
     pub args: Vec<OsString>,
@@ -90,6 +157,27 @@ pub struct NativeInvocation {
     pub cwd: PathBuf,
     pub geometry: NativeTerminalGeometry,
     environment_is_authoritative: EnvironmentIsAuthoritative,
+}
+
+impl std::fmt::Debug for NativeInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let NativeInvocation {
+            program,
+            args,
+            env,
+            cwd,
+            geometry,
+            environment_is_authoritative,
+        } = self;
+        f.debug_struct("NativeInvocation")
+            .field("program", program)
+            .field("args", args)
+            .field("env", &EnvNames(env))
+            .field("cwd", cwd)
+            .field("geometry", geometry)
+            .field("environment_is_authoritative", environment_is_authoritative)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,9 +246,18 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 self.row.harness
             ))
         })?;
+        // The row's live carrier decides whether the declaration names the token or withholds
+        // it for the harness's environment, exactly as on the managed live launch.
+        let carrier = self.row.token.live;
+        let bridge = &carrier.declared(context.bridge);
         let mut injection = NativeInjection {
             argv_prefix: Vec::new(),
             env_overlay: Vec::new(),
+            bridge_env: carrier
+                .process_env(context.bridge)
+                .into_iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect(),
             documents: Vec::new(),
         };
         match declaration {
@@ -176,7 +273,7 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix = vec![OsString::from(flag), named];
                 injection.documents.push(NativeDocument {
                     path,
-                    contents: body(context.bridge).into_bytes(),
+                    contents: body(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::EnvDocument { key, file, body } => {
@@ -186,24 +283,18 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                     .push((OsString::from(key), path.as_os_str().to_owned()));
                 injection.documents.push(NativeDocument {
                     path,
-                    contents: body(context.bridge).into_bytes(),
+                    contents: body(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::EnvInline { key, body } => {
                 injection
                     .env_overlay
-                    .push((OsString::from(key), OsString::from(body(context.bridge))));
+                    .push((OsString::from(key), OsString::from(body(bridge))));
             }
             LiveDeclaration::ArgvPairs { flag, pairs, .. } => {
                 // The update policy's pair first, exactly where the managed launch renders it
                 // ([`crate::spec::render`]'s `Field::Pairs`), then the declaration's own.
-                for (k, v) in self
-                    .row
-                    .updates
-                    .pair()
-                    .into_iter()
-                    .chain(pairs(context.bridge))
-                {
+                for (k, v) in self.row.updates.pair().into_iter().chain(pairs(bridge)) {
                     injection.argv_prefix.push(OsString::from(flag));
                     injection
                         .argv_prefix
@@ -220,12 +311,11 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix = vec![OsString::from(flag), dir.as_os_str().to_owned()];
                 injection.documents.push(NativeDocument {
                     path: dir.join(file),
-                    contents: body(context.bridge).into_bytes(),
+                    contents: body(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::ArgvInline { flag, body, .. } => {
-                injection.argv_prefix =
-                    vec![OsString::from(flag), OsString::from(body(context.bridge))];
+                injection.argv_prefix = vec![OsString::from(flag), OsString::from(body(bridge))];
             }
         }
         // The row's completion push is enabled here as on the pane shape, and for the same reason
@@ -280,6 +370,8 @@ pub enum NativeInjectionError {
     DuplicateOverlayName,
     #[error("native process environment may not inject reserved MARION_ identity")]
     ReservedMarionEnvironment,
+    #[error("native injection passes the bridge a variable other than its node token")]
+    UndeclaredBridgeVariable,
     #[error("native adapter injection failed: {0}")]
     Adapter(String),
 }
@@ -359,6 +451,14 @@ pub fn assemble_native(
     {
         return Err(NativeInjectionError::ReservedMarionEnvironment);
     }
+    validate_environment(&injection.bridge_env, DuplicateKind::Overlay)?;
+    if injection
+        .bridge_env
+        .iter()
+        .any(|(name, _)| name != NODE_TOKEN_ENV)
+    {
+        return Err(NativeInjectionError::UndeclaredBridgeVariable);
+    }
 
     let NativeProcessBase {
         program,
@@ -370,6 +470,7 @@ pub fn assemble_native(
     let NativeInjection {
         mut argv_prefix,
         env_overlay,
+        bridge_env,
         documents,
     } = injection;
 
@@ -386,6 +487,8 @@ pub fn assemble_native(
             env.push((name, value));
         }
     }
+    // After the base's `MARION_` names are gone, so the token is marion's and never the operator's.
+    env.extend(bridge_env);
 
     Ok(PreparedNativeLaunch {
         invocation: NativeInvocation {

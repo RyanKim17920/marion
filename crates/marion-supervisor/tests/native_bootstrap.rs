@@ -189,6 +189,7 @@ mod enabled_launch {
                 env_overlay.push((OsString::from(PROBE_TOKEN_ENV), OsString::from(token)));
             }
             Ok(NativeInjection {
+                bridge_env: Vec::new(),
                 argv_prefix: vec![OsString::from(INJECTED_PREFIX)],
                 env_overlay,
                 documents: vec![],
