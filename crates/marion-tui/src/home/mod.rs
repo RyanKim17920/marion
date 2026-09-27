@@ -30,7 +30,7 @@ pub mod watch;
 pub mod widgets;
 
 pub use help::{HelpView, KeyRow};
-pub use setup::{AgentTypeRow, SetupView};
+pub use setup::{AgentTypeRow, FormField, FormView, LoginRow, ProfileRow, SetupView};
 pub use start::{HarnessRow, RecentRow, StartView};
 pub use theme::{Ready, Theme};
 pub use watch::{

@@ -4570,9 +4570,23 @@ mod tests {
             assert_eq!(steer.target, id.0);
             assert_eq!(steer.text, SteerText::Words(text.into()));
         }
+        // Setup's key hand-offs run exactly the command they echo: the verb and one credential id,
+        // which `marion login`/`logout` take as their only positional argument.
+        for (e, v) in [
+            (Effect::Login("openrouter:work".into()), "login"),
+            (Effect::Logout("openrouter:work".into()), "logout"),
+        ] {
+            let a = verb(&e);
+            assert_eq!(a, [v, "openrouter:work"]);
+            assert!(marion_core::provider::CredentialId::parse(&a[1]).is_some());
+        }
         // The verbs the echoes name are the verbs this binary dispatches.
         let production = include_str!("marion.rs");
         let production = &production[..production.find("#[cfg(test)]").unwrap()];
+        assert!(
+            production.contains("Some(\"login\" | \"logout\")"),
+            "`marion login`/`logout` are echoed and not dispatched"
+        );
         for v in ["attach", "cancel", "resume", "steer"] {
             assert!(
                 production.contains(&format!("== Some(\"{v}\")")),

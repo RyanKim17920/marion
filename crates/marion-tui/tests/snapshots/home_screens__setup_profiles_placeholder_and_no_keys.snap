@@ -6,19 +6,14 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  HARNESSES   2 of 6 ready · checking…
+  HARNESSES   3 of 6 ready
 
   ● claude       2.1.268   ready                       headless · pane · channel push
   ● codex        0.61.0    ready                       headless · pane · ACP
-❯ ◐ gemini       0.9.1     sign-in needed              headless · pane
-    └ BINARY   /usr/local/bin/gemini
-      VERSION  0.9.1
-      AUTH     not signed in
-      FIX      run gemini once and sign in
-               marion uses your login, never its own
-  ⠸ opencode     —         checking…                   headless · pane · ACP
-  ⠼ copilot      —         checking…                   headless · ACP
-  ⠴ agy          —         checking…                   —
+  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+❯ ○ agy          —         not installed               —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
@@ -27,18 +22,24 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
   ✓ .marion/agents.toml: 2 types, valid
 
-  LOGINS   3 keys
+  LOGINS
+  no keys stored · a adds one with marion login <provider>
+
+  PROFILES
+  several logins per harness arrive with marion profile; until then each harness uses its own
+
 
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion doctor                                                                      checking… │
+ │ ❯ marion doctor                                                                              r │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
 --- styles ---
-  181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
-   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   65  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  684  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-   20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸⠼⠴reviewermigrator"
-   13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
-    9  Style::new().green().bg(Color::Reset)  "●●●●●●●●✓"
+  131  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+    9  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionagy"
+   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  718  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
+   42  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯amarionlogin<provi"
+   10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
    17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"

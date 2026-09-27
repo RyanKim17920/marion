@@ -596,3 +596,249 @@ fn the_feed_records_what_changed_while_the_screen_watched() {
     assert_eq!(f.watch.feed.len(), 2);
     assert_eq!(f.watch.feed[0].tone, marion_tui::tree::Tone::Failed);
 }
+
+// ------------------------------------------------------------------ Setup: logins and the form
+
+fn every_key() -> Vec<Key> {
+    [
+        Key::Enter,
+        Key::Esc,
+        Key::Tab,
+        Key::BackTab,
+        Key::Backspace,
+        Key::Up,
+        Key::Down,
+        Key::Left,
+        Key::Right,
+        Key::Paste("p".into()),
+    ]
+    .into_iter()
+    .chain((b'!'..=b'~').map(|b| Key::Char(b as char)))
+    .collect()
+}
+
+fn setup_home() -> Home {
+    let mut h = home();
+    h.tab = Tab::Setup;
+    h.setup.providers = vec!["anthropic".into(), "openrouter".into()];
+    h.setup.logins = vec![
+        StoredLogin {
+            provider: "anthropic".into(),
+            id: "anthropic".into(),
+            note: None,
+        },
+        StoredLogin {
+            provider: "openrouter".into(),
+            id: "openrouter:work".into(),
+            note: None,
+        },
+    ];
+    h
+}
+
+#[test]
+fn setup_cursor_runs_on_from_the_harnesses_into_the_stored_keys() {
+    let mut h = setup_home();
+    for _ in 0..10 {
+        h.key(Key::Char('j'));
+    }
+    assert_eq!(
+        h.setup.cursor, 3,
+        "two harnesses, then two keys, and no further"
+    );
+    assert_eq!(
+        h.selected_login().map(|l| l.id.as_str()),
+        Some("openrouter:work")
+    );
+    h.key(Key::Char('k'));
+    assert_eq!(h.selected_login().map(|l| l.id.as_str()), Some("anthropic"));
+    h.setup.cursor = 0;
+    assert_eq!(h.selected_login(), None, "a harness row is not a key");
+}
+
+#[test]
+fn removing_a_key_waits_for_y_and_names_the_credential_id() {
+    let mut h = setup_home();
+    h.setup.cursor = 3;
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(
+        h.mode,
+        Mode::Confirm(Effect::Logout("openrouter:work".into()))
+    );
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.notice.as_deref(), Some("key kept"));
+    h.key(Key::Char('x'));
+    assert_eq!(
+        h.key(Key::Char('y')),
+        Effect::Logout("openrouter:work".into())
+    );
+    let mut h = setup_home();
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal, "x on a harness row removes nothing");
+    assert!(h.notice.is_some());
+}
+
+#[test]
+fn adding_a_key_asks_for_the_provider_and_hands_off_to_marion_login() {
+    let mut h = setup_home();
+    assert_eq!(h.key(Key::Char('a')), Effect::None);
+    assert_eq!(
+        h.mode,
+        Mode::Login {
+            text: String::new()
+        }
+    );
+    typed(&mut h, "openrouter:personal");
+    assert_eq!(
+        h.key(Key::Enter),
+        Effect::Login("openrouter:personal".into())
+    );
+    // A provider marion does not know is refused here, before the terminal changes hands.
+    h.key(Key::Char('a'));
+    typed(&mut h, "nope");
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    assert!(
+        h.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("marion login --list")
+    );
+    // On a key's row, the box starts with that key's provider.
+    h.setup.cursor = 3;
+    h.key(Key::Char('a'));
+    assert_eq!(
+        h.mode,
+        Mode::Login {
+            text: "openrouter".into()
+        }
+    );
+    assert_eq!(h.key(Key::Esc), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+}
+
+#[test]
+fn login_and_logout_echo_the_commands_they_run_and_only_logout_asks_first() {
+    assert_eq!(
+        Effect::Login("openrouter:work".into()).argv().unwrap(),
+        ["marion", "login", "openrouter:work"]
+    );
+    assert_eq!(
+        Effect::Logout("openrouter:work".into()).argv().unwrap(),
+        ["marion", "logout", "openrouter:work"]
+    );
+    assert!(!Effect::Login("x".into()).destructive());
+    assert!(Effect::Logout("x".into()).destructive());
+}
+
+#[test]
+fn the_form_fills_a_draft_and_enter_asks_for_a_preview() {
+    let mut h = setup_home();
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    let Mode::Form(f) = &h.mode else {
+        panic!("n opens the form, got {:?}", h.mode)
+    };
+    assert_eq!(
+        f.draft.harness, "claude",
+        "the first harness a file can name"
+    );
+    typed(&mut h, "reviewer");
+    h.key(Key::Tab);
+    h.key(Key::Right);
+    h.key(Key::Tab);
+    typed(&mut h, "o3");
+    h.key(Key::Backspace);
+    h.key(Key::Tab);
+    typed(&mut h, "Reviews diffs");
+    h.key(Key::Tab);
+    h.key(Key::Right);
+    let Effect::PreviewType(d) = h.key(Key::Enter) else {
+        panic!("enter previews")
+    };
+    assert_eq!(d.name, "reviewer");
+    assert_eq!(d.harness, "copilot", "→ moved to the next harness");
+    assert_eq!(d.model, "o");
+    assert_eq!(d.description, "Reviews diffs");
+    assert_eq!(d.tools, types_form::Tools::Read);
+    assert!(
+        matches!(h.mode, Mode::Form(_)),
+        "the form stays open while it previews"
+    );
+    h.key(Key::BackTab);
+    let Mode::Form(f) = &h.mode else { panic!() };
+    assert_eq!(f.field, 3, "shift-tab goes back a field");
+}
+
+#[test]
+fn an_incomplete_form_previews_nothing_and_says_what_is_missing() {
+    let mut h = setup_home();
+    h.key(Key::Char('n'));
+    assert_eq!(h.key(Key::Enter), Effect::None);
+    let Mode::Form(f) = &h.mode else { panic!() };
+    assert!(f.error.as_deref().unwrap_or("").contains("name"), "{f:?}");
+    assert_eq!(h.key(Key::Esc), Effect::None);
+    assert_eq!(h.mode, Mode::Normal, "esc closes it");
+}
+
+#[test]
+fn a_preview_waits_for_y_and_anything_else_goes_back_to_the_form() {
+    let mut h = setup_home();
+    h.key(Key::Char('n'));
+    typed(&mut h, "reviewer");
+    let Effect::PreviewType(d) = ({
+        h.key(Key::Tab);
+        h.key(Key::Tab);
+        h.key(Key::Tab);
+        typed(&mut h, "Reviews");
+        h.key(Key::Enter)
+    }) else {
+        panic!()
+    };
+    h.show_preview("NEW".into(), vec![('+', "x".into())]);
+    assert_eq!(
+        h.mode,
+        Mode::Confirm(Effect::WriteTypes {
+            text: "NEW".into(),
+            draft: d.clone()
+        })
+    );
+    assert_eq!(h.setup.preview.len(), 1);
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    let Mode::Form(f) = &h.mode else {
+        panic!("back to the form, got {:?}", h.mode)
+    };
+    assert_eq!(f.draft, d, "with the draft as it was");
+    assert!(h.setup.preview.is_empty());
+    h.form_refused("agent type \"reviewer\" would shadow".into());
+    let Mode::Form(f) = &h.mode else { panic!() };
+    assert!(f.error.as_deref().unwrap().contains("shadow"));
+    h.show_preview("NEW".into(), vec![]);
+    assert_eq!(
+        h.key(Key::Char('y')),
+        Effect::WriteTypes {
+            text: "NEW".into(),
+            draft: d
+        }
+    );
+    assert!(
+        Effect::WriteTypes {
+            text: String::new(),
+            draft: Default::default()
+        }
+        .destructive()
+    );
+}
+
+#[test]
+fn no_key_on_a_stored_key_or_in_the_form_is_destructive() {
+    for k in every_key() {
+        let mut h = setup_home();
+        h.setup.cursor = 3;
+        let e = h.key(k.clone());
+        assert!(!e.destructive(), "{k:?} on a key's row returned {e:?}");
+        let mut h = setup_home();
+        h.key(Key::Char('n'));
+        let e = h.key(k.clone());
+        assert!(!e.destructive(), "{k:?} in the form returned {e:?}");
+    }
+}
