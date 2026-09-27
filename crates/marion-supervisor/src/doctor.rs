@@ -225,11 +225,10 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
         }
     }
     Ok(Options {
-        // §8 names `--capabilities` first and calls the other the one that matters more. Neither is
-        // the default: they cost differently by orders of magnitude — one reads a version string,
-        // the other spawns an agent and spends a model call — so choosing for the operator is
-        // choosing how much their `doctor` costs.
-        mode: mode.ok_or("marion doctor needs a mode: --capabilities or --adapter")?,
+        // The two cost differently by orders of magnitude — one reads a version string, the
+        // other spawns an agent and spends a model call — so the default is the one that costs
+        // nothing, and a model call is only ever made when `--adapter` asks for it.
+        mode: mode.unwrap_or(ProbeMode::Capabilities),
         harness,
         model,
         acp_command,
@@ -1800,8 +1799,11 @@ mod tests {
         assert!(auth < shape, "the cause comes first: {notes:#?}");
     }
 
+    /// Both modes parse, and with neither `doctor` runs the free one: `--capabilities` reads
+    /// version strings and spends nothing, while `--adapter` spends a model call and is only ever
+    /// asked for.
     #[test]
-    fn a_mode_is_required_and_both_of_section_8s_modes_parse() {
+    fn both_modes_parse_and_the_free_one_is_the_default() {
         assert_eq!(
             parse_args(&["--capabilities".into()]).unwrap().mode,
             ProbeMode::Capabilities
@@ -1810,8 +1812,13 @@ mod tests {
             parse_args(&["--adapter".into()]).unwrap().mode,
             ProbeMode::Adapter
         );
-        // Neither is the default: the two differ by orders of magnitude in cost.
-        assert!(parse_args(&[]).unwrap_err().contains("needs a mode"));
+        assert_eq!(parse_args(&[]).unwrap().mode, ProbeMode::Capabilities);
+        assert_eq!(
+            parse_args(&["--harness".into(), "codex".into()])
+                .unwrap()
+                .mode,
+            ProbeMode::Capabilities
+        );
     }
 
     #[test]

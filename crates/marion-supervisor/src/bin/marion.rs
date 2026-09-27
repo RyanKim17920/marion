@@ -48,7 +48,7 @@ fn usage_text() -> String {
          \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
-         \x20      marion doctor <--capabilities|--adapter> [--harness <name>]\n\
+         \x20      marion doctor [--capabilities|--adapter] [--harness <name>]\n\
          \x20      marion --version\n\
          \n\
          marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\

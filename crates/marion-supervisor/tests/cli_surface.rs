@@ -53,11 +53,6 @@ fn marion_doctor_forwards_to_the_supervisors_doctor() {
         err.contains("unknown doctor flag `--no-such-flag`"),
         "the doctor's own refusal, not marion's usage text: {err}"
     );
-
-    let out = run(env!("CARGO_BIN_EXE_marion"), &["doctor"]);
-    let err = text(&out.stderr);
-    assert_eq!(out.status.code(), Some(2), "{err}");
-    assert!(err.contains("--capabilities or --adapter"), "{err}");
 }
 
 /// **An unknown command is one line and a failure**, not a screen of usage text: it names what
