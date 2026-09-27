@@ -2814,6 +2814,53 @@ mod tests {
         );
     }
 
+    /// **An endpoint child's key never reaches its live event record.** `launch_only_child`
+    /// records each line as it lands, before the capture is redacted, so the redaction has to
+    /// happen on the line; a harness echoing its key in an error is the case this defends.
+    #[test]
+    fn a_launch_only_childs_live_record_carries_no_endpoint_key() {
+        let dir = scratch("run-live-redact");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let id = AgentId("n-redact".into());
+        let events_path = dir.join("events.jsonl");
+        let sink = crate::events::EventSink::new(
+            crate::events::EventWriter::open_path(&events_path, &id).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        let key = "sk-endpoint-9f2c1e7a";
+        let inv = Invocation {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(r#"echo '{{"type":"error","message":"bad key {key}"}}'"#),
+            ],
+            env: vec![],
+            cwd: dir.to_path_buf(),
+            model: None,
+            session_mode: None,
+        };
+        let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
+        let run = launch_only_child(
+            &inv,
+            StdDuration::from_secs(20),
+            &|_| {},
+            &watch,
+            Some(&sink),
+            Some(key),
+        )
+        .unwrap();
+        drop(sink);
+        assert!(
+            run.stdout.contains(key),
+            "the capture is redacted by the caller, later"
+        );
+        let recorded = std::fs::read_to_string(&events_path).unwrap();
+        assert!(recorded.contains("bad key ***"), "{recorded}");
+        assert!(!recorded.contains(key), "{recorded}");
+    }
+
     /// `kill(pid, 0)`: `ESRCH` is the only answer that means *gone*. `EPERM` means the process
     /// exists and is not ours, which for this fix would still be a survivor.
     fn alive(pid: i32) -> bool {
