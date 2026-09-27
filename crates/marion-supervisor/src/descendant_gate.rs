@@ -735,7 +735,7 @@ mod tests {
         released: std::sync::atomic::AtomicBool,
     }
     impl SpawnObserver for Counted {
-        fn identified(&self, _: &AgentId) -> Option<String> {
+        fn identified(&self, _: &AgentId) -> Option<marion_core::secret::Secret> {
             None
         }
         fn started(&self, _: &AgentId, _: i32) {}

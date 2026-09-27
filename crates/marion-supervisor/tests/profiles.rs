@@ -388,7 +388,7 @@ impl Bed {
             prompt: "do the task".into(),
             caller: Some(SpawnCaller {
                 agent_id: self.root.clone(),
-                node_token: self.token.clone(),
+                node_token: self.token.clone().into(),
             }),
             isolation: Some(Isolation::SharedCwd),
             allow_concurrent_writes: Some(true),
@@ -692,7 +692,7 @@ fn a_root_runs_on_the_named_profile_and_a_node_may_not_choose_one() {
             prompt: "x".into(),
             caller: Some(SpawnCaller {
                 agent_id: bed.root.clone(),
-                node_token: bed.token.clone(),
+                node_token: bed.token.clone().into(),
             }),
             profile: Some("personal".into()),
             ..params()
