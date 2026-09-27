@@ -273,7 +273,11 @@ mod name_tests {
 
     #[test]
     fn the_name_column_fits_the_longest_name_within_bounds() {
-        assert_eq!(name_col(&[row("codex")]), NAME_W, "short names keep the floor");
+        assert_eq!(
+            name_col(&[row("codex")]),
+            NAME_W,
+            "short names keep the floor"
+        );
         assert_eq!(
             name_col(&[row("codex"), row("acp claude-agent-acp")]),
             "acp claude-agent-acp".len() + 2,

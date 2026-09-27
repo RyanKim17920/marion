@@ -143,7 +143,15 @@ fn body_lines<'a>(
     for (i, h) in v.harnesses.iter().enumerate() {
         let sel = i == v.cursor;
         let start = out.len();
-        let l = harness_line(h, name_w, sel, frame + i, theme, w + g as usize, Some(NOTE_W));
+        let l = harness_line(
+            h,
+            name_w,
+            sel,
+            frame + i,
+            theme,
+            w + g as usize,
+            Some(NOTE_W),
+        );
         out.push((0, l));
         if sel && v.expanded {
             let mut rows: Vec<(String, Vec<Span>)> = h
