@@ -24,40 +24,57 @@ handle: observe · steer · interrupt · result
 
 Topology is a star, not a mesh: 1→N fan-out, N→1 fan-in, every edge has a parent.
 
-## Quick start
+## Install
 
-Requires Rust 1.94 (pinned in `rust-toolchain.toml`), macOS or Linux, and at least one harness CLI on `PATH`.
+You need macOS or Linux, a Rust toolchain (1.94 or newer; the repository pins it in `rust-toolchain.toml`), and:
+
+- at least one harness CLI on `PATH`, **already logged in**: marion runs each harness on the login you set up for it and never starts a login of its own;
+- `git`, so each child can work in its own worktree and branch.
 
 ```sh
-cargo install --path crates/marion-supervisor   # installs both `marion` and `marion-supervisor`
+cargo install --locked --git https://github.com/RyanKim17920/marion marion-supervisor
+marion --version
+marion doctor
 ```
 
-Both binaries must land in the same directory — `marion` resolves the supervisor next to itself.
+This installs two binaries, `marion` and `marion-supervisor`, into `~/.cargo/bin`. Keep them in the same directory: `marion` starts the supervisor that sits beside it, and `marion doctor` fails if the two come from different builds. marion never updates itself. To upgrade, run the install command again. From a checkout, `cargo install --locked --path crates/marion-supervisor` does the same.
+
+<!-- Homebrew and a shell installer come with the release pipeline. Add them here once they
+     exist; until then the cargo commands above are the only install channel. -->
+
+`marion doctor` checks both binaries, the OS, the state directory and its socket path, git, and every harness it finds, and ends with `overall: ready: yes` or `no`. A harness newer than the last version marion verified is marked unmeasured. It still runs.
+
+## Quick start
 
 ```sh
-# A headless root against marion's canned provider: no credentials, no cost.
-marion run codex --prompt "say hello" --canned
+# Free, no credentials: marion's canned provider plays a Claude Code root that delegates
+# one edit to a Codex child. Needs `claude` and `codex` on PATH.
+cargo install --locked --git https://github.com/RyanKim17920/marion marion-provider   # marion-canned
+marion-canned &
+marion run claude --prompt "say hello" --canned
 
-# The same, on the vendor you are already logged in to (this spends real money).
+# On your own login. These make real model calls and cost real money.
 marion run codex --prompt "say hello"
+marion run claude --model haiku --prompt "Spawn a codex child to create hello.txt containing hi, then tell me its branch."
 
-# Codex's own TUI, as a journaled marion root with marion's MCP server connected.
+# A harness's own TUI, as a journaled marion root with marion's MCP server connected.
+marion claude
 marion codex
 
-# The fleet, and one node's terminal.
+# The fleet, one node's terminal, and a root relaunched after its supervisor died.
+marion list
 marion tree
 marion attach <agent-id>
-
-# Relaunch a root whose supervisor died, under its own id.
 marion resume <agent-id>
 
 # Queue a message for a running node's next turn, as the operator (id or the tree's short id).
 marion steer 8ea3 "use the v2 API, not v1"
-
-# What marion has actually measured about the harnesses on this machine.
-marion-supervisor doctor --capabilities
-marion-supervisor doctor --capabilities --harness codex
 ```
+
+- **The first `marion claude` in a folder** shows Claude Code's own dialogs: whether you trust the folder, then a one-time "Loading development channels" warning, because marion loads its channel so that a background child's result reaches the session without a `wait`. `marion codex` asks its own trust question. They are the harness's prompts, so you answer them; marion never answers them for you.
+- **Inside `marion <harness>`**, `^] d` detaches and leaves the session running (`marion attach <agent-id>` brings it back) and `^] s` toggles marion's status row. Every other key goes to the harness.
+- **A child's work** lands on its own branch, `marion/<task_id>`, and marion never merges it into yours. See [Where a child's work lands](#where-a-childs-work-lands).
+- **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion tree` shows a session only when it sees the same value the session started with.
 
 **Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node in `marion tree` and types the message on the hint row (Enter sends, Esc cancels, the answer shows in the detail pane), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's stream is not read by a row, and `status` says so). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
 
@@ -89,7 +106,7 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `qwen` (Qwen Code) | 0.23.0 | yes | no — interactive shape unmeasured | — |
 | `acp:<command>` | n/a | — | — | the generic path |
 
-The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness — `codex-impl` and `claude-impl` grant `read` and `write`, plain `codex` and `claude` grant nothing. `marion run` with no arguments lists all fifteen.
+The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion` offers them in its picker.
 
 ![marion tree: a codex-impl root whose child is marked blocked:descendants because its own grandchild is still spawning; the detail pane shows type, harness, state, surface, depth, timeout and id.](docs/media/tree-descendant-gate.png)
 
