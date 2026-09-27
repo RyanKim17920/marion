@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use marion_core::agent_type;
 use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::acp;
 use crate::antigravity;
@@ -143,6 +144,12 @@ pub struct Extras {
     /// The agent type's `approval_mode`: an ACP session mode the driver sets over the protocol.
     /// Read only by [`AcpAdapter`]; any other adapter refuses a launch carrying one, by name.
     pub approval_mode: Option<String>,
+    /// The supervisor's own mode and endpoint, where this node's differs — set on an
+    /// [`Auth::Endpoint`] node alone. The bridge the node starts is told these, never the node's
+    /// provider: a spawn it serves is resolved afresh by the supervisor, and handing it the
+    /// provider's URL would point a grandchild's canned overlay at a third party.
+    pub tree_auth: Option<Auth>,
+    pub tree_base_url: Option<String>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -209,6 +216,12 @@ pub struct LaunchSpec {
     /// grammar for the shape asked for refuses the launch by name rather than starting fresh under
     /// a resumed session's id; nothing here is per harness.
     pub resume: Option<String>,
+    /// The wire this node speaks to its endpoint — chosen by endpoint resolution as the first of
+    /// the harness's wires the provider serves natively. `None` on canned and live nodes, whose
+    /// wire is the row's own.
+    pub wire: Option<Wire>,
+    /// The registry id of the provider an [`Auth::Endpoint`] node talks to; `None` otherwise.
+    pub provider: Option<String>,
     pub extra: Extras,
 }
 
@@ -758,8 +771,12 @@ fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
         args: ctx.bridge_args.clone(),
         repo: ctx.repo.clone(),
         state: ctx.state_dir.clone(),
-        base_url: spec.base_url.clone(),
-        auth: spec.auth,
+        // An endpoint node's bridge is told the supervisor's mode and endpoint, never the node's.
+        base_url: match spec.auth {
+            Auth::Endpoint => spec.extra.tree_base_url.clone(),
+            Auth::Canned | Auth::Inherited => spec.base_url.clone(),
+        },
+        auth: spec.extra.tree_auth.unwrap_or(spec.auth),
         agent_id: ctx.agent_id.clone(),
         agent_type: ctx.agent_type.clone(),
         depth: ctx.depth,
@@ -2439,6 +2456,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }
@@ -2456,6 +2475,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }
@@ -3695,6 +3716,40 @@ mod tests {
                 adapter.mcp_route(&canned),
                 adapter.mcp_route(&endpoint),
                 "{h}: route"
+            );
+        }
+    }
+
+    /// **An endpoint node's bridge is told the supervisor's mode, never the node's provider.** A
+    /// spawn the bridge serves is resolved afresh; handing it the provider's URL as
+    /// `MARION_BASE_URL` would aim a grandchild's canned overlay at a third party.
+    #[test]
+    fn an_endpoint_nodes_bridge_declares_the_tree_mode_and_not_the_provider() {
+        let provider_url = "https://provider.example/v1";
+        for (tree_auth, tree_url, want_auth) in [
+            (Auth::Inherited, None, "inherited"),
+            (Auth::Canned, Some("http://127.0.0.1:8099/v1"), "canned"),
+        ] {
+            let spec = LaunchSpec {
+                auth: Auth::Endpoint,
+                base_url: Some(provider_url.into()),
+                api_key: Some("sk-endpoint-test".into()),
+                extra: Extras {
+                    tree_auth: Some(tree_auth),
+                    tree_base_url: tree_url.map(str::to_string),
+                    ..Extras::default()
+                },
+                ..claude_spec()
+            };
+            let bridge = bridge_env(&spec, &ctx());
+            assert_eq!(bridge.auth.as_wire(), want_auth);
+            assert_eq!(bridge.base_url.as_deref(), tree_url);
+            let pairs = bridge.pairs();
+            assert!(
+                !pairs
+                    .iter()
+                    .any(|(_, v)| v.contains("provider.example") || v.contains("sk-endpoint")),
+                "{pairs:?}"
             );
         }
     }

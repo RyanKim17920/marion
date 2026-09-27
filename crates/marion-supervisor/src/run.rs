@@ -2190,6 +2190,9 @@ fn child_launch_spec(
         // every fresh spawn. A row whose caps refuse resume refuses the launch by name here rather
         // than starting fresh under a resumed node's id.
         resume: req.resume.as_ref().map(|r| r.session.clone()),
+        // Filled by endpoint resolution, where the child names a provider.
+        wire: None,
+        provider: None,
         extra: Extras {
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
@@ -3451,6 +3454,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }

@@ -1634,6 +1634,8 @@ fn probe_spec(
         auth: Auth::Inherited,
         config_dir: std::env::temp_dir().join("marion-doctor"),
         resume: None,
+        wire: None,
+        provider: None,
         extra: Extras {
             // `None` for the other four, and `Some` only for the row that is *about* this agent.
             // The adapter refuses an unnamed agent by name (§6.4), so a probe that left this empty

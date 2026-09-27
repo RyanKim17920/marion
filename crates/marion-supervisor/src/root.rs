@@ -1058,6 +1058,9 @@ fn root_launch_spec(
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
+        // Filled by endpoint resolution, where the root names a provider.
+        wire: None,
+        provider: None,
         extra,
     }
 }
