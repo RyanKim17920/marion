@@ -179,6 +179,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::Gemini,
         env: &[],
+        // The gemini wire carries its key in `x-goog-api-key` whatever the provider's row says;
+        // Bearer is listed because it is the default every provider states.
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.",
     }],
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \

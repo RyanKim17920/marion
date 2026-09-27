@@ -31,7 +31,7 @@
 use std::path::PathBuf;
 
 use marion_core::harness::Harness;
-use marion_core::provider::Wire;
+use marion_core::provider::{KeyHeader, Wire};
 
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
@@ -153,9 +153,29 @@ pub struct HarnessSpec {
 pub struct WireRecipe {
     pub wire: Wire,
     pub env: &'static [(&'static str, &'static str)],
+    /// The key headers this recipe can present ([`KeyHeader`]), each with the variables that make
+    /// the harness present the key there — applied over the row's own, by name. A provider whose
+    /// header is not listed is refused by name rather than sent the key in another header.
+    pub keys: &'static [KeyRecipe],
     /// **Mandatory**: how the recipe was established, as for a row's own `note`.
     pub note: &'static str,
 }
+
+/// **How one recipe presents the key in one header**: the rows that do it, over the row's own
+/// (empty where the row's overlay already does), and how that was established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyRecipe {
+    pub header: KeyHeader,
+    pub env: &'static [Env],
+    pub note: &'static str,
+}
+
+/// The one [`KeyRecipe`] most recipes carry: a Bearer key, presented by the row's own overlay.
+pub const BEARER_BY_OVERLAY: KeyRecipe = KeyRecipe {
+    header: KeyHeader::Bearer,
+    env: &[],
+    note: "the row's own overlay sends the key as `Authorization: Bearer`",
+};
 
 /// **How a backgrounded child's end reaches the parent model without a `wait`** — the
 /// notification the bridge pushes on its stdio pipe, and the launch flag that makes the harness
@@ -685,6 +705,9 @@ pub struct Fields {
     /// The wire an endpoint launch speaks — `LaunchSpec::wire`, seeded neutrally — whose
     /// [`WireRecipe`] the renderer applies. `None` on canned and live launches.
     pub wire: Option<Wire>,
+    /// The header the endpoint's provider reads its key from, whose [`KeyRecipe`] the renderer
+    /// applies; `None` is the default, [`KeyHeader::Bearer`].
+    pub key_header: Option<KeyHeader>,
     /// The program, where the row's is `None`.
     pub program: Option<String>,
     pub prompt: String,
@@ -808,6 +831,8 @@ pub enum Refusal {
     NoResume,
     /// An endpoint launch names a wire this row has no [`WireRecipe`] for — or names none.
     NoWireRecipe,
+    /// The endpoint's provider reads its key from a header this wire's recipe cannot present.
+    NoKeyRecipe(KeyHeader),
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -940,10 +965,20 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     }
     let mut env = render_env(spec.env, f);
     if f.auth == Auth::Endpoint {
-        apply_recipe(
-            &mut env,
-            recipe_for(spec, f.wire).ok_or(Refusal::NoWireRecipe)?,
-        );
+        let recipe = recipe_for(spec, f.wire).ok_or(Refusal::NoWireRecipe)?;
+        apply_recipe(&mut env, recipe);
+        let header = f.key_header.unwrap_or_default();
+        let key = recipe
+            .keys
+            .iter()
+            .find(|k| k.header == header)
+            .ok_or(Refusal::NoKeyRecipe(header))?;
+        for (k, v) in render_env(key.env, f) {
+            match env.iter_mut().find(|(n, _)| *n == k) {
+                Some(slot) => slot.1 = v,
+                None => env.push((k, v)),
+            }
+        }
     }
     env.extend(spec.updates.env());
     env.extend(f.extra_env.iter().cloned());

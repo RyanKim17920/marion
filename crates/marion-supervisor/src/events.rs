@@ -186,6 +186,9 @@ pub struct EventSink {
     /// The `request_id` this node's `initialize` went out with. What separates the one
     /// `control_response` §5.2 forbids keeping from every other one, which must be kept.
     init_id: String,
+    /// An endpoint node's keys — every one it has been launched on — replaced by `***` in every
+    /// event before it is written ([`Self::scrub_key`]); empty on a canned or live node.
+    scrub: RefCell<Vec<String>>,
 }
 
 impl EventSink {
@@ -223,6 +226,25 @@ impl EventSink {
             writer: RefCell::new(writer),
             harness,
             init_id,
+            scrub: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Scrub `key` from every event this sink records — an endpoint node's, whose harness may echo
+    /// its credential in an error frame while the run is live. The rule is
+    /// [`crate::endpoint::redact`]'s, so a short key is left alone as it is everywhere else.
+    pub fn scrubbing(self, key: Option<&str>) -> Self {
+        if let Some(k) = key {
+            self.scrub_key(k);
+        }
+        self
+    }
+
+    /// Add a key to scrub, from now on — a rotated node's next credential.
+    pub fn scrub_key(&self, key: &str) {
+        let mut keys = self.scrub.borrow_mut();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
         }
     }
 
@@ -312,10 +334,38 @@ impl EventSink {
                 d.provenance.completeness = Completeness::Partial;
                 d
             }
-            ev => from_stream_event(self.harness, ev),
+            ev if self.scrub.borrow().is_empty() => from_stream_event(self.harness, ev),
+            ev => self.scrubbed(ev),
         };
         d.provenance.observed_live = live;
         d
+    }
+
+    /// `ev` recorded with `key` replaced: a raw line directly, a frame through its text — re-parsed,
+    /// so it is still recorded as the frame it was.
+    fn scrubbed(&self, ev: StreamEvent<'_>) -> Draft {
+        let redact = |text: &str| {
+            self.scrub
+                .borrow()
+                .iter()
+                .fold(text.to_string(), |t, k| crate::endpoint::redact(&t, k))
+        };
+        match ev {
+            StreamEvent::Unparsed(line) => {
+                from_stream_event(self.harness, StreamEvent::Unparsed(&redact(line)))
+            }
+            StreamEvent::Frame(json) => {
+                let text = json.to_string();
+                let clean = redact(&text);
+                if clean == text {
+                    return from_stream_event(self.harness, ev);
+                }
+                match serde_json::from_str::<serde_json::Value>(&clean) {
+                    Ok(v) => from_stream_event(self.harness, StreamEvent::Frame(&v)),
+                    Err(_) => from_stream_event(self.harness, StreamEvent::Unparsed(&clean)),
+                }
+            }
+        }
     }
 
     /// Whether a frame is the `control_response` to **this node's** `initialize`.
@@ -1365,6 +1415,33 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **An endpoint node's key never reaches its live stream**: a duplex frame or raw line that
+    /// echoes the key — an SDK error quoting the header it sent — is recorded with the key
+    /// replaced, as it arrives, not only in the capture kept after the run.
+    #[test]
+    fn a_sink_given_the_nodes_key_scrubs_it_from_every_live_event() {
+        let key = "sk-endpoint-live-0001";
+        let dir = scratch("events-scrub");
+        let path = dir.join("events.jsonl");
+        {
+            let s = EventSink::new(
+                EventWriter::open_path(&path, &node()).unwrap(),
+                Harness::ClaudeCode,
+                "unused".into(),
+            )
+            .scrubbing(Some(key));
+            let frame =
+                serde_json::json!({"type": "assistant", "error": format!("401 for Bearer {key}")});
+            s.record(StreamEvent::Frame(&frame));
+            s.record(StreamEvent::Unparsed(&format!("x-api-key: {key}")));
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains(key), "{text}");
+        assert_eq!(text.matches("***").count(), 2, "{text}");
+        let (log, _) = read(&path);
+        assert_eq!(log.records, 2, "both still recorded, and still parse");
     }
 
     /// Set on the re-executed copy of this binary that actually drives a node with a recording sink.

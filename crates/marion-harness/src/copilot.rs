@@ -28,7 +28,7 @@
 //!   marion's canned placeholder does not appear in anything a child prints; a live key is the
 //!   operator's own and is never placed by marion.
 
-use marion_core::provider::Wire;
+use marion_core::provider::{KeyHeader, Wire};
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -230,12 +230,44 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         WireRecipe {
             wire: Wire::OpenAiChat,
             env: &[],
+            keys: &[crate::spec::BEARER_BY_OVERLAY],
             note: "the row's own BYOK overlay (openai type, completions wire); endpoint_matrix's \
                    copilot chat cell",
         },
         WireRecipe {
             wire: Wire::AnthropicMessages,
             env: &[(PROVIDER_TYPE_ENV, "anthropic")],
+            // copilot 1.0.88 `help environment`: "the API key is sent as Authorization for openai,
+            // api-key for azure, and x-api-key for anthropic", and the bearer token "is always
+            // sent as Authorization" and "takes precedence over COPILOT_PROVIDER_API_KEY".
+            keys: &[
+                crate::spec::KeyRecipe {
+                    header: KeyHeader::Bearer,
+                    env: &[
+                        Env {
+                            key: PROVIDER_BEARER_TOKEN_ENV,
+                            val: Val::Field(Field::ApiKey),
+                            when: When::Always,
+                        },
+                        // Measured on 1.0.88: beside a bearer token the API key is still sent as
+                        // `x-api-key`, a second credential; blank, it is sent nowhere.
+                        Env {
+                            key: PROVIDER_API_KEY_ENV,
+                            val: Val::Lit(""),
+                            when: When::Always,
+                        },
+                    ],
+                    note: "COPILOT_PROVIDER_BEARER_TOKEN, sent as Authorization (help environment, \
+                           1.0.88), with the API key blanked; endpoint_matrix's copilot anthropic \
+                           bearer cell",
+                },
+                crate::spec::KeyRecipe {
+                    header: KeyHeader::XApiKey,
+                    env: &[],
+                    note: "the row's COPILOT_PROVIDER_API_KEY, which the anthropic type sends as \
+                           x-api-key; endpoint_matrix's copilot anthropic cell",
+                },
+            ],
             note: "COPILOT_PROVIDER_TYPE=anthropic over the same base URL; endpoint_matrix's \
                    copilot anthropic cell",
         },
@@ -366,6 +398,9 @@ pub const PROVIDER_WIRE_API_ENV: &str = "COPILOT_PROVIDER_WIRE_API";
 /// Sent as `Authorization: Bearer …` and **redacted from the CLI's own JSONL wherever the string
 /// appears** (see the module docs). **Dropped under [`Auth::Inherited`]**.
 pub const PROVIDER_API_KEY_ENV: &str = "COPILOT_PROVIDER_API_KEY";
+/// A bearer token for the BYOK provider, always sent as `Authorization` and preferred over
+/// [`PROVIDER_API_KEY_ENV`] (1.0.88 `help environment`).
+pub const PROVIDER_BEARER_TOKEN_ENV: &str = "COPILOT_PROVIDER_BEARER_TOKEN";
 /// `true` skips every network path but the provider: GitHub auth, telemetry, web tools, the GitHub
 /// MCP server and auto-update. Requires [`PROVIDER_BASE_URL_ENV`], so it travels with it and is
 /// **dropped under [`Auth::Inherited`]**, where GitHub auth is the whole point.

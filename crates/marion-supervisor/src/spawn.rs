@@ -1310,6 +1310,7 @@ pub fn build_contract(
             provider: None,
             route: None,
             credential: None,
+            credential_failover: vec![],
         },
         repo,
         base_commit: base,

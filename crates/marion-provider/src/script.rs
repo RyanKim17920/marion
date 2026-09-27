@@ -882,6 +882,21 @@ pub struct Script {
     /// non-empty list takes over for every request whose body carries one of its markers, in list
     /// order; see [`NodeScript`] for why the order is load-bearing and why a root belongs first.
     pub nodes: Vec<NodeScript>,
+    /// **Keys this provider refuses**, each with the status it answers — a rate limit, an auth
+    /// failure or an outage, on every request presenting that key, before any script step. Empty —
+    /// the default — refuses nothing.
+    pub refusals: Vec<KeyRefusal>,
+    /// The model ids `GET …/models` lists. Empty — the default — leaves a GET answered as it
+    /// always was, with the provider's plain-text banner.
+    pub models: Vec<String>,
+}
+
+/// One refused key: every request presenting `key` — as a Bearer token, `x-api-key` or
+/// `x-goog-api-key` — is answered `status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRefusal {
+    pub key: String,
+    pub status: u16,
 }
 
 impl Default for Script {
@@ -916,6 +931,8 @@ impl Default for Script {
             openai_final_text: "Reported back through marion. Done.".to_string(),
             root: None,
             nodes: Vec::new(),
+            refusals: Vec::new(),
+            models: Vec::new(),
         }
     }
 }

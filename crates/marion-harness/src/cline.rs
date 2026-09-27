@@ -193,6 +193,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions: the generated `providers.json` is `openai-compatible`.",
     }],
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \

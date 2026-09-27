@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions, through `OPENAI_BASE_URL`.",
     }],
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \

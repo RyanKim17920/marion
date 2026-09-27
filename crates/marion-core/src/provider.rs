@@ -101,6 +101,36 @@ impl AuthKind {
     }
 }
 
+/// **Which header a provider reads its key from** on the Anthropic and OpenAI wires. A column of
+/// the row rather than a branch on its name: Anthropic's own API takes `x-api-key` (what its SDKs
+/// send for an API key), the gateways that serve Anthropic Messages document `Authorization:
+/// Bearer`, and a harness recipe renders whichever the row states. Gemini's wire carries its key in
+/// its own header whatever this says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyHeader {
+    /// `Authorization: Bearer <key>` — every OpenAI-compatible server, and the default.
+    #[default]
+    Bearer,
+    /// `x-api-key: <key>`.
+    XApiKey,
+}
+
+impl KeyHeader {
+    /// The spelling `providers.toml` takes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            KeyHeader::Bearer => "bearer",
+            KeyHeader::XApiKey => "x-api-key",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<KeyHeader> {
+        [KeyHeader::Bearer, KeyHeader::XApiKey]
+            .into_iter()
+            .find(|h| h.as_str() == s.trim())
+    }
+}
+
 /// One seed row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Provider {
@@ -120,6 +150,8 @@ pub struct Provider {
     /// Whether the provider answers a model listing (`GET …/models`). For a later `doctor
     /// --providers`; nothing reads it yet.
     pub list_models: bool,
+    /// The header the key rides ([`KeyHeader`]).
+    pub key_header: KeyHeader,
 }
 
 const API: AuthKind = AuthKind::ApiKey;
@@ -134,6 +166,9 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("ANTHROPIC_API_KEY"),
         list_models: true,
+        // What Anthropic's SDKs send for an API key; the API's docs also accept a Bearer key and
+        // call `x-api-key` the legacy fallback, still supported.
+        key_header: KeyHeader::XApiKey,
     },
     Provider {
         id: "openai",
@@ -146,6 +181,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("OPENAI_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Anthropic Messages at `/api` is OpenRouter's documented Claude Code route. Its OAuth PKCE
     // flow is a later phase; a pasted key works today.
@@ -160,6 +196,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("OPENROUTER_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Google AI Studio keys. The OpenAI-compatible layer at `/v1beta/openai` is documented as
     // beta: unverified.
@@ -177,6 +214,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("GEMINI_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Anthropic Messages at `/anthropic`: documented for Claude Code, unverified by marion.
     Provider {
@@ -193,6 +231,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("DEEPSEEK_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Anthropic Messages at `/anthropic`: documented for Claude Code, unverified by marion.
     Provider {
@@ -206,6 +245,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("MOONSHOT_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Anthropic Messages at `/api/anthropic`: documented for Claude Code, unverified by marion.
     Provider {
@@ -219,6 +259,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("ZAI_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "groq",
@@ -228,6 +269,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("GROQ_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "together",
@@ -237,6 +279,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("TOGETHER_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "fireworks",
@@ -246,6 +289,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("FIREWORKS_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "mistral",
@@ -255,6 +299,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("MISTRAL_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // OpenAI Responses on xAI: documented, unverified by marion.
     Provider {
@@ -268,6 +313,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("XAI_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     // Responses and Anthropic Messages on the gateway: documented, unverified by marion.
     Provider {
@@ -282,6 +328,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: API,
         import_env: Some("AI_GATEWAY_API_KEY"),
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "ollama",
@@ -291,6 +338,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: AuthKind::None,
         import_env: None,
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
     Provider {
         id: "lmstudio",
@@ -300,6 +348,7 @@ pub const PROVIDERS: &[Provider] = &[
         auth: AuthKind::None,
         import_env: None,
         list_models: true,
+        key_header: KeyHeader::Bearer,
     },
 ];
 
@@ -311,6 +360,8 @@ pub struct ProviderDef {
     pub wires: Vec<(Wire, String)>,
     pub auth: AuthKind,
     pub import_env: Option<String>,
+    /// The header the key rides ([`KeyHeader`]).
+    pub key_header: KeyHeader,
     /// From the user's `providers.toml`, not the seed table.
     pub custom: bool,
 }
@@ -342,6 +393,7 @@ impl From<&Provider> for ProviderDef {
             wires: p.wires.iter().map(|(w, b)| (*w, b.to_string())).collect(),
             auth: p.auth,
             import_env: p.import_env.map(str::to_string),
+            key_header: p.key_header,
             custom: false,
         }
     }
@@ -369,6 +421,8 @@ pub enum ProviderError {
     NoWires(String),
     #[error("provider `{id}`: auth `{auth}` is not one of api-key, none")]
     BadAuth { id: String, auth: String },
+    #[error("provider `{id}`: key_header `{header}` is not one of bearer, x-api-key")]
+    BadKeyHeader { id: String, header: String },
     #[error(
         "[credentials] {provider}: `{credential}` is not a credential id for that provider \
          (`{provider}` or `{provider}:<label>`)"
@@ -393,6 +447,8 @@ struct RawCustom {
     auth: Option<String>,
     #[serde(default)]
     import_env: Option<String>,
+    #[serde(default)]
+    key_header: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -500,6 +556,7 @@ pub fn custom_provider(
         wires: seen.into_iter().map(|w| (w, url.to_string())).collect(),
         auth,
         import_env: import_env.map(str::to_string),
+        key_header: KeyHeader::Bearer,
         custom: true,
     })
 }
@@ -611,14 +668,23 @@ pub fn parse_custom(text: &str) -> Result<Vec<ProviderDef>, ProviderError> {
                 });
             }
         };
-        out.push(custom_provider(
+        let key_header = match row.key_header.as_deref() {
+            None => KeyHeader::Bearer,
+            Some(h) => KeyHeader::parse(h).ok_or_else(|| ProviderError::BadKeyHeader {
+                id: id.clone(),
+                header: h.to_string(),
+            })?,
+        };
+        let mut def = custom_provider(
             &id,
             &row.base_url,
             &wires,
             auth,
             row.name.as_deref(),
             row.import_env.as_deref(),
-        )?);
+        )?;
+        def.key_header = key_header;
+        out.push(def);
     }
     Ok(out)
 }
@@ -670,6 +736,12 @@ pub fn render_custom(defs: &[ProviderDef], order: &BTreeMap<String, Vec<Credenti
         }
         if let Some(e) = &d.import_env {
             out.push_str(&format!("import_env = {}\n", toml_str(e)));
+        }
+        if d.key_header != KeyHeader::Bearer {
+            out.push_str(&format!(
+                "key_header = {}\n",
+                toml_str(d.key_header.as_str())
+            ));
         }
     }
     if !order.is_empty() {
@@ -916,6 +988,41 @@ mod tests {
             let e = Registry::with_custom(text).unwrap_err().to_string();
             assert!(e.contains(needle), "{e}");
         }
+    }
+
+    /// **How a provider reads its key is row data.** Anthropic's own API takes the key in
+    /// `x-api-key` (what its SDKs send for an API key; its docs also accept `Authorization:
+    /// Bearer`), while the Anthropic-compatible gateways document `Authorization: Bearer` alone —
+    /// so the header is a column of the row, never a branch on the provider's name.
+    #[test]
+    fn each_provider_states_the_header_its_key_rides_and_a_custom_one_may_choose() {
+        let reg = Registry::seed();
+        assert_eq!(reg.get("anthropic").unwrap().key_header, KeyHeader::XApiKey);
+        for p in PROVIDERS.iter().filter(|p| p.id != "anthropic") {
+            assert_eq!(p.key_header, KeyHeader::Bearer, "{}", p.id);
+        }
+        let reg = Registry::with_custom(
+            "[providers.gw]\nbase_url=\"https://gw.example\"\nwires=[\"anthropic\"]\n\
+             key_header=\"x-api-key\"\n\n[providers.plain]\nbase_url=\"https://p.example/v1\"\n\
+             wires=[\"openai-chat\"]\n",
+        )
+        .unwrap();
+        assert_eq!(reg.get("gw").unwrap().key_header, KeyHeader::XApiKey);
+        assert_eq!(reg.get("plain").unwrap().key_header, KeyHeader::Bearer);
+        let err = Registry::with_custom(
+            "[providers.x]\nbase_url=\"https://x\"\nwires=[\"anthropic\"]\nkey_header=\"cookie\"",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("key_header") && err.contains("x-api-key"),
+            "{err}"
+        );
+        // And it survives `marion login custom`'s rewrite of the file.
+        let mut gw = reg.get("gw").unwrap().clone();
+        gw.custom = true;
+        let text = render_custom(&[gw.clone()], &BTreeMap::new());
+        assert_eq!(parse_custom(&text).unwrap(), vec![gw]);
     }
 
     #[test]

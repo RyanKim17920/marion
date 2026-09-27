@@ -46,6 +46,7 @@ fn contract(comp: Completion) -> TaskContract {
             provider: None,
             route: None,
             credential: None,
+            credential_failover: vec![],
         },
         repo: RepoIdentity {
             git_common_dir: Some("/repo/.git".into()),

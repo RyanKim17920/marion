@@ -13,7 +13,7 @@
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
-use marion_core::provider::{CredentialId, Registry, Wire};
+use marion_core::provider::{CredentialId, KeyHeader, Registry, Wire};
 use marion_harness::{Auth, LaunchSpec};
 
 use crate::credentials::{CredentialStore, Secret};
@@ -31,11 +31,13 @@ pub struct Endpoint {
     pub key: Option<Secret>,
     /// Which of the provider's credentials [`Self::key`] is — recorded, never the key itself.
     pub credential: CredentialId,
-    /// The credentials after it in the order tried — what a rotation would move to next. Nothing
-    /// moves through them yet.
+    /// The credentials after it in the order tried — what a rotation moves to next
+    /// ([`next_credential`]).
     pub fallbacks: Vec<CredentialId>,
     /// The model id the provider is asked for, prefix removed.
     pub model: String,
+    /// The header the provider reads the key from — the provider row's, handed to the recipe.
+    pub key_header: KeyHeader,
 }
 
 /// Why a node naming a provider cannot run on it. No variant carries a key.
@@ -69,7 +71,8 @@ pub enum EndpointError {
     Config(String),
 }
 
-fn wire_list(wires: &[Wire]) -> String {
+/// Wires comma-joined for display and refusals; `no endpoint wire` where there are none.
+pub fn wire_list(wires: &[Wire]) -> String {
     if wires.is_empty() {
         return "no endpoint wire".to_string();
     }
@@ -78,6 +81,18 @@ fn wire_list(wires: &[Wire]) -> String {
         .map(|w| w.as_str())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// **The wire a harness is pointed at on `provider`**: the first of the harness row's recipe wires,
+/// in its order, that the provider serves natively — with the provider's base for it. The one rule
+/// a launch resolves by and `marion doctor --providers` tabulates.
+pub fn shared_wire<'p>(
+    harness_wires: &[Wire],
+    provider: &'p marion_core::provider::ProviderDef,
+) -> Option<(Wire, &'p str)> {
+    harness_wires
+        .iter()
+        .find_map(|w| provider.base_for(*w).map(|b| (*w, b)))
 }
 
 /// The provider a launch names, and the model with any prefix removed — or `None` where it names
@@ -174,9 +189,8 @@ pub fn resolve_endpoint_with(
     let model = model
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| EndpointError::NoModel(id.clone()))?;
-    let (wire, base_url) = harness_wires
-        .iter()
-        .find_map(|w| provider.base_for(*w).map(|b| (*w, b.to_string())))
+    let (wire, base_url) = shared_wire(harness_wires, provider)
+        .map(|(w, b)| (w, b.to_string()))
         .ok_or_else(|| EndpointError::NoSharedWire {
             harness: agent_type.harness,
             provider: id.clone(),
@@ -214,7 +228,43 @@ pub fn resolve_endpoint_with(
         credential,
         fallbacks,
         model,
+        key_header: provider.key_header,
     }))
+}
+
+/// **The endpoint on the next credential**: the first of `ep`'s fallbacks with a stored key, the
+/// rest after it as its own fallbacks — or `None` once none is left. Everything but the credential
+/// is `ep`'s, so a rotation changes only which key is presented. API keys alone reach here: a
+/// provider that needs no credential has no fallbacks, and no subscription login is ever a
+/// credential of a provider.
+pub fn next_credential(
+    ep: &Endpoint,
+    store: &dyn CredentialStore,
+) -> Result<Option<Endpoint>, EndpointError> {
+    for (i, c) in ep.fallbacks.iter().enumerate() {
+        let key = store
+            .get(&c.to_string())
+            .map_err(|e| EndpointError::Config(e.to_string()))?;
+        if let Some(k) = key {
+            return Ok(Some(Endpoint {
+                key: Some(k),
+                credential: c.clone(),
+                fallbacks: ep.fallbacks[i + 1..].to_vec(),
+                ..ep.clone()
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// [`next_credential`] against the user's own credential store — what a rotating launch calls.
+pub fn next_for_launch(ep: &Endpoint) -> Result<Option<Endpoint>, EndpointError> {
+    if ep.fallbacks.is_empty() {
+        return Ok(None);
+    }
+    let store =
+        crate::credentials::default_store().map_err(|e| EndpointError::Config(e.to_string()))?;
+    next_credential(ep, store.as_ref())
 }
 
 /// [`resolve_endpoint`] against the user's own registry and credential store — what a launch
@@ -259,6 +309,7 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     launch.model = Some(ep.model.clone());
     launch.wire = Some(ep.wire);
     launch.provider = Some(ep.provider.clone());
+    launch.extra.key_header = Some(ep.key_header);
 }
 
 /// The model a resumed node asks for: its journaled provider back in front of the provider's model
@@ -498,6 +549,7 @@ mod tests {
             credential: CredentialId::default_for("groq"),
             fallbacks: vec![],
             model: "llama".into(),
+            key_header: KeyHeader::XApiKey,
         };
         apply(&mut launch, &ep);
         assert_eq!(launch.auth, Auth::Endpoint);
@@ -509,6 +561,7 @@ mod tests {
         assert_eq!(launch.model.as_deref(), Some("llama"));
         assert_eq!(launch.wire, Some(Wire::OpenAiChat));
         assert_eq!(launch.provider.as_deref(), Some("groq"));
+        assert_eq!(launch.extra.key_header, Some(KeyHeader::XApiKey));
         assert_eq!(launch.extra.tree_auth, Some(Auth::Canned));
         assert_eq!(
             launch.extra.tree_base_url.as_deref(),
@@ -624,6 +677,59 @@ mod tests {
         assert!(
             err.contains("openrouter:work, openrouter:personal") && err.contains("marion login"),
             "{err}"
+        );
+    }
+
+    /// **The provider's key header rides the endpoint**: Anthropic's own row reads `x-api-key`,
+    /// OpenRouter's Anthropic route a Bearer key — the same wire, told apart by row data alone.
+    #[test]
+    fn the_endpoint_carries_the_header_its_provider_reads_the_key_from() {
+        let reg = Registry::seed();
+        let claude = ty(Harness::ClaudeCode, None, None);
+        let store = MemStore::with("anthropic", "sk-ant-test-1");
+        let ep = resolve_endpoint(Some("anthropic:m"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.key_header, KeyHeader::XApiKey);
+        let store = MemStore::with("openrouter", "sk-or-test-key");
+        let ep = resolve_endpoint(Some("openrouter:m"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.key_header, KeyHeader::Bearer);
+    }
+
+    /// **The next credential is the next stated one with a key**, carrying the rest as its own
+    /// fallbacks — so a chain of rotations visits each credential once and then ends.
+    #[test]
+    fn the_next_credential_skips_ids_with_no_key_and_ends_after_the_last() {
+        let id = |s: &str| CredentialId::parse(s).unwrap();
+        let store = MemStore::with("openrouter:a", "sk-key-a-0001");
+        store
+            .put("openrouter:c", &Secret::new("sk-key-c-0003").unwrap())
+            .unwrap();
+        let mut t = ty(Harness::OpenCode, None, None);
+        t.credentials = vec![
+            "openrouter:a".into(),
+            "openrouter:b".into(),
+            "openrouter:c".into(),
+        ];
+        let ep = resolve_endpoint(Some("openrouter:m"), &t, CHAT, &Registry::seed(), &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.credential, id("openrouter:a"));
+        let next = next_credential(&ep, &store).unwrap().expect("c has a key");
+        assert_eq!(
+            next.credential,
+            id("openrouter:c"),
+            "b has no key and is skipped"
+        );
+        assert_eq!(next.key.as_ref().unwrap().expose(), "sk-key-c-0003");
+        assert!(next.fallbacks.is_empty());
+        assert_eq!((next.model.as_str(), next.wire), ("m", Wire::OpenAiChat));
+        assert_eq!(
+            next_credential(&next, &store).unwrap(),
+            None,
+            "each is tried once"
         );
     }
 
