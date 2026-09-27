@@ -1,8 +1,8 @@
 //! Durable binary PTY stream primitives.
-
-// This increment deliberately lands the format and durability machinery before its production
-// callsite, so every item in this module is expected to remain dark until that integration lands.
-#![allow(dead_code)]
+//!
+//! The supervisor only ever writes a stream. The decoder (`recover_session_bytes` and the
+//! `decode` halves of each type) is compiled for tests alone: they read a stream back to prove
+//! what the writer committed.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -54,30 +54,41 @@ const TIMED_OUT: u8 = 1 << 2;
 pub(crate) enum StreamError {
     #[error("PTY stream storage error: {0}")]
     Storage(String),
+    #[cfg(test)]
     #[error("invalid PTY stream header length: got {actual}, expected {expected}")]
     InvalidHeaderLength { actual: usize, expected: usize },
+    #[cfg(test)]
     #[error("invalid PTY stream magic")]
     BadMagic,
+    #[cfg(test)]
     #[error("unsupported PTY stream version {0}")]
     UnsupportedVersion(u16),
+    #[cfg(test)]
     #[error("truncated PTY stream frame")]
     TruncatedFrame,
     #[error("PTY stream frame length {actual} exceeds maximum {max}")]
     RecordTooLarge { actual: usize, max: usize },
+    #[cfg(test)]
     #[error("unknown PTY stream record kind {0}")]
     UnknownRecordKind(u8),
+    #[cfg(test)]
     #[error("invalid PTY stream record payload")]
     InvalidRecordPayload,
+    #[cfg(test)]
     #[error("PTY stream record checksum mismatch")]
     ChecksumMismatch,
     #[error("input evidence sequence does not match its record sequence")]
     InputSequenceMismatch,
+    #[cfg(test)]
     #[error("PTY stream record sequence is not dense: expected {expected}, got {actual}")]
     RecordSequenceGap { expected: u64, actual: u64 },
+    #[cfg(test)]
     #[error("PTY stream display sequence is invalid: expected {expected}, got {actual}")]
     DisplaySequenceGap { expected: u64, actual: u64 },
+    #[cfg(test)]
     #[error("PTY stream input sequence is invalid: expected {expected}, got {actual}")]
     InputSequenceGap { expected: u64, actual: u64 },
+    #[cfg(test)]
     #[error("PTY stream record appears after End")]
     RecordAfterEnd,
     #[error("PTY stream recovery input exceeds maximum {max} bytes")]
@@ -90,6 +101,7 @@ pub(crate) enum StreamError {
     WriterPoisoned,
     #[error("PTY stream session id entropy failed: {0}")]
     Entropy(String),
+    #[cfg(test)]
     #[error("PTY stream session header checksum mismatch")]
     HeaderChecksumMismatch,
     #[error("PTY stream path has no file name")]
@@ -102,12 +114,14 @@ pub(crate) enum StreamError {
     PathChanged,
     #[error("PTY stream already has a live writer")]
     WriterLocked,
+    #[cfg(test)]
     #[error("PTY stream session header does not match the expected identity or geometry")]
     HeaderMismatch,
     #[error("PTY stream counter overflow")]
     CounterOverflow,
     #[error("PTY stream terminal outcome is internally inconsistent")]
     InvalidTerminalOutcome,
+    #[cfg(test)]
     #[error("PTY stream session format requires a typed terminal outcome")]
     MissingTerminalOutcome,
 }
@@ -140,6 +154,7 @@ impl ReaderDisposition {
         }
     }
 
+    #[cfg(test)]
     fn decode(encoded: u8) -> Result<Self, StreamError> {
         match encoded {
             1 => Ok(Self::CleanEof),
@@ -201,6 +216,7 @@ impl TerminalOutcome {
         Ok(encoded)
     }
 
+    #[cfg(test)]
     fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
         if encoded.len() != TERMINAL_OUTCOME_BYTES
             || encoded[0] & !(EXIT_CODE_PRESENT | SIGNAL_PRESENT | TIMED_OUT) != 0
@@ -346,6 +362,7 @@ impl Record {
         })
     }
 
+    #[cfg(test)]
     fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
         let record = checked_record_bytes(encoded)?;
         let kind = record[0];
@@ -367,6 +384,7 @@ impl Record {
 }
 
 /// Validate a frame's length prefix, bounds, and checksum; return the record bytes it protects.
+#[cfg(test)]
 fn checked_record_bytes(encoded: &[u8]) -> Result<&[u8], StreamError> {
     if encoded.len() < FRAME_LEN_BYTES + CHECKSUM_BYTES {
         return Err(StreamError::TruncatedFrame);
@@ -390,6 +408,7 @@ fn checked_record_bytes(encoded: &[u8]) -> Result<&[u8], StreamError> {
 }
 
 /// Interpret a checked record's kind byte and payload.
+#[cfg(test)]
 fn decode_record_kind(kind: u8, payload: &[u8], input_seq: u64) -> Result<RecordKind, StreamError> {
     match kind {
         OUTPUT_KIND => Ok(RecordKind::Output(payload.to_vec())),
@@ -402,6 +421,7 @@ fn decode_record_kind(kind: u8, payload: &[u8], input_seq: u64) -> Result<Record
     }
 }
 
+#[cfg(test)]
 fn decode_resize_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
     if payload.len() != 4 {
         return Err(StreamError::InvalidRecordPayload);
@@ -413,6 +433,7 @@ fn decode_resize_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
 }
 
 /// Input evidence persists only the accepted byte length; its bytes are never stored.
+#[cfg(test)]
 fn decode_input_evidence_payload(
     payload: &[u8],
     input_seq: u64,
@@ -426,6 +447,7 @@ fn decode_input_evidence_payload(
     })
 }
 
+#[cfg(test)]
 fn decode_end_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
     if payload.is_empty() {
         return Err(StreamError::MissingTerminalOutcome);
@@ -517,6 +539,7 @@ impl SessionHeader {
         encoded
     }
 
+    #[cfg(test)]
     fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
         if encoded.len() != SESSION_HEADER_LEN {
             return Err(StreamError::InvalidHeaderLength {
@@ -568,6 +591,7 @@ impl SessionHeader {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRecovery {
     pub(crate) header: SessionHeader,
@@ -672,6 +696,7 @@ fn lock_writer(file: &File) -> Result<(), StreamError> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, StreamError> {
     if encoded.len() < SESSION_HEADER_LEN {
         return Err(StreamError::InvalidHeaderLength {
@@ -739,6 +764,7 @@ pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, S
     })
 }
 
+#[cfg(test)]
 fn validate_next_record(
     record: &Record,
     counters: &mut TrailerCounters,
@@ -759,6 +785,7 @@ fn validate_next_record(
 /// display axis, input evidence the input axis, and every record advances the record axis. A gap on
 /// any of them is a record that was lost between two that survived, which is what recovery exists to
 /// refuse rather than to paper over.
+#[cfg(test)]
 fn validate_record_sequence(
     record: &Record,
     counters: &TrailerCounters,
@@ -809,6 +836,7 @@ fn validate_record_sequence(
 /// Display completeness is a one-way latch, and these are the three ways a stream could contradict
 /// it: display output after the marker, the marker stated twice, and an End claiming the replay is
 /// complete when the display was already known not to be.
+#[cfg(test)]
 fn validate_display_completeness(
     record: &Record,
     display_incomplete: &mut bool,
@@ -856,6 +884,7 @@ impl SessionWriter {
         )
     }
 
+    #[cfg(test)]
     fn create_with_session(
         cast_path: &Path,
         agent_id: &AgentId,
