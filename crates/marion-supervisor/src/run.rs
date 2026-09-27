@@ -1795,7 +1795,14 @@ pub fn run_spawn_watched(
             unaccountable.set(failed);
         };
         let left = deadline.saturating_duration_since(Instant::now());
-        let next = launch_only_child(&next_inv, env.auth, left, &announce_generation, &session);
+        let next = launch_only_child(
+            &next_inv,
+            env.auth,
+            left,
+            &announce_generation,
+            &session,
+            events.as_ref(),
+        );
         if let Some(why) = unaccountable.take() {
             turns.dropped(
                 &message.id,
