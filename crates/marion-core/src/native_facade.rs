@@ -597,7 +597,9 @@ impl<'a> NativeFacadeRegistry<'a> {
             })
     }
 
-    /// Resolves a canonical primary command without choosing a lane.
+    /// Resolves a canonical primary command without choosing a lane. Only the registry's own
+    /// tests bind by primary command; clients resolve through [`Self::resolve`].
+    #[cfg(test)]
     pub fn resolve_primary(&self, command: &str) -> Option<ResolvedNativeFacade<'_>> {
         self.entries
             .iter()
@@ -613,20 +615,6 @@ impl<'a> NativeFacadeRegistry<'a> {
         self.entries
             .iter()
             .filter(|entry| entry.descriptor.native.is_some_and(|lane| lane.enabled()))
-            .map(|entry| entry.descriptor.command)
-            .collect()
-    }
-
-    /// Primary commands whose static structured-lane policy is enabled.
-    pub fn enabled_structured_commands(&self) -> Vec<&'a str> {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .descriptor
-                    .structured
-                    .is_some_and(|lane| lane.enabled())
-            })
             .map(|entry| entry.descriptor.command)
             .collect()
     }
@@ -1273,7 +1261,6 @@ mod tests {
              (`tests/native_facade_e2e.rs`); `gemini`'s settings merge was measured per key \
              (`tests/fixtures/s30/`), so it is among them"
         );
-        assert!(registry.enabled_structured_commands().is_empty());
         for word in RESERVED_COMMANDS
             .iter()
             .copied()
