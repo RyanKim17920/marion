@@ -133,6 +133,77 @@ impl Operator {
         term.viewport_lines().join("\n")
     }
 
+    /// With `MARION_HOME_DUMP=<dir>` set, the screen's cells — colour and modifiers included, as
+    /// the emulator holds them — as `<dir>/<name>.json`, for a rasteriser to draw.
+    fn dump(&self, name: &str) {
+        let Some(dir) = std::env::var_os("MARION_HOME_DUMP") else {
+            return;
+        };
+        use ratatui::style::{Color, Modifier};
+        let mut term = marion_term::Term::with_options(
+            marion_term::Size::new(SIZE.cols as usize, SIZE.rows as usize),
+            marion_tui::grid_options(),
+        );
+        for (code, data) in cast_records(&self.cast) {
+            if code == "o" {
+                term.advance(data.as_bytes());
+            }
+        }
+        let area = ratatui::layout::Rect::new(0, 0, SIZE.cols, SIZE.rows);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&term, area, &mut buf);
+        let tag = |c: Color| match c {
+            Color::Reset => "d".to_string(),
+            Color::Indexed(n) => format!("i{n}"),
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Black => "a0".into(),
+            Color::Red => "a1".into(),
+            Color::Green => "a2".into(),
+            Color::Yellow => "a3".into(),
+            Color::Blue => "a4".into(),
+            Color::Magenta => "a5".into(),
+            Color::Cyan => "a6".into(),
+            Color::Gray => "a7".into(),
+            Color::DarkGray => "a8".into(),
+            Color::LightRed => "a9".into(),
+            Color::LightGreen => "a10".into(),
+            Color::LightYellow => "a11".into(),
+            Color::LightBlue => "a12".into(),
+            Color::LightMagenta => "a13".into(),
+            Color::LightCyan => "a14".into(),
+            Color::White => "a15".into(),
+        };
+        let rows: Vec<serde_json::Value> = (0..SIZE.rows)
+            .map(|y| {
+                serde_json::Value::Array(
+                    (0..SIZE.cols)
+                        .map(|x| {
+                            let c = &buf[(x, y)];
+                            let mut f = String::new();
+                            for (m, ch) in [
+                                (Modifier::BOLD, 'B'),
+                                (Modifier::DIM, 'D'),
+                                (Modifier::REVERSED, 'R'),
+                            ] {
+                                if c.modifier.contains(m) {
+                                    f.push(ch);
+                                }
+                            }
+                            serde_json::json!([c.symbol(), tag(c.fg), tag(c.bg), f])
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let doc = serde_json::json!({"w": SIZE.cols, "h": SIZE.rows, "rows": rows});
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            Path::new(&dir).join(format!("{name}.json")),
+            doc.to_string(),
+        )
+        .unwrap();
+    }
+
     fn type_in(&self, bytes: &[u8]) {
         self.host
             .master()
@@ -321,6 +392,7 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     op.wait_for("the run command echoed", |s| {
         s.contains("marion run codex") && s.contains("HOMEE2E-TASK")
     });
+    op.dump("real-start");
     op.type_in(b"\r");
 
     // Watch: the node appears, and its commands appear in the stream as the shim prints them.
@@ -342,6 +414,7 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     op.wait_for("the child's call, live, while it runs", |s| {
         s.contains("report(") && s.contains("RUNNING")
     });
+    op.dump("real-watch-child");
     op.type_in(b"k");
     op.wait_for("the root selected again", |s| {
         s.lines()
@@ -369,6 +442,18 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     op.wait_for("the confirm again", |s| s.contains("y yes"));
     op.type_in(b"y");
     op.wait_for("the node cancelled", |s| s.contains("cancelled"));
+
+    // Setup: the real doctor rows; then the key page.
+    op.type_in(b"\t");
+    op.wait_for("Setup with the doctor's answer", |s| {
+        s.contains("HARNESSES") && s.contains("AGENT TYPES") && !s.contains("checking…")
+    });
+    op.dump("real-setup");
+    op.type_in(b"\t");
+    op.wait_for("the key page", |s| {
+        s.contains("EVERYWHERE") && s.contains("marion cancel <id>")
+    });
+    op.dump("real-help");
 
     op.type_in(b"\x03");
 }
