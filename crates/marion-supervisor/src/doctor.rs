@@ -1818,8 +1818,8 @@ fn row_label(r: &Row) -> String {
         .find_map(|n| n.strip_prefix("acp agent: `"))
         .and_then(|rest| rest.split('`').next());
     match agent {
-        Some(a) => format!("{} {a}", r.report.harness),
-        None => r.report.harness.to_string(),
+        Some(a) => format!("{} {a}", r.report.harness.cli_name()),
+        None => r.report.harness.cli_name().to_string(),
     }
 }
 
@@ -1831,7 +1831,7 @@ pub fn render(rows: &[Row], environment: &[crate::preflight::Check]) -> String {
         // this report and quotes it must not be able to turn it into "codex cannot resume".
         s.push_str(&format!(
             "{} {} [{}]\n",
-            r.report.harness,
+            r.report.harness.cli_name(),
             r.report
                 .harness_version
                 .as_deref()
@@ -2713,8 +2713,15 @@ mod tests {
             );
         }
         for h in Harness::ALL {
-            assert!(out.contains(h.as_str()), "{h} is missing from the report");
+            assert!(
+                out.contains(&format!("\n{} ", h.cli_name())) || out.starts_with(h.cli_name()),
+                "{h} is missing from the report"
+            );
         }
+        assert!(
+            !out.lines().any(|l| l.starts_with("claude-code ")),
+            "a row names Claude Code as a person types it: {out}"
+        );
     }
 
     /// **A probe's own omissions must never be printed in the column that reports the operator's

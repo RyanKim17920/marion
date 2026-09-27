@@ -65,6 +65,16 @@ impl Harness {
         }
     }
 
+    /// The name a person types and reads: [`Self::as_str`], except `claude` for Claude Code, the
+    /// spelling `marion claude` and the agent types use. Output meant for an operator (doctor's
+    /// rows) says this; the wire, the journal and contracts keep [`Self::as_str`].
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => "claude",
+            other => other.as_str(),
+        }
+    }
+
     /// **Can a node on this harness change a file with an empty `tools:` list?**
     ///
     /// §6.6's occupancy rule is *"at most one node with **write tools** per cwd"*, and reading that
@@ -264,6 +274,10 @@ mod tests {
     fn claude_parses_as_claude_code_and_the_wire_spelling_is_unchanged() {
         assert_eq!("claude".parse::<Harness>(), Ok(Harness::ClaudeCode));
         assert_eq!("claude-code".parse::<Harness>(), Ok(Harness::ClaudeCode));
+        for h in Harness::ALL {
+            assert_eq!(h.cli_name().parse::<Harness>(), Ok(h), "{h}");
+        }
+        assert_eq!(Harness::ClaudeCode.cli_name(), "claude");
         assert_eq!(Harness::ClaudeCode.as_str(), "claude-code");
         let e = "clod".parse::<Harness>().unwrap_err().to_string();
         assert!(e.contains("known harnesses are claude,"), "{e}");
