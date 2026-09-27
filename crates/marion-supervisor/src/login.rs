@@ -276,16 +276,13 @@ fn custom(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
     };
     let def = provider::custom_provider(id, &base_url, &wires, auth, name.as_deref(), None)?;
     let path = credentials::config_dir()?.join("providers.toml");
-    let mut defs: Vec<ProviderDef> = match std::fs::read_to_string(&path) {
-        Ok(text) => provider::parse_custom(&text)
-            .map_err(|e| Failure::Refused(format!("{}: {e}", path.display())))?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(Failure::Refused(format!("{}: {e}", path.display()))),
-    };
+    let existing = credentials::registry_from(&path).map_err(Failure::Refused)?;
+    let order = existing.credential_orders().clone();
+    let mut defs: Vec<ProviderDef> = existing.custom().cloned().collect();
     let replaced = defs.iter().any(|d| d.id == def.id);
     defs.retain(|d| d.id != def.id);
     defs.push(def.clone());
-    write_atomically(&path, &provider::render_custom(&defs))?;
+    write_atomically(&path, &provider::render_custom(&defs, &order))?;
     writeln!(
         out,
         "{} provider {} ({}) in {}.",

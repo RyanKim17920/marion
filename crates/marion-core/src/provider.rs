@@ -369,6 +369,16 @@ pub enum ProviderError {
     NoWires(String),
     #[error("provider `{id}`: auth `{auth}` is not one of api-key, none")]
     BadAuth { id: String, auth: String },
+    #[error(
+        "[credentials] {provider}: `{credential}` is not a credential id for that provider \
+         (`{provider}` or `{provider}:<label>`)"
+    )]
+    BadCredential {
+        provider: String,
+        credential: String,
+    },
+    #[error("[credentials] names `{0}`, which is neither built in nor defined in this file")]
+    UnknownCredentialProvider(String),
 }
 
 /// One `[providers.<id>]` table, as written.
@@ -390,6 +400,57 @@ struct RawCustom {
 struct RawFile {
     #[serde(default)]
     providers: BTreeMap<String, RawCustom>,
+    /// `[credentials]`: per provider, the ordered credential ids a launch tries — the first with a
+    /// stored key is used. A provider not named here uses its credentials in login order.
+    #[serde(default)]
+    credentials: BTreeMap<String, Vec<String>>,
+}
+
+/// **One stored credential**: a provider id and an optional label — `openrouter` or
+/// `openrouter:work`. A user may hold several credentials for one provider (a work and a personal
+/// key); the label tells them apart. Both halves take [`valid_id`]'s grammar, so an id is safe as a
+/// Keychain account, a JSON key and a record field without escaping.
+///
+/// **API keys and provider-published OAuth only.** This is never a way to hold several vendor
+/// *subscription* logins for one harness and switch between them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CredentialId {
+    pub provider: String,
+    pub label: Option<String>,
+}
+
+impl CredentialId {
+    /// `provider` or `provider:label`, each half a [`valid_id`].
+    pub fn parse(s: &str) -> Option<Self> {
+        let (provider, label) = match s.split_once(':') {
+            Some((p, l)) => (p, Some(l)),
+            None => (s, None),
+        };
+        if !valid_id(provider) || label.is_some_and(|l| !valid_id(l)) {
+            return None;
+        }
+        Some(CredentialId {
+            provider: provider.to_string(),
+            label: label.map(str::to_string),
+        })
+    }
+
+    /// The provider's unlabeled credential — the one `marion login <provider>` stores.
+    pub fn default_for(provider: &str) -> Self {
+        CredentialId {
+            provider: provider.to_string(),
+            label: None,
+        }
+    }
+}
+
+impl fmt::Display for CredentialId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.label {
+            Some(l) => write!(f, "{}:{l}", self.provider),
+            None => f.write_str(&self.provider),
+        }
+    }
 }
 
 /// Whether `id` is a spelling a custom provider may take.
@@ -447,6 +508,8 @@ pub fn custom_provider(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registry {
     defs: Vec<ProviderDef>,
+    /// `[credentials]`: the user's stated credential order, per provider id.
+    order: BTreeMap<String, Vec<CredentialId>>,
 }
 
 impl Default for Registry {
@@ -460,6 +523,7 @@ impl Registry {
     pub fn seed() -> Self {
         Registry {
             defs: PROVIDERS.iter().map(ProviderDef::from).collect(),
+            order: BTreeMap::new(),
         }
     }
 
@@ -467,7 +531,37 @@ impl Registry {
     pub fn with_custom(text: &str) -> Result<Self, ProviderError> {
         let mut reg = Registry::seed();
         reg.defs.extend(parse_custom(text)?);
+        let raw: RawFile = toml::from_str(text).map_err(|e| ProviderError::Parse(e.to_string()))?;
+        for (provider, ids) in raw.credentials {
+            if reg.get(&provider).is_none() {
+                return Err(ProviderError::UnknownCredentialProvider(provider));
+            }
+            let mut order = Vec::new();
+            for id in ids {
+                match CredentialId::parse(&id) {
+                    Some(c) if c.provider == provider => order.push(c),
+                    _ => {
+                        return Err(ProviderError::BadCredential {
+                            provider,
+                            credential: id,
+                        });
+                    }
+                }
+            }
+            reg.order.insert(provider, order);
+        }
         Ok(reg)
+    }
+
+    /// Every `[credentials]` order the user stated, by provider — what a rewrite of the file must
+    /// carry forward.
+    pub fn credential_orders(&self) -> &BTreeMap<String, Vec<CredentialId>> {
+        &self.order
+    }
+
+    /// The credential order the user stated for `provider` in `[credentials]`, if they stated one.
+    pub fn credential_order(&self, provider: &str) -> Option<&[CredentialId]> {
+        self.order.get(provider).map(Vec::as_slice)
     }
 
     pub fn get(&self, id: &str) -> Option<&ProviderDef> {
@@ -550,10 +644,10 @@ fn toml_str(s: &str) -> String {
     out
 }
 
-/// A `providers.toml` holding exactly these custom providers — what `marion login custom` writes
-/// back after adding or replacing one. Comments in the old file are not preserved; the header
-/// says so.
-pub fn render_custom(defs: &[ProviderDef]) -> String {
+/// A `providers.toml` holding exactly these custom providers and credential orders — what `marion
+/// login custom` writes back after adding or replacing one. Comments in the old file are not
+/// preserved; the header says so.
+pub fn render_custom(defs: &[ProviderDef], order: &BTreeMap<String, Vec<CredentialId>>) -> String {
     let mut out = String::from(
         "# marion's custom providers. Rewritten by `marion login custom`; comments are not kept.\n",
     );
@@ -576,6 +670,17 @@ pub fn render_custom(defs: &[ProviderDef]) -> String {
         }
         if let Some(e) = &d.import_env {
             out.push_str(&format!("import_env = {}\n", toml_str(e)));
+        }
+    }
+    if !order.is_empty() {
+        out.push_str("\n[credentials]\n");
+        for (provider, ids) in order {
+            let ids = ids
+                .iter()
+                .map(|c| toml_str(&c.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("{provider} = [{ids}]\n"));
         }
     }
     out
@@ -771,6 +876,49 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_id_is_a_provider_and_an_optional_label() {
+        let c = CredentialId::parse("openrouter:work").unwrap();
+        assert_eq!(
+            (c.provider.as_str(), c.label.as_deref()),
+            ("openrouter", Some("work"))
+        );
+        assert_eq!(c.to_string(), "openrouter:work");
+        assert_eq!(
+            CredentialId::parse("groq").unwrap(),
+            CredentialId::default_for("groq")
+        );
+        for bad in ["", "open router", "a:", ":b", "a:b:c", "A:b", "a:B"] {
+            assert!(CredentialId::parse(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_stated_credential_order_parses_and_must_name_its_own_provider() {
+        let reg = Registry::with_custom(
+            "[credentials]\nopenrouter = [\"openrouter:work\", \"openrouter\"]\n",
+        )
+        .unwrap();
+        let order: Vec<String> = reg
+            .credential_order("openrouter")
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(order, ["openrouter:work", "openrouter"]);
+        assert!(reg.credential_order("groq").is_none());
+        for (text, needle) in [
+            (
+                "[credentials]\nopenrouter = [\"groq:work\"]\n",
+                "not a credential id",
+            ),
+            ("[credentials]\nnope = [\"nope\"]\n", "neither built in"),
+        ] {
+            let e = Registry::with_custom(text).unwrap_err().to_string();
+            assert!(e.contains(needle), "{e}");
+        }
+    }
+
+    #[test]
     fn a_rendered_custom_file_parses_back_to_the_same_providers() {
         let a = custom_provider(
             "my-gw",
@@ -790,7 +938,19 @@ mod tests {
             None,
         )
         .unwrap();
-        let text = render_custom(&[a.clone(), b.clone()]);
+        let mut order = BTreeMap::new();
+        order.insert(
+            "openrouter".to_string(),
+            vec![
+                CredentialId::parse("openrouter:work").unwrap(),
+                CredentialId::default_for("openrouter"),
+            ],
+        );
+        let text = render_custom(&[a.clone(), b.clone()], &order);
         assert_eq!(parse_custom(&text).unwrap(), vec![b, a]);
+        assert_eq!(
+            Registry::with_custom(&text).unwrap().credential_orders(),
+            &order
+        );
     }
 }
