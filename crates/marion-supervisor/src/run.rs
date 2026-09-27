@@ -1656,13 +1656,9 @@ pub fn run_spawn_watched(
         LaunchPath::Terminal => {
             return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
         }
-        LaunchPath::LaunchOnly => launch_only_child(
-            &inv,
-            bound,
-            &announce_started,
-            &session,
-            events.as_ref(),
-        ),
+        LaunchPath::LaunchOnly => {
+            launch_only_child(&inv, bound, &announce_started, &session, events.as_ref())
+        }
         // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
         // children through the single ACP adapter*, and until this arm existed the only thing that
         // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
