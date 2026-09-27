@@ -38,7 +38,7 @@
 //! message's length and SHA-256, never its text**. They are not barriers (`journal.rs` says why).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 
 use marion_core::contract::{AgentId, TaskId};
@@ -149,6 +149,51 @@ impl std::fmt::Debug for TurnFeed {
         f.debug_struct("TurnFeed")
             .field("mid_turn", &self.mid_turn)
             .finish_non_exhaustive()
+    }
+}
+
+/// A [`DeliveryPort`] that **latches**: a wake with nobody waiting is kept until it is taken, so a
+/// driver that checks between its own steps never misses one that landed in between.
+#[derive(Default)]
+pub struct Latch {
+    set: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Latch {
+    /// Whether a wake landed since the last take, clearing it.
+    pub fn take(&self) -> bool {
+        std::mem::take(&mut *self.set.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Wait for a wake until `deadline` (forever with `None`), clearing it. `false` on timeout.
+    pub fn wait_until(&self, deadline: Option<std::time::Instant>) -> bool {
+        let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        while !*set {
+            match deadline {
+                None => set = self.cv.wait(set).unwrap_or_else(|e| e.into_inner()),
+                Some(d) => {
+                    let left = d.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    set = self
+                        .cv
+                        .wait_timeout(set, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+            }
+        }
+        *set = false;
+        true
+    }
+}
+
+impl DeliveryPort for Latch {
+    fn wake(&self) {
+        *self.set.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
     }
 }
 

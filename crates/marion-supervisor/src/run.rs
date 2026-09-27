@@ -1608,6 +1608,7 @@ pub fn run_spawn_watched(
             bound,
             on_started: &announce_started,
             on_line: None,
+            turns: None,
         })
         .map(|r| ChildRun {
             stdout: r.stdout,

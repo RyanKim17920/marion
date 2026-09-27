@@ -72,18 +72,24 @@ const SIGKILL: i32 = 9;
 /// The JSON-RPC id marion stamps on `initialize`. doctor's number, kept, so a capture taken with
 /// one and read against the other still correlates.
 const INITIALIZE_ID: u64 = 0;
-/// The id on `session/prompt`. `session/new`'s is **not** a constant here — it is read out of the
-/// declaration the adapter compiled (`marion_harness::adapter::SESSION_NEW_ID` is where it is
-/// stamped), because a driver that assumed the value and an adapter that changed it would not fail
-/// loudly; they would wait out the whole session budget for an answer that had already arrived
-/// under a different id.
-const PROMPT_ID: u64 = 2;
+/// The id on the first `session/prompt`; each later prompt — a message from the node's inbox — takes
+/// the next. `session/new`'s is **not** a constant here — it is read out of the declaration the
+/// adapter compiled (`marion_harness::adapter::SESSION_NEW_ID` is where it is stamped), because a
+/// driver that assumed the value and an adapter that changed it would not fail loudly; they would
+/// wait out the whole session budget for an answer that had already arrived under a different id.
+const FIRST_PROMPT_ID: u64 = 2;
 /// The id on the request that sets a session select (the model, then the approval mode), one at a
-/// time.
+/// time. The inbox's second prompt reuses the number: every select is answered and its answer
+/// consumed before the first prompt is sent, so the two never share a pending id.
 const SET_SELECT_ID: u64 = 3;
 /// How long the agent is given to answer one select. A local state change on every agent measured,
 /// answered with no network round trip; bounded like every other step.
 const SET_SELECT_BUDGET: Duration = Duration::from_secs(30);
+
+/// `MessageDelivered.via` for a prompt sent while an earlier one was still running, and for one
+/// sent after every earlier one settled.
+pub const VIA_MID_TURN: &str = "acp:mid-turn";
+pub const VIA_NEXT_TURN: &str = "acp:next-turn";
 
 /// How long the agent is given to answer `initialize`. A process start and one frame.
 ///
@@ -175,6 +181,10 @@ pub struct AcpChildSpec<'a> {
     /// Each line is delivered exactly once, and the concatenation is [`AcpRun::stdout`]. `None` for
     /// a node nobody watches live.
     pub on_line: Option<&'a dyn Fn(&str)>,
+    /// **The node's inbox**, for every prompt after the first, or `None` for a session that takes
+    /// only [`Self::prompt`]. With a feed the session ends only when every prompt has settled and
+    /// a `take_or_seal` seals the inbox; see [`prompt_session`].
+    pub turns: Option<crate::inbox::TurnFeed>,
 }
 
 impl std::fmt::Debug for AcpChildSpec<'_> {
@@ -366,7 +376,13 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
             )?;
         }
     }
-    let answered = prompt_session(&mut agent, &session, spec.prompt, deadline)?;
+    let answered = prompt_session(
+        &mut agent,
+        &session,
+        spec.prompt,
+        deadline,
+        spec.turns.as_ref(),
+    )?;
 
     let (end, _) = agent.finish(!answered);
     Ok(AcpRun {
@@ -522,7 +538,16 @@ fn select_in_session(
     }
 }
 
-/// `session/prompt`, and the turn's expiry. `false` when the agent never answered.
+/// `session/prompt` — the first, and every one the node's inbox then holds — and the turn's expiry.
+/// `false` when marion cut the session short: a prompt the agent never answered, or a hold that
+/// outlived the wall clock.
+///
+/// Every prompt in flight settles before a boundary: the next queued message is then sent as a
+/// prompt of its own, an empty inbox still owed a background child's end is waited on, and one
+/// that seals ends the session. On a folding agent ([`marion_harness::spec::MidTurn::Fold`]) a
+/// message queued mid-turn is sent at once, as S31 measured opencode and claude-agent-acp taking
+/// it into the running loop and answering both prompts when it drains; on every other agent it
+/// waits, because codex-acp never answers the first and copilot supersedes it.
 ///
 /// The cancel is §8's interrupt step in ACP's own vocabulary, and it runs *before* the signal
 /// because it is the cleaner one: the pending prompt answers a cancel with
@@ -533,17 +558,94 @@ fn prompt_session(
     session: &str,
     prompt: &str,
     deadline: Instant,
+    turns: Option<&crate::inbox::TurnFeed>,
 ) -> Result<bool, AcpChildError> {
+    let mut last_id = FIRST_PROMPT_ID;
     agent.send(
-        &acp::prompt_request(PROMPT_ID, session, prompt),
+        &acp::prompt_request(last_id, session, prompt),
         "session/prompt",
     )?;
-    if agent.settle(PROMPT_ID, deadline).is_some() {
-        return Ok(true);
+    let latch = Arc::new(crate::inbox::Latch::default());
+    if let Some(feed) = turns {
+        feed.source.attach_port(latch.clone());
     }
-    let _ = agent.write(&acp::cancel_notification(session));
-    agent.settle(PROMPT_ID, Instant::now() + CANCEL_GRACE);
-    Ok(false)
+    let folding = turns.filter(|f| f.folds());
+    let mut pending = vec![last_id];
+    loop {
+        while let Some(&id) = pending.first() {
+            let mut sent = Vec::new();
+            let answered = agent.settle_while(id, deadline, |agent| {
+                let Some(feed) = folding.filter(|_| latch.take()) else {
+                    return;
+                };
+                while let Some(msg) = feed.source.take_next() {
+                    last_id += 1;
+                    if send_turn(agent, feed, session, last_id, &msg, VIA_MID_TURN) {
+                        sent.push(last_id);
+                    }
+                }
+            });
+            pending.remove(0);
+            pending.extend(sent);
+            if answered.is_none() {
+                let _ = agent.write(&acp::cancel_notification(session));
+                agent.settle(last_id, Instant::now() + CANCEL_GRACE);
+                return Ok(false);
+            }
+        }
+        let Some(feed) = turns else {
+            return Ok(true);
+        };
+        match feed.source.take_or_seal() {
+            Some(msg) => {
+                last_id += 1;
+                if !send_turn(agent, feed, session, last_id, &msg, VIA_NEXT_TURN) {
+                    return Ok(true);
+                }
+                pending.push(last_id);
+            }
+            // Owed a background child's end: wait for the inbox, bounded by the wall clock.
+            None if feed.source.held() => loop {
+                if latch.take() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                if matches!(agent.child.try_wait(), Ok(Some(_))) {
+                    return Ok(true);
+                }
+                // Answered while waiting: an agent may still ask marion something between turns.
+                agent.classify();
+                std::thread::sleep(POLL);
+            },
+            None => return Ok(true),
+        }
+    }
+}
+
+/// Send a taken message as `session/prompt` `id` and journal how it went. `false` when the agent's
+/// stdin is gone — the message is dropped by name, and the session's end says why.
+fn send_turn(
+    agent: &mut Driver<'_>,
+    feed: &crate::inbox::TurnFeed,
+    session: &str,
+    id: u64,
+    msg: &crate::inbox::Message,
+    via: &str,
+) -> bool {
+    let text = crate::inbox::render(msg);
+    match agent.write(&acp::prompt_request(id, session, &text)) {
+        Ok(()) => {
+            feed.source.delivered(&msg.id, via);
+            true
+        }
+        Err(e) => {
+            feed.source
+                .dropped(&msg.id, &format!("the agent's stdin closed: {e}"));
+            false
+        }
+    }
 }
 
 /// What the adapter's session-opening request asks for, read back off the request itself.
@@ -762,9 +864,21 @@ impl<'a> Driver<'a> {
     /// S21's probe grew `answer_agent_requests` for this; `doctor` has no equivalent only because
     /// its micro-prompt is chosen so nothing is ever asked.
     fn settle(&mut self, id: u64, deadline: Instant) -> Option<String> {
+        self.settle_while(id, deadline, |_| {})
+    }
+
+    /// [`Self::settle`], calling `between` on every poll — where a driver sends what it may send
+    /// while the agent is still working (a folded prompt).
+    fn settle_while(
+        &mut self,
+        id: u64,
+        deadline: Instant,
+        mut between: impl FnMut(&mut Self),
+    ) -> Option<String> {
         let mut gone: Option<Instant> = None;
         loop {
             self.classify();
+            between(self);
             if let Some((_, frame)) = self.responses.iter().find(|(k, _)| *k == id) {
                 return Some(frame.clone());
             }
@@ -1093,6 +1207,7 @@ mod tests {
             bound,
             on_started,
             on_line: None,
+            turns: None,
         }
     }
 
@@ -1218,6 +1333,7 @@ sleep 15"#,
         };
         let run = run_acp_child(AcpChildSpec {
             on_line: Some(&on_line),
+            turns: None,
             ..spec(&inv, Duration::from_secs(10), &|_| {})
         })
         .expect("a turn");
@@ -1492,6 +1608,7 @@ sleep 15"#,
                 bound: Duration::from_secs(5),
                 on_started: &|_| panic!("nothing may be spawned"),
                 on_line: None,
+                turns: None,
             })
             .expect_err("refused")
         };
@@ -1748,5 +1865,255 @@ sleep 15"#,
             .as_deref(),
             Some("a")
         );
+    }
+
+    // ---- turn delivery (S31): the node's inbox, as prompts after the first ----
+
+    use crate::inbox::{BoundInbox, Inboxes, Message, Source, TurnFeed, render};
+    use marion_core::contract::{AgentId, TaskId};
+    use marion_core::journal::RecordKind;
+    use marion_harness::spec::{MidTurn, TurnDelivery};
+
+    struct Fed {
+        inboxes: Arc<Inboxes>,
+        log: Arc<Mutex<Vec<RecordKind>>>,
+        agent: AgentId,
+        feed: TurnFeed,
+    }
+
+    fn fed(mid_turn: MidTurn) -> Fed {
+        let (inboxes, log) = crate::inbox::tests::recording();
+        let inboxes = Arc::new(inboxes);
+        let agent = AgentId("acp-node".into());
+        inboxes.open(&agent);
+        let feed = TurnFeed::new(
+            Arc::new(BoundInbox::new(Arc::clone(&inboxes), agent.clone())),
+            TurnDelivery::TypedTurn {
+                mid_turn,
+                note: "t",
+            },
+        );
+        Fed {
+            inboxes,
+            log,
+            agent,
+            feed,
+        }
+    }
+
+    impl Fed {
+        fn delivery(&self) -> TurnDelivery {
+            TurnDelivery::TypedTurn {
+                mid_turn: self.feed.mid_turn,
+                note: "t",
+            }
+        }
+        fn queue(&self, source: Source, text: &str) -> (String, String) {
+            let id = self
+                .inboxes
+                .enqueue(&self.agent, self.delivery(), source.clone(), text.into())
+                .expect("open");
+            (id, rendered(source, text))
+        }
+        fn delivered(&self) -> Vec<(String, String)> {
+            crate::inbox::tests::records(&self.log)
+                .into_iter()
+                .filter_map(|r| match r {
+                    RecordKind::MessageDelivered(d) => Some((d.message_id, d.via)),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn sealed(&self) -> bool {
+            self.inboxes
+                .enqueue(
+                    &self.agent,
+                    self.delivery(),
+                    Source::Operator,
+                    "late".into(),
+                )
+                .is_err()
+        }
+        fn spec<'a>(&self, inv: &'a Invocation) -> AcpChildSpec<'a> {
+            AcpChildSpec {
+                turns: Some(self.feed.clone()),
+                ..spec(inv, Duration::from_secs(20), &|_| {})
+            }
+        }
+    }
+
+    fn rendered(source: Source, text: &str) -> String {
+        render(&Message {
+            id: String::new(),
+            source,
+            text: text.into(),
+            queued_at: std::time::SystemTime::now(),
+        })
+    }
+
+    /// `(id, text)` of the `session/prompt` a script wrote to `path`.
+    fn prompt_at(path: &Path) -> (u64, String) {
+        let line = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("the agent never read a prompt into {path:?}: {e}"));
+        let v: Value = serde_json::from_str(line.trim()).expect("a frame");
+        assert_eq!(v["method"], "session/prompt", "{v}");
+        assert_eq!(v["params"]["sessionId"], "ses_fake");
+        (
+            v["id"].as_u64().expect("an id"),
+            v["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    fn wait_for_file(path: &Path) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < until, "{path:?} never appeared");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    const HANDSHAKE: &str =
+        "read init\nprintf '%s\\n' \"$HELLO\"\nread new\nprintf '%s\\n' \"$OPENED\"\n";
+
+    fn fed_agent(dir: &Path, body: &str) -> Invocation {
+        agent(
+            dir,
+            &format!("HELLO='{HELLO}'\nOPENED='{OPENED}'\n{HANDSHAKE}{body}"),
+        )
+    }
+
+    /// **On a queueing agent a message waits for the running prompt to settle**, then goes out as
+    /// the next prompt under the next id — never while the first is in flight, which codex-acp
+    /// would never answer and copilot would supersede (S31).
+    #[test]
+    fn a_queueing_agent_gets_the_message_as_its_next_prompt_only_after_the_first_settles() {
+        let dir = scratch("acp-queue");
+        let (held, early, second) = (dir.join("held"), dir.join("early"), dir.join("second"));
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"read -r prompt
+: > '{held}'
+if read -r -t 2 line; then printf '%s\n' "$line" > '{early}'; fi
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+read -r next
+printf '%s\n' "$next" > '{second}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+read -r more
+exit 0"#,
+            held = held.display(),
+            early = early.display(),
+            second = second.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let (id, want) = std::thread::scope(|s| {
+            let steer = s.spawn(|| {
+                wait_for_file(&held);
+                fx.queue(Source::Operator, "and the tests")
+            });
+            let run = run_acp_child(fx.spec(&inv)).expect("the session completes");
+            assert!(!run.exit.timed_out, "marion did not cut it short");
+            steer.join().unwrap()
+        });
+        assert!(
+            !early.exists(),
+            "a prompt was sent while the first was in flight"
+        );
+        assert_eq!(prompt_at(&second), (3, want));
+        assert_eq!(fx.delivered(), [(id, VIA_NEXT_TURN.to_string())]);
+        assert!(fx.sealed());
+    }
+
+    /// **On a folding agent a message is sent into the running turn** under its own id, and the
+    /// session ends only once both prompts are answered — which S31 measured arriving together
+    /// when the loop drains.
+    #[test]
+    fn a_folding_agent_gets_the_message_mid_turn_and_both_prompts_settle() {
+        let dir = scratch("acp-fold");
+        let (held, mid) = (dir.join("held"), dir.join("mid"));
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"read -r prompt
+: > '{held}'
+read -r line
+printf '%s\n' "$line" > '{mid}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+sleep 0.3
+printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn","usage":{{"inputTokens":1,"outputTokens":1}}}}}}'
+read -r more
+exit 0"#,
+            held = held.display(),
+            mid = mid.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let (id, want) = std::thread::scope(|s| {
+            let steer = s.spawn(|| {
+                wait_for_file(&held);
+                fx.queue(Source::Operator, "switch approach")
+            });
+            let run = run_acp_child(fx.spec(&inv)).expect("the session completes");
+            assert!(!run.exit.timed_out);
+            assert!(
+                run.stdout.contains(r#""id":3"#),
+                "the driver waited for the folded prompt's answer too: {}",
+                run.stdout
+            );
+            steer.join().unwrap()
+        });
+        assert_eq!(prompt_at(&mid), (3, want));
+        assert_eq!(fx.delivered(), [(id, VIA_MID_TURN.to_string())]);
+        assert!(fx.sealed());
+    }
+
+    /// **An agent owed a background child's end is held open after its prompt settles**, and
+    /// the end, announced later, is its next prompt.
+    #[test]
+    fn an_agent_owed_a_childs_end_is_held_and_takes_it_as_its_next_prompt() {
+        let dir = scratch("acp-held");
+        let (done, second) = (dir.join("done"), dir.join("second"));
+        let fx = fed(MidTurn::Fold);
+        assert!(fx.inboxes.owe(&fx.agent));
+        let ended = Source::ChildEnded {
+            child: AgentId("child".into()),
+            task_id: TaskId("t-child".into()),
+            status: "completed".into(),
+            agent_type: "claude".into(),
+            root: false,
+        };
+        let script = format!(
+            r#"read -r prompt
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+: > '{done}'
+read -r next
+printf '%s\n' "$next" > '{second}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+read -r more
+exit 0"#,
+            done = done.display(),
+            second = second.display(),
+        );
+        let inv = fed_agent(&dir, &script);
+        let id = std::thread::scope(|s| {
+            let child = s.spawn(|| {
+                wait_for_file(&done);
+                std::thread::sleep(Duration::from_millis(300));
+                fx.inboxes
+                    .announce(
+                        &fx.agent,
+                        fx.delivery(),
+                        ended.clone(),
+                        "the contract".into(),
+                    )
+                    .expect("owed, so accepted")
+            });
+            let run = run_acp_child(fx.spec(&inv)).expect("the session completes");
+            assert!(!run.exit.timed_out);
+            child.join().unwrap()
+        });
+        assert_eq!(prompt_at(&second), (3, rendered(ended, "the contract")));
+        assert_eq!(fx.delivered(), [(id, VIA_NEXT_TURN.to_string())]);
+        assert!(fx.sealed());
     }
 }
