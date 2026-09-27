@@ -183,6 +183,9 @@ pub fn compile(
         isolation: Isolation::SharedCwd,
         allow_concurrent_writes: true,
         resume: None,
+        // A canned launch runs on no profile (`profiles::Launch::resolve` refuses every
+        // non-inherited auth).
+        profile: None,
     };
     let mut spec = child_launch_spec(
         &env,

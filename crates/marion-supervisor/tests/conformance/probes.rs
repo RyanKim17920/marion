@@ -1537,6 +1537,7 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 model: None,
                 session_mode: None,
+                env_remove: vec![],
             },
             files: vec![json_doc.clone(), toml_doc.clone()],
             session: None,
