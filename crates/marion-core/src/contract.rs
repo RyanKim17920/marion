@@ -408,6 +408,22 @@ impl TokenUsage {
             .saturating_add(self.cache_read)
             .saturating_add(self.cache_write)
     }
+
+    /// What was spent after `earlier`, where both are running totals of one session: counter by
+    /// counter, **saturating at zero**, because a total that went backwards is a harness's bad
+    /// arithmetic and not a negative spend. A reasoning split stays unreported where this total
+    /// reported none.
+    pub fn since(self, earlier: TokenUsage) -> TokenUsage {
+        TokenUsage {
+            input: self.input.saturating_sub(earlier.input),
+            output: self.output.saturating_sub(earlier.output),
+            cache_read: self.cache_read.saturating_sub(earlier.cache_read),
+            cache_write: self.cache_write.saturating_sub(earlier.cache_write),
+            reasoning: self
+                .reasoning
+                .map(|r| r.saturating_sub(earlier.reasoning.unwrap_or(0))),
+        }
+    }
 }
 
 /// Counter-by-counter, **saturating**: a counter is a harness's number, and a hostile or buggy
@@ -537,6 +553,39 @@ mod tests {
         );
         let back: TokenUsage = serde_json::from_str(&serde_json::to_string(&A).unwrap()).unwrap();
         assert_eq!(back, A);
+    }
+
+    /// **A running total minus an earlier one is the spend between them**, and undoes an add;
+    /// a total that went backwards is a harness's bad arithmetic, never a negative spend.
+    #[test]
+    fn the_spend_since_an_earlier_total_undoes_an_add_and_saturates_at_zero() {
+        let b = TokenUsage {
+            input: 1,
+            output: 2,
+            cache_read: 3,
+            cache_write: 4,
+            reasoning: Some(1),
+        };
+        assert_eq!(
+            (A + b).since(A),
+            TokenUsage {
+                reasoning: Some(1),
+                ..b
+            }
+        );
+        assert_eq!(
+            (A + b).since(b),
+            TokenUsage {
+                reasoning: Some(0),
+                ..A
+            }
+        );
+        assert_eq!(b.since(A).input, 0, "backwards is zero, not a wrap");
+        assert_eq!(
+            A.since(b).reasoning,
+            None,
+            "no split reported stays unreported"
+        );
     }
 
     #[test]

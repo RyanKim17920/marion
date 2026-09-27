@@ -336,6 +336,12 @@ pub enum UsageFold {
     Last,
     /// Each unit is one turn's or step's spend, and the run is their sum.
     Sum,
+    /// Each unit is the **session's** running total so far — every process that resumed the
+    /// session included — so the latest unit is the whole session's spend, and a resumed run spent
+    /// its latest unit less the session's total when it began. codex's `turn.completed` (measured
+    /// on 0.155.1 by `continuation.rs`: a resumed generation's turn reported both generations'
+    /// responses).
+    Session,
 }
 
 /// A counter at `ptr` as an unsigned integer, zero when absent or not one.
@@ -392,28 +398,32 @@ pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
 /// The run's usage from its units under the row's fold. `None` for no units.
 pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
     match rule.fold {
-        UsageFold::Last => units.last().copied(),
+        UsageFold::Last | UsageFold::Session => units.last().copied(),
         UsageFold::Sum => units.iter().copied().reduce(|a, b| a + b),
     }
 }
 
 /// **A node's usage, kept current frame by frame as its stream is recorded**, across every process
-/// the node runs as.
+/// the run takes.
 ///
-/// A node can be several processes in turn — a `LaunchOnly` node's next turn is a relaunch under
-/// its session (a continuation generation) — and a row's fold describes **one process's** stream:
-/// a `Last` row's terminal frame totals that process's run, as every capture behind such a row was
-/// one process. So the fold runs within a generation and generations add: a `Sum` row's units add
-/// throughout, and a `Last` row's final unit of each generation is added to the others'.
+/// A run can be several processes in turn — a `LaunchOnly` node's next turn is a relaunch under
+/// its session (a continuation generation) — and the row's fold says how their units combine:
+/// a `Sum` row's units add throughout; a `Last` row's final unit totals **its process's** run (as
+/// every capture behind such a row was one process), so each generation's final is added to the
+/// others'; a `Session` row's latest unit already totals every process of the session, and a run
+/// that resumed a session begun by an earlier run spent that less the earlier total
+/// ([`Self::resumed_from`]).
 ///
-/// O(1) state: a running fold, never the units, so a long-lived node's meter does not grow.
+/// O(1) state: running folds, never the units, so a long-lived node's meter does not grow.
 #[derive(Debug, Clone, Copy)]
 pub struct UsageMeter {
     rule: &'static UsageRule,
-    /// Every generation already ended, added.
+    /// Every generation already ended, added (`Last` and `Sum`).
     ended: Option<TokenUsage>,
-    /// The running generation, folded under the rule.
+    /// The running generation folded under the rule — for a `Session` row, the latest total.
     current: Option<TokenUsage>,
+    /// What the session had spent before this run began: the node's earlier runs, on a resume.
+    baseline: Option<TokenUsage>,
 }
 
 impl UsageMeter {
@@ -422,6 +432,17 @@ impl UsageMeter {
             rule,
             ended: None,
             current: None,
+            baseline: None,
+        }
+    }
+
+    /// This run resumes a session whose earlier runs recorded spending `prior`. Only a `Session`
+    /// row's totals include that spend, so only it subtracts; the other folds' units are this
+    /// run's own.
+    pub fn resumed_from(self, prior: Option<TokenUsage>) -> Self {
+        Self {
+            baseline: prior,
+            ..self
         }
     }
 
@@ -436,23 +457,38 @@ impl UsageMeter {
     }
 
     /// The running generation's process has ended: what it spent is settled, and the next frame
-    /// belongs to the next generation.
+    /// belongs to the next generation. A `Session` row's next total continues this one's, so it
+    /// keeps its latest.
     pub fn end_generation(&mut self) {
-        self.ended = add_usage_claims(self.ended, self.current.take());
+        if self.rule.fold != UsageFold::Session {
+            self.ended = add_usage_claims(self.ended, self.current.take());
+        }
     }
 
-    /// Everything the node's stream says it spent so far. `None` when no unit was ever read — no
+    /// Everything this run's stream says it spent so far. `None` when no unit was ever read — no
     /// claim, which is not a claim of zero.
     pub fn usage(&self) -> Option<TokenUsage> {
-        add_usage_claims(self.ended, self.current)
+        match (self.rule.fold, self.baseline) {
+            (UsageFold::Session, Some(before)) => self.current.map(|now| now.since(before)),
+            _ => add_usage_claims(self.ended, self.current),
+        }
     }
 }
 
-/// Each turn's (or step's) total spend, oldest first, where the row's units are turns — a `Sum`
-/// row. Empty for a `Last` row, whose units are running totals rather than turns.
+/// Each turn's (or step's) total spend, oldest first: a `Sum` row's units themselves, and the
+/// steps between a `Session` row's running totals. Empty for a `Last` row, whose final unit totals
+/// a process whose turns it does not break down.
 pub fn turns(rule: &UsageRule, units: &[TokenUsage]) -> Vec<u64> {
     match rule.fold {
         UsageFold::Sum => units.iter().map(TokenUsage::total).collect(),
+        UsageFold::Session => {
+            let totals = units.iter().map(TokenUsage::total);
+            let before = std::iter::once(0).chain(units.iter().map(TokenUsage::total));
+            totals
+                .zip(before)
+                .map(|(t, b)| t.saturating_sub(b))
+                .collect()
+        }
         UsageFold::Last => Vec::new(),
     }
 }
@@ -1097,6 +1133,42 @@ mod tests {
         fold: UsageFold::Sum,
         ..RULE
     };
+    static SESSION: UsageRule = UsageRule {
+        fold: UsageFold::Session,
+        ..RULE
+    };
+
+    /// **A session's running totals are not added up.** Its latest unit is the whole session's
+    /// spend however many generations passed; a run that resumed a session an earlier run began
+    /// spent the latest total less what that run recorded; and its per-turn series is the steps
+    /// between totals, never the totals themselves.
+    #[test]
+    fn a_session_row_takes_its_latest_total_less_what_earlier_runs_recorded() {
+        let mut m = UsageMeter::new(&SESSION);
+        m.observe(&done(20, 2, 4));
+        m.end_generation();
+        m.observe(&done(50, 5, 9));
+        assert_eq!(
+            m.usage(),
+            Some(tokens(50, 5, 9)),
+            "the latest total, not 70"
+        );
+        let mut resumed = UsageMeter::new(&SESSION).resumed_from(Some(tokens(50, 5, 9)));
+        assert_eq!(
+            resumed.usage(),
+            None,
+            "a resumed run that said nothing claims nothing"
+        );
+        resumed.observe(&done(80, 6, 10));
+        assert_eq!(resumed.usage(), Some(tokens(30, 1, 1)));
+        let units = usage_units(&SESSION, &[done(20, 2, 4), done(50, 5, 9)]);
+        assert_eq!(turns(&SESSION, &units), vec![26, 38]);
+        assert_eq!(fold_usage(&SESSION, &units), Some(tokens(50, 5, 9)));
+        // The other folds' units are the run's own: a baseline moves nothing.
+        let mut sum = UsageMeter::new(&SUM).resumed_from(Some(tokens(50, 5, 9)));
+        sum.observe(&done(1, 1, 1));
+        assert_eq!(sum.usage(), Some(tokens(1, 1, 1)));
+    }
 
     /// **A meter folds within a generation and adds across generations.** A `Last` row's final
     /// unit of each process is that process's total, so two generations add their finals rather
