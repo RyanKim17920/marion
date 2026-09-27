@@ -510,6 +510,9 @@ pub struct Replay {
     /// Each writer's next expected ordinal. Private: it is bookkeeping for [`Replay::gaps`], and a
     /// caller that could set it could suppress the loss signal it exists to raise.
     expected: HashMap<WriterId, u64>,
+    /// Messages queued and not yet delivered or dropped, in queue order. See
+    /// [`Replay::unresolved_messages`].
+    unresolved: Vec<(AgentId, String)>,
 }
 
 impl Replay {
@@ -518,6 +521,16 @@ impl Replay {
     /// sequence, and file order is the only one the journal actually defines.
     pub fn nodes(&self) -> &[ReplayedNode] {
         &self.nodes
+    }
+
+    /// **Every `MessageQueued` no later `MessageDelivered` or `MessageDropped` resolved**, as
+    /// `(recipient, message id)` in queue order — resolution is by message id alone.
+    ///
+    /// Tracked during the one fold so a restarting supervisor can journal the drop of every message
+    /// its predecessor left queued without decoding the whole journal a second time; at 100k
+    /// records that second decode was half the boot.
+    pub fn unresolved_messages(&self) -> &[(AgentId, String)] {
+        &self.unresolved
     }
 
     pub fn get(&self, id: &AgentId) -> Option<&ReplayedNode> {
@@ -590,6 +603,18 @@ impl Replay {
     }
 
     fn apply(&mut self, r: JournalRecord) {
+        match &r.kind {
+            RecordKind::MessageQueued(q) => self
+                .unresolved
+                .push((q.agent_id.clone(), q.message_id.clone())),
+            RecordKind::MessageDelivered(crate::journal::MessageDelivered {
+                message_id, ..
+            })
+            | RecordKind::MessageDropped(crate::journal::MessageDropped { message_id, .. }) => {
+                self.unresolved.retain(|(_, m)| m != message_id)
+            }
+            _ => {}
+        }
         let Some(agent_id) = r.agent_id().cloned() else {
             debug_assert!(matches!(r.kind, RecordKind::SupervisorExited(_)));
             return;

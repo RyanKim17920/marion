@@ -284,6 +284,44 @@ pub fn drop_undelivered(journal: &std::path::Path) -> Result<usize, crate::journ
     Ok(n)
 }
 
+/// [`drop_undelivered`] for a supervisor that has **already booted** its registry: the unresolved
+/// messages come from the boot's own fold ([`marion_core::registry::Replay::unresolved_messages`])
+/// instead of a second read and decode of the whole journal, and the drops are folded into the
+/// registry before it is served.
+///
+/// Called at the same point in the boot as before — this supervisor has won the socket and has no
+/// queue of its own yet — so every unresolved message still died with another process. A boot that
+/// stopped at a corrupt line did not fold what follows it, while the old pass read every decodable
+/// line; that case falls back to [`drop_undelivered`] so no message past the corruption is missed.
+pub fn drop_undelivered_at_boot(
+    registry: &mut crate::registry::Registry,
+) -> Result<usize, crate::journal::JournalError> {
+    if matches!(registry.status(), crate::registry::Status::Stopped { .. }) {
+        return drop_undelivered(registry.path());
+    }
+    let drops: Vec<RecordKind> = registry
+        .tree()
+        .unresolved_messages()
+        .iter()
+        .map(|(agent_id, message_id)| {
+            RecordKind::MessageDropped(MessageDropped {
+                agent_id: agent_id.clone(),
+                message_id: message_id.clone(),
+                reason: SUPERVISOR_RESTARTED.to_string(),
+            })
+        })
+        .collect();
+    let n = drops.len();
+    let path = registry.path().to_path_buf();
+    for kind in drops {
+        crate::journal::append_at(&path, kind)?;
+    }
+    if n > 0 {
+        registry.poll();
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1017,6 +1055,50 @@ mod tests {
 
     /// The boot pass appends those drops to the journal itself, once: a second boot over the same
     /// journal finds nothing left to drop.
+    /// **The boot's own fold finds exactly what the separate pass found**, journals the same
+    /// drops, and serves a registry that already includes them.
+    #[test]
+    fn dropping_at_boot_matches_the_separate_pass_without_a_second_read() {
+        let dir = marion_testsupport::scratch("restart-drops-at-boot");
+        let path = dir.join("journal.jsonl");
+        let mut log = Log::default();
+        log.started("a", Some(1))
+            .push(queued("a", "m-1"))
+            .push(queued("a", "m-2"))
+            .push(RecordKind::MessageDelivered(MessageDelivered {
+                agent_id: id("a"),
+                message_id: "m-1".into(),
+                via: "steer".into(),
+            }))
+            .push(queued("a", "m-3"));
+        let bytes: Vec<u8> = log.0.iter().flat_map(|r| encode(r).unwrap()).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let kinds: Vec<RecordKind> = log.0.iter().map(|r| r.kind.clone()).collect();
+        let expected = undelivered(&kinds);
+        assert_eq!(expected.len(), 2);
+
+        let mut registry = crate::registry::Registry::boot_path(&path).unwrap();
+        assert_eq!(drop_undelivered_at_boot(&mut registry).unwrap(), 2);
+        assert_eq!(
+            registry.tree().records,
+            log.0.len() + 2,
+            "the registry served includes the drops"
+        );
+        assert!(registry.tree().unresolved_messages().is_empty());
+        let tail: Vec<RecordKind> = std::fs::read(&path).unwrap()[bytes.len()..]
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .filter_map(marion_core::journal::decode)
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(tail, expected, "the same drops, in the same order");
+        assert_eq!(
+            drop_undelivered(&path).unwrap(),
+            0,
+            "and they resolve the messages"
+        );
+    }
+
     #[test]
     fn the_boot_pass_journals_the_drops_once() {
         let dir = marion_testsupport::scratch("restart-drops");

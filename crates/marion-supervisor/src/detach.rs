@@ -628,21 +628,22 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         return Ok(());
     };
     let project = ProjectDir::new(&launch.state_dir, &launch.project_root);
-    // Before the boot, while this supervisor has no queue of its own: every message still queued
-    // on the journal died with the supervisor that held it (`restart`'s module docs). An audit
-    // record, so a failure to write one is reported and does not keep the supervisor down.
-    if let Err(e) = crate::restart::drop_undelivered(&project.journal()) {
-        eprintln!(
-            "marion-supervisor: could not journal the messages the previous supervisor left \
-             queued: {e}"
-        );
-    }
-    let registry = Registry::boot(&project).map_err(|source| DetachError::Spawn {
+    let mut registry = Registry::boot(&project).map_err(|source| DetachError::Spawn {
         program: launch.program.clone(),
         source: std::io::Error::other(format!(
             "the supervisor could not open this project's journal: {source}"
         )),
     })?;
+    // Right after the boot, while this supervisor still has no queue of its own: every message
+    // still queued on the journal died with the supervisor that held it (`restart`'s module docs).
+    // Found by the boot's own fold, so the journal is read and decoded once. An audit record, so a
+    // failure to write one is reported and does not keep the supervisor down.
+    if let Err(e) = crate::restart::drop_undelivered_at_boot(&mut registry) {
+        eprintln!(
+            "marion-supervisor: could not journal the messages the previous supervisor left \
+             queued: {e}"
+        );
+    }
     let live = std::sync::Arc::new(LiveRegistry::follow(registry, REGISTRY_POLL));
     let sentry = serving.sentry();
     // **`owning`, so §2's `agent/spawn` is answered rather than refused** (§11 item 28 step 5).
