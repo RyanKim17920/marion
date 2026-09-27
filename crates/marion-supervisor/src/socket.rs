@@ -123,7 +123,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_core::paths::{ProjectDir, project_hash, state_dir};
+use marion_core::paths::{ProjectDir, state_dir};
 
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
@@ -198,12 +198,12 @@ impl SocketPaths {
 
     /// Where a detached supervisor's stderr goes (`crate::detach`).
     ///
-    /// Keyed on the **project**, in both branches. Under `<state>` that is free — the whole
-    /// directory is the project's — but the `/tmp` fallback's directory is `/tmp/marion-<uid>`,
-    /// shared by every project whose state path overflowed, so a `supervisor.log` joined onto
-    /// [`Self::dir`] is one file for every such project on the machine. That was the arrangement
-    /// before this became a path in its own right, and it is why the fallback branch spells it
-    /// `<project-hash>.log` like everything else it puts there.
+    /// Keyed on the **project** (with its state directory), in both branches. Under `<state>` that
+    /// is free — the whole directory is the project's — but the `/tmp` fallback's directory is
+    /// `/tmp/marion-<uid>`, shared by every project whose state path overflowed, so a
+    /// `supervisor.log` joined onto [`Self::dir`] is one file for every such project on the
+    /// machine. That was the arrangement before this became a path in its own right, and it is why
+    /// the fallback branch spells it `<fallback-key>.log` like everything else it puts there.
     pub fn log(&self) -> &Path {
         &self.log
     }
@@ -224,9 +224,24 @@ impl SocketPaths {
 /// [`resolve`] and handed in, which is `marion_core::paths`' rule applied one layer out and what
 /// makes the overflow branch testable without a 100-byte `$HOME`.
 ///
-/// `<project-hash>` is the same 12 hex characters in both branches — deliberately, so the fallback
-/// keys on the same project the primary path does and two projects cannot collide in `/tmp` any
-/// more easily than they can under `<state>`.
+/// The fallback is keyed on **the state directory and the project together** ([`fallback_key`]),
+/// because that pair is what the primary path is keyed on: under `<state>` a different
+/// `--state-dir` is a different directory and so a different supervisor. Keying `/tmp` on the
+/// project alone made two overflowing state directories for one project share one socket and one
+/// lock, so a client of one reached the other's supervisor and listed its nodes.
+/// The name §2's `/tmp` fallback files are keyed on: 12 hex characters of BLAKE3 over the state
+/// directory and the canonical project root, NUL-separated (a NUL cannot occur in either path, so
+/// no two pairs share an input). The same length and alphabet as `<project-hash>`, and a pure
+/// function of the same two inputs the primary path is, so the per-child bridge derives the same
+/// name with nothing to be told.
+pub fn fallback_key(state: &Path, canonical_root: &Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(state.as_os_str().as_encoded_bytes());
+    hasher.update(&[0]);
+    hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    hasher.finalize().to_hex()[..marion_core::paths::PROJECT_HASH_LEN].to_string()
+}
+
 /// This process's own real uid: what §2's `/tmp` fallback path is keyed on, and what a peer's
 /// uid is compared against.
 pub fn own_uid() -> u32 {
@@ -250,7 +265,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
             overflow: None,
         };
     }
-    let hash = project_hash(canonical_root);
+    let hash = fallback_key(state, canonical_root);
     let dir = PathBuf::from(format!("/tmp/marion-{uid}"));
     SocketPaths {
         canonical_project: canonical_root.to_path_buf(),
@@ -1149,6 +1164,7 @@ fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_core::paths::project_hash;
     use marion_testsupport::{scratch, until};
     use std::sync::{Arc, Barrier};
 
@@ -1180,21 +1196,54 @@ mod tests {
             "/Users/a-rather-long-account-name/Library/Application Support/state/marion-supervisor",
         );
         let over = socket_paths(long, root, 501);
+        let key = fallback_key(long, root);
         assert_eq!(
             over.socket(),
-            PathBuf::from(format!("/tmp/marion-501/{hash}.sock"))
+            PathBuf::from(format!("/tmp/marion-501/{key}.sock"))
         );
         assert_eq!(
             over.lock(),
-            PathBuf::from(format!("/tmp/marion-501/{hash}.lock"))
+            PathBuf::from(format!("/tmp/marion-501/{key}.lock"))
         );
         assert_eq!(over.dir(), Path::new("/tmp/marion-501"));
         let why = over.overflow().expect("the fallback says why it was taken");
         assert!(why.contains("103"), "{why}");
         assert!(why.contains(&long.display().to_string()), "{why}");
-        // The fallback keys on the *same* project, so two projects collide in /tmp no more easily
-        // than they do under `<state>`.
-        assert!(over.socket().to_string_lossy().contains(&hash));
+        // The fallback keys on the same (state, project) pair the primary path does, so two
+        // projects — or two state directories — collide in /tmp no more easily than under
+        // `<state>`.
+        assert_eq!(key.len(), hash.len());
+        assert_ne!(key, fallback_key(long, Path::new("/Users/u/code/other")));
+    }
+
+    /// **NC — two state directories are two supervisors, in the fallback too.**
+    ///
+    /// Under `<state>` a different `--state-dir` is a different directory, so a different lock and a
+    /// different socket. The `/tmp` fallback used to key on the project alone, so two overflowing
+    /// state directories for one project reached the same supervisor: `serve --state-dir A`
+    /// reported success against B's supervisor and `marion list --state-dir A` listed B's nodes.
+    #[test]
+    fn two_overflowing_state_directories_for_one_project_get_two_fallback_sockets() {
+        let root = Path::new("/Users/u/code/marion");
+        let long = |tag: &str| {
+            PathBuf::from(format!(
+                "/Users/a-rather-long-account-name/Library/Application Support/state/{tag}/marion"
+            ))
+        };
+        let a = socket_paths(&long("aaaa"), root, 501);
+        let b = socket_paths(&long("bbbb"), root, 501);
+        assert!(a.overflow().is_some() && b.overflow().is_some());
+        assert_ne!(
+            a.socket(),
+            b.socket(),
+            "one supervisor answered for two state dirs"
+        );
+        assert_ne!(a.lock(), b.lock());
+        assert_ne!(a.native_bootstrap(), b.native_bootstrap());
+        assert_ne!(a.identity(), b.identity());
+        assert_ne!(a.log(), b.log());
+        // Deterministic, so the per-child bridge derives the same path from the same inputs.
+        assert_eq!(a, socket_paths(&long("aaaa"), root, 501));
     }
 
     /// **NC — the length check is exact, and it is checked on the byte that matters.**
@@ -1906,7 +1955,7 @@ mod tests {
         let other = socket_paths(long, Path::new("/Users/u/code/other"), 501);
         assert_eq!(
             over.log(),
-            PathBuf::from(format!("/tmp/marion-501/{hash}.log"))
+            PathBuf::from(format!("/tmp/marion-501/{}.log", fallback_key(long, root)))
         );
         assert_eq!(
             over.dir(),

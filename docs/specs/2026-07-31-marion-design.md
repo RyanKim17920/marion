@@ -80,7 +80,9 @@ the lifetime it acts on is §5.7.
 falling back to cwd) — not cwd, since worktree children (§6.6) have different cwds and would
 otherwise hash to different supervisors. **The socket is
 `<state>/<project-hash>/supervisor.sock`** (§4.3), length-checked against the 104-byte `sun_path`
-limit and falling back to `/tmp/marion-<uid>/<12-hex>.sock` when it does not fit — which a long
+limit and falling back to `/tmp/marion-<uid>/<12-hex>.sock` when it does not fit (the hex keyed on
+the state directory and the project root together, so two state directories never share a socket) —
+which a long
 `$HOME` under `$XDG_STATE_HOME` makes a normal case, not an exotic one. **The per-child MCP bridge
 derives this path by the same rule**, since the harness spawns it as a separate process and it must
 independently find the supervisor its parent bound.
