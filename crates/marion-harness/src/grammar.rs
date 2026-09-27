@@ -563,6 +563,17 @@ pub fn session_in(s: &SessionId, frame: &Value) -> Option<String> {
         .find_map(|u| text(u, s.path).filter(|id| !id.trim().is_empty()))
 }
 
+/// No arguments at all, or an empty object or array — what a call's first sighting carries on a
+/// harness that fills its input in later.
+fn is_empty_args(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Object(o) => o.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
 /// The last `max_calls` tool calls `frames` show, oldest first, and the last non-empty line of the
 /// last text the model wrote — read in stream order under `rule`, the same pointers-over-units
 /// walk [`usage`] and [`session_id`] take, so no harness is named here.
@@ -571,7 +582,11 @@ pub fn session_in(s: &SessionId, frame: &Value) -> Option<String> {
 /// both (Claude Code's `assistant` content) says the words that led to the call.
 pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) -> RecentActivity {
     let mut calls: Vec<ToolCall> = Vec::new();
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Each id's call, by its index in `calls`: a later unit for the same id is the same call seen
+    // again, and it may carry arguments the first sighting did not (opencode acp's `pending`
+    // `tool_call` has `rawInput: {}`, its `in_progress` update the input), so the last non-empty
+    // arguments are the call's.
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut said: Option<String> = None;
     // Whether the last thing read was a joining text unit, so the next one continues it.
     let mut joining = false;
@@ -601,14 +616,19 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 else {
                     continue;
                 };
-                if let Some(id) = c.id.and_then(|p| text(unit, p))
-                    && !seen.insert(id)
-                {
-                    continue;
+                let args = unit.pointer(c.args).cloned().unwrap_or(Value::Null);
+                if let Some(id) = c.id.and_then(|p| text(unit, p)) {
+                    if let Some(&at) = seen.get(&id) {
+                        if !is_empty_args(&args) {
+                            calls[at].args = args;
+                        }
+                        continue;
+                    }
+                    seen.insert(id, calls.len());
                 }
                 calls.push(ToolCall {
                     name: name.to_string(),
-                    args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                    args,
                 });
                 joining = false;
             }

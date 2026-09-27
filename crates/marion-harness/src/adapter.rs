@@ -525,6 +525,13 @@ pub trait HarnessAdapter {
         grammar::session_id(self.spec().stream?, frame)
     }
 
+    /// The rule a running node's recent tool calls and words are read by — the row's
+    /// [`grammar::StreamGrammar::activity`] — or `None` where there is none, which a caller says
+    /// rather than showing an empty peek.
+    fn activity(&self) -> Option<&'static grammar::ActivityRule> {
+        self.spec().stream?.activity.as_ref()
+    }
+
     /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
     /// reading a **root** is judged by, since §9 gives a root no contract and §5.4 refuses its
     /// `report`. A row with no grammar reads as [`Self::parse_stream`] does.
@@ -2095,6 +2102,12 @@ impl HarnessAdapter for AcpAdapter {
     /// session is named is a protocol fact, as spend is.
     fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
         grammar::session_in(&acp::SESSION, frame)
+    }
+
+    /// The protocol's `session/update` frames ([`acp::ACTIVITY`]), whatever the agent: every
+    /// agent names its calls and streams its words through the same updates.
+    fn activity(&self) -> Option<&'static grammar::ActivityRule> {
+        Some(&acp::ACTIVITY)
     }
 }
 

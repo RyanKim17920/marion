@@ -4,10 +4,10 @@
 //! A parent deciding whether to `steer` a child, and an operator deciding whether to press `s`,
 //! both need more than a state word. The node's own `events.jsonl` already carries every frame its
 //! harness emitted, verbatim; this reads the tail of that file and hands the frames to
-//! [`marion_harness::grammar::recent_activity`] under the row's `activity` rule — the same
-//! row-driven reader everything else about a stream uses. **No harness is named here**: a row with
-//! no rule (ACP, whose stream is read as code) is said to be unread, never shown as an empty peek,
-//! because "did nothing" and "marion cannot tell" call for opposite next moves.
+//! [`marion_harness::grammar::recent_activity`] under the adapter's activity rule — a row's, or
+//! ACP's protocol-wide `session/update` one — the same reader everything else about a stream uses.
+//! **No harness is named here**: a harness with no rule is said to be unread, never shown as an
+//! empty peek, because "did nothing" and "marion cannot tell" call for opposite next moves.
 //!
 //! Bounded three ways, so a chatty child cannot flood its parent's context: at most
 //! [`MAX_CALLS`] calls, each line at most [`LINE_CAP`] characters, and the whole at most
@@ -19,7 +19,7 @@ use std::path::Path;
 
 use marion_core::event::{EventLog, Payload};
 use marion_core::harness::Harness;
-use marion_harness::adapter::harness_spec;
+use marion_harness::adapter::adapter_for;
 use marion_harness::grammar::{RecentActivity, recent_activity};
 use serde_json::Value;
 
@@ -35,10 +35,7 @@ const TAIL_BYTES: u64 = 1024 * 1024;
 
 /// The peek at a node of `harness` whose stream is `events`, as lines ready to print.
 pub fn peek(events: &Path, harness: Harness) -> String {
-    let Some(rule) = harness_spec(harness)
-        .stream
-        .and_then(|g| g.activity.as_ref())
-    else {
+    let Some(rule) = adapter_for(harness).ok().and_then(|a| a.activity()) else {
         return format!(
             "Recent activity: not shown — marion reads no {harness:?} stream by a row, so it \
              cannot say which tools this node called."
@@ -214,13 +211,42 @@ mod tests {
         );
     }
 
+    /// **An ACP node is read by the protocol's `session/update` frames**, recorded live since the
+    /// ACP child path gained its line seam: `opencode acp`'s s21 turn, its call's input taken from
+    /// the `in_progress` update and its words joined from token-sized chunks.
     #[test]
-    fn a_node_with_no_row_is_unread_and_a_node_with_no_file_has_said_nothing() {
+    fn a_peek_reads_an_acp_nodes_session_updates() {
+        use crate::events::{EventSink, EventWriter};
+        let dir = marion_testsupport::scratch("activity-acp");
+        let path = dir.join("events.jsonl");
+        let agent = marion_core::contract::AgentId("019f-acp-peek".into());
+        {
+            let s = EventSink::new(
+                EventWriter::open_path(&path, &agent).unwrap(),
+                Harness::Acp,
+                "unused".into(),
+            );
+            s.lifecycle(marion_core::event::Lifecycle::Opened);
+            for line in
+                include_str!("../../../tests/fixtures/s21/opencode-acp-session.jsonl").lines()
+            {
+                s.record_line(line);
+            }
+        }
+        assert_eq!(
+            peek(&path, Harness::Acp),
+            "Recent activity (oldest first):\n\
+             - marion_report({\"narrative\":\"hello from acp\"})\n- last said: Reported."
+        );
+    }
+
+    #[test]
+    fn a_node_with_no_file_has_said_nothing() {
         let dir = marion_testsupport::scratch("activity-peek");
         let missing = dir.join("events.jsonl");
-        let acp = peek(&missing, Harness::Acp);
-        assert!(acp.contains("not shown"), "{acp}");
-        let codex = peek(&missing, Harness::Codex);
-        assert!(codex.contains("nothing recorded yet"), "{codex}");
+        for h in [Harness::Acp, Harness::Codex] {
+            let out = peek(&missing, h);
+            assert!(out.contains("nothing recorded yet"), "{h:?}: {out}");
+        }
     }
 }

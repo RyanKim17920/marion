@@ -5,7 +5,7 @@
 //! them: a reader that followed the wrong pointer would compute the same wrong answer the test did.
 
 use marion_core::Harness;
-use marion_harness::adapter::harness_spec;
+use marion_harness::adapter::adapter_for_type;
 use marion_harness::grammar::{RecentActivity, recent_activity};
 use marion_harness::json_frames;
 
@@ -30,7 +30,12 @@ const OPENCODE: &str = r#"{"type":"tool_use","timestamp":"<TS>","sessionID":"<SE
 {"type":"text","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"id":"<PART-2>","messageID":"<MESSAGE-1>","type":"text","text":"CANNED_OK","time":{"start":"<TS>","end":"<TS>"}}}"#;
 
 fn activity_of(h: Harness, stdout: &str) -> Option<RecentActivity> {
-    let rule = harness_spec(h).stream?.activity.as_ref()?;
+    acp_activity_of(h, None, stdout)
+}
+
+/// The rule the adapter reads a node's activity by — its row's, or ACP's protocol-wide one.
+fn acp_activity_of(h: Harness, agent: Option<&str>, stdout: &str) -> Option<RecentActivity> {
+    let rule = adapter_for_type(h, agent).ok()?.activity()?;
     Some(recent_activity(rule, &json_frames(stdout), 5))
 }
 
@@ -136,9 +141,40 @@ fn a_calls_arguments_are_what_the_harness_gave_the_tool() {
     }
 }
 
-/// ACP's stream is read as code, per agent, not by a row: there is no activity rule, and a caller
-/// says so rather than showing an empty peek as if the node had done nothing.
+/// **An ACP node's activity is the protocol's `session/update` frames**, the same for every agent:
+/// a `tool_call` (or its `tool_call_update`) names the tool in `title` and its input in
+/// `rawInput`, and `agent_message_chunk`s stream the words one token at a time. opencode's pending
+/// `tool_call` carries `rawInput: {}` and fills it in on the `in_progress` update, so a call's
+/// arguments are the last non-empty ones seen for its id (s21), while codex-acp's first sighting
+/// already carries them (s22).
 #[test]
-fn an_acp_node_has_no_row_to_read_its_activity_by() {
-    assert!(activity_of(Harness::Acp, "").is_none());
+fn an_acp_node_is_read_by_the_protocols_session_updates() {
+    let a = acp_activity_of(
+        Harness::Acp,
+        Some("opencode"),
+        fixture!("s21/opencode-acp-session.jsonl"),
+    )
+    .expect("the ACP adapter reads activity");
+    assert_eq!(names(&a), ["marion_report"], "{a:?}");
+    assert_eq!(
+        a.calls[0].args,
+        serde_json::json!({"narrative": "hello from acp"})
+    );
+    assert_eq!(a.text.as_deref(), Some("Reported."), "{a:?}");
+
+    let a = acp_activity_of(
+        Harness::Acp,
+        Some("codex-acp"),
+        fixture!("s22/codex-acp-session.jsonl"),
+    )
+    .unwrap();
+    assert_eq!(
+        names(&a),
+        ["mcp__marion__startup", "mcp.marion.report"],
+        "{a:?}"
+    );
+    assert_eq!(
+        a.calls[1].args["arguments"],
+        serde_json::json!({"narrative": "hello from acp"})
+    );
 }

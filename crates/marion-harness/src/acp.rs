@@ -49,7 +49,9 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
-use crate::grammar::{Cond, SessionId, UsageFold, UsageRule, Where};
+use crate::grammar::{
+    ActivityRule, Cond, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
+};
 use crate::spec::{
     Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push, Spelling,
     Surfaces, TurnDelivery, UpdatePolicy,
@@ -909,6 +911,49 @@ pub const SESSION: SessionId = SessionId {
         unit: &[],
     },
     path: "/result/sessionId",
+};
+
+/// What an ACP node has been doing, read off the protocol's own `session/update` notifications:
+/// a `tool_call`, and the `tool_call_update`s after it, name the tool in `title` and its input in
+/// `rawInput` under one `toolCallId`; `agent_message_chunk` streams the model's words one delta at
+/// a time. opencode's first `tool_call` is `pending` with `rawInput: {}` and the `in_progress`
+/// update carries the input (s21), where codex-acp's first sighting already does (s22) — so both
+/// frame kinds are units, and the reader keeps a call's last non-empty arguments.
+pub const ACTIVITY: ActivityRule = ActivityRule {
+    calls: &[
+        ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/params/update/sessionUpdate", "tool_call")],
+                each: None,
+                unit: &[],
+            },
+            name: "/params/update/title",
+            args: "/params/update/rawInput",
+            id: Some("/params/update/toolCallId"),
+        },
+        ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/params/update/sessionUpdate", "tool_call_update")],
+                each: None,
+                unit: &[],
+            },
+            name: "/params/update/title",
+            args: "/params/update/rawInput",
+            id: Some("/params/update/toolCallId"),
+        },
+    ],
+    text: &[TextUnit {
+        at: Where {
+            frame: &[Cond::Eq(
+                "/params/update/sessionUpdate",
+                "agent_message_chunk",
+            )],
+            each: None,
+            unit: &[],
+        },
+        path: "/params/update/content/text",
+        joins: true,
+    }],
 };
 
 /// `session/prompt`. One text block: §8's micro-contract asserts a *response shape*.
