@@ -100,6 +100,10 @@ pub struct ReplayedNode {
     /// the tree its session was created in, and refuses by name when it is `None` rather than
     /// picking a directory.
     pub launch_workspace: Option<crate::contract::Workspace>,
+    /// **The profile the last [`SessionObserved`] recorded this node's session ran under** — the
+    /// account a resume must continue on. `None` is the harness's own default login, or a journal
+    /// that predates the field.
+    pub profile: Option<String>,
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
@@ -163,6 +167,7 @@ impl ReplayedNode {
             harness_session: None,
             harness_pane: false,
             launch_workspace: None,
+            profile: None,
             spawn_aborted: None,
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
@@ -337,6 +342,8 @@ impl ReplayedNode {
             RecordKind::MessageQueued(_)
             | RecordKind::MessageDelivered(_)
             | RecordKind::MessageDropped(_) => {}
+            // An audit of why the node was relaunched; the relaunch's own records move the node.
+            RecordKind::ProfileFailover(_) => {}
             RecordKind::SupervisorExited(_) => {
                 unreachable!("the process-wide record returned before selecting a node")
             }
@@ -432,6 +439,7 @@ impl ReplayedNode {
             session_id,
             pane,
             workspace,
+            profile,
             ..
         } = s;
         self.harness_session = Some(session_id);
@@ -441,6 +449,8 @@ impl ReplayedNode {
         // record and keeping the other from an older one would describe a launch that never
         // happened. A record that names no workspace therefore leaves the node saying `None`.
         self.launch_workspace = workspace;
+        // Written with the session, so read with it: the account and the conversation it owns.
+        self.profile = profile;
     }
 }
 
@@ -1881,6 +1891,7 @@ mod tests {
             session_id: "0a2f7d1e-session".into(),
             pane: false,
             workspace: None,
+            profile: None,
         });
         assert_eq!(observed.agent_id(), Some(&AgentId("a-1".into())));
         assert!(
@@ -1943,6 +1954,7 @@ mod tests {
             session_id: "s".into(),
             pane: false,
             workspace: None,
+            profile: None,
         });
         assert_eq!(
             serde_json::to_string(&headless).unwrap(),
@@ -1955,6 +1967,7 @@ mod tests {
             session_id: "s".into(),
             pane: true,
             workspace: None,
+            profile: None,
         });
         assert_eq!(
             serde_json::to_string(&paned).unwrap(),
@@ -1989,6 +2002,7 @@ mod tests {
             session_id: "thr_01".into(),
             pane: false,
             workspace: Some(wt.clone()),
+            profile: None,
         });
         assert_eq!(
             serde_json::to_string(&observed).unwrap(),
@@ -2019,6 +2033,7 @@ mod tests {
             session_id: "thr_01".into(),
             pane: false,
             workspace: None,
+            profile: None,
         });
         assert_eq!(
             serde_json::to_string(&older).unwrap(),
@@ -2031,6 +2046,66 @@ mod tests {
         assert_eq!(
             replay(&bytes).get(&id("a-1")).unwrap().launch_workspace,
             None
+        );
+    }
+
+    /// **The profile a session ran under rides its `SessionObserved`**, so a resume reads the
+    /// account the conversation belongs to rather than re-resolving one; an older record without
+    /// the key replays as `None`. A `ProfileFailover` is an audit record that moves no state.
+    #[test]
+    fn the_session_profile_replays_onto_the_node_and_a_failover_moves_nothing() {
+        let observed = |profile: Option<&str>| {
+            RecordKind::SessionObserved(SessionObserved {
+                agent_id: id("a-1"),
+                harness: Harness::ClaudeCode,
+                session_id: "s-1".into(),
+                pane: false,
+                workspace: None,
+                profile: profile.map(str::to_string),
+            })
+        };
+        let failover = RecordKind::ProfileFailover(crate::journal::ProfileFailover {
+            agent_id: id("a-1"),
+            harness: Harness::ClaudeCode,
+            from: "work".into(),
+            to: "personal".into(),
+            cause: "auth".into(),
+        });
+        assert_eq!(failover.agent_id(), Some(&id("a-1")));
+        assert!(!failover.is_barrier());
+        assert_eq!(
+            serde_json::to_string(&failover).unwrap(),
+            r#"{"ProfileFailover":{"agent_id":"a-1","harness":"claude-code","from":"work","to":"personal","cause":"auth"}}"#
+        );
+        let mut bytes = Vec::new();
+        for (seq, kind) in [
+            intent(),
+            observed(Some("work")),
+            failover,
+            observed(Some("personal")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bytes.extend(encode(&record(seq as u64, kind)).unwrap());
+        }
+        let tree = replay(&bytes);
+        let node = tree.get(&id("a-1")).unwrap();
+        assert_eq!(
+            node.profile.as_deref(),
+            Some("personal"),
+            "last session wins"
+        );
+        assert_eq!(node.state, NodeState::Spawning);
+        let older: RecordKind = serde_json::from_str(
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s-1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(older, observed(None));
+        assert_eq!(
+            serde_json::to_string(&observed(None)).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s-1"}}"#,
+            "no profile is byte-identical to what earlier builds wrote"
         );
     }
 }

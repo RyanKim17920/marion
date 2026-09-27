@@ -222,6 +222,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::MessageQueued(_) => "MessageQueued",
             RecordKind::MessageDelivered(_) => "MessageDelivered",
             RecordKind::MessageDropped(_) => "MessageDropped",
+            RecordKind::ProfileFailover(_) => "ProfileFailover",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()

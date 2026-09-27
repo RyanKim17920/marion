@@ -11864,6 +11864,7 @@ mod tests {
                     // A root derives its cwd from the project this supervisor serves, so its
                     // launch names no workspace. The child fixture below is the one that does.
                     workspace: None,
+                    profile: None,
                 }),
             ]
         }
@@ -11901,6 +11902,7 @@ mod tests {
                     session_id: format!("sess-{agent}"),
                     pane: false,
                     workspace: ws,
+                    profile: None,
                 })
             };
             vec![

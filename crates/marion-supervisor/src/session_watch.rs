@@ -111,6 +111,7 @@ impl<'a> SessionWatch<'a> {
                     session_id: id,
                     pane: self.pane,
                     workspace: self.workspace.clone(),
+                    profile: None,
                 }),
             );
         }

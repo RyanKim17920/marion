@@ -5259,6 +5259,7 @@ mod tests {
                 session_id: "thread-1".into(),
                 pane,
                 workspace: None,
+                profile: None,
             })
         };
 
