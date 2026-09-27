@@ -246,6 +246,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
+        keys: &[
+            crate::spec::BEARER_BY_OVERLAY,
+            crate::spec::KeyRecipe {
+                header: marion_core::provider::KeyHeader::XApiKey,
+                env: &[],
+                note: "the generated provider block carries the key in `options.headers` and no \
+                       `apiKey`; endpoint_matrix's opencode x-api-key cell",
+            },
+        ],
         note: "Chat Completions: the generated provider block is `@ai-sdk/openai-compatible`. opencode bundles an Anthropic SDK too, but the row renders only this one.",
     }],
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
@@ -417,6 +426,9 @@ pub struct ConfigSpec {
     /// confirmed on the wire). No `/v1` derivation here, unlike gemini and Claude Code.
     pub base_url: String,
     pub api_key: Option<marion_core::secret::Secret>,
+    /// The header the provider reads [`Self::api_key`] from: `apiKey` for a Bearer key, a
+    /// `headers` entry for `x-api-key`.
+    pub key_header: marion_core::provider::KeyHeader,
 }
 
 /// The opencode config document, written under `$XDG_CONFIG_HOME/opencode/`.
@@ -438,8 +450,12 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
         "timeout": PROVIDER_TIMEOUT_MS,
         "headerTimeout": PROVIDER_HEADER_TIMEOUT_MS,
     });
-    if let Some(k) = &spec.api_key {
-        options["apiKey"] = json!(k);
+    match (&spec.api_key, spec.key_header) {
+        (Some(k), marion_core::provider::KeyHeader::Bearer) => options["apiKey"] = json!(k),
+        (Some(k), marion_core::provider::KeyHeader::XApiKey) => {
+            options["headers"] = json!({ "x-api-key": k });
+        }
+        (None, _) => {}
     }
 
     // Built through a `Map` rather than `json!` because both keys are values, not literals.
@@ -602,6 +618,7 @@ mod tests {
             model: model(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             api_key: Some("sk-fake".into()),
+            key_header: Default::default(),
         }
     }
 
@@ -949,6 +966,19 @@ mod tests {
             "marion's bridge and nothing else"
         );
         assert!(live_config_json(None).as_object().unwrap().is_empty());
+    }
+
+    /// **A provider reading `x-api-key` gets its key there**, in the block's `headers`, and no
+    /// `apiKey` — which `@ai-sdk/openai-compatible` would send as a second, Bearer, credential.
+    #[test]
+    fn an_x_api_key_provider_gets_the_key_in_a_header_and_no_bearer() {
+        let mut c = cfg();
+        c.key_header = marion_core::provider::KeyHeader::XApiKey;
+        let v = config_json(&c, None);
+        let o = &v["provider"]["canned"]["options"];
+        assert_eq!(o["headers"]["x-api-key"], json!("sk-fake"));
+        assert!(o["apiKey"].is_null(), "{o}");
+        assert!(config_json(&cfg(), None)["provider"]["canned"]["options"]["headers"].is_null());
     }
 
     #[test]

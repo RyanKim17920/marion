@@ -14,7 +14,7 @@ use marion_supervisor::{detach, doctor, mcp, preflight};
 
 /// The doctor's flags, as a person types them through `marion doctor`.
 const DOCTOR_USAGE: &str = "usage: marion doctor [--capabilities|--adapter] [--harness <name>] \
-                            [--model <id>] [--acp-command <cmd>]";
+                            [--model <id>] [--acp-command <cmd>] | --providers [--model <id>]";
 
 fn usage() -> ! {
     eprintln!(
@@ -42,11 +42,33 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("doctor") if marion_supervisor::provider_check::parse_args(&argv[1..]).is_some() => {
+            let parsed = marion_supervisor::provider_check::parse_args(&argv[1..])
+                .expect("checked by the guard");
+            match parsed
+                .and_then(|model| marion_supervisor::provider_check::report(model.as_deref()))
+            {
+                Ok(text) => print!("{text}"),
+                Err(e) => {
+                    eprintln!("marion doctor --providers: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
         Some("doctor") => match doctor::parse_args(&argv[1..]) {
             Ok(opts) => {
                 let rows = doctor::run(&opts);
                 let environment = preflight::checks(&preflight::gather());
                 print!("{}", doctor::render(&rows, &environment));
+                // Bare `marion doctor` also checks the provider keys `marion login` stored — the
+                // `--providers` report, one `GET …/models` per credential, which spends nothing. A
+                // store it cannot read is said, never a failure of the machine's own checks.
+                if argv.len() == 1 {
+                    match marion_supervisor::provider_check::report(None) {
+                        Ok(text) => print!("\n{text}"),
+                        Err(e) => println!("\nproviders: not checked — {e}"),
+                    }
+                }
                 // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
                 // the doctor in either mode; a warning never does.
                 if environment

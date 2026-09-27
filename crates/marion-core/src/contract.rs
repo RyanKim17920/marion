@@ -247,6 +247,32 @@ pub struct ChildRef {
     /// the key. `None` wherever `provider` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// Each move from one API-key credential to the next that the launch made because the
+    /// provider refused the first before any turn succeeded, in order — ids only, never a key.
+    /// Empty (and skipped) wherever no rotation happened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_failover: Vec<CredentialFailover>,
+}
+
+/// **One API-key rotation**: the credential refused, the one tried next, and why. Only an endpoint
+/// node's API keys rotate — never a vendor subscription login — and only before the node's first
+/// successful turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialFailover {
+    pub from: String,
+    pub to: String,
+    pub cause: FailoverCause,
+}
+
+/// Why an endpoint's first request failed in a way the next credential may not: the key was
+/// refused (401/403), rate-limited (429), or the provider was failing or unreachable (5xx, a
+/// connection error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailoverCause {
+    Auth,
+    RateLimit,
+    Outage,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the

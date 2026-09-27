@@ -295,6 +295,28 @@ pub(crate) fn http_response(status: &str, content_type: &str, body: &str) -> Vec
 
 /// Decide what to answer, and what to record about it. Pure, so it can be tested without sockets.
 pub(crate) fn handle(req: &HttpRequest, script: &Script) -> (String, String, String) {
+    if let Some(r) = script.refusals.iter().find(|r| presents(req, &r.key)) {
+        return refusal(r.status);
+    }
+    if req.method.eq_ignore_ascii_case("GET")
+        && !script.models.is_empty()
+        && req
+            .path
+            .split('?')
+            .next()
+            .is_some_and(|p| p.ends_with("/models"))
+    {
+        let data: Vec<Value> = script
+            .models
+            .iter()
+            .map(|m| serde_json::json!({"id": m, "object": "model"}))
+            .collect();
+        return (
+            "200 OK".into(),
+            "application/json".into(),
+            serde_json::json!({"object": "list", "data": data}).to_string(),
+        );
+    }
     if req.method.eq_ignore_ascii_case("GET") {
         return (
             "200 OK".into(),
@@ -319,6 +341,34 @@ pub(crate) fn handle(req: &HttpRequest, script: &Script) -> (String, String, Str
             .to_string(),
         ),
     }
+}
+
+/// Whether `req` presents `key` in any of the headers a wire carries a key in.
+fn presents(req: &HttpRequest, key: &str) -> bool {
+    ["authorization", "x-api-key", "x-goog-api-key", "api-key"]
+        .iter()
+        .filter_map(|h| req.header(h))
+        .any(|v| v == key || v.strip_prefix("Bearer ").is_some_and(|t| t.trim() == key))
+}
+
+/// A refusal in the shape every wire's client reads as an error: `{"error":{type,message}}`, the
+/// type named for the status the way the vendors name theirs.
+fn refusal(status: u16) -> (String, String, String) {
+    let (reason, kind) = match status {
+        401 => ("Unauthorized", "authentication_error"),
+        403 => ("Forbidden", "permission_error"),
+        429 => ("Too Many Requests", "rate_limit_error"),
+        529 => ("Overloaded", "overloaded_error"),
+        s if s >= 500 => ("Internal Server Error", "api_error"),
+        _ => ("Bad Request", "invalid_request_error"),
+    };
+    (
+        format!("{status} {reason}"),
+        "application/json".into(),
+        serde_json::json!({"type": "error", "error": {"type": kind,
+            "message": format!("marion canned provider: {status} {reason} for this key")}})
+        .to_string(),
+    )
 }
 
 /// Three of the four wires are SSE. Gemini's `:generateContent` is the exception and answers plain
@@ -426,6 +476,117 @@ mod tests {
             "both harnesses were driven with an explicit length, not a streamed body"
         );
         assert!(text.ends_with("\r\n\r\nevent: x\ndata: {}\n\n"));
+    }
+
+    fn keyed(method: &str, path: &str, header: (&str, &str), body: Value) -> HttpRequest {
+        HttpRequest {
+            method: method.into(),
+            path: path.into(),
+            headers: vec![(header.0.into(), header.1.into())],
+            body: if body.is_null() {
+                vec![]
+            } else {
+                body.to_string().into_bytes()
+            },
+        }
+    }
+
+    /// **A key the script refuses is answered with its status, in the wire's error shape** — the
+    /// rate limit, auth failure or outage a rotation test needs — and every other key is served.
+    #[test]
+    fn a_refused_key_is_answered_with_its_status_and_another_key_is_served() {
+        let script = Script {
+            refusals: vec![crate::KeyRefusal {
+                key: "sk-key-a-0001".into(),
+                status: 429,
+            }],
+            ..Script::default()
+        };
+        let chat = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                          "tools": [{"type": "function", "function": {"name": "t"}}]});
+        let (status, ct, body) = handle(
+            &keyed(
+                "POST",
+                "/v1/chat/completions",
+                ("Authorization", "Bearer sk-key-a-0001"),
+                chat.clone(),
+            ),
+            &script,
+        );
+        assert!(status.starts_with("429"), "{status}");
+        assert_eq!(ct, "application/json");
+        assert!(body.contains("rate_limit"), "{body}");
+        let (status, _, _) = handle(
+            &keyed(
+                "POST",
+                "/v1/messages",
+                ("x-api-key", "sk-key-a-0001"),
+                chat.clone(),
+            ),
+            &script,
+        );
+        assert!(
+            status.starts_with("429"),
+            "the x-api-key spelling is refused too"
+        );
+        let (status, _, _) = handle(
+            &keyed(
+                "POST",
+                "/v1/chat/completions",
+                ("Authorization", "Bearer sk-key-b-0002"),
+                chat,
+            ),
+            &script,
+        );
+        assert!(status.starts_with("200"), "{status}");
+    }
+
+    /// **A model listing, where the script names models**: `GET …/models` in OpenAI's list shape,
+    /// behind the same refusals — what `marion doctor --providers` asks.
+    #[test]
+    fn a_scripted_model_list_is_served_on_get_models_behind_the_refusals() {
+        let script = Script {
+            models: vec!["endpoint-model-7".into()],
+            refusals: vec![crate::KeyRefusal {
+                key: "sk-bad-key-0001".into(),
+                status: 401,
+            }],
+            ..Script::default()
+        };
+        let (status, ct, body) = handle(
+            &keyed(
+                "GET",
+                "/v1/models",
+                ("Authorization", "Bearer sk-good-0002"),
+                Value::Null,
+            ),
+            &script,
+        );
+        assert!(status.starts_with("200"));
+        assert_eq!(ct, "application/json");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["data"][0]["id"], "endpoint-model-7");
+        let (status, _, _) = handle(
+            &keyed(
+                "GET",
+                "/v1/models",
+                ("Authorization", "Bearer sk-bad-key-0001"),
+                Value::Null,
+            ),
+            &script,
+        );
+        assert!(status.starts_with("401"), "{status}");
+        // With no models scripted, a GET is answered as it always was.
+        let (_, ct, _) = handle(
+            &keyed(
+                "GET",
+                "/v1/models",
+                ("Authorization", "Bearer x"),
+                Value::Null,
+            ),
+            &Script::default(),
+        );
+        assert_eq!(ct, "text/plain");
     }
 
     #[test]

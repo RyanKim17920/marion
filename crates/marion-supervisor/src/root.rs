@@ -1272,7 +1272,15 @@ fn launch_inner(
         &node.agent_id,
         node.harness,
         crate::run::init_request_id(&node.agent_id),
-    );
+    )
+    .map(|es| {
+        es.scrubbing(
+            node.endpoint
+                .as_ref()
+                .and_then(|e| e.key.as_ref())
+                .map(|k| k.expose()),
+        )
+    });
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
     }

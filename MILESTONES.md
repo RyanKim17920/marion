@@ -1690,23 +1690,36 @@ ever runs a real login.
   --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
   refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
-  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
-  on another branch.
+  fixture key appears in no output"). `marion --help` names `login` (label, `--stdin`,
+  `--from-env`, `--list`, `custom`) and `logout` with a one-paragraph account of endpoint mode.
 - **Several credentials per provider — stored and listed; rotation not built.** A credential is
   `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
   work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
   `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
   (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
   ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
-- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+- **Credential choice — built.** A launch tries its provider's
   credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
   checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
   and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
   rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
-  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
-  5xx/connection failure *before* the child's first successful turn, relaunch on the next
-  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
-  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  are kept as `Endpoint::fallbacks`. A resume re-resolves by the stated order rather than the
+  journaled credential.
+- **API-key rotation — built for children.** A child endpoint launch whose process failed with no
+  report and nothing changed in its worktree (the evidence available that no turn succeeded), and
+  whose stderr or stream failure names a rate limit (`429`, `rate limit`), a refused key
+  (`401`/`403` and the shared auth markers) or an outage (`5xx`, overload, a refused or reset
+  connection) — `marion_harness::failover_cause`, row-independent marker lists in `auth.rs` — is
+  relaunched fresh in the same node on the next stated credential with a key
+  (`endpoint::next_credential`), sharing the node's one wall clock. Each credential is tried once;
+  only a finished process is rotated, never mid-turn; the relaunch writes a second `Spawned`
+  (generation two, the new pid and credential id). The contract's `child.credential_failover`
+  lists each move as `{from, to, cause}` (`auth` | `rate_limit` | `outage`), ids only. API keys
+  alone: a subscription login is never a credential of a provider. Canned cells green on
+  2026-09-27 (codex 0.155.1): key `a` answered 429 fails over to `b` and succeeds; both answered 401
+  fail after one failover. **Not built:** rotation for a root (`root::prepare`), and a stricter
+  "no successful turn" signal than no-report-and-no-change (a run that made tool calls without
+  editing and then hit a 429 would rotate). **TODO, not built:** a
   `profile` field selecting one of several native harness profiles the user set up
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
@@ -1731,7 +1744,9 @@ ever runs a real login.
   gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
   per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
   provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
-  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  is redacted of the key, and so is the live event stream: the node's `EventSink` scrubs every key
+  it has been launched on (a rotated child adds its next) from each frame and raw line before it is
+  written (unit-tested; the duplex claude cell cannot run here, version gate).
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
   Node config documents are now written `0600` (they carry the node token and, on opencode and
   cline endpoint nodes, the key).
@@ -1742,7 +1757,10 @@ ever runs a real login.
   (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
   provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
   `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
-- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+- **Endpoint cells — green for codex, opencode, copilot (×2), gemini, cline and qwen; claude and
+  goose written, not run.** Added 2026-09-27: gemini on its own wire (the key in
+  `x-goog-api-key`, the model in the request path), cline and qwen on Chat — green; goose's cell is
+  blocked here by the version gate (1.52.0 installed, not admitted).
   `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
   `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
   server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
@@ -1753,6 +1771,29 @@ ever runs a real login.
   Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
   with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
   is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
+- **`doctor --providers` — built; not yet in the default summary.** `marion-supervisor doctor
+  --providers [--model <id>]` (`provider_check`) lists every credential worth a row (login index,
+  `[credentials]` orders, stored unlabelled ids): key stored or not (never the key), the credential
+  file's mode where the store is a file, and — with a key — `GET <base>/models` through `curl -sS`
+  with the key header on stdin (`-H @-`, so the key is on no argv and marion links no TLS),
+  reporting listed/refused/status/unreachable and whether the requested model is listed. Then the
+  harness × provider matrix from the resolver's own rule (`endpoint::shared_wire` plus whether the
+  recipe presents the provider's key header), with each unsupported pair's reason (both wire lists,
+  or the header). Canned tests: the probe (listed, a 401-refused key, a missing key), the matrix,
+  and the command line. **Not done:** the fold into the default `marion doctor` summary and `marion
+  doctor` forwarding, which live on the onboarding branch and are not in this base.
+- **Key header — built.** Which header a provider reads its key from is a provider column,
+  `key_header` (`bearer`, the default, or `x-api-key`; settable per custom provider in
+  `providers.toml`). The `anthropic` seed row states `x-api-key` — what Anthropic's SDKs send for an
+  API key; Anthropic's API docs (checked 2026-09-27) also accept `Authorization: Bearer <key>` and
+  call `x-api-key` the legacy fallback, still supported — while the Anthropic-compatible gateways
+  document Bearer. Each wire recipe lists the headers it can present (`keys`, a sweep holds every
+  recipe to state Bearer and a note per header); a header a recipe cannot present is refused by
+  name. Claude Code: Bearer through `ANTHROPIC_AUTH_TOKEN`, `x-api-key` through `ANTHROPIC_API_KEY`
+  (docs; not run, version gate). Copilot's anthropic type: `x-api-key` through its API key, Bearer
+  through `COPILOT_PROVIDER_BEARER_TOKEN` with the API key blanked (measured on 1.0.88: left set,
+  it is sent as a second credential). opencode: `x-api-key` as a provider-block header with no
+  `apiKey`. Canned cells green on 2026-09-27: copilot anthropic Bearer, opencode Chat `x-api-key`.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

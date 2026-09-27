@@ -991,6 +991,7 @@ fn canned_operator(
                     },
                     base_url: base_url.to_string(),
                     api_key: Some("canned".into()),
+                    key_header: Default::default(),
                 },
                 None,
             );

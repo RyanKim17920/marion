@@ -23,6 +23,9 @@ use marion_testsupport::{fixture_repo, scratch};
 
 /// The fixture key. The test writes it; nothing in marion ever mints it.
 const KEY: &str = "sk-endpoint-test";
+/// Two labelled keys of `canned-rot`, tried in the stated order `a` then `b`.
+const KEY_A: &str = "sk-rotate-key-a-0001";
+const KEY_B: &str = "sk-rotate-key-b-0002";
 
 struct Fixture {
     config: PathBuf,
@@ -39,7 +42,9 @@ fn fixture() -> &'static Fixture {
         write_owner_only(
             &config.join("credentials.json"),
             &format!(
-                "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\"}}}}\n"
+                "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\", \
+                 \"canned-anthropic-bearer\": \"{KEY}\", \"canned-chat-xkey\": \"{KEY}\", \
+                 \"canned-rot:a\": \"{KEY_A}\", \"canned-rot:b\": \"{KEY_B}\"}}}}\n"
             ),
         );
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has read the
@@ -68,7 +73,10 @@ fn write_owner_only(path: &Path, body: &str) {
 
 /// Hold the cell lock and point the fixture providers at `base_url`: `canned-test` serving all
 /// four wires, `canned-chat` serving Chat Completions alone, `canned-anthropic` serving Anthropic
-/// Messages alone, `canned-nokey` with no stored key.
+/// Messages alone and reading its key from `x-api-key` as Anthropic's own API does,
+/// `canned-anthropic-bearer` the same wire reading a Bearer key as the gateways do, `canned-nokey`
+/// with no stored key, `canned-chat-xkey` serving Chat Completions and reading `x-api-key`,
+/// `canned-rot` holding two labelled keys in a stated order.
 fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
     static CELLS: Mutex<()> = Mutex::new(());
     let guard = CELLS.lock().unwrap_or_else(|p| p.into_inner());
@@ -81,7 +89,14 @@ fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
              [providers.canned-chat]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\n\
              [providers.canned-nokey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\", \
              \"openai-responses\"]\n\n\
-             [providers.canned-anthropic]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n",
+             [providers.canned-anthropic]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n\
+             key_header = \"x-api-key\"\n\n\
+             [providers.canned-anthropic-bearer]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n\n\
+             [providers.canned-chat-xkey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\
+             key_header = \"x-api-key\"\n\n\
+             [providers.canned-rot]\nbase_url = \"{base_url}\"\n\
+             wires = [\"openai-chat\", \"openai-responses\"]\n\n\
+             [credentials]\ncanned-rot = [\"canned-rot:a\", \"canned-rot:b\"]\n",
             // An Anthropic base is the root, as the seed rows spell it: the SDK appends `/v1`.
             root = base_url.trim_end_matches("/v1")
         ),
@@ -204,12 +219,13 @@ use serde_json::{Value, json};
 const MODEL: &str = "endpoint-model-7";
 const NARRATIVE: &str = "Reported back through marion from an endpoint node.";
 
-/// How the harness presents the key: `Authorization: Bearer <key>`, or the Anthropic SDK's
-/// `x-api-key: <key>`.
+/// How the harness presents the key: `Authorization: Bearer <key>`, the Anthropic SDK's
+/// `x-api-key: <key>`, or the Gemini wire's `x-goog-api-key: <key>`.
 #[derive(Clone, Copy)]
 enum Presents {
     Bearer,
     XApiKey,
+    GoogApiKey,
 }
 
 struct Cell {
@@ -284,6 +300,17 @@ fn summary(ev: &Evidence) -> String {
         .join("\n")
 }
 
+/// The model a logged request asks for: the body's `model`, else the Gemini path's
+/// `/models/<model>:<method>` segment.
+fn requested_model(r: &Value) -> Option<String> {
+    if let Some(m) = r["body"]["model"].as_str() {
+        return Some(m.to_string());
+    }
+    let path = r["path"].as_str()?;
+    let rest = path.split("/models/").nth(1)?;
+    Some(rest.split(':').next()?.to_string())
+}
+
 fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
     let who = cell.agent_type;
     let contract = ev
@@ -294,6 +321,7 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
     let (header, value) = match cell.presents {
         Presents::Bearer => ("authorization", fingerprint(&format!("Bearer {KEY}"))),
         Presents::XApiKey => ("x-api-key", fingerprint(KEY)),
+        Presents::GoogApiKey => ("x-goog-api-key", fingerprint(KEY)),
     };
     for r in &ev.requests {
         // claude 2.1.283 opens with `HEAD /api/hello` against the base URL, a reachability probe
@@ -320,8 +348,9 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
             !headers.contains("oauth"),
             "{who}: an OAuth header: {headers}"
         );
-        // No request names any model but the chosen one — background calls included.
-        if let Some(m) = r["body"]["model"].as_str() {
+        // No request names any model but the chosen one — background calls included. The Gemini
+        // wire names it in the path (`/models/<model>:streamGenerateContent`), the others in the body.
+        if let Some(m) = requested_model(r).as_deref() {
             assert_eq!(
                 m,
                 MODEL,
@@ -332,7 +361,9 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
         assert_eq!(r["wire"], cell.wire, "{who}: wire\n{}", summary(ev));
     }
     assert!(
-        ev.requests.iter().any(|r| r["body"]["model"] == MODEL),
+        ev.requests
+            .iter()
+            .any(|r| requested_model(r).as_deref() == Some(MODEL)),
         "{who}: no request named the model at all\n{}",
         summary(ev)
     );
@@ -495,5 +526,431 @@ fn a_copilot_child_takes_its_anthropic_recipe_when_the_provider_serves_only_that
         compiled_model: MODEL,
         wire: "anthropic",
     };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+/// **The key header is the provider's, and the recipe honors it**: the same copilot anthropic
+/// recipe, against a provider that reads a Bearer key, presents `Authorization: Bearer` through
+/// `COPILOT_PROVIDER_BEARER_TOKEN` instead of the `x-api-key` the cell above sees.
+#[test]
+fn a_copilot_child_presents_a_bearer_key_to_an_anthropic_provider_that_reads_one() {
+    assert!(
+        on_path("copilot"),
+        "put `copilot` ({}) on PATH",
+        pinned_version("copilot")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-anthropic-bearer",
+        agent_type: "copilot",
+        script: Script {
+            root_tool: "marion-report".into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "anthropic",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+/// **An OpenAI-wire provider that reads `x-api-key`**: opencode's generated provider block carries
+/// the key as a header and sends no Bearer beside it.
+#[test]
+fn an_opencode_child_presents_an_x_api_key_to_a_chat_provider_that_reads_one() {
+    assert!(
+        on_path("opencode"),
+        "put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    let cell = Cell {
+        presents: Presents::XApiKey,
+        provider: "canned-chat-xkey",
+        agent_type: "opencode",
+        script: Script {
+            openai_report_tool: "marion_report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: "marion/endpoint-model-7",
+        wire: "openai",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+// ---- credential rotation: API keys only, before the first successful turn ----------------------
+
+/// A codex child on `canned-rot`, whose provider refuses the keys in `refused` with `status`.
+fn drive_rotation(tag: &str, refused: &[&str], status: u16) -> (Evidence, Result<Value, String>) {
+    let reqlog_dir = scratch(&format!("endpoint-reqlog-rot-{tag}"));
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            child_narrative: NARRATIVE.into(),
+            refusals: refused
+                .iter()
+                .map(|k| marion_provider::KeyRefusal {
+                    key: k.to_string(),
+                    status,
+                })
+                .collect(),
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+    let _cells = providers_at(&base_url);
+    let t = tree(&format!("rot-{tag}"), Some(base_url));
+    let contract = run_spawn(
+        &t.env,
+        &request(&t, "codex-impl", &format!("canned-rot:{MODEL}")),
+        &TaskId(format!("endpoint-rot-{tag}")),
+        &Caller::root(
+            "root",
+            marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+        ),
+    )
+    .map_err(|e| e.to_string());
+    let as_json = contract
+        .as_ref()
+        .map(|c| serde_json::to_value(c).unwrap())
+        .map_err(Clone::clone);
+    let requests = server.requests().unwrap_or_default();
+    let walked = persisted_contracts(&t.state);
+    let journal = std::fs::read_to_string(t.env.project_dir.journal()).unwrap_or_default();
+    drop(server);
+    let leaked = survivors(&t.state.parent().unwrap().to_string_lossy());
+    for (pid, _) in &leaked {
+        kill_hard(*pid);
+    }
+    let persisted = judge(&walked.expect("the state dir walks"))
+        .into_iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    (
+        Evidence {
+            contract,
+            persisted,
+            requests,
+            journal,
+            leaked: leaked.into_iter().map(|(_, l)| l).collect(),
+        },
+        as_json,
+    )
+}
+
+fn presented(r: &Value, key: &str) -> bool {
+    r["credentials"]["authorization"] == fingerprint(&format!("Bearer {key}"))
+}
+
+fn assert_no_key_kept(ev: &Evidence) {
+    for key in [KEY_A, KEY_B] {
+        for (what, text) in [
+            (
+                "the persisted contract",
+                ev.persisted
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<String>(),
+            ),
+            ("the journal", ev.journal.clone()),
+        ] {
+            assert!(!text.contains(key), "the key is in {what}");
+        }
+    }
+    assert!(ev.leaked.is_empty(), "leaked {:?}", ev.leaked);
+}
+
+/// **A rate-limited first key rotates to the next, before any turn succeeded**: the provider
+/// answers key `a` with 429, so the node is relaunched fresh on `b`, succeeds there, and its
+/// contract records the failover by id — never a key.
+#[test]
+fn a_rate_limited_key_fails_over_to_the_next_stated_credential_before_the_first_turn() {
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let (ev, json) = drive_rotation("429", &[KEY_A], 429);
+    let contract = ev
+        .contract
+        .as_ref()
+        .unwrap_or_else(|e| panic!("run_spawn failed: {e}\n{}", summary(&ev)));
+    let comp = contract.completion.as_ref().expect("a finished run");
+    assert_eq!(
+        comp.status,
+        ExitStatus::Ok,
+        "{}\n{}",
+        comp.exit.description,
+        summary(&ev)
+    );
+    assert_eq!(contract.child.credential.as_deref(), Some("canned-rot:b"));
+    assert_eq!(
+        json.unwrap()["child"]["credential_failover"],
+        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "rate_limit"}]),
+    );
+    let first_b = ev
+        .requests
+        .iter()
+        .position(|r| presented(r, KEY_B))
+        .unwrap_or_else(|| panic!("key b was never presented\n{}", summary(&ev)));
+    assert!(
+        first_b > 0 && presented(&ev.requests[0], KEY_A),
+        "a first\n{}",
+        summary(&ev)
+    );
+    assert!(
+        ev.requests[first_b..].iter().all(|r| presented(r, KEY_B)),
+        "after the failover only b is presented\n{}",
+        summary(&ev)
+    );
+    assert_no_key_kept(&ev);
+}
+
+/// **Rotation is bounded**: every stated key refused, each is tried once and the node fails,
+/// naming the one failover it took.
+#[test]
+fn rotation_tries_each_credential_once_and_then_fails() {
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let (ev, json) = drive_rotation("all-401", &[KEY_A, KEY_B], 401);
+    let contract = ev
+        .contract
+        .as_ref()
+        .unwrap_or_else(|e| panic!("run_spawn failed: {e}\n{}", summary(&ev)));
+    let comp = contract.completion.as_ref().expect("a finished run");
+    assert_ne!(comp.status, ExitStatus::Ok);
+    assert_eq!(
+        json.unwrap()["child"]["credential_failover"],
+        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "auth"}]),
+    );
+    assert!(ev.requests.iter().any(|r| presented(r, KEY_B)));
+    assert_no_key_kept(&ev);
+}
+
+// ---- `marion doctor --providers`: each stored credential, probed; the harness x provider matrix --
+
+/// **Each stored credential is checked by id, and the key is never shown**: present or not, its
+/// provider reachable through `GET <base>/models` with the key in the header the provider reads,
+/// the requested model listed or not — and a key the provider refuses reported as refused.
+#[test]
+fn doctor_providers_checks_each_stored_credential_against_its_endpoint() {
+    use marion_supervisor::provider_check::{self, Reach};
+    let reqlog_dir = scratch("endpoint-reqlog-doctor");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            models: vec![MODEL.into(), "other-model".into()],
+            refusals: vec![marion_provider::KeyRefusal {
+                key: KEY_A.into(),
+                status: 401,
+            }],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let _cells = providers_at(&server.base_url());
+    let rows = provider_check::check_user(Some(MODEL)).expect("the user's config reads");
+    let row = |id: &str| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {rows:#?}"))
+    };
+    let ok = row("canned-test");
+    assert!(ok.key_present);
+    assert_eq!(
+        ok.reach,
+        Some(Reach::Listed {
+            models: 2,
+            model_listed: Some(true)
+        }),
+        "{ok:#?}"
+    );
+    assert_eq!(row("canned-rot:a").reach, Some(Reach::Refused(401)));
+    let nokey = row("canned-nokey");
+    assert!(!nokey.key_present);
+    assert_eq!(nokey.reach, None, "no key, no probe");
+    #[cfg(target_os = "linux")]
+    assert_eq!(ok.file_mode, Some(0o600));
+    // The x-api-key provider was asked in its own header.
+    let requests = server.requests().unwrap_or_default();
+    assert!(
+        requests.is_empty(),
+        "a GET is not logged as a model request"
+    );
+    let text = provider_check::render(
+        &rows,
+        &provider_check::matrix(&marion_supervisor::credentials::user_registry().unwrap()),
+    );
+    for key in [KEY, KEY_A, KEY_B] {
+        assert!(!text.contains(key), "the key is in doctor's output");
+    }
+    assert!(
+        text.contains("canned-test") && text.contains("listed"),
+        "{text}"
+    );
+}
+
+/// **The matrix is the resolver's answer, harness by provider**: native on the first shared wire,
+/// unsupported with both wire lists where none is shared, and unsupported naming the header where
+/// the recipe cannot present the provider's key.
+#[test]
+fn doctor_providers_matrix_is_computed_by_the_endpoint_resolver() {
+    use marion_core::harness::Harness;
+    use marion_supervisor::provider_check::{Cell, matrix};
+    let _cells = providers_at("http://127.0.0.1:9/v1");
+    let reg = marion_supervisor::credentials::user_registry().unwrap();
+    let m = matrix(&reg);
+    let cell = |h: Harness, p: &str| {
+        m.iter()
+            .find(|c| c.harness == h && c.provider == p)
+            .map(|c| c.cell.clone())
+            .unwrap_or_else(|| panic!("no cell {h} {p}"))
+    };
+    assert_eq!(
+        cell(Harness::Codex, "openai"),
+        Cell::Native("openai-responses".into())
+    );
+    assert_eq!(
+        cell(Harness::Copilot, "canned-anthropic"),
+        Cell::Native("anthropic".into())
+    );
+    match cell(Harness::Codex, "groq") {
+        Cell::Unsupported(why) => assert!(
+            why.contains("openai-responses") && why.contains("openai-chat"),
+            "{why}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    match cell(Harness::Codex, "canned-chat-xkey") {
+        Cell::Unsupported(why) => assert!(why.contains("openai-chat"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match cell(Harness::Goose, "canned-chat-xkey") {
+        Cell::Unsupported(why) => assert!(why.contains("x-api-key"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        cell(Harness::OpenCode, "canned-chat-xkey"),
+        Cell::Native("openai-chat".into())
+    );
+    match cell(Harness::Acp, "openai") {
+        Cell::Unsupported(why) => assert!(why.contains("no endpoint wire"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **`marion-supervisor doctor --providers` prints the report and never a key**, reading the same
+/// user configuration a launch reads.
+#[test]
+fn doctor_providers_on_the_command_line_prints_ids_and_the_matrix_and_no_key() {
+    let reqlog_dir = scratch("endpoint-reqlog-doctor-cli");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            models: vec![MODEL.into()],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let _cells = providers_at(&server.base_url());
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
+        .args(["doctor", "--providers", "--model", MODEL])
+        .output()
+        .expect("the supervisor runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("canned-test: key stored") && stdout.contains("requested model listed"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("codex=openai-responses"), "{stdout}");
+    for key in [KEY, KEY_A, KEY_B] {
+        assert!(!stdout.contains(key), "the key is in doctor's output");
+    }
+}
+
+// ---- the remaining rows with an endpoint recipe: gemini, goose, cline, qwen ----------------------
+
+/// A cell of `agent_type` on `canned-test` over one of the OpenAI-compatible Chat recipes, with
+/// marion's report under the harness's own tool spelling.
+fn chat_cell(agent_type: &'static str, report_tool: &str) -> Cell {
+    Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type,
+        script: Script {
+            openai_report_tool: report_tool.into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "openai",
+    }
+}
+
+#[test]
+fn a_gemini_child_runs_on_the_users_provider_over_the_gemini_wire() {
+    assert!(
+        on_path("gemini"),
+        "put `gemini` ({}) on PATH",
+        pinned_version("gemini")
+    );
+    let cell = Cell {
+        presents: Presents::GoogApiKey,
+        provider: "canned-test",
+        agent_type: "gemini",
+        script: Script {
+            gemini_report_tool: "mcp_marion_report".into(),
+            gemini_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "gemini",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_goose_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("goose"),
+        "put `goose` ({}) on PATH",
+        pinned_version("goose")
+    );
+    let cell = chat_cell("goose", "marion__report");
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_cline_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("cline"),
+        "put `cline` ({}) on PATH",
+        pinned_version("cline")
+    );
+    let cell = chat_cell("cline", "marion__report");
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_qwen_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("qwen"),
+        "put `qwen` ({}) on PATH",
+        pinned_version("qwen")
+    );
+    let cell = chat_cell("qwen", "mcp__marion__report");
     assert_endpoint_cell(&cell, &drive(&cell));
 }
