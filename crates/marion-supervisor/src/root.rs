@@ -376,6 +376,11 @@ pub struct RootNode {
     /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
     /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
     pub acp_agent: Option<String>,
+    /// The root's inbox and its row's mid-turn behaviour, for a typed root whose owner keeps one
+    /// (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's end
+    /// reach the root as a turn after its first. `None` on the pane and `LaunchOnly` paths, which
+    /// have no typed channel to carry one.
+    pub turns: Option<crate::inbox::TurnFeed>,
 }
 
 /// What the root's run produced.
@@ -800,7 +805,18 @@ pub fn prepare_watched(
         root_grant_record(&agent_id, &change_base, &launch.tools),
     );
 
+    // Bound before `agent_id` moves into the node. Headless, since only a typed path takes it.
+    let turns = matches!(path, RootPath::Duplex | RootPath::Acp)
+        .then(|| observer.turn_source(&agent_id))
+        .flatten()
+        .map(|source| {
+            crate::inbox::TurnFeed::new(
+                source,
+                adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+            )
+        });
     Ok(RootNode {
+        turns,
         agent_id,
         project,
         agent_dir,
@@ -2328,7 +2344,7 @@ fn launch_duplex(
             // it"* — and the supervisor owning the root is precisely something outside that can.
             // See `launch_inner` for the hook and `spawned_record` for the record.
             on_started: Some(on_started),
-            turns: None,
+            turns: node.turns.clone(),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

@@ -973,6 +973,8 @@ struct ChildDuplex<'a> {
     on_started: &'a dyn Fn(i32),
     /// The watch for the frame that names this node's harness session.
     session: &'a crate::session_watch::SessionWatch<'a>,
+    /// The node's inbox, for its turns after the first ([`DuplexSpec::turns`]).
+    turns: Option<crate::inbox::TurnFeed>,
 }
 
 fn duplex_child(
@@ -989,6 +991,7 @@ fn duplex_child(
         events,
         on_started,
         session,
+        turns,
     } = child;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -1030,7 +1033,7 @@ fn duplex_child(
             wall_clock: Some(bound),
             sink,
             on_started: Some(on_started),
-            turns: None,
+            turns,
         },
     )?;
     Ok(ChildRun {
@@ -1568,6 +1571,14 @@ pub fn run_spawn_watched(
             }
         }
     };
+    // The child's inbox, for the typed paths' turns after the first: a steer, or the end of a child
+    // it backgrounded. A child is always headless (a pane belongs to a root).
+    let turns = observer.turn_source(&agent_id).map(|source| {
+        crate::inbox::TurnFeed::new(
+            source,
+            adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        )
+    });
     let run = match path {
         // **A contracted child does not get a pane, and the refusal is the design rather than a
         // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
@@ -1626,6 +1637,7 @@ pub fn run_spawn_watched(
                 events: events.as_ref(),
                 on_started: &announce_started,
                 session: &session,
+                turns,
             },
         ),
     };
