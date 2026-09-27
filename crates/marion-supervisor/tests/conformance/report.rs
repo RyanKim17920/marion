@@ -105,6 +105,17 @@ impl Scrub {
         if let Ok(home) = std::env::var("HOME") {
             pairs.push((home, "<HOME>"));
         }
+        // A harness's own temp files (gemini's error reports) name the per-user temp dir.
+        let tmp = std::env::temp_dir();
+        for t in [Some(tmp.clone()), tmp.canonicalize().ok()]
+            .into_iter()
+            .flatten()
+        {
+            let t = t.to_string_lossy().trim_end_matches('/').to_string();
+            if t.len() > 4 {
+                pairs.push((t, "<TMP>"));
+            }
+        }
         // Longest first, so a scratch path under $HOME is not half-replaced by `<HOME>`.
         pairs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
         Self(pairs)

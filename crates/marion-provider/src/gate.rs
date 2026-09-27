@@ -55,8 +55,10 @@ pub trait Hold: std::fmt::Debug + Send + Sync {
     /// Consulted once [`Self::wait_for`] has returned, so a hold can park a request and then decide
     /// how it ends. It is how a test scripts a provider **fault** — a 401, a 429, a 5xx — that no
     /// [`crate::Script`] can express, because a script is a function of the body and always
-    /// succeeds. The default answers nothing, so every hold that only waits is unchanged.
-    fn answer(&self, _wire: Option<&str>, _body: &Value) -> Option<Answer> {
+    /// succeeds. `path` is the request's, query included: Gemini's framing (SSE or one JSON body)
+    /// is decided by it rather than by the body. The default answers nothing, so every hold that
+    /// only waits is unchanged.
+    fn answer(&self, _wire: Option<&str>, _path: &str, _body: &Value) -> Option<Answer> {
         None
     }
 }

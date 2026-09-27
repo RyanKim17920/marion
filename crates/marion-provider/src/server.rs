@@ -362,7 +362,7 @@ fn serve_connection(
             && !classified.is_some_and(|w| is_auxiliary(w, &body))
         {
             gate.wait_for(wire, &body);
-            answer = gate.answer(wire, &body);
+            answer = gate.answer(wire, &req.path, &body);
         }
 
         let (status, content_type, payload) = match answer {
@@ -693,7 +693,12 @@ mod tests {
         struct Fault;
         impl Hold for Fault {
             fn wait_for(&self, _: Option<&str>, _: &Value) {}
-            fn answer(&self, _: Option<&str>, body: &Value) -> Option<crate::gate::Answer> {
+            fn answer(
+                &self,
+                _: Option<&str>,
+                _: &str,
+                body: &Value,
+            ) -> Option<crate::gate::Answer> {
                 crate::script::carries(body, "FAULT").then(|| crate::gate::Answer {
                     status: 429,
                     content_type: "application/json".into(),

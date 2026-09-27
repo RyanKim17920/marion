@@ -15,7 +15,9 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use marion_provider::{Answer, CannedServer, Config, Hold, Script, anthropic, openai, responses};
+use marion_provider::{
+    Answer, CannedServer, Config, Hold, Script, anthropic, gemini, openai, responses,
+};
 use serde_json::{Value, json};
 
 use crate::report::Log;
@@ -167,6 +169,14 @@ fn pick(turns: &[Turn], text: &str) -> Option<Turn> {
 }
 
 fn step_of(turn: &Turn, wire: &str, text: &str) -> usize {
+    if wire == "gemini" {
+        // Gemini's calls carry no id: the step is the function responses since the turn's prompt.
+        let from = text.rfind(&turn.marker).unwrap_or(0);
+        return text[from..]
+            .matches("\"functionResponse\"")
+            .count()
+            .min(turn.calls.len());
+    }
     (0..turn.calls.len())
         .find(|i| !text.contains(&turn.call_id(*i, wire)))
         .unwrap_or(turn.calls.len())
@@ -209,7 +219,7 @@ impl Hold for ProbeHold {
         }
     }
 
-    fn answer(&self, wire: Option<&str>, body: &Value) -> Option<Answer> {
+    fn answer(&self, wire: Option<&str>, path: &str, body: &Value) -> Option<Answer> {
         let wire = wire?;
         let text = body.to_string();
         let mut s = self.lock();
@@ -219,20 +229,21 @@ impl Hold for ProbeHold {
                 .w("prov", &json!({"resp": "fault", "status": status}));
             return Some(answer);
         }
-        // Gemini's calls carry no id and its answer's framing depends on the path, which a hold
-        // does not see; the canned script answers it (its default flow calls `report`).
-        if wire == "gemini" {
-            return None;
-        }
+        let streaming = path.contains(":streamGenerateContent") || path.contains("alt=sse");
+        let content_type = if wire == "gemini" && !streaming {
+            "application/json"
+        } else {
+            "text/event-stream"
+        };
         let reply = match pick(&s.turns, &text) {
             Some(turn) => {
                 let step = step_of(&turn, wire, &text);
                 match turn.calls.get(step) {
-                    Some(call) => call_turn(wire, call, &turn.call_id(step, wire)),
-                    None => text_turn(wire, &turn.final_text),
+                    Some(call) => call_turn(wire, streaming, call, &turn.call_id(step, wire)),
+                    None => text_turn(wire, streaming, &turn.final_text),
                 }
             }
-            None => text_turn(wire, "ok"),
+            None => text_turn(wire, streaming, "ok"),
         };
         let reply = if s.usage {
             let k = s.usage_sent.len() as u64 + 1;
@@ -245,24 +256,26 @@ impl Hold for ProbeHold {
         self.log.w("prov", &json!({"resp": "script", "wire": wire}));
         Some(Answer {
             status: 200,
-            content_type: "text/event-stream".into(),
+            content_type: content_type.into(),
             body: reply,
         })
     }
 }
 
-fn call_turn(wire: &str, call: &Call, id: &str) -> String {
+fn call_turn(wire: &str, streaming: bool, call: &Call, id: &str) -> String {
     match wire {
         "anthropic" => anthropic::tool_use_turn(&call.spelled, id, &call.args),
         "responses" => responses::mcp_call(&call.verb, &call.args, id),
+        "gemini" => gemini::function_call_turn(&call.spelled, &call.args, streaming),
         _ => openai::tool_call_turn(&call.spelled, id, &call.args),
     }
 }
 
-fn text_turn(wire: &str, text: &str) -> String {
+fn text_turn(wire: &str, streaming: bool, text: &str) -> String {
     match wire {
         "anthropic" => anthropic::text_turn(text),
         "responses" => responses::final_message(text),
+        "gemini" => gemini::text_turn(text, streaming),
         _ => openai::text_turn(text),
     }
 }
@@ -333,6 +346,18 @@ fn rewrite_sse(sse: &str, mut f: impl FnMut(&mut Value) -> Option<String>) -> St
 /// Put counted usage into an answer, where each wire states it: Anthropic's `message_start` and
 /// `message_delta`, Responses' `response.completed`, OpenAI chat's finishing chunk.
 fn with_usage(wire: &str, sse: &str, (input, output, cached): (u64, u64, u64)) -> String {
+    let gemini_usage = json!({"promptTokenCount": input + cached, "candidatesTokenCount": output,
+        "cachedContentTokenCount": cached, "totalTokenCount": input + cached + output});
+    if wire == "gemini" && !sse.starts_with("data: ") {
+        // Non-streaming Gemini: one JSON body.
+        return match serde_json::from_str::<Value>(sse) {
+            Ok(mut v) => {
+                v["usageMetadata"] = gemini_usage;
+                v.to_string()
+            }
+            Err(_) => sse.to_string(),
+        };
+    }
     rewrite_sse(sse, |v| {
         match wire {
             "anthropic" => match v["type"].as_str() {
@@ -343,6 +368,7 @@ fn with_usage(wire: &str, sse: &str, (input, output, cached): (u64, u64, u64)) -
                 Some("message_delta") => v["usage"] = json!({"output_tokens": output}),
                 _ => {}
             },
+            "gemini" => v["usageMetadata"] = gemini_usage.clone(),
             "responses" => {
                 if v["type"] == "response.completed" {
                     v["response"]["usage"] = json!({"input_tokens": input + cached,
@@ -485,6 +511,10 @@ mod tests {
             1
         );
         assert!(pick(&turns, r#"{"messages":["generate a title"]}"#).is_none());
+        // Gemini carries no call ids: its step is the function responses after the prompt.
+        let gem = r#"["old","functionResponse","ONE go",{"functionResponse":{}}]"#;
+        assert_eq!(step_of(&one, "gemini", gem), 1);
+        assert_eq!(step_of(&one, "gemini", r#"["ONE go"]"#), 0);
     }
 
     #[test]
