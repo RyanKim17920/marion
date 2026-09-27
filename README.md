@@ -97,7 +97,7 @@ The pin is the oldest version whose evidence is on record, not a ceiling; the ad
 
 ![The Codex TUI running inside a marion pane after `marion attach`, showing the delegated prompt, a Working indicator, and a line typed by the operator through the attachment.](docs/media/attach-pane.png)
 
-![Claude Code's /mcp screen inside a session started by `marion claude`, listing marion among the built-in MCP servers as connected with 5 tools.](docs/media/native-claude-mcp.png)
+![Claude Code's /mcp screen inside a session started by `marion claude`, listing marion among the built-in MCP servers as connected with 5 tools (the operator's own servers, connectors and plugins redacted).](docs/media/native-claude-mcp.png)
 
 ![Journal queries after killing the supervisor with SIGKILL and running marion resume: three SpawnIntent records, a RootChanged, and the resumed root's Exited status Ok.](docs/media/resume-generation-2.png)
 
