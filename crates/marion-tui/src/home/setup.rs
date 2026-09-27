@@ -140,8 +140,23 @@ fn body_lines<'a>(
     ));
     blank(&mut out);
     let name_w = name_col(&v.harnesses);
+    // Harnesses that are not installed fold into one line, so twenty-odd rows of "not installed"
+    // do not push the sections below off the screen; the one under the cursor still shows in place.
+    // One absent harness keeps its own row: a fold of one says no more and reads worse.
+    let fold = v
+        .harnesses
+        .iter()
+        .enumerate()
+        .filter(|(i, h)| h.ready == Ready::Absent && *i != v.cursor)
+        .count()
+        > 1;
+    let mut absent: Vec<&str> = Vec::new();
     for (i, h) in v.harnesses.iter().enumerate() {
         let sel = i == v.cursor;
+        if fold && h.ready == Ready::Absent && !sel {
+            absent.push(&h.name);
+            continue;
+        }
         let start = out.len();
         let l = harness_line(
             h,
@@ -175,6 +190,15 @@ fn body_lines<'a>(
         if sel {
             selected = (start, out.len());
         }
+    }
+    if !absent.is_empty() {
+        let l = vec![
+            Span::raw("  "),
+            span(Ready::Absent.glyph(frame), Ready::Absent.style(theme)),
+            span(format!(" {} not installed  ", absent.len()), dim()),
+            span(absent.join(" · "), dim()),
+        ];
+        out.push((0, Line::from(fit(l, w + g as usize))));
     }
 
     if !v.project.is_empty() {

@@ -1,0 +1,45 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
+---
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESSES   3 of 12 ready
+
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+❯ ○ acp vibe     —         not installed               headless
+  ○ 6 not installed  agy · goose · cline · qwen · acp kilo · acp vtcode
+
+  PROJECT
+  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
+
+  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ✓ .marion/agents.toml: 2 types, valid
+
+  LOGINS   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+  ● openrouter  openrouter:work
+  keys in the macOS Keychain · a adds one · x removes the selected
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion doctor                                                                              r │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
+--- styles ---
+  160  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionacpvibe"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  778  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"
+   13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"

@@ -1003,6 +1003,27 @@ fn setup_expanded_harness() {
     insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
 }
 
+/// A machine with most harnesses missing: the missing ones fold into one line, so the sections
+/// below still show, and the one under the cursor keeps its own row.
+#[test]
+fn setup_folds_the_harnesses_that_are_not_installed() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    for name in ["goose", "cline", "qwen", "acp kilo", "acp vibe", "acp vtcode"] {
+        v.harnesses.push(harness(
+            name,
+            None,
+            Ready::Absent,
+            "not installed",
+            "headless",
+            None,
+        ));
+    }
+    v.cursor = v.harnesses.len() - 2;
+    let input = command("marion doctor", "r");
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+}
+
 #[test]
 fn setup_doctor_checking() {
     let v = setup_view(true);
