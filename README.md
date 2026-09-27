@@ -39,8 +39,15 @@ marion doctor
 
 This installs two binaries, `marion` and `marion-supervisor`, into `~/.cargo/bin`. Keep them in the same directory: `marion` starts the supervisor that sits beside it, and `marion doctor` fails if the two come from different builds. marion never updates itself. To upgrade, run the install command again. From a checkout, `cargo install --locked --path crates/marion-supervisor` does the same.
 
-<!-- Homebrew and a shell installer come with the release pipeline. Add them here once they
-     exist; until then the cargo commands above are the only install channel. -->
+Once a release is published, prebuilt binaries skip the Rust toolchain. Every channel installs the same archive, `marion` and `marion-supervisor` side by side:
+
+- **Homebrew (macOS, Linux):** `brew install RyanKim17920/tap/marion`
+- **Shell installer (macOS, Linux):** `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RyanKim17920/marion/releases/latest/download/marion-supervisor-installer.sh | sh`
+- **npm (macOS, Linux, WSL; Node 14.14 or newer):** `npm install -g @ryankim17920/marion`
+- **cargo binstall (a prebuilt archive, no compile):** `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor`; or build it with the `cargo install` line above.
+- **Windows:** install inside WSL 2 with any of the Linux channels above. Native Windows is not supported; `CONTRIBUTING.md` says why.
+
+Archives cover macOS and Linux (glibc and static musl) on arm64 and x86_64. Upgrade with the channel you installed from: `brew upgrade`, `npm update -g`, or the same command again.
 
 `marion doctor` checks both binaries, the OS, the state directory and its socket path, git, and every harness it finds, and ends with `overall: ready: yes` or `no`. A harness newer than the last version marion verified is marked unmeasured. It still runs.
 
