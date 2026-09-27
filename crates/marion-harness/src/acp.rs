@@ -106,11 +106,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
     push: Push::None,
     // The protocol's own permission surface: the ACP driver answers `session/request_permission`
-    // itself, selecting an offered allow option (S21). No session mode was measured approving.
+    // itself, selecting an offered allow option (S21); an agent type's `approval_mode` is set on
+    // the session's mode select before the prompt (2026-09-22, all four measured agents).
     approval: Approval::SessionMode {
-        mode_ids: &[],
+        category: MODE_CATEGORY,
         note: "S21: marion's client answers session/request_permission with the agent's own \
-               allow option; no session/set_mode value is measured",
+               allow option; 2026-09-22: an agent type's approval_mode is set on the session's \
+               `mode` select (claude-agent-acp, codex-acp, copilot, opencode)",
     },
     client_name: None,
     delivery: Deliveries {

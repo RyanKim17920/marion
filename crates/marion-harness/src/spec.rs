@@ -334,12 +334,14 @@ pub enum Approval {
         note: &'static str,
     },
     /// A protocol's own permission surface, answered by marion's client — ACP's
-    /// `session/request_permission`, which the ACP driver answers itself. `mode_ids` are the
-    /// session modes (`session/set_mode`, or a mode config option) an agent was measured
-    /// approving in, in preference order; empty where none was measured and the requests are the
-    /// whole of it. The driver owns choosing one; the row only states them.
+    /// `session/request_permission`, which the ACP driver answers itself with the agent's own
+    /// allow option. An operator who wants the agent to stop asking names one of its modes as the
+    /// agent type's `approval_mode`, which the driver sets on the session's `category` select
+    /// (`acp::MODE_CATEGORY`) through the same `acp::SelectChannel` a model rides, refusing a
+    /// session that does not offer it. The modes are the agent's own strings, read off its
+    /// `session/new` answer; the row states only the select's category, never a second list.
     SessionMode {
-        mode_ids: &'static [&'static str],
+        category: &'static str,
         note: &'static str,
     },
     /// Only the **operator's own settings** can grant it, and marion never edits them: `rule`

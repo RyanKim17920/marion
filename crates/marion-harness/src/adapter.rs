@@ -8732,8 +8732,13 @@ mod tests {
                         "{h} ({name}): no `{key}={value}`: {:?}",
                         inv.env
                     ),
-                    Approval::SessionMode { .. } => {
-                        assert_eq!(h, Harness::Acp, "a session mode is a protocol's answer")
+                    Approval::SessionMode { category, .. } => {
+                        assert_eq!(h, Harness::Acp, "a session mode is a protocol's answer");
+                        assert_eq!(
+                            category,
+                            crate::acp::MODE_CATEGORY,
+                            "the select an approval_mode rides is the driver's own"
+                        );
                     }
                     Approval::OperatorAllowlist {
                         file,

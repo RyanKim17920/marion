@@ -353,9 +353,10 @@ fn approval_note(approval: Approval, home: Option<&Path>) -> String {
         Approval::EnvVar {
             key, value, scope, ..
         } => format!("approval: {kind} — marion sets `{key}={value}`, which approves {scope}"),
-        Approval::SessionMode { .. } => {
-            format!("approval: {kind} — marion's client answers the protocol's permission requests")
-        }
+        Approval::SessionMode { category, .. } => format!(
+            "approval: {kind} — marion's client answers the protocol's permission requests; an \
+             agent type's `approval_mode` sets the session's `{category}` select"
+        ),
         Approval::None { .. } => {
             format!("approval: {kind} — the harness asks nothing for an MCP tool")
         }
