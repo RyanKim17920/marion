@@ -831,3 +831,15 @@ fn no_key_on_a_stored_key_or_in_the_form_is_destructive() {
         assert!(!e.destructive(), "{k:?} in the form returned {e:?}");
     }
 }
+
+#[test]
+fn setup_shows_long_paths_by_their_ends() {
+    let short = view::short_place(
+        "file /private/tmp/mn-501/marion-home-e2e-run-83954-t4/config/marion/keys.json",
+    );
+    assert!(short.starts_with("file /private/"), "{short}");
+    assert!(short.ends_with("marion/keys.json"), "{short}");
+    assert!(short.chars().count() <= "file ".len() + 36, "{short}");
+    let keychain = "macOS Keychain (service \"marion\")";
+    assert_eq!(view::short_place(keychain), keychain);
+}

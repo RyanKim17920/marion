@@ -486,8 +486,8 @@ fn setup(home: &Home, places: &Places) -> SetupView {
         cursor: home.setup.cursor,
         expanded: home.setup.expanded,
         project: vec![
-            ("repo".into(), places.project.clone()),
-            ("state".into(), places.state.clone()),
+            ("checkout".into(), places.project.clone()),
+            ("state".into(), short_place(&places.state)),
             ("agents".into(), crate::run::AGENT_TYPES_FILE.into()),
         ],
         agent_types: home
@@ -518,6 +518,24 @@ fn setup(home: &Home, places: &Places) -> SetupView {
     }
 }
 
+/// The widest a path is shown on Setup: its start and its end, the middle elided.
+const PLACE_W: usize = 36;
+
+/// Every absolute path in `text` `~`-shortened and, past [`PLACE_W`], middle-elided: a state
+/// directory under `/private/tmp/…` is recognisable by its ends.
+pub fn short_place(text: &str) -> String {
+    text.split(' ')
+        .map(|w| {
+            if w.starts_with('/') || w.starts_with('~') {
+                marion_tui::home::text::clip_middle(&tilde(w), PLACE_W)
+            } else {
+                w.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The line under the stored keys: why they could not be listed, else where they are kept and
 /// what the keys do. Subscription logins are never marion's: they stay with each harness's CLI.
 fn logins_note(home: &Home) -> String {
@@ -527,6 +545,7 @@ fn logins_note(home: &Home) -> String {
     let Some(store) = &home.setup.store else {
         return "listing keys…".into();
     };
+    let store = &short_place(store);
     if home.setup.logins.is_empty() {
         format!(
             "no API keys stored ({store}) · `a` adds one with `marion login <provider>`; \

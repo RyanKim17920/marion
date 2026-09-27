@@ -77,6 +77,27 @@ pub fn clip_left(s: &str, w: usize) -> String {
     std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
+/// `s` in at most `w` columns, keeping both ends and eliding the middle: for a path, whose start
+/// says where and whose end says what.
+pub fn clip_middle(s: &str, w: usize) -> String {
+    if width(s) <= w {
+        return s.to_string();
+    }
+    if w < 3 {
+        return clip(s, w);
+    }
+    // `clip` and `clip_left` each spend one column on their own `…`: ask each for one more.
+    let tail_w = (w - 1) / 2;
+    let head_w = w - 1 - tail_w;
+    let head = clip(s, head_w + 1);
+    let tail = clip_left(s, tail_w + 1);
+    format!(
+        "{}…{}",
+        head.trim_end_matches('…'),
+        tail.trim_start_matches('…')
+    )
+}
+
 /// Clip, then right-pad with spaces to exactly `w` columns.
 pub fn pad(s: &str, w: usize) -> String {
     let c = clip(s, w);
@@ -324,6 +345,15 @@ mod tests {
         assert_eq!(clip("日本語版", 8), "日本語版");
         assert_eq!(width(&clip("日本語版", 6)), 5, "{}", clip("日本語版", 6));
         assert_eq!(clip("日本語版", 6), "日本…");
+    }
+
+    #[test]
+    fn clip_middle_keeps_both_ends() {
+        assert_eq!(clip_middle("abcdef", 6), "abcdef");
+        assert_eq!(clip_middle("abcdefghij", 7), "abc…hij");
+        assert_eq!(width(&clip_middle("abcdefghij", 7)), 7);
+        assert_eq!(clip_middle("/private/tmp/run/state", 12), "/priva…state");
+        assert_eq!(clip_middle("abcdef", 2), "a…");
     }
 
     #[test]
