@@ -1314,10 +1314,15 @@ pub struct TokenCarriers {
 
 impl TokenCarriers {
     /// Both modes carry the token inside the declaration.
-    pub const DECLARATION: TokenCarriers = TokenCarriers {
-        canned: TokenCarrier::Declaration,
-        live: TokenCarrier::Declaration,
-    };
+    pub const DECLARATION: TokenCarriers = TokenCarriers::both(TokenCarrier::Declaration);
+
+    /// One carrier for both modes, where the route does not change with the auth mode.
+    pub const fn both(carrier: TokenCarrier) -> TokenCarriers {
+        TokenCarriers {
+            canned: carrier,
+            live: carrier,
+        }
+    }
 
     /// The carrier for a launch under `auth` — endpoint rides the canned route, as
     /// `HarnessAdapter::mcp_route` has it.
