@@ -221,6 +221,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/message/usage/output",
         cache_read: Some("/message/usage/cacheRead"),
         cache_write: Some("/message/usage/cacheWrite"),
+        reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Sum,
     }),

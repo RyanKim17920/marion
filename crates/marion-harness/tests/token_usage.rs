@@ -108,6 +108,25 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
     }
 }
 
+/// **opencode 1.18.32's `step_finish`, measured non-zero** (`s36-opencode-parity/`): the provider
+/// answered one text turn with `prompt_tokens` 1000 (300 of them `cached_tokens`) and
+/// `completion_tokens` 50 (7 of them `reasoning_tokens`), and opencode split both — `input` 700,
+/// `cache.read` 300, `output` 43, `reasoning` 7, `total` 1050. So its `input` excludes the cache
+/// reads and its `output` excludes the reasoning, and marion's record counts every generated token
+/// in `output`, as codex's and claude's counters already do: the four counters sum to the
+/// harness's own `total`.
+#[test]
+fn opencodes_measured_step_finish_counts_reasoning_as_output_and_sums_to_its_own_total() {
+    let stdout = fixture!("s36-opencode-parity/run-usage.stdout.jsonl");
+    let usage = usage_of(Harness::OpenCode, None, stdout).expect("a step_finish was read");
+    assert_eq!(usage, tokens(700, 50, 300, 0));
+    let reported_total = json_frames(stdout)
+        .iter()
+        .find_map(|f| f.pointer("/part/tokens/total").and_then(|t| t.as_u64()))
+        .expect("the measured step_finish carries opencode's own total");
+    assert_eq!(usage.total(), reported_total);
+}
+
 #[test]
 fn a_stream_that_never_reached_its_usage_frame_reports_no_usage() {
     // The first frame of each measured stream alone: the run was killed before it said anything

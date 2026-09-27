@@ -281,6 +281,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/aggregateUsage/outputTokens",
         cache_read: Some("/aggregateUsage/cacheReadTokens"),
         cache_write: Some("/aggregateUsage/cacheWriteTokens"),
+        reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
     }),
