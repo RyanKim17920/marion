@@ -1601,6 +1601,17 @@ ever runs a real login.
   `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
   (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
   ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
+- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+  credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
+  checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
+  and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
+  rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
+  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
+  5xx/connection failure *before* the child's first successful turn, relaunch on the next
+  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
+  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  `profile` field selecting one of several native harness profiles the user set up
+  (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
   overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
   endpoint's env keys, documents and MCP route equal to canned's on every harness, bar the

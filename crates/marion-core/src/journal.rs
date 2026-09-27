@@ -347,6 +347,10 @@ pub struct Spawned {
     /// serves the harness's own wire. `None` wherever `provider` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// Which of the provider's credentials the node presented, by id (`openrouter:work`) — never
+    /// the key. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -641,6 +645,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }),
             RecordKind::SpawnAborted(SpawnAborted {
                 agent_id: AgentId("a-1".into()),
@@ -811,6 +816,7 @@ mod tests {
             start_id: None,
             provider: None,
             route: None,
+            credential: None,
         };
         let line = serde_json::to_string(&RecordKind::Spawned(without)).unwrap();
         assert_eq!(
@@ -827,6 +833,7 @@ mod tests {
             start_id: Some(crate::node::StartId("darwin-p_starttime:ab".into())),
             provider: None,
             route: None,
+            credential: None,
         };
         let line = serde_json::to_string(&RecordKind::Spawned(with.clone())).unwrap();
         assert!(

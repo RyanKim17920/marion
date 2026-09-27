@@ -83,6 +83,7 @@ pub struct ReplayedNode {
     /// which may have changed since.
     pub provider: Option<String>,
     pub route: Option<String>,
+    pub credential: Option<String>,
     /// The harness's own name for this node's conversation, from the last [`SessionObserved`]
     /// the journal carries — the handle a resume hands back to the harness. `None` is honest and
     /// common: no producer has written the record yet, the harness's first frame never arrived, or
@@ -158,6 +159,7 @@ impl ReplayedNode {
             start_id: None,
             provider: None,
             route: None,
+            credential: None,
             harness_session: None,
             harness_pane: false,
             launch_workspace: None,
@@ -365,6 +367,7 @@ impl ReplayedNode {
         self.start_id = s.start_id;
         self.provider = s.provider;
         self.route = s.route;
+        self.credential = s.credential;
         if self.spawn_generation > 1 {
             self.state = NodeState::Spawning;
             self.exit = None;
@@ -767,6 +770,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             })),
             next(RecordKind::SpawnIntent(SpawnIntent {
                 agent_id: id("child"),
@@ -786,6 +790,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             })),
             next(RecordKind::StateChanged(StateChanged {
                 agent_id: id("child"),
@@ -1151,6 +1156,7 @@ mod tests {
                 start_id: Some(new_start.clone()),
                 provider: None,
                 route: None,
+                credential: None,
             }),
         )]));
 
@@ -1384,6 +1390,7 @@ mod tests {
                     start_id: None,
                     provider: None,
                     route: None,
+                    credential: None,
                 }),
             ),
             at(
@@ -1462,6 +1469,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }),
         )];
         let r = replay(&bytes(&j));
@@ -1898,6 +1906,7 @@ mod tests {
             start_id: None,
             provider: None,
             route: None,
+            credential: None,
         });
         let mut bytes = Vec::new();
         for (seq, kind) in [intent(), spawned, observed].into_iter().enumerate() {

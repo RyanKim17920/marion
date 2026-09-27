@@ -252,6 +252,10 @@ pub struct AgentType {
     /// provider: the node runs canned or on the operator's own login. A `<provider>:<model>`
     /// prefix on `model` names one too; this field is the explicit spelling.
     pub provider: Option<String>,
+    /// The order a node of this type tries its provider's credentials in (`credentials =
+    /// ["openrouter:work", "openrouter"]`), each a `marion_core::provider::CredentialId` of
+    /// [`Self::provider`]. Empty — every built-in — defers to the user's own order.
+    pub credentials: Vec<String>,
 }
 
 impl AgentType {
@@ -319,6 +323,7 @@ impl AgentType {
             prompt_prefix: None,
             approval_mode: None,
             provider: None,
+            credentials: Vec::new(),
         }
     }
 }
@@ -701,6 +706,12 @@ pub enum AgentTypesError {
          letters, digits and `-`); `marion login --list` shows the providers marion knows"
     )]
     InvalidProvider { name: String, provider: String },
+    #[error(
+        "agent type {name:?} lists credential {credential:?}, which is not a credential id of its \
+         provider (`<provider>` or `<provider>:<label>`, and a row that lists credentials names \
+         its provider)"
+    )]
+    InvalidCredential { name: String, credential: String },
 }
 
 /// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: Claude Code as
@@ -730,6 +741,7 @@ struct FileRow {
     prompt_prefix: Option<String>,
     approval_mode: Option<String>,
     provider: Option<String>,
+    credentials: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -844,7 +856,18 @@ impl FileRow {
                 provider: provider.clone(),
             });
         }
+        let credentials = self.credentials.unwrap_or_default();
+        if let Some(bad) = credentials.iter().find(|c| {
+            crate::provider::CredentialId::parse(c)
+                .is_none_or(|id| Some(&id.provider) != self.provider.as_ref())
+        }) {
+            return Err(AgentTypesError::InvalidCredential {
+                name: self.name,
+                credential: bad.clone(),
+            });
+        }
         Ok(AgentType {
+            credentials,
             model: self.model,
             acp_agent,
             tools,
@@ -1448,6 +1471,31 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
             matches!(err, AgentTypesError::InvalidProvider { .. }),
             "{err}"
         );
+    }
+
+    /// **`credentials` orders a row's keys for its provider** — ids of that provider only.
+    #[test]
+    fn a_rows_credentials_are_its_providers_own_ids() {
+        let row = |extra: &str| {
+            AgentTypes::parse(&format!(
+                "[[agent]]\nname = \"x\"\nharness = \"codex\"\ndescription = \"d\"\n\
+                 provider = \"openrouter\"\n{extra}"
+            ))
+        };
+        let t = row("credentials = [\"openrouter:work\", \"openrouter\"]\n")
+            .unwrap()
+            .resolve("x")
+            .unwrap();
+        assert_eq!(t.credentials, vec!["openrouter:work", "openrouter"]);
+        for bad in [
+            "credentials = [\"groq:work\"]\n",
+            "credentials = [\"Open:x\"]\n",
+        ] {
+            assert!(
+                matches!(row(bad), Err(AgentTypesError::InvalidCredential { .. })),
+                "{bad}"
+            );
+        }
     }
 
     /// **`approval_mode` is an ACP row's session mode**, carried verbatim, and refused by name on

@@ -1871,6 +1871,7 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
             .endpoint
             .as_ref()
             .map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        credential: node.endpoint.as_ref().map(|e| e.credential.to_string()),
     }
 }
 

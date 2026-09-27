@@ -355,6 +355,12 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
         "{who}"
     );
     assert_eq!(contract.child.route.as_deref(), Some("native"), "{who}");
+    // The credential by id — the provider's unlabelled one here — and never the key.
+    assert_eq!(
+        contract.child.credential.as_deref(),
+        Some(cell.provider),
+        "{who}"
+    );
     assert_eq!(ev.persisted.len(), 1, "{who}");
     // The key is in no record marion keeps.
     for (what, text) in [

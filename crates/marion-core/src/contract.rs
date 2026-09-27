@@ -243,6 +243,10 @@ pub struct ChildRef {
     /// serves the harness's own wire. `None` wherever `provider` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// Which of the provider's credentials the node presented, by id (`openrouter:work`) — never
+    /// the key. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the

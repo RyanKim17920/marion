@@ -1964,6 +1964,7 @@ pub fn run_spawn_watched(
     contract.child.route = endpoint
         .as_ref()
         .map(|_| crate::endpoint::ROUTE_NATIVE.to_string());
+    contract.child.credential = endpoint.as_ref().map(|e| e.credential.to_string());
     // **The third field sourced from what ran rather than from what was asked for**, joining
     // `harness` and `model` above (`32ec905`). §6.7's `allowed_tools` records *"the compiled,
     // harness-native constraint — or the harness's coarsest equivalent where it has no per-tool
@@ -2332,6 +2333,7 @@ fn child_spawned_record(
         },
         provider: endpoint.map(|e| e.provider.clone()),
         route: endpoint.map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        credential: endpoint.map(|e| e.credential.to_string()),
     }
 }
 

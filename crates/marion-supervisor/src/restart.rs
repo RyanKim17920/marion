@@ -344,6 +344,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }))
         }
 
@@ -813,6 +814,7 @@ mod tests {
             start_id: None,
             provider: None,
             route: None,
+            credential: None,
         });
         let n = log.0.len() as u64;
         let mut tail = Log::default();

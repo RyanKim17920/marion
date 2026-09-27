@@ -1309,6 +1309,7 @@ pub fn build_contract(
             model: None,
             provider: None,
             route: None,
+            credential: None,
         },
         repo,
         base_commit: base,

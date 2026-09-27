@@ -404,6 +404,7 @@ impl NativeNodeRecorder for NativeNodeJournal {
             },
             provider: None,
             route: None,
+            credential: None,
         }));
         // **`Running` from the instant the process holds its pane** — the same record, for the
         // same reason, that `journal::confirm_spawned` writes beside a managed node's `Spawned`:

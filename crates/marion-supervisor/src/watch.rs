@@ -365,6 +365,7 @@ mod tests {
                     start_id: None,
                     provider: None,
                     route: None,
+                    credential: None,
                 }),
             ),
         );

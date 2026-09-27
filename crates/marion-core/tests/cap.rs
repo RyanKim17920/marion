@@ -45,6 +45,7 @@ fn contract(comp: Completion) -> TaskContract {
             model: None,
             provider: None,
             route: None,
+            credential: None,
         },
         repo: RepoIdentity {
             git_common_dir: Some("/repo/.git".into()),

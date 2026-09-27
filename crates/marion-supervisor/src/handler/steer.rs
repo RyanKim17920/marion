@@ -337,6 +337,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }));
             self.write(RecordKind::StateChanged(StateChanged {
                 agent_id: id(agent),
@@ -539,6 +540,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }),
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("native"),

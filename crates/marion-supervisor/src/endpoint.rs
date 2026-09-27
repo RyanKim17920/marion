@@ -13,7 +13,7 @@
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
-use marion_core::provider::{Registry, Wire};
+use marion_core::provider::{CredentialId, Registry, Wire};
 use marion_harness::{Auth, LaunchSpec};
 
 use crate::credentials::{CredentialStore, Secret};
@@ -29,6 +29,11 @@ pub struct Endpoint {
     pub base_url: String,
     /// `None` for a provider that authenticates nothing (a local server).
     pub key: Option<Secret>,
+    /// Which of the provider's credentials [`Self::key`] is — recorded, never the key itself.
+    pub credential: CredentialId,
+    /// The credentials after it in the order tried — what a rotation would move to next. Nothing
+    /// moves through them yet.
+    pub fallbacks: Vec<CredentialId>,
     /// The model id the provider is asked for, prefix removed.
     pub model: String,
 }
@@ -46,8 +51,10 @@ pub enum EndpointError {
          agent type)"
     )]
     NoModel(String),
-    #[error("no key is stored for provider `{0}`; run `marion login {0}`")]
-    LoggedOut(String),
+    #[error(
+        "no key is stored for provider `{provider}` (tried {tried}); run `marion login {provider}`"
+    )]
+    LoggedOut { provider: String, tried: String },
     #[error(
         "{harness} speaks {harness_wires} and provider `{provider}` serves {provider_wires}; no \
          wire is shared, and translating between them is not built yet"
@@ -101,12 +108,61 @@ fn named_provider<'m>(
     None
 }
 
-/// Resolve a launch's endpoint. `Ok(None)` is a launch that names no provider.
+/// The order `provider`'s credentials are tried in: the type's own list, else the user's stated
+/// `[credentials]` order, else login order with the unlabelled id last — never empty.
+fn credential_order(
+    provider: &str,
+    agent_type: &AgentType,
+    registry: &Registry,
+    logins: &[CredentialId],
+) -> Vec<CredentialId> {
+    let typed: Vec<CredentialId> = agent_type
+        .credentials
+        .iter()
+        .filter_map(|c| CredentialId::parse(c))
+        .filter(|c| c.provider == provider)
+        .collect();
+    if !typed.is_empty() {
+        return typed;
+    }
+    if let Some(order) = registry
+        .credential_order(provider)
+        .filter(|o| !o.is_empty())
+    {
+        return order.to_vec();
+    }
+    let mut order: Vec<CredentialId> = logins
+        .iter()
+        .filter(|c| c.provider == provider)
+        .cloned()
+        .collect();
+    let default = CredentialId::default_for(provider);
+    if !order.contains(&default) {
+        order.push(default);
+    }
+    order
+}
+
+/// Resolve a launch's endpoint against the seed-plus-user registry and a store, with no login
+/// index: the provider's unlabelled credential alone, unless the type or the registry orders more.
 pub fn resolve_endpoint(
     model_req: Option<&str>,
     agent_type: &AgentType,
     harness_wires: &[Wire],
     registry: &Registry,
+    store: &dyn CredentialStore,
+) -> Result<Option<Endpoint>, EndpointError> {
+    resolve_endpoint_with(model_req, agent_type, harness_wires, registry, &[], store)
+}
+
+/// Resolve a launch's endpoint. `Ok(None)` is a launch that names no provider. `logins` is the
+/// user's login index, the last word on credential order.
+pub fn resolve_endpoint_with(
+    model_req: Option<&str>,
+    agent_type: &AgentType,
+    harness_wires: &[Wire],
+    registry: &Registry,
+    logins: &[CredentialId],
     store: &dyn CredentialStore,
 ) -> Result<Option<Endpoint>, EndpointError> {
     let Some((id, model)) = named_provider(registry, model_req, agent_type) else {
@@ -127,20 +183,36 @@ pub fn resolve_endpoint(
             harness_wires: wire_list(harness_wires),
             provider_wires: provider.wire_list(),
         })?;
-    let key = if provider.auth.needs_credential() {
-        let key = store
-            .get(&id)
-            .map_err(|e| EndpointError::Config(e.to_string()))?
-            .ok_or_else(|| EndpointError::LoggedOut(id.clone()))?;
-        Some(key)
+    let order = credential_order(&id, agent_type, registry, logins);
+    let (credential, key, fallbacks) = if provider.auth.needs_credential() {
+        let mut found = None;
+        for (i, c) in order.iter().enumerate() {
+            let key = store
+                .get(&c.to_string())
+                .map_err(|e| EndpointError::Config(e.to_string()))?;
+            if let Some(k) = key {
+                found = Some((c.clone(), Some(k), order[i + 1..].to_vec()));
+                break;
+            }
+        }
+        found.ok_or_else(|| EndpointError::LoggedOut {
+            provider: id.clone(),
+            tried: order
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        })?
     } else {
-        None
+        (CredentialId::default_for(&id), None, Vec::new())
     };
     Ok(Some(Endpoint {
         provider: id,
         wire,
         base_url,
         key,
+        credential,
+        fallbacks,
         model,
     }))
 }
@@ -158,11 +230,15 @@ pub fn resolve_for_launch(
     }
     let store =
         crate::credentials::default_store().map_err(|e| EndpointError::Config(e.to_string()))?;
-    resolve_endpoint(
+    let logins = crate::credentials::Logins::user()
+        .and_then(|l| l.all())
+        .map_err(|e| EndpointError::Config(e.to_string()))?;
+    resolve_endpoint_with(
         model_req,
         agent_type,
         harness_wires,
         &registry,
+        &logins,
         store.as_ref(),
     )
 }
@@ -419,6 +495,8 @@ mod tests {
             wire: Wire::OpenAiChat,
             base_url: "https://api.groq.com/openai/v1".into(),
             key: Some(Secret::new("gsk-test-key-1").unwrap()),
+            credential: CredentialId::default_for("groq"),
+            fallbacks: vec![],
             model: "llama".into(),
         };
         apply(&mut launch, &ep);
@@ -477,6 +555,75 @@ mod tests {
         assert_eq!(
             (ep.provider.as_str(), ep.model.as_str()),
             ("openrouter", "anthropic/claude-sonnet-4")
+        );
+    }
+
+    /// **Which of a provider's credentials a launch uses**: the type's own `credentials` list,
+    /// else the `[credentials]` order the user stated, else login order — the first with a stored
+    /// key, with the rest kept as the fallbacks a later rotation would move through.
+    #[test]
+    fn the_first_credential_with_a_key_in_the_stated_order_is_used() {
+        let reg = Registry::with_custom(
+            "[credentials]\nopenrouter = [\"openrouter:work\", \"openrouter:personal\"]\n",
+        )
+        .unwrap();
+        let id = |s: &str| CredentialId::parse(s).unwrap();
+        let store = MemStore::with("openrouter:personal", "sk-personal-1");
+        let logins = vec![id("openrouter:personal"), id("openrouter:work")];
+        let ep = resolve_endpoint_with(
+            Some("openrouter:m"),
+            &ty(Harness::OpenCode, None, None),
+            CHAT,
+            &reg,
+            &logins,
+            &store,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ep.credential,
+            id("openrouter:personal"),
+            "work has no key, so personal"
+        );
+        assert_eq!(ep.key.unwrap().expose(), "sk-personal-1");
+        assert!(ep.fallbacks.is_empty());
+        // The type's own list wins over the file's order.
+        store
+            .put("openrouter:work", &Secret::new("sk-work-1").unwrap())
+            .unwrap();
+        let mut t = ty(Harness::OpenCode, None, None);
+        t.credentials = vec!["openrouter:personal".into(), "openrouter:work".into()];
+        let ep = resolve_endpoint_with(Some("openrouter:m"), &t, CHAT, &reg, &logins, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.credential, id("openrouter:personal"));
+        assert_eq!(ep.fallbacks, vec![id("openrouter:work")]);
+        // With no stated order, login order; and a refusal names every id it tried.
+        let seed = Registry::seed();
+        let ep = resolve_endpoint_with(
+            Some("openrouter:m"),
+            &ty(Harness::OpenCode, None, None),
+            CHAT,
+            &seed,
+            &logins,
+            &store,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ep.credential, id("openrouter:personal"));
+        let err = resolve_endpoint_with(
+            Some("openrouter:m"),
+            &ty(Harness::OpenCode, None, None),
+            CHAT,
+            &reg,
+            &logins,
+            &MemStore::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("openrouter:work, openrouter:personal") && err.contains("marion login"),
+            "{err}"
         );
     }
 

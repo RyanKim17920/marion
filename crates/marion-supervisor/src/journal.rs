@@ -469,6 +469,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             }))
             .unwrap();
             j.append(intent("child", Some("root"))).unwrap();
@@ -624,6 +625,7 @@ mod tests {
                 start_id: None,
                 provider: None,
                 route: None,
+                credential: None,
             },
         )
         .expect("the confirmation lands");

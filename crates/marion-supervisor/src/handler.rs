@@ -4939,6 +4939,7 @@ mod tests {
                     start_id: None,
                     provider: None,
                     route: None,
+                    credential: None,
                 }),
             )],
             "no-intent",
@@ -5148,6 +5149,7 @@ mod tests {
             start_id: None,
             provider: None,
             route: None,
+            credential: None,
         })
     }
 
@@ -5427,6 +5429,7 @@ mod tests {
                     start_id: None,
                     provider: None,
                     route: None,
+                    credential: None,
                 }),
             ),
         );
@@ -11851,6 +11854,7 @@ mod tests {
                     start_id,
                     provider: None,
                     route: None,
+                    credential: None,
                 }),
                 RecordKind::SessionObserved(marion_core::journal::SessionObserved {
                     agent_id: id("root"),
@@ -11887,6 +11891,7 @@ mod tests {
                     start_id: None,
                     provider: None,
                     route: None,
+                    credential: None,
                 })
             };
             let session = |agent: &str, ws: Option<marion_core::contract::Workspace>| {
