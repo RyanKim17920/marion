@@ -41,9 +41,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -207,6 +207,25 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Chat first: it is the wire harness_matrix's copilot cell has always proved. Responses
     // (`COPILOT_PROVIDER_WIRE_API=responses`) is documented and unmeasured, so it is not a recipe.
+    // S37 first screens (1.0.83, `tests/fixtures/s37-boot-dialogs/copilot-1.0.83.raw`): a fresh
+    // directory opens on `Confirm folder trust`, selection on `1. Yes` (this session only). CR
+    // selects it and the composer draws; nothing is remembered past the session.
+    boot_dialogs: BootDialogs {
+        dialogs: &[
+            BootDialog {
+                needle: "❯ 1. Yes",
+                answer: DialogAnswer::Keys(b"\r"),
+                note: "S37 1.0.83 folder trust, default `1. Yes` (this session): CR trusts",
+            },
+            BootDialog {
+                needle: "Do you trust the files in this folder?",
+                answer: DialogAnswer::Hold,
+                note: "the same dialog with a selection S37 did not measure",
+            },
+        ],
+        note: "S37 1.0.83, fresh directory, the operator's login under COPILOT_AUTO_UPDATE=false: \
+               folder trust is the only dialog before the composer",
+    },
     wires: &[
         WireRecipe {
             wire: Wire::OpenAiChat,

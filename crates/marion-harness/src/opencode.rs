@@ -24,9 +24,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -242,6 +242,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             "S31 p0b/tui/opencode (1.18.32): bracketed paste + CR submits at 0 ms; busy repaints \
              ≤ 361 ms; no structured turn-end signal",
         ),
+    },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "S37 1.18.32, fresh directory, the operator's login: the first screen is the \
+               composer, no dialog",
     },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,

@@ -47,9 +47,9 @@ use serde_json::{Value, json};
 
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -196,6 +196,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "qwen's TUI was not measured (S31 probed codex, opencode, copilot and claude), \
                    and its native lane ships disabled",
         },
+    },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "qwen's TUI was not measured",
     },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,

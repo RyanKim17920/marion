@@ -128,6 +128,12 @@ pub struct HarnessSpec {
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
     /// surfaces_can_carry` checks each strategy against the rest of the row.
     pub delivery: Deliveries,
+    /// **The dialogs this harness's TUI can put up before its composer exists** — measured first
+    /// screens in a fresh directory. A paste typed into one answers it: claude 2.1.283's folder
+    /// trust defaults to `No, exit`, so a paste + CR quits the session. The paste driver holds
+    /// while one is on screen, and answers only a dialog the row marks answerable, only in a
+    /// workspace marion created ([`DialogAnswer`]).
+    pub boot_dialogs: BootDialogs,
     /// The wires this harness can be pointed at in **endpoint mode**, as recipes, in its order of
     /// preference — only ones this row can actually render, so a provider serving a wire the
     /// harness could speak but the row cannot yet aim it at is refused rather than half-configured.
@@ -304,6 +310,43 @@ pub enum MidTurn {
 pub enum IdleSignal {
     /// No output for `ms` milliseconds.
     OutputQuiet { ms: u32 },
+}
+
+/// A row's [`BootDialog`]s, with the measurement behind them — `dialogs` empty and `note` saying
+/// what was searched where none was seen, or why the first screen was not measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootDialogs {
+    pub dialogs: &'static [BootDialog],
+    pub note: &'static str,
+}
+
+/// **One dialog a TUI can show before its composer**, recognised by `needle`: text on the screen
+/// as the pty host reads it — visible characters, with every run of spaces, line breaks and
+/// cursor moves read as one space (claude draws `No, exit` as `No,` `ESC[8G` `exit`).
+///
+/// Where the TUI marks its selection, the needle includes the marker and the selected option
+/// (`❯ No, exit`): the answer's keys are only right for the selection that was measured, so a
+/// release that moves the default no longer matches as answerable. Such a release still shows
+/// the dialog, so a row lists a second, marker-free needle with [`DialogAnswer::Hold`] beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootDialog {
+    pub needle: &'static str,
+    pub answer: DialogAnswer,
+    pub note: &'static str,
+}
+
+/// What marion may do about a [`BootDialog`] on a node's screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogAnswer {
+    /// Safe to answer **in a workspace marion created** — folder trust for a worktree marion made
+    /// is marion's own decision — with these keys, written once, as measured. Anywhere else (an
+    /// operator's own directory) the dialog is the operator's, and the paste waits as for
+    /// [`DialogAnswer::Hold`].
+    Keys(&'static [u8]),
+    /// Never answered by marion: a login or a consent screen, or a dialog whose answer was not
+    /// measured. The paste waits for someone else to dismiss it, and is dropped by name past the
+    /// grace.
+    Hold,
 }
 
 /// **The one resolver**: the row's strategy for a node of this shape. No harness is named here —

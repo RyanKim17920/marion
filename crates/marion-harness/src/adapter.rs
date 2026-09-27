@@ -8990,6 +8990,49 @@ mod tests {
         }
     }
 
+    /// **Every row states the dialogs its TUI shows before the composer**, with the measurement —
+    /// an empty list included, whose note says what was searched. A needle is written the way the
+    /// pty host reads a screen (one space between words, nothing leading or trailing), or it could
+    /// never match; answer keys are never empty; and a row that answers a dialog also names the
+    /// dialog marker-free as `Hold`, so a release that moves the selection is held, not answered
+    /// with keys measured for another selection. Whether each needle is on its measured screen is
+    /// the supervisor's test (`pty::input`), which owns the reader.
+    #[test]
+    fn every_row_states_its_boot_dialogs_as_the_pty_host_reads_them() {
+        use crate::spec::DialogAnswer;
+        for h in Harness::ALL {
+            let row = harness_spec(h).boot_dialogs;
+            assert!(
+                !row.note.trim().is_empty(),
+                "{h}: boot dialogs without the measurement behind them"
+            );
+            for d in row.dialogs {
+                assert!(!d.note.trim().is_empty(), "{h}: {:?} has no note", d.needle);
+                let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    !d.needle.is_empty() && d.needle == normal,
+                    "{h}: needle {:?} is not written as the host reads a screen",
+                    d.needle
+                );
+                if let DialogAnswer::Keys(keys) = d.answer {
+                    assert!(!keys.is_empty(), "{h}: {:?} answers with nothing", d.needle);
+                }
+            }
+            if row
+                .dialogs
+                .iter()
+                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)))
+            {
+                assert!(
+                    row.dialogs
+                        .last()
+                        .is_some_and(|d| d.answer == DialogAnswer::Hold),
+                    "{h}: an answered dialog needs a held, marker-free needle after it"
+                );
+            }
+        }
+    }
+
     /// **A claude node that took two turns spent both turns' tokens.** Measured on 2.1.280
     /// (S31 `p0a/out/a`, two stream-json turns in one process): each `result` frame's `usage` is
     /// that turn's alone (10 in / 5 out, twice) while `modelUsage` and `total_cost_usd` run

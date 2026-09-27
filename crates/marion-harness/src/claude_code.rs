@@ -19,9 +19,9 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When, WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -219,6 +219,26 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    message is not delivered; bracketed paste into the TUI is measured to work \
                    (p0b/tui/claude) and is the fallback a later phase may add",
         },
+    },
+    // S37 first screens (2.1.283, `tests/fixtures/s37-boot-dialogs/claude-code-2.1.283.raw`): a
+    // fresh directory opens on folder trust, selection on `No, exit`. A bare CR quits the session
+    // (measured: the process exited); down-arrow + CR in one write trusts and opens the composer.
+    boot_dialogs: BootDialogs {
+        dialogs: &[
+            BootDialog {
+                needle: "❯ No, exit Yes, I trust this folder",
+                answer: DialogAnswer::Keys(b"\x1b[B\r"),
+                note: "S37 2.1.283 folder trust, default `No, exit`: `ESC[B` + CR as one write \
+                       selects `Yes, I trust this folder` and the composer draws; CR alone exits",
+            },
+            BootDialog {
+                needle: "Is this a project you created or one you trust?",
+                answer: DialogAnswer::Hold,
+                note: "the same dialog with a selection S37 did not measure",
+            },
+        ],
+        note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
+               onboarding done: folder trust is the only dialog before the composer",
     },
     wires: &[WireRecipe {
         wire: Wire::AnthropicMessages,

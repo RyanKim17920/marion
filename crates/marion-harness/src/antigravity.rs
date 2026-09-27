@@ -36,8 +36,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration, MCP_ALIAS,
-    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration,
+    MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
     UpdatePolicy,
 };
 
@@ -81,6 +81,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[],
     // No canned route and so no overlay to point at an endpoint: agy runs only on the operator's
     // own login, and an endpoint launch is refused like a canned one.
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "agy's first screen was not measured for dialogs, and its native lane ships disabled",
+    },
     wires: &[],
     stream: Some(&STREAM),
     // `read` → `view_file`, `write` → `write_to_file`: the names 1.2.8's `init.tools` lists and

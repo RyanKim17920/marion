@@ -18,9 +18,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -163,6 +163,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         interactive: TurnDelivery::None {
             note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
         },
+    },
+    // S37 first screen (0.53.0, `tests/fixtures/s37-boot-dialogs/gemini-0.53.0.raw`): folder
+    // trust, selection on `1. Trust folder`. Its answer was not measured (it persists to the
+    // operator's trustedFolders), and the row takes no paste, so it is held.
+    boot_dialogs: BootDialogs {
+        dialogs: &[BootDialog {
+            needle: "Do you trust the files in this folder?",
+            answer: DialogAnswer::Hold,
+            note: "S37 0.53.0 folder trust; its answer persists and was not measured",
+        }],
+        note: "S37 0.53.0, fresh directory, the operator's login, terminal queries answered: \
+               folder trust before the composer",
     },
     wires: &[WireRecipe {
         wire: Wire::Gemini,
