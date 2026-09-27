@@ -84,6 +84,9 @@ mode=ok
 cfg=; prev=
 for a in "$@"; do [ "$prev" = --mcp-config ] && cfg=$a; prev=$a; done
 ready=$(tr -d '\n' < "$cfg" | sed -n 's/.*"MARION_READY_FILE"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+# Whether marion handed this process a readiness marker some earlier process had already touched:
+# a stale one would let the prompt go out before this process's own bridge is up.
+if [ -e "$ready" ]; then echo stale >> {log}.ready; else echo fresh >> {log}.ready; fi
 [ -n "$ready" ] && : > "$ready"
 IFS= read -r init
 id=$(printf '%s' "$init" | sed -n 's/.*"request_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -560,6 +563,12 @@ fn a_usage_limit_is_a_notice_and_never_a_relaunch_or_a_failover() {
 fn a_refused_login_fails_over_to_the_next_listed_profile() {
     let bed = bed("profiles-auth", "auth", "ok");
     let (id, contract) = bed.child("two-accounts");
+    let ready = std::fs::read_to_string(bed.log.with_extension("log.ready")).unwrap();
+    assert_eq!(
+        ready.lines().collect::<Vec<_>>(),
+        ["fresh", "fresh"],
+        "each launch waits on a marker its own bridge writes"
+    );
     let runs: Vec<String> = bed.invocations("claude").into_iter().map(|r| r.0).collect();
     assert_eq!(
         runs,
