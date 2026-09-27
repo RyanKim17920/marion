@@ -1,0 +1,1 @@
+{"t": 1790541339.3467898, "path": "/v1/chat/completions", "model": "canned-1", "tools": ["bash", "edit", "glob", "grep", "read", "skill", "slow_report", "task", "todowrite", "webfetch", "write"], "stream_options": {"include_usage": true}, "roles": ["system", "user"]}

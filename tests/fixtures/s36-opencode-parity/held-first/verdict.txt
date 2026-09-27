@@ -1,0 +1,3 @@
+first request held for 20 s; frames on stdout 3 s into the hold:        0
+frames after the run:        3
+FAIL: no frame, so no session id, until the first response streams

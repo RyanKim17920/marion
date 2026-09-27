@@ -35,7 +35,13 @@
 //! cargo test -p marion-supervisor --test restart_resume
 //! ```
 //!
-//! It needs a real `codex` on `PATH`. Every model call is the CannedServer's: no paid tokens.
+//! The lost-child arc runs again on an **opencode** root and child (s36): the second life is
+//! `opencode run --session <ses_…>` over the session store the first life left in its own
+//! directory, and it is parked one request later than codex's, because opencode names its session
+//! only on a frame of its first response.
+//!
+//! It needs a real `codex` and `opencode` on `PATH`. Every model call is the CannedServer's: no
+//! paid tokens.
 //! Bounded throughout, so a wedged binary fails as a named timeout rather than a hang.
 
 use std::path::Path;
@@ -44,7 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use marion_core::contract::AgentId;
-use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
+use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script, TurnGate};
 use marion_testsupport::{Liveness, fixture_repo, liveness, on_path, scratch, until_within};
 use serde_json::json;
 
@@ -146,6 +152,66 @@ fn codex_script() -> Script {
     s
 }
 
+/// An opencode root that spawns an opencode child, both answered by the canned provider on the
+/// Chat Completions wire: the child writes the marker through opencode's own `write`, then reports.
+fn opencode_script() -> Script {
+    let mut s = Script {
+        root: Some(RootScript {
+            marker: ROOT_MARKER.into(),
+            turn: RootTurn {
+                tool: "marion_spawn".into(),
+                args: json!({
+                    "agent_type": "opencode",
+                    "prompt": "Add the marker file under src/ and report back.",
+                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
+                    "writable_scope": ["src/**"],
+                    "verification": [VERIFICATION],
+                    "timeout_secs": 60,
+                    "model": marion_core::agent_type::OPENCODE_DEFAULT_MODEL,
+                }),
+                final_text: "The child completed the task and reported back.".into(),
+            },
+        }),
+        ..Script::default()
+    };
+    s.openai_report_tool = "marion_report".into();
+    s.openai_report_args = json!({ "narrative": NARRATIVE });
+    s.openai_edit = Some(EditTurn {
+        tool: "write".into(),
+        args: json!({ "filePath": CHILD_FILE, "content": CHILD_CONTENT }),
+    });
+    s
+}
+
+/// One harness's root-and-child tree, as the arc needs it.
+struct Tree {
+    program: &'static str,
+    root_type: &'static str,
+    /// The wire both nodes speak under a canned provider.
+    wire: &'static str,
+    /// The first request on [`Self::wire`] the gate holds: the child's first turn for codex, which
+    /// names its session before it asks anything; the child's **second** for opencode, which names
+    /// its session only on a frame of the first response (s36 `held-first/`).
+    hold_from: u64,
+    script: fn() -> Script,
+}
+
+const CODEX_TREE: Tree = Tree {
+    program: "codex",
+    root_type: "codex-impl",
+    wire: WIRE,
+    hold_from: 2,
+    script: codex_script,
+};
+
+const OPENCODE_TREE: Tree = Tree {
+    program: "opencode",
+    root_type: "opencode",
+    wire: "openai",
+    hold_from: 3,
+    script: opencode_script,
+};
+
 /// A codex root and its codex child, both with **live processes**, parked on the child's first
 /// turn — the state a supervisor SIGKILL is applied to. Both tests below start here.
 ///
@@ -157,19 +223,20 @@ struct Parked {
     run: std::process::Child,
 }
 
-fn park_a_live_tree(dir: &Path, repo: &Path, state: &Path) -> Parked {
+fn park_a_live_tree(dir: &Path, repo: &Path, state: &Path, tree: &Tree) -> Parked {
     assert!(
-        on_path("codex"),
-        "this E2E drives a real codex; put it on PATH"
+        on_path(tree.program),
+        "this E2E drives a real {}; put it on PATH",
+        tree.program
     );
     // Hold the **second** Responses request — the child's first turn — so the tree parks with both
     // the root and the child holding live processes, exactly as `client_run.rs`'s crit-3 does.
-    let gate = TurnGate::holding_from(WIRE, 2);
+    let gate = TurnGate::holding_from(tree.wire, tree.hold_from);
     let server = CannedServer::start_gated(
         Config {
             addr: ([127, 0, 0, 1], 0).into(),
             reqlog: dir.join("provider-requests.jsonl"),
-            script: codex_script(),
+            script: (tree.script)(),
         },
         Some(Arc::clone(&gate)),
     )
@@ -179,7 +246,7 @@ fn park_a_live_tree(dir: &Path, repo: &Path, state: &Path) -> Parked {
     let run = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "codex-impl",
+            tree.root_type,
             "--prompt",
             &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
             "--repo",
@@ -254,7 +321,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         server,
         gate,
         mut run,
-    } = park_a_live_tree(&dir, &repo, &state);
+    } = park_a_live_tree(&dir, &repo, &state, &CODEX_TREE);
     let base_url = server.base_url();
 
     let before = journal_nodes(&state, &repo);
@@ -507,7 +574,20 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
 #[test]
 #[ignore = "drives a real codex binary and a detached supervisor; run deliberately"]
 fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next_turn() {
-    let dir = scratch("restart-resume-child-e2e");
+    a_lost_child_resumes(&CODEX_TREE, "restart-resume-child-e2e");
+}
+
+/// **The same arc on an opencode child**: its second life is `opencode run --session <ses_…>`
+/// against the session store its first life left under its own directory, so the request after
+/// the relaunch carries the resume prompt and the first life's task.
+#[test]
+#[ignore = "drives a real opencode binary and a detached supervisor; run deliberately"]
+fn a_lost_opencode_child_resumes_its_own_session_under_its_parent_and_takes_its_next_turn() {
+    a_lost_child_resumes(&OPENCODE_TREE, "restart-resume-oc-child-e2e");
+}
+
+fn a_lost_child_resumes(tree: &Tree, tag: &str) {
+    let dir = scratch(tag);
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -515,7 +595,7 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         server,
         gate,
         mut run,
-    } = park_a_live_tree(&dir, &repo, &state);
+    } = park_a_live_tree(&dir, &repo, &state, tree);
     let base_url = server.base_url();
 
     // ---- the child has everything a resume of it needs, before the kill -----------------------
@@ -525,7 +605,8 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
         until(
             || child_of(&journal_nodes(&state, &repo)).is_some_and(|c| c.harness_session.is_some())
         ),
-        "the child must name its codex session before the kill: {:?}",
+        "the child must name its {} session before the kill: {:?}",
+        tree.program,
         journal_nodes(&state, &repo)
     );
     let before = journal_nodes(&state, &repo);
@@ -667,8 +748,10 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
     let took_turn = || {
         server.requests().unwrap_or_default().iter().any(|r| {
             r["seq"].as_u64().is_some_and(|seq| seq > seq_before)
-                && r["wire"].as_str() == Some(WIRE)
+                && r["wire"].as_str() == Some(tree.wire)
                 && r.to_string().contains(RESUME_PROMPT)
+                // The first life's task, sent back from the harness's own session: a real resume.
+                && r.to_string().contains("Add the marker file under src/")
         })
     };
     let second_life_exit = || {
@@ -695,7 +778,8 @@ fn a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next
     assert_eq!(
         (exit.code, exit.signal),
         (Some(0), None),
-        "the resumed codex child must finish its turn and exit clean: {exit:?}"
+        "the resumed {} child must finish its turn and exit clean: {exit:?}",
+        tree.program
     );
 
     // ---- and it re-ran the verification its spawn asked for ----------------------------------

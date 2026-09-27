@@ -89,3 +89,16 @@ run on the operator's configured default, as a live claude or codex node does. m
 refuse that launch (the `opencode` type's default, `marion/default`, names the provider block only
 a canned node generates); it now treats the plumbing default as naming no model under `--live`,
 for `opencode run` and for an `opencode acp` session alike (`opencode::requested_model`).
+
+## `held-first/` — when does `opencode run` name its session?
+
+The stub held the first model request for 20 s. Three seconds into the hold `stdout.jsonl` had
+**no frame at all**; the three frames (`step_start`, `text`, `step_finish`, each carrying
+`sessionID`) arrived only once the response streamed. **FAIL** against claude and codex, which
+name their session (`system/init`, `thread.started`) before their first request: an opencode node
+whose supervisor dies while its first request is in flight has journaled no session, so
+`marion resume` has nothing to hand back and refuses. `restart_resume`'s opencode arc therefore
+parks the child on its second request, after the first response named the session, and from there
+the resume is measured working (`a_lost_opencode_child_resumes_its_own_session_under_its_parent_
+and_takes_its_next_turn`). A way past the gap, not yet taken: marion titles every opencode session
+`marion-<agent id>`, so the id could be looked up by title in the node's own `OPENCODE_DB`.
