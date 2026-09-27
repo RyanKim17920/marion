@@ -144,6 +144,9 @@ pub struct ReplayedNode {
     /// node that has only ever been mentioned — it is still `Spawning`, which is where every node
     /// starts, and no record moved it there.
     pub state_ts: Option<crate::encoding::SystemTime>,
+    /// The `ts` of the last `Spawned` — when its current process started, which a resume moves.
+    /// `None` before any process existed.
+    pub spawned_ts: Option<crate::encoding::SystemTime>,
 }
 
 impl ReplayedNode {
@@ -177,6 +180,7 @@ impl ReplayedNode {
             records: 0,
             first_ts: None,
             state_ts: None,
+            spawned_ts: None,
         }
     }
 
@@ -589,6 +593,9 @@ impl Replay {
         node.records += 1;
         if node.first_ts.is_none() {
             node.first_ts = Some(ts);
+        }
+        if matches!(r.kind, RecordKind::Spawned(_)) {
+            node.spawned_ts = Some(ts);
         }
         // Observed rather than predicted from the record kind, which is the difference between
         // stamping *this record's* time and stamping the time the state actually moved: a

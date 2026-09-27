@@ -259,7 +259,9 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             (None, None) => unreachable!("refused above"),
         },
         pane,
-        started_at: None,
+        // The journal's own times, never this process's clock (see `first_ts`).
+        started_at: node.spawned_ts.or(node.first_ts),
+        ended_at: node.state.is_exited().then_some(node.state_ts).flatten(),
         tokens: None,
     })
 }
@@ -5150,6 +5152,53 @@ mod tests {
             "nothing sets `Node.name` yet, so `None` is what the journal says rather than a \
              placeholder for what marion does not know"
         );
+    }
+
+    /// **A row's clock comes from the journal**: started at its latest `Spawned` (its process's
+    /// start, which a resume moves), ended at the record that moved it to `Exited`, so a client
+    /// words elapsed time without the supervisor ticking anything.
+    #[test]
+    fn a_summary_carries_when_the_node_started_and_ended() {
+        let spawned = |ms| {
+            line(
+                1,
+                ms,
+                RecordKind::Spawned(Spawned {
+                    agent_id: id("c"),
+                    harness_version: "0.9.0".into(),
+                    model: None,
+                    pid: Some(3),
+                    start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
+                }),
+            )
+        };
+        let intent_at = line(0, 1_000, intent("c", None, "codex-impl", 0));
+        let running = summarize(&node_of(std::slice::from_ref(&intent_at), "c"), false).unwrap();
+        assert_eq!(
+            running.started_at,
+            Some(SystemTime::from_unix_millis(1_000)),
+            "before any Spawned, the intent's time"
+        );
+        let exited = line(
+            2,
+            9_000,
+            RecordKind::Exited(Exited {
+                agent_id: id("c"),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "done".into(),
+                },
+            }),
+        );
+        let s = summarize(&node_of(&[intent_at, spawned(2_000), exited], "c"), false).unwrap();
+        assert_eq!(s.started_at, Some(SystemTime::from_unix_millis(2_000)));
+        assert_eq!(s.ended_at, Some(SystemTime::from_unix_millis(9_000)));
+        assert_eq!(running.ended_at, None, "a node still running has not ended");
     }
 
     /// **A recorded bound outranks the agent type's, because it is the one the node is under.**

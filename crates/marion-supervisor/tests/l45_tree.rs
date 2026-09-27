@@ -57,6 +57,7 @@ fn node(
         timeout: Duration::from_secs(900),
         pane,
         started_at: None,
+        ended_at: None,
         tokens: None,
     }
 }
