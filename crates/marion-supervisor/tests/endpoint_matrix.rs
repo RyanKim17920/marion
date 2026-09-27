@@ -219,12 +219,13 @@ use serde_json::{Value, json};
 const MODEL: &str = "endpoint-model-7";
 const NARRATIVE: &str = "Reported back through marion from an endpoint node.";
 
-/// How the harness presents the key: `Authorization: Bearer <key>`, or the Anthropic SDK's
-/// `x-api-key: <key>`.
+/// How the harness presents the key: `Authorization: Bearer <key>`, the Anthropic SDK's
+/// `x-api-key: <key>`, or the Gemini wire's `x-goog-api-key: <key>`.
 #[derive(Clone, Copy)]
 enum Presents {
     Bearer,
     XApiKey,
+    GoogApiKey,
 }
 
 struct Cell {
@@ -299,6 +300,17 @@ fn summary(ev: &Evidence) -> String {
         .join("\n")
 }
 
+/// The model a logged request asks for: the body's `model`, else the Gemini path's
+/// `/models/<model>:<method>` segment.
+fn requested_model(r: &Value) -> Option<String> {
+    if let Some(m) = r["body"]["model"].as_str() {
+        return Some(m.to_string());
+    }
+    let path = r["path"].as_str()?;
+    let rest = path.split("/models/").nth(1)?;
+    Some(rest.split(':').next()?.to_string())
+}
+
 fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
     let who = cell.agent_type;
     let contract = ev
@@ -309,6 +321,7 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
     let (header, value) = match cell.presents {
         Presents::Bearer => ("authorization", fingerprint(&format!("Bearer {KEY}"))),
         Presents::XApiKey => ("x-api-key", fingerprint(KEY)),
+        Presents::GoogApiKey => ("x-goog-api-key", fingerprint(KEY)),
     };
     for r in &ev.requests {
         // claude 2.1.283 opens with `HEAD /api/hello` against the base URL, a reachability probe
@@ -335,8 +348,9 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
             !headers.contains("oauth"),
             "{who}: an OAuth header: {headers}"
         );
-        // No request names any model but the chosen one — background calls included.
-        if let Some(m) = r["body"]["model"].as_str() {
+        // No request names any model but the chosen one — background calls included. The Gemini
+        // wire names it in the path (`/models/<model>:streamGenerateContent`), the others in the body.
+        if let Some(m) = requested_model(r).as_deref() {
             assert_eq!(
                 m,
                 MODEL,
@@ -347,7 +361,9 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
         assert_eq!(r["wire"], cell.wire, "{who}: wire\n{}", summary(ev));
     }
     assert!(
-        ev.requests.iter().any(|r| r["body"]["model"] == MODEL),
+        ev.requests
+            .iter()
+            .any(|r| requested_model(r).as_deref() == Some(MODEL)),
         "{who}: no request named the model at all\n{}",
         summary(ev)
     );
@@ -863,4 +879,78 @@ fn doctor_providers_on_the_command_line_prints_ids_and_the_matrix_and_no_key() {
     for key in [KEY, KEY_A, KEY_B] {
         assert!(!stdout.contains(key), "the key is in doctor's output");
     }
+}
+
+// ---- the remaining rows with an endpoint recipe: gemini, goose, cline, qwen ----------------------
+
+/// A cell of `agent_type` on `canned-test` over one of the OpenAI-compatible Chat recipes, with
+/// marion's report under the harness's own tool spelling.
+fn chat_cell(agent_type: &'static str, report_tool: &str) -> Cell {
+    Cell {
+        presents: Presents::Bearer,
+        provider: "canned-test",
+        agent_type,
+        script: Script {
+            openai_report_tool: report_tool.into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "openai",
+    }
+}
+
+#[test]
+fn a_gemini_child_runs_on_the_users_provider_over_the_gemini_wire() {
+    assert!(
+        on_path("gemini"),
+        "put `gemini` ({}) on PATH",
+        pinned_version("gemini")
+    );
+    let cell = Cell {
+        presents: Presents::GoogApiKey,
+        provider: "canned-test",
+        agent_type: "gemini",
+        script: Script {
+            gemini_report_tool: "mcp_marion_report".into(),
+            gemini_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "gemini",
+    };
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_goose_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("goose"),
+        "put `goose` ({}) on PATH",
+        pinned_version("goose")
+    );
+    let cell = chat_cell("goose", "marion__report");
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_cline_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("cline"),
+        "put `cline` ({}) on PATH",
+        pinned_version("cline")
+    );
+    let cell = chat_cell("cline", "marion__report");
+    assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+#[test]
+fn a_qwen_child_runs_on_the_users_provider_over_the_chat_wire() {
+    assert!(
+        on_path("qwen"),
+        "put `qwen` ({}) on PATH",
+        pinned_version("qwen")
+    );
+    let cell = chat_cell("qwen", "mcp__marion__report");
+    assert_endpoint_cell(&cell, &drive(&cell));
 }

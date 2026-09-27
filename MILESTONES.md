@@ -1757,7 +1757,10 @@ ever runs a real login.
   (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
   provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
   `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
-- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+- **Endpoint cells — green for codex, opencode, copilot (×2), gemini, cline and qwen; claude and
+  goose written, not run.** Added 2026-09-27: gemini on its own wire (the key in
+  `x-goog-api-key`, the model in the request path), cline and qwen on Chat — green; goose's cell is
+  blocked here by the version gate (1.52.0 installed, not admitted).
   `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
   `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
   server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
