@@ -177,41 +177,42 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
 ///
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is
 /// dead for that purpose — it can run no code and its parent alone owns the remaining wait record
-/// — while `kill(pid, 0)` would misclassify it as alive. `ps` supplies that distinction. The bound
-/// is a safety refusal, not a grace period: SIGKILL has no graceful leg, and a caller that cannot
-/// observe death leaves its already-durable intent unconfirmed for §7.2-style recovery.
+/// — while `kill(pid, 0)` would misclassify it as alive, so the process table's own state is read
+/// ([`crate::procid::run_state`]: one `sysctl` or one `/proc` read, no fork). The bound is a safety
+/// refusal, not a grace period: SIGKILL has no graceful leg, and a caller that cannot observe death
+/// leaves its already-durable intent unconfirmed for §7.2-style recovery.
+///
+/// This used to fork `ps -o stat=` in a `yield_now` loop — up to five seconds of back-to-back
+/// forks per kill. A SIGKILLed process is usually gone within a millisecond, so the reads back off
+/// from 1 ms to [`OBSERVE_PAUSE_MAX`].
 pub(crate) fn kill_process_tree_and_wait(child_pid: i32) -> bool {
     kill_process_tree(child_pid);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        let mut command = Command::new("ps");
-        command
-            .args(["-o", "stat=", "-p", &child_pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let observation = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
-            .spawn(&mut command)
-            .and_then(std::process::Child::wait_with_output);
-        match observation {
-            Ok(output) => {
-                let state = String::from_utf8_lossy(&output.stdout);
-                let state = state.trim();
-                if state.starts_with('Z') {
-                    return true;
-                }
-                if state.is_empty() && output.stderr.is_empty() {
-                    return true;
-                }
-                std::thread::yield_now();
-            }
-            // Failing to observe is not observing death. In particular, treating an unavailable
-            // `ps` as an absent PID would append the confirmation whose claim this loop exists to
-            // earn.
-            Err(_) => std::thread::yield_now(),
+    observe_dead(child_pid, Instant::now() + Duration::from_secs(5))
+}
+
+/// The longest pause between two reads of a killed process's state.
+const OBSERVE_PAUSE_MAX: Duration = Duration::from_millis(50);
+
+/// Read `pid`'s state until it is gone or a zombie (`true`) or `deadline` passes (`false`). An
+/// unreadable state is not death: treating it as absent would append the confirmation whose claim
+/// this loop exists to earn.
+fn observe_dead(pid: i32, deadline: Instant) -> bool {
+    use crate::procid::RunState;
+    let mut pause = Duration::from_millis(1);
+    loop {
+        if matches!(
+            crate::procid::run_state(pid),
+            RunState::Gone | RunState::Zombie
+        ) {
+            return true;
         }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(pause.min(left));
+        pause = (pause * 2).min(OBSERVE_PAUSE_MAX);
     }
-    false
 }
 
 #[cfg(test)]
@@ -229,6 +230,32 @@ mod tests {
              55395 55386 55386\n\
              99999     1 99999\n",
         )
+    }
+
+    /// **Observed dead, and promptly**: a SIGKILLed child that nobody has reaped is a zombie, which
+    /// counts, and a process that will not die is refused at the deadline rather than confirmed.
+    #[test]
+    fn a_killed_process_is_observed_dead_and_a_live_one_is_refused_at_the_deadline() {
+        let mut live = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = live.id() as i32;
+        let start = Instant::now();
+        assert!(
+            !observe_dead(pid, Instant::now() + Duration::from_millis(200)),
+            "a running process is not observed dead"
+        );
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        live.kill().unwrap();
+        let start = Instant::now();
+        assert!(observe_dead(pid, Instant::now() + Duration::from_secs(5)));
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "the death was read, not waited out"
+        );
+        live.wait().unwrap();
+        assert!(observe_dead(pid, Instant::now()), "a reaped pid is gone");
     }
 
     #[test]

@@ -439,6 +439,83 @@ fn kinfo_proc(pid: i32) -> Result<KinfoProc, String> {
     Ok(KinfoProc::Described(buf))
 }
 
+/// **Whether a pid has stopped running**, as the kill path's "observed dead" needs it.
+///
+/// Liveness, not identity (see the module doc): a zombie has stopped running — it can run no code
+/// and only its parent's wait remains — while `kill(pid, 0)` would still call it alive. So this
+/// reads the process table's state, with no fork: `sysctl(KERN_PROC_PID)`'s `p_stat` on macOS,
+/// `/proc/<pid>/stat`'s state on Linux. `Unknown` is marion failing to ask, and is never treated
+/// as death.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunState {
+    /// No process wears the pid.
+    Gone,
+    /// The process has exited and awaits its parent's wait.
+    Zombie,
+    /// The process is in the table in any state other than zombie.
+    Running,
+    /// marion could not read the state, and says why.
+    Unknown(String),
+}
+
+/// **macOS: `p_stat` of `struct extern_proc`, byte 36 of `struct kinfo_proc`.**
+///
+/// `kp_proc` is the first member of `kinfo_proc`; in `extern_proc` a 16-byte union is followed by
+/// two pointers (`p_vmspace`, `p_sigacts`) and the `int p_flag`, so `char p_stat` sits at
+/// 16 + 8 + 8 + 4 = 36, and `SZOMB` is 5 (`<sys/proc.h>`). Both are pinned by
+/// `run_state_tells_running_from_zombie_from_gone`, against a real child.
+#[cfg(target_os = "macos")]
+pub(crate) fn run_state(pid: i32) -> RunState {
+    const P_STAT: usize = 36;
+    const SZOMB: u8 = 5;
+    if pid <= 0 {
+        return RunState::Unknown(format!("{pid} is not a process id"));
+    }
+    match kinfo_proc(pid) {
+        Ok(KinfoProc::NoSuchProcess) => RunState::Gone,
+        Ok(KinfoProc::Described(bytes)) => match bytes.get(P_STAT) {
+            Some(&SZOMB) => RunState::Zombie,
+            Some(_) => RunState::Running,
+            None => RunState::Unknown(format!(
+                "the kernel described process {pid} in {} bytes, too few to hold its state",
+                bytes.len()
+            )),
+        },
+        Err(why) => RunState::Unknown(why),
+    }
+}
+
+/// **Linux: field 3 of `/proc/<pid>/stat`**, the first after the `)` that closes the comm field.
+/// `Z` is a zombie and `X` a process already being torn down; a missing file is no process.
+#[cfg(target_os = "linux")]
+pub(crate) fn run_state(pid: i32) -> RunState {
+    if pid <= 0 {
+        return RunState::Unknown(format!("{pid} is not a process id"));
+    }
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return RunState::Gone,
+        Err(error) => return RunState::Unknown(format!("/proc/{pid}/stat: {error}")),
+    };
+    match stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_ascii_whitespace().next())
+    {
+        Some("Z") => RunState::Zombie,
+        Some("X") => RunState::Gone,
+        Some(_) => RunState::Running,
+        None => RunState::Unknown(format!("/proc/{pid}/stat has no state field")),
+    }
+}
+
+/// Every other platform: nothing measured, so nothing observed.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn run_state(pid: i32) -> RunState {
+    RunState::Unknown(format!(
+        "marion cannot read the state of process {pid} on this platform"
+    ))
+}
+
 /// A terminal device number as `(major, minor)`, so the process table's spelling and `fstat`'s
 /// spelling of the same device compare equal on every platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -645,6 +722,26 @@ fn read_impl(pid: i32) -> Read {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offsets [`run_state`] reads, pinned against a real child in each state: running while it
+    /// sleeps, a zombie once killed and not yet waited for, and gone once reaped.
+    #[test]
+    fn run_state_tells_running_from_zombie_from_gone() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        assert_eq!(run_state(pid), RunState::Running);
+        child.kill().expect("kill the child");
+        assert!(
+            marion_testsupport::until(|| run_state(pid) == RunState::Zombie),
+            "a killed, unwaited child reads as a zombie: {:?}",
+            run_state(pid)
+        );
+        child.wait().expect("reap the child");
+        assert_eq!(run_state(pid), RunState::Gone);
+    }
     use marion_core::contract::AgentId;
     use marion_core::harness::Harness;
     use marion_core::ir::Provenance;
