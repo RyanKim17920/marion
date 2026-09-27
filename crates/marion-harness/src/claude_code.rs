@@ -7,7 +7,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
-use marion_core::provider::Wire;
+use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::grammar::{
@@ -223,6 +223,33 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::AnthropicMessages,
         env: &[],
+        // `ANTHROPIC_AUTH_TOKEN` is sent as `Authorization: Bearer` and `ANTHROPIC_API_KEY` as
+        // `X-Api-Key` (Claude Code's environment-variable docs); a non-empty key wins over a token,
+        // so each recipe sets its own and blanks the other.
+        keys: &[
+            crate::spec::KeyRecipe {
+                header: KeyHeader::Bearer,
+                env: &[],
+                note: "the row's `ANTHROPIC_AUTH_TOKEN`, beside a blanked `ANTHROPIC_API_KEY`",
+            },
+            crate::spec::KeyRecipe {
+                header: KeyHeader::XApiKey,
+                env: &[
+                    Env {
+                        key: "ANTHROPIC_API_KEY",
+                        val: Val::Field(Field::ApiKey),
+                        when: When::Always,
+                    },
+                    Env {
+                        key: "ANTHROPIC_AUTH_TOKEN",
+                        val: Val::Lit(""),
+                        when: When::Always,
+                    },
+                ],
+                note: "`ANTHROPIC_API_KEY` is sent as `X-Api-Key` (Claude Code docs, env vars); \
+                       not run here: the installed claude is outside the version gate",
+            },
+        ],
         note: "Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.",
     }],
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \

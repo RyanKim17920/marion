@@ -1,0 +1,59 @@
+{
+ "decset_modes_seen_at_boot": [
+  "2004h",
+  "2026h",
+  "2026l",
+  "25l"
+ ],
+ "osc_sequences_seen": [
+  "0;\u03c0 - work",
+  "11;?",
+  "133;A",
+  "133;B",
+  "133;C",
+  "8;;"
+ ],
+ "first_byte_s": 0.81,
+ "boot_settled_s": 1.44,
+ "boot_bytes": 16320,
+ "idle_bytes_over_10s": 0,
+ "idle_writes": [],
+ "bytes_in_4s_after_turn": 0,
+ "max_gap_while_busy_s": 0.082,
+ "requests": [
+  [
+   [
+    "user",
+    "paste ZEBRA\nsecond line"
+   ]
+  ],
+  [
+   [
+    "user",
+    "paste ZEBRA\nsecond line"
+   ],
+   [
+    "assistant",
+    ""
+   ],
+   [
+    "tool",
+    "recorded"
+   ],
+   [
+    "user",
+    "steer while busy OKAPI"
+   ]
+  ]
+ ],
+ "screen_text_mentions": {
+  "TUI-DONE": true,
+  "Trust": false,
+  "trust": false,
+  "changelog": false,
+  "What's new": false,
+  "login": false,
+  "Login": false,
+  "mcp__marion__report": true
+ }
+}

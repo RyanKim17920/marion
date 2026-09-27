@@ -1,0 +1,24 @@
+{
+ "argv": [
+  "pi",
+  "-p",
+  "--mode",
+  "json",
+  "--session",
+  "<UUID-8>",
+  "--no-extensions",
+  "--provider",
+  "marion",
+  "--model",
+  "canned-1",
+  "--tools",
+  "read,write,edit,mcp__marion__report",
+  "-e",
+  "<RUN-DIR>/marion-pi.js",
+  "x"
+ ],
+ "exit": 1,
+ "wall_s": 0.7,
+ "requests": 0,
+ "stderr": "No session found matching '<UUID-8>'"
+}

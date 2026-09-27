@@ -49,7 +49,11 @@ fn usage_text() -> String {
          \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion cancel <agent-id|short-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
-         \x20      marion doctor [--capabilities|--adapter] [--harness <name>]\n\
+         \x20      marion login <provider>[:<label>] [--stdin | --from-env]\n\
+         \x20      marion login --list\n\
+         \x20      marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--auth none]\n\
+         \x20      marion logout <provider>[:<label>]\n\
+         \x20      marion doctor [--capabilities|--adapter] [--harness <name>] | --providers\n\
          \x20      marion --version\n\
          \n\
          marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
@@ -81,6 +85,11 @@ fn usage_text() -> String {
          with the supervisor's own sentence when it was refused. Like list, it starts no\n\
          supervisor.\n\
          \n\
+         marion login stores an API key you give it for a provider (a terminal prompt, stdin, or\n\
+         the provider's own env var with your consent); a node whose agent type or --model names\n\
+         that provider (`--model openrouter:<model>`) then runs on it. --list shows each provider\n\
+         and which credentials are stored, never a key. No vendor subscription login is reused.\n\
+         \n\
          marion mcp serves marion's {n} tools — {tool_list} — over stdio, for an MCP client to\n\
          be configured with (report answers only inside a child marion started). Its spawn\n\
          creates a root over the same socket `marion run` uses. Point a client at it with\n\
@@ -90,7 +99,8 @@ fn usage_text() -> String {
          its children keep running. It asks nothing; a typed command is the confirmation.\n\
          \n\
          A run uses the login you already have for each harness and makes real model calls that\n\
-         cost real money. marion stores no credential and starts no login.\n\
+         cost real money. marion never logs in to a harness; `marion login` stores API keys you\n\
+         give it.\n\
          \n\
          --canned points the node at marion's canned test provider ({CANNED_BASE_URL}) instead:\n\
          no credential, no cost, and answers nothing useful. Start it first (`marion-canned`,\n\
@@ -3630,6 +3640,24 @@ mod tests {
     fn the_usage_text_names_attach() {
         let text = usage_text();
         assert!(text.contains("marion attach <agent-id>"), "{text}");
+    }
+
+    /// Endpoint mode starts with `marion login`, so the usage text names it, `logout`, and the
+    /// forms a user reaches for: a label, stdin, the provider's env var, the listing, a custom
+    /// provider.
+    #[test]
+    fn the_usage_text_names_login_and_logout() {
+        let text = usage_text();
+        for needle in [
+            "marion login <provider>[:<label>]",
+            "--stdin",
+            "--from-env",
+            "marion login --list",
+            "marion login custom <id> --base-url <url> --wire <wire>",
+            "marion logout <provider>[:<label>]",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
     }
 
     /// **§9's M5 clause 3 needs a UI an operator can actually open**, and a tree screen reachable

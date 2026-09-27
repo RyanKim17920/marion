@@ -1152,6 +1152,10 @@ impl crate::run::SpawnObserver for NodeOwner {
     fn process_ended(&self, agent_id: &AgentId) -> bool {
         self.handle.process_ended(agent_id)
     }
+
+    fn kill_requested(&self, agent_id: &AgentId) -> bool {
+        self.handle.kill_requested(agent_id)
+    }
 }
 
 /// **What authorizes `agent/spawn` with no caller — open question 3, decided.**
@@ -2809,6 +2813,14 @@ impl RegistryHandle {
         }
         node.ending = Ending::KillRequested;
         true
+    }
+
+    /// Whether a kill of `agent_id` has been asked for, settling nothing: see
+    /// [`crate::run::SpawnObserver::kill_requested`].
+    pub(crate) fn kill_requested(&self, agent_id: &AgentId) -> bool {
+        lock(&self.nodes)
+            .get(agent_id)
+            .is_some_and(|n| matches!(n.ending, Ending::KillRequested))
     }
 
     /// **A node thread's half of [`Ending`]**, asked the instant its process has ended and before

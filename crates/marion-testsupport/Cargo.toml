@@ -16,3 +16,13 @@ path = "src/lib.rs"
 # shipped `marion` uses, resolved by the same rule rather than a second spelling of it.
 marion-core = { path = "../marion-core" }
 serde_json.workspace = true
+
+[dev-dependencies]
+# The three-axis checks (`tests/three_axis/`) read the workspace's own source as a syntax tree, so
+# "a `Harness::Codex` pattern outside the row files" or "a `thread::sleep` inside a loop" is a
+# question about code, not about text: a doc comment or a string that merely mentions either is
+# not a finding. syn 2 is already in the lock through serde_derive/thiserror; `full` and `visit`
+# add the item/expression grammar and the walker. `span-locations` gives every finding a line.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+syn = { version = "2", features = ["full", "visit"] }

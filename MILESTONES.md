@@ -85,17 +85,17 @@ Everything below is dated. Re-verify before relying on any harness fact.
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
 dated audit under "Status convention" names the test behind each.
 
-**Harnesses.** Nine rows in `Harness::ALL` (`marion-core/src/harness.rs`): eight terminal
-harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen` — as
+**Harnesses.** Ten rows in `Harness::ALL` (`marion-core/src/harness.rs`): nine terminal
+harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `pi` — as
 `HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
-one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `cross_product` 57
+one runs as a child and a root through `run_spawn` (`harness_matrix` 9 cells; `cross_product` 64
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269, 2.1.280 and 2.1.283; codex 0.146.0/0.146.1/0.147.0/0.155.1;
 gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
-qwen 0.23.0.
+qwen 0.23.0; pi 0.80.2.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
 `harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
@@ -113,9 +113,9 @@ unit tests, `mcp_conformance.rs`, and `tests/user_agent_types.rs` (a real codex 
 relay as a journaled root, **and that root can now delegate**: since 2026-09-11 the supervisor
 mints §5.4's capability for a native node at the instant its `SpawnIntent` is durable and declares
 it beside the node's identity, so `spawn`/`wait`/`status` from the operator's own session are
-authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`.
+authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`, `pi`.
 Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
-row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
+row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen, pi);
 gemini, goose, cline and ACP refuse by name. TUI: the home screen (below; it replaced the
 44-column `marion tree` screen, whose name is kept as an alias of `marion ls`) and `marion attach`.
 2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
@@ -301,6 +301,16 @@ resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`). Not yet: 
 the parent's own `wait` already collected it (collection lives in the parent's bridge, which the
 supervisor does not hear from), so such a parent takes one more continuation per end —
 `m4_fan_in`'s codex root, which waits on both of its children, now runs three generations.
+The same two held-child cells run for **pi** from one row table (2026-09-27): a steer into a held pi
+child relaunches it as generation two with `--session <id>` beside the rendered steer, its Chat
+Completions request replays turn one, `continuation:gen2`, and the contract carries its report
+`reported_early`; a grandchild's end reaching a held pi parent is its generation two, which reports.
+pi's session store lives under the relocated `PI_CODING_AGENT_DIR`, which every generation of one
+node shares, so the resume finds it. The grandchild is backgrounded over the socket with the pi
+child's own credentials rather than by its model: a child's permission axis is only `report`, and
+pi's `--tools` governs extension tools, so a pi (or Claude Code) child cannot call `spawn` at all,
+while codex, which reads no permission list, is served. Every generation's stream now reaches the
+node's `events.jsonl` as it lands.
 
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
@@ -720,6 +730,38 @@ kills the gate** with every other hook (`results/f/`), so no gate can ride the h
 (`results/g/`), and the managed-settings path was **not measured** (no managed file; root needed).
 **Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
 session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
+
+**Every ACP agent that installs without an account, probed to `session/new` (S33, 2026-09-27,
+`tests/fixtures/s33-acp-agents/`, $0.13 metered).** The ACP registry lists ~50 agents; twelve were
+installed user-level (npm -g, uv tool, brew) and probed with marion's own `initialize` and a
+`session/new`, never an `authenticate`. **Opened** with no account: opencode 1.18.32, kilo 7.8.1;
+under the operator's existing logins: claude-agent-acp 0.66.0 and 0.81.2, codex-acp 1.13.1, copilot
+1.0.83; only once pointed at a provider through the agent's own env (dummy key, loopback URL):
+qwen 0.23.0, goose 1.52.0, fast-agent-acp 0.10.37, mistral-vibe 2.25.8, vtcode 0.169.0 (which also
+needs `VT_ACP_ENABLED=1`), docker-agent 1.144.0 (needs an agent file, so evidence only).
+**Refused — probed only to the account wall:** gemini-cli 0.53.0 (vendor ineligibility, as S20),
+auggie 0.36.0, qoder-cli 1.1.64, cline 3.0.61, pi-acp 0.0.34 (shim/pi version skew, not auth), and
+droid 0.228.0, whose `session/new` **starts a device pairing** — so it is deliberately not a row
+(the doctor's `--adapter` mode opens a session on every row). Turns at $0.00 against a local
+endpoint: qwen, goose, fast-agent and docker-agent to `end_turn`; fast-agent asked
+`session/request_permission` and a real `tools/call` reached the bridge (model-facing
+`marion__report`, ACP title `marion/report`, read by the generic reading); docker-agent names MCP
+tools by an opaque `acp_<hash>`, so no reading can find marion's verb in its transcript; qwen
+started the bridge but deferred its tools behind `tool_search`; copilot 1.0.83 still ignores the
+`session/new` bridge. Live, on the operator's logins: `marion run acp-claude-acp --model haiku`
+($0.13) and `marion run acp-codex-acp --model gpt-5.6-luna` (subscription) each wrote
+`hello.txt` = `marion` in a scratch repo. **Carried as data:** ten new `acp::AGENTS` rows (kilo, qwen,
+goose, fast-agent, vibe, vtcode; auggie, qoder, cline, pi-acp), each row now stating its
+`agent_info`, `install` and `Reach` (opened with/without a provider and its model/mode selects, or
+refused), held to its capture by `every_refinement_row_matches_its_s33_capture`; a built-in
+`acp-<id>` type for every opened row (`every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row`).
+**Read at runtime, not tabled:** the MCP transports an agent advertises (`AgentHandshake::mcp_transports`,
+published by the doctor) and its identity (`acp::identity_note`: an `acp:<command>` that is a known
+row, or a row whose binary now answers as another agent). The doctor also stopped waiting 30 s on an
+agent that exits at startup and quotes its stderr (`an_acp_agent_that_exits_before_answering_is_reported_at_once_with_its_stderr`).
+Not installable without an account or a pipe-to-shell installer: Kiro, Cursor agent, Junie, Kimi
+Code (the `kimi-cli` package is its archived predecessor), OpenHands, Code Assistant, Amp, Blackbox;
+Crush's ACP server is an unmerged PR and Warp exposes none.
 
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
@@ -1436,6 +1478,57 @@ Not measured, and so not claimed: the file-path form of `--mcp-config`, a bare p
 place of the deprecated `-p`, the interactive TUI's reading of `--mcp-config` (the native lane ships
 disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices.
 
+**pi runs as a marion child, root and native lane at $0.00. It is the ninth binary and the first
+with no MCP client.** *(pi 0.80.2, npm `@earendil-works/pi-coding-agent` under Homebrew's node,
+macOS darwin 25.5.0, measured 2026-09-27 against the canned provider; fixture
+`tests/fixtures/s34-pi/`, drivers `spikes/s34/pi_{run,rpc,tui}.py`. Witnesses: `harness_matrix`'s
+ninth cell, `cross_product` `zzm`–`zzs` (a pi child of claude, codex and opencode, and a pi root
+over claude, codex, opencode and itself, all green at `RUST_TEST_THREADS=4`), and the pi lane of
+`native_facade_e2e`.)* The facts the row rests on:
+
+- **The declaration is an extension, not an MCP config.** pi's README says "No MCP". `-e <file>`
+  loads an extension for one run, and `--no-extensions` still honours it, so nothing goes into
+  `~/.pi`. marion's declaration is `crates/marion-harness/src/pi_extension.js`: a stdio MCP client
+  for one server, rendered around the node's bridge and written under marion's own directory. It
+  is `LiveDeclaration::ArgvDocument { flag: "-e" }`, the shape claude's `--mcp-config` has, and
+  no supervisor code names pi. The factory is awaited before startup, so marion's tools are in
+  `tools[]` on request one. A bridge that cannot start fails the extension load at exit 1.
+- **One list on both axes, and no approval surface.** `--tools` is an allowlist over built-in and
+  extension tools alike. An empty list offers nothing, and unknown names are dropped silently. pi
+  never asks to run a tool. `read` is `read`, `write` is `write` plus `edit`, and the record is
+  `tools:<name>`. The plain `pi` type carries `[read, write]` and `pi-orchestrator` carries
+  nothing.
+- **The stream.** The `session` header's `id` comes first. A call is `tool_execution_start
+  {toolCallId, toolName, args}`, and its verdict is `tool_execution_end.isError`, paired by
+  `toolCallId`. An MCP `isError` reaches the stream because the extension throws it. Usage sits
+  on each assistant `message_end` (`input` net of cache reads) and is summed.
+- **⚠ Every failure exits 0.** A provider fault is an assistant `stopReason: "error"` with
+  `errorMessage`. Only the `agent_end` whose `willRetry` is false is a claim: a 500 is retried 3
+  times over ~15 s under `willRetry: true`, and a recovered retry leaves no claim. A 401 is not
+  retried.
+- **⚠ stdin is read to EOF when it is not a TTY.** A launch with an open, silent stdin hangs, and
+  the supervisor's `Stdio::null()` is what lets pi start.
+- **Isolation that keeps the login.** A canned node relocates `PI_CODING_AGENT_DIR`, which holds
+  `auth.json`, `models.json`, settings, sessions and extensions, to a `models.json` naming marion's
+  endpoint, and adds `--no-extensions --provider marion`. A live node keeps all of that and adds
+  only `-e`, `--tools` and a named `--model`. `PI_SKIP_VERSION_CHECK=1` is the no-update switch;
+  pi never replaces itself.
+- **Resume and delivery.** `--session <id>` continues the session, and an unknown id exits 1, so
+  headless delivery is `Continuation`. The TUI sets DECSET 2004, submits a bracketed paste plus CR
+  byte-exact, is silent when idle and repaints at ≤ 88 ms when busy, so interactive delivery is
+  `bracketed_paste` and the native lane is enabled. A process-group SIGTERM or SIGKILL takes the
+  extension's bridge down with pi.
+- **`--mode rpc` measured, not yet driven.** It is a JSONL command channel whose `steer` folds after
+  the in-flight tool result into the same turn's next request (S31's `MidTurn::Fold`), whose
+  `follow_up` queues a next turn, and whose `abort` ends the next request `stopReason: "aborted"`.
+  A bare `prompt` mid-turn is refused. marion has no generic typed driver for such a channel, so
+  the row stays `LaunchOnly`/`Continuation`.
+
+Not measured, and so not claimed: a `steer` into a *running* pi node (a steer during a §7.6 hold
+and a pushed child end reaching a held pi parent are driven end to end in `tests/continuation.rs`);
+a pi child spawning its own grandchild, which its `--tools` allowlist withholds; pi's project-trust prompt for a worktree carrying `.pi/` files; the `journal_wiring`,
+`depth_gate` and `launch_only_root` matrices.
+
 **Live-matrix row corrections (2026-09-22, real logins).** Each measured on the operator's existing
 login with the cheapest model the harness offered.
 
@@ -1634,23 +1727,36 @@ ever runs a real login.
   --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
   refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
-  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
-  on another branch.
+  fixture key appears in no output"). `marion --help` names `login` (label, `--stdin`,
+  `--from-env`, `--list`, `custom`) and `logout` with a one-paragraph account of endpoint mode.
 - **Several credentials per provider — stored and listed; rotation not built.** A credential is
   `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
   work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
   `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
   (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
   ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
-- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+- **Credential choice — built.** A launch tries its provider's
   credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
   checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
   and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
   rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
-  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
-  5xx/connection failure *before* the child's first successful turn, relaunch on the next
-  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
-  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  are kept as `Endpoint::fallbacks`. A resume re-resolves by the stated order rather than the
+  journaled credential.
+- **API-key rotation — built for children.** A child endpoint launch whose process failed with no
+  report and nothing changed in its worktree (the evidence available that no turn succeeded), and
+  whose stderr or stream failure names a rate limit (`429`, `rate limit`), a refused key
+  (`401`/`403` and the shared auth markers) or an outage (`5xx`, overload, a refused or reset
+  connection) — `marion_harness::failover_cause`, row-independent marker lists in `auth.rs` — is
+  relaunched fresh in the same node on the next stated credential with a key
+  (`endpoint::next_credential`), sharing the node's one wall clock. Each credential is tried once;
+  only a finished process is rotated, never mid-turn; the relaunch writes a second `Spawned`
+  (generation two, the new pid and credential id). The contract's `child.credential_failover`
+  lists each move as `{from, to, cause}` (`auth` | `rate_limit` | `outage`), ids only. API keys
+  alone: a subscription login is never a credential of a provider. Canned cells green on
+  2026-09-27 (codex 0.155.1): key `a` answered 429 fails over to `b` and succeeds; both answered 401
+  fail after one failover. **Not built:** rotation for a root (`root::prepare`), and a stricter
+  "no successful turn" signal than no-report-and-no-change (a run that made tool calls without
+  editing and then hit a 429 would rotate). **TODO, not built:** a
   `profile` field selecting one of several native harness profiles the user set up
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
@@ -1675,7 +1781,9 @@ ever runs a real login.
   gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
   per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
   provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
-  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  is redacted of the key, and so is the live event stream: the node's `EventSink` scrubs every key
+  it has been launched on (a rotated child adds its next) from each frame and raw line before it is
+  written (unit-tested; the duplex claude cell cannot run here, version gate).
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
   Node config documents are now written `0600` (they carry the node token and, on opencode and
   cline endpoint nodes, the key).
@@ -1686,7 +1794,10 @@ ever runs a real login.
   (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
   provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
   `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
-- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+- **Endpoint cells — green for codex, opencode, copilot (×2), gemini, cline and qwen; claude and
+  goose written, not run.** Added 2026-09-27: gemini on its own wire (the key in
+  `x-goog-api-key`, the model in the request path), cline and qwen on Chat — green; goose's cell is
+  blocked here by the version gate (1.52.0 installed, not admitted).
   `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
   `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
   server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
@@ -1697,6 +1808,29 @@ ever runs a real login.
   Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
   with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
   is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
+- **`doctor --providers` — built; not yet in the default summary.** `marion-supervisor doctor
+  --providers [--model <id>]` (`provider_check`) lists every credential worth a row (login index,
+  `[credentials]` orders, stored unlabelled ids): key stored or not (never the key), the credential
+  file's mode where the store is a file, and — with a key — `GET <base>/models` through `curl -sS`
+  with the key header on stdin (`-H @-`, so the key is on no argv and marion links no TLS),
+  reporting listed/refused/status/unreachable and whether the requested model is listed. Then the
+  harness × provider matrix from the resolver's own rule (`endpoint::shared_wire` plus whether the
+  recipe presents the provider's key header), with each unsupported pair's reason (both wire lists,
+  or the header). Canned tests: the probe (listed, a 401-refused key, a missing key), the matrix,
+  and the command line. **Not done:** the fold into the default `marion doctor` summary and `marion
+  doctor` forwarding, which live on the onboarding branch and are not in this base.
+- **Key header — built.** Which header a provider reads its key from is a provider column,
+  `key_header` (`bearer`, the default, or `x-api-key`; settable per custom provider in
+  `providers.toml`). The `anthropic` seed row states `x-api-key` — what Anthropic's SDKs send for an
+  API key; Anthropic's API docs (checked 2026-09-27) also accept `Authorization: Bearer <key>` and
+  call `x-api-key` the legacy fallback, still supported — while the Anthropic-compatible gateways
+  document Bearer. Each wire recipe lists the headers it can present (`keys`, a sweep holds every
+  recipe to state Bearer and a note per header); a header a recipe cannot present is refused by
+  name. Claude Code: Bearer through `ANTHROPIC_AUTH_TOKEN`, `x-api-key` through `ANTHROPIC_API_KEY`
+  (docs; not run, version gate). Copilot's anthropic type: `x-api-key` through its API key, Bearer
+  through `COPILOT_PROVIDER_BEARER_TOKEN` with the API key blanked (measured on 1.0.88: left set,
+  it is sent as a second credential). opencode: `x-api-key` as a provider-block header with no
+  `apiKey`. Canned cells green on 2026-09-27: copilot anthropic Bearer, opencode Chat `x-api-key`.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

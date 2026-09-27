@@ -283,6 +283,9 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // Nothing measured beyond what the row compiles: `--conversation` is the row's resume
         // grammar (s32), not this table's supervisor-driven `resume`. `false` is "not measured".
         Harness::Antigravity => Capabilities::NONE,
+        // Nothing measured through the `-p --mode json` surface beyond what the row compiles. S34's
+        // `--session <id>` second turn is the row's `resume` grammar, not this table's capability.
+        Harness::Pi => Capabilities::NONE,
         // **The one row where `advertised` describes a protocol rather than a program**, because
         // §5.2's `acp` adapter serves many agents and the version here is not even readable until
         // one of them has answered `initialize`. So `version` is deliberately unused: it keys the

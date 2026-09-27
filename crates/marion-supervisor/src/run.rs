@@ -904,6 +904,45 @@ struct ChildRun {
     denied_permissions: Vec<String>,
 }
 
+/// **Whether a finished endpoint launch rotates to its next credential**, and why — `None` for any
+/// run that must stand as it is.
+///
+/// Rotates only where every one of these holds: the node runs on an endpoint with a credential
+/// left to try that has a stored key; the process ended on its own, with wall clock left to spend;
+/// it failed (a nonzero exit or a stream that says so) with no report and nothing changed in its
+/// worktree — the evidence available that no turn of it succeeded; and what it said names a
+/// failure another key could fare differently on ([`marion_harness::failover_cause`]).
+fn rotation(
+    endpoint: Option<&crate::endpoint::Endpoint>,
+    run: &ChildRun,
+    adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
+    wt: &Path,
+    base: Option<&Oid>,
+    remaining: StdDuration,
+) -> Option<(
+    crate::endpoint::Endpoint,
+    marion_core::contract::FailoverCause,
+)> {
+    let ep = endpoint.filter(|e| !e.fallbacks.is_empty())?;
+    if run.exit.timed_out || remaining.is_zero() {
+        return None;
+    }
+    let stream = adapter.parse_stream(&run.stdout, run.exit);
+    let failed = run.exit.code != Some(0) || stream.failure.is_some();
+    if !failed || stream.narrative.is_some() {
+        return None;
+    }
+    if base.is_some_and(|b| changed_paths(wt, b).map_or(true, |c| !c.is_empty())) {
+        return None;
+    }
+    let said = format!("{}\n{}", run.stderr, stream.failure.unwrap_or_default());
+    let cause = marion_harness::failover_cause(&said)?;
+    // A store that cannot be read now is no reason to lose the failed run's own contract: the run
+    // stands as it ended, and the failure it recorded says why.
+    let next = crate::endpoint::next_for_launch(ep).ok().flatten()?;
+    Some((next, cause))
+}
+
 /// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
 /// withhold and nothing to steer. codex, gemini and opencode all declare
 /// `launch_only_with_protocol_events()` and all take this path; §6.1 step 8 asserts their MCP
@@ -914,7 +953,6 @@ fn launch_only_child(
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
-    secret: Option<&str>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -924,11 +962,11 @@ fn launch_only_child(
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
     // ([`record_capture_after_the_fact`] skips this path).
-    // An endpoint node's key is redacted from each line before it is kept, as the whole capture
-    // is afterwards: the live record would otherwise be the one place it survived.
+    // An endpoint node's key is scrubbed by the sink itself (`EventSink::scrub_key`), on this
+    // live seam as on every other, before a line is kept.
     let on_line = |line: &str| {
         if let Some(es) = events {
-            es.record_line_redacted(line, secret);
+            es.record_line(line);
         }
         session.observe_line(line);
     };
@@ -1196,6 +1234,12 @@ pub trait SpawnObserver: Sync {
     /// refuses a kill of the node rather than signalling a process already reaped. Defaulted to
     /// `false` for an owner that cannot be asked to kill anything.
     fn process_ended(&self, _agent_id: &AgentId) -> bool {
+        false
+    }
+    /// Whether an operator's kill of the node has been asked for, **without** settling anything:
+    /// the check between one launch attempt and the next (a key rotation), where
+    /// [`Self::process_ended`]'s answer would make the next attempt unkillable.
+    fn kill_requested(&self, _agent_id: &AgentId) -> bool {
         false
     }
 }
@@ -1489,10 +1533,6 @@ pub fn run_spawn_watched(
     let path = launch_path(&adapter.surfaces())
         .ok_or(SpawnError::UnsupportedChildSurface(agent_type.harness))?;
     let ready_file = child_ready_file(path, &agent_dir);
-    let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
-    if let Some(ep) = &endpoint {
-        crate::endpoint::apply(&mut launch, ep);
-    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The **canonical** name, read off the resolved type rather than off `req.agent_type`: the
@@ -1532,10 +1572,6 @@ pub fn run_spawn_watched(
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the one
-    // sentence on this path a reader of the journal needs verbatim, so it is filed for the abort
-    // record on the way out rather than replaced by the guard's generic reason.
-    let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it
@@ -1572,22 +1608,27 @@ pub fn run_spawn_watched(
         false,
     )
     .in_workspace(Some(workspace.clone()));
-    // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
-    // asked for after the child had been run and reaped, which was the only place it *could* be
-    // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
-    // instant the process exists, and it carries this field, so the probe has to precede the
-    // launch — which is where §6.1 step 3 put it in the first place.
-    //
-    // The cost is stated rather than hidden: [`HARNESS_VERSION_TIMEOUT`] now sits on the
-    // pre-launch critical path, so a harness that hangs answering `--version` delays the child by
-    // that bound instead of delaying its caller by that bound after the child is done. It is the
-    // same total, spent before rather than after, and it is bounded for the same reason.
-    //
-    // Asked **once**, not once per reader. The `Spawned` record below and `contract.child.version`
-    // further down both need it, and each used to run its own `--version` — two processes, two
-    // deadlines to hang on, and two chances for the journal and the contract to disagree about the
-    // version of a single node's harness.
-    let version = harness_version(&inv.program);
+    // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
+    // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
+    let turns = observer.turn_source(&agent_id).map(|source| {
+        crate::inbox::TurnFeed::new(
+            source,
+            adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        )
+    });
+    // **The same inbox, on the lane whose next turn is a relaunch** (`crate::continuation`): a
+    // `LaunchOnly` node whose row measured a resume that continues its session. Attached before
+    // the first launch, so a message queued while it runs is waiting at its stop. The typed lanes
+    // take their turns inside their own drivers, from `turns`.
+    let continuation = match (
+        path,
+        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+    ) {
+        (LaunchPath::LaunchOnly, marion_harness::spec::TurnDelivery::Continuation { .. }) => turns
+            .as_ref()
+            .map(|feed| crate::continuation::Turns::attach(Arc::clone(&feed.source))),
+        _ => None,
+    };
     // **§6.1 step 7's confirmation, moved to the instant it becomes true.**
     //
     // It used to be written here-ish in the source but *after* the whole run: `spawn` is
@@ -1626,16 +1667,15 @@ pub fn run_spawn_watched(
     // means: no process exists.
     let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
         std::cell::Cell::new(None);
-    let announce_started = |pid: i32| {
+    // Asked of each process with what that process carries: its attempt's version, model and
+    // endpoint on the first generation, and the same on every continuation generation after.
+    let announce = |pid: i32,
+                    version: &str,
+                    model: Option<&str>,
+                    endpoint: Option<&crate::endpoint::Endpoint>| {
         let appended = crate::journal::confirm_spawned(
             &env.project_dir,
-            child_spawned_record(
-                &agent_id,
-                &version,
-                inv.model.as_deref(),
-                pid,
-                endpoint.as_ref(),
-            ),
+            child_spawned_record(&agent_id, version, model, pid, endpoint),
         );
         match appended {
             // **After the append, never before.** The owner's whole reason for wanting this instant
@@ -1653,129 +1693,184 @@ pub fn run_spawn_watched(
             }
         }
     };
-    // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
-    // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
-    let turns = observer.turn_source(&agent_id).map(|source| {
-        crate::inbox::TurnFeed::new(
-            source,
-            adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
-        )
-    });
-    // **The same inbox, on the lane whose next turn is a relaunch** (`crate::continuation`): a
-    // `LaunchOnly` node whose row measured a resume that continues its session. Attached before
-    // the first launch, so a message queued while it runs is waiting at its stop. The typed lanes
-    // take their turns inside their own drivers, from `turns`.
-    let continuation = match (
-        path,
-        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
-    ) {
-        (LaunchPath::LaunchOnly, marion_harness::spec::TurnDelivery::Continuation { .. }) => turns
-            .as_ref()
-            .map(|feed| crate::continuation::Turns::attach(Arc::clone(&feed.source))),
-        _ => None,
+    // Each attempt's driver takes its own handle on the one inbox: a typed driver consumes the
+    // feed it is given, and a rotated attempt is a fresh process with the same inbox behind it.
+    let feed = || {
+        turns.as_ref().map(|f| crate::inbox::TurnFeed {
+            source: Arc::clone(&f.source),
+            mid_turn: f.mid_turn,
+        })
     };
-    let run = match path {
-        // **A contracted child does not get a pane, and the refusal is the design rather than a
-        // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
-        // `report`, under the wall clock its contract records. A pane node is a TUI, which takes
-        // no turn at all until a human presses return — so a contracted child in a pane is a task
-        // that can only ever time out, and the contract would record that as the child's failure.
-        // A pane belongs to a **root**: a node an operator started and is watching.
-        LaunchPath::Terminal => {
-            return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
+    // **API-key rotation, before the first successful turn.** An endpoint node whose provider
+    // refused its key (401/403), rate-limited it (429) or failed or could not be reached (5xx, a
+    // connection error) — with no report and nothing changed in its worktree, so no turn of it had
+    // succeeded — is relaunched fresh on the next credential in the stated order, and the move is
+    // recorded on its contract. Only a finished process is rotated, so never mid-turn; each
+    // credential is tried once; and every attempt shares the node's one wall clock.
+    let mut endpoint = endpoint;
+    let mut failovers: Vec<marion_core::contract::CredentialFailover> = Vec::new();
+    let mut probed_version: Option<String> = None;
+    let launched_at = Instant::now();
+    let (launch, inv, mut run, version) = loop {
+        let attempt_bound = bound.saturating_sub(launched_at.elapsed());
+        // The live stream is scrubbed of every key this node has been launched on, as it arrives.
+        if let (Some(es), Some(key)) = (&events, endpoint.as_ref().and_then(|e| e.key.as_ref())) {
+            es.scrub_key(key.expose());
         }
-        LaunchPath::LaunchOnly => launch_only_child(
-            &inv,
-            bound,
-            &announce_started,
-            &session,
-            events.as_ref(),
-            endpoint
-                .as_ref()
-                .and_then(|e| e.key.as_ref())
-                .map(|k| k.expose()),
-        ),
-        // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
-        // children through the single ACP adapter*, and until this arm existed the only thing that
-        // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
-        // contract, no journal and no bridge, so it could not answer the clause however green it
-        // was. That is the sixth "fully tested in isolation and unreachable from any binary" of
-        // the day, and this arm is the fix.
+        let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+        if let Some(ep) = &endpoint {
+            crate::endpoint::apply(&mut launch, ep);
+        }
+        // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the
+        // one sentence on this path a reader of the journal needs verbatim, so it is filed for the
+        // abort record on the way out rather than replaced by the guard's generic reason.
+        let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
+        // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
+        // asked for after the child had been run and reaped, which was the only place it *could* be
+        // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
+        // instant the process exists, and it carries this field, so the probe has to precede the
+        // launch — which is where §6.1 step 3 put it in the first place.
         //
-        // The declaration is asked of the adapter here rather than rebuilt in the driver, so the
-        // frame marion sends and the frame `McpRoute::Session` verified are the same object.
-        LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
-            inv: &inv,
-            session_declaration: adapter.session_declaration(&launch, &ctx)?,
-            prompt: &req.prompt,
-            bound,
-            on_started: &announce_started,
-            on_line: None,
-            turns,
-        })
-        .map(|r| ChildRun {
-            stdout: r.stdout,
-            stderr: r.stderr,
-            exit: r.exit,
-            capture_truncated: r.capture_truncated,
-            // ACP has a permission surface (`session/request_permission`) and marion answers it
-            // permissively in the driver, so nothing is denied on this path yet. An empty vector
-            // here is therefore "marion refused nothing", which is true, and **not** the
-            // `LaunchOnly` arm's "no ask could reach marion at all". When a policy lands, this is
-            // the field it fills; §11 item 24's two axes are why the distinction is written down
-            // rather than left to look identical.
-            denied_permissions: vec![],
-        })
-        .map_err(SpawnError::from),
-        LaunchPath::Duplex => duplex_child(
-            &inv,
-            ChildDuplex {
-                agent_id: &agent_id,
-                ready_file: ready_file
-                    .as_deref()
-                    .expect("the duplex path always mints a marker"),
+        // The cost is stated rather than hidden: [`HARNESS_VERSION_TIMEOUT`] now sits on the
+        // pre-launch critical path, so a harness that hangs answering `--version` delays the child by
+        // that bound instead of delaying its caller by that bound after the child is done. It is the
+        // same total, spent before rather than after, and it is bounded for the same reason.
+        //
+        // Asked **once**, not once per reader. The `Spawned` record below and `contract.child.version`
+        // further down both need it, and each used to run its own `--version` — two processes, two
+        // deadlines to hang on, and two chances for the journal and the contract to disagree about the
+        // version of a single node's harness.
+        let version = probed_version
+            .get_or_insert_with(|| harness_version(&inv.program))
+            .clone();
+        let announce_started =
+            |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());
+        let run = match path {
+            // **A contracted child does not get a pane, and the refusal is the design rather than a
+            // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
+            // `report`, under the wall clock its contract records. A pane node is a TUI, which takes
+            // no turn at all until a human presses return — so a contracted child in a pane is a task
+            // that can only ever time out, and the contract would record that as the child's failure.
+            // A pane belongs to a **root**: a node an operator started and is watching.
+            LaunchPath::Terminal => {
+                return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
+            }
+            LaunchPath::LaunchOnly => launch_only_child(
+                &inv,
+                attempt_bound,
+                &announce_started,
+                &session,
+                events.as_ref(),
+            ),
+            // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
+            // children through the single ACP adapter*, and until this arm existed the only thing that
+            // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
+            // contract, no journal and no bridge, so it could not answer the clause however green it
+            // was. That is the sixth "fully tested in isolation and unreachable from any binary" of
+            // the day, and this arm is the fix.
+            //
+            // The declaration is asked of the adapter here rather than rebuilt in the driver, so the
+            // frame marion sends and the frame `McpRoute::Session` verified are the same object.
+            LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
+                inv: &inv,
+                session_declaration: adapter.session_declaration(&launch, &ctx)?,
                 prompt: &req.prompt,
-                bound,
-                depth: ctx.depth,
-                events: events.as_ref(),
+                bound: attempt_bound,
                 on_started: &announce_started,
-                session: &session,
-                turns,
-            },
-        ),
+                on_line: None,
+                turns: feed(),
+            })
+            .map(|r| ChildRun {
+                stdout: r.stdout,
+                stderr: r.stderr,
+                exit: r.exit,
+                capture_truncated: r.capture_truncated,
+                // ACP has a permission surface (`session/request_permission`) and marion answers it
+                // permissively in the driver, so nothing is denied on this path yet. An empty vector
+                // here is therefore "marion refused nothing", which is true, and **not** the
+                // `LaunchOnly` arm's "no ask could reach marion at all". When a policy lands, this is
+                // the field it fills; §11 item 24's two axes are why the distinction is written down
+                // rather than left to look identical.
+                denied_permissions: vec![],
+            })
+            .map_err(SpawnError::from),
+            LaunchPath::Duplex => duplex_child(
+                &inv,
+                ChildDuplex {
+                    agent_id: &agent_id,
+                    ready_file: ready_file
+                        .as_deref()
+                        .expect("the duplex path always mints a marker"),
+                    prompt: &req.prompt,
+                    bound: attempt_bound,
+                    depth: ctx.depth,
+                    events: events.as_ref(),
+                    on_started: &announce_started,
+                    session: &session,
+                    turns: feed(),
+                },
+            ),
+        };
+        // **Checked before the launch's own `?`, and that ordering is the whole point.** The kill above
+        // makes the driver return *something* — a signalled exit on one path, a `DuplexError` on the
+        // other — and either of those, reported as itself, would name the symptom and bury the cause.
+        // Reading the cell first means the caller is told the one thing that is true about this node:
+        // marion could not record it, so marion does not have it.
+        if let Some(why) = unaccountable.take() {
+            return Err(SpawnError::UnaccountableNode {
+                agent_id: agent_id.clone(),
+                // The error's *shape*, never a copy of the record that would not fit. This string is
+                // journaled inside a `SpawnAborted`, and pasting a 16 KiB record into the explanation
+                // of why a 16 KiB record was refused would fail the same cap twice.
+                why: why.to_string(),
+            });
+        }
+        // An attempt the operator killed is the node's end, never a reason to rotate to the next
+        // key: asked without settling the race, which `process_ended` does once, after the loop.
+        let killed = observer.kill_requested(&agent_id);
+        // A driver that failed because the kill landed before its first turn (the node died before
+        // `initialize`, say) is a node marion *did* decide the fate of: the kill's `KillConfirmed`
+        // is its terminal record, so the abort guard must not add a `SpawnAborted` beside it. The
+        // error still goes back to the caller as the driver reported it.
+        if run.is_err() && killed {
+            resolution.armed = false;
+        }
+        let mut run = run?;
+        // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
+        // its credential in an error would otherwise put it in the contract and the event log.
+        if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+            run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
+            run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
+        }
+        if !killed
+            && let Some((next, cause)) = rotation(
+                endpoint.as_ref(),
+                &run,
+                adapter.as_ref(),
+                &wt,
+                base.as_ref(),
+                bound.saturating_sub(launched_at.elapsed()),
+            )
+        {
+            failovers.push(marion_core::contract::CredentialFailover {
+                from: endpoint
+                    .as_ref()
+                    .map(|e| e.credential.to_string())
+                    .unwrap_or_default(),
+                to: next.credential.to_string(),
+                cause,
+            });
+            endpoint = Some(next);
+            continue;
+        }
+        break (launch, inv, run, version);
     };
-    // **Checked before the launch's own `?`, and that ordering is the whole point.** The kill above
-    // makes the driver return *something* — a signalled exit on one path, a `DuplexError` on the
-    // other — and either of those, reported as itself, would name the symptom and bury the cause.
-    // Reading the cell first means the caller is told the one thing that is true about this node:
-    // marion could not record it, so marion does not have it.
-    if let Some(why) = unaccountable.take() {
-        return Err(SpawnError::UnaccountableNode {
-            agent_id: agent_id.clone(),
-            // The error's *shape*, never a copy of the record that would not fit. This string is
-            // journaled inside a `SpawnAborted`, and pasting a 16 KiB record into the explanation
-            // of why a 16 KiB record was refused would fail the same cap twice.
-            why: why.to_string(),
-        });
-    }
+    let announce_started =
+        |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());
     // **The process has ended; nothing terminal is written yet.** The one instant at which "did
     // marion end this on a kill?" can be asked and answered for good — see
     // [`SpawnObserver::process_ended`].
     let ended_by_kill = observer.process_ended(&agent_id);
-    // A driver that failed because the kill landed before its first turn (the node died before
-    // `initialize`, say) is a node marion *did* decide the fate of: the kill's `KillConfirmed` is
-    // its terminal record, so the abort guard must not add a `SpawnAborted` beside it. The error
-    // still goes back to the caller as the driver reported it.
-    if run.is_err() && ended_by_kill {
-        resolution.armed = false;
-    }
-    let mut run = run?;
-    // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
-    // its credential in an error would otherwise put it in the contract and the event log.
-    if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
-        run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
-        run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
-    }
     record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
@@ -1890,10 +1985,6 @@ pub fn run_spawn_watched(
                 &announce_generation,
                 &session,
                 events.as_ref(),
-                endpoint
-                    .as_ref()
-                    .and_then(|e| e.key.as_ref())
-                    .map(|k| k.expose()),
             );
             if let Some(why) = unaccountable.take() {
                 turns.dropped(
@@ -2029,6 +2120,7 @@ pub fn run_spawn_watched(
         .as_ref()
         .map(|_| crate::endpoint::ROUTE_NATIVE.to_string());
     contract.child.credential = endpoint.as_ref().map(|e| e.credential.to_string());
+    contract.child.credential_failover = failovers;
     // **The third field sourced from what ran rather than from what was asked for**, joining
     // `harness` and `model` above (`32ec905`). §6.7's `allowed_tools` records *"the compiled,
     // harness-native constraint — or the harness's coarsest equivalent where it has no per-tool
@@ -2885,8 +2977,8 @@ mod tests {
     }
 
     /// **An endpoint child's key never reaches its live event record.** `launch_only_child`
-    /// records each line as it lands, before the capture is redacted, so the redaction has to
-    /// happen on the line; a harness echoing its key in an error is the case this defends.
+    /// records each line as it lands, before the capture is redacted, so the node's sink has to
+    /// scrub the line; a harness echoing its key in an error is the case this defends.
     #[test]
     fn a_launch_only_childs_live_record_carries_no_endpoint_key() {
         let dir = scratch("run-live-redact");
@@ -2898,7 +2990,8 @@ mod tests {
             crate::events::EventWriter::open_path(&events_path, &id).unwrap(),
             Harness::Codex,
             "unused".into(),
-        );
+        )
+        .scrubbing(Some("sk-endpoint-9f2c1e7a"));
         let key = "sk-endpoint-9f2c1e7a";
         let inv = Invocation {
             program: "sh".into(),
@@ -2918,7 +3011,6 @@ mod tests {
             &|_| {},
             &watch,
             Some(&sink),
-            Some(key),
         )
         .unwrap();
         drop(sink);
@@ -3587,6 +3679,8 @@ mod tests {
             ("cline", Harness::Cline),
             ("qwen", Harness::Qwen),
             ("qwen-impl", Harness::Qwen),
+            ("pi", Harness::Pi),
+            ("pi-orchestrator", Harness::Pi),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
@@ -3757,6 +3851,11 @@ mod tests {
                 Harness::Qwen,
                 vec!["core-tools:mcp__marion__report", "core-tools:write_file"],
             ),
+            // The `--tools` list itself: marion's verb, then both built-ins that change a file.
+            (
+                Harness::Pi,
+                vec!["tools:mcp__marion__report", "tools:write", "tools:edit"],
+            ),
         ] {
             let adapter = adapter_for(harness).unwrap();
             let launch = LaunchSpec {
@@ -3828,6 +3927,7 @@ mod tests {
             ("goose", Harness::Goose),
             ("cline", Harness::Cline),
             ("qwen", Harness::Qwen),
+            ("pi", Harness::Pi),
         ] {
             let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
             let err: SpawnError = adapter

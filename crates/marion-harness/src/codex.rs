@@ -204,6 +204,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     wires: &[WireRecipe {
         wire: Wire::OpenAiResponses,
         env: &[],
+        keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "OpenAI Responses alone: `wire_api = \"chat\"` was removed from codex, and the generated provider names `responses`.",
     }],
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
@@ -224,8 +225,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
 /// `error` the words; only the success spelling is recorded, so anything else terminal is a
 /// refusal rather than an unknown.
 ///
-/// **No failure claim of its own**: codex emits a terminal item but no verdict marion reads, so
-/// the contract's status comes from the reported narrative and the exit code, as it always has.
+/// **One failure claim**: a `turn.failed` frame, in its `error.message` (measured on 0.155.1
+/// against a provider refusing the key). Otherwise the contract's status comes from the reported
+/// narrative and the exit code, as it always has.
 /// `file_change` items are recorded as corroboration; git is the authority.
 pub const STREAM: StreamGrammar = StreamGrammar {
     call: Where {
@@ -248,7 +250,15 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     },
     refused_report: OnRefusedReport::Record,
-    failures: &[],
+    failures: &[crate::grammar::Failure::Frame {
+        at: Where {
+            frame: &[Cond::Eq("/type", "turn.failed")],
+            each: None,
+            unit: &[],
+        },
+        words: &["/error/message"],
+        fallback: "the child's stream carried a turn.failed frame",
+    }],
     file_changes: Some(PathList {
         at: Where {
             frame: &[Cond::Eq("/item/type", "file_change")],
@@ -584,6 +594,39 @@ mod tests {
             .filter(|w| w[0] == "-c")
             .map(|w| w[1].clone())
             .collect()
+    }
+
+    /// **A failed turn is the stream's failure claim, in codex's own words** — measured on 0.155.1
+    /// against the canned provider refusing the key: a `turn.failed` frame closes the run with
+    /// `error.message`. The informational `item.completed` of type `error` (missing model
+    /// metadata) is not a failure.
+    #[test]
+    fn a_failed_turn_is_a_failure_claim_and_an_error_item_is_not() {
+        let stdout = concat!(
+            r#"{"type":"thread.started","thread_id":"t-1"}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `m` not found."}}"#,
+            "\n",
+            r#"{"type":"turn.started"}"#,
+            "\n",
+            r#"{"type":"error","message":"exceeded retry limit, last status: 429 Too Many Requests"}"#,
+            "\n",
+            r#"{"type":"turn.failed","error":{"message":"exceeded retry limit, last status: 429 Too Many Requests"}}"#,
+            "\n",
+        );
+        let out = crate::grammar::parse_stream(&STREAM, stdout, "");
+        assert_eq!(
+            out.failure.as_deref(),
+            Some("exceeded retry limit, last status: 429 Too Many Requests")
+        );
+        let clean = concat!(
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `m` not found."}}"#,
+            "\n"
+        );
+        assert_eq!(
+            crate::grammar::parse_stream(&STREAM, clean, "").failure,
+            None
+        );
     }
 
     #[test]

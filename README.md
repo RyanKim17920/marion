@@ -1,6 +1,6 @@
 # marion
 
-marion runs any agent harness — Claude Code, Codex, Gemini CLI, opencode, Copilot CLI, goose, Cline, Qwen Code, or any ACP agent — as a first-class subagent of any other, and gives you one supervisor and one UI over the whole tree.
+marion runs any agent harness — Claude Code, Codex, Gemini CLI, opencode, Copilot CLI, goose, Cline, Qwen Code, pi, or any ACP agent — as a first-class subagent of any other, and gives you one supervisor and one UI over the whole tree.
 
 A demo of a Claude session delegating a build to a codex child is coming.
 
@@ -125,9 +125,35 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
 | `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
 | `qwen` (Qwen Code) | 0.23.0 | yes | no — interactive shape unmeasured | — |
+| `pi` | 0.80.2 | yes — MCP through marion's own `-e` extension | yes | — |
 | `acp:<command>` | n/a | — | — | the generic path |
 
 The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion`'s Start tab offers them per harness.
+
+### ACP agents
+
+Any ACP agent runs through `acp:<command>`. These have a refinement row in `acp::AGENTS`, probed on 2026-09-27 (S33, `tests/fixtures/s33-acp-agents/`) without an account marion made or a login marion ran. "Opened" means `session/new` answered with a session; agents marked *provider* opened only once pointed at a provider through their own env, which on your machine is your own configuration for that agent. **Refused** rows were probed only to the account wall: `initialize` works, a session does not, and there is no built-in type for them.
+
+| row | command | built-in type | session/new | notes |
+|---|---|---|---|---|
+| `opencode` | `opencode acp` | `acp-opencode` | opened | tool call measured; canned recipe |
+| `claude-acp` | `npx -y @agentclientprotocol/claude-agent-acp@0.66.0` | `acp-claude-acp` | opened (your claude login) | tool call measured; live file write 2026-09-27 |
+| `codex-acp` | `codex-acp` | `acp-codex-acp` | opened (your codex login) | tool call measured; live file write 2026-09-27 |
+| `copilot` | `copilot --acp` | `acp-copilot` | opened (your login) | bridge only through `--additional-mcp-config` |
+| `kilo` | `kilo acp` | `acp-kilo` | opened, no account | a prompt needs a Kilo login or provider |
+| `qwen` | `qwen --acp` | `acp-qwen` | opened, *provider* | turn run against a local endpoint; MCP tools deferred behind `tool_search` |
+| `goose` | `goose acp` | `acp-goose` | opened, *provider* | turn run against a local endpoint |
+| `fast-agent` | `fast-agent-acp -x` | `acp-fast-agent` | opened, *provider* | real bridge call against a local endpoint |
+| `vibe` | `vibe-acp` | `acp-vibe` | opened, *provider* | no turn run |
+| `vtcode` | `vtcode acp` | `acp-vtcode` | opened | needs `VT_ACP_ENABLED=1` or `[acp]` in its config; no turn run |
+| `gemini` | `gemini --acp` | — | **refused** | Gemini Code Assist ineligibility |
+| `auggie` | `auggie --acp` | — | **refused** | `auggie login` (account) |
+| `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
+| `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
+| `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
+
+`marion doctor --capabilities --harness acp` probes every row and names the MCP transports each agent advertises; `--acp-command "<cmd>"` adds your own, and says when it turns out to be one of these rows.
+
 
 ![The Codex TUI running inside a marion pane after `marion attach`, showing the delegated prompt, a Working indicator, and a line typed by the operator through the attachment.](docs/media/attach-pane.png)
 
