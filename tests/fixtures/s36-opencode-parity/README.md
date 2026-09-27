@@ -80,3 +80,12 @@ fallback, `experimental.mcp_timeout`. marion now sets it on every `opencode acp`
 `OPENCODE_CONFIG_CONTENT` (`opencode::acp_session_document`), under both modes. The ~30 s startup
 limit remains: marion's bridge must answer `initialize` inside it, which it does in well under a
 second when the machine is not saturated.
+
+## `model-omitted/` — what `opencode run` does with no `-m`
+
+The sandbox config names `"model": "canned/canned-1"`; the run passed no `-m`. The request went
+out for `canned-1`: **PASS**. So a live node that names no model of its own can leave `-m` off and
+run on the operator's configured default, as a live claude or codex node does. marion used to
+refuse that launch (the `opencode` type's default, `marion/default`, names the provider block only
+a canned node generates); it now treats the plumbing default as naming no model under `--live`,
+for `opencode run` and for an `opencode acp` session alike (`opencode::requested_model`).

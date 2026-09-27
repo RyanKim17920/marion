@@ -1,0 +1,6 @@
+{"t": 1790539120.183452, "ev": "start"}
+{"t": 1790539120.1837308, "ev": "recv", "method": "initialize"}
+{"t": 1790539128.189051, "ev": "sent", "method": "initialize"}
+{"t": 1790539128.204851, "ev": "recv", "method": "notifications/initialized"}
+{"t": 1790539128.2049658, "ev": "recv", "method": "tools/list"}
+{"t": 1790539128.20503, "ev": "sent", "method": "tools/list"}

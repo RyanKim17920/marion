@@ -17,6 +17,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
     TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -396,6 +397,19 @@ impl ModelRef {
     pub fn qualified(&self) -> String {
         format!("{}/{}", self.provider, self.model)
     }
+}
+
+/// The model a node asks opencode for — `run`'s `-m`, `acp`'s session model — or `None`, where it
+/// asks for none and opencode runs on its configured default (s36 `model-omitted/`: `run` with no
+/// `-m` sent the config's `model`).
+///
+/// The request, except that under [`Auth::Inherited`] **marion's own plumbing default names
+/// nothing**: [`agent_type::OPENCODE_DEFAULT_MODEL`] is the provider block marion generates for its
+/// canned endpoint, and a live node generates none (S13 measured `-m marion/default` there as
+/// `Error: {"name":"UnknownError",…}`, exit 1). So a live node given only its type's default runs
+/// on the operator's own default model — what a live claude or codex node does with no model.
+pub fn requested_model(auth: Auth, model: Option<&str>) -> Option<&str> {
+    model.filter(|m| !(auth == Auth::Inherited && *m == agent_type::OPENCODE_DEFAULT_MODEL))
 }
 
 /// `$XDG_CONFIG_HOME` — the only true config replacement (S13).

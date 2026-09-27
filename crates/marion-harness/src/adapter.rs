@@ -1110,34 +1110,29 @@ impl HarnessAdapter for GeminiAdapter {
 pub struct OpenCodeAdapter;
 
 impl OpenCodeAdapter {
-    /// The `provider/model` pair, which both argv and the generated config name. Parsed once so
-    /// they cannot disagree.
-    fn model_ref(spec: &LaunchSpec) -> Result<opencode::ModelRef, HarnessError> {
-        let m = spec.model.as_deref().ok_or(HarnessError::MissingInput {
-            harness: Harness::OpenCode,
-            what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
-                   so argv and the generated config are the only two channels",
-        })?;
-        // **The default is marion's own plumbing, and under `--live` that plumbing does not
-        // exist.** `marion/default` names the provider block `config_json` *generates*, pointed at
-        // marion's canned endpoint. A live node writes no provider block at all — deliberately, so
-        // as not to shadow the operator's real one — so `-m marion/default` would resolve nothing
-        // and S13 measured that as `Error: {"name":"UnknownError",…}` with exit 1. Refused by name
-        // instead: the operator has to say which of *their* providers a live node should use.
-        if spec.auth == Auth::Inherited && m == marion_core::agent_type::OPENCODE_DEFAULT_MODEL {
-            return Err(HarnessError::MissingInput {
+    /// The `provider/model` pair, which both argv and the generated config name — parsed once so
+    /// they cannot disagree — or, on a live node that names no model of its own, none: `-m` is
+    /// left off and opencode runs on the operator's configured default
+    /// ([`opencode::requested_model`]).
+    fn model(spec: &LaunchSpec) -> Result<Option<opencode::ModelRef>, HarnessError> {
+        let Some(m) = opencode::requested_model(spec.auth, spec.model.as_deref()) else {
+            return match spec.auth {
+                Auth::Inherited => Ok(None),
+                Auth::Canned => Err(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "a canned node needs an explicit -m provider/model: there is no \
+                           OPENCODE_MODEL env var, so argv and the generated provider block are \
+                           the only two channels",
+                }),
+            };
+        };
+        opencode::ModelRef::parse(m)
+            .map(Some)
+            .ok_or(HarnessError::MissingInput {
                 harness: Harness::OpenCode,
-                what: "the built-in default model `marion/default` names the provider block marion \
-                       generates for its own canned endpoint, and a --live node writes none — so \
-                       it resolves to no provider at all. Name a real provider/model from the \
-                       operator's own opencode config instead (marion run --live -m …)",
-            });
-        }
-        opencode::ModelRef::parse(m).ok_or(HarnessError::MissingInput {
-            harness: Harness::OpenCode,
-            what: "the model must be in `provider/model` form, which is the only spelling `-m` \
-                   accepts and the one the generated provider block has to repeat",
-        })
+                what: "the model must be in `provider/model` form, which is the only spelling \
+                       `-m` accepts and the one the generated provider block has to repeat",
+            })
     }
 }
 
@@ -1146,8 +1141,9 @@ impl HarnessAdapter for OpenCodeAdapter {
         Harness::OpenCode
     }
 
-    /// The `provider/model` pair (refused where it is not one, or is marion's own default on a
-    /// live node — [`Self::model_ref`]), the session title, and the live route's inline document.
+    /// The `provider/model` pair (refused where it is not one; none on a live node that names no
+    /// model of its own — [`Self::model`]), the session title, and the live route's inline
+    /// document.
     ///
     /// **Under `Inherited` the declaration is compiled into the env, not written to a file.** S13:
     /// auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
@@ -1165,7 +1161,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         // the row reads the result — see `Self::tool_name` for why a declaration here compiles
         // nothing.
         let mut f = neutral_fields(spec, self.axes(spec)?);
-        f.model = Some(Self::model_ref(spec)?.qualified());
+        f.model = Self::model(spec)?.map(|m| m.qualified());
         // Any stable string suppresses the title-generation call; the node's own id makes the
         // session identifiable in `opencode session list` without leaking the prompt.
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
@@ -1197,7 +1193,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
         let json = opencode::config_json(
             &opencode::ConfigSpec {
-                model: Self::model_ref(spec)?,
+                // A canned launch names a model or `Self::model` refused it.
+                model: Self::model(spec)?.expect("a canned opencode launch always names a model"),
                 base_url: base_url.to_string(),
                 api_key: spec.api_key.clone(),
             },
@@ -1850,7 +1847,10 @@ impl HarnessAdapter for AcpAdapter {
                 // of its `Env` rows — the same binary, one subcommand over, updates itself the same
                 // way.
                 env.extend(opencode::SPEC.updates.env());
-                (env, spec.model.clone())
+                // And, live, no session model where only the type's plumbing default was given:
+                // the session keeps the operator's own.
+                let model = opencode::requested_model(spec.auth, spec.model.as_deref());
+                (env, model.map(str::to_string))
             }
             // The requested model rides the session, not argv: `acp_child` sets it through ACP's
             // `session/set_config_option` and refuses the run by name where the agent offers no
@@ -4725,48 +4725,97 @@ mod tests {
         );
     }
 
-    /// **`marion/default` names marion's own generated plumbing, and a live node generates none.**
-    /// It would resolve to no provider at all — S13 measured that as
-    /// `Error: {"name":"UnknownError",…}`, exit 1 — so it is refused by name at compile time
-    /// instead, with the refusal saying what to pass instead.
+    /// **A live node that names no model of its own runs on the operator's configured default**,
+    /// as a live claude or codex node does — `-m` is left off argv. `marion/default`, the type's
+    /// default, names marion's own generated plumbing, which a live node does not generate (S13
+    /// measured `-m marion/default` there as `Error: {"name":"UnknownError",…}`, exit 1), so it
+    /// counts as naming none. s36 measured `opencode run` with no `-m` taking the config's `model`
+    /// (`model-omitted/`). Canned is untouched: that default is what its provider block is for,
+    /// and a canned launch still names one.
     #[test]
-    fn the_canned_default_model_is_refused_under_live_rather_than_resolving_to_no_provider() {
-        let live = LaunchSpec {
-            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
-            ..opencode_live_spec()
-        };
-        let e = OpenCodeAdapter.compile(&live, &ctx()).unwrap_err();
-        assert!(
-            matches!(
-                &e,
-                HarnessError::MissingInput {
-                    harness: Harness::OpenCode,
-                    ..
-                }
-            ),
-            "{e}"
-        );
-        assert!(
-            e.to_string().contains("marion/default"),
-            "the refusal must name the problem: {e}"
-        );
-        // And it is a *live* refusal only — canned is what that default exists for.
+    fn a_live_node_that_names_no_model_of_its_own_runs_on_the_operators_default() {
+        for model in [
+            None,
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+        ] {
+            let live = LaunchSpec {
+                model: model.clone(),
+                ..opencode_live_spec()
+            };
+            let inv = OpenCodeAdapter
+                .compile(&live, &ctx())
+                .unwrap_or_else(|e| panic!("{model:?}: {e}"));
+            assert!(
+                !inv.args.iter().any(|a| a == "-m"),
+                "{model:?}: no -m, so the operator's own default model runs: {:?}",
+                inv.args
+            );
+            assert_eq!(
+                inv.model, None,
+                "{model:?}: the record names no model marion chose"
+            );
+        }
+        // A real provider/model is still passed, and still checked for its form.
+        let named = OpenCodeAdapter
+            .compile(&opencode_live_spec(), &ctx())
+            .unwrap();
+        assert!(named.args.windows(2).any(|w| w[0] == "-m"));
         assert!(
             OpenCodeAdapter
                 .compile(
                     &LaunchSpec {
-                        model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                        model: Some("no-slash".into()),
+                        ..opencode_live_spec()
+                    },
+                    &ctx()
+                )
+                .is_err()
+        );
+        // Canned: the default reaches argv and its provider block; no model at all is refused.
+        let canned = OpenCodeAdapter
+            .compile(
+                &LaunchSpec {
+                    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                    ..opencode_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        assert!(canned.args.iter().any(|a| a == "marion/default"));
+        assert!(
+            OpenCodeAdapter
+                .compile(
+                    &LaunchSpec {
+                        model: None,
                         ..opencode_spec()
                     },
                     &ctx()
                 )
-                .is_ok()
+                .is_err()
         );
-        // A real provider/model is accepted live.
-        assert!(
-            OpenCodeAdapter
-                .compile(&opencode_live_spec(), &ctx())
-                .is_ok()
+    }
+
+    /// The same for `opencode acp`: the type's plumbing default is not set on a live session, so
+    /// the session keeps the operator's own default rather than being refused as offering no
+    /// `marion/default`.
+    #[test]
+    fn a_live_opencode_acp_node_leaves_the_plumbing_default_off_its_session() {
+        let live = LaunchSpec {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..acp_spec()
+        };
+        assert_eq!(acp_adapter().compile(&live, &ctx()).unwrap().model, None);
+        let canned = LaunchSpec {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..canned_acp_spec()
+        };
+        assert_eq!(
+            acp_adapter()
+                .compile(&canned, &ctx())
+                .unwrap()
+                .model
+                .as_deref(),
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL)
         );
     }
 
