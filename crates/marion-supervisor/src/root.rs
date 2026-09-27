@@ -2100,7 +2100,22 @@ fn launch_only_generation(
     let mut cmd = inv.command();
     // The one live seam this path has, and the session watch is its one reader: the first frame
     // names the session, and a root lost mid-run never reaches the capture below.
-    let on_line = |line: &str| session.observe_line(line);
+    // A refused credential ends the run at once: a root has no wall clock at all, so a harness
+    // retrying a 401 would otherwise hold it for its whole backoff (`run::launch_only_child`).
+    let stopped: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let on_line = |line: &str| {
+        session.observe_line(line);
+        let refusal = serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|frame| adapter.auth_refusal(&frame));
+        match refusal {
+            Some(why) => {
+                stopped.borrow_mut().get_or_insert(why);
+                std::ops::ControlFlow::Break(())
+            }
+            None => std::ops::ControlFlow::Continue(()),
+        }
+    };
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     let redact = |bytes: &[u8]| {
         let text = String::from_utf8_lossy(bytes).into_owned();
@@ -2133,7 +2148,8 @@ fn launch_only_generation(
         // with a fresh session is the more specific claim.
         failure: adapter
             .resume_refusal(&stdout, node.resumed.as_deref())
-            .or_else(|| adapter.stream_failure(&stdout)),
+            .or_else(|| adapter.stream_failure(&stdout))
+            .or_else(|| stopped.into_inner().map(crate::run::stopped_words)),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
@@ -2599,6 +2615,9 @@ fn launch_duplex(
         .clone()
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let inv = &node.invocation;
+    let adapter = marion_harness::adapter::adapter_for(node.harness)
+        .map_err(|_| RootError::UnsupportedRootSurface(node.harness))?;
+    let stop_on = |frame: &serde_json::Value| adapter.auth_refusal(frame);
     let out = duplex::run_duplex(
         &mut inv.command(),
         &DuplexSpec {
@@ -2622,6 +2641,7 @@ fn launch_duplex(
             // See `launch_inner` for the hook and `spawned_record` for the record.
             on_started: Some(on_started),
             turns: node.turns.clone(),
+            stop_on: Some(&stop_on),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;
@@ -2633,8 +2653,8 @@ fn launch_duplex(
         // Gated *before* the turn on this path, so restating it post hoc would add nothing.
         marion_calls: vec![],
         // Same reason: the duplex driver never reaches the post-hoc assertion, so there is nowhere
-        // for a stream failure claim to be read from here.
-        failure: None,
+        // for a stream failure claim to be read from here — save marion's own ending of the run.
+        failure: out.stopped.map(crate::run::stopped_words),
         timed_out: out.timed_out,
         bridge_unused: false,
     })

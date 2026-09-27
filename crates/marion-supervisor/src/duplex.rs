@@ -403,7 +403,15 @@ pub struct DuplexSpec<'a> {
     /// otherwise; after each `result` the driver takes the next message, or holds while the node
     /// is owed a background child's end, and only a `take_or_seal` that seals ends the session.
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// **A frame that ends the run now**, with why — the row's refused-credential reading
+    /// (`HarnessAdapter::auth_refusal`), which no retry of the harness's heals. The driver stops
+    /// reading, kills the node's tree and records the reason ([`DuplexOutcome::stopped`]); a limit
+    /// or an outage is never one, since those can recover inside the harness's own backoff.
+    pub stop_on: Option<StopOn<'a>>,
 }
+
+/// [`DuplexSpec::stop_on`]'s shape: a frame in, the reason to end the run now out.
+pub type StopOn<'a> = &'a dyn Fn(&Value) -> Option<String>;
 
 /// Hand-written because a [`StreamSink`] is a `dyn Fn` and cannot derive it. The sink is reported as
 /// present or absent, which is the only fact about it a debug print could honestly carry.
@@ -420,6 +428,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("sink", &self.sink.map(|_| "<sink>"))
             .field("on_started", &self.on_started.map(|_| "<on_started>"))
             .field("turns", &self.turns)
+            .field("stop_on", &self.stop_on.map(|_| "<stop_on>"))
             .finish()
     }
 }
@@ -444,6 +453,8 @@ pub struct DuplexOutcome {
     pub unanswered_control_requests: Vec<String>,
     /// marion's own wall-clock bound expired and the node's process group was killed.
     pub timed_out: bool,
+    /// marion ended the run on a frame [`DuplexSpec::stop_on`] named, for this reason.
+    pub stopped: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -563,8 +574,12 @@ pub fn run_duplex(
     }
     drive(&rx, &mut stdin, spec, &mut outcome)?;
 
-    // Closing stdin is what ends a `--input-format stream-json` session.
+    // Closing stdin is what ends a `--input-format stream-json` session — but not one retrying a
+    // refused credential, which runs its whole backoff first: that one marion ends itself.
     drop(stdin);
+    if outcome.stopped.is_some() {
+        guard.end_now(&mut child);
+    }
     let status = child.wait()?;
     let (stderr, timed_out) = guard.stop(false, &mut child);
     // What the node said after marion's last boundary — a turn it queued itself from a mid-turn
@@ -618,6 +633,14 @@ impl RunGuard {
             stderr,
             stdout,
         }
+    }
+
+    /// Kill the node's tree now, leaving the settling to [`Self::stop`].
+    fn end_now(&self, child: &mut std::process::Child) {
+        if self.own_group {
+            kill_process_tree(self.pid);
+        }
+        let _ = child.kill();
     }
 
     /// Settle the run and return the drained stderr and whether the wall clock expired.
@@ -677,6 +700,9 @@ fn record_line(spec: &DuplexSpec<'_>, outcome: &mut DuplexOutcome, line: &str) -
             Some(v) => sink(StreamEvent::Frame(v)),
             None => sink(StreamEvent::Unparsed(line)),
         }
+    }
+    if let (None, Some(stop), Some(v)) = (&outcome.stopped, spec.stop_on, &frame) {
+        outcome.stopped = stop(v);
     }
     frame
 }
@@ -819,6 +845,9 @@ fn drive(
                 Ok(Event::Line(line)) => {
                     if handle_line(stdin, spec, outcome, &line)? == Seen::TurnEnded {
                         running = false;
+                    }
+                    if outcome.stopped.is_some() {
+                        return Ok(());
                     }
                 }
                 Ok(Event::Wake) => {
@@ -1118,6 +1147,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect("the run returns");
@@ -1228,6 +1258,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect("the run returns");
@@ -1285,6 +1316,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect("the run returns");
@@ -1336,6 +1368,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: spec_sink,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect("the run returns")
@@ -1567,6 +1600,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: None,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -1603,6 +1637,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: None,
                 on_started: None,
                 turns: None,
+                stop_on: None,
             },
         )
         .expect("the bounded run returns");
@@ -1613,6 +1648,65 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
         );
         assert!(out.timed_out, "marion's own attributed kill (§6.7)");
         assert_eq!(out.signal, Some(9));
+    }
+
+    /// **A refused credential claude retries ends the run at once** — claude 2.1.283 retries a 401
+    /// as ten `system/api_retry` frames over minutes, stdin's end does not stop it, and no retry
+    /// heals the key. The driver stops at the first such frame the row reads, kills the node and
+    /// says why; a 429 retry frame is not one, and the node runs on to its bound.
+    #[test]
+    fn a_refused_credential_the_node_retries_ends_the_run_at_once() {
+        let run = |tag: &str, retry: &str| {
+            let dir = scratch(tag);
+            let marker = dir.join("mcp-ready");
+            std::fs::write(&marker, b"ready\n").unwrap();
+            let script = format!(
+                "read line; printf '%s\\n' '{INIT_REPLY}'; read line; \
+                 while :; do printf '%s\\n' '{retry}'; sleep 0.1; done"
+            );
+            let adapter =
+                marion_harness::adapter::adapter_for(marion_core::harness::Harness::ClaudeCode)
+                    .unwrap();
+            let stop_on = |frame: &Value| adapter.auth_refusal(frame);
+            let started = Instant::now();
+            let out = run_duplex(
+                SysCommand::new("sh").args(["-c", &script]),
+                &DuplexSpec {
+                    ready_file: &marker,
+                    prompt: "do the task",
+                    init_id: "marion-init-test".into(),
+                    mcp_ready_timeout: StdDuration::from_secs(5),
+                    blocked_bound: StdDuration::ZERO,
+                    depth: crate::depth::ROOT_DEPTH + 1,
+                    wall_clock: Some(StdDuration::from_secs(3)),
+                    sink: None,
+                    on_started: None,
+                    turns: None,
+                    stop_on: Some(&stop_on),
+                },
+            )
+            .expect("the run returns");
+            (out, started.elapsed())
+        };
+        let (out, took) = run(
+            "duplex-auth-stop",
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"authentication_failed","error_status":401,"max_retries":10}"#,
+        );
+        assert_eq!(
+            out.stopped.as_deref(),
+            Some("HTTP 401 authentication_failed")
+        );
+        assert!(!out.timed_out, "marion's own ending, not the wall clock");
+        assert!(took < StdDuration::from_secs(3), "took {took:?}");
+        let (out, _) = run(
+            "duplex-limit-waits",
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"rate_limit","error_status":429,"max_retries":10}"#,
+        );
+        assert_eq!(out.stopped, None);
+        assert!(
+            out.timed_out,
+            "a rate limit is left to the harness's backoff"
+        );
     }
 
     // ---- turn delivery (S31): the node's inbox, delivered at turn boundaries and mid-turn ----
@@ -1711,6 +1805,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
             sink: None,
             on_started: None,
             turns: Some(feed.clone()),
+            stop_on: None,
         }
     }
 
