@@ -846,6 +846,37 @@ pub enum SpawnGateError {
     TooManyChildren { live: u32, max: u32 },
 }
 
+/// marion's verbs for delegating and following what was delegated: create a child, then observe,
+/// collect and steer it. A root is granted all of them; a child is granted them while it may still
+/// create a child of its own ([`child_verbs`]).
+pub const DELEGATION_VERBS: [&str; 5] = ["spawn", "status", "wait", "list", "steer"];
+
+/// A child's return path, and the one verb every child is granted.
+pub const REPORT_VERB: &str = "report";
+
+/// Whether a node of type `ty` at `depth` (root = 0) may create a child: the depth half of
+/// [`check_spawn_gates`], which reads this same predicate, so the grant and the refusal cannot
+/// disagree about where the bound is.
+pub fn may_delegate(ty: &AgentType, depth: u32) -> bool {
+    depth < ty.max_depth
+}
+
+/// **The marion verbs a child at `depth` is granted on its permission axis**, in marion's
+/// vocabulary — one rule for every harness, which the adapter then spells.
+///
+/// `report` always; the [`DELEGATION_VERBS`] too while [`may_delegate`] holds. A child at its
+/// type's `max_depth` is granted `report` alone: its `spawn` would only ever be refused, and the
+/// verbs that follow a child have no child to follow. The per-call gate stays the guarantee — an
+/// allowlist harness denies the ungranted verb before marion is asked, and every other harness
+/// reaches [`check_spawn_gates`] and is refused there.
+pub fn child_verbs(ty: &AgentType, depth: u32) -> Vec<&'static str> {
+    let mut verbs = vec![REPORT_VERB];
+    if may_delegate(ty, depth) {
+        verbs.extend(DELEGATION_VERBS);
+    }
+    verbs
+}
+
 /// §6.1 step 2, applied to the **caller's** agent type.
 ///
 /// Reading the caller's type, never the child's just-resolved one, is load-bearing: the child has
@@ -860,10 +891,9 @@ pub fn check_spawn_gates(
     caller_depth: u32,
     live_children: u32,
 ) -> Result<(), SpawnGateError> {
-    let child_depth = caller_depth + 1;
-    if child_depth > caller.max_depth {
+    if !may_delegate(caller, caller_depth) {
         return Err(SpawnGateError::DepthExceeded {
-            child_depth,
+            child_depth: caller_depth + 1,
             max_depth: caller.max_depth,
         });
     }
@@ -1280,6 +1310,26 @@ mod tests {
         let s = crate::scope::Scope::new(&ceiling, &[Glob("src/**".into())]).unwrap();
         assert!(s.is_writable(std::path::Path::new("src/a.rs")));
         assert!(!s.is_writable(std::path::Path::new("docs/a.md")));
+    }
+
+    /// The grant follows the gate: a child below its type's bound is granted every delegation verb
+    /// beside `report`, and a child at the bound `report` alone — the depth at which the gate would
+    /// refuse its `spawn`, and no other.
+    #[test]
+    fn a_child_is_granted_the_delegation_verbs_exactly_where_the_depth_gate_would_serve_them() {
+        let t = builtin("claude").unwrap();
+        for d in 1..=t.max_depth + 1 {
+            let verbs = child_verbs(&t, d);
+            let served = check_spawn_gates(&t, d, 0).is_ok();
+            assert_eq!(verbs[0], REPORT_VERB, "depth {d}");
+            if served {
+                assert_eq!(verbs[1..], DELEGATION_VERBS, "depth {d} may delegate");
+            } else {
+                assert_eq!(verbs, [REPORT_VERB], "depth {d} is at or past the bound");
+            }
+        }
+        assert_eq!(child_verbs(&t, t.max_depth), [REPORT_VERB]);
+        assert_eq!(child_verbs(&t, t.max_depth - 1).len(), 6);
     }
 
     #[test]

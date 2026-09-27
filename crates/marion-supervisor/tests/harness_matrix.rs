@@ -415,8 +415,16 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
         expected_harness: Harness::ClaudeCode,
         expected_model: None,
         // A real per-tool allowlist: the literal contents of `--allowedTools`. `claude` declares no
-        // tools, so marion's own verb is the whole of it.
-        expected_allowed_tools: &["mcp__marion__report"],
+        // tools, so marion's own verbs are the whole of it — `report`, and the delegation verbs a
+        // child at depth 1 is granted below its type's bound (`agent_type::child_verbs`).
+        expected_allowed_tools: &[
+            "mcp__marion__report",
+            "mcp__marion__spawn",
+            "mcp__marion__status",
+            "mcp__marion__wait",
+            "mcp__marion__list",
+            "mcp__marion__steer",
+        ],
         expected_wire: "anthropic",
     };
     let ev = drive(&cell);
@@ -541,9 +549,17 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_harness: Harness::Copilot,
         expected_model: Some("canned-1"),
         // A real allowlist, in copilot's pattern grammar and prefixed with the axis: the literal
-        // `--allow-tool=marion(report)`, which is what `-p` mode checks the call against. `copilot-orchestrator`
-        // declares no tools, so no `allow-tool:write` joins it.
-        expected_allowed_tools: &["allow-tool:marion(report)"],
+        // `--allow-tool=marion(report)`, which is what `-p` mode checks the call against, then the
+        // delegation verbs a depth-1 child is granted. `copilot-orchestrator` declares no tools, so
+        // no `allow-tool:write` joins them.
+        expected_allowed_tools: &[
+            "allow-tool:marion(report)",
+            "allow-tool:marion(spawn)",
+            "allow-tool:marion(status)",
+            "allow-tool:marion(wait)",
+            "allow-tool:marion(list)",
+            "allow-tool:marion(steer)",
+        ],
         expected_wire: "openai",
     };
     let ev = drive(&cell);
@@ -661,8 +677,16 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_model: Some("canned-1"),
         // A real allowlist: `--core-tools` is what the model is offered (s25 item 5), and the
         // record is its literal contents prefixed with the axis. `qwen-orchestrator` declares no
-        // tools, so marion's own verb is the whole list.
-        expected_allowed_tools: &["core-tools:mcp__marion__report"],
+        // tools, so marion's own verbs — `report` and a depth-1 child's delegation verbs — are the
+        // whole list.
+        expected_allowed_tools: &[
+            "core-tools:mcp__marion__report",
+            "core-tools:mcp__marion__spawn",
+            "core-tools:mcp__marion__status",
+            "core-tools:mcp__marion__wait",
+            "core-tools:mcp__marion__list",
+            "core-tools:mcp__marion__steer",
+        ],
         expected_wire: "openai",
     };
     let ev = drive(&cell);

@@ -330,6 +330,20 @@ a_compose_line_buffers_edits_sends_and_cancels, a_compose_line_ignores_arrows_fl
 `tree::tests::{s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it,
 enter_sends_the_steer_and_its_refusal_lands_in_the_notice}`.
 
+**Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
+permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/
+`list`/`steer` while the child's depth is below its type's `max_depth` (`may_delegate`, the same
+predicate `check_spawn_gates` refuses on). It was `[report]` alone, so on the allowlist harnesses
+(claude `--allowedTools`, copilot `--allow-tool`, qwen `--core-tools`) a child could not spawn a
+grandchild while codex, gemini and opencode children could. At the bound the grant is `[report]`
+again and the gate still refuses a `spawn` that arrives. The bridge's `tools/list` is unchanged: it
+lists every verb to every child, and the per-call gate is the guarantee. Witnesses:
+`depth_gate::a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contract` (RED
+before: the claude child's `spawn` was a denied `can_use_tool`), the four at-the-bound cells in the
+same file (claude still refused by its allowlist),
+`agent_type::tests::a_child_is_granted_the_delegation_verbs_exactly_where_the_depth_gate_would_serve_them`,
+and `harness_matrix`'s claude, copilot and qwen `allowed_tools` records.
+
 **Recent activity (2026-09-27).** A parent deciding whether to steer needs to see what its child is
 doing. Each `StreamGrammar` row now carries an `activity` rule — the units that are a call to **any**
 tool (name, arguments, an optional id so codex's `item.started`/`item.completed` is one call) and
