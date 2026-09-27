@@ -2131,28 +2131,33 @@ fn launch_only_generation(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    // The one live seam this path has, and the session watch is its one reader: the first frame
-    // names the session, and a root lost mid-run never reaches the capture below.
-    let on_line = |line: &str| session.observe_line(line);
-    let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
-    let redact = |bytes: &[u8]| {
-        let text = String::from_utf8_lossy(bytes).into_owned();
-        match node.endpoint.as_ref().and_then(|e| e.key.as_ref()) {
-            Some(key) => crate::endpoint::redact(&text, key.expose()),
-            None => text,
-        }
+    let secret = node
+        .endpoint
+        .as_ref()
+        .and_then(|e| e.key.as_ref())
+        .map(|k| k.expose());
+    let redact = |text: &str| match secret {
+        Some(key) => crate::endpoint::redact(text, key),
+        None => text.to_string(),
     };
-    let stdout = redact(&out.stdout);
-    let stderr = redact(&out.stderr);
-    // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
-    // `transcript` is `json_frames(&stdout)`, which keeps only the parseable lines. S12 measured
-    // gemini interleaving `[STARTUP] Phase 1` and `Warning: Basic terminal detected` on stdout, and
-    // a recording built from `transcript` would drop exactly those — rendering a root that printed
-    // a stack trace as an unexplained silence, which is the failure `duplex::StreamEvent` has two
-    // variants to prevent.
-    if let Some(es) = events {
-        es.record_capture(&stdout);
-    }
+    // The one live seam this path has, with two readers: the session watch reads the session off
+    // the first frame, and `events` keeps every line **as it lands**, so a running root's
+    // `events.jsonl` already says what it has done — the home screen's stream and `status`'s peek
+    // read it — exactly as a `LaunchOnly` child's does. Every stdout line is recorded, JSON or not
+    // (S12 measured gemini interleaving `[STARTUP] Phase 1` on stdout; dropping those would render
+    // a root that printed a stack trace as an unexplained silence), and an endpoint node's key is
+    // redacted from each line before it is kept: the live record would otherwise be the one place
+    // it survived. The capture below is therefore never recorded again.
+    let events = events.map(|es| &*es);
+    let on_line = |line: &str| {
+        if let Some(es) = events {
+            es.record_line_redacted(line, secret);
+        }
+        session.observe_line(line);
+    };
+    let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
+    let stdout = redact(&String::from_utf8_lossy(&out.stdout));
+    let stderr = redact(&String::from_utf8_lossy(&out.stderr));
     Ok(RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),

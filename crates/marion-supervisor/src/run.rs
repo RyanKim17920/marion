@@ -928,10 +928,7 @@ fn launch_only_child(
     // is afterwards: the live record would otherwise be the one place it survived.
     let on_line = |line: &str| {
         if let Some(es) = events {
-            match secret {
-                Some(key) => es.record_line(&crate::endpoint::redact(line, key)),
-                None => es.record_line(line),
-            }
+            es.record_line_redacted(line, secret);
         }
         session.observe_line(line);
     };
