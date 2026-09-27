@@ -7942,12 +7942,16 @@ mod tests {
         let ctx = ctx();
         for h in Harness::ALL {
             let row = harness_spec(h);
+            // A row with no canned route (agy) carries no endpoint of its own; it is handed the
+            // codex spec's, so every row is seen dropping one.
             let live = LaunchSpec {
                 auth: Auth::Inherited,
                 model: match h {
                     Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
                     _ => spec_for(h).model,
                 },
+                base_url: spec_for(h).base_url.or(codex_spec().base_url),
+                api_key: spec_for(h).api_key.or(codex_spec().api_key),
                 ..spec_for(h)
             };
             assert!(
