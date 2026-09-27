@@ -1,4 +1,4 @@
-//! §6.7's cap rules 0–6, applied to the **returned** copy of a contract only.
+//! §6.7's cap rules 0–6 (rule 5 now through (f), for review findings), applied to the **returned** copy of a contract only.
 //!
 //! The persisted `contracts/<task_id>.json` is always complete; this shortens what rides back
 //! through the harness, because Claude Code 2.1.220 replaces an MCP tool result over ~64–100 KB
@@ -90,12 +90,13 @@ fn encoded_len(c: &TaskContract) -> usize {
 /// A table rather than a straight line so the "re-serialize after each, stop as soon as it fits"
 /// loop is written once: with the check inlined between steps it was repeated five times, and a
 /// sixth step would have had to remember to repeat it again.
-const BACKSTOP_STEPS: [fn(&mut TaskContract); 5] = [
+const BACKSTOP_STEPS: [fn(&mut TaskContract); 6] = [
     rule_5a_empty_diff,
     rule_5b_drop_evidence,
     rule_5c_narrative,
     rule_5d_paths,
     rule_5e_instructions_and_criteria,
+    rule_5f_review_findings,
 ];
 
 /// Apply the cap. Returns the copy to hand back through the harness.
@@ -230,6 +231,20 @@ fn rule_5e_instructions_and_criteria(c: &mut TaskContract) {
     }
 }
 
+/// Rule 5(f) — drop reviewer-written text: every finding and summary in the review's rounds and
+/// in the node's own report, counted in each `findings_omitted`. A reviewer is a foreign agent and
+/// its per-string caps bound raw bytes only, so three rounds of control-heavy findings can exceed
+/// the backstop alone; the decisions and blocker counts stay.
+fn rule_5f_review_findings(c: &mut TaskContract) {
+    let comp = completion(c);
+    if let Some(r) = comp.review.as_mut() {
+        r.elide_findings();
+    }
+    if let Some(f) = comp.findings.as_mut() {
+        f.elide();
+    }
+}
+
 /// Rule 6's stub completion: every text field empty, every counter raised to the full dropped
 /// count, and the persisted path so a reader goes there instead.
 fn stub(mut c: TaskContract) -> TaskContract {
@@ -253,6 +268,8 @@ fn stub(mut c: TaskContract) -> TaskContract {
     // resort O(n) in whatever a foreign agent sent, so a large enough list defeats every rule and
     // the contract goes back over the threshold that replaces it with a `<persisted-output>` stub.
     comp.result_commits.clear();
+    // Reviewer text needs nothing here: the stub is reached only after every rule 5 step ran,
+    // and 5(f) left no finding or summary, only counters and marion's own decisions.
     if let Some(n) = comp.narrative.as_mut() {
         n.value.clear();
         n.truncated = true;

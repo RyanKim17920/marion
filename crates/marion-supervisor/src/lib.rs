@@ -32,6 +32,7 @@ pub(crate) mod continuation;
 /// sends `agent/spawn`, and reads the node's own stream back — carrying a request and an answer
 /// rather than owning a process.
 pub mod courier;
+pub mod credentials;
 pub(crate) mod depth;
 /// §7.6's descendant-gated completion: a child's `Exited` is held while a descendant is live,
 /// unless it reported early or its own bound expires.
@@ -43,6 +44,7 @@ pub mod doctor;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;
+pub mod endpoint;
 /// `events.jsonl`, writer and reader side: one node's stream on disk, and §7.3.3's one cursor.
 pub mod events;
 /// First-token native-facade routing, kept ahead of the legacy UTF-8 command parser.
@@ -59,6 +61,7 @@ pub mod journal;
 /// The kill a bound sends at expiry: the `ps` walk that finds every descendant group first, and
 /// the observed-dead confirmation §6.7 asks for after it.
 pub mod kill;
+pub mod login;
 /// **marion's MCP surface**, shared by `marion-supervisor mcp` (the per-child bridge) and
 /// `marion mcp` (the top-level entry point). One dispatch, so there is one spawn path, and it
 /// goes over the socket.

@@ -2421,6 +2421,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("doctor") {
         return doctor_main(&argv[1..]);
     }
+    if matches!(argv.first().map(String::as_str), Some("login" | "logout")) {
+        return marion_supervisor::login::main(&argv);
+    }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
     // the protocol stream and leave the client parsing prose.

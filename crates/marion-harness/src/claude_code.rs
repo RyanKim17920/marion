@@ -7,6 +7,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
@@ -20,7 +21,7 @@ pub use crate::mcp_bridge::{
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When,
+    Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -125,6 +126,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Lit(""),
             when: When::Present(Field::ApiKey),
         },
+        // Claude Code's background calls (titles, summaries) name a Haiku id by default. On a
+        // third-party endpoint that is a Claude model sent to someone else, so both are the node's
+        // own model there. Canned mode needs neither: marion's endpoint ignores the name.
+        Env {
+            key: "ANTHROPIC_SMALL_FAST_MODEL",
+            val: Val::Field(Field::Model),
+            when: When::Endpoint,
+        },
+        Env {
+            key: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            val: Val::Field(Field::Model),
+            when: When::Endpoint,
+        },
     ],
     stream: Some(&STREAM),
     // `read` → `Read`, `write` → `Write`, measured on 2.1.222 (`tests/fixtures/s14/`): `--tools
@@ -206,6 +220,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    (p0b/tui/claude) and is the fallback a later phase may add",
         },
     },
+    wires: &[WireRecipe {
+        wire: Wire::AnthropicMessages,
+        env: &[],
+        note: "Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.",
+    }],
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

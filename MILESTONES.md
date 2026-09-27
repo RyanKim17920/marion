@@ -681,6 +681,23 @@ per turn preserved; never answer an approval with `cancel` unless ending the tur
 interrupt must be followed by killing the turn's processes and must not await a second interrupt's
 response; a reader must accept items for a turn that has already completed.
 
+**A marion-owned Stop hook can gate native claude (S35, 2026-09-27, `tests/fixtures/s35-stop-gate/`,
+claude 2.1.283, operator's claude.ai login, haiku, $0.171 notional).** Interactive in a pty with
+`--dangerously-load-development-channels server:<key>` (channel registered), an overlay
+`--settings '{"hooks":{"Stop":[…]}}'` **fires** and a printed `{"decision":"block","reason":…}`
+**continues the turn with the reason in the model's context** (the model answered the reason's
+nonce; the second Stop call carries `stop_hook_active:true`) — `results/a/`. It **coexists** with
+the operator's hooks ("Ran 5 stop hooks": the overlay's plus the user-settings Stop hook and the
+codex, ralph-wiggum and warp plugin Stop hooks), and a hooks-only overlay **merges** with user
+settings (statusLine, user `UserPromptSubmit`/`SessionStart` hooks intact). **The last `--settings`
+wins**: with two flags only the later one's Stop hook ran (`results/e/`), so marion must merge an
+operator's own `--settings` into its overlay rather than append a second flag. **`disableAllHooks`
+kills the gate** with every other hook (`results/f/`), so no gate can ride the headless children's
+`{"disableAllHooks":true}` overlay; `allowManagedHooksOnly` from `--settings` is ignored
+(`results/g/`), and the managed-settings path was **not measured** (no managed file; root needed).
+**Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
+session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
@@ -923,7 +940,11 @@ were marion's own: the run was on 2.1.280 (its `system/init` says so) and c9a240
 listing `report` to a declared root, so claude answered `No such tool available` and never asked.
 The probes now drop `MARION_DEPTH` from the root's declaration (test-side; production unchanged)
 and ask on 2.1.283 as the recording does. `turn_delivery` runs through the gate from this
-admission on. The probes under `spikes/` were not re-run.
+admission on. The probes under `spikes/` were not re-run. Endpoint mode on 2.1.283
+(`endpoint_matrix::a_claude_code_child_runs_on_the_users_provider_over_the_anthropic_wire`, first
+run 2026-09-27): every `POST /v1/messages` presented the stored key as `authorization: Bearer`
+and named only the chosen model; the run opens with `HEAD /api/hello` to the base URL, carrying
+no credential and no body, which the cell now skips.
 
 **goose 1.52.0, admitted 2026-09-27 via `scripts/admit-harness.sh`.** Homebrew replaced 1.51.0 in
 place. Green with only the entry widened: `marion-testsupport` (35), `cross_product` (57),
@@ -1561,6 +1582,98 @@ resolution runs: an operator who exports `GEMINI_API_KEY` or `GOOGLE_GENAI_USE_V
 route with no settings file written. Antigravity shares `~/.gemini/` and owns the
 `service=gemini` Keychain item S12 found, so S12 is a starting point, but the CLI surface must be
 measured rather than assumed to carry over.
+
+### Endpoint mode — any harness on any provider the user holds a key for (started 2026-09-27)
+
+A third auth mode beside canned and live: a node is pointed at a real provider endpoint with a key
+the **user** stored through `marion login`. Scope rules that do not move: no vendor subscription
+login is ever reused outside its own harness, no client identity is spoofed, and no agent or test
+ever runs a real login.
+
+- **Provider registry — built.** `marion_core::provider`: `Wire` (anthropic, openai-chat,
+  openai-responses, gemini), `AuthKind`, and a seed table of fifteen providers (anthropic, openai,
+  openrouter, gemini, deepseek, moonshot, zai, groq, together, fireworks, mistral, xai,
+  vercel-gateway, ollama, lmstudio) with each native wire's base. Rows are transcribed from vendor
+  docs, **not measured**; beta or undocumented-by-marion wires are marked unverified on the row.
+  User-level custom providers parse from `providers.toml` text; `<provider>:<model>` splits on the
+  first colon only when the prefix is a registry id (`ollama:qwen3:32b`).
+- **Credential store — built.** `marion_supervisor::credentials`: a `Secret` whose `Debug` is
+  `***`; the macOS login Keychain through `/usr/bin/security` (service `marion`, account the
+  provider id; writes via `security -i` with the command on stdin so the key never reaches argv;
+  keys and ids validated to characters that need no quoting), or a `0600` JSON file in a `0700`
+  `$XDG_CONFIG_HOME/marion/` replaced through an `O_EXCL` temp file and a rename;
+  `MARION_CREDENTIAL_STORE=file` forces the file. A key file other users can read is refused.
+  Custom providers load from the **user-level** `providers.toml` only. The Keychain round trip ran
+  green once with `MARION_KEYCHAIN_TEST=1`; it is skipped by default.
+- **`marion login` — built.** `marion login <provider>` (terminal prompt with echo off, offering
+  the provider's own env var with a y/N consent), `--stdin`, `--from-env`, `--list` (id, name,
+  wires, stored or not — never the key), `marion logout <provider>`, and `marion login custom <id>
+  --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
+  refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
+  `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
+  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
+  on another branch.
+- **Several credentials per provider — stored and listed; rotation not built.** A credential is
+  `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
+  work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
+  `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
+  (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
+  ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
+- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+  credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
+  checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
+  and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
+  rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
+  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
+  5xx/connection failure *before* the child's first successful turn, relaunch on the next
+  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
+  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  `profile` field selecting one of several native harness profiles the user set up
+  (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
+- **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
+  overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
+  endpoint's env keys, documents and MCP route equal to canned's on every harness, bar the
+  endpoint-only rows below); a node's bridge
+  is told the supervisor's own mode, never the provider. Codex's provider key is one row variable,
+  `MARION_PROVIDER_KEY`, compiled from the launch's credential — it replaced four post-compile
+  `MARION_DUMMY_KEY` pushes with the same values (child placeholder, root per-run token).
+- **`provider` on agent types — built.** `.marion/agents.toml` rows may name `provider = "<id>"`;
+  a malformed id is a parse error, and an id neither built in nor in the user's `providers.toml`
+  refuses every spawn against that tree by name.
+- **Endpoint resolution — built.** `marion_supervisor::endpoint::resolve_endpoint`, called by
+  `run_spawn_watched` (before the intent is journaled) and `root::prepare`: the provider is the
+  request model's registry-id prefix, else the type's `provider`, else the type model's prefix;
+  the wire is the first of the harness row's `wires` recipes (a wire plus the env that selects it,
+  applied by the one renderer; the resolver names no harness) the provider serves natively (claude
+  anthropic; codex openai-responses; gemini gemini; copilot openai-chat then anthropic via
+  `COPILOT_PROVIDER_TYPE=anthropic`; opencode, goose, cline, qwen openai-chat; ACP none, refused by
+  name); a missing key, unknown provider, missing model or no
+  shared wire is refused naming the command or both wire lists. A Claude Code endpoint node also
+  gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
+  per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
+  provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
+  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
+  Node config documents are now written `0600` (they carry the node token and, on opencode and
+  cline endpoint nodes, the key).
+- **Endpoint records and resume — built; tree display not yet.** `provider` and `route`
+  (`native`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
+  default, skipped when absent, so canned and live records are byte-identical to before). A resume
+  re-requests `<provider>:<model>` with the adapter's own spelling undone
+  (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
+  provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
+  `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
+- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+  `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
+  `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
+  server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
+  from the request log (which now records a fingerprint beside every redacted credential header):
+  every request presents the stored key and no second credential, no header carries an OAuth
+  marker, every request body names exactly `endpoint-model-7`, the contract and journal name the
+  provider and route and hold no key. Measured on 2026-09-27: codex 0.147 on Responses, opencode on
+  Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
+  with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
+  is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

@@ -1,0 +1,8 @@
+still 2000
+type-if ❯ No, exit \e[B
+still 800
+type-if ❯ Yes, I trust this folder \r
+still 2000
+type-if ❯ 1. I am using this for local development \r
+still 3000
+snap ready

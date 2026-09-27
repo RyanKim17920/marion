@@ -108,12 +108,14 @@ new fixture goes through it before it is committed.
 
 Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`, 0.33.0).
 `dist-workspace.toml` is the configuration; `.github/workflows/release.yml` is generated from it
-by `dist generate` and is never edited by hand. One archive per target (macOS and glibc Linux,
-arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer and
-a Homebrew formula named `marion`.
+by `dist generate` and is never edited by hand. One archive per target (macOS, glibc Linux and
+static musl Linux, each arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer, a
+Homebrew formula named `marion`, and the npm package `@ryankim17920/marion` (plain `marion` is
+taken on npm), whose install step downloads the archive for the platform it runs on.
 
 To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The workflow
-builds every target, creates the GitHub Release, and pushes the formula to the tap. Pull
+builds every target, creates the GitHub Release, pushes the formula to the tap and publishes the
+npm package. Pull
 requests run `dist plan` only.
 
 Before changing the configuration, check it locally:
@@ -131,8 +133,46 @@ dist generate --check                                 # release.yml matches the 
 2. Create a fine-grained personal access token with **Contents: read and write** on that tap
    repository only, and add it to this repository as the Actions secret `HOMEBREW_TAP_TOKEN`
    (Settings → Secrets and variables → Actions). The publish job fails without it.
+3. On npmjs.com, as the `ryankim17920` user (the scope must match it or an organization of that
+   name), create a **granular access token** with read and write on packages in the
+   `@ryankim17920` scope, and add it as the Actions secret `NPM_TOKEN`. The first publish creates
+   the public package `@ryankim17920/marion`; the npm publish job fails without the secret.
 
 The workflow asks for `contents: write` itself, so no repository-wide Actions setting changes.
 
-After that, `brew install RyanKim17920/tap/marion` and the `curl … | sh` line on the release
-page both work.
+After that, `brew install RyanKim17920/tap/marion`, `npm install -g @ryankim17920/marion` and the
+`curl … | sh` line on the release page all work.
+
+## Windows
+
+Windows users run marion under WSL 2, where it is a Linux program and every channel above works.
+Native Windows is not supported, and is a port, not a build flag. What stands in the way,
+measured against the current tree:
+
+- **The pty host.** `marion-supervisor/src/pty.rs` and `pty/` drive harness TUIs through a POSIX
+  pseudo-terminal (`openpty`, `setsid`, controlling-terminal ioctls, `termios` raw mode), and the
+  native facade (`native_tty`, `native_relay`) verifies the operator's terminal by the same
+  ioctls. Windows has ConPTY instead, with a different lifecycle and no controlling-terminal
+  concept.
+- **Unix domain sockets and what rides on them.** The supervisor socket (`socket.rs`), the
+  detach/attach path and the native bootstrap use `AF_UNIX`, peer credentials
+  (`getpeereid`/`SO_PEERCRED`) for authentication, and `SCM_RIGHTS` to pass terminal descriptors
+  between processes. Windows has `AF_UNIX` without descriptor passing or peer credentials; named
+  pipes plus `DuplicateHandle` and the pipe client's process id are the equivalents.
+- **Process groups and signals.** Kill, timeout and reap (`kill.rs`, `run.rs`, `detach.rs`) signal
+  whole process groups and mask signals per thread. The Windows shape is a Job Object per node
+  and `GenerateConsoleCtrlEvent`/`TerminateJobObject`.
+- **Around the edges:** hand-declared `tcgetattr`/`tcsetattr` raw mode in `marion-tui`, `flock`
+  on the journal, `/tmp`-style paths in `scripts/cargo-runner.sh`, and every test fixture that
+  opens a pty.
+
+Rough effort: several weeks of focused work before `marion run` and `marion attach` pass on
+Windows, most of it in the pty and socket layers and their tests, and more before the native
+facade does. The lanes whose harnesses are themselves Unix-only gain nothing.
+
+Suggested approach, if it is ever wanted: first turn `pty` and `socket` into seams — one trait
+each for "spawn a child on a terminal, read, write, resize, wait" and "listen, accept, identify
+the peer, pass a terminal" — with today's POSIX code as the only implementation and no behaviour
+change. Then add ConPTY and named-pipe implementations behind them, a Job Object behind `kill`,
+and a Windows runner in `ci.yml`. The native facade's descriptor-passing capability would need
+its own design on Windows rather than a translation.

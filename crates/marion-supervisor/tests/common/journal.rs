@@ -63,6 +63,9 @@ pub fn a_finished_node(
         model: None,
         pid: None,
         start_id: None,
+        provider: None,
+        route: None,
+        credential: None,
     }));
     next(RecordKind::Exited(Exited {
         agent_id: id,

@@ -39,8 +39,15 @@ marion doctor
 
 This installs two binaries, `marion` and `marion-supervisor`, into `~/.cargo/bin`. Keep them in the same directory: `marion` starts the supervisor that sits beside it, and `marion doctor` fails if the two come from different builds. marion never updates itself. To upgrade, run the install command again. From a checkout, `cargo install --locked --path crates/marion-supervisor` does the same.
 
-<!-- Homebrew and a shell installer come with the release pipeline. Add them here once they
-     exist; until then the cargo commands above are the only install channel. -->
+Once a release is published, prebuilt binaries skip the Rust toolchain. Every channel installs the same archive, `marion` and `marion-supervisor` side by side:
+
+- **Homebrew (macOS, Linux):** `brew install RyanKim17920/tap/marion`
+- **Shell installer (macOS, Linux):** `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RyanKim17920/marion/releases/latest/download/marion-supervisor-installer.sh | sh`
+- **npm (macOS, Linux, WSL; Node 14.14 or newer):** `npm install -g @ryankim17920/marion`
+- **cargo binstall (a prebuilt archive, no compile):** `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor`; or build it with the `cargo install` line above.
+- **Windows:** install inside WSL 2 with any of the Linux channels above. Native Windows is not supported; `CONTRIBUTING.md` says why.
+
+Archives cover macOS and Linux (glibc and static musl) on arm64 and x86_64. Upgrade with the channel you installed from: `brew upgrade`, `npm update -g`, or the same command again.
 
 `marion doctor` checks both binaries, the OS, the state directory and its socket path, git, and every harness it finds, and ends with `overall: ready: yes` or `no`. A harness newer than the last version marion verified is marked unmeasured. It still runs.
 
@@ -69,6 +76,13 @@ marion resume <agent-id>
 
 # Queue a message for a running node's next turn, as the operator (id or the tree's short id).
 marion steer 8ea3 "use the v2 API, not v1"
+
+# Store a provider key for endpoint mode (read with echo off; or pipe it with --stdin).
+marion login openrouter
+marion login --list
+
+# Any harness on that provider: a registry id before the model picks the endpoint (endpoint mode).
+marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
 ```
 
 - **The first `marion claude` in a folder** shows Claude Code's own dialogs: whether you trust the folder, then a one-time "Loading development channels" warning, because marion loads its channel so that a background child's result reaches the session without a `wait`. `marion codex` asks its own trust question. They are the harness's prompts, so you answer them; marion never answers them for you.
@@ -77,6 +91,8 @@ marion steer 8ea3 "use the v2 API, not v1"
 - **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion tree` shows a session only when it sees the same value the session started with.
 
 **Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node in `marion tree` and types the message on the hint row (Enter sends, Esc cancels, the answer shows in the detail pane), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's stream is not read by a row, and `status` says so). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
+
+`marion login <provider>` keeps a key you paste in the macOS Keychain (or, elsewhere or with `MARION_CREDENTIAL_STORE=file`, a `0600` file under `$XDG_CONFIG_HOME/marion/`); it never prints it and never runs a vendor's own login. `marion login custom <id> --base-url <url> --wire <wire>` adds your own OpenAI-, Anthropic- or Gemini-compatible endpoint to the user-level `providers.toml` (a repository's `.marion/` is never read for providers), and `marion logout <provider>` removes a key. Several keys for one provider are kept apart by label (`marion login openrouter --label work`, or `openrouter:work`); `providers.toml`'s `[credentials]` table states the order a launch tries them in. Subscription logins (Claude, ChatGPT, Copilot, Google accounts) stay with their own harness; marion never reuses them.
 
 Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 

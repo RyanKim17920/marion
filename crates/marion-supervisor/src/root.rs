@@ -360,9 +360,9 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
-    /// Carried onto the node because the credential decision is not finished at `compile`: the
-    /// `LaunchOnly` run below pushes `MARION_DUMMY_KEY`, and under [`Auth::Inherited`] it must not.
-    pub auth: Auth,
+    /// An endpoint root's resolution: its provider for the journal, its key so what the root
+    /// writes is redacted before it is kept. `None` on a canned or live root.
+    pub endpoint: Option<crate::endpoint::Endpoint>,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -456,6 +456,9 @@ pub enum RootError {
     Harness(#[from] marion_harness::HarnessError),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The root names a provider marion cannot point it at ([`crate::endpoint::EndpointError`]).
+    #[error("{0}")]
+    Endpoint(#[from] crate::endpoint::EndpointError),
     /// §9's grant gate: the type declared a built-in tool and marion cannot record what the root
     /// does with it.
     ///
@@ -690,6 +693,13 @@ pub fn prepare_watched(
     // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
     // protocol, and the agent type's `acp_agent` names the agent.
     let adapter = adapter_for_type(harness, agent_type.acp_agent.as_deref())?;
+    // Endpoint mode, where the root's type or model names a provider — refused by name here, before
+    // anything is written, where it is unknown, logged out or shares no wire with this harness.
+    let endpoint = crate::endpoint::resolve_for_launch(
+        spec.model.as_deref(),
+        &agent_type,
+        &adapter.endpoint_wires(),
+    )?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
     // harness; the pane is a fact about the run. Selecting here — once, before anything is
     // compiled — is what keeps the two from being decided in two places and disagreeing: the
@@ -718,7 +728,7 @@ pub fn prepare_watched(
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
     // name a document nobody wrote.
-    let launch = root_launch_spec(
+    let mut launch = root_launch_spec(
         spec,
         path,
         tools,
@@ -731,6 +741,9 @@ pub fn prepare_watched(
             ..Extras::default()
         },
     );
+    if let Some(ep) = &endpoint {
+        crate::endpoint::apply(&mut launch, ep);
+    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -781,7 +794,9 @@ pub fn prepare_watched(
     // already withheld the three env vars it compiles; a push here would put two of them straight
     // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
     // that is supposed to be using it.
-    if path == RootPath::Duplex && spec.auth == Auth::Canned {
+    // Read off the launch, not the spec: an endpoint root's type or model named a provider, its
+    // key is already compiled, and the per-run token pushed here would replace it.
+    if path == RootPath::Duplex && launch.auth == Auth::Canned {
         // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
         // silently wins (§6.4), so it is set to empty rather than left inherited.
         invocation
@@ -872,7 +887,7 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
-        auth: spec.auth,
+        endpoint,
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
@@ -1056,9 +1071,14 @@ fn root_launch_spec(
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
             // — so there is nothing for the post-`compile` push below to do.
             (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.to_string()),
+            // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
+            (Auth::Endpoint, _) => None,
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
+        // Filled by endpoint resolution, where the root names a provider.
+        wire: None,
+        provider: None,
         extra,
     }
 }
@@ -1849,6 +1869,12 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
             // resolves to an honest `cannot-tell`.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         }),
+        provider: node.endpoint.as_ref().map(|e| e.provider.clone()),
+        route: node
+            .endpoint
+            .as_ref()
+            .map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        credential: node.endpoint.as_ref().map(|e| e.credential.to_string()),
     }
 }
 
@@ -2044,22 +2070,19 @@ fn launch_only_generation(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if node.auth == Auth::Canned {
-        // Codex's generated `config.toml` names this as its provider `env_key`, and a provider
-        // whose key is unset refuses to start. The per-run token rather than a constant, for
-        // the same reason `ANTHROPIC_AUTH_TOKEN` carries it on the duplex path: it attributes a
-        // request log to one run. It is not a credential — the endpoint is the canned server.
-        //
-        // Under `Inherited` there is no canned endpoint to name a key for, and pushing one would
-        // put a placeholder credential beside the operator's real login.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
     // The one live seam this path has, and the session watch is its one reader: the first frame
     // names the session, and a root lost mid-run never reaches the capture below.
     let on_line = |line: &str| session.observe_line(line);
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let redact = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        match node.endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+            Some(key) => crate::endpoint::redact(&text, key.expose()),
+            None => text,
+        }
+    };
+    let stdout = redact(&out.stdout);
+    let stderr = redact(&out.stderr);
     // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
     // `transcript` is `json_frames(&stdout)`, which keeps only the parseable lines. S12 measured
     // gemini interleaving `[STARTUP] Phase 1` and `Warning: Basic terminal detected` on stdout, and
@@ -2360,13 +2383,6 @@ fn launch_terminal(
         // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
         // about the pty this launcher just opened, which no adapter can know.
         .env("TERM", PANE_TERM);
-    if node.auth == Auth::Canned {
-        // The same push `launch_only` makes and for the same reason: codex's generated
-        // `config.toml` names this as its provider `env_key`, and a provider whose key is unset
-        // refuses to start. Claude Code's pane compiles its own credential in `compile_pane`, so
-        // this is here for the second harness to declare a pane rather than for the first.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
 
     // The pid is announced by `spawn_pty` itself, through `on_started`, between `spawn()` and the
     // first byte — that is the only instant at which a durable record can name this process while
@@ -3790,7 +3806,7 @@ mod tests {
                 assert!(
                     canned
                         .as_deref()
-                        .is_some_and(|e| e.contains("no canned provider route")),
+                        .is_some_and(|e| e.contains("no canned or endpoint provider route")),
                     "{name}: {canned:?}"
                 );
                 RootSpec {
@@ -4292,7 +4308,7 @@ mod tests {
             "marion wrote into {} on a route whose only readable config.toml is ~/.codex/config.toml",
             node.agent_dir.config_dir().display()
         );
-        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+        for k in ["CODEX_HOME", "MARION_PROVIDER_KEY"] {
             assert!(
                 !node.invocation.env.iter().any(|(n, _)| n == k),
                 "{k} must be absent, not blank: {:?}",

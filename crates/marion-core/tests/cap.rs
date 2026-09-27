@@ -9,6 +9,10 @@ use std::time::Duration as StdDuration;
 use marion_core::cap::{BACKSTOP, MAX_COMMITS, MAX_EVIDENCE, PATH_CAP, cap_for_return};
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, Millis, SystemTime};
+use marion_core::review::{
+    Decision, Finding, Findings, ModelVerdict, ReviewOutcome, ReviewRecord, ReviewRound, Severity,
+    Verdict,
+};
 
 fn cmd() -> Command {
     Command {
@@ -39,6 +43,9 @@ fn contract(comp: Completion) -> TaskContract {
             version: "0.146.0".into(),
             // `codex exec` carries no model argument, so a Codex contract names none.
             model: None,
+            provider: None,
+            route: None,
+            credential: None,
         },
         repo: RepoIdentity {
             git_common_dir: Some("/repo/.git".into()),
@@ -93,6 +100,8 @@ fn completion() -> Completion {
         },
         branch: None,
         commit: None,
+        review: None,
+        findings: None,
     }
 }
 
@@ -426,4 +435,143 @@ fn a_recorded_model_is_a_bare_string_beside_the_harness() {
     assert_eq!(v["child"]["version"], "0.146.0", "and version is untouched");
     let back: TaskContract = serde_json::from_value(v).unwrap();
     assert_eq!(back, c);
+}
+
+/// Completions exactly as the build before review existed wrote them: one with nothing landed and
+/// one with a branch and commit. Captured from that build's `serde_json::to_string`.
+const BEFORE_REVIEW: [&str; 2] = [
+    r#"{"status":"Ok","died_before_gate":false,"reported_early":false,"held_to_timeout":false,"live_descendants_at_report":[],"narrative":{"value":"did the thing","truncated":false,"original_bytes":13},"narrative_synthesized":false,"result_commits":[],"changed_paths":["src/main.rs"],"acceptance_criteria_omitted":0,"changed_paths_omitted":0,"result_commits_omitted":0,"scope_violations_omitted":0,"scope_enforced":true,"scope_violations":[],"diff":{"value":"+line\n","truncated":false,"original_bytes":6},"evidence":[{"command":{"program":"sh","args":["-c","cargo test"],"cwd":"/tmp/wt","timeout":300},"exit_code":0,"stdout":{"value":"ok","truncated":false,"original_bytes":2},"stderr":{"value":"","truncated":false,"original_bytes":0},"duration":412,"timed_out":false}],"evidence_omitted":0,"exit":{"code":0,"signal":null,"description":"clean exit"}}"#,
+    r#"{"status":"Ok","died_before_gate":false,"reported_early":false,"held_to_timeout":false,"live_descendants_at_report":[],"narrative":{"value":"did the thing","truncated":false,"original_bytes":13},"narrative_synthesized":false,"result_commits":[],"changed_paths":["src/main.rs"],"acceptance_criteria_omitted":0,"changed_paths_omitted":0,"result_commits_omitted":0,"scope_violations_omitted":0,"scope_enforced":true,"scope_violations":[],"diff":{"value":"+line\n","truncated":false,"original_bytes":6},"evidence":[{"command":{"program":"sh","args":["-c","cargo test"],"cwd":"/tmp/wt","timeout":300},"exit_code":0,"stdout":{"value":"ok","truncated":false,"original_bytes":2},"stderr":{"value":"","truncated":false,"original_bytes":0},"duration":412,"timed_out":false}],"evidence_omitted":0,"exit":{"code":0,"signal":null,"description":"clean exit"},"branch":"marion/t1","commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+];
+
+/// **Additive on the wire, byte for byte.** A contract persisted before `review` and `findings`
+/// existed reads back with both `None` and re-encodes to the very bytes it was read from.
+#[test]
+fn a_completion_written_before_review_existed_reads_and_re_encodes_byte_identically() {
+    for old in BEFORE_REVIEW {
+        let back: Completion = serde_json::from_str(old).unwrap();
+        assert_eq!((back.review.as_ref(), back.findings.as_ref()), (None, None));
+        assert_eq!(serde_json::to_string(&back).unwrap(), old);
+    }
+}
+
+fn finding(text: &str) -> Finding {
+    Finding {
+        severity: Severity::High,
+        file: "src/main.rs".into(),
+        line: Some(3),
+        claim: text.into(),
+        evidence: text.into(),
+        recommendation: text.into(),
+        grounded: true,
+    }
+}
+
+fn report(n: usize, text: &str) -> Findings {
+    Findings {
+        verdict: ModelVerdict::Block,
+        summary: text.into(),
+        findings: (0..n).map(|_| finding(text)).collect(),
+        findings_omitted: 0,
+    }
+}
+
+fn record(rounds: u8, n: usize, text: &str) -> ReviewRecord {
+    ReviewRecord {
+        outcome: ReviewOutcome::Blocked,
+        rounds: (1..=rounds)
+            .map(|round| ReviewRound {
+                round,
+                commit: Some("c".repeat(40)),
+                reviewer: Some("reviewer".into()),
+                verdict: Verdict {
+                    decision: Decision::Block,
+                    blocking: n,
+                    findings: report(n, text),
+                },
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_reviewed_completion_carries_its_review_and_findings_and_round_trips() {
+    let mut c = completion();
+    c.review = Some(record(2, 1, "off by one"));
+    c.findings = Some(report(1, "off by one"));
+    let v = serde_json::to_value(&c).unwrap();
+    assert_eq!(v["review"]["outcome"]["kind"], "blocked");
+    assert_eq!(v["review"]["rounds"][1]["round"], 2);
+    assert_eq!(v["findings"]["verdict"], "block");
+    assert_eq!(v["findings"]["findings"][0]["grounded"], true);
+    assert_eq!(serde_json::from_value::<Completion>(v).unwrap(), c);
+}
+
+/// Reviewer text is foreign and escapes like any other: control characters at every per-string
+/// cap, the most findings a verdict keeps, and the most rounds a review runs are several times
+/// the backstop encoded. Rule 5(f) drops the findings (counting them) so the contract converges
+/// without reaching the stub, and keeps each round's decision and blocker count.
+#[test]
+fn oversized_review_findings_are_dropped_by_their_own_backstop_step_before_the_stub() {
+    let text = "\u{1}".repeat(1024);
+    let mut comp = completion();
+    comp.review = Some(record(3, 16, &text));
+    comp.findings = Some(report(16, &text));
+    let c = contract(comp);
+    assert!(
+        encoded(&c) > BACKSTOP,
+        "the premise: this input is over the backstop"
+    );
+
+    let out = cap_for_return(c);
+    assert!(encoded(&out) <= BACKSTOP, "got {} bytes", encoded(&out));
+    let got = out.completion.as_ref().unwrap();
+    assert_eq!(
+        got.narrative.as_ref().map(|n| n.value.as_str()),
+        Some("did the thing"),
+        "5(f) converged before rule 6 wiped the narrative"
+    );
+    let review = got.review.as_ref().unwrap();
+    assert_eq!(review.outcome, ReviewOutcome::Blocked);
+    for r in &review.rounds {
+        assert!(r.verdict.findings.findings.is_empty() && r.verdict.findings.summary.is_empty());
+        assert_eq!(r.verdict.findings.findings_omitted, 16);
+        assert_eq!(
+            (r.verdict.decision, r.verdict.blocking),
+            (Decision::Block, 16)
+        );
+    }
+    let own = got.findings.as_ref().unwrap();
+    assert!(own.findings.is_empty());
+    assert_eq!(own.findings_omitted, 16);
+}
+
+/// **Rule 6 stays terminal with a review aboard**: the stub clears every reviewer-written string
+/// and says how many findings it dropped.
+#[test]
+fn the_terminal_stub_clears_review_findings_and_says_how_many() {
+    let mut comp = completion();
+    comp.review = Some(record(1, 2, "claim"));
+    comp.findings = Some(Findings {
+        findings_omitted: 5,
+        ..report(3, "claim")
+    });
+    let mut c = contract(comp);
+    c.acceptance_criteria = (0..64).map(|_| Capped::whole("c".repeat(8192))).collect();
+
+    let out = cap_for_return(c);
+    let got = out.completion.as_ref().unwrap();
+    assert!(
+        got.narrative
+            .as_ref()
+            .is_some_and(|n| n.value.is_empty() && n.truncated),
+        "the premise: this input reaches rule 6"
+    );
+    let round = &got.review.as_ref().unwrap().rounds[0];
+    assert!(round.verdict.findings.findings.is_empty());
+    assert!(round.verdict.findings.summary.is_empty());
+    assert_eq!(round.verdict.findings.findings_omitted, 2);
+    let own = got.findings.as_ref().unwrap();
+    assert!(own.findings.is_empty() && own.summary.is_empty());
+    assert_eq!(own.findings_omitted, 3 + 5);
 }

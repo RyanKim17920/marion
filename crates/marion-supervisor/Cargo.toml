@@ -86,3 +86,13 @@ insta = "1"
 [package.metadata.dist]
 dist = true
 formula = "marion"
+npm-package = "marion"
+
+# `cargo binstall` fetches the dist archive for the host instead of compiling. The crate is not on
+# crates.io (`publish = false`), so it is named by repository:
+# `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor`.
+# The archive holds `marion-supervisor-<target>/{marion,marion-supervisor}`; `{ bin }` covers both.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.xz"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "txz"

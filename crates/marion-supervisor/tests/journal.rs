@@ -37,6 +37,9 @@ fn a_tree() -> Vec<RecordKind> {
             model: None,
             pid: Some(101),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         }),
     ];
     for i in 0..3 {
@@ -57,6 +60,9 @@ fn a_tree() -> Vec<RecordKind> {
             model: None,
             pid: Some(200 + i),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         }));
         kinds.push(RecordKind::StateChanged(StateChanged {
             agent_id: child.clone(),

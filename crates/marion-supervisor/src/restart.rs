@@ -342,6 +342,9 @@ mod tests {
                 model: None,
                 pid,
                 start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
             }))
         }
 
@@ -809,6 +812,9 @@ mod tests {
             model: None,
             pid: Some(99),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         });
         let n = log.0.len() as u64;
         let mut tail = Log::default();

@@ -771,6 +771,9 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             model: None,
             pid: Some(pid),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         }),
     );
     seed(
