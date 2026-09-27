@@ -67,6 +67,7 @@ use marion_core::proto::NativeLaunchContext;
 use marion_core::root_change::{
     Reason, RootChange, RootChanged, RootDelta, RootGrant, RootObservation, RootScope,
 };
+use marion_core::secret::Secret;
 use marion_harness::{
     Auth, CallOutcome, ExecutionSurfaces, Extras, HarnessAdapter, Invocation, LaunchSpec,
     MarionCall, McpDeclaration, SpawnCtx, adapter_for, adapter_for_type, json_frames,
@@ -342,7 +343,7 @@ pub struct RootNode {
     /// so there is no frame to withhold and nothing to gate (§6.1 step 8).
     pub ready_file: Option<PathBuf>,
     /// The per-run bearer token (§9). Never a real credential: the endpoint is the canned server.
-    pub token: String,
+    pub token: Secret,
     pub invocation: Invocation,
     /// Which harness this root is, for the error messages that must name a cause.
     pub harness: Harness,
@@ -798,7 +799,7 @@ pub fn prepare_watched(
         // silently wins (§6.4), so it is set to empty rather than left inherited.
         invocation
             .env
-            .push(("ANTHROPIC_AUTH_TOKEN".into(), token.clone()));
+            .push(("ANTHROPIC_AUTH_TOKEN".into(), token.expose().to_string()));
         invocation
             .env
             .push(("ANTHROPIC_API_KEY".into(), String::new()));
@@ -897,8 +898,11 @@ pub fn prepare_watched(
 
 /// A token scoped to this run and nothing else. Not a credential — the endpoint is canned — but
 /// distinct per run so a request log attributes traffic to one run.
-fn per_run_token() -> Result<String, RootError> {
-    Ok(format!("marion-run-{}", uuid_v7(unix_millis(), entropy()?)))
+fn per_run_token() -> Result<Secret, RootError> {
+    Ok(Secret::new(format!(
+        "marion-run-{}",
+        uuid_v7(unix_millis(), entropy()?)
+    )))
 }
 
 /// **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
@@ -1011,7 +1015,7 @@ fn root_launch_spec(
     spec: &RootSpec,
     path: RootPath,
     tools: Vec<String>,
-    token: &str,
+    token: &Secret,
     adapter: &dyn HarnessAdapter,
     agent_dir: &AgentDir,
     extra: Extras,
@@ -1067,7 +1071,7 @@ fn root_launch_spec(
             // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
             // — so there is nothing for the post-`compile` push below to do.
-            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.into()),
+            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.clone()),
             // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
             (Auth::Endpoint, _) => None,
         },
@@ -4149,9 +4153,9 @@ mod tests {
     /// reading.
     #[test]
     fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
-        struct Owner(marion_core::secret::Secret);
+        struct Owner(Secret);
         impl crate::run::SpawnObserver for Owner {
-            fn identified(&self, _: &AgentId) -> Option<marion_core::secret::Secret> {
+            fn identified(&self, _: &AgentId) -> Option<Secret> {
                 Some(self.0.clone())
             }
             fn started(&self, _: &AgentId, _: i32) {}
@@ -4330,6 +4334,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **A prepared root never debug-prints its run token** — neither the field that holds it nor
+    /// the compiled environment it is pushed into as `ANTHROPIC_AUTH_TOKEN`. A `RootNode` is what a
+    /// launch failure has in hand, so its `{:?}` is the one most likely to reach an error.
+    #[test]
+    fn a_prepared_roots_debug_form_carries_no_run_token() {
+        let dir = temp("root-debug");
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
+        let token = node
+            .invocation
+            .env
+            .iter()
+            .find(|(k, _)| k == "ANTHROPIC_AUTH_TOKEN")
+            .map(|(_, v)| v.clone())
+            .expect("the token is still pushed where the harness reads it");
+        assert!(token.starts_with("marion-run-"), "{}", token.len());
+        let printed = format!("{node:?} {node:#?}");
+        assert!(!printed.contains(&token), "{printed}");
+        assert!(printed.contains("ANTHROPIC_AUTH_TOKEN"), "{printed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The canned root is untouched by the axis existing — the pair is still pushed, and it is still
     /// only pushed on the duplex path.
     #[test]
@@ -4343,7 +4368,10 @@ mod tests {
                 .find(|(n, _)| n == k)
                 .map(|(_, v)| v.clone())
         };
-        assert_eq!(get("ANTHROPIC_AUTH_TOKEN"), Some(node.token.clone()));
+        assert_eq!(
+            get("ANTHROPIC_AUTH_TOKEN"),
+            Some(node.token.expose().to_string())
+        );
         assert_eq!(get("ANTHROPIC_API_KEY"), Some(String::new()));
         assert_eq!(
             get("ANTHROPIC_BASE_URL"),
