@@ -35,7 +35,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -274,6 +275,30 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // **No token count exists to read** (`s24/*.stdout.jsonl`): the terminal `result.usage` carries
     // `premiumRequests`, API and session durations and `codeChanges`, never tokens.
     usage: None,
+    // `tool.execution_start` names every tool it runs, built-in or MCP, and the whole
+    // `assistant.message` carries the model's words — empty on a turn that only called tools
+    // (`s24/copilot-write-then-report.stdout.jsonl`), which the reader skips.
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "tool.execution_start")],
+                each: None,
+                unit: &[],
+            },
+            name: "/data/toolName",
+            args: "/data/arguments",
+            id: Some("/data/toolCallId"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "assistant.message")],
+                each: None,
+                unit: &[],
+            },
+            path: "/data/content",
+            joins: false,
+        }],
+    }),
 };
 
 /// Relocates configuration and state — `config.json`, `session-state/`, `logs/`,

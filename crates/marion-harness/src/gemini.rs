@@ -12,8 +12,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
-    Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -256,6 +256,29 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: None,
         input_includes_cache: true,
         fold: UsageFold::Last,
+    }),
+    // `tool_use` frames name every tool; the assistant's words arrive as `message` frames marked
+    // `"delta":true` (`s12/README.md`), so consecutive ones are one message.
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "tool_use")],
+                each: None,
+                unit: &[],
+            },
+            name: "/tool_name",
+            args: "/parameters",
+            id: Some("/tool_id"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message"), Cond::Eq("/role", "assistant")],
+                each: None,
+                unit: &[],
+            },
+            path: "/content",
+            joins: true,
+        }],
     }),
 };
 

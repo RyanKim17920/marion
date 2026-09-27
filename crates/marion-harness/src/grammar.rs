@@ -57,6 +57,56 @@ pub struct StreamGrammar {
     /// Where the harness states the tokens the run spent — read by [`usage`]. `None` where no
     /// frame was measured carrying a token count, and the row says why beside it.
     pub usage: Option<UsageRule>,
+    /// Where the harness shows what a node is doing — **every** tool it calls, not only marion's,
+    /// and the words it writes — read by [`recent_activity`] for a peek at a running node. `None`
+    /// where no frame was measured carrying either.
+    pub activity: Option<ActivityRule>,
+}
+
+/// Where a harness shows a node's own activity: the units that are a call to any tool, and the
+/// units that carry the model's text. A list of each because one harness spells several kinds of
+/// work as several unit shapes (codex's `mcp_tool_call`, `command_execution`, `file_change` items).
+#[derive(Debug)]
+pub struct ActivityRule {
+    pub calls: &'static [ToolUnit],
+    pub text: &'static [TextUnit],
+}
+
+/// A unit that is a call to some tool: the tool's name at `name`, what it was given at `args`.
+/// With an `id`, a later unit for the same id is the same call seen again (codex's `item.started`
+/// then `item.completed`) and is not counted twice.
+#[derive(Debug)]
+pub struct ToolUnit {
+    pub at: Where,
+    pub name: &'static str,
+    pub args: &'static str,
+    pub id: Option<&'static str>,
+}
+
+/// A unit carrying the model's words: the string at `path`. `joins` where the harness streams one
+/// message as consecutive deltas (gemini's `"delta":true`), so adjacent units are one message
+/// rather than each replacing the last.
+#[derive(Debug)]
+pub struct TextUnit {
+    pub at: Where,
+    pub path: &'static str,
+    pub joins: bool,
+}
+
+/// One tool call as [`recent_activity`] read it: its name as the harness spelled it, and its
+/// arguments whole — shortening is the renderer's decision, not the reader's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCall {
+    pub name: String,
+    pub args: Value,
+}
+
+/// What a stream shows a node doing most recently: its last calls, oldest first, and the last line
+/// of text it wrote.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RecentActivity {
+    pub calls: Vec<ToolCall>,
+    pub text: Option<String>,
 }
 
 /// Where a harness states its session id: the string at `path` in each unit of `at`. The first
@@ -502,6 +552,70 @@ pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
         .find_map(|u| text(u, s.path).filter(|id| !id.trim().is_empty()))
 }
 
+/// The last `max_calls` tool calls `frames` show, oldest first, and the last non-empty line of the
+/// last text the model wrote — read in stream order under `rule`, the same pointers-over-units
+/// walk [`usage`] and [`session_id`] take, so no harness is named here.
+///
+/// Within one frame the rule's text units are read before its call units: a frame that carries
+/// both (Claude Code's `assistant` content) says the words that led to the call.
+pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) -> RecentActivity {
+    let mut calls: Vec<ToolCall> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut said: Option<String> = None;
+    // Whether the last thing read was a joining text unit, so the next one continues it.
+    let mut joining = false;
+    for frame in frames {
+        let one = std::slice::from_ref(frame);
+        for t in rule.text {
+            for unit in units(one, &t.at) {
+                let Some(s) = unit.pointer(t.path).and_then(Value::as_str) else {
+                    continue;
+                };
+                if s.trim().is_empty() {
+                    continue;
+                }
+                match (&mut said, t.joins && joining) {
+                    (Some(held), true) => held.push_str(s),
+                    _ => said = Some(s.to_string()),
+                }
+                joining = t.joins;
+            }
+        }
+        for c in rule.calls {
+            for unit in units(one, &c.at) {
+                let Some(name) = unit
+                    .pointer(c.name)
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.trim().is_empty())
+                else {
+                    continue;
+                };
+                if let Some(id) = c.id.and_then(|p| text(unit, p))
+                    && !seen.insert(id)
+                {
+                    continue;
+                }
+                calls.push(ToolCall {
+                    name: name.to_string(),
+                    args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                });
+                joining = false;
+            }
+        }
+    }
+    let keep = calls.len().saturating_sub(max_calls);
+    RecentActivity {
+        calls: calls.split_off(keep),
+        text: said.and_then(|t| {
+            t.lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        }),
+    }
+}
+
 /// Every call to one of marion's verbs the stream shows, with what came of each — in
 /// **marion's** vocabulary. `prefix` is this harness's spelling of marion's tools with the verb
 /// left off (`marion_tool_name("")`).
@@ -700,6 +814,79 @@ mod tests {
             ..RULE
         };
         assert_eq!(usage(&write, &[frame]), Some(tokens(12, 0, 5)));
+    }
+
+    /// A rule over a made-up stream: `call` frames with an id, `say` frames whole, `delta`
+    /// frames streamed.
+    const ACTIVITY: ActivityRule = ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "call")],
+                each: None,
+                unit: &[],
+            },
+            name: "/name",
+            args: "/args",
+            id: Some("/id"),
+        }],
+        text: &[
+            TextUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/type", "say")],
+                    each: None,
+                    unit: &[],
+                },
+                path: "/text",
+                joins: false,
+            },
+            TextUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/type", "delta")],
+                    each: None,
+                    unit: &[],
+                },
+                path: "/text",
+                joins: true,
+            },
+        ],
+    };
+
+    fn call(id: &str, name: &str) -> Value {
+        serde_json::json!({"type": "call", "id": id, "name": name, "args": {"n": id}})
+    }
+
+    #[test]
+    fn only_the_last_calls_are_kept_oldest_first_and_a_revision_is_not_a_second_call() {
+        let frames: Vec<Value> = (1..=7)
+            .map(|i| call(&i.to_string(), &format!("t{i}")))
+            .chain([call("7", "t7")])
+            .collect();
+        let a = recent_activity(&ACTIVITY, &frames, 3);
+        let names: Vec<&str> = a.calls.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["t5", "t6", "t7"]);
+        assert_eq!(a.calls[2].args, serde_json::json!({"n": "7"}));
+        assert_eq!(a.text, None, "no text unit, no line — never an empty one");
+    }
+
+    #[test]
+    fn the_text_is_the_last_line_of_the_last_message_and_deltas_join_into_one() {
+        let say = |t: &str| serde_json::json!({"type": "say", "text": t});
+        let delta = |t: &str| serde_json::json!({"type": "delta", "text": t});
+        // A whole message replaces the last; its last non-empty line is the one kept.
+        let a = recent_activity(&ACTIVITY, &[say("first"), say("plan:\nstep two\n\n")], 5);
+        assert_eq!(a.text.as_deref(), Some("step two"));
+        // Deltas are one message until something else is said between them.
+        let a = recent_activity(&ACTIVITY, &[delta("wri"), delta("ting tests")], 5);
+        assert_eq!(a.text.as_deref(), Some("writing tests"));
+        let a = recent_activity(
+            &ACTIVITY,
+            &[delta("old"), call("1", "t"), delta("new "), delta("words")],
+            5,
+        );
+        assert_eq!(a.text.as_deref(), Some("new words"));
+        // A blank message is not words, and does not erase the last ones.
+        let a = recent_activity(&ACTIVITY, &[say("kept"), say("   ")], 5);
+        assert_eq!(a.text.as_deref(), Some("kept"));
     }
 
     #[test]

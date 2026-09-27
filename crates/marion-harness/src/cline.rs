@@ -45,8 +45,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, UsageFold, UsageRule, Verdict,
-    Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
+    UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -269,6 +269,37 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: Some("/aggregateUsage/cacheWriteTokens"),
         input_includes_cache: false,
         fold: UsageFold::Last,
+    }),
+    // A tool's `content_start` and a text block's `content_end`, which carries the finished text
+    // (`s27/cline-report-ok.stdout.jsonl`).
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "agent_event"),
+                    Cond::Eq("/event/type", "content_start"),
+                    Cond::Eq("/event/contentType", "tool"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            name: "/event/toolName",
+            args: "/event/input",
+            id: Some("/event/toolCallId"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "agent_event"),
+                    Cond::Eq("/event/type", "content_end"),
+                    Cond::Eq("/event/contentType", "text"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            path: "/event/text",
+            joins: false,
+        }],
     }),
 };
 

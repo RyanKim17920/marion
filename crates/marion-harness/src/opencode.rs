@@ -18,8 +18,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
-    Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -309,6 +309,29 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: Some("/part/tokens/cache/write"),
         input_includes_cache: false,
         fold: UsageFold::Sum,
+    }),
+    // A `tool_use` frame per finished call, any tool, and a `text` frame per finished text part
+    // (`s13/README.md`). No call id is read: opencode emits each call once, terminal only.
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "tool_use")],
+                each: None,
+                unit: &[],
+            },
+            name: "/part/tool",
+            args: "/part/state/input",
+            id: None,
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "text")],
+                each: None,
+                unit: &[],
+            },
+            path: "/part/text",
+            joins: false,
+        }],
     }),
 };
 

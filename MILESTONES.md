@@ -267,6 +267,19 @@ a_compose_line_buffers_edits_sends_and_cancels, a_compose_line_ignores_arrows_fl
 `tree::tests::{s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it,
 enter_sends_the_steer_and_its_refusal_lands_in_the_notice}`.
 
+**Recent activity (2026-09-27).** A parent deciding whether to steer needs to see what its child is
+doing. Each `StreamGrammar` row now carries an `activity` rule — the units that are a call to **any**
+tool (name, arguments, an optional id so codex's `item.started`/`item.completed` is one call) and
+the units that carry the model's text (`joins` for gemini's streamed deltas) — and
+`grammar::recent_activity` reads the last N calls and the last line of text with the same
+pointers-over-units walk as `usage` and `session_id`; no harness is named in the reader. Rows:
+claude-code (and qwen), codex (`mcp_tool_call`, `command_execution`, `file_change`,
+`agent_message`), copilot, cline, goose, gemini and opencode, each transcribed from its fixture. ACP
+has no row (its stream is read as code), so it has no activity rule. Witnesses:
+`marion-harness/tests/recent_activity.rs` (one case per row, plus codex's arguments and s7's
+commands), `grammar::tests::{only_the_last_calls_are_kept_oldest_first_and_a_revision_is_not_a_second_call,
+the_text_is_the_last_line_of_the_last_message_and_deltas_join_into_one}`.
+
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:

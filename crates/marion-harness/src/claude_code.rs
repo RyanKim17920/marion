@@ -10,8 +10,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
-    Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -271,6 +271,29 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: Some("/usage/cache_creation_input_tokens"),
         input_includes_cache: false,
         fold: UsageFold::Sum,
+    }),
+    // `assistant` frames' content blocks (`s9/can-use-tool-*.stdout.jsonl`): a `tool_use` block is
+    // a call to any tool, a `text` block the model's words. qwen shares this row.
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "assistant")],
+                each: Some("/message/content"),
+                unit: &[Cond::Eq("/type", "tool_use")],
+            },
+            name: "/name",
+            args: "/input",
+            id: Some("/id"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "assistant")],
+                each: Some("/message/content"),
+                unit: &[Cond::Eq("/type", "text")],
+            },
+            path: "/text",
+            joins: false,
+        }],
     }),
 };
 

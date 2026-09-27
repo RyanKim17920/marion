@@ -14,8 +14,8 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::grammar::{
-    Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar, UsageFold, UsageRule,
-    Verdict, Where,
+    ActivityRule, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -259,6 +259,52 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: Some("/usage/cache_write_input_tokens"),
         input_includes_cache: true,
         fold: UsageFold::Sum,
+    }),
+    // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
+    // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`
+    // under one `id`, so the id keeps it one call. The model's words are the `agent_message` item.
+    activity: Some(ActivityRule {
+        calls: &[
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/item/type", "mcp_tool_call")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/item/tool",
+                args: "/item/arguments",
+                id: Some("/item/id"),
+            },
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/item/type", "command_execution")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/item/type",
+                args: "/item/command",
+                id: Some("/item/id"),
+            },
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/item/type", "file_change")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/item/type",
+                args: "/item/changes",
+                id: Some("/item/id"),
+            },
+        ],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[Cond::Eq("/item/type", "agent_message")],
+                each: None,
+                unit: &[],
+            },
+            path: "/item/text",
+            joins: false,
+        }],
     }),
 };
 

@@ -35,7 +35,8 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::grammar::{
-    Cond, Name, OnRefusedReport, Pairing, StreamGrammar, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
+    UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
@@ -222,6 +223,32 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: Some("/cache_write_input_tokens"),
         input_includes_cache: false,
         fold: UsageFold::Last,
+    }),
+    // An assistant `message`'s content blocks (`s26/goose-report.stdout.jsonl`): `toolRequest` is a
+    // call to any extension's tool, `text` the model's words.
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message")],
+                each: Some("/message/content"),
+                unit: &[Cond::Eq("/type", "toolRequest")],
+            },
+            name: "/toolCall/value/name",
+            args: "/toolCall/value/arguments",
+            id: Some("/id"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "message"),
+                    Cond::Eq("/message/role", "assistant"),
+                ],
+                each: Some("/message/content"),
+                unit: &[Cond::Eq("/type", "text")],
+            },
+            path: "/text",
+            joins: false,
+        }],
     }),
 };
 
