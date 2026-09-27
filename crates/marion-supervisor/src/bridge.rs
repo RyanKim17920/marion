@@ -398,7 +398,9 @@ fn tools_describing(agent_type_description: &str) -> Value {
             "name": "status",
             "description": "Check what a backgrounded child is doing right now, without blocking. \
                             Takes the task_id from the handle `spawn` returned, and answers with \
-                            the child's current state as marion's supervisor holds it. Works after \
+                            the child's current state as marion's supervisor holds it — and, while \
+                            it has not finished, its last few tool calls and the last line it \
+                            wrote, where marion reads its harness's stream. Works after \
                             the child has finished, and after `wait` has already collected it. \
                             This is a poll, not a wait — if what you actually want is the child's \
                             result, call `wait`, which blocks and returns the contract.",
@@ -1202,10 +1204,16 @@ pub fn node_line(node: &marion_core::proto::model::NodeSummary) -> String {
 /// `TaskContract`. Promising one here would be the same false receipt
 /// [`background_result`] avoids one call earlier — worse, in fact, because `status` is the verb a
 /// caller reaches for precisely when it is deciding whether waiting is worth it.
+///
+/// `activity` is [`crate::activity::peek`]'s bounded lines for a child that has not finished,
+/// appended after the sentence rather than inside its [`SUMMARY_CAP`], because the peek carries
+/// its own bound and a state sentence cut short to make room for it would lose the one fact the
+/// verb exists for.
 pub fn status_result(
     id: &Value,
     task_id: &str,
     node: &marion_core::proto::model::NodeSummary,
+    activity: Option<&str>,
 ) -> Value {
     let returns = if node.parent_id.is_none() {
         "the terminal status marion observed — this is a root, and a root has no task contract, so \
@@ -1220,15 +1228,16 @@ pub fn status_result(
     } else {
         format!("Call `wait` with this task_id to block until it finishes and receive {returns}.")
     };
-    tool_result(
-        id,
-        &bounded(&format!(
-            "marion: task_id {task_id:?} is {}. This is the state marion's supervisor holds right \
-             now, not a cached one. {next}",
-            node_line(node)
-        )),
-        false,
-    )
+    let sentence = bounded(&format!(
+        "marion: task_id {task_id:?} is {}. This is the state marion's supervisor holds right \
+         now, not a cached one. {next}",
+        node_line(node)
+    ));
+    let text = match activity {
+        Some(peek) => format!("{sentence}\n\n{peek}"),
+        None => sentence,
+    };
+    tool_result(id, &text, false)
 }
 
 /// **`status` against a handle this bridge process has no row for.**

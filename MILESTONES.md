@@ -284,6 +284,15 @@ to its `events.jsonl` as it lands (`EventSink::record_line`, `observed_live: tru
 `on_line` seam `run_bounded_watched` already had for the session watch, instead of recording the
 whole capture after exit; only ACP children and launch-only roots still record after the fact.
 Witness: `events::tests::a_line_recorded_as_it_lands_is_the_captures_event_observed_live`.
+The MCP `status` tool appends that peek for a child that has not exited (`activity::peek`): it
+reads the last 1 MiB of the child's `events.jsonl`, takes the harness frames, and renders at most
+five calls as `- name(args)` and `- last said: …`, each line at most 160 characters and the whole
+at most 2 KiB, after the state sentence. A row with no activity rule says marion cannot tell (never
+an empty peek); a stream with no frames yet says nothing is recorded; an exited child gets no peek.
+Witnesses: `background_spawn::status_on_a_running_child_shows_its_recent_tool_calls_within_bounds`
+(a real detached supervisor, a shim codex child that prints six commands and a message and blocks:
+the last five, the first gone, the long one shortened, the peek gone once it finishes; red with the
+live recording removed), `activity::tests`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is

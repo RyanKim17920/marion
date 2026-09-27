@@ -631,9 +631,16 @@ fn tool_status(
     let Some((agent_id, _)) = bg.node_of(task_id) else {
         return Err(bridge::status_unknown(id, task_id));
     };
-    let (sock, _) = paths_or_refuse(who, id)?;
+    let (sock, project) = paths_or_refuse(who, id)?;
     match courier::node_get(sock.socket(), &agent_id) {
-        Ok(r) => Ok(bridge::status_result(id, task_id, &r.node)),
+        Ok(r) => {
+            // **A peek only while the child has not finished**: a finished child's answer is its
+            // contract, which `wait` returns, and a stale "last said" beside `finished` would read
+            // as work still going on.
+            let peek = (!matches!(r.node.state, marion_core::node::NodeState::Exited(_)))
+                .then(|| crate::activity::peek(&project.agent(&agent_id).events(), r.node.harness));
+            Ok(bridge::status_result(id, task_id, &r.node, peek.as_deref()))
+        }
         // The supervisor's own sentence where there is one (`SupervisorRefused` carries a
         // `not_found` that already names the id and how current the registry is), and
         // marion's where the supervisor could not be reached at all. Neither is reworded.

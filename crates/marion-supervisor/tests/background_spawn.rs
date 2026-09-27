@@ -128,6 +128,7 @@ fn shim(
     started_dir: &Path,
     done_dir: &Path,
     slow_version: &Path,
+    chatty: &Path,
 ) -> PathBuf {
     let bin = dir.join("codex");
     let script = format!(
@@ -150,7 +151,22 @@ case "$*" in
   *) wait_for={gate}
      mkdir -p {started} {done}
      # A distinct marker per invocation, so a test can count the children that really launched.
-     : > {started}/$$ ;;
+     : > {started}/$$
+     # **A child that has done something before it blocks.** Opt-in, like `slow_version`: codex
+     # frames of the shapes `s6`/`s7` recorded — six commands, the first seen twice, then a
+     # message — so `status` has a running child's activity to peek at. No `thread.started` and
+     # no marion `report`, so no other test's journal or contract changes.
+     if [ -e {chatty} ]; then
+       printf '%s\n' \
+         '{{"type":"item.started","item":{{"id":"item_1","type":"command_execution","command":"cargo test step-1","status":"in_progress"}}}}' \
+         '{{"type":"item.completed","item":{{"id":"item_1","type":"command_execution","command":"cargo test step-1","status":"completed"}}}}' \
+         '{{"type":"item.started","item":{{"id":"item_2","type":"command_execution","command":"cargo test step-2","status":"in_progress"}}}}' \
+         '{{"type":"item.started","item":{{"id":"item_3","type":"command_execution","command":"cargo test step-3","status":"in_progress"}}}}' \
+         '{{"type":"item.started","item":{{"id":"item_4","type":"command_execution","command":"cargo test step-4","status":"in_progress"}}}}' \
+         '{{"type":"item.started","item":{{"id":"item_5","type":"command_execution","command":"cargo test step-5","status":"in_progress"}}}}' \
+         '{{"type":"item.started","item":{{"id":"item_6","type":"command_execution","command":"cargo test step-6 {long}","status":"in_progress"}}}}' \
+         '{{"type":"item.completed","item":{{"id":"item_7","type":"agent_message","text":"thinking\nrunning the suite now"}}}}'
+     fi ;;
 esac
 # **Mortal by construction.** The gate lives in a `Scratch` directory that is removed when the
 # test's fixture drops, so a shim that only ever waited for the gate would spin forever if the test
@@ -179,6 +195,8 @@ exit 0
         root_gate = common::shell_quote(root_gate),
         root_marker = ROOT_MARKER,
         slow_version = common::shell_quote(slow_version),
+        chatty = common::shell_quote(chatty),
+        long = "x".repeat(300),
         life_ticks = SHIM_LIFE.as_millis() / 50,
         life_secs = SHIM_LIFE.as_secs(),
     );
@@ -405,6 +423,7 @@ struct Fixture {
     started: PathBuf,
     done: PathBuf,
     slow_version: PathBuf,
+    chatty: PathBuf,
     shim_dir: PathBuf,
     supervisor: Supervisor,
     /// The node every bridge in this file serves, and whose capability token it presents.
@@ -428,9 +447,18 @@ fn fixture(tag: &str) -> Fixture {
     let gate = dir.join("gate");
     let root_gate = dir.join("root-gate");
     let slow_version = dir.join("slow-version");
+    let chatty = dir.join("chatty");
     std::fs::create_dir_all(&shim_dir).expect("the shim dir");
     std::fs::create_dir_all(&state).expect("the state dir");
-    shim(&shim_dir, &gate, &root_gate, &started, &done, &slow_version);
+    shim(
+        &shim_dir,
+        &gate,
+        &root_gate,
+        &started,
+        &done,
+        &slow_version,
+        &chatty,
+    );
 
     // **The whole search path is stated, not extended.** `execvp` does not stop at the first match:
     // a `PATH` entry whose `codex` fails to exec is skipped and the search continues, so a test that
@@ -501,6 +529,7 @@ fn fixture(tag: &str) -> Fixture {
         started,
         done,
         slow_version,
+        chatty,
         shim_dir,
         supervisor,
         root_id: root.agent_id,
@@ -591,6 +620,11 @@ impl Fixture {
     }
 
     /// Make the shim hang when asked its version, from the next invocation on.
+    /// Every child launched from here on prints codex frames before it blocks on the gate.
+    fn make_children_chatty(&self) {
+        std::fs::write(&self.chatty, b"say").expect("the chatty marker is written");
+    }
+
     fn make_version_slow(&self) {
         std::fs::write(&self.slow_version, b"hang").expect("the slow-version marker is written");
     }
@@ -2019,6 +2053,81 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
         2,
         "one journal record per accepted steer"
     );
+    assert!(bridge.close().success());
+}
+
+/// **`status` on a running child shows what it has been doing**, bounded: its last five tool
+/// calls, oldest first — the first of six is gone, and the one it reported twice is not doubled —
+/// each line at most 160 characters, and the last line it wrote, read from its `events.jsonl`
+/// while it is still blocked on the gate. Once it has finished, the peek is gone: its answer is
+/// the contract `wait` returns.
+#[test]
+fn status_on_a_running_child_shows_its_recent_tool_calls_within_bounds() {
+    let fx = fixture("bg-status-activity");
+    fx.make_children_chatty();
+    let mut bridge = fx.bridge();
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    fx.await_children(1);
+
+    // The child prints before it blocks and the supervisor records each line as it lands, so the
+    // peek fills in while the child runs; the bound only fails a run where it never does.
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    let text = loop {
+        let reply = bridge.tool("status", json!({"task_id": &task_id}));
+        assert!(!is_error(&reply), "{reply}");
+        let text = text_of(&reply);
+        if text.contains("last said:") {
+            break text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a running child's status never showed its activity: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(text.contains("running"), "the state sentence leads: {text}");
+    let peek = &text[text
+        .find("Recent activity (oldest first):")
+        .unwrap_or_else(|| panic!("{text}"))..];
+    assert!(peek.len() <= 2048, "{} bytes: {peek}", peek.len());
+    let lines: Vec<&str> = peek.lines().skip(1).collect();
+    let calls: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("- command_execution("))
+        .collect();
+    assert_eq!(calls.len(), 5, "the last five of six: {peek}");
+    for (line, step) in calls.iter().zip(2..=6) {
+        assert!(line.contains(&format!("step-{step}")), "{line}");
+    }
+    assert!(
+        !peek.contains("step-1"),
+        "the oldest call is past the bound: {peek}"
+    );
+    for line in &lines {
+        assert!(line.chars().count() <= 160, "{line}");
+    }
+    assert!(
+        calls[4].ends_with('…'),
+        "a shortened line says so: {}",
+        calls[4]
+    );
+    assert_eq!(lines.last(), Some(&"- last said: running the suite now"));
+
+    fx.open_gate();
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    loop {
+        let text = text_of(&bridge.tool("status", json!({"task_id": &task_id})));
+        if text.contains("finished") {
+            assert!(!text.contains("Recent activity"), "{text}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child never finished: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(bridge.close().success());
 }
 

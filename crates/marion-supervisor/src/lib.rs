@@ -17,6 +17,9 @@
 /// `marion attach <agent-id>`: the client process that holds `marion-tui`'s pieces together and
 /// gives that crate its first reverse dependency.
 pub mod acp_child;
+/// A bounded peek at what a running node has done — its last tool calls and words — read from its
+/// `events.jsonl` through its row's stream grammar.
+pub mod activity;
 pub mod attach;
 pub mod background;
 pub mod bridge;
