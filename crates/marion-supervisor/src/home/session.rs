@@ -774,11 +774,12 @@ fn copy(text: &str) {
 }
 
 /// The name a harness is shown and matched under — the one doctor's rows carry (`doctor::label`):
-/// its command name, or `acp <agent>` for an ACP row.
-fn harness_name(h: marion_core::harness::Harness, acp_agent: Option<&str>) -> String {
-    match (h, acp_agent) {
-        (marion_core::harness::Harness::Acp, Some(a)) => format!("acp {a}"),
-        _ => h.cli_name().to_string(),
+/// its command name, followed by the agent a type names where it names one (`acp opencode`). Read
+/// off the type's data, as doctor reads its row's, never off which harness it is.
+fn harness_name(h: marion_core::harness::Harness, agent: Option<&str>) -> String {
+    match agent {
+        Some(a) => format!("{} {a}", h.cli_name()),
+        None => h.cli_name().to_string(),
     }
 }
 
