@@ -67,13 +67,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::encoding::SystemTime;
 use marion_core::event::{EncodeError, Event, EventLog, Lifecycle, Payload, bound, encode};
 use marion_core::harness::Harness;
 use marion_core::ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 use marion_core::paths::AgentDir;
 use marion_core::registry::Truncation;
+use marion_harness::adapter::adapter_for;
+use marion_harness::grammar::UsageMeter;
 
 use crate::duplex::StreamEvent;
 use crate::journal::GROUP_COMMIT_INTERVAL;
@@ -189,6 +191,11 @@ pub struct EventSink {
     /// An endpoint node's keys — every one it has been launched on — replaced by `***` in every
     /// event before it is written ([`Self::scrub_key`]); empty on a canned or live node.
     scrub: RefCell<Vec<String>>,
+    /// **What the node's stream says it spent, folded as each frame is recorded.** Every frame of
+    /// every path passes through this sink, so the node's usage costs no second read of its stream
+    /// or its capture, and a capture cut short does not cut it short. `None` for a harness whose
+    /// row states no usage rule.
+    usage: RefCell<Option<UsageMeter>>,
 }
 
 impl EventSink {
@@ -221,12 +228,19 @@ impl EventSink {
         }
     }
 
+    /// The usage rule is the harness's own (`HarnessAdapter::usage_rule`), taken here so no
+    /// launcher can forget it — the same argument as §5.2's rule in [`Self::record`].
     pub fn new(writer: EventWriter, harness: Harness, init_id: String) -> Self {
+        let usage = adapter_for(harness)
+            .ok()
+            .and_then(|a| a.usage_rule())
+            .map(UsageMeter::new);
         Self {
             writer: RefCell::new(writer),
             harness,
             init_id,
             scrub: RefCell::new(Vec::new()),
+            usage: RefCell::new(usage),
         }
     }
 
@@ -246,6 +260,27 @@ impl EventSink {
         if !keys.iter().any(|k| k == key) {
             keys.push(key.to_string());
         }
+    }
+
+    /// This run resumes a node whose earlier runs recorded spending `prior`. See
+    /// [`UsageMeter::resumed_from`].
+    pub fn resumed_from(&self, prior: Option<TokenUsage>) {
+        let mut usage = self.usage.borrow_mut();
+        *usage = usage.map(|m| m.resumed_from(prior));
+    }
+
+    /// The process this sink was recording has ended: what it spent is settled, and the next
+    /// frame is the next generation's (a continuation). See [`UsageMeter`].
+    pub fn end_generation(&self) {
+        if let Some(m) = self.usage.borrow_mut().as_mut() {
+            m.end_generation();
+        }
+    }
+
+    /// Everything the recorded stream says the node spent so far, across its generations. `None`
+    /// when it stated nothing, which is not zero.
+    pub fn usage(&self) -> Option<TokenUsage> {
+        self.usage.borrow().as_ref().and_then(UsageMeter::usage)
     }
 
     /// Record one live [`StreamEvent`] — the body of the `duplex::DuplexSpec::sink` closure.
@@ -315,6 +350,9 @@ impl EventSink {
     }
 
     fn draft(&self, ev: StreamEvent<'_>, live: bool) -> Draft {
+        if let (StreamEvent::Frame(json), Some(m)) = (&ev, self.usage.borrow_mut().as_mut()) {
+            m.observe(json);
+        }
         let mut d = match ev {
             StreamEvent::Frame(json) if self.is_own_initialize_reply(json) => {
                 let bytes = serde_json::to_vec(json).map(|v| v.len()).unwrap_or(0);
@@ -1345,6 +1383,43 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **The sink meters the node's spend from the frames it records**, on every recording seam,
+    /// under the harness's own rule: gemini's terminal `result` totals its process, so a second
+    /// `result` in one process supersedes the first while a continuation's adds to it; a line that
+    /// is not JSON is not a unit; and a harness whose row states no usage claims none — `None`,
+    /// never zero.
+    #[test]
+    fn a_sink_meters_its_nodes_usage_across_generations_from_the_frames_it_records() {
+        let dir = scratch("events-usage");
+        let result = |input: u64, output: u64| {
+            format!(
+                "{{\"type\":\"result\",\"stats\":{{\"input_tokens\":{input},\
+                 \"output_tokens\":{output},\"cached\":0}}}}"
+            )
+        };
+        let mut s = EventSink::new(
+            EventWriter::open_path(&dir.join("gemini.jsonl"), &node()).unwrap(),
+            Harness::Gemini,
+            "unused".into(),
+        );
+        assert_eq!(s.usage(), None, "nothing read, nothing claimed");
+        s.record_line(&result(1, 1));
+        s.record_line("not json");
+        s.record_capture(&result(100, 20));
+        s.end_generation();
+        s.record_line(&result(30, 2));
+        let u = s.usage().expect("three units were recorded");
+        assert_eq!((u.input, u.output), (130, 22));
+
+        let silent = EventSink::new(
+            EventWriter::open_path(&dir.join("copilot.jsonl"), &node()).unwrap(),
+            Harness::Copilot,
+            "unused".into(),
+        );
+        silent.record_line(r#"{"type":"result","usage":{"premiumRequests":1}}"#);
+        assert_eq!(silent.usage(), None, "copilot's row reads no token count");
     }
 
     /// A capture read after the process died is not a live observation, and §4.1 has an axis that

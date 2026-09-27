@@ -58,7 +58,9 @@ use std::path::PathBuf;
 use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
-use marion_core::contract::{AgentId, Capped, ExitStatus, Oid, ProcessExit, new_agent_id};
+use marion_core::contract::{
+    AgentId, Capped, ExitStatus, Oid, ProcessExit, TokenUsage, new_agent_id,
+};
 use marion_core::harness::Harness;
 use marion_core::ids::uuid_v7;
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
@@ -206,6 +208,18 @@ fn availability_axis(
 /// module has always used. Two copies of §3.4's dispatch would be exactly the drift §9 warns about.
 pub use crate::duplex::{LaunchPath as RootPath, launch_path as root_path};
 
+/// What a root's second life is reconstructed from — all of it read off the journal, as
+/// `run::ChildResume` is for a child. See [`RootSpec::resume`].
+#[derive(Debug, Clone)]
+pub struct RootResume {
+    /// The node's own id, reused so the relaunch is a second lifetime and not a second node.
+    pub agent_id: AgentId,
+    /// The harness's own name for the conversation, handed back verbatim.
+    pub session: String,
+    /// What the node's earlier runs recorded spending (`ReplayedNode::usage`).
+    pub usage: Option<TokenUsage>,
+}
+
 /// What `marion run` was asked for.
 #[derive(Debug, Clone)]
 pub struct RootSpec {
@@ -266,13 +280,13 @@ pub struct RootSpec {
     /// answer that attach with *"no display plane"* — a true sentence about a node marion made
     /// headless after being told not to.
     pub pane: bool,
-    /// **A resume, or a fresh run** (`plan-restart-resume.md` step 6). `Some((agent_id, session))`
+    /// **A resume, or a fresh run** (`plan-restart-resume.md` step 6). `Some(resume)`
     /// relaunches a lost node **under its own id** and hands the harness back the session its
     /// stream named, through the row's measured resume flag — a launch a `node/resume` reconstructs
     /// from the node's own journal. `None` is a fresh run, where `prepare` mints a new id. The id
     /// rides here rather than being minted so a resumed node keeps the identity every other record
     /// about it already names.
-    pub resume: Option<(AgentId, String)>,
+    pub resume: Option<RootResume>,
     /// **§9's node-level bound for this run, already resolved** by [`blocked_bound_secs`] from
     /// `marion run --timeout` and the agent type — not the operator's `Option<u64>`.
     ///
@@ -385,6 +399,9 @@ pub struct RootNode {
     /// The harness session this launch resumes, where it resumes one — what the stream is checked
     /// against ([`marion_harness::HarnessAdapter::resume_refusal`]).
     pub resumed: Option<String>,
+    /// What the node's earlier runs recorded spending, where this launch resumes one — the total a
+    /// row whose counters run over the session subtracts (`UsageMeter::resumed_from`).
+    pub resumed_usage: Option<TokenUsage>,
     /// What a `LaunchOnly` root's next generation is compiled from — the launch and context its
     /// first was, which a continuation resumes under the observed session with the message as the
     /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
@@ -657,7 +674,7 @@ pub fn prepare_watched(
     // the second `Spawned` lands on the same node every earlier record names — which is the whole
     // of what a resume is (`registry.rs` folds a second `Spawned` on a known id as generation two).
     let agent_id = match &spec.resume {
-        Some((id, _)) => id.clone(),
+        Some(r) => r.agent_id.clone(),
         None => new_agent_id(unix_millis(), entropy()?),
     };
     // **Before `create_dir_all`, which is this function's first side effect.** See the doc above.
@@ -896,7 +913,8 @@ pub fn prepare_watched(
         },
         session_declaration: session,
         acp_agent: agent_type.acp_agent.clone(),
-        resumed: spec.resume.as_ref().map(|(_, session)| session.clone()),
+        resumed: spec.resume.as_ref().map(|r| r.session.clone()),
+        resumed_usage: spec.resume.as_ref().and_then(|r| r.usage),
     })
 }
 
@@ -1054,7 +1072,7 @@ fn root_launch_spec(
         // The session this launch resumes, handed to the row's measured resume flag — or `None`
         // for a fresh run. A row with no measured flag for this shape refuses at `compile`, by
         // name, rather than starting fresh under the resumed session's id.
-        resume: spec.resume.as_ref().map(|(_, session)| session.clone()),
+        resume: spec.resume.as_ref().map(|r| r.session.clone()),
         base_url: spec.base_url.clone(),
         // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
         // onto the invocation below. On the other three it is **not** an env var marion can push
@@ -1298,6 +1316,7 @@ fn launch_inner(
     });
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
+        es.resumed_from(node.resumed_usage);
     }
     // The root's harness session, journaled on the frame that names it — what a later
     // `node/resume` hands back to the harness. Beside `events` for the same reason it is on the
@@ -1369,6 +1388,12 @@ fn launch_inner(
     // **The process has ended; nothing terminal is written yet** — the one instant the owner's
     // attribution can be asked and settled (`SpawnObserver::process_ended`).
     let ended_by_kill = ended_by_kill.is_some_and(|asked| asked());
+    // A root has no contract (§9), so the journal's record is the one place its spend is kept.
+    crate::journal::record_usage(
+        &node.project,
+        &node.agent_id,
+        events.as_ref().and_then(|es| es.usage()),
+    );
     journal_the_roots_outcome(
         node,
         &result,
@@ -2168,7 +2193,13 @@ fn launch_only_generation(
         }
         session.observe_line(line);
     };
-    let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
+    let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line));
+    // The process is over, however it ended: what it spent is settled, and a continuation's frames
+    // are the next generation's.
+    if let Some(es) = events {
+        es.end_generation();
+    }
+    let out = out?;
     let stdout = redact(&String::from_utf8_lossy(&out.stdout));
     let stderr = redact(&String::from_utf8_lossy(&out.stderr));
     Ok(RootOutcome {

@@ -3914,7 +3914,11 @@ impl RegistryHandle {
             // shape the node's session was observed in. A pane names no session, so a resumable
             // node is always headless today; the field keeps that a checked fact.
             pane: node.harness_pane,
-            resume: Some((node.agent_id.clone(), session)),
+            resume: Some(crate::root::RootResume {
+                agent_id: node.agent_id.clone(),
+                session,
+                usage: node.usage,
+            }),
             // **The node's own bound, from its own journal** — the same discipline the two fields
             // above follow. A relaunch that re-resolved this from the agent type would put a root
             // the operator had launched with `--timeout 300` back under §3.1's 900 s, which is a
@@ -4121,6 +4125,7 @@ impl RegistryHandle {
                 agent_id: node.agent_id.clone(),
                 session,
                 workspace,
+                usage: node.usage,
             }),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.

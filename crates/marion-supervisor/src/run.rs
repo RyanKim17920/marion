@@ -205,6 +205,9 @@ pub struct ChildResume {
     /// session only from the cwd that created it, and the caller has already proved this one is
     /// still on disk.
     pub workspace: Workspace,
+    /// What the node's earlier runs recorded spending (`ReplayedNode::usage`) — the total a row
+    /// whose counters run over the session subtracts (`UsageMeter::resumed_from`).
+    pub usage: Option<TokenUsage>,
 }
 
 /// The node whose `spawn` this is — §6.1 step 2's gates read the **caller's** agent type, never
@@ -970,7 +973,13 @@ fn launch_only_child(
         }
         session.observe_line(line);
     };
-    let output = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
+    let output = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line));
+    // The process is over, however it ended: what it spent is settled, and a continuation's frames
+    // are the next generation's.
+    if let Some(es) = events {
+        es.end_generation();
+    }
+    let output = output?;
     Ok(ChildRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -1593,6 +1602,7 @@ pub fn run_spawn_watched(
     // distinguishable from one that was never recorded.
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
+        es.resumed_from(req.resume.as_ref().and_then(|r| r.usage));
     }
     // The node's harness session, journaled the moment its stream names one — the handle a later
     // `node/resume` hands back. Beside `events` because both read the same live frames, and for
@@ -2145,6 +2155,13 @@ pub fn run_spawn_watched(
     if ended_by_kill {
         record_cancelled(&mut contract);
     }
+    // **What the node spent, from the stream as it was recorded** — every generation's, added —
+    // into the contract, and into the journal's one record of it, before the terminal records.
+    let usage = events.as_ref().and_then(|es| es.usage());
+    if let Some(completion) = contract.completion.as_mut() {
+        completion.usage = usage;
+    }
+    crate::journal::record_usage(&env.project_dir, &agent_id, usage);
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
@@ -2731,6 +2748,7 @@ mod tests {
             agent_id: agent_id.clone(),
             session: "sess-1".into(),
             workspace: recorded.clone(),
+            usage: None,
         });
         let (workspace, _base, _claim) =
             select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id)

@@ -40,12 +40,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::node::{BlockReason, NodeState};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::{AgentSpawnParams, NodeSteerParams};
 use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_core::registry::Replay;
+use marion_provider::USAGE;
 use marion_provider::reqlog::RequestLog;
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::journal::read_path;
@@ -727,6 +728,34 @@ fn steer_during_a_hold_is_the_second_generation(row: &Row) {
         "the grandchild is still live, and generation two reported: {completion}"
     );
     assert_eq!(completion["held_to_timeout"], json!(false), "{completion}");
+
+    // **What the node spent is both generations', each response counted once**, whatever way the
+    // row's harness counts: codex's second generation reports its thread's running total, which
+    // already holds the first's spend, and pi's reports its own messages — and the same figure is
+    // the journal's, on the node a restarted supervisor would replay. A reasoning split is claimed
+    // exactly where the row states one.
+    let responses = requests_carrying(&bed.reqlog, DELEGATOR_MARKER).len() as u64;
+    let harness = marion_core::agent_type::builtin(row.agent_type)
+        .expect("the row's agent type resolves")
+        .harness;
+    let splits_reasoning = marion_harness::adapter_for(harness)
+        .unwrap()
+        .usage_rule()
+        .is_some_and(|rule| rule.reasoning.is_some());
+    let usage: TokenUsage = serde_json::from_value(completion["usage"].clone())
+        .unwrap_or_else(|e| panic!("the contract carries the node's usage ({e}): {completion}"));
+    assert_eq!(
+        (usage.input, usage.output, usage.cache_read, usage.reasoning),
+        (
+            responses * (USAGE.input - USAGE.cached),
+            responses * USAGE.output,
+            responses * USAGE.cached,
+            splits_reasoning.then_some(responses * USAGE.reasoning),
+        ),
+        "{responses} canned responses across both generations, {} in the second",
+        steered.len()
+    );
+    assert_eq!(tree(&bed.journal).get(&child).unwrap().usage, Some(usage));
 }
 
 /// **A child's end resumes its held codex parent**: the parent stopped unreported with a
