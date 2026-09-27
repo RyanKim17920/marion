@@ -1490,21 +1490,31 @@ over claude, codex, opencode and itself, all green at `RUST_TEST_THREADS=4`), an
   endpoint, and adds `--no-extensions --provider marion`. A live node keeps all of that and adds
   only `-e`, `--tools` and a named `--model`. `PI_SKIP_VERSION_CHECK=1` is the no-update switch;
   pi never replaces itself.
-- **Resume and delivery.** `--session <id>` continues the session, and an unknown id exits 1, so
-  headless delivery is `Continuation`. The TUI sets DECSET 2004, submits a bracketed paste plus CR
+- **Resume and delivery.** `--session <id>` continues the session, and an unknown id exits 1. The
+  one-shot launch that relies on it is kept as `pi::LAUNCH_ONLY`; headless is `--mode rpc` (next
+  bullet). The TUI sets DECSET 2004, submits a bracketed paste plus CR
   byte-exact, is silent when idle and repaints at ≤ 88 ms when busy, so interactive delivery is
   `bracketed_paste` and the native lane is enabled. A process-group SIGTERM or SIGKILL takes the
   extension's bridge down with pi.
-- **`--mode rpc` measured, not yet driven.** It is a JSONL command channel whose `steer` folds after
-  the in-flight tool result into the same turn's next request (S31's `MidTurn::Fold`), whose
-  `follow_up` queues a next turn, and whose `abort` ends the next request `stopReason: "aborted"`.
-  A bare `prompt` mid-turn is refused. marion has no generic typed driver for such a channel, so
-  the row stays `LaunchOnly`/`Continuation`.
+- **Headless is `--mode rpc`, driven (2026-09-27).** It is a JSONL command channel whose `steer`
+  folds after the in-flight tool result into the same turn's next request (S31's `MidTurn::Fold`),
+  whose `follow_up` queues a next turn, and whose `abort` ends the next request `stopReason:
+  "aborted"`. A bare `prompt` mid-turn is refused. The row selects `Surfaces::JsonlRpc(&pi::RPC)`:
+  `TypedKind::JsonlRpc`, whose vocabulary is row data (`marion_harness::jsonl_channel`) and which
+  `duplex`'s typed-turn loop speaks as `Dialect::Jsonl`, so no supervisor code names pi. The
+  handshake is `get_state` (its reply names the session; rpc prints no `session` header), the fold
+  is `prompt` with `streamingBehavior: "steer"` (queued like `steer` while streaming, a new turn
+  when idle), the boundaries are `agent_start` and the non-retried `agent_end`, and `abort` is
+  written at the wall clock before the kill. Headless delivery is `TypedTurn { Fold }`, journaled
+  `jsonl-rpc:mid-turn` / `jsonl-rpc:next-turn`. Witnesses: `tests/pi_rpc.rs` (a steer into a
+  running pi child in the next request of the same turn; a pi child past its bound aborted and
+  exiting on its own, `TimedOut`, no signal; a background child's end reaching its held pi parent
+  in the same process), `duplex::tests`' four JSONL-dialect cells, and `pi::tests`' reading of the
+  rpc captures. All three `pi_rpc` cells were RED on the `LaunchOnly` row.
 
-Not measured, and so not claimed: a `steer` into a *running* pi node (a steer during a §7.6 hold
-and a pushed child end reaching a held pi parent are driven end to end in `tests/continuation.rs`);
-a pi child spawning its own grandchild, which its `--tools` allowlist withholds; pi's project-trust prompt for a worktree carrying `.pi/` files; the `journal_wiring`,
-`depth_gate` and `launch_only_root` matrices.
+Not measured, and so not claimed: pi's project-trust prompt for a worktree carrying `.pi/` files;
+the `journal_wiring`, `depth_gate` and `launch_only_root` matrices. pi's two `continuation.rs`
+cells left with the `LaunchOnly` row.
 
 **Live-matrix row corrections (2026-09-22, real logins).** Each measured on the operator's existing
 login with the cheapest model the harness offered.

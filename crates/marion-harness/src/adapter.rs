@@ -8884,7 +8884,8 @@ mod tests {
             (Harness::Qwen, "continuation", "none"),
             // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
             (Harness::Antigravity, "continuation", "paste"),
-            (Harness::Pi, "continuation", "paste"),
+            // S34 item 12: `--mode rpc` folds a steer into the running turn.
+            (Harness::Pi, "typed", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(

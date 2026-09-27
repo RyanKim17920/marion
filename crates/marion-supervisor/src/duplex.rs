@@ -1170,8 +1170,9 @@ mod tests {
                 ("qwen-orchestrator", Some(LaunchPath::LaunchOnly)),
                 ("agy", Some(LaunchPath::LaunchOnly)),
                 ("agy-orchestrator", Some(LaunchPath::LaunchOnly)),
-                ("pi", Some(LaunchPath::LaunchOnly)),
-                ("pi-orchestrator", Some(LaunchPath::LaunchOnly)),
+                // pi's JSONL command channel runs on the typed-turn loop (`Dialect::Jsonl`).
+                ("pi", Some(LaunchPath::Duplex)),
+                ("pi-orchestrator", Some(LaunchPath::Duplex)),
             ]
         );
     }
