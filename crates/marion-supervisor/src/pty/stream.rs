@@ -167,8 +167,6 @@ pub(crate) enum StreamError {
     Entropy(String),
     #[error("PTY stream session header checksum mismatch")]
     HeaderChecksumMismatch,
-    #[error("PTY stream session is already ended")]
-    SessionEnded,
     #[error("PTY stream path has no file name")]
     InvalidCastPath,
     #[error("PTY stream parent directory is not private and owned by the effective user")]
@@ -1293,20 +1291,6 @@ impl PinnedStreamPath {
         Ok(file)
     }
 
-    fn open_existing(&self) -> Result<File, StreamError> {
-        let fd = rustix::fs::openat(
-            &self.parent,
-            &self.name,
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )?;
-        let file = File::from(fd);
-        validate_stream_file(&file)?;
-        lock_writer(&file)?;
-        self.ensure_current(&file)?;
-        Ok(file)
-    }
-
     fn ensure_current(&self, file: &File) -> Result<(), StreamError> {
         let opened = rustix::fs::fstat(file)?;
         let current = rustix::fs::statat(
@@ -1339,57 +1323,15 @@ fn validate_stream_file(file: &File) -> Result<(), StreamError> {
     Ok(())
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Fires once, after a refused `flock`, so a test can close the descriptor that owns the lock
-    /// at exactly the step the confirmation below depends on rather than racing a sleep against it.
-    static LOCK_REFUSAL_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn on_lock_refused() {
-    let hook = LOCK_REFUSAL_HOOK.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
-/// How long a refused `flock` is re-offered before `WriterLocked` is believed.
+/// Take the stream's exclusive writer lock without waiting.
 ///
-/// An `flock` belongs to the **open file description**, and `fork` duplicates that description.
-/// `spawn_pty` installs a `pre_exec`, which forces `std::process::Command` down `fork`+`exec`, so
-/// every child this supervisor starts inherits every stream lock it currently holds and keeps that
-/// lock alive until `exec` closes the `O_CLOEXEC` descriptor. Within that window the owning
-/// writer's own `close` releases nothing, and a `create` or crash-recovery `reopen` racing it is
-/// told the stream has a live writer when the only holder was a copy of its own descriptor on its
-/// way out of the process.
-///
-/// So a single instantaneous refusal is not evidence of a competing writer. This is a bound on how
-/// long the refusal is *confirmed* for, not a timing assumption about the answer: a writer that
-/// really is live still holds the lock past any budget and is still refused, and a duplicate on its
-/// way to `exec` is gone in well under this one.
-const WRITER_LOCK_CONFIRM: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// How long to wait between offers while confirming. Short enough that a released lock is taken
-/// promptly, long enough that confirming does not spin a core for half a second.
-const WRITER_LOCK_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(1);
-
+/// The stream is created with `O_EXCL`, so no other writer can already hold this inode's lock; a
+/// refusal is a real conflict, never a stale lock to wait out.
 fn lock_writer(file: &File) -> Result<(), StreamError> {
-    let deadline = std::time::Instant::now() + WRITER_LOCK_CONFIRM;
-    loop {
-        match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => return Ok(()),
-            Err(error) if error == rustix::io::Errno::AGAIN => {
-                #[cfg(test)]
-                on_lock_refused();
-                if std::time::Instant::now() >= deadline {
-                    return Err(StreamError::WriterLocked);
-                }
-                std::thread::sleep(WRITER_LOCK_RETRY_PAUSE);
-            }
-            Err(error) => return Err(StreamError::Storage(error.to_string())),
-        }
+    match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::AGAIN => Err(StreamError::WriterLocked),
+        Err(error) => Err(StreamError::Storage(error.to_string())),
     }
 }
 
@@ -1553,73 +1495,12 @@ fn validate_display_completeness(
     Ok(())
 }
 
-/// Read the whole stream file, refusing one larger than recovery is allowed to hold.
-///
-/// Twice, and both are needed: the length says what the file claims before a byte is allocated for
-/// it, and the read is bounded one byte past the limit so a file that grew between the two — or
-/// whose length lied — is still refused rather than read without a ceiling.
-fn read_recovery_bytes(file: &mut File) -> Result<Vec<u8>, StreamError> {
-    if file.metadata()?.len() > MAX_RECOVERY_BYTES as u64 {
-        return Err(StreamError::RecoveryTooLarge {
-            max: MAX_RECOVERY_BYTES,
-        });
-    }
-    let mut encoded = Vec::new();
-    file.take(MAX_RECOVERY_BYTES as u64 + 1)
-        .read_to_end(&mut encoded)?;
-    if encoded.len() > MAX_RECOVERY_BYTES {
-        return Err(StreamError::RecoveryTooLarge {
-            max: MAX_RECOVERY_BYTES,
-        });
-    }
-    Ok(encoded)
-}
-
-/// The recovered file must be this session's, at this geometry, in this version.
-///
-/// The checksum says the header is intact; it does not say it is the header this writer expects.
-/// Appending to a stream whose identity or geometry differs would produce one file describing two
-/// sessions.
-fn ensure_header_matches(
-    recovered: &SessionHeader,
-    expected: &SessionHeader,
-) -> Result<(), StreamError> {
-    if recovered.version != SESSION_VERSION
-        || recovered.initial_cols != expected.initial_cols
-        || recovered.initial_rows != expected.initial_rows
-        || recovered.session_id != expected.session_id
-        || recovered.agent_binding != expected.agent_binding
-    {
-        return Err(StreamError::HeaderMismatch);
-    }
-    Ok(())
-}
-
-/// Where the three counters stand after recovery: at the last surviving record, or at zero for a
-/// file that holds nothing but its header.
-fn recovered_counters(records: &[Record]) -> TrailerCounters {
-    records
-        .last()
-        .map(|record| TrailerCounters {
-            record_seq: record.record_seq,
-            display_seq: record.display_seq,
-            input_seq: record.input_seq,
-        })
-        .unwrap_or(TrailerCounters {
-            record_seq: 0,
-            display_seq: 0,
-            input_seq: 0,
-        })
-}
-
 pub(crate) struct SessionWriter {
     file: File,
-    header: SessionHeader,
     counters: TrailerCounters,
     committed_len: u64,
     output_limit: u64,
     display_incomplete: bool,
-    ended: bool,
     poisoned: bool,
 }
 
@@ -1671,7 +1552,6 @@ impl SessionWriter {
         }
         Ok(Self {
             file,
-            header,
             counters: TrailerCounters {
                 record_seq: 0,
                 display_seq: 0,
@@ -1680,107 +1560,8 @@ impl SessionWriter {
             committed_len: SESSION_HEADER_LEN as u64,
             output_limit: SESSION_OUTPUT_LIMIT_BYTES as u64,
             display_incomplete: false,
-            ended: false,
             poisoned: false,
         })
-    }
-
-    pub(crate) fn reopen(
-        cast_path: &Path,
-        agent_id: &AgentId,
-        initial_size: super::WinSize,
-        session_id: [u8; SESSION_ID_BYTES],
-    ) -> Result<Self, StreamError> {
-        Self::reopen_prepared(
-            cast_path,
-            agent_id,
-            initial_size,
-            session_id,
-            |file, offset, marker| {
-                file.seek(SeekFrom::Start(offset))?;
-                Write::write_all(file, marker)?;
-                file.sync_data()
-            },
-        )
-    }
-
-    fn reopen_prepared(
-        cast_path: &Path,
-        agent_id: &AgentId,
-        initial_size: super::WinSize,
-        session_id: [u8; SESSION_ID_BYTES],
-        persist_repair: impl FnOnce(&mut File, u64, &[u8]) -> io::Result<()>,
-    ) -> Result<Self, StreamError> {
-        let path = PinnedStreamPath::open(cast_path)?;
-        let mut file = path.open_existing()?;
-        let encoded = read_recovery_bytes(&mut file)?;
-        let recovery = recover_session_bytes(&encoded)?;
-        let expected = SessionHeader::new(agent_id, initial_size, session_id);
-        ensure_header_matches(&recovery.header, &expected)?;
-        path.ensure_current(&file)?;
-        let committed_len = recovery.truncate_to.unwrap_or(encoded.len());
-        let recovered_torn_tail = recovery.truncate_to.is_some();
-        if recovered_torn_tail {
-            file.set_len(committed_len as u64)?;
-            file.sync_data()?;
-        }
-        file.seek(SeekFrom::Start(committed_len as u64))?;
-        path.ensure_current(&file)?;
-        let counters = recovered_counters(&recovery.records);
-        let ended = recovery
-            .records
-            .last()
-            .is_some_and(|record| matches!(record.kind, RecordKind::End(_)));
-        let display_incomplete = recovery
-            .records
-            .iter()
-            .any(|record| matches!(record.kind, RecordKind::DisplayIncomplete));
-        let mut writer = Self {
-            file,
-            header: recovery.header,
-            counters,
-            committed_len: committed_len as u64,
-            output_limit: SESSION_OUTPUT_LIMIT_BYTES as u64,
-            display_incomplete,
-            ended,
-            poisoned: false,
-        };
-        if !writer.ended && !writer.display_incomplete {
-            writer.repair_unended_prefix(persist_repair)?;
-        }
-        writer.file.seek(SeekFrom::Start(writer.committed_len))?;
-        Ok(writer)
-    }
-
-    /// An unended file is crash recovery, even when it ended exactly on a frame boundary: terminal
-    /// bytes may have been lost before they reached a durable Output record. Mark it incomplete
-    /// before admitting new appends.
-    ///
-    /// If marker persistence fails, nothing here is committed: the next reopen sees the same unended
-    /// prefix, or a partial marker it repairs first, and retries.
-    fn repair_unended_prefix(
-        &mut self,
-        persist_repair: impl FnOnce(&mut File, u64, &[u8]) -> io::Result<()>,
-    ) -> Result<(), StreamError> {
-        let marker = self.next_record(RecordKind::DisplayIncomplete)?;
-        let encoded_marker = marker.encode_for(RecordFormat::SessionV3)?;
-        if let Err(error) = persist_repair(&mut self.file, self.committed_len, &encoded_marker) {
-            return Err(error.into());
-        }
-        let repaired_len = self
-            .committed_len
-            .checked_add(encoded_marker.len() as u64)
-            .ok_or(StreamError::CommittedLengthOverflow)?;
-        self.file.set_len(repaired_len)?;
-        self.file.sync_data()?;
-        self.counters = TrailerCounters {
-            record_seq: marker.record_seq,
-            display_seq: marker.display_seq,
-            input_seq: marker.input_seq,
-        };
-        self.committed_len = repaired_len;
-        self.display_incomplete = true;
-        Ok(())
     }
 
     pub(crate) fn append_output(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
@@ -1843,9 +1624,6 @@ impl SessionWriter {
         if self.poisoned {
             return Err(StreamError::WriterPoisoned);
         }
-        if self.ended {
-            return Err(StreamError::SessionEnded);
-        }
         let record = self.next_record(kind)?;
         let record_seq = record.record_seq;
         let display_seq = record.display_seq;
@@ -1877,7 +1655,6 @@ impl SessionWriter {
         };
         self.committed_len = next_committed_len;
         self.display_incomplete |= matches!(record.kind, RecordKind::DisplayIncomplete);
-        self.ended = matches!(record.kind, RecordKind::End(_));
         Ok(())
     }
 
@@ -2720,34 +2497,6 @@ mod tests {
     }
 
     #[test]
-    fn incremental_stream_reopen_rejects_an_oversized_sparse_file() {
-        let dir = marion_testsupport::scratch("pty-stream-oversized-reopen");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let stream_path = stream_path_for_cast(&cast_path).unwrap();
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(stream_path)
-            .unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .unwrap();
-        file.set_len(MAX_RECOVERY_BYTES as u64 + 1).unwrap();
-
-        assert!(matches!(
-            SessionWriter::reopen(
-                &cast_path,
-                &AgentId("oversized-reopen".into()),
-                super::super::WinSize::new(80, 24),
-                [0; SESSION_ID_BYTES],
-            ),
-            Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES
-            })
-        ));
-    }
-
-    #[test]
     fn incremental_stream_rejects_a_group_or_world_writable_parent() {
         let dir = marion_testsupport::scratch("pty-stream-unsafe-parent");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -2798,7 +2547,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            SessionWriter::reopen(
+            SessionWriter::create_with_session(
                 &cast_path,
                 &AgentId("single-writer".into()),
                 super::super::WinSize::new(80, 24),
@@ -2835,31 +2584,6 @@ mod tests {
         .unwrap();
         let mode = writer.file.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn incremental_stream_reopen_rejects_a_header_mismatch() {
-        let dir = marion_testsupport::scratch("pty-stream-header-mismatch");
-        let cast_path = dir.join("pty.cast");
-        let writer = SessionWriter::create_with_session(
-            &cast_path,
-            &AgentId("expected-agent".into()),
-            super::super::WinSize::new(80, 24),
-            [0x45; SESSION_ID_BYTES],
-        )
-        .unwrap();
-        drop(writer);
-
-        assert_eq!(
-            SessionWriter::reopen(
-                &cast_path,
-                &AgentId("wrong-agent".into()),
-                super::super::WinSize::new(80, 24),
-                [0x45; SESSION_ID_BYTES],
-            )
-            .err(),
-            Some(StreamError::HeaderMismatch)
-        );
     }
 
     #[test]
@@ -3000,225 +2724,6 @@ mod tests {
                 }
             ]
         ));
-    }
-
-    /// Mutation: believe the first non-blocking `flock` answer.
-    ///
-    /// An `flock` belongs to the **open file description**, not to the descriptor and not to the
-    /// process, and `fork` duplicates that description. `spawn_pty` sets `pre_exec`, which forces
-    /// `std::process::Command` down the `fork`+`exec` path, so every child this supervisor starts
-    /// inherits every stream lock the supervisor holds and keeps it alive until `exec` closes the
-    /// `O_CLOEXEC` descriptor. Inside that window the parent's own `close` releases nothing: a
-    /// writer that has just closed its descriptor is refused its own stream with `WriterLocked`,
-    /// and crash recovery through `reopen` fails for a stream no other writer wants.
-    ///
-    /// `try_clone` is that inherited copy exactly — one description, two descriptors — so the race
-    /// is reproduced here without a child process. The hook closes the duplicate at the step the
-    /// refusal happens, so the test is a causal barrier rather than a sleep sized against a budget.
-    #[test]
-    fn a_lock_left_by_a_duplicate_of_a_closed_descriptor_is_not_a_competing_writer() {
-        let dir = marion_testsupport::scratch("pty-stream-lock-confirm");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("lock-confirm".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x44; SESSION_ID_BYTES];
-
-        let writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        let inherited = writer.file.try_clone().unwrap();
-        drop(writer);
-
-        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = std::sync::Arc::clone(&released);
-        LOCK_REFUSAL_HOOK.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new(move || {
-                drop(inherited);
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }));
-        });
-
-        let reopened = SessionWriter::reopen(&cast_path, &agent, size, session_id);
-        assert!(
-            released.load(std::sync::atomic::Ordering::SeqCst),
-            "the duplicate must still own the lock when the first attempt is refused"
-        );
-        assert!(
-            reopened.is_ok(),
-            "a lock released during the confirmation window is not a competing writer: {:?}",
-            reopened.err()
-        );
-        LOCK_REFUSAL_HOOK.with(|slot| *slot.borrow_mut() = None);
-    }
-
-    /// Mutation: derive truncation only from a live SessionWriter field. Reopen would lose the
-    /// state and seal a truncated stream as replay-complete.
-    #[test]
-    fn session_reopen_recovers_persisted_truncation_before_seal() {
-        let dir = marion_testsupport::scratch("pty-stream-reopen-truncation");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("reopen-truncation".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x36; SESSION_ID_BYTES];
-        let mut writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        writer.limit_output_for_test(SESSION_HEADER_LEN);
-        assert!(matches!(
-            writer.append_output(b"past the display quota"),
-            Err(StreamError::OutputBudgetExhausted { .. })
-        ));
-        drop(writer);
-
-        SessionWriter::reopen(&cast_path, &agent, size, session_id)
-            .unwrap()
-            .seal(TerminalOutcome {
-                exit_code: Some(0),
-                signal: None,
-                timed_out: false,
-                reader: ReaderDisposition::CleanEof,
-                cast_complete: true,
-                stream_complete: true,
-            })
-            .unwrap();
-
-        let recovered = recover_session_bytes(
-            &std::fs::read(stream_path_for_cast(&cast_path).unwrap()).unwrap(),
-        )
-        .unwrap();
-        let RecordKind::End(outcome) = recovered.records.last().unwrap().kind else {
-            panic!("sealed session ends with typed terminal evidence")
-        };
-        assert!(!outcome.stream_complete);
-    }
-
-    #[test]
-    fn session_reopen_marks_a_discarded_partial_frame_as_display_incomplete() {
-        let dir = marion_testsupport::scratch("pty-stream-torn-tail-truncation");
-        let cast_path = dir.join("pty.cast");
-        std::fs::write(&cast_path, b"cast").unwrap();
-        let agent = AgentId("torn-tail-truncation".into());
-        let size = super::super::WinSize::new(80, 24);
-        let session_id = [0x37; SESSION_ID_BYTES];
-        let writer =
-            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
-        drop(writer);
-        let stream_path = stream_path_for_cast(&cast_path).unwrap();
-        let torn_output = Record {
-            record_seq: 1,
-            display_seq: 1,
-            input_seq: 0,
-            kind: RecordKind::Output(b"possibly lost display".to_vec()),
-        }
-        .encode_for(RecordFormat::SessionV3)
-        .unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&stream_path)
-            .unwrap();
-        Write::write_all(&mut file, &torn_output[..torn_output.len() - 1]).unwrap();
-        file.sync_data().unwrap();
-        drop(file);
-
-        SessionWriter::reopen(&cast_path, &agent, size, session_id)
-            .unwrap()
-            .seal(TerminalOutcome {
-                exit_code: Some(0),
-                signal: None,
-                timed_out: false,
-                reader: ReaderDisposition::CleanEof,
-                cast_complete: true,
-                stream_complete: true,
-            })
-            .unwrap();
-
-        let recovered = recover_session_bytes(&std::fs::read(stream_path).unwrap()).unwrap();
-        assert!(matches!(
-            recovered.records.as_slice(),
-            [
-                Record {
-                    kind: RecordKind::DisplayIncomplete,
-                    ..
-                },
-                Record {
-                    kind: RecordKind::End(TerminalOutcome {
-                        stream_complete: false,
-                        ..
-                    }),
-                    ..
-                }
-            ]
-        ));
-    }
-
-    #[test]
-    fn failed_discontinuity_repairs_are_retried_on_the_next_reopen() {
-        for failure in ["no-bytes", "partial", "full-before-sync"] {
-            let dir = marion_testsupport::scratch(&format!("pty-stream-retry-repair-{failure}"));
-            let cast_path = dir.join("pty.cast");
-            std::fs::write(&cast_path, b"cast").unwrap();
-            let agent = AgentId(format!("retry-repair-{failure}"));
-            let size = super::super::WinSize::new(80, 24);
-            let session_id = [0x38; SESSION_ID_BYTES];
-            drop(SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap());
-
-            let injection_entered = std::cell::Cell::new(false);
-            let first = SessionWriter::reopen_prepared(
-                &cast_path,
-                &agent,
-                size,
-                session_id,
-                |file, offset, marker| {
-                    injection_entered.set(true);
-                    file.seek(SeekFrom::Start(offset))?;
-                    match failure {
-                        "no-bytes" => {}
-                        "partial" => Write::write_all(file, &marker[..8])?,
-                        "full-before-sync" => Write::write_all(file, marker)?,
-                        _ => unreachable!(),
-                    }
-                    Err(io::Error::other(format!(
-                        "injected {failure} repair failure"
-                    )))
-                },
-            );
-            assert!(
-                matches!(&first, Err(StreamError::Storage(error)) if error.contains(failure)),
-                "{failure}: injection_entered={}; actual={:?}",
-                injection_entered.get(),
-                first.as_ref().err()
-            );
-
-            SessionWriter::reopen(&cast_path, &agent, size, session_id)
-                .unwrap()
-                .seal(TerminalOutcome {
-                    exit_code: Some(0),
-                    signal: None,
-                    timed_out: false,
-                    reader: ReaderDisposition::CleanEof,
-                    cast_complete: true,
-                    stream_complete: true,
-                })
-                .unwrap();
-            let stream_path = stream_path_for_cast(&cast_path).unwrap();
-            let recovered = recover_session_bytes(&std::fs::read(stream_path).unwrap()).unwrap();
-            assert!(matches!(
-                recovered.records.as_slice(),
-                [
-                    Record {
-                        kind: RecordKind::DisplayIncomplete,
-                        ..
-                    },
-                    Record {
-                        kind: RecordKind::End(TerminalOutcome {
-                            stream_complete: false,
-                            ..
-                        }),
-                        ..
-                    }
-                ]
-            ));
-        }
     }
 
     /// Mutation: persist a keyed digest and its key beside low-entropy operator input evidence.
@@ -3457,7 +2962,7 @@ mod tests {
     }
 
     #[test]
-    fn sealing_commits_one_typed_end_and_reopen_stays_sealed() {
+    fn sealing_commits_one_typed_end() {
         let dir = marion_testsupport::scratch("pty-stream-typed-seal");
         let cast_path = dir.join("pty.cast");
         std::fs::write(&cast_path, b"cast").unwrap();
@@ -3483,12 +2988,6 @@ mod tests {
         assert_eq!(
             recovered.records.last().map(|record| &record.kind),
             Some(&RecordKind::End(outcome))
-        );
-
-        let mut reopened = SessionWriter::reopen(&cast_path, &agent, size, session_id).unwrap();
-        assert_eq!(
-            reopened.append_output(b"after end"),
-            Err(StreamError::SessionEnded)
         );
     }
 }
