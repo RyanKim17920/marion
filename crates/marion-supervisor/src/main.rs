@@ -60,6 +60,15 @@ fn main() {
                 let rows = doctor::run(&opts);
                 let environment = preflight::checks(&preflight::gather());
                 print!("{}", doctor::render(&rows, &environment));
+                // Bare `marion doctor` also checks the provider keys `marion login` stored — the
+                // `--providers` report, one `GET …/models` per credential, which spends nothing. A
+                // store it cannot read is said, never a failure of the machine's own checks.
+                if argv.len() == 1 {
+                    match marion_supervisor::provider_check::report(None) {
+                        Ok(text) => print!("\n{text}"),
+                        Err(e) => println!("\nproviders: not checked — {e}"),
+                    }
+                }
                 // A failed machine check (a mismatched binary pair, an unwritable state dir) fails
                 // the doctor in either mode; a warning never does.
                 if environment
