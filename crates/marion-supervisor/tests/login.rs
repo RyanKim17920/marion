@@ -67,12 +67,15 @@ fn marion_in(
     }
     let mut child = cmd.spawn().expect("marion starts");
     if let Some(input) = stdin {
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
+        // A command refused before it reads its stdin (an unknown provider) may exit first, and the
+        // write then meets a closed pipe. That refusal is the outcome under test, so a broken pipe
+        // is no failure; any other write error is.
+        let written = child.stdin.take().unwrap().write_all(input.as_bytes());
+        if let Err(e) = written
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            panic!("writing marion's stdin: {e}");
+        }
     }
     let out = child.wait_with_output().unwrap();
     Run {
