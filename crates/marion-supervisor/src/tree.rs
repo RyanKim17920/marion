@@ -560,6 +560,9 @@ mod tests {
         assert_eq!(sub.drain(), Ok(true));
         assert_eq!(sub.nodes.len(), 1);
         assert_eq!(sub.nodes[0].name.as_deref(), Some("é-worker"));
+        // `shutdown`, not only a drop: on macOS a test that forks concurrently can inherit `b`
+        // before its close-on-exec flag lands, and a drop would then close only this copy.
+        b.shutdown(std::net::Shutdown::Both).unwrap();
         drop(b);
         assert!(sub.drain().is_err(), "a closed supervisor is an error");
     }
