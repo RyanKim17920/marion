@@ -11,8 +11,8 @@ use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -327,6 +327,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             name: "/name",
             args: "/input",
             id: Some("/id"),
+            shape: CallShape::Tool,
         }],
         text: &[TextUnit {
             at: Where {

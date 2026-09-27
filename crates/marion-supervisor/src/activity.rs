@@ -144,7 +144,7 @@ pub fn page(events: &Path, harness: Harness, cursor: ActivityCursor) -> Activity
         .into_iter()
         .map(|i| {
             let (kind, text) = match i.item {
-                Activity::Call(c) => (ActionKind::Call, call_line(&c)),
+                Activity::Call(c) => (ActionKind::Call, brief(&c)),
                 Activity::Said(t) => (ActionKind::Said, capped(&one_line(&t))),
             };
             ActionLine {
@@ -170,6 +170,165 @@ fn call_line(c: &marion_harness::grammar::ToolCall) -> String {
         other => other.to_string(),
     };
     capped(&format!("{}({})", c.name, one_line(&args)))
+}
+
+/// Argument keys that name a shell command, most telling first.
+const COMMAND_KEYS: &[&str] = &["command", "cmd", "script"];
+/// Argument keys that name a file or a place.
+const PATH_KEYS: &[&str] = &[
+    "file_path",
+    "path",
+    "file",
+    "filename",
+    "notebook_path",
+    "target_file",
+    "absolute_path",
+    "dir_path",
+    "directory",
+];
+/// Argument keys that say what is searched for or fetched.
+const PATTERN_KEYS: &[&str] = &["pattern", "query", "regex", "glob", "url"];
+/// Argument keys that carry words the agent wrote: quoted, as speech.
+const MESSAGE_KEYS: &[&str] = &[
+    "narrative",
+    "message",
+    "text",
+    "prompt",
+    "description",
+    "summary",
+    "content",
+];
+
+/// One call as a person reads it, one bounded line: `$ cargo test` for a command, `~ src/a.rs`
+/// for a file change, and otherwise the tool's verb and its most telling argument —
+/// `report "tests pass"`, `Read src/lib.rs`, `Grep fn main`. Worded from the row's
+/// [`CallShape`] and the argument's key, so no harness is named here.
+pub fn brief(c: &marion_harness::grammar::ToolCall) -> String {
+    use marion_harness::grammar::CallShape;
+    // Some harnesses deliver the argument object as a JSON string.
+    let parsed;
+    let args = match &c.args {
+        Value::String(s) if s.trim_start().starts_with('{') => {
+            parsed = serde_json::from_str::<Value>(s).unwrap_or_else(|_| c.args.clone());
+            &parsed
+        }
+        other => other,
+    };
+    let line = match c.shape {
+        CallShape::Command => format!("$ {}", command_text(args)),
+        CallShape::Files => files_text(args),
+        CallShape::Tool => tool_text(verb(&c.name), args),
+    };
+    capped(&one_line(&line))
+}
+
+/// The tool's own name without an MCP server prefix (`mcp__marion__report` is `report`).
+fn verb(name: &str) -> &str {
+    name.rsplit("__").next().unwrap_or(name)
+}
+
+fn tool_text(verb: &str, args: &Value) -> String {
+    let Value::Object(map) = args else {
+        return match args {
+            Value::String(s) if !s.trim().is_empty() => format!("{verb} {s}"),
+            _ => verb.to_string(),
+        };
+    };
+    let pick = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| map.get(*k).map(string_of).filter(|s| !s.trim().is_empty()))
+    };
+    if let Some(cmd) = pick(COMMAND_KEYS) {
+        return format!("$ {}", unwrap_shell(&cmd));
+    }
+    if let Some(p) = pick(PATTERN_KEYS).or_else(|| pick(PATH_KEYS)) {
+        return format!("{verb} {p}");
+    }
+    if let Some(m) = pick(MESSAGE_KEYS) {
+        return format!("{verb} \"{}\"", one_line(&m));
+    }
+    match map
+        .values()
+        .find_map(|v| v.as_str().filter(|s| !s.trim().is_empty()))
+    {
+        Some(first) => format!("{verb} {first}"),
+        None => verb.to_string(),
+    }
+}
+
+/// A string as itself, an array of strings as words, anything else as nothing.
+fn string_of(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
+}
+
+/// The command a `Command`-shaped call ran, a shell's `-c` wrapper taken off.
+fn command_text(args: &Value) -> String {
+    match args {
+        Value::Array(parts) => {
+            let words: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+            match words.as_slice() {
+                [sh, flag, script] if is_shell(sh) && is_dash_c(flag) => script.to_string(),
+                _ => words.join(" "),
+            }
+        }
+        other => unwrap_shell(&string_of(other)),
+    }
+}
+
+/// `bash -lc 'cargo test'` as `cargo test`: the wrapper says nothing about what ran.
+fn unwrap_shell(cmd: &str) -> String {
+    let mut it = cmd.trim().splitn(3, ' ');
+    match (it.next(), it.next(), it.next()) {
+        (Some(sh), Some(flag), Some(rest)) if is_shell(sh) && is_dash_c(flag) => {
+            let rest = rest.trim();
+            for q in ['\'', '"'] {
+                if let Some(inner) = rest.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
+                    return inner.to_string();
+                }
+            }
+            rest.to_string()
+        }
+        _ => cmd.trim().to_string(),
+    }
+}
+
+fn is_shell(word: &str) -> bool {
+    let name = word.rsplit('/').next().unwrap_or(word);
+    matches!(name, "sh" | "bash" | "zsh" | "dash" | "fish")
+}
+
+fn is_dash_c(flag: &str) -> bool {
+    flag.starts_with('-') && !flag.starts_with("--") && flag.ends_with('c')
+}
+
+/// The files a `Files`-shaped call changed: the first, and how many more.
+fn files_text(args: &Value) -> String {
+    let paths: Vec<String> = match args {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|i| match i {
+                Value::String(s) => Some(s.clone()),
+                Value::Object(m) => m.get("path").and_then(Value::as_str).map(str::to_string),
+                _ => None,
+            })
+            .collect(),
+        Value::Object(m) => m.keys().cloned().collect(),
+        Value::String(s) => vec![s.clone()],
+        _ => Vec::new(),
+    };
+    match paths.as_slice() {
+        [] => "~ files".to_string(),
+        [one] => format!("~ {one}"),
+        [first, rest @ ..] => format!("~ {first} +{} more", rest.len()),
+    }
 }
 
 /// A journal or event timestamp as the RFC3339 text it serializes to.
@@ -253,13 +412,102 @@ fn cap_bytes(s: String, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_harness::grammar::ToolCall;
+    use marion_harness::grammar::{CallShape, ToolCall};
 
     fn call(name: &str, args: Value) -> ToolCall {
         ToolCall {
             name: name.into(),
             args,
+            shape: CallShape::Tool,
         }
+    }
+
+    fn shaped(shape: CallShape, name: &str, args: Value) -> ToolCall {
+        ToolCall {
+            shape,
+            ..call(name, args)
+        }
+    }
+
+    /// A call as a person reads it: the verb and the one argument that says what it is about,
+    /// never the argument object as JSON. Worded from the row's shape and the argument's key, so
+    /// no harness is named.
+    #[test]
+    fn a_call_reads_as_its_verb_and_most_telling_argument() {
+        use serde_json::json;
+        let cases = [
+            (
+                call(
+                    "report",
+                    json!({"narrative": "s6 probe: reporting via MCP"}),
+                ),
+                "report \"s6 probe: reporting via MCP\"",
+            ),
+            (
+                call("mcp__marion__report", json!({"narrative": "done"})),
+                "report \"done\"",
+            ),
+            (
+                call("Bash", json!({"command": "cargo test", "timeout": 5})),
+                "$ cargo test",
+            ),
+            (
+                shaped(
+                    CallShape::Command,
+                    "command_execution",
+                    json!("/bin/zsh -lc 'cargo test -q'"),
+                ),
+                "$ cargo test -q",
+            ),
+            (
+                shaped(
+                    CallShape::Command,
+                    "command_execution",
+                    json!(["bash", "-lc", "ls src"]),
+                ),
+                "$ ls src",
+            ),
+            (
+                shaped(
+                    CallShape::Files,
+                    "file_change",
+                    json!([{"path": "src/limits/bucket.rs", "kind": "update"}, {"path": "b.rs"}]),
+                ),
+                "~ src/limits/bucket.rs +1 more",
+            ),
+            (
+                shaped(CallShape::Files, "file_change", json!([{"path": "a.rs"}])),
+                "~ a.rs",
+            ),
+            (
+                call("Read", json!({"file_path": "src/lib.rs", "limit": 40})),
+                "Read src/lib.rs",
+            ),
+            (
+                call("Grep", json!({"pattern": "fn main", "path": "src"})),
+                "Grep fn main",
+            ),
+            (
+                call("todo", json!({"count": 3, "label": "tidy"})),
+                "todo tidy",
+            ),
+            (call("ping", json!({})), "ping"),
+            (call("ping", Value::Null), "ping"),
+            // Arguments some harnesses deliver as a JSON string are read as the object they are.
+            (call("edit", json!("{\"path\":\"x.rs\"}")), "edit x.rs"),
+            (
+                call("say", json!("line one\nline two")),
+                "say line one line two",
+            ),
+        ];
+        for (c, want) in cases {
+            assert_eq!(brief(&c), want, "{c:?}");
+        }
+        let long = brief(&call("say", json!({"message": "x".repeat(500)})));
+        assert!(
+            long.chars().count() <= LINE_CAP && long.ends_with('…'),
+            "{long}"
+        );
     }
 
     #[test]
@@ -371,7 +619,7 @@ mod tests {
             everything
                 .lines
                 .iter()
-                .any(|l| l.kind == ActionKind::Call && l.text.starts_with("report(")),
+                .any(|l| l.kind == ActionKind::Call && l.text.starts_with("report ")),
             "{everything:?}"
         );
 

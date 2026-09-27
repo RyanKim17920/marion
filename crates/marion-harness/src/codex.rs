@@ -15,8 +15,8 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -299,6 +299,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 name: "/item/tool",
                 args: "/item/arguments",
                 id: Some("/item/id"),
+                shape: CallShape::Tool,
             },
             ToolUnit {
                 at: Where {
@@ -309,6 +310,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 name: "/item/type",
                 args: "/item/command",
                 id: Some("/item/id"),
+                shape: CallShape::Command,
             },
             ToolUnit {
                 at: Where {
@@ -319,6 +321,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 name: "/item/type",
                 args: "/item/changes",
                 id: Some("/item/id"),
+                shape: CallShape::Files,
             },
         ],
         text: &[TextUnit {

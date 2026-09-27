@@ -81,6 +81,21 @@ pub struct ToolUnit {
     pub name: &'static str,
     pub args: &'static str,
     pub id: Option<&'static str>,
+    /// What the unit's arguments are, so a reader can word the call without knowing the harness.
+    pub shape: CallShape,
+}
+
+/// What a call unit's arguments hold. Most harnesses spell every kind of work as a named tool with
+/// an argument object; some give a shell command or a file change a unit shape of its own, whose
+/// "name" is only the shape's tag (codex's `command_execution`, `file_change`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallShape {
+    /// A named tool and its argument object: the name is the verb.
+    Tool,
+    /// The arguments are the shell command it ran (a string, or an argv array).
+    Command,
+    /// The arguments list the files it changed (strings, or objects with a `path`).
+    Files,
 }
 
 /// A unit carrying the model's words: the string at `path`. `joins` where the harness streams one
@@ -99,6 +114,8 @@ pub struct TextUnit {
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
+    /// Its unit's [`CallShape`].
+    pub shape: CallShape,
 }
 
 /// What a stream shows a node doing most recently: its last calls, oldest first, and the last line
@@ -717,6 +734,7 @@ pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityIte
                     item: Activity::Call(ToolCall {
                         name: name.to_string(),
                         args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                        shape: c.shape,
                     }),
                 });
                 joining = false;
@@ -954,6 +972,7 @@ mod tests {
             name: "/name",
             args: "/args",
             id: Some("/id"),
+            shape: CallShape::Tool,
         }],
         text: &[
             TextUnit {

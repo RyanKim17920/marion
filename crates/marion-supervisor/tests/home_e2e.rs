@@ -412,7 +412,7 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
         s.contains("TASK") && s.contains("HOMEE2E-CHILD")
     });
     op.wait_for("the child's call, live, while it runs", |s| {
-        s.contains("report(") && s.contains("RUNNING")
+        s.contains("report \"s6 probe") && s.contains("RUNNING")
     });
     op.dump("real-watch-child");
     op.type_in(b"k");
