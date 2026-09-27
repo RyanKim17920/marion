@@ -91,6 +91,11 @@ pub enum CredentialError {
 /// Where provider keys are kept.
 pub trait CredentialStore {
     fn get(&self, provider: &str) -> Result<Option<Secret>, CredentialError>;
+    /// Whether a key is stored under `provider`, for a listing: a backend that can answer without
+    /// handing the key over (the Keychain's attribute lookup) does, so a listing never holds one.
+    fn has(&self, provider: &str) -> Result<bool, CredentialError> {
+        Ok(self.get(provider)?.is_some())
+    }
     fn put(&self, provider: &str, key: &Secret) -> Result<(), CredentialError>;
     /// `true` when there was a key to remove.
     fn delete(&self, provider: &str) -> Result<bool, CredentialError>;
@@ -447,6 +452,28 @@ impl CredentialStore for Keychain {
         }
     }
 
+    /// `find-generic-password` without `-w`: the item's attributes only, never its password.
+    fn has(&self, provider: &str) -> Result<bool, CredentialError> {
+        check_provider(provider)?;
+        let (code, _) = self.run(
+            &[
+                "find-generic-password",
+                "-s",
+                KEYCHAIN_SERVICE,
+                "-a",
+                provider,
+            ],
+            None,
+        )?;
+        match code {
+            0 => Ok(true),
+            ERR_ITEM_NOT_FOUND => Ok(false),
+            c => Err(CredentialError::Keychain(format!(
+                "find-generic-password exited {c}"
+            ))),
+        }
+    }
+
     fn put(&self, provider: &str, key: &Secret) -> Result<(), CredentialError> {
         check_provider(provider)?;
         // Both tokens are validated to a character set `security -i`'s tokenizer passes through
@@ -641,8 +668,10 @@ mod tests {
         let key = Secret::new("sk-keychain-test-value").unwrap();
         kc.put(&id, &key).unwrap();
         assert_eq!(kc.get(&id).unwrap(), Some(key));
+        assert!(kc.has(&id).unwrap(), "the attribute lookup finds it");
         assert!(kc.delete(&id).unwrap());
         assert_eq!(kc.get(&id).unwrap(), None);
+        assert!(!kc.has(&id).unwrap());
         assert!(!kc.delete(&id).unwrap());
     }
 }
