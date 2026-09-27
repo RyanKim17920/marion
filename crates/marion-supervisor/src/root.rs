@@ -4149,9 +4149,9 @@ mod tests {
     /// reading.
     #[test]
     fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
-        struct Owner(String);
+        struct Owner(marion_core::secret::Secret);
         impl crate::run::SpawnObserver for Owner {
-            fn identified(&self, _: &AgentId) -> Option<String> {
+            fn identified(&self, _: &AgentId) -> Option<marion_core::secret::Secret> {
                 Some(self.0.clone())
             }
             fn started(&self, _: &AgentId, _: i32) {}

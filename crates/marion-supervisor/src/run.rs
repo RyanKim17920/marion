@@ -30,6 +30,7 @@ use marion_core::journal::{
 };
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
+use marion_core::secret::Secret;
 use marion_harness::{
     Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for_type,
 };
@@ -1155,7 +1156,7 @@ impl Drop for AbortOnDrop<'_> {
 pub trait SpawnObserver: Sync {
     /// The node's identity, the instant it has one and nothing more. Returns §5.4's per-node
     /// capability token to write into its declaration, or `None` for an owner that mints none.
-    fn identified(&self, agent_id: &AgentId) -> Option<String>;
+    fn identified(&self, agent_id: &AgentId) -> Option<Secret>;
     /// A process exists. `pid` is a signal target, not an identity — see the `Spawned` writer below
     /// and `restart.rs` for why those are different claims.
     fn started(&self, agent_id: &AgentId, pid: i32);
@@ -1194,7 +1195,7 @@ pub trait SpawnObserver: Sync {
 pub struct Unwatched;
 
 impl SpawnObserver for Unwatched {
-    fn identified(&self, _: &AgentId) -> Option<String> {
+    fn identified(&self, _: &AgentId) -> Option<Secret> {
         None
     }
     fn started(&self, _: &AgentId, _: i32) {}
@@ -3373,7 +3374,7 @@ mod tests {
         }
         const TOKEN: &str = "MARION-OBSERVER-TOKEN-b17f";
         impl SpawnObserver for Recorder {
-            fn identified(&self, agent_id: &AgentId) -> Option<String> {
+            fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
                 // Read back through the same replay a restarted supervisor would use, not by
                 // grepping the file: what matters is that a *reader* can find the node.
                 let intent_durable = crate::registry::Registry::boot(&self.project)
@@ -3385,7 +3386,7 @@ mod tests {
                     .unwrap()
                     .push((intent_durable, side_effect_taken));
                 self.identified.lock().unwrap().push(agent_id.clone());
-                Some(TOKEN.to_string())
+                Some(TOKEN.into())
             }
             fn started(&self, agent_id: &AgentId, pid: i32) {
                 self.started.lock().unwrap().push((agent_id.clone(), pid));

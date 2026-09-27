@@ -51,7 +51,7 @@ pub struct BridgeEnv {
     pub depth: u32,
     /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
     /// absent, never empty ([`NODE_TOKEN_ENV`]).
-    pub node_token: Option<String>,
+    pub node_token: Option<marion_core::secret::Secret>,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on.
@@ -83,7 +83,7 @@ impl BridgeEnv {
             pairs.push((BASE_URL_ENV.to_string(), u.clone()));
         }
         if let Some(t) = &self.node_token {
-            pairs.push((NODE_TOKEN_ENV.to_string(), t.clone()));
+            pairs.push((NODE_TOKEN_ENV.to_string(), t.expose().to_string()));
         }
         if let Some(r) = &self.ready_file {
             pairs.push((READY_FILE_ENV.to_string(), r.to_string_lossy().into_owned()));
@@ -99,5 +99,49 @@ impl BridgeEnv {
                 .map(|(k, v)| (k, json!(v)))
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bridge(node_token: Option<&str>) -> BridgeEnv {
+        BridgeEnv {
+            bridge: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
+            repo: "/repo".into(),
+            state: "/state".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
+            agent_id: AgentId("019f-child".into()),
+            agent_type: "codex-impl".into(),
+            depth: 1,
+            node_token: node_token.map(Into::into),
+            ready_file: None,
+        }
+    }
+
+    /// **The token is carried, but never printed.** The declaration's `env` block is where the
+    /// bridge reads its capability from, so the value must reach [`BridgeEnv::pairs`] verbatim;
+    /// a `{:?}` of the same struct must not show it.
+    #[test]
+    fn the_node_token_reaches_the_env_block_but_never_a_debug_print() {
+        let b = bridge(Some("tok-SENTINEL-7c1f"));
+        let printed = format!("{b:?} {b:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert!(
+            b.pairs()
+                .contains(&(NODE_TOKEN_ENV.to_string(), "tok-SENTINEL-7c1f".to_string())),
+            "{:?}",
+            b.pairs().iter().map(|(k, _)| k).collect::<Vec<_>>()
+        );
+        assert_eq!(b.env_json()[NODE_TOKEN_ENV], "tok-SENTINEL-7c1f");
+        assert!(
+            bridge(None)
+                .pairs()
+                .iter()
+                .all(|(k, _)| k != NODE_TOKEN_ENV)
+        );
     }
 }

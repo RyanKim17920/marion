@@ -85,6 +85,7 @@ use marion_core::proto::{
     RpcError, SpawnCaller, SupervisorDisposition,
 };
 use marion_core::registry::{Replay, ReplayedNode};
+use marion_core::secret::Secret;
 
 use crate::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use crate::registry::{LiveRegistry, Registry};
@@ -693,7 +694,7 @@ pub struct NodeHandle {
     task_id: Option<TaskId>,
     /// §5.4's per-node capability, minted here and written into exactly one other place: the MCP
     /// declaration this node's own bridge reads. See [`RegistryHandle::claim`].
-    token: String,
+    token: Secret,
     /// **The tree this node lives in**, and therefore the tree its own children branch from —
     /// [`crate::run::SpawnRequest::repo`] for the child of this node's next `agent/spawn`.
     ///
@@ -884,25 +885,6 @@ impl NodeHandle {
     }
 }
 
-/// **Constant-time byte comparison, for the one value where a timing difference is a signal.**
-///
-/// `==` on `String` returns at the first differing byte, so an attacker who can call `agent/spawn`
-/// repeatedly learns a token one byte at a time. The token is 32 hex characters; a prefix oracle
-/// turns that from infeasible into a few hundred calls. The whole slice is always read.
-fn tokens_match(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    // The length is not a secret — it is a constant of this build — so comparing it first leaks
-    // nothing, and it is what lets the loop below be a fixed-width fold.
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 unsafe extern "C" {
     fn getpgid(pid: i32) -> i32;
 }
@@ -946,24 +928,24 @@ const LAUNCH_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 /// A failure to read `/dev/urandom` yields `None`, and [`RegistryHandle::claim`]'s caller turns
 /// that into a node with no token — which is a node whose bridge can never spawn, and never a node
 /// with a predictable one.
-fn mint_token() -> String {
+fn mint_token() -> Secret {
     use std::io::Read;
     let mut bytes = [0u8; 32];
     match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
-        Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
+        Ok(()) => Secret::new(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()),
         // **A token nothing can present, rather than one anything can guess.** The empty string
-        // never matches: `tokens_match` compares lengths first, and every real `SpawnCaller` must
+        // never matches: `Secret`'s equality compares lengths first, and every real `SpawnCaller` must
         // carry a non-empty `node_token` to deserialize at all. So the node runs and cannot spawn,
         // which is the safe direction for a machine whose entropy source is unreadable.
-        Err(_) => String::new(),
+        Err(_) => Secret::new(String::new()),
     }
 }
 
 /// **A fixed decoy of a real token's shape**, so a `SpawnCaller` naming a node this supervisor does
 /// not own takes the same comparison path as one naming a node it does. Minted once per process and
 /// never written anywhere, so it matches nothing.
-fn decoy_token() -> &'static str {
-    static DECOY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+fn decoy_token() -> &'static Secret {
+    static DECOY: std::sync::OnceLock<Secret> = std::sync::OnceLock::new();
     DECOY.get_or_init(mint_token)
 }
 
@@ -1029,7 +1011,7 @@ impl crate::root::PaneOwner for NodeOwner {
 }
 
 impl crate::run::SpawnObserver for NodeOwner {
-    fn identified(&self, agent_id: &AgentId) -> Option<String> {
+    fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
         let token = self
             .handle
             .claim(agent_id, self.task_id.clone(), self.repo.clone());
@@ -2632,7 +2614,7 @@ impl RegistryHandle {
         agent_id: &AgentId,
         task_id: Option<TaskId>,
         repo: PathBuf,
-    ) -> String {
+    ) -> Secret {
         let token = mint_token();
         lock(&self.nodes).insert(
             agent_id.clone(),
@@ -2826,9 +2808,9 @@ impl RegistryHandle {
         // oracle a caller could probe with ids alone.
         let (stored, repo) = match nodes.get(&c.agent_id) {
             Some(n) => (n.token.clone(), Some(n.repo.clone())),
-            None => (decoy_token().to_string(), None),
+            None => (decoy_token().clone(), None),
         };
-        if tokens_match(&stored, c.node_token.expose()) & repo.is_some() {
+        if (stored == c.node_token) & repo.is_some() {
             repo
         } else {
             None
@@ -10587,6 +10569,7 @@ mod tests {
             // own last character*: one token in sixteen already ends in `0`, and for those this row
             // handed the handler the genuine token, which was accepted — a `Spawning` result where
             // a refusal was asserted, and a suite failure that came and went with the entropy.
+            let real = real.expose();
             let last_byte_changed = {
                 let (head, tail) = real.split_at(real.len() - 1);
                 format!("{head}{}", if tail == "0" { '1' } else { '0' })
@@ -10704,7 +10687,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("deep"),
-                        node_token: token.into(),
+                        node_token: token,
                     }),
                     1,
                 ),
@@ -10759,7 +10742,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("root"),
-                        node_token: token.into(),
+                        node_token: token,
                     }),
                     1,
                 ),
@@ -11189,7 +11172,7 @@ mod tests {
                     params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token.into(),
+                            node_token: token,
                         }),
                         1,
                     ),
@@ -11291,7 +11274,7 @@ mod tests {
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token.into(),
+                            node_token: token,
                         }),
                         1,
                     )
@@ -11440,7 +11423,7 @@ mod tests {
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token.into(),
+                            node_token: token,
                         }),
                         1,
                     )
@@ -11580,7 +11563,7 @@ mod tests {
                     params(
                         Some(SpawnCaller {
                             agent_id: id(root),
-                            node_token: token.into(),
+                            node_token: token,
                         }),
                         5,
                     ),
@@ -11716,25 +11699,8 @@ mod tests {
                 a, b,
                 "a per-node token that is not per-node is a fleet token"
             );
-            assert_eq!(a.len(), 64, "32 bytes as hex");
-            assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
-        }
-
-        /// The comparison reads the whole slice, so a caller cannot learn a token one byte at a time
-        /// from the shape of a refusal. Asserted as *correctness over every boundary a short-circuit
-        /// would get right anyway* — the timing property itself is not measurable in a unit test, so
-        /// what is pinned here is the behaviour, and the loop is what a reader must not "simplify".
-        #[test]
-        fn a_token_comparison_is_total_over_the_slice() {
-            assert!(tokens_match("abc", "abc"));
-            assert!(!tokens_match("abc", "abd"), "a differing last byte");
-            assert!(!tokens_match("abc", "bbc"), "a differing first byte");
-            assert!(!tokens_match("abc", "abcd"), "a longer candidate");
-            assert!(!tokens_match("abcd", "abc"), "a shorter candidate");
-            // The empty stored token — what `mint_token` produces when `/dev/urandom` cannot be read.
-            // It matches only the empty string, which `SpawnCaller` cannot carry: `node_token` has no
-            // serde default, so an absent one fails deserialization rather than becoming this.
-            assert!(!tokens_match("", "x"));
+            assert_eq!(a.expose().len(), 64, "32 bytes as hex");
+            assert!(a.expose().chars().all(|c| c.is_ascii_hexdigit()));
         }
 
         // ------------------------------------------------------------------------------------
@@ -11780,7 +11746,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("root"),
-                        node_token: token.into(),
+                        node_token: token,
                     }),
                     secs,
                 ),

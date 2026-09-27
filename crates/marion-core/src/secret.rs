@@ -32,6 +32,11 @@ impl Secret {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    /// Whether there is a value at all — a presence bit, which says nothing about the value.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl From<String> for Secret {
@@ -52,9 +57,11 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// Compares every byte of equal-length values rather than stopping at the first difference, so
-/// the time a comparison takes does not say how much of a presented token was right. The length
-/// itself is not hidden; marion's tokens are fixed-length.
+/// **Constant-time for equal lengths**, because this is the comparison the supervisor checks a
+/// presented node token with. `==` on `String` returns at the first differing byte, so a caller
+/// who can call `agent/spawn` repeatedly would learn a token one byte at a time; the whole slice
+/// is always read instead. The length is not a secret — marion's tokens are a constant 64 hex
+/// characters — so comparing it first leaks nothing and is what makes the loop a fixed-width fold.
 impl PartialEq for Secret {
     fn eq(&self, other: &Self) -> bool {
         let (a, b) = (self.0.as_bytes(), other.0.as_bytes());
@@ -94,11 +101,30 @@ mod tests {
         assert!(serde_json::from_str::<Secret>("7").is_err());
     }
 
+    /// Asserted as correctness over every boundary a short-circuit would also get right: the
+    /// timing property is not measurable in a unit test, so the fold is what a reader must not
+    /// "simplify" back to `==`.
     #[test]
-    fn equality_is_by_value() {
+    fn equality_is_by_value_over_the_whole_slice() {
         assert_eq!(Secret::new("abc"), Secret::new("abc"));
         assert_ne!(Secret::new("abc"), Secret::new("abd"));
-        assert_ne!(Secret::new("abc"), Secret::new("abcd"));
+        assert_ne!(
+            Secret::new("abc"),
+            Secret::new("bbc"),
+            "a differing first byte"
+        );
+        assert_ne!(
+            Secret::new("abc"),
+            Secret::new("abcd"),
+            "a longer candidate"
+        );
+        assert_ne!(
+            Secret::new("abcd"),
+            Secret::new("abc"),
+            "a shorter candidate"
+        );
+        // The empty token is what the supervisor mints when `/dev/urandom` cannot be read; it
+        // matches only the empty string, which a `SpawnCaller` cannot carry.
         assert_ne!(Secret::new(""), Secret::new("a"));
         assert_eq!(Secret::new(""), Secret::new(""));
     }

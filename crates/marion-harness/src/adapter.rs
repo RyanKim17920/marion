@@ -251,7 +251,7 @@ pub struct SpawnCtx {
     /// `None` where no owner minted one — every spawn path but the supervisor's own `agent/spawn`,
     /// until steps 5 and 6 land. A node with no token declares no key at all rather than an empty
     /// one, so its bridge states no capability rather than a worthless one.
-    pub node_token: Option<String>,
+    pub node_token: Option<marion_core::secret::Secret>,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` for a surface whose prompt rides argv and so has no frame to withhold.
     pub ready_file: Option<PathBuf>,
@@ -4627,6 +4627,20 @@ mod tests {
                 "{h}: the token VALUE must be carried, not just its key:\n{doc}"
             );
         }
+    }
+
+    /// **A node's token never reaches a debug print of its spawn context.** `SpawnCtx` is threaded
+    /// through every compile, so a `{:?}` in a refusal, a panic or a failing assertion would
+    /// otherwise print the node's capability.
+    #[test]
+    fn a_nodes_capability_token_never_appears_in_its_spawn_contexts_debug_form() {
+        let ctx = SpawnCtx {
+            node_token: Some("MARION-TOKEN-VALUE-4e1b".into()),
+            ..ctx()
+        };
+        let printed = format!("{ctx:?} {ctx:#?}");
+        assert!(!printed.contains("MARION-TOKEN-VALUE"), "{printed}");
+        assert!(printed.contains("node_token"), "{printed}");
     }
 
     /// **Present or absent, never empty** — [`mcp_bridge::BASE_URL_ENV`]'s rule, applied to the one

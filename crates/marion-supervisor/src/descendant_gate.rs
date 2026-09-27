@@ -647,7 +647,7 @@ mod tests {
     /// An owner whose tree always has one live descendant under the node.
     struct AlwaysLive;
     impl SpawnObserver for AlwaysLive {
-        fn identified(&self, _: &AgentId) -> Option<String> {
+        fn identified(&self, _: &AgentId) -> Option<marion_core::secret::Secret> {
             None
         }
         fn started(&self, _: &AgentId, _: i32) {}
