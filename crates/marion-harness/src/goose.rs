@@ -22,7 +22,10 @@
 //!   extension that also carries `shell`.
 //! - **Headless approval is `auto` or nothing.** `GOOSE_MODE=approve` aborts the run at exit 1
 //!   after the `toolRequest` frame; `chat` withholds every call; unset behaves as `auto`. marion
-//!   states `auto` rather than leaning on a default.
+//!   states `auto` rather than leaning on a default, and on 1.52.0 (S37,
+//!   `tests/fixtures/s37-goose-mode/`) the statement is what keeps an operator's own config from
+//!   deciding: unset, a write-granted child writes; with `GOOSE_MODE: approve` in the config a live
+//!   node reads, it aborts at exit 1; the env wins over that config.
 //! - **Neither fault is an exit code.** An `isError: true` MCP result arrives as
 //!   `toolResult.status: "success"` with `value.isError: true`, the model gets another turn, exit
 //!   0. A provider 500 is four retries, then an ordinary assistant `message` beginning `Ran into
@@ -110,7 +113,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Field(Field::ApiKey),
             when: When::Overlay,
         },
-        // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated.
+        // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated, not left
+        // to the default: a canned node's fresh home would run tools unset (S37), but a live node
+        // reads the operator's config.yaml, and a `GOOSE_MODE` there decides unless this does.
         Env {
             key: MODE_ENV,
             val: Val::Lit(AUTO_MODE),
@@ -163,7 +168,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         scope: "every tool the node is offered, which under --no-profile is marion's and the \
                 declared builtins",
         note: "S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest; chat \
-               withholds every call; auto runs them",
+               withholds every call; auto runs them. S37 on 1.52.0 (s37-goose-mode): unset, a \
+               fresh config runs marion's tool and a granted write unasked, so the grant is not \
+               load-bearing on a canned node; `GOOSE_MODE: approve` in the operator's config.yaml \
+               aborts a headless run at exit 1 and the env overrides it, so it is on a live one",
     },
     client_name: None,
     delivery: Deliveries {
