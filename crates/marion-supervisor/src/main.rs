@@ -13,13 +13,14 @@
 use marion_supervisor::{detach, doctor, mcp};
 
 fn usage() -> ! {
-    eprintln!("usage: marion-supervisor <mcp|serve|doctor>");
+    eprintln!("usage: marion-supervisor <mcp|serve|doctor|--version>");
     std::process::exit(2)
 }
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
+        Some("--version" | "-V") => println!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),
         Some("mcp") => mcp::serve_stdio(mcp::Principal::Node),
         Some(detach::SERVE) => {
             let program = std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into());

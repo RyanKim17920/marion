@@ -48,6 +48,7 @@ fn usage_text() -> String {
          \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
+         \x20      marion --version\n\
          \n\
          marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
          marion root with marion's MCP server connected. ^] d detaches, ^] s toggles a status row.\n\
@@ -2392,6 +2393,10 @@ fn legacy_main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
         println!("{}", usage_text());
+        return ExitCode::SUCCESS;
+    }
+    if matches!(argv.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("marion {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     // **The whole of the second verb's dispatch.** A `match` on argv[0] would read better and
