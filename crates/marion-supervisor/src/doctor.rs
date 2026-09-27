@@ -1779,6 +1779,7 @@ const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
     (Harness::Cline, "cline", "3.0.61"),
     (Harness::Qwen, "qwen", "0.23.0"),
     (Harness::Antigravity, "agy", "1.2.8"),
+    (Harness::Pi, "pi", "0.80.2"),
 ];
 
 /// The newest version marion verified `h` against, if it keeps one (an ACP agent's version is the
