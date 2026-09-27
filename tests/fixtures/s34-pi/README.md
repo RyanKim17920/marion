@@ -29,6 +29,8 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
 | `pi-empty-tools.*` | `--tools ""` and no extension: `tools[]` is **empty** (an empty allowlist is no tools, not all tools) |
 | `pi-resume-turn-1.*`, `pi-resume-turn-2.*` | turn one, then `--session <id>` with the id off turn one's `session` frame: turn two's `session` frame repeats the id and its request replays turn one |
 | `pi-resume-unknown.*` | `--session <unknown id>`: `No session found matching '…'`, exit 1, no stdout |
+| `pi-rpc-steer-mid-tool.*` | `--mode rpc` driven by `spikes/s34/pi_rpc.py`. A `prompt` is sent, then during the (3 s, `slow`) MCP call three more commands go in: a bare `prompt`, which is refused (`success: false`, "Agent is already processing. Specify streamingBehavior…"); a `steer`, which lands as a `user` message after the tool result in the **same turn's next request**; and a `follow_up`, which becomes its own request after the turn's last answer. A second `prompt` after `agent_end` is a new turn in the same process and session. `requests.json` lists each provider request's messages |
+| `pi-rpc-abort-mid-tool.*` | `abort` during the MCP call: the call still completes, and the next model request ends `stopReason: "aborted"`, `errorMessage: "Request was aborted."`. The process stays up until stdin closes, then exits 0 |
 | `pi-bridge-missing.*` | the extension naming a server that cannot start: `Failed to load extension … marion's MCP server did not start`, exit 1, no request made |
 
 ## What was learned
@@ -70,3 +72,14 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
 11. **Isolation.** `PI_CODING_AGENT_DIR` relocates `auth.json`, `models.json`, `settings.json`,
     `sessions/` and extensions. It is also where the operator's credentials live, so a live node
     must not relocate it.
+12. **`--mode rpc` is a typed control channel.** Commands are JSONL on stdin and events are the
+    same frames as `--mode json` plus `response` records. `steer` is a fold: it is delivered after
+    the in-flight tool calls finish and before the next model request of the same turn, which is
+    `MidTurn::Fold` as S31 measured it on Claude Code's stream-json. `follow_up` queues the message
+    as the next turn, and a bare `prompt` during a turn is refused by name. Hazard: in an
+    exploratory run, two bare `prompt`s written 50 ms apart **before** the first `agent_start`
+    both answered `success: true`, and the second was never delivered. A driver must wait for
+    `agent_start` (or use `steer`/`follow_up`) before writing again. Startup to the first response
+    took ~3 s with the extension loading. marion does not drive this surface yet; the row stays
+    `LaunchOnly` with `Continuation` delivery. rpc is what a typed row would use (see
+    `marion_harness::pi`).
