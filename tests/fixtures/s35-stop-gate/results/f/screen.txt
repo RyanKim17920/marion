@@ -1,0 +1,13 @@
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   <scratch>/proj
+▎ Debug mode enabled · logging to
+▎ <scratch>/f/debug.log
+  1 more notice hidden
+❯ Reply with the single word OK.
+⏺ OK
+✻ Crunched for 1s · done 2:24 PM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

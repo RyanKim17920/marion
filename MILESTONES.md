@@ -667,6 +667,23 @@ per turn preserved; never answer an approval with `cancel` unless ending the tur
 interrupt must be followed by killing the turn's processes and must not await a second interrupt's
 response; a reader must accept items for a turn that has already completed.
 
+**A marion-owned Stop hook can gate native claude (S35, 2026-09-27, `tests/fixtures/s35-stop-gate/`,
+claude 2.1.283, operator's claude.ai login, haiku, $0.171 notional).** Interactive in a pty with
+`--dangerously-load-development-channels server:<key>` (channel registered), an overlay
+`--settings '{"hooks":{"Stop":[…]}}'` **fires** and a printed `{"decision":"block","reason":…}`
+**continues the turn with the reason in the model's context** (the model answered the reason's
+nonce; the second Stop call carries `stop_hook_active:true`) — `results/a/`. It **coexists** with
+the operator's hooks ("Ran 5 stop hooks": the overlay's plus the user-settings Stop hook and the
+codex, ralph-wiggum and warp plugin Stop hooks), and a hooks-only overlay **merges** with user
+settings (statusLine, user `UserPromptSubmit`/`SessionStart` hooks intact). **The last `--settings`
+wins**: with two flags only the later one's Stop hook ran (`results/e/`), so marion must merge an
+operator's own `--settings` into its overlay rather than append a second flag. **`disableAllHooks`
+kills the gate** with every other hook (`results/f/`), so no gate can ride the headless children's
+`{"disableAllHooks":true}` overlay; `allowManagedHooksOnly` from `--settings` is ignored
+(`results/g/`), and the managed-settings path was **not measured** (no managed file; root needed).
+**Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
+session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`

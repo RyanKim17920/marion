@@ -1,0 +1,6 @@
+type Reply with the single word OK.
+sleep 500
+type \r
+wait ⏺ OK
+still 8000
+snap turn

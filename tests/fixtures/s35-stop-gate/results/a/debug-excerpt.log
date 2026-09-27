@@ -1,0 +1,35 @@
+2026-09-27T19:22:04.619Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: ralph-wiggum
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: watch
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: vercel
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: warp
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: codex
+2026-09-27T19:22:05.079Z [DEBUG] Registered 17 hooks from 17 plugins
+2026-09-27T19:22:11.524Z [DEBUG] Hooks: Config-based async hook, backgrounding process async_hook_70129
+2026-09-27T19:22:11.524Z [DEBUG] Hooks: Registering async hook async_hook_70129 (SessionStart:startup) with timeout 600000ms
+2026-09-27T19:22:11.606Z [DEBUG] "Hook SessionStart:startup (SessionStart) success:\n{\n  \"hookSpecificOutput\": {\n    \"additionalContext\": \"This project is indexed by cymbal. Use cymbal for structural code navigation when you know (or can guess) the symbol name.\\n\\nTypical flow: `cymbal search \\u003cname\\u003e` to locate -\\u003e `cymbal context/show/investigate \\u003csym\\u003e` to rea
+2026-09-27T19:22:11.606Z [DEBUG] Hook SessionStart (cymbal hook remind --format=claude-code --update=if-stale) provided additionalContext (2402 chars)
+2026-09-27T19:22:11.861Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-09-27T19:22:12.178Z [DEBUG] MCP server "s35probe": Channel notifications registered
+2026-09-27T19:22:30.028Z [DEBUG] Hooks: Found 1 total hooks in registry
+2026-09-27T19:22:30.028Z [DEBUG] Hooks: Checking hook async_hook_70129 (SessionStart:startup) - attachmentSent: false
+2026-09-27T19:22:30.028Z [DEBUG] Hooks: Hook shell status completed
+2026-09-27T19:22:30.030Z [DEBUG] Hooks: async_hook_70129 (SessionStart:startup) produced no response payload — skipping attachment
+2026-09-27T19:22:30.034Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-09-27T19:22:30.042Z [DEBUG] Hooks: Config-based async hook, backgrounding process async_hook_83278
+2026-09-27T19:22:30.042Z [DEBUG] Hooks: Registering async hook async_hook_83278 (UserPromptSubmit) with timeout 600000ms
+2026-09-27T19:22:30.065Z [DEBUG] Hooks: Checking first line for async: {"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Use subagents as much as possible logically."}}
+2026-09-27T19:22:30.065Z [DEBUG] Hooks: Parsed initial response: {"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Use subagents as much as possible logically."}}
+2026-09-27T19:22:30.065Z [DEBUG] Hooks: Initial response is not async, continuing normal processing
+2026-09-27T19:22:30.066Z [DEBUG] "Hook UserPromptSubmit (UserPromptSubmit) success:\n{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Use subagents as much as possible logically.\"}}"
+2026-09-27T19:22:30.066Z [DEBUG] Hook UserPromptSubmit (Injecting subagent reminder) provided additionalContext (44 chars)
+2026-09-27T19:22:33.075Z [DEBUG] Hooks: Config-based async hook, backgrounding process async_hook_84527
+2026-09-27T19:22:33.075Z [DEBUG] Hooks: Registering async hook async_hook_84527 (Stop) with timeout 600000ms
+2026-09-27T19:22:33.390Z [DEBUG] Hooks: Checking first line for async: {"decision":"block","reason":"GATE-gate: before stopping, reply with exactly the word PINEAPPLE-gate and nothing else."}
+2026-09-27T19:22:33.390Z [DEBUG] Hooks: Parsed initial response: {"decision":"block","reason":"GATE-gate: before stopping, reply with exactly the word PINEAPPLE-gate and nothing else."}
+2026-09-27T19:22:33.390Z [DEBUG] Hooks: Initial response is not async, continuing normal processing
+2026-09-27T19:22:33.392Z [DEBUG] "Hook Stop (Stop) success:\n{\"decision\":\"block\",\"reason\":\"GATE-gate: before stopping, reply with exactly the word PINEAPPLE-gate and nothing else.\"}"
+2026-09-27T19:22:33.396Z [DEBUG] Hook Stop (~/Desktop/CODING/mw-review/tests/fixtures/s35-stop-gate/gate-hook.sh gate <scratch>/a/hooklog) returned permissionDecision: deny (reason: GATE-gate: before stopping, reply with exactly the word PINEAPPLE-gate and nothing else.)
+2026-09-27T19:22:35.514Z [DEBUG] Hooks: Config-based async hook, backgrounding process async_hook_85588
+2026-09-27T19:22:35.515Z [DEBUG] Hooks: Registering async hook async_hook_85588 (Stop) with timeout 600000ms
+2026-09-27T19:22:36.083Z [DEBUG] [engine] turn 1 end (turns=2 usage in=917 out=113 cost=$0.0330 api=5828ms stop=end_turn resultLen=14)
