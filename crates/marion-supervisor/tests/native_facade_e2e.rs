@@ -840,7 +840,7 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
 // Step 10: SIGTERM at the client
 // ---------------------------------------------------------------------------------------------
 
-/// `docs/superpowers/specs/2026-08-13-native-relay-synchronous-signals-design.md`: an owned
+/// `docs/specs/2026-08-13-native-relay-synchronous-signals-design.md`: an owned
 /// termination restores the terminal, then delivers the **selected default** so the client dies by
 /// that signal; marion neither kills nor signals the node, which survives for ordinary reconnect.
 #[test]

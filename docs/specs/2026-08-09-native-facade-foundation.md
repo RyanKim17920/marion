@@ -1,7 +1,5 @@
 # Native Facade Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Establish the vendor-neutral registry, exact OS-value wire types, CLI seam, and root validation needed for `marion <harness> <native args>` without advertising or launching an incomplete facade.
 
 **Architecture:** Keep command discovery and resolution pure in `marion-core`; keep exact, versioned launch data in `marion-proto`; let the `marion` binary recognize only registry entries before its legacy parser; and carry a root-only native context through the supervisor while an explicit readiness gate still refuses launch. This slice deliberately stops before adapter injection and transparent PTY proxying, so no user-visible facade can claim compatibility prematurely.

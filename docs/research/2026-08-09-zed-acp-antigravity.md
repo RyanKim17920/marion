@@ -275,7 +275,7 @@ Sources for the matrix:
 
 - The native-facade spec's opaque `marion <facade-command> [native argv]` grammar and
   `TransparentPty | TypedAcp | RecursiveMarion` separation are directionally correct
-  ([native facade design](../superpowers/specs/2026-08-09-native-harness-facade-design.md)).
+  ([native facade design](../specs/2026-08-09-native-harness-facade-design.md)).
 - Its rule that ACP injects Marion through `session/new.mcpServers`, while a native facade preserves
   the program's own TUI, matches the protocol/client boundary. Keep it.
 - [`ExecutionSurfaces`](../../crates/marion-harness/src/surfaces.rs) already separates control,
