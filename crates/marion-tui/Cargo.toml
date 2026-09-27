@@ -13,3 +13,11 @@ marion-term = { path = "../marion-term" }
 # `view`, which sizes and clips that widget; nothing in this crate draws a cell itself.
 ratatui = { version = "0.30", default-features = false }
 serde_json.workspace = true
+# Column widths for the home screen's layout (`home::text`): a prompt typed in CJK is two columns
+# per character. Already in the tree through `ratatui`, at the same version.
+unicode-width = "0.2"
+
+[dev-dependencies]
+# Snapshot tests for the home screen (`tests/home_screens.rs`), as `marion-term` and the tree
+# screen's L4.5 driver use.
+insta = "1"

@@ -40,6 +40,30 @@ pub struct TreeSubscribeParams {}
 #[serde(deny_unknown_fields)]
 pub struct NodeGetParams {
     pub agent_id: AgentId,
+    /// Ask for a page of the node's activity stream in the answer, from where. Absent, the answer
+    /// carries no stream, which is what every caller that only wants the row needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<ActivityCursor>,
+}
+
+impl NodeGetParams {
+    /// The row and its detail, no stream.
+    pub fn of(agent_id: AgentId) -> Self {
+        NodeGetParams {
+            agent_id,
+            activity: None,
+        }
+    }
+}
+
+/// Where a `node/get` activity page starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityCursor {
+    /// The end of the stream, as much as one page holds: the first poll of a watcher.
+    Tail,
+    /// Byte `n` of the stream: the `next` a previous page returned.
+    From(u64),
 }
 
 /// Versioned opt-in to the byte-exact pane replay stream on `node/attach`.
@@ -531,7 +555,15 @@ mod tests {
             }};
         }
         rt!(TreeSubscribeParams {});
-        rt!(NodeGetParams { agent_id: agent() });
+        rt!(NodeGetParams::of(agent()));
+        rt!(NodeGetParams {
+            agent_id: agent(),
+            activity: Some(ActivityCursor::From(812))
+        });
+        rt!(NodeGetParams {
+            agent_id: agent(),
+            activity: Some(ActivityCursor::Tail)
+        });
         rt!(NodeAttachParams {
             agent_id: agent(),
             pane_stream: None,

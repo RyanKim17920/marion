@@ -53,3 +53,7 @@ crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded:
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
 crates/marion-supervisor/src/handler.rs:ATTACHED_TICK  tracked: efficiency waves — 5 ms re-read of a followed node's events.jsonl, only while a client is attached to it (the accept loop itself now blocks in poll(2)); remove when a per-node file watch wakes it
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
+
+# --- home-polish (2026-09-27): the event-driven home loop ---------------------------------------
+crates/marion-supervisor/src/home/session.rs:TICK  bounded: the home screen wakes on it only while something on the tab moves (a running node's elapsed time, a harness being checked); an idle screen has no timeout at all
+crates/marion-supervisor/src/home/session.rs:Session::reports  not a poll: drains the side threads' channel once the wake pipe says a report arrived; never loops on a timer

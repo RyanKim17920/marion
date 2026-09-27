@@ -1,0 +1,43 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"help\"), 100, 30)"
+---
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  EVERYWHERE
+  tab      next screen
+  ?        this page
+  q        quit
+
+  WATCH
+  enter    attach                $ marion attach <id>
+  s        steer                 $ marion steer <id> <text>
+  x        cancel                $ marion cancel <id>
+  c        copy the merge        $ git merge --no-ff <branch>
+  !        next attention        $ marion list --attention
+
+  START
+  enter    run                   $ marion run <type> --prompt <text>
+  ↑↓       harness
+  ←→       model
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion --help                                                                                │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  tab back                                                                             ? shortcuts
+--- styles ---
+   79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenthispagequitat"
+    6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
+   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtab?"
+  483  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
+   25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tab?qentersxc!enter↑↓←→"
+    2  Style::new().yellow().bg(Color::Reset)  "◐2"

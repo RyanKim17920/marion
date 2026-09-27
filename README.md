@@ -9,7 +9,7 @@ A demo of a Claude session delegating a build to a codex child is coming.
 - Supervises eight harnesses as one tree. Every node is journaled, addressable by id, and shown in the same view regardless of which CLI is behind it.
 - Gives a running agent six tools over MCP — `spawn`, `wait`, `status`, `list`, `steer`, `report` — so a harness delegates to another harness, and redirects what it delegated, by calling a tool, not by shelling out.
 - Runs a harness's own TUI as a marion root: `marion claude`, `marion codex`, `marion gemini`, `marion opencode`, `marion copilot`. Same login, same keybindings, plus marion's MCP server injected and the session journaled.
-- Attaches to any live node's terminal (`marion attach`) and shows the fleet as a tree with a detail pane and a per-node capability strip (`marion tree`).
+- Opens a home screen with bare `marion`: harness readiness and a prompt box to run a task (Start), the fleet with the selected node expanded in place — what marion sent it, a live stream of what it runs, its tokens, its capabilities, the branch it landed (Watch, also `marion ls`) — and the doctor checks and agent types (Setup). Every key's CLI equivalent is shown in the box at the bottom. Attaches to any live node's terminal from there or with `marion attach`.
 - Survives its own death. `kill -9` the supervisor and `marion resume <id>` relaunches the lost root under the same id against the same session, recorded as a second generation.
 - Enforces the gates in the topology, not in a prompt: a node cannot exit while a descendant is live, delegation stops at `max_depth 3`, a run past `--timeout` has its process group killed, and a node may address only its own descendants and its parent.
 - Reaches any ACP agent with no adapter code: `acp:<command> [args…]` launches it and speaks the protocol; `marion-supervisor doctor --acp-command "<cmd>"` probes one by its own handshake.
@@ -68,13 +68,18 @@ marion run claude --model haiku --prompt "Spawn a codex child to create hello.tx
 marion claude
 marion codex
 
-# The fleet, one node's terminal, and a root relaunched after its supervisor died.
+# The home screen: run a task, watch the fleet, check the harnesses.
+marion
+
+# The same things as commands. A detached run returns once the root has started.
+marion run codex --prompt "say hello" --detach
+marion ls                      # the Watch tab; `marion ls <id>` prints one node's detail
 marion list
-marion tree
 marion attach <agent-id>
 marion resume <agent-id>
+marion cancel 8ea3             # end a running node (id or its short id); recorded as cancelled
 
-# Queue a message for a running node's next turn, as the operator (id or the tree's short id).
+# Queue a message for a running node's next turn, as the operator (id or its short id).
 marion steer 8ea3 "use the v2 API, not v1"
 
 # Store a provider key for endpoint mode (read with echo off; or pipe it with --stdin).
@@ -88,13 +93,13 @@ marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
 - **The first `marion claude` in a folder** shows Claude Code's own dialogs: whether you trust the folder, then a one-time "Loading development channels" warning, because marion loads its channel so that a background child's result reaches the session without a `wait`. `marion codex` asks its own trust question. They are the harness's prompts, so you answer them; marion never answers them for you.
 - **Inside `marion <harness>`**, `^] d` detaches and leaves the session running (`marion attach <agent-id>` brings it back) and `^] s` toggles marion's status row. Every other key goes to the harness.
 - **A child's work** lands on its own branch, `marion/<task_id>`, and marion never merges it into yours. See [Where a child's work lands](#where-a-childs-work-lands).
-- **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion tree` shows a session only when it sees the same value the session started with.
+- **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion ls` shows a session only when it sees the same value the session started with.
 
-**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node in `marion tree` and types the message on the hint row (Enter sends, Esc cancels, the answer shows in the detail pane), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's stream is not read by a row, and `status` says so). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
+**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node on the home screen's Watch tab and types the message in the box (Enter sends, Esc cancels, the answer shows on the hint row), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's stream is not read by a row, and `status` says so). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
 
 `marion login <provider>` keeps a key you paste in the macOS Keychain (or, elsewhere or with `MARION_CREDENTIAL_STORE=file`, a `0600` file under `$XDG_CONFIG_HOME/marion/`); it never prints it and never runs a vendor's own login. `marion login custom <id> --base-url <url> --wire <wire>` adds your own OpenAI-, Anthropic- or Gemini-compatible endpoint to the user-level `providers.toml` (a repository's `.marion/` is never read for providers), and `marion logout <provider>` removes a key. Several keys for one provider are kept apart by label (`marion login openrouter --label work`, or `openrouter:work`); `providers.toml`'s `[credentials]` table states the order a launch tries them in. Subscription logins (Claude, ChatGPT, Copilot, Google accounts) stay with their own harness; marion never reuses them.
 
-Bare `marion` asks three questions — harness, model, prompt — and then runs what `marion run` would. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
+Bare `marion` on a terminal opens the home screen. **Start** lists each harness's readiness as `marion doctor` finds it (● ready, ✗ broken with the fix, ○ not installed), the agent types of the selected harness (the plain name edits in a worktree; `^o` picks the read-only `<harness>-orchestrator`), the models you last ran it on (`←→`), and headless or pane (`^p`); type the task and press Enter, and it runs `marion run … --detach`, shown above the box before you press it. **Watch** is the forest: `j/k` move, and the selected node opens in place with the task marion sent it, its steers, a live stream of the calls it makes (`J/K` or Page Up/Down scroll, the end is followed), its tokens (never a price), its capabilities with the unmeasured ones greyed, and the branch it landed with the `git merge` to take it. Enter attaches to a pane node (`^] d` comes back), `s` steers, `x` cancels after asking, `u` resumes an ended node, `o` opens a shell in its workspace, `d` shows what its branch changed, `c` copies the merge, `!` jumps to the next node that needs you. **Setup** shows the doctor checks with their fixes (`r` re-checks) and the agent types (`e` edits `.marion/agents.toml`, then validates it). `Tab` changes screen, `^c` quits; in a pipe bare `marion` prints usage. Keys marion keeps are `marion login`'s (below); subscription logins stay with each harness's own CLI. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
 
 ## Profiles: more than one login per harness
 
@@ -157,7 +162,7 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `pi` | 0.80.2 | yes — MCP through marion's own `-e` extension | yes | — |
 | `acp:<command>` | n/a | — | — | the generic path |
 
-The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion` offers them in its picker.
+The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion`'s Start tab offers them per harness.
 
 ### ACP agents
 
@@ -183,7 +188,6 @@ Any ACP agent runs through `acp:<command>`. These have a refinement row in `acp:
 
 `marion doctor --capabilities --harness acp` probes every row and names the MCP transports each agent advertises; `--acp-command "<cmd>"` adds your own, and says when it turns out to be one of these rows.
 
-![marion tree: a codex-impl root whose child is marked blocked:descendants because its own grandchild is still spawning; the detail pane shows type, harness, state, surface, depth, timeout and id.](docs/media/tree-descendant-gate.png)
 
 ![The Codex TUI running inside a marion pane after `marion attach`, showing the delegated prompt, a Working indicator, and a line typed by the operator through the attachment.](docs/media/attach-pane.png)
 

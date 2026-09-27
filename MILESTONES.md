@@ -101,7 +101,7 @@ qwen 0.23.0; pi 0.80.2.
 `harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
 read/write vocabulary, `description`, optional `prompt_prefix`) adds types beside the built-ins;
 one table, one resolution path (`AgentTypes::resolve`) at every site — `run_spawn`, `root::prepare`,
-the root preflight, a spawn's caller, both resume arms, `marion run`, the picker, and the bridge's
+the root preflight, a spawn's caller, both resume arms, `marion run`, the home screen's Start, and the bridge's
 `spawn` schema, which lists every name with its description per `tools/list`. Refused as a load
 error, never a default: a row shadowing a built-in or an alias, a duplicate, an invalid name, an
 unknown harness or tool, an unknown key, or a file that cannot be read; a resume whose row has moved
@@ -146,8 +146,8 @@ it beside the node's identity, so `spawn`/`wait`/`status` from the operator's ow
 authorized exactly as a managed root's are. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`, `pi`.
 Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen, pi);
-gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
-`caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
+gemini, goose, cline and ACP refuse by name. TUI: the home screen (below; it replaced the
+44-column `marion tree` screen, whose name is kept as an alias of `marion ls`) and `marion attach`.
 2026-09-22: a read-only attach — `marion tree` → Enter on a native root, whose keyboard the
 facade's connection holds — now runs the keyboard reader too, forwarding nothing and detaching on
 `^] d`; before, nothing read the keys and the client had to be killed (`attach.rs`,
@@ -369,6 +369,43 @@ the detail pane's notice. Witnesses: `marion_tui::tree::tests::{s_asks_to_steer_
 a_compose_line_buffers_edits_sends_and_cancels, a_compose_line_ignores_arrows_flattens_a_paste_and_holds_its_limit}`,
 `tree::tests::{s_opens_a_compose_line_whose_keys_are_text_and_esc_cancels_it,
 enter_sends_the_steer_and_its_refusal_lands_in_the_notice}`.
+
+**Home screen (2026-09-27).** Bare `marion` on a terminal opens it; `marion ls` opens it on Watch
+(`marion tree` is kept as that name), and without a terminal `ls` prints `marion list`'s lines and
+`ls <id>` one node's detail. It replaced both the three-question line picker and the tree screen.
+Three layers: `marion_tui::home` draws plain views (palette: one accent `rgb(193,95,60)` with an
+`Indexed(173)` fallback read from `COLORTERM`, every status a glyph plus an ANSI-16 colour, no
+background, never a price); `marion_supervisor::home` is a pure state machine (`Home::key` → at
+most one `Effect`); `home::session` runs the loop on one thread as the tree screen did, leaving
+the screen for an attach, a resume, a shell, a diff or `$EDITOR` and re-entering. **Every effect is
+an existing command or RPC**: a run is `marion run … --detach` (new; `--pane` already returned at
+once), a steer `node/steer`, a cancel `node/kill` behind a `y` (new: `marion cancel <id|short>`,
+and the supervisor now answers `node/kill` — see the handler's `kill_node`, shared with
+`session/quit`'s KillTree, and the per-node `Ending` claim that keeps the node's own thread from
+rewriting a cancel as a failure), an attach `attach::run`. The box shows each effect's command
+line, and the binary's own tests parse each back through its argument parser
+(`every_home_effect_parses_back_to_itself`). Start reads readiness from doctor's own rule
+(`doctor::why_not_ready`, which `verdict` now shares) on a background thread, one harness at a
+time; models come from `<state>/recent.json` and projects are recorded in
+`<state>/<hash>/project.json` (`recent.rs`; models only, never prompts). Watch expands the
+selected node from `node/get`'s new, additive `detail`: the task as delivered (the contract's
+instructions with marion's report instruction split off; for a running child, the supervisor's
+in-memory copy until the contract is written), the journal's message records (length and outcome,
+never text), token usage by the row's usage rule, the workspace, the completion, and an
+offset-cursored page of the action stream read through the row's activity grammar
+(`grammar::activity_stream`, of which `recent_activity` is now the tail). The capability strip
+became the expansion's `CAN` row, greyed by the same `tree::actions_for`. Witnesses:
+`marion-tui/tests/home_screens.rs` (every tab at 80x24, 100x30, 160x50 with a style census, plus
+palette, glyph, greying and scrolling checks), `home::tests` (no destructive effect without a
+`y`, among others), `node_detail`/`activity`/`recent` unit tests, `tests/node_kill.rs`, and
+`tests/home_e2e.rs` — bare `marion` on a pty read back through `marion_term`: Start renders a
+shimmed codex as ready, a typed prompt runs it and it appears on Watch, a child's call appears
+in its stream while it runs, `s` steers, `x` asks then cancels, Enter attaches to a pane node and
+`^] d` returns ($0.00, no harness, no network). Not yet: per-row elapsed time and tokens for
+unselected nodes (the summary carries neither), a token-rate sparkline and context gauge (the
+widgets exist; no harness reports the rate or the window to marion), diff line counts, the agent
+type form, and a logins view (Setup points at `marion login`, which stores API keys; subscription
+logins stay with each harness's own CLI).
 
 **Recent activity (2026-09-27).** A parent deciding whether to steer needs to see what its child is
 doing. Each `StreamGrammar` row now carries an `activity` rule — the units that are a call to **any**

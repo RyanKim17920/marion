@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s   waiting on 2 children
+❯ ├─ ● codex impl a1f0           ⠸   2m17s   editing src/limits/bucket.rs
+  │    └ TASK             Implement the bucket and wire it into /v1/orders; …
+  │                       ✓ 2 criteria · $ 1 check
+  │      RUNNING          14:27:20  read_file src/limits/mod.rs
+  │                       14:27:27  read_file Cargo.toml
+  │                       14:27:34  “I'll add a token bucket keyed by API key…
+  │                       14:27:41  ~ src/limits/bucket.rs
+  │                       ↑ 20 earlier · ↓ 6 newer   J follows
+  ├─ ◐ codex impl 91cd               3m02s   asks to write .github/workflows/…
+  ├─ ✗ codex impl 7b2e               4m50s   exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s   landed marion/t-3c33
+  ✓ claude review 88f2              1h ago   landed marion/t-88f2
+
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-a1f0                                same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
+--- styles ---
+  146  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+   11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGj/kenter"
+  638  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
+    2  Style::new().green().bg(Color::Reset)  "●●"
+   21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
+   33  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
+❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  │    └ TASK             Implement the bucket and wire it into /v1/orders; keep the existing
+  │                       middleware order and add a regression test for burst traffic
+  │                       + marion: When you have finished, call the `report` tool of the marion …
+  │                       ✓ cargo test passes
+  │                       ✓ 100 req/min per key, 429 after
+  │                       $ cargo test -q limits
+  │      RUNNING          14:27:06  $ git commit -am limiter
+  │                       14:27:13  report "limiter in, tests green"
+  │                       14:27:20  read_file src/limits/mod.rs
+  │                       14:27:27  read_file Cargo.toml
+  │                       14:27:34  “I'll add a token bucket keyed by API key.”
+  │                       14:27:41  ~ src/limits/bucket.rs
+  │                       ↑ 18 earlier · ↓ 6 newer   J follows
+  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-a1f0                                                    same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
+--- styles ---
+  316  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+   11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
+   29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGj/kenter"
+  800  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
+    2  Style::new().green().bg(Color::Reset)  "●●"
+   21  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed"
+   38  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
+❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  │    └ TASK             Implement the bucket and wire it into /v1/orders; keep the existing middleware order and add a regression test for burst traffic
+  │                       + marion: When you have finished, call the `report` tool of the marion MCP server exactly once.
+  │                       ✓ cargo test passes
+  │                       ✓ 100 req/min per key, 429 after
+  │                       $ cargo test -q limits
+  │      RUNNING          14:26:31  ~ src/limits/bucket.rs
+  │                       14:26:38  ~ src/routes/orders.rs +1 more
+  │                       14:26:45  $ cargo build -q
+  │                       14:26:52  $ cargo test -q limits
+  │                       14:26:59  “142 passed; committing.”
+  │                       14:27:06  $ git commit -am limiter
+  │                       14:27:13  report "limiter in, tests green"
+  │                       14:27:20  read_file src/limits/mod.rs
+  │                       14:27:27  read_file Cargo.toml
+  │                       14:27:34  “I'll add a token bucket keyed by API key.”
+  │                       14:27:41  ~ src/limits/bucket.rs
+  │                       ↑ 13 earlier · ↓ 6 newer   J follows
+  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ACTIVITY
+
+  14:31  ✓ 3c33  landed marion/t-3c33 · 3 files +84 −12
+  14:30  ✗ 7b2e  exit 101 · 3 tests failed in limits::bucket
+  14:29  ◐ 91cd  asks to write .github/workflows/ci.yml
+  14:29  ● a1f0  spawned by 5e1a · codex impl
+  14:24  ● 5e1a  started · claude opus
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-a1f0                                                                                                                same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                   ? shortcuts
+--- styles ---
+  416  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+   11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
+   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESTASKRUNNINGACTIVITY"
+ 1392  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯J❯"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   22  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed✗"
+   39  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"

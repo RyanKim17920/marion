@@ -260,7 +260,25 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             (None, None) => unreachable!("refused above"),
         },
         pane,
+        started_at: clock(node).0,
+        ended_at: clock(node).1,
+        tokens: None,
     })
+}
+
+/// When a node started and ended, in the journal's own times — never this process's clock (see
+/// `first_ts`): started at its latest `Spawned`, else its first record; ended at the record that
+/// moved it to `Exited`.
+fn clock(
+    node: &ReplayedNode,
+) -> (
+    Option<marion_core::encoding::SystemTime>,
+    Option<marion_core::encoding::SystemTime>,
+) {
+    (
+        node.spawned_ts.or(node.first_ts),
+        node.state.is_exited().then_some(node.state_ts).flatten(),
+    )
 }
 
 /// What a subscriber has already been told about one node.
@@ -268,6 +286,31 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
 struct Told {
     state: NodeState,
     reap_state: ReapState,
+    /// The summary's facts that move without a state change — its clock and its spend. A change
+    /// here re-sends the whole summary as `tree/node-added`, which every client, old or new, folds
+    /// as a replacement in place (`tree::fold_tree_event`); a new notification kind would make an
+    /// older client read a frame it cannot decode as the supervisor going away.
+    extra: Extra,
+}
+
+/// See [`Told::extra`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Extra {
+    started_at: Option<marion_core::encoding::SystemTime>,
+    ended_at: Option<marion_core::encoding::SystemTime>,
+    tokens: Option<u64>,
+}
+
+impl Extra {
+    /// Read without projecting the node: this runs for every node on every flush.
+    fn of(n: &ReplayedNode, tallies: &crate::usage_tally::Tallies) -> Extra {
+        let (started_at, ended_at) = clock(n);
+        Extra {
+            started_at,
+            ended_at,
+            tokens: tallies.total(&n.agent_id),
+        }
+    }
 }
 
 /// One client following one node's `events.jsonl`.
@@ -732,6 +775,28 @@ pub struct NodeHandle {
     /// What the node's own thread produced. `None` means **still running**, and that is the reading
     /// §5.7's exit predicate takes as a second guard beside the journal's.
     outcome: Option<NodeOutcome>,
+    /// Who records how this node's process ended — see [`Ending`].
+    ending: Ending,
+}
+
+/// **Who writes a node's terminal record**, decided once, under [`RegistryHandle::nodes`]'s lock.
+///
+/// Two writers can reach a node's end: its own thread, which observed the process exit and would
+/// journal `Exited` with the status it derived, and an operator's kill (`node/kill`, KillTree),
+/// which journals `KillConfirmed` — §6.7's `Exited(Cancelled)`. Both folding in means the later
+/// one wins in replay, so a thread that wrote `Exited(Failed)` a moment after the confirmation
+/// would rewrite a deliberate cancellation as a failure. The thread already has this answer for its
+/// own timeout kill (`timed_out`); this is the same attribution for a kill marion made from outside
+/// the thread, and whichever side gets here first settles it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Ending {
+    /// Neither has happened yet.
+    #[default]
+    Running,
+    /// A kill claimed the node first: its thread records the cancellation and no `Exited`.
+    KillRequested,
+    /// The thread saw its process end first and records the exit it observed.
+    ProcessEnded,
 }
 
 /// What a node's thread produced, in the vocabulary of the kind of node it was.
@@ -1068,6 +1133,15 @@ impl crate::run::SpawnObserver for NodeOwner {
                 .read(|r| crate::descendant_gate::live_descendants(r.tree(), agent_id)),
         )
     }
+
+    /// [`RegistryHandle::process_ended`]: this supervisor is the one a `node/kill` reaches.
+    fn process_ended(&self, agent_id: &AgentId) -> bool {
+        self.handle.process_ended(agent_id)
+    }
+
+    fn kill_requested(&self, agent_id: &AgentId) -> bool {
+        self.handle.kill_requested(agent_id)
+    }
 }
 
 /// **What authorizes `agent/spawn` with no caller — open question 3, decided.**
@@ -1390,6 +1464,16 @@ pub struct RegistryHandle {
     /// [`Self::quit`] uses and for the same reason — it makes a read and the write derived from it
     /// one indivisible decision, not a throughput device.
     spawn_decision: Mutex<()>,
+    /// **What this supervisor sent each child it started**, for `node/get` to show while the child
+    /// runs: its contract file is written when it ends, and until then nothing on disk holds the
+    /// prompt. In memory only, like [`NodeHandle`]; after the run the contract is the record.
+    sent: Mutex<HashMap<AgentId, marion_core::proto::result::TaskSent>>,
+    /// **What each node has spent so far**, folded from only what its stream appended since the
+    /// last reading ([`crate::usage_tally`]). Advanced by [`Self::flush`] for nodes whose total can
+    /// still move, at most every [`TALLY_EVERY`], and by `node/get` for the node it describes.
+    tallies: crate::usage_tally::Tallies,
+    /// When [`Self::flush`] last advanced the tallies.
+    tallied_at: Mutex<Option<std::time::Instant>>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1534,6 +1618,9 @@ impl RegistryHandle {
             #[cfg(test)]
             pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
+            sent: Mutex::new(HashMap::new()),
+            tallies: crate::usage_tally::Tallies::default(),
+            tallied_at: Mutex::new(None),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
             stopped_reported: AtomicBool::new(false),
@@ -1614,6 +1701,8 @@ impl RegistryHandle {
     /// can tell "nothing changed" from "nothing was delivered", which are the same zero from the
     /// socket's side and different problems.
     pub fn flush(&self) -> usize {
+        // File reads, so before either lock: a slow disk must never hold up the tree.
+        self.advance_tallies();
         // **Before the shared lock, never inside it.** See [`Panes`]: the two are separate maps
         // precisely so an operator's keystroke is not written under the lock every `tree/subscribe`
         // waits on, and taking them in the other order here would rebuild that coupling.
@@ -1632,7 +1721,7 @@ impl RegistryHandle {
                 return Vec::new();
             }
             g.collected_at = Some(generation);
-            collect(r, &mut g, &panes)
+            collect(r, &mut g, &panes, &self.tallies)
         });
         deliver(&mut g, &events);
         events.len()
@@ -1660,6 +1749,42 @@ impl RegistryHandle {
         panes.next_completed_expiry
     }
 
+    /// Read what every node whose total can still move has appended to its stream, at most every
+    /// [`TALLY_EVERY`]: a running node, and an ended one not yet read since it ended (its last
+    /// unit lands at its exit). A tree with nothing running and everything read reads no file.
+    fn advance_tallies(&self) {
+        {
+            let mut at = lock(&self.tallied_at);
+            if at.is_some_and(|t| t.elapsed() < TALLY_EVERY) {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        let due: Vec<(AgentId, std::path::PathBuf, crate::node_detail::Inputs)> =
+            self.live.read(|r| {
+                let Some(project) = r.project() else {
+                    return Vec::new();
+                };
+                r.tree()
+                    .nodes()
+                    .iter()
+                    .filter(|n| !n.state.is_exited() || !self.tallies.settled(&n.agent_id))
+                    .filter_map(|n| {
+                        let i = crate::node_detail::inputs(n)?;
+                        Some((n.agent_id.clone(), project.agent(&n.agent_id).events(), i))
+                    })
+                    .collect()
+            });
+        for (id, events, i) in due {
+            if let Some(rule) = usage_rule(&i) {
+                self.tallies.read(&id, &events, rule);
+            }
+            if i.exited {
+                self.tallies.settle(&id);
+            }
+        }
+    }
+
     /// The nodes this supervisor holds a pty for, as a snapshot.
     ///
     /// Cloned out under the panes lock and read afterwards, so no caller holds two locks at once.
@@ -1683,8 +1808,8 @@ impl RegistryHandle {
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
             g.collected_at = Some(r.generation());
-            let events = collect(r, &mut g, &panes);
-            let nodes = project(r.tree(), &mut g, &panes);
+            let events = collect(r, &mut g, &panes, &self.tallies);
+            let nodes = project(r.tree(), &mut g, &panes, &self.tallies);
             (events, nodes, r.read_point())
         });
         deliver(&mut g, &events);
@@ -1692,7 +1817,11 @@ impl RegistryHandle {
         TreeSubscribeResult { nodes, read_point }
     }
 
-    fn node_get(&self, id: &AgentId) -> Result<NodeGetResult, RpcError> {
+    fn node_get(
+        &self,
+        id: &AgentId,
+        cursor: Option<marion_core::proto::params::ActivityCursor>,
+    ) -> Result<NodeGetResult, RpcError> {
         let pane = lock(&self.panes).has_live(id);
         self.live.read(|r| match r.tree().get(id) {
             None => Err(RpcError::not_found(
@@ -1707,8 +1836,24 @@ impl RegistryHandle {
                 "§3.2",
             )),
             Some(node) => summarize(node, pane)
-                .map(|node| NodeGetResult { node })
+                .map(|summary| (summary, crate::node_detail::inputs(node), r.project()))
                 .map_err(|e| e.as_error(id)),
+        })
+        .map(|(node, inputs, project)| {
+            // The detail's file reads happen here, after the registry lock is released: a long
+            // stream or a slow disk must never hold up the tree for everyone else.
+            let mut detail: marion_core::proto::result::NodeDetail = match (inputs, project) {
+                (Some(i), Some(p)) => {
+                    crate::node_detail::read(&p, id, &i, cursor, &self.tallies)
+                }
+                _ => Default::default(),
+            };
+            let mut node = node;
+            node.tokens = detail.usage.map(|u| u.total());
+            if detail.task.is_none() {
+                detail.task = lock(&self.sent).get(id).cloned();
+            }
+            NodeGetResult { node, detail }
         })
     }
 
@@ -2672,10 +2817,54 @@ impl RegistryHandle {
                 started_at: None,
                 join: None,
                 outcome: None,
+                ending: Ending::Running,
             },
         );
         self.inboxes.open(agent_id);
         token
+    }
+
+    /// **A kill's half of [`Ending`]**: claim the node's end before signalling it. `false` means
+    /// the node's own thread already saw its process end and is recording that exit, so there is
+    /// nothing left to signal. A node this supervisor does not own has no thread to race and is
+    /// always claimable — its end is the kill's to record.
+    fn claim_kill(&self, agent_id: &AgentId) -> bool {
+        let mut nodes = lock(&self.nodes);
+        let Some(node) = nodes.get_mut(agent_id) else {
+            return true;
+        };
+        if node.ending == Ending::ProcessEnded || !node.running() {
+            return false;
+        }
+        node.ending = Ending::KillRequested;
+        true
+    }
+
+    /// Whether a kill of `agent_id` has been asked for, settling nothing: see
+    /// [`crate::run::SpawnObserver::kill_requested`].
+    pub(crate) fn kill_requested(&self, agent_id: &AgentId) -> bool {
+        lock(&self.nodes)
+            .get(agent_id)
+            .is_some_and(|n| matches!(n.ending, Ending::KillRequested))
+    }
+
+    /// **A node thread's half of [`Ending`]**, asked the instant its process has ended and before
+    /// anything terminal is written: `true` means marion killed it on request, so the thread
+    /// records the cancellation and leaves the terminal record to the kill's `KillConfirmed`.
+    /// `false` settles the other way — the exit is the thread's to record, and a kill arriving now
+    /// is refused rather than signalling a reaped pid.
+    pub(crate) fn process_ended(&self, agent_id: &AgentId) -> bool {
+        let mut nodes = lock(&self.nodes);
+        let Some(node) = nodes.get_mut(agent_id) else {
+            return false;
+        };
+        match node.ending {
+            Ending::KillRequested => true,
+            Ending::Running | Ending::ProcessEnded => {
+                node.ending = Ending::ProcessEnded;
+                false
+            }
+        }
     }
 
     /// **A native root this supervisor claimed has reached its end**, and its table entry says so.
@@ -3164,8 +3353,22 @@ impl RegistryHandle {
         let answered_task_id = task_id.clone();
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
+        // The prompt as the child will receive it, resolved the way `run_spawn_watched` resolves
+        // it, before `req` moves into the launch.
+        let delivered = crate::run::agent_types(&req.repo)
+            .ok()
+            .and_then(|t| t.resolve(&req.agent_type))
+            .map(|t| crate::run::child_prompt(&t, &req.prompt));
+        let acceptance = req.acceptance_criteria.clone();
+        let verification = req.verification.clone();
         let (agent_id, state) =
             self.launch_child(me, env, req, task_id, caller, repo, decision, announce_to)?;
+        if let Some(prompt) = delivered {
+            lock(&self.sent).insert(
+                agent_id.clone(),
+                crate::node_detail::task_of(&prompt, acceptance, verification),
+            );
+        }
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
@@ -3437,6 +3640,9 @@ impl RegistryHandle {
                 // `SpawnObserver` are visibly the same trait here as on the child path.
                 use crate::run::SpawnObserver as _;
                 let started = |pid: i32| observer.started(&node.agent_id, pid);
+                // The same attribution the child path asks through the trait: did a `node/kill`
+                // (or KillTree) end this root, so its terminal record is the kill's?
+                let ended_by_kill = || observer.process_ended(&node.agent_id);
                 crate::root::launch_owned(
                     &node,
                     bound,
@@ -3450,6 +3656,7 @@ impl RegistryHandle {
                     // because it is the same ownership — this supervisor answers `node/attach`,
                     // so it is the only process for which a registered pane means anything.
                     Some(&observer),
+                    Some(&ended_by_kill),
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -4247,39 +4454,12 @@ impl RegistryHandle {
 
         let mut killed = Vec::with_capacity(targets.len());
         for node in targets {
-            self.journal_append(RecordKind::KillIntent(KillIntent {
-                agent_id: node.agent_id.clone(),
-                was: node.state,
-            }))
-            .map_err(journal_failure_before_signal)?;
-            let signal = node.reap_state != ReapState::ReapedIdle;
-            if signal
-                && !self.runtime.kill_process_tree_and_wait(
-                    node.pid.expect("preflight required a signal target PID"),
-                )
-            {
-                return Err(RpcError::internal(format!(
-                    "marion journaled the kill intent for `{}` and signalled its per-node process \
-                     tree, but could not observe its PID dead; the intent remains unconfirmed and \
-                     the supervisor will not exit (§6.7, §5.7)",
-                    node.agent_id.0
-                )));
-            }
-            self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
-                agent_id: node.agent_id.clone(),
-                exit: ProcessExit {
-                    code: None,
-                    signal: signal.then_some(9),
-                    description: if signal {
-                        "marion sent SIGKILL for confirmed session/quit KillTree".into()
-                    } else {
-                        "confirmed session/quit retired an already ReapedIdle node; no process \
-                         existed to signal"
-                            .into()
-                    },
-                },
-            }))
-            .map_err(journal_failure_after_signal)?;
+            // A node whose own thread already saw its process end is still ended here, exactly as
+            // before `node/kill` existed: the operator confirmed this exact set, and KillTree has
+            // no refusal for a node that happens to be finishing. The claim only tells an owned
+            // node's thread that marion ended it, when marion got there first.
+            self.claim_kill(&node.agent_id);
+            self.kill_node(node, KillBy::QuitKillTree)?;
             killed.push(KilledNode {
                 agent_id: node.agent_id.clone(),
                 was: node.state,
@@ -4291,6 +4471,137 @@ impl RegistryHandle {
                 nodes: killed,
                 supervisor: SupervisorDisposition::Exiting,
             },
+        })
+    }
+
+    /// **§6.7's kill of one node**: the intent made durable, the per-node process tree signalled
+    /// and observed dead, the confirmation made durable — and nothing else. Shared by
+    /// `session/quit`'s KillTree, which runs it per confirmed node, and by `node/kill`; each caller
+    /// owns its own preflight, and neither the supervisor's exit nor any other node is this
+    /// function's business.
+    ///
+    /// A `ReapedIdle` node is retired rather than signalled: §7.2 already ended its process, and
+    /// its recorded pid may name something else by now. The confirmation then records no signal,
+    /// because marion sent none.
+    ///
+    /// The caller has checked that a node to be signalled has a recorded pid.
+    fn kill_node(
+        &self,
+        node: &marion_core::registry::ReplayedNode,
+        by: KillBy,
+    ) -> Result<(), RpcError> {
+        self.journal_append(RecordKind::KillIntent(KillIntent {
+            agent_id: node.agent_id.clone(),
+            was: node.state,
+        }))
+        .map_err(|e| journal_failure_before_signal_in(by.verb(), e))?;
+        let signal = node.reap_state != ReapState::ReapedIdle;
+        if signal
+            && !self.runtime.kill_process_tree_and_wait(
+                node.pid.expect("preflight required a signal target PID"),
+            )
+        {
+            return Err(RpcError::internal(format!(
+                "marion journaled the kill intent for `{}` and signalled its per-node process \
+                 tree, but could not observe its PID dead; the intent remains unconfirmed and \
+                 the supervisor will not exit (§6.7, §5.7)",
+                node.agent_id.0
+            )));
+        }
+        self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
+            agent_id: node.agent_id.clone(),
+            exit: ProcessExit {
+                code: None,
+                signal: signal.then_some(9),
+                description: if signal {
+                    by.signalled().into()
+                } else {
+                    by.retired().into()
+                },
+            },
+        }))
+        .map_err(|e| journal_failure_after_signal_in(by.verb(), e))
+    }
+
+    /// **§2's `node/kill` — end one node**, which §6.7 classifies `Exited(Cancelled)`.
+    ///
+    /// The per-node half of §7.3.2's disposition (a), through the same [`Self::kill_node`], and
+    /// deliberately *only* that half: no confirmed-set comparison (the caller named one node), and
+    /// no change to the supervisor's disposition — §5.7 goes on deciding that from whatever else is
+    /// still running.
+    ///
+    /// The refusals come before any side effect, in the order that decides them:
+    ///
+    /// 1. the caller is this supervisor's own user — the check every operator call makes
+    ///    ([`root_spawn_authorized`]); a node cannot kill through this verb;
+    /// 2. the node is on the journal (`NotFound` otherwise), named by its whole id as `node/steer`
+    ///    names it;
+    /// 3. it has not already ended (`Refused`, naming its state) — its old pid is never signalled;
+    /// 4. a node to be signalled has a recorded pid (`Conflict`: still spawning, retry);
+    /// 5. **for a node this supervisor owns, its own thread has not already seen its process end**
+    ///    (`Conflict`). This is the thread race, settled under one lock by [`Self::claim_kill`]
+    ///    and [`Self::process_ended`]: whichever reaches the node's end first decides who writes
+    ///    its terminal record. A kill that wins tells the thread, which then records its outcome
+    ///    as the cancellation and writes no `Exited` over the `KillConfirmed`; a thread that wins
+    ///    is already recording an exit it observed, and a kill would aim at a reaped pid.
+    ///
+    /// Held under the same lock as `session/quit`, so a KillTree and a `node/kill` cannot both
+    /// journal an intent for one node.
+    fn node_kill(
+        &self,
+        p: &marion_core::proto::params::NodeKillParams,
+        peer: Peer,
+    ) -> Result<marion_core::proto::result::NodeKillResult, RpcError> {
+        root_spawn_authorized(peer)?;
+        let _decision = lock(&self.quit);
+        self.live.refresh();
+        let node = self
+            .live
+            .read(|r| r.tree().get(&p.agent_id).cloned())
+            .ok_or_else(|| {
+                RpcError::not_found(
+                    &p.agent_id.0,
+                    format!(
+                        "this project's journal records no node `{}`, so there is nothing to end. \
+                         Nothing was signalled.",
+                        p.agent_id.0
+                    ),
+                    "§2, §6.7",
+                )
+            })?;
+        if node.state.is_exited() {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` has already ended ({:?}); there is no process to end, and a terminal \
+                     node's recorded PID is never signalled. Nothing was signalled.",
+                    p.agent_id.0, node.state
+                ),
+                "§6.7",
+            ));
+        }
+        if node.reap_state != ReapState::ReapedIdle && node.pid.is_none() {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node has no recorded PID yet, so marion cannot prove a signal reaches it. \
+                 Nothing was signalled; retry after its spawn resolves.",
+                "§6.7",
+            ));
+        }
+        // A `ReapedIdle` node is retired, not signalled, so there is no process end to race for:
+        // §7.2's reap already ended it, and its thread's own reading of that is long settled.
+        if node.reap_state != ReapState::ReapedIdle && !self.claim_kill(&p.agent_id) {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node's process has already ended on its own and its thread is recording how; \
+                 its terminal state lands on the journal in a moment. Nothing was signalled.",
+                "§6.7",
+            ));
+        }
+        self.kill_node(&node, KillBy::NodeKill)?;
+        self.live.refresh();
+        Ok(marion_core::proto::result::NodeKillResult {
+            state: self.spawned_state(&p.agent_id),
         })
     }
 
@@ -4440,15 +4751,23 @@ fn attach_io_failure(
 }
 
 fn journal_failure_before_signal(error: crate::journal::JournalError) -> RpcError {
-    RpcError::internal(format!(
-        "session/quit could not durably journal its intent, so it refused before signalling the \
-         node: {error}"
-    ))
+    journal_failure_before_signal_in("session/quit", error)
 }
 
 fn journal_failure_after_signal(error: crate::journal::JournalError) -> RpcError {
+    journal_failure_after_signal_in("session/quit", error)
+}
+
+fn journal_failure_before_signal_in(verb: &str, error: crate::journal::JournalError) -> RpcError {
     RpcError::internal(format!(
-        "session/quit changed a process but could not durably journal its confirmation; its intent \
+        "{verb} could not durably journal its intent, so it refused before signalling the node: \
+         {error}"
+    ))
+}
+
+fn journal_failure_after_signal_in(verb: &str, error: crate::journal::JournalError) -> RpcError {
+    RpcError::internal(format!(
+        "{verb} changed a process but could not durably journal its confirmation; its intent \
          remains for restart recovery and the supervisor will not exit: {error}"
     ))
 }
@@ -4457,6 +4776,45 @@ fn journal_failure_after_signal(error: crate::journal::JournalError) -> RpcError
 /// loop's old fixed cadence, kept for exactly this, since nothing yet wakes on a node's own file.
 const ATTACHED_TICK: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Which operator act a [`RegistryHandle::kill_node`] carries out — what its journal records say
+/// marion did, and which verb its failures name. §6.7 wants the description to record marion as
+/// the sender; the act is what tells a reader why.
+#[derive(Clone, Copy)]
+enum KillBy {
+    /// §7.3.2's disposition (a), one confirmed node at a time.
+    QuitKillTree,
+    /// §2's `node/kill`, for the one node it names.
+    NodeKill,
+}
+
+impl KillBy {
+    fn verb(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => "session/quit",
+            KillBy::NodeKill => "node/kill",
+        }
+    }
+
+    fn signalled(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => "marion sent SIGKILL for confirmed session/quit KillTree",
+            KillBy::NodeKill => "marion sent SIGKILL for the operator's node/kill",
+        }
+    }
+
+    fn retired(self) -> &'static str {
+        match self {
+            KillBy::QuitKillTree => {
+                "confirmed session/quit retired an already ReapedIdle node; no process existed to \
+                 signal"
+            }
+            KillBy::NodeKill => {
+                "node/kill retired an already ReapedIdle node; no process existed to signal"
+            }
+        }
+    }
+}
+
 impl Handle for RegistryHandle {
     fn connected(&self, conn: ConnId) {
         lock(&self.shared).clients.insert(conn);
@@ -4464,7 +4822,9 @@ impl Handle for RegistryHandle {
 
     fn call(&self, _conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
         match call {
-            Call::NodeGet(p) => self.node_get(&p.agent_id).map(MethodResult::NodeGet),
+            Call::NodeGet(p) => self
+                .node_get(&p.agent_id, p.activity)
+                .map(MethodResult::NodeGet),
             Call::TreeSubscribe(_) => Ok(MethodResult::TreeSubscribe(self.subscribe(out))),
             Call::NodeAttach(p) => self
                 .node_attach(&p.agent_id, p.pane_stream.is_some(), out)
@@ -4484,6 +4844,7 @@ impl Handle for RegistryHandle {
                 .node_resume(p, out.peer())
                 .map(MethodResult::NodeResume),
             Call::NodeSteer(p) => self.node_steer(p, out.peer()).map(MethodResult::NodeSteer),
+            Call::NodeKill(p) => self.node_kill(p, out.peer()).map(MethodResult::NodeKill),
             Call::NodePrompt(_) => Err(RpcError::unimplemented(
                 "node/prompt",
                 "`node/prompt` is not built. A message for a node's next turn is `node/steer`, which \
@@ -4500,8 +4861,8 @@ impl Handle for RegistryHandle {
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
                      `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit`, \
-                     `node/resume` and `node/steer`; the remaining methods land with the \
-                     milestone that needs them.",
+                     `node/resume`, `node/steer` and `node/kill`; the remaining methods land with \
+                     the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -4674,11 +5035,16 @@ impl Handle for RegistryHandle {
 /// `panes` is the set of nodes this supervisor holds a pty for, read **before** the shared lock was
 /// taken — see [`RegistryHandle::pane_ids`] for why it is a snapshot passed in rather than a map
 /// consulted here.
-fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeSummary> {
+fn project(
+    tree: &Replay,
+    g: &mut Shared,
+    panes: &HashSet<AgentId>,
+    tallies: &crate::usage_tally::Tallies,
+) -> Vec<NodeSummary> {
     let mut out = Vec::new();
     let mut lost = 0usize;
     for n in tree.nodes() {
-        match summarize(n, panes.contains(&n.agent_id)) {
+        match summarize_spent(n, panes.contains(&n.agent_id), tallies) {
             Ok(s) => out.push(s),
             Err(_) => lost += 1,
         }
@@ -4696,7 +5062,12 @@ fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeS
 /// Every `ts` is the journal's, never this process's clock — see
 /// [`marion_core::registry::ReplayedNode::first_ts`] for why a follower's `now()` is the wrong
 /// answer on a field a client renders as when the thing occurred.
-fn collect(r: &Registry, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<Event> {
+fn collect(
+    r: &Registry,
+    g: &mut Shared,
+    panes: &HashSet<AgentId>,
+    tallies: &crate::usage_tally::Tallies,
+) -> Vec<Event> {
     #[cfg(test)]
     {
         g.collects += 1;
@@ -4706,34 +5077,73 @@ fn collect(r: &Registry, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<Event>
         let now = Told {
             state: n.state,
             reap_state: n.reap_state,
+            extra: Extra::of(n, tallies),
         };
-        match g.told.get(&n.agent_id) {
+        let before = g.told.get(&n.agent_id).copied();
+        if before == Some(now) {
+            continue;
+        }
+        // Projected only when there is something to say, not for every node on every flush.
+        let summary = summarize_spent(n, panes.contains(&n.agent_id), tallies).ok();
+        match before {
             None => {
                 // A node marion cannot describe produces no `tree/node-added` — there is no summary
                 // to put in one — but it is still recorded as told, so it is not re-examined on
                 // every flush. `project` is what counts it.
-                if let Ok(node) = summarize(n, panes.contains(&n.agent_id)) {
+                if let Some(node) = summary {
                     events.push(Event::NodeAdded {
                         node,
                         ts: journal_ts(n.first_ts),
                     });
                 }
-                g.told.insert(n.agent_id.clone(), now);
             }
-            Some(before) if *before != now => {
-                events.push(Event::NodeState {
-                    agent_id: n.agent_id.clone(),
-                    state: n.state,
-                    reap_state: n.reap_state,
-                    ts: journal_ts(n.state_ts),
-                });
-                g.told.insert(n.agent_id.clone(), now);
+            Some(before) => {
+                if (before.state, before.reap_state) != (now.state, now.reap_state) {
+                    events.push(Event::NodeState {
+                        agent_id: n.agent_id.clone(),
+                        state: n.state,
+                        reap_state: n.reap_state,
+                        ts: journal_ts(n.state_ts),
+                    });
+                }
+                if before.extra != now.extra
+                    && let Some(node) = summary
+                {
+                    events.push(Event::NodeAdded {
+                        node,
+                        ts: journal_ts(n.state_ts.or(n.first_ts)),
+                    });
+                }
             }
-            Some(_) => {}
         }
+        g.told.insert(n.agent_id.clone(), now);
     }
     events
 }
+
+/// [`summarize`], with the node's spend so far from `tallies` — read from memory, no file.
+fn summarize_spent(
+    n: &ReplayedNode,
+    pane: bool,
+    tallies: &crate::usage_tally::Tallies,
+) -> Result<NodeSummary, Unprojectable> {
+    let mut s = summarize(n, pane)?;
+    s.tokens = tallies.total(&n.agent_id);
+    Ok(s)
+}
+
+/// The rule a node's usage is read by, from its adapter: no harness is named here.
+fn usage_rule(
+    i: &crate::node_detail::Inputs,
+) -> Option<&'static marion_harness::grammar::UsageRule> {
+    marion_harness::adapter::adapter_for_type(i.harness, i.acp_agent.as_deref())
+        .ok()?
+        .usage_rule()
+}
+
+/// How often [`RegistryHandle::flush`] reads running nodes' streams for their spend. A usage unit
+/// lands once per turn or step, so a watcher sees a new total within this of the unit.
+const TALLY_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The journal's own time for a transition.
 ///
@@ -4943,6 +5353,53 @@ mod tests {
             "nothing sets `Node.name` yet, so `None` is what the journal says rather than a \
              placeholder for what marion does not know"
         );
+    }
+
+    /// **A row's clock comes from the journal**: started at its latest `Spawned` (its process's
+    /// start, which a resume moves), ended at the record that moved it to `Exited`, so a client
+    /// words elapsed time without the supervisor ticking anything.
+    #[test]
+    fn a_summary_carries_when_the_node_started_and_ended() {
+        let spawned = |ms| {
+            line(
+                1,
+                ms,
+                RecordKind::Spawned(Spawned {
+                    agent_id: id("c"),
+                    harness_version: "0.9.0".into(),
+                    model: None,
+                    pid: Some(3),
+                    start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
+                }),
+            )
+        };
+        let intent_at = line(0, 1_000, intent("c", None, "codex-impl", 0));
+        let running = summarize(&node_of(std::slice::from_ref(&intent_at), "c"), false).unwrap();
+        assert_eq!(
+            running.started_at,
+            Some(SystemTime::from_unix_millis(1_000)),
+            "before any Spawned, the intent's time"
+        );
+        let exited = line(
+            2,
+            9_000,
+            RecordKind::Exited(Exited {
+                agent_id: id("c"),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "done".into(),
+                },
+            }),
+        );
+        let s = summarize(&node_of(&[intent_at, spawned(2_000), exited], "c"), false).unwrap();
+        assert_eq!(s.started_at, Some(SystemTime::from_unix_millis(2_000)));
+        assert_eq!(s.ended_at, Some(SystemTime::from_unix_millis(9_000)));
+        assert_eq!(running.ended_at, None, "a node still running has not ended");
     }
 
     /// **A recorded bound outranks the agent type's, because it is the one the node is under.**
@@ -5329,9 +5786,7 @@ mod tests {
 
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             1,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
@@ -5354,9 +5809,7 @@ mod tests {
         // operator can tell "no such node" from "not yet".
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("nobody"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("nobody"))),
             2,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
@@ -5454,6 +5907,46 @@ mod tests {
             "§7.6 gates on the disjunction, so the two travel in one message"
         );
         assert_eq!(ts, SystemTime::from_unix_millis(3_500));
+
+        // The child's stream states what it spent: the row's total arrives as the whole summary
+        // again, the one notification an older client already folds as a replacement.
+        let events =
+            w.fx.handle
+                .live
+                .read(|r| r.project())
+                .expect("the fixture's journal names a project")
+                .agent(&id("child"))
+                .events();
+        std::fs::create_dir_all(events.parent().unwrap()).unwrap();
+        let sink = crate::events::EventSink::new(
+            crate::events::EventWriter::open_path(&events, &id("child")).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        for l in include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl").lines() {
+            sink.record_line(l);
+        }
+        let spent = marion_harness::adapter::adapter_for(Harness::Codex)
+            .unwrap()
+            .usage(&crate::activity::all_frames(&events))
+            .expect("the fixture states its usage")
+            .total();
+        let Frame::Notification(n) = next_frame(&mut r) else {
+            panic!("expected a notification")
+        };
+        let Event::NodeAdded { node, .. } = n.event else {
+            panic!(
+                "a total that moved must arrive as tree/node-added, got {:?}",
+                n.event.method()
+            )
+        };
+        assert_eq!(node.agent_id, id("child"));
+        assert_eq!(node.tokens, Some(spent));
+        assert_eq!(
+            node.state,
+            NodeState::Running,
+            "the replacement is the whole, current row"
+        );
     }
 
     /// **NC — a node the snapshot could not describe is excluded *and counted*, never silently
@@ -5611,9 +6104,7 @@ mod tests {
         assert!(matches!(
             fx.handle.call(
                 ConnId(1),
-                &Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                    agent_id: id("root")
-                }),
+                &Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
                 &out,
             ),
             Ok(MethodResult::NodeGet(_))
@@ -6602,6 +7093,254 @@ mod tests {
                 .signal,
             Some(9)
         );
+    }
+
+    /// `node/kill` over the handler, the way a connection sends it.
+    fn node_kill(
+        fx: &Fx,
+        agent: &str,
+    ) -> Result<marion_core::proto::result::NodeKillResult, RpcError> {
+        let out = crate::serve::sink(ConnId(9));
+        match fx.handle.call(
+            ConnId(9),
+            &Call::NodeKill(marion_core::proto::params::NodeKillParams {
+                agent_id: id(agent),
+            }),
+            &out,
+        )? {
+            MethodResult::NodeKill(r) => Ok(r),
+            other => panic!("wrong result: {}", other.method().as_str()),
+        }
+    }
+
+    /// A live root with a recorded pid, as `journal::confirm_spawned` leaves one.
+    fn running_root(agent: &str, pid: i32) -> Vec<RecordKind> {
+        vec![
+            intent(agent, None, "claude", 0),
+            spawned(agent, pid),
+            state(agent, NodeState::Running),
+        ]
+    }
+
+    /// **NC — an id the journal never named is `NotFound`, and nothing is written or signalled.**
+    #[test]
+    fn node_kill_refuses_an_unknown_node_before_any_side_effect() {
+        let (fx, runtime) = recording_fx_with("handler-kill-unknown", running_root("root", 101));
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "nobody").expect_err("no such node");
+        assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
+        assert!(e.message.contains("nobody"), "{e}");
+        assert!(runtime.killed().is_empty());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — a finished node is refused with its terminal state, and its old pid is never
+    /// signalled.** That number may belong to an unrelated process by now, and a second terminal
+    /// record would rewrite how the node ended.
+    #[test]
+    fn node_kill_refuses_an_exited_node_naming_its_state_and_signals_nothing() {
+        let mut records = running_root("done", 101);
+        records.push(RecordKind::Exited(Exited {
+            agent_id: id("done"),
+            status: ExitStatus::Failed,
+            exit: ProcessExit {
+                code: Some(1),
+                signal: None,
+                description: "it failed on its own".into(),
+            },
+        }));
+        let (fx, runtime) = recording_fx_with("handler-kill-exited", records);
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "done").expect_err("an exited node has nothing to end");
+        assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+        assert!(
+            e.message.contains("Failed"),
+            "the refusal names the state: {e}"
+        );
+        assert!(runtime.killed().is_empty(), "nothing was signalled");
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — a node still spawning has no pid to aim at**, so the refusal is a `Conflict` (retry
+    /// once the spawn resolves), exactly as `session/quit`'s KillTree preflight answers it.
+    #[test]
+    fn node_kill_refuses_a_node_with_no_recorded_pid_and_signals_nothing() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-kill-no-pid",
+            vec![intent("root", None, "claude", 0)],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "root").expect_err("no pid, no provable signal");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(e.message.contains("no recorded PID"), "{e}");
+        assert!(runtime.killed().is_empty());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// A `ReapedIdle` node is retired, not signalled: its process is already gone (§7.2), and the
+    /// confirmation must not claim a signal marion never sent. The same rule KillTree applies.
+    #[test]
+    fn node_kill_retires_a_reaped_idle_node_without_signalling_it() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-kill-reaped",
+            vec![
+                intent("reaped", None, "claude", 0),
+                spawned("reaped", 501),
+                state("reaped", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("reaped"),
+                    reason: "an earlier session/quit reaped it".into(),
+                }),
+                RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: id("reaped"),
+                }),
+            ],
+        );
+
+        // Owned, with its thread long past its process's end — which is what a reap leaves. That
+        // race is settled and irrelevant here: nothing is signalled, so nothing is refused for it.
+        fx.handle.claim(&id("reaped"), None, fx.path.clone());
+        assert!(!fx.handle.process_ended(&id("reaped")));
+
+        let r = node_kill(&fx, "reaped").expect("a reaped node can still be ended");
+        assert_eq!(r.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert!(runtime.killed().is_empty(), "no process was left to signal");
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        let node = replay.get(&id("reaped")).unwrap();
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(node.exit.as_ref().unwrap().signal, None);
+    }
+
+    /// **The happy path, with §6.7's order observed at the instant of the signal**: the intent is
+    /// durable when the process is signalled, the confirmation lands after, and the answer is the
+    /// state the journal now folds to — `Exited(Cancelled)` with marion named as the sender.
+    #[test]
+    fn node_kill_journals_its_intent_before_the_signal_and_its_confirmation_after() {
+        let runtime = Arc::new(OrderingRuntime::default());
+        let fx = fx_with_runtime(
+            "handler-kill-order",
+            running_root("root", 301),
+            runtime.clone(),
+        );
+        *lock(&runtime.path) = Some(fx.path.clone());
+        let before = journal_tags(&fx.path).len();
+
+        let r = node_kill(&fx, "root").expect("a running node with a pid is ended");
+        assert_eq!(r.state, NodeState::Exited(ExitStatus::Cancelled));
+
+        let snapshots = lock(&runtime.at_signal).clone();
+        assert_eq!(snapshots.len(), 1, "one signal for one node");
+        assert_eq!(snapshots[0].last().map(String::as_str), Some("KillIntent"));
+        assert_eq!(
+            &journal_tags(&fx.path)[before..],
+            ["KillIntent", "KillConfirmed"],
+            "exactly one intent/confirm pair and nothing else"
+        );
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        let node = replay.get(&id("root")).unwrap();
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        let exit = node.exit.as_ref().unwrap();
+        assert_eq!(exit.signal, Some(9));
+        assert!(
+            exit.description.contains("node/kill"),
+            "{}",
+            exit.description
+        );
+    }
+
+    /// **Ending one node is not quitting.** The other node keeps running, nothing records the
+    /// supervisor's exit, and §5.7 still holds the supervisor resident on the survivor — the
+    /// negative control against a helper extracted from KillTree that carried its "then exit" along.
+    #[test]
+    fn node_kill_ends_only_its_node_and_leaves_the_supervisor_resident() {
+        let mut records = running_root("victim", 101);
+        records.extend(running_root("survivor", 202));
+        let (fx, runtime) = recording_fx_with("handler-kill-one-of-two", records);
+
+        node_kill(&fx, "victim").expect("the victim is ended");
+        assert_eq!(runtime.killed(), [101], "only the named node's pid");
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        assert_eq!(
+            replay.get(&id("survivor")).unwrap().state,
+            NodeState::Running
+        );
+        assert_eq!(
+            fx.handle.residency(),
+            Some(ResidentReason::NonTerminalNode),
+            "the survivor keeps the supervisor resident"
+        );
+        assert!(!fx.handle.begin_idle_exit());
+        assert!(!fx.handle.exiting());
+        assert!(
+            !journal_tags(&fx.path).contains(&"SupervisorExited".to_string()),
+            "a per-node kill never records the supervisor's exit"
+        );
+    }
+
+    /// **NC — a death marion cannot observe is not confirmed.** The intent stays outstanding for
+    /// §7.2's recovery and the caller is told the kill did not complete.
+    #[test]
+    fn node_kill_whose_death_cannot_be_observed_leaves_its_intent_unconfirmed() {
+        let fx = fx_with_runtime(
+            "handler-kill-unobservable",
+            running_root("root", 401),
+            Arc::new(UnobservableRuntime),
+        );
+        let e = node_kill(&fx, "root").expect_err("the death was not observed");
+        assert_eq!(e.kind(), Some(FailureKind::Internal), "{e}");
+        assert_eq!(journal_tags(&fx.path).last().unwrap(), "KillIntent");
+    }
+
+    /// **The thread race, from the kill's side.** A node this supervisor owns whose own thread has
+    /// already seen its process end is finishing on its own: its thread is about to write the
+    /// terminal record it observed. Signalling now would aim at a reaped pid and put a second
+    /// terminal record beside the thread's, so the kill is refused before any side effect.
+    #[test]
+    fn node_kill_refuses_an_owned_node_whose_process_already_ended_on_its_own() {
+        let (fx, runtime) =
+            recording_fx_with("handler-kill-ended-first", running_root("root", 101));
+        fx.handle.claim(&id("root"), None, fx.path.clone());
+        fx.handle.mark_started(&id("root"), 101);
+        assert!(
+            !fx.handle.process_ended(&id("root")),
+            "nobody asked marion to end it, so its thread records its own exit"
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "root").expect_err("its thread is already recording its end");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(runtime.killed().is_empty(), "nothing was signalled");
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **The thread race, from the thread's side.** Once `node/kill` has claimed an owned node, the
+    /// node's thread is told at its process's end that marion ended it — so it writes no `Exited`
+    /// of its own over the `KillConfirmed` (which would refold the node to `Failed`) and records its
+    /// outcome as the cancellation it was.
+    #[test]
+    fn an_owned_node_that_marion_killed_is_told_so_when_its_thread_sees_the_process_end() {
+        let (fx, runtime) =
+            recording_fx_with("handler-kill-thread-told", running_root("root", 101));
+        fx.handle.claim(&id("root"), None, fx.path.clone());
+        fx.handle.mark_started(&id("root"), 101);
+
+        node_kill(&fx, "root").expect("an owned running node is ended");
+        assert_eq!(runtime.killed(), [101]);
+        assert!(
+            fx.handle.process_ended(&id("root")),
+            "the thread learns its process ended because marion ended it"
+        );
+    }
+
+    /// A node this supervisor does not own (an orphan, or a node another process recorded) is
+    /// still ended through its recorded pid; there is simply no thread here to tell.
+    #[test]
+    fn process_ended_for_a_node_nobody_owns_is_never_attributed_to_a_kill() {
+        let (fx, _) = recording_fx_with("handler-kill-unowned", running_root("root", 101));
+        assert!(!fx.handle.process_ended(&id("root")));
     }
 
     /// **One supervisor is one writer, across every RPC it serves — `seq` and `mono_ns` say so or
@@ -7707,9 +8446,7 @@ mod tests {
         // It must be the next frame: the forged notification produces no notification of its own.
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             9,
         );
         assert!(matches!(next_frame(&mut r), Frame::Response(_)));
@@ -8562,11 +9299,11 @@ mod tests {
         let w = Wired::new("handler-pane-live-projection");
         let host = pane(&w, "root", "sleep 30");
         say(&events_of(&w.fx, "root"), "root", &["ready"]);
-        assert!(w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(w.fx.handle.pane_ids().contains(&id("root")));
 
         w.fx.handle.closing_pane(&id("root"), &host);
-        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(!w.fx.handle.pane_ids().contains(&id("root")));
         let (closing_out, _closing_rx) = crate::serve::capture(ConnId(1_111));
         let closing =
@@ -8633,7 +9370,7 @@ mod tests {
                 if matches!(&note.event, Event::NodePaneFrame(frame)
                     if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}))
         ));
-        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(!w.fx.handle.pane_ids().contains(&id("root")));
         let (completed_out, _completed_rx) = crate::serve::capture(ConnId(1_112));
         let completed =
@@ -9953,9 +10690,7 @@ mod tests {
         // The socket is still a live, framed connection: nothing about the delivery departed it.
         call(
             &mut client,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         loop {
@@ -10038,9 +10773,7 @@ mod tests {
         );
         call(
             &mut client,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         assert!(
@@ -10160,9 +10893,7 @@ mod tests {
         // the same connection instead of sleeping on a hope.
         call(
             &mut second,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             9,
         );
         assert!(matches!(next_frame(&mut sr), Frame::Response(_)));
@@ -10240,9 +10971,7 @@ mod tests {
         write_keys(&mut c, "root", "x");
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         assert!(matches!(next_frame(&mut r), Frame::Response(_)));
@@ -12091,9 +12820,7 @@ mod tests {
                 .handle
                 .call(
                     ConnId(9),
-                    &Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                        agent_id: id("root"),
-                    }),
+                    &Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
                     &crate::serve::sink(ConnId(9)),
                 )
                 .expect("the orphan is on the tree");

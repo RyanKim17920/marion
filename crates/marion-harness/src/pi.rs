@@ -30,8 +30,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -247,6 +247,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             name: "/toolName",
             args: "/args",
             id: Some("/toolCallId"),
+            shape: CallShape::Tool,
         }],
         text: &[TextUnit {
             at: Where {

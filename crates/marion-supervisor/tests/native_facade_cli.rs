@@ -213,6 +213,8 @@ fn registered_selectors_refuse_off_a_terminal_while_reserved_and_unknown_names_k
         "run",
         "attach",
         "tree",
+        "ls",
+        "cancel",
         "mcp",
         "doctor",
         "help",

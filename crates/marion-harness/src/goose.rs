@@ -36,8 +36,8 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
-    UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit,
+    ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
@@ -257,6 +257,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             name: "/toolCall/value/name",
             args: "/toolCall/value/arguments",
             id: Some("/id"),
+            shape: CallShape::Tool,
         }],
         text: &[TextUnit {
             at: Where {

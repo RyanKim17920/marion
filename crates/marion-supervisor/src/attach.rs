@@ -167,7 +167,7 @@ pub enum Leave {
 pub fn reattach_hint(agent_id: &str) -> String {
     format!(
         "marion: detached; node {agent_id} keeps running. Back in: `marion attach {agent_id}`, \
-         or `marion tree` to see every node."
+         or `marion ls` to see every node."
     )
 }
 
@@ -1554,7 +1554,7 @@ mod tests {
             hint.contains("`marion attach 01a0ca8b-2cf8-766b-82c0-a64a086b5688`"),
             "{hint}"
         );
-        assert!(hint.contains("`marion tree`"), "{hint}");
+        assert!(hint.contains("`marion ls`"), "{hint}");
     }
 
     /// A supervisor that takes the attach request and never answers must not hold the operator:
@@ -1714,6 +1714,9 @@ mod tests {
                     reap_state: ReapState::Live,
                     timeout: Duration::from_secs(900),
                     pane: true,
+                    started_at: None,
+                    ended_at: None,
+                    tokens: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 0,

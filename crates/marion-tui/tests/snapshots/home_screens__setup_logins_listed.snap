@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
+
+  PROJECT
+  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.…
+
+  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode
+  ● reviewer   ● migrator
+  ✓ .marion/agents.toml: 2 types, valid
+
+  LOGINS   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+❯ ● openrouter  openrouter:work
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion logout openrouter:work                                          x │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter expand · r re-check · n new type · a add key    ? shortcuts
+--- styles ---
+  133  Style::new().fg(Color::Reset).bg(Color::Reset)  "opencodecopilotagy~/code"
+   16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
+   35  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESLOGINSj"
+  522  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
+   11  Style::new().green().bg(Color::Reset)  "●●●●●●●✓●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+    3  Style::new().yellow().bg(Color::Reset)  "◐2◐"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESSES   3 of 6 ready
+
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
+
+  PROJECT
+  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
+
+  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ✓ .marion/agents.toml: 2 types, valid
+
+  LOGINS   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+❯ ● openrouter  openrouter:work
+  keys in the macOS Keychain · a adds one · x removes the selected
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion logout openrouter:work                                                              x │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
+--- styles ---
+  153  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
+   45  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  733  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯ax❯"
+   13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESSES   3 of 6 ready
+
+  ● claude       2.1.268   ready                       headless · pane · channel push
+  ● codex        0.61.0    ready                       headless · pane · ACP
+  ◐ gemini       0.9.1     sign-in needed              headless · pane
+  ● opencode     1.2.3     ready                       headless · pane · ACP
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
+  ○ agy          —         not installed               —
+
+  PROJECT
+  repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
+
+  AGENT TYPES   7 · custom ones come from .marion/agents.toml
+  ● claude   ● claude-orchestrator   ● codex   ◐ gemini   ● opencode   ● reviewer   ● migrator
+  ✓ .marion/agents.toml: 2 types, valid
+
+  LOGINS   3 keys
+  ● anthropic   anthropic
+  ● openrouter  openrouter
+❯ ● openrouter  openrouter:work
+  keys in the macOS Keychain · a adds one · x removes the selected
+
+  PROFILES
+  several logins per harness arrive with marion profile; until then each harness uses its own
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion logout openrouter:work                                                                                                                          x │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter expand · r re-check · n new type · a add key · x remove key                                                                     ? shortcuts
+--- styles ---
+  153  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   16  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionopenrouter"
+   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  977  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
+   22  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯axmarionprofile❯"
+   13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"

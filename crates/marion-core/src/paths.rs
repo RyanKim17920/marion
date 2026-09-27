@@ -171,6 +171,13 @@ impl AgentDir {
         self.0.join("root-change.json")
     }
 
+    /// `prompt.txt` — the prompt a **root** was launched with, 0600, so a watcher can show its
+    /// task: a child's task is in its contract, and §9 gives a root none. Written once, at a fresh
+    /// launch; a resume's message is not the task and leaves it alone.
+    pub fn prompt(&self) -> PathBuf {
+        self.0.join("prompt.txt")
+    }
+
     /// IR, append-only.
     pub fn events(&self) -> PathBuf {
         self.0.join("events.jsonl")

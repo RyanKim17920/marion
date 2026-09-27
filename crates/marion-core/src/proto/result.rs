@@ -8,7 +8,7 @@
 //! A result is a struct even where it holds one field. `node/get` returning a bare `NodeSummary`
 //! would be shorter and would make the first added field a wire break for every client.
 
-use crate::contract::{AgentId, TaskId};
+use crate::contract::{AgentId, Oid, ResultStatus, TaskId, TokenUsage, Workspace};
 use crate::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,143 @@ pub struct TreeSubscribeResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeGetResult {
     pub node: NodeSummary,
+    /// What a person looking at this one node wants beside its row: the task, what it is doing,
+    /// what it spent, where it works and how it ended. `#[serde(default)]`, so a client one version
+    /// older keeps parsing and one talking to an older supervisor reads an empty detail.
+    #[serde(default, skip_serializing_if = "NodeDetail::is_empty")]
+    pub detail: NodeDetail,
+}
+
+/// `node/get`'s detail. Every field is optional because a node reports them at different times: a
+/// spawning node has no stream yet, a running one no completion, a root no contract and so no task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDetail {
+    /// What marion sent it: the contract's instructions, criteria and checks. A root has no
+    /// contract and so `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskSent>,
+    /// The messages queued for it (steers, a child's end), oldest first: who, when, how long, and
+    /// what came of each. **Never their text** — the journal keeps a length and a digest only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageLine>,
+    /// A page of what it is running, when the call asked for one with
+    /// [`crate::proto::params::NodeGetParams::activity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<ActivityPage>,
+    /// The tokens its stream says it spent so far. `None` when the harness states none — which is
+    /// not zero. Tokens only: marion never prices a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    /// Where it works: its worktree and branch, or the checkout it shares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Workspace>,
+    /// How its latest contract ended, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<CompletionSummary>,
+    /// The tokens each turn (or step) spent, oldest first, where the harness reports usage per
+    /// turn: the sparkline a watcher draws. Empty when it reports only a run total, or nothing —
+    /// a client then draws no sparkline rather than an empty one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<u64>,
+}
+
+/// The task as the node received it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSent {
+    /// The prompt as delivered, the agent type's prefix included, up to marion's own appended text.
+    pub prompt: String,
+    /// What marion appended after the prompt (its one instruction on how to report), split off so
+    /// a reader can show it as marion's rather than the operator's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appended: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance: Vec<String>,
+    /// The verification commands, one line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
+}
+
+/// One message queued for a node, from the journal's delivery records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageLine {
+    /// When it was queued (RFC3339).
+    pub at: String,
+    /// Who it was from: `operator`, `ancestor <id>`, `child <id> ended <status>`.
+    pub from: String,
+    /// Its length in bytes.
+    pub len: u32,
+    /// `queued`, `delivered via <verb>`, or `dropped: <reason>`.
+    pub outcome: String,
+}
+
+/// A page of a node's activity stream: the items read from byte `from` of its `events.jsonl` up to
+/// byte `next`, which is where the next page starts. A client polls with `next` and so reads each
+/// byte once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityPage {
+    pub from: u64,
+    pub next: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<ActionLine>,
+    /// Set when marion reads no activity from this node's stream (its row has no activity rule),
+    /// which is not the same as the node having done nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<String>,
+}
+
+/// One thing a node did: a tool call or a message, one line, bounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionLine {
+    /// When marion recorded it (RFC3339).
+    pub at: String,
+    pub kind: ActionKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    Call,
+    Said,
+}
+
+impl NodeDetail {
+    pub fn is_empty(&self) -> bool {
+        self == &NodeDetail::default()
+    }
+}
+
+/// A [`crate::contract::Completion`], cut to what a row can show: the full record stays in the
+/// contract file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionSummary {
+    pub status: ResultStatus,
+    /// The narrative the node reported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrative: Option<String>,
+    /// The branch its work landed on, and that branch's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Oid>,
+    /// How many paths it changed.
+    #[serde(default)]
+    pub changed_paths: usize,
+    /// What its landed branch changed against the commit it started from, from git: `None` when
+    /// it landed no branch or git could not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffStat>,
+    /// The process exit, as marion described it.
+    #[serde(default)]
+    pub exit: String,
+}
+
+/// Lines added and removed, and files touched: `git diff --shortstat`'s three numbers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffStat {
+    pub added: u32,
+    pub removed: u32,
+    pub files: u32,
 }
 
 /// `node/attach`. The mode is §7.3.3's per-node answer; see [`AttachMode`].
@@ -239,6 +376,76 @@ mod tests {
     use super::*;
     use crate::contract::ExitStatus;
     use crate::proto::model::{DetachGuidance, ResidentReason, SupervisorDisposition};
+
+    /// **`node/get`'s detail is additive**: an answer from a supervisor that predates it parses
+    /// with an empty detail, an empty detail is not written, and a full one round-trips.
+    #[test]
+    fn node_get_detail_is_optional_on_the_wire() {
+        let node = serde_json::json!({
+            "agent_id": "a", "parent_id": null, "name": null, "agent_type": "codex",
+            "harness": "codex", "harness_version": null, "depth": 0, "state": "Running",
+            "reap_state": "Live", "timeout": 60000
+        });
+        let old: NodeGetResult =
+            serde_json::from_value(serde_json::json!({ "node": node })).expect("an old answer");
+        assert!(old.detail.is_empty());
+        let written = serde_json::to_value(&old).unwrap();
+        assert!(written.get("detail").is_none(), "{written}");
+
+        let full = NodeGetResult {
+            node: old.node.clone(),
+            detail: NodeDetail {
+                task: Some(TaskSent {
+                    prompt: "add a limiter".into(),
+                    appended: Some("report when done".into()),
+                    acceptance: vec!["tests pass".into()],
+                    verification: vec!["cargo test".into()],
+                }),
+                messages: vec![MessageLine {
+                    at: "2026-09-27T14:30:00.000Z".into(),
+                    from: "operator".into(),
+                    len: 42,
+                    outcome: "delivered via turn".into(),
+                }],
+                stream: Some(ActivityPage {
+                    from: 0,
+                    next: 812,
+                    lines: vec![ActionLine {
+                        at: "2026-09-27T14:30:01.000Z".into(),
+                        kind: ActionKind::Call,
+                        text: "command_execution(cargo test)".into(),
+                    }],
+                    unread: None,
+                }),
+                usage: Some(TokenUsage {
+                    input: 10,
+                    output: 2,
+                    cache_read: 5,
+                    cache_write: 0,
+                }),
+                workspace: Some(Workspace::Worktree {
+                    path: "/w/t-1".into(),
+                    branch: "marion/t-1".into(),
+                }),
+                completion: Some(CompletionSummary {
+                    status: ExitStatus::Ok,
+                    narrative: Some("done".into()),
+                    branch: Some("marion/t-1".into()),
+                    commit: Some(Oid("abc".into())),
+                    changed_paths: 3,
+                    exit: "exit 0".into(),
+                    diff: None,
+                }),
+                turns: Vec::new(),
+            },
+        };
+        let s = serde_json::to_string(&full).unwrap();
+        assert_eq!(
+            full,
+            serde_json::from_str::<NodeGetResult>(&s).unwrap(),
+            "{s}"
+        );
+    }
 
     #[test]
     fn results_round_trip() {

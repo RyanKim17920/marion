@@ -52,6 +52,8 @@ pub mod facade_cli;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
+/// The home screen bare `marion` opens: Start, Watch, Setup and help.
+pub mod home;
 /// Turn delivery's queue: one inbox per node, the renderer every message arrives through, and the
 /// journal records that audit it.
 pub mod inbox;
@@ -93,6 +95,8 @@ pub(crate) mod native_launch;
 ))]
 pub(crate) mod native_relay;
 mod native_tty;
+/// `node/get`'s detail: task, activity, usage, workspace and completion, read beside the journal.
+pub mod node_detail;
 mod pane_client;
 /// Turn delivery into an interactive node: a bracketed paste into its pty.
 pub mod paste;
@@ -109,6 +113,8 @@ pub mod provider_check;
 /// §5.3's display plane: the pty master, its recording, and the thread that reads it. The master
 /// lives here and not in a client, because a client that held it would SIGHUP the agent by dying.
 pub mod pty;
+/// The projects and models the home screen remembers between runs.
+pub mod recent;
 pub mod registry;
 /// §7.2's supervisor-restart marking: the `Live` → `Orphaned` judgement applied to a replayed
 /// tree, and what it refuses to decide without a process to look at.
@@ -129,6 +135,8 @@ pub(crate) mod spawn_receive_gate;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;
+/// Each node's token spend, folded from only what its stream appended since the last reading.
+pub mod usage_tally;
 /// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
 /// on instead of sleeping.
 pub mod wake;

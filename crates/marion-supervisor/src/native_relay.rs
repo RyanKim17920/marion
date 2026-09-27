@@ -4112,6 +4112,9 @@ mod tests {
             reap_state: marion_core::node::ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(900),
             pane: false,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
         }
     }
 
@@ -4303,6 +4306,9 @@ mod tests {
                     reap_state: ReapState::Live,
                     timeout: Duration::from_secs(900),
                     pane: true,
+                    started_at: None,
+                    ended_at: None,
+                    tokens: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 0,

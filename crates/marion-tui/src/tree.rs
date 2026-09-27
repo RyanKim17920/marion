@@ -281,6 +281,18 @@ impl Tree {
             .collect()
     }
 
+    /// The node drawn at `row`, and that row's connector prefix: the walk in render order, for a
+    /// renderer that lays rows out itself (the home screen's Watch tab).
+    pub fn row(&self, row: usize) -> Option<(&str, &Node)> {
+        let i = *self.order.get(row)?;
+        Some((self.prefix[row].as_str(), &self.nodes[i]))
+    }
+
+    /// The row the cursor is on.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     /// One row as its three spans — connectors, `glyph state`, ` label` — for a renderer that
     /// styles them differently. [`Self::lines`] is their concatenation, by construction.
     fn spans(&self, row: usize) -> Option<(&str, String, String)> {

@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
+
+  TYPE      claude edits in a worktree   claude-orchestrator read-only, deleg…
+  MODEL     default   opus   sonnet
+  OPTIONS   timeout 20m · change record on
+
+
+  $ marion run claude --model opus --prompt "Add rate limiting to /v1/orders…"
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and  │
+ │   cover it with tests▏                                                     │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens   ? shortcuts
+--- styles ---
+  110  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
+   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
+  524  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+    3  Style::new().green().bg(Color::Reset)  "●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
+
+  TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
+  MODEL     default   opus   sonnet
+  OPTIONS   timeout 20m · change record on
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  RECENT   marion resume <id> picks one up
+
+  14:24 ● claude opus      Add rate limiting to /v1/orders                                 running
+  13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                   landed
+  11:47 ✓ codex default    Port the CSV exporter to streaming writes                        landed
+  10:15 ✗ gemini default   Summarise open TODOs in src/billing                              failed
+
+  $ marion run claude --model opus --prompt "Add rate limiting to /v1/orders (token bucket, 100 …"
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏ │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                       ? shortcuts
+--- styles ---
+  159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
+   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+  895  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   28  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350✗fa"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+❯ ● claude       2.1.268   ready
+  ● codex        0.61.0    ready
+  ◐ gemini       0.9.1     sign-in needed
+  ● opencode     1.2.3     ready
+  ✗ copilot      0.0.339   too old, needs ≥ 0.0.350
+  ○ agy          —         not installed
+
+  TYPE      claude edits in a worktree   claude-orchestrator read-only, delegates
+  MODEL     default   opus   sonnet
+  OPTIONS   timeout 20m · change record on
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  RECENT   marion resume <id> picks one up
+
+  14:24 ● claude opus      Add rate limiting to /v1/orders                                                                                             running
+  13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                                                                               landed
+  11:47 ✓ codex default    Port the CSV exporter to streaming writes                                                                                    landed
+  10:15 ✗ gemini default   Summarise open TODOs in src/billing                                                                                          failed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  $ marion run claude --model opus --prompt "Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests"
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ Add rate limiting to /v1/orders (token bucket, 100 req/min per key) and cover it with tests▏                                                             │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                   ? shortcuts
+--- styles ---
+  159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
+   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+ 1167  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯claudeopus❯"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   28  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350✗fa"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"

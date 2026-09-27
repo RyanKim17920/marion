@@ -2012,6 +2012,9 @@ mod tests {
             reap_state: ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(60),
             pane: false,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
         };
         let done = text(&status_result(
             &json!(1),

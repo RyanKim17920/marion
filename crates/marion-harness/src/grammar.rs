@@ -119,6 +119,21 @@ pub struct ToolUnit {
     pub name: &'static str,
     pub args: &'static str,
     pub id: Option<&'static str>,
+    /// What the unit's arguments are, so a reader can word the call without knowing the harness.
+    pub shape: CallShape,
+}
+
+/// What a call unit's arguments hold. Most harnesses spell every kind of work as a named tool with
+/// an argument object; some give a shell command or a file change a unit shape of its own, whose
+/// "name" is only the shape's tag (codex's `command_execution`, `file_change`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallShape {
+    /// A named tool and its argument object: the name is the verb.
+    Tool,
+    /// The arguments are the shell command it ran (a string, or an argv array).
+    Command,
+    /// The arguments list the files it changed (strings, or objects with a `path`).
+    Files,
 }
 
 /// A unit carrying the model's words: the string at `path`. `joins` where the harness streams one
@@ -137,6 +152,8 @@ pub struct TextUnit {
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
+    /// Its unit's [`CallShape`].
+    pub shape: CallShape,
 }
 
 /// What a stream shows a node doing most recently: its last calls, oldest first, and the last line
@@ -350,23 +367,46 @@ fn counter(unit: &Value, ptr: Option<&str>) -> u64 {
 /// that never reached its usage frame made no claim about spend, and zero would be one. A unit of
 /// zeros is `Some` of zero: a run that reported spending nothing did report.
 pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
-    let mut per_unit = units(frames, &rule.at).into_iter().map(|unit| {
-        let cache_read = counter(unit, rule.cache_read);
-        let input = counter(unit, Some(rule.input));
-        TokenUsage {
-            input: if rule.input_includes_cache {
-                input.saturating_sub(cache_read)
-            } else {
-                input
-            },
-            output: counter(unit, Some(rule.output)),
-            cache_read,
-            cache_write: counter(unit, rule.cache_write),
-        }
-    });
+    fold_usage(rule, &usage_units(rule, frames))
+}
+
+/// Every usage unit in `frames` under `rule`, oldest first, each as the counts it states. Units
+/// are read frame by frame, so a caller reading a stream in pieces may read each piece's units and
+/// append them: the run's usage is then [`fold_usage`] over the whole list.
+pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
+    units(frames, &rule.at)
+        .into_iter()
+        .map(|unit| {
+            let cache_read = counter(unit, rule.cache_read);
+            let input = counter(unit, Some(rule.input));
+            TokenUsage {
+                input: if rule.input_includes_cache {
+                    input.saturating_sub(cache_read)
+                } else {
+                    input
+                },
+                output: counter(unit, Some(rule.output)),
+                cache_read,
+                cache_write: counter(unit, rule.cache_write),
+            }
+        })
+        .collect()
+}
+
+/// The run's usage from its units under the row's fold. `None` for no units.
+pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
     match rule.fold {
-        UsageFold::Last => per_unit.next_back(),
-        UsageFold::Sum => per_unit.reduce(|a, b| a + b),
+        UsageFold::Last => units.last().copied(),
+        UsageFold::Sum => units.iter().copied().reduce(|a, b| a + b),
+    }
+}
+
+/// Each turn's (or step's) total spend, oldest first, where the row's units are turns — a `Sum`
+/// row. Empty for a `Last` row, whose units are running totals rather than turns.
+pub fn turns(rule: &UsageRule, units: &[TokenUsage]) -> Vec<u64> {
+    match rule.fold {
+        UsageFold::Sum => units.iter().map(TokenUsage::total).collect(),
+        UsageFold::Last => Vec::new(),
     }
 }
 
@@ -660,12 +700,57 @@ pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
 /// Within one frame the rule's text units are read before its call units: a frame that carries
 /// both (Claude Code's `assistant` content) says the words that led to the call.
 pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) -> RecentActivity {
-    let mut calls: Vec<ToolCall> = Vec::new();
+    let items = activity_stream(rule, frames);
+    let said = items.iter().rev().find_map(|i| match &i.item {
+        Activity::Said(t) => Some(t.clone()),
+        Activity::Call(_) => None,
+    });
+    let mut calls: Vec<ToolCall> = items
+        .into_iter()
+        .filter_map(|i| match i.item {
+            Activity::Call(c) => Some(c),
+            Activity::Said(_) => None,
+        })
+        .collect();
+    let keep = calls.len().saturating_sub(max_calls);
+    RecentActivity {
+        calls: calls.split_off(keep),
+        text: said.and_then(|t| {
+            t.lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        }),
+    }
+}
+
+/// One thing a stream shows a node doing, in the order it happened.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Activity {
+    /// A tool call, counted once however many frames repeat it (a start and its completion).
+    Call(ToolCall),
+    /// Text it wrote: consecutive joining units (deltas) are one item.
+    Said(String),
+}
+
+/// An [`Activity`] and the index of the frame it was read from, so a caller can time it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivityItem {
+    pub frame: usize,
+    pub item: Activity,
+}
+
+/// **Everything** a stream shows a node doing under `rule`, oldest first — the whole sequence that
+/// [`recent_activity`] keeps only the end of. A call whose id was already seen in `frames` is not
+/// repeated; a text unit that joins (a delta) extends the text item before it, unless a call came
+/// between them.
+pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityItem> {
+    let mut items: Vec<ActivityItem> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut said: Option<String> = None;
     // Whether the last thing read was a joining text unit, so the next one continues it.
     let mut joining = false;
-    for frame in frames {
+    for (index, frame) in frames.iter().enumerate() {
         let one = std::slice::from_ref(frame);
         for t in rule.text {
             for unit in units(one, &t.at) {
@@ -675,9 +760,18 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 if s.trim().is_empty() {
                     continue;
                 }
-                match (&mut said, t.joins && joining) {
-                    (Some(held), true) => held.push_str(s),
-                    _ => said = Some(s.to_string()),
+                match (items.last_mut(), t.joins && joining) {
+                    (
+                        Some(ActivityItem {
+                            item: Activity::Said(held),
+                            ..
+                        }),
+                        true,
+                    ) => held.push_str(s),
+                    _ => items.push(ActivityItem {
+                        frame: index,
+                        item: Activity::Said(s.to_string()),
+                    }),
                 }
                 joining = t.joins;
             }
@@ -696,25 +790,19 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 {
                     continue;
                 }
-                calls.push(ToolCall {
-                    name: name.to_string(),
-                    args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                items.push(ActivityItem {
+                    frame: index,
+                    item: Activity::Call(ToolCall {
+                        name: name.to_string(),
+                        args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                        shape: c.shape,
+                    }),
                 });
                 joining = false;
             }
         }
     }
-    let keep = calls.len().saturating_sub(max_calls);
-    RecentActivity {
-        calls: calls.split_off(keep),
-        text: said.and_then(|t| {
-            t.lines()
-                .rev()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_string)
-        }),
-    }
+    items
 }
 
 /// Why a launch that resumed `resumed` did not: the stream's first session unit names another
@@ -887,6 +975,27 @@ mod tests {
         assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
     }
 
+    /// **Per-turn spend is the units themselves, on a row whose units are turns.** A `Sum` row's
+    /// units are each one turn's or step's spend, which is what a sparkline draws; a `Last` row's
+    /// units are running totals, so it has no per-turn series to offer and says so with none.
+    #[test]
+    fn per_turn_spend_is_read_off_a_sum_row_and_never_invented_for_a_last_row() {
+        let frames = [done(10, 1, 2), done(30, 3, 4)];
+        let sum = UsageRule {
+            fold: UsageFold::Sum,
+            ..RULE
+        };
+        let units = usage_units(&sum, &frames);
+        assert_eq!(units, vec![tokens(10, 1, 2), tokens(30, 3, 4)]);
+        assert_eq!(fold_usage(&sum, &units), usage(&sum, &frames));
+        assert_eq!(turns(&sum, &units), vec![13, 37]);
+        assert_eq!(
+            turns(&RULE, &usage_units(&RULE, &frames)),
+            Vec::<u64>::new()
+        );
+        assert_eq!(fold_usage(&sum, &[]), None, "no unit is no claim, not zero");
+    }
+
     #[test]
     fn input_that_counts_its_cache_is_normalised_to_uncached_input() {
         let rule = UsageRule {
@@ -945,6 +1054,7 @@ mod tests {
             name: "/name",
             args: "/args",
             id: Some("/id"),
+            shape: CallShape::Tool,
         }],
         text: &[
             TextUnit {
@@ -1004,6 +1114,41 @@ mod tests {
         // A blank message is not words, and does not erase the last ones.
         let a = recent_activity(&ACTIVITY, &[say("kept"), say("   ")], 5);
         assert_eq!(a.text.as_deref(), Some("kept"));
+    }
+
+    /// The whole stream, in order, each item with the frame it came from: every call once, and
+    /// deltas joined into one message until a call comes between them.
+    #[test]
+    fn the_activity_stream_is_every_call_and_message_in_order() {
+        let say = |t: &str| serde_json::json!({"type": "say", "text": t});
+        let delta = |t: &str| serde_json::json!({"type": "delta", "text": t});
+        let frames = [
+            say("planning"),
+            call("1", "read"),
+            call("1", "read"),
+            delta("edit"),
+            delta("ing"),
+            call("2", "write"),
+            say("   "),
+            delta("done"),
+        ];
+        let got: Vec<(usize, String)> = activity_stream(&ACTIVITY, &frames)
+            .into_iter()
+            .map(|i| match i.item {
+                Activity::Call(c) => (i.frame, format!("call {}", c.name)),
+                Activity::Said(t) => (i.frame, format!("said {t}")),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, "said planning".to_string()),
+                (1, "call read".to_string()),
+                (3, "said editing".to_string()),
+                (5, "call write".to_string()),
+                (7, "said done".to_string()),
+            ]
+        );
     }
 
     #[test]

@@ -1160,3 +1160,101 @@ fn a_gemini_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_be
 fn an_opencode_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it_dead() {
     a_hanging_root_is_killed_with_its_group(&OPENCODE, "bound-opencode");
 }
+
+// --- the stream is recorded as it lands ---------------------------------------------------------
+//
+// A root is watched while it runs (the home screen's Watch tab, `status`'s peek), and both read its
+// `events.jsonl`. A `LaunchOnly` root that recorded its stream only from the capture at exit showed
+// an empty stream for its whole run; its children already record each line as it lands.
+
+/// The first `events.jsonl` under `state`, wherever the project key put it.
+fn events_file(state: &Path) -> Option<PathBuf> {
+    let mut stack = vec![state.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n == "events.jsonl") {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
+    let node = &CODEX;
+    let dir = scratch("lo-live-codex");
+    let gate = dir.join("gate");
+    let frame = reached_the_bridge(node);
+    let bin = stub_harness(
+        &dir,
+        node,
+        "",
+        &format!(
+            "cat <<'EOF'\n{frame}\nEOF\n\
+             waited=0; while [ ! -e '{gate}' ] && [ \"$waited\" -le 600 ]; do sleep 0.05; waited=$((waited + 1)); done\n\
+             exit 0",
+            gate = gate.display()
+        ),
+    );
+    let repo = dir.join("repo");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args(["run", node.agent_type, "--prompt", "Delegate the task."])
+        .arg("--repo")
+        .arg(&repo)
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["--canned", "--base-url"])
+        .arg(marion_testsupport::silent_canned_endpoint())
+        .args(["--timeout", "120"])
+        .env("PATH", path)
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("marion run starts");
+    let deadline = Instant::now() + RUN_BOUND;
+    let mut recorded = String::new();
+    while Instant::now() < deadline {
+        recorded = events_file(&state)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        if recorded.contains("mcp_tool_call") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::fs::write(&gate, "").unwrap();
+    let _ = child.wait();
+    // The stub lets itself go after 30 s, and a frame recovered from the capture at that exit is
+    // `observed_live: false`: only a line recorded as it landed passes this.
+    let live = recorded
+        .lines()
+        .any(|l| l.contains("mcp_tool_call") && l.contains(r#""observed_live":true"#));
+    assert!(
+        live,
+        "a running LaunchOnly root's events.jsonl did not hold the frame it printed, recorded \
+         live:\n{recorded}"
+    );
+    let events = events_file(&state).expect("an events file");
+    let prompt = std::fs::read_to_string(events.with_file_name("prompt.txt"))
+        .expect("a root keeps the prompt it was launched with, for a watcher to show");
+    assert!(prompt.contains("Delegate the task."), "{prompt}");
+    let final_record = std::fs::read_to_string(&events).unwrap();
+    assert_eq!(
+        final_record.matches("mcp_tool_call").count(),
+        1,
+        "a frame recorded live must not be recorded again from the capture:\n{final_record}"
+    );
+}

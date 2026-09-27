@@ -76,6 +76,23 @@ pub struct NodeSummary {
     /// `#[serde(default)]`: `false` is what a journal-only reader and an older client both mean.
     #[serde(default)]
     pub pane: bool,
+    /// When it was launched: its spawn record's time. A client words elapsed time from it; the
+    /// supervisor never ticks a clock for anyone. `None` where no spawn record was read.
+    ///
+    /// `#[serde(default)]`, as every added field: an older client ignores it, an older supervisor
+    /// sends nothing and the row simply shows no time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<crate::encoding::SystemTime>,
+    /// When it ended: the time of the record that moved it to `Exited`. A client words an ended
+    /// node's time from it (`12m ago`) as it words a live one's elapsed from [`Self::started_at`].
+    /// `None` while it runs, and where the journal does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<crate::encoding::SystemTime>,
+    /// Every token its stream says it has spent so far (`TokenUsage::total`), kept current as usage
+    /// frames arrive. `None` when the harness has stated none — which is not zero. Tokens only:
+    /// marion never prices a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -684,6 +701,9 @@ mod tests {
             // 900_500 ms: a bound, so it must round UP to 901 and never down to 900.
             timeout: Duration(std::time::Duration::from_millis(900_500)),
             pane: true,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

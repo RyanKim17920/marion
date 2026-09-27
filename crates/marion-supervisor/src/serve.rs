@@ -2328,6 +2328,9 @@ mod tests {
             reap_state: ReapState::Live,
             timeout: EncDuration::from_secs(900),
             pane: false,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
         }
     }
 
@@ -2347,7 +2350,10 @@ mod tests {
                 panic!("a handler blew up");
             }
             match call {
-                Call::NodeGet(_) => Ok(MethodResult::NodeGet(NodeGetResult { node: a_node() })),
+                Call::NodeGet(_) => Ok(MethodResult::NodeGet(NodeGetResult {
+                    node: a_node(),
+                    detail: Default::default(),
+                })),
                 Call::TreeSubscribe(_) => {
                     lock(&self.subs).push(out.clone());
                     Ok(MethodResult::TreeSubscribe(TreeSubscribeResult {
@@ -2942,9 +2948,9 @@ mod tests {
     }
 
     fn node_get(agent: &str) -> Call {
-        Call::NodeGet(marion_core::proto::params::NodeGetParams {
-            agent_id: AgentId(agent.into()),
-        })
+        Call::NodeGet(marion_core::proto::params::NodeGetParams::of(AgentId(
+            agent.into(),
+        )))
     }
 
     /// **§2's inbound notifications reach the handler and produce no frame.**
@@ -3072,7 +3078,10 @@ mod tests {
         };
         assert_eq!(
             Method::NodeGet.decode_result(&body).unwrap(),
-            MethodResult::NodeGet(NodeGetResult { node: a_node() })
+            MethodResult::NodeGet(NodeGetResult {
+                node: a_node(),
+                detail: Default::default()
+            })
         );
     }
 

@@ -52,10 +52,10 @@ use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::{
-    AgentSpawnParams, NodeGetParams, NodeSteerParams, TreeSubscribeParams,
+    AgentSpawnParams, NodeGetParams, NodeKillParams, NodeSteerParams, TreeSubscribeParams,
 };
 use marion_core::proto::result::{
-    AgentSpawnResult, DeliveryResult, NodeGetResult, TreeSubscribeResult,
+    AgentSpawnResult, DeliveryResult, NodeGetResult, NodeKillResult, TreeSubscribeResult,
 };
 use marion_core::proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
@@ -266,9 +266,19 @@ pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult
 /// sentence through [`SpawnError::SupervisorRefused`], which already names the id and says how
 /// current the registry is.
 pub fn node_get(socket: &Path, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
+    node_get_with(socket, agent_id, None)
+}
+
+/// [`node_get`], with a page of the node's activity stream from `activity` when it is given.
+pub fn node_get_with(
+    socket: &Path,
+    agent_id: &AgentId,
+    activity: Option<marion_core::proto::params::ActivityCursor>,
+) -> Result<NodeGetResult, SpawnError> {
     match Conn::dial(socket)?.ask(
         Call::NodeGet(NodeGetParams {
             agent_id: agent_id.clone(),
+            activity,
         }),
         READ_ANSWER_BOUND,
         &format!(
@@ -329,6 +339,31 @@ pub fn steer(
         agent_type,
         result,
     })
+}
+
+/// **End one node, as the operator** — §2's `node/kill`, which §6.7 records as `Cancelled`.
+///
+/// The supervisor decides whether it may and whether there is anything to signal (a node already
+/// ended, or one still spawning with no pid, is refused before anything is signalled); a refusal
+/// is its sentence, carried verbatim.
+pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnError> {
+    match Conn::dial(socket)?.ask(
+        Call::NodeKill(NodeKillParams {
+            agent_id: agent_id.clone(),
+        }),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `node/kill` within {} s, so marion cannot say whether the node was \
+             ended; `marion list` shows its state",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NodeKill(r) => Ok(r),
+        _ => Err(unreachable(
+            socket,
+            "it answered `node/kill` with a result marion cannot read",
+        )),
+    }
 }
 
 /// An accepted steer: the supervisor's answer and the node it is for.

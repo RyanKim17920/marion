@@ -210,61 +210,121 @@ fn read_hidden_line() -> io::Result<String> {
     Ok(line)
 }
 
+/// One provider as a listing shows it: who it is, and the credential ids stored for it. Never a
+/// key: the ids are what `marion logout` takes, and [`CredentialStore::has`] is how they are known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderLogins {
+    pub id: String,
+    pub name: String,
+    pub custom: bool,
+    /// Its wires, comma-joined.
+    pub wires: String,
+    /// Whether it takes a key at all (a local server may not).
+    pub needs_key: bool,
+    /// Its stored credential ids, the unlabelled one first, then login order.
+    pub stored: Vec<StoredId>,
+}
+
+/// A stored credential id, and why the store could not say, when it could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredId {
+    pub id: String,
+    pub unreadable: Option<String>,
+}
+
+/// Every provider `reg` knows, with the ids `store` holds for each: what `marion login --list`
+/// prints and what the home screen's Setup lists.
+pub fn stored_logins(
+    reg: &Registry,
+    store: &dyn CredentialStore,
+    logins: &Logins,
+) -> Vec<ProviderLogins> {
+    reg.iter()
+        .map(|p| {
+            let needs_key = p.auth.needs_credential();
+            ProviderLogins {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                custom: p.custom,
+                wires: p.wire_list(),
+                needs_key,
+                stored: if needs_key {
+                    stored_ids(store, logins, &p.id)
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
+}
+
+/// [`stored_logins`] over the user's own registry, store and login index, and the store's name.
+pub fn user_logins() -> Result<(Vec<ProviderLogins>, String), String> {
+    let reg = credentials::user_registry()?;
+    let store = credentials::default_store().map_err(|e| e.to_string())?;
+    let logins = Logins::user().map_err(|e| e.to_string())?;
+    Ok((
+        stored_logins(&reg, store.as_ref(), &logins),
+        store.describe(),
+    ))
+}
+
 /// `marion login --list`: id, name, wires, and the credential ids stored for each provider in
 /// login order. Never a key.
 fn list(out: &mut dyn Write) -> Result<(), Failure> {
-    let reg = registry()?;
-    let store = store()?;
-    let logins = Logins::user()?;
+    let (providers, store) = user_logins().map_err(Failure::Refused)?;
     writeln!(
         out,
         "{:<16} {:<28} {:<40} KEYS",
         "PROVIDER", "NAME", "WIRES"
     )?;
-    for p in reg.iter() {
-        let stored = if !p.auth.needs_credential() {
+    for p in providers {
+        let stored = if !p.needs_key {
             "not needed".to_string()
+        } else if p.stored.is_empty() {
+            "-".to_string()
         } else {
-            stored_ids(store.as_ref(), &logins, &p.id)
+            p.stored
+                .iter()
+                .map(|s| match &s.unreadable {
+                    Some(e) => format!("{} (unreadable: {e})", s.id),
+                    None => s.id.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         let name = if p.custom {
             format!("{} (custom)", p.name)
         } else {
-            p.name.clone()
+            p.name
         };
-        writeln!(
-            out,
-            "{:<16} {:<28} {:<40} {stored}",
-            p.id,
-            name,
-            p.wire_list()
-        )?;
+        writeln!(out, "{:<16} {:<28} {:<40} {stored}", p.id, name, p.wires)?;
     }
-    writeln!(out, "\nkeys: {}", store.describe())?;
+    writeln!(out, "\nkeys: {store}")?;
     Ok(())
 }
 
-/// The stored credential ids for `provider`, comma-joined in login order — the unlabelled one
-/// first where no login index names it — or `-` for none.
-fn stored_ids(store: &dyn CredentialStore, logins: &Logins, provider: &str) -> String {
+/// The stored credential ids for `provider` in login order — the unlabelled one first where no
+/// login index names it.
+fn stored_ids(store: &dyn CredentialStore, logins: &Logins, provider: &str) -> Vec<StoredId> {
     let mut ids = logins.of(provider).unwrap_or_default();
     let default = CredentialId::default_for(provider);
     if !ids.contains(&default) {
         ids.insert(0, default);
     }
-    let mut stored = Vec::new();
-    for id in ids {
-        match store.get(&id.to_string()) {
-            Ok(Some(_)) => stored.push(id.to_string()),
-            Ok(None) => {}
-            Err(e) => stored.push(format!("{id} (unreadable: {e})")),
-        }
-    }
-    if stored.is_empty() {
-        "-".to_string()
-    } else {
-        stored.join(", ")
-    }
+    ids.into_iter()
+        .filter_map(|id| match store.has(&id.to_string()) {
+            Ok(true) => Some(StoredId {
+                id: id.to_string(),
+                unreadable: None,
+            }),
+            Ok(false) => None,
+            Err(e) => Some(StoredId {
+                id: id.to_string(),
+                unreadable: Some(e.to_string()),
+            }),
+        })
+        .collect()
 }
 
 fn logout(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
@@ -352,4 +412,61 @@ fn write_atomically(path: &std::path::Path, body: &str) -> io::Result<()> {
     let tmp = dir.join(format!(".providers.toml.{}", std::process::id()));
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credentials::CredentialError;
+
+    /// A store that answers whether a key is there and refuses to hand one over: a listing that
+    /// reads a key to learn it exists fails here.
+    struct NoReads(Vec<&'static str>);
+
+    impl CredentialStore for NoReads {
+        fn get(&self, _: &str) -> Result<Option<Secret>, CredentialError> {
+            panic!("a listing read a key")
+        }
+        fn has(&self, id: &str) -> Result<bool, CredentialError> {
+            Ok(self.0.contains(&id))
+        }
+        fn put(&self, _: &str, _: &Secret) -> Result<(), CredentialError> {
+            unreachable!()
+        }
+        fn delete(&self, _: &str) -> Result<bool, CredentialError> {
+            unreachable!()
+        }
+        fn describe(&self) -> String {
+            "a test store".into()
+        }
+    }
+
+    #[test]
+    fn the_listing_groups_stored_ids_by_provider_without_reading_a_key() {
+        let dir = std::env::temp_dir().join(format!("marion-login-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logins = Logins::at(dir.join("logins.json"));
+        logins
+            .add(&CredentialId::parse("openai:work").unwrap())
+            .unwrap();
+        let store = NoReads(vec!["openai", "openai:work"]);
+        let listed = stored_logins(&Registry::seed(), &store, &logins);
+        let openai = listed
+            .iter()
+            .find(|p| p.id == "openai")
+            .expect("openai is listed");
+        let ids: Vec<&str> = openai.stored.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["openai", "openai:work"],
+            "unlabelled first, then login order"
+        );
+        assert!(
+            listed
+                .iter()
+                .filter(|p| p.id != "openai")
+                .all(|p| p.stored.is_empty())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
