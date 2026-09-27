@@ -285,7 +285,7 @@ pub struct RootSpec {
     pub bound_secs: u64,
     /// **The profile this root runs on**, overriding its agent type's `profile` and
     /// `profiles.toml`'s `[default]` — a caller's own choice, or on a resume the profile the
-    /// session was recorded under. See [`crate::profiles::Launch::for_child`].
+    /// session was recorded under. See [`crate::profiles::Launch::resolve`].
     pub profile: Option<String>,
 }
 
@@ -700,7 +700,7 @@ pub fn prepare_watched(
     };
     let harness = agent_type.harness;
     // Which of the operator's own logins the root runs on, refused before any side effect.
-    let mut profiles = crate::profiles::Launch::for_child(
+    let mut profiles = crate::profiles::Launch::resolve(
         spec.auth,
         &spec.state,
         harness,

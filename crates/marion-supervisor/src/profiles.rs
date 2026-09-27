@@ -600,15 +600,15 @@ pub fn limit_notice(
 /// keep their own isolation) and wherever nothing selects a profile.
 #[derive(Debug, Clone, Default)]
 pub struct Launch {
-    pub harness: Option<Harness>,
     pub chain: Vec<Profile>,
     pub paths: Option<ProfilePaths>,
 }
 
 impl Launch {
-    /// The chain for a child launch: a resume runs on exactly the profile its session was
-    /// recorded under (or none); a fresh spawn resolves spawn > agent type > default.
-    pub fn for_child(
+    /// The chain for a launch of `harness` — a child's or a root's: a resume runs on exactly the
+    /// profile its session was recorded under (or none); a fresh launch resolves the run's own
+    /// choice > agent type > default.
+    pub fn resolve(
         auth: marion_harness::Auth,
         state_root: &Path,
         harness: Harness,
@@ -632,11 +632,7 @@ impl Launch {
         } else {
             resolve(&file, harness, requested, agent_type)?
         };
-        Ok(Self {
-            harness: Some(harness),
-            chain,
-            paths,
-        })
+        Ok(Self { chain, paths })
     }
 
     pub fn profile(&self, at: usize) -> Option<&Profile> {

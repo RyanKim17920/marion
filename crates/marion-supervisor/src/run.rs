@@ -1404,7 +1404,7 @@ pub fn run_spawn_watched(
     // **Which of the operator's own logins this node runs on**, refused here — before the node
     // exists — when a named profile is unknown, belongs to another harness, or has lost its
     // directory. Empty under canned auth and wherever nothing names a profile.
-    let profiles = crate::profiles::Launch::for_child(
+    let profiles = crate::profiles::Launch::resolve(
         env.auth,
         &env.state,
         agent_type.harness,
