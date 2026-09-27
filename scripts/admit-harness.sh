@@ -16,7 +16,8 @@
 #      integration suite under crates/marion-supervisor/tests that names one of the harnesses AND
 #      gates on a real one (`$gate`, below), plus the suites that walk every enabled native lane
 #      when a named harness's lane is on — sequentially, each bounded by MARION_ADMIT_BOUND
-#      seconds (default 1800);
+#      seconds (default 1800); then the conformance battery for the named programs, against the
+#      committed tests/fixtures/conformance/matrix.json (a PASS cell that moved is RED);
 #   3. on all green, writes the dated observation comment above each `accepted` list, formats the
 #      file, and prints the MILESTONES "Verified harness facts" paragraph(s) and the commit message.
 #      On any red, restores the table exactly as it was and exits non-zero with the suite named
@@ -148,6 +149,20 @@ run_suite marion-testsupport cargo test -p marion-testsupport --lib
 for s in $suites; do
     run_suite "$s" cargo test -p marion-supervisor --test "$s"
 done
+
+# The conformance battery, for exactly the admitted programs (each names every row that runs it:
+# `opencode` is both `opencode` and `acp:opencode`). It rewrites that row's transcripts and cells in
+# tests/fixtures/conformance/, and a cell that was PASS in the committed matrix and is not now is
+# RED — the diff this admission exists to read. Other moves are printed and land in the commit.
+conformance_rows=$(printf '%s' "$pairs" | awk '{printf "%s%s", (NR>1?",":""), $1}')
+committed_matrix=$(mktemp) || { restore; exit 1; }
+git -C "$here" show HEAD:tests/fixtures/conformance/matrix.json >"$committed_matrix" 2>/dev/null ||
+    : >"$committed_matrix"
+run_suite conformance env MARION_CONFORMANCE="$conformance_rows" \
+    MARION_CONFORMANCE_BASELINE="$committed_matrix" COPILOT_AUTO_UPDATE=false \
+    cargo test -p marion-supervisor --test conformance -- battery --nocapture
+grep '^conformance: changed' "$log" || true
+rm -f "$committed_matrix"
 rm -f "$log"
 
 # --- 3. the observation, beside each entry ------------------------------------------------------
@@ -193,7 +208,9 @@ cat <<EOF
 **$h $v, admitted $stamp via \`scripts/admit-harness.sh\`.** The binary first on
 PATH moved to $v and the gate refused it; the suites that drive a real \`$h\` were
 re-run against it (one run for $names), all green with only the table entries widened:
-$counts. The probes under \`spikes/\` were **not** re-run by the script; those readings remain
+$counts. The conformance battery re-ran for $h (\`tests/fixtures/conformance/\`; read
+\`git diff tests/fixtures/conformance/matrix.md\` for the cells that moved). The probes under
+\`spikes/\` were **not** re-run by the script; those readings remain
 the previous entry's unless re-measured beside this one.
 EOF
 done
