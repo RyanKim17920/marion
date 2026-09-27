@@ -341,8 +341,8 @@ pub fn render(rows: &[CredentialRow], matrix: &[MatrixCell]) -> String {
                     .iter()
                     .find(|c| c.harness == h && c.provider == *p)
                     .map(|c| match &c.cell {
-                        Cell::Native(w) => format!("{h}={w}"),
-                        Cell::Unsupported(_) => format!("{h}=-"),
+                        Cell::Native(w) => format!("{}={w}", h.cli_name()),
+                        Cell::Unsupported(_) => format!("{}=-", h.cli_name()),
                     })
             })
             .collect();
@@ -351,7 +351,11 @@ pub fn render(rows: &[CredentialRow], matrix: &[MatrixCell]) -> String {
     out.push_str("\nunsupported:\n");
     for c in matrix {
         if let Cell::Unsupported(why) = &c.cell {
-            out.push_str(&format!("  {} on {}: {why}\n", c.harness, c.provider));
+            out.push_str(&format!(
+                "  {} on {}: {why}\n",
+                c.harness.cli_name(),
+                c.provider
+            ));
         }
     }
     out
