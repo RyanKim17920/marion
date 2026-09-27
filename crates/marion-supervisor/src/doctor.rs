@@ -1607,12 +1607,12 @@ fn probe_ctx() -> SpawnCtx {
 /// `tests::the_verified_versions_are_the_newest_the_pin_table_admits` fails the day the two
 /// disagree. Read only to *note* a newer installed version; it never blocks a run.
 const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
-    (Harness::ClaudeCode, "claude", "2.1.269"),
-    (Harness::Codex, "codex", "0.147.0"),
+    (Harness::ClaudeCode, "claude", "2.1.283"),
+    (Harness::Codex, "codex", "0.155.1"),
     (Harness::Gemini, "gemini", "0.53.0"),
-    (Harness::OpenCode, "opencode", "1.18.30"),
+    (Harness::OpenCode, "opencode", "1.18.32"),
     (Harness::Copilot, "copilot", "1.0.83"),
-    (Harness::Goose, "goose", "1.50.0"),
+    (Harness::Goose, "goose", "1.52.0"),
     (Harness::Cline, "cline", "3.0.61"),
     (Harness::Qwen, "qwen", "0.23.0"),
 ];
