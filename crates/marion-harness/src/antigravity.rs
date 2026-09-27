@@ -79,6 +79,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     pane: None,
     // Nothing to relocate: agy runs on the operator's own login, and there is no canned route.
     env: &[],
+    // No canned route and so no overlay to point at an endpoint: agy runs only on the operator's
+    // own login, and an endpoint launch is refused like a canned one.
+    wires: &[],
     stream: Some(&STREAM),
     // `read` → `view_file`, `write` → `write_to_file`: the names 1.2.8's `init.tools` lists and
     // the model was watched calling (s32).

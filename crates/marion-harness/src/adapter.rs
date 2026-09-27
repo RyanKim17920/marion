@@ -1761,21 +1761,22 @@ impl HarnessAdapter for AntigravityAdapter {
 
     /// The refusal this harness owes, the root, and the working-directory preamble.
     ///
-    /// **Canned is refused by name.** agy has no measured way to point it at marion's canned
+    /// **Canned and endpoint are refused by name.** agy has no measured way to point it at another
     /// provider (an API-key route would need the operator's profile relocated, which loses the
     /// keychain login), so a "canned" node would spend the operator's real quota under a mode
-    /// that promises it spends nothing.
+    /// that promises it spends nothing, and an endpoint node would bill the operator's login
+    /// instead of the provider it names.
     fn fields(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        if spec.auth == Auth::Canned {
+        if spec.auth.overlays() {
             return Err(HarnessError::MissingInput {
                 harness: Harness::Antigravity,
-                what: "agy has no canned provider route: it runs only on the operator's own \
-                       login, so launch it live (marion run --live)",
+                what: "agy has no canned or endpoint provider route: it runs only on the \
+                       operator's own login, so launch it without --canned or a provider",
             });
         }
         let mut f = neutral_fields(spec, self.axes(spec)?);
@@ -3817,8 +3818,9 @@ mod tests {
         }
     }
 
-    /// **Every harness but the ACP protocol row can be pointed at an endpoint**, on the wire its
-    /// canned overlay already renders — the row states it rather than a resolver guessing it.
+    /// **Every harness but the ACP protocol row and agy can be pointed at an endpoint**, on the
+    /// wire its canned overlay already renders — the row states it rather than a resolver guessing
+    /// it. agy has no overlay at all (it runs only on the operator's own login), so no wire.
     #[test]
     fn every_row_but_acp_states_the_endpoint_wire_its_overlay_renders() {
         use marion_core::provider::Wire;
@@ -3833,7 +3835,7 @@ mod tests {
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]
                 }
-                Harness::Acp => &[],
+                Harness::Acp | Harness::Antigravity => &[],
             };
             assert_eq!(wires, want, "{h}");
         }
@@ -9015,16 +9017,18 @@ mod tests {
     }
 
     #[test]
-    fn agy_refuses_a_canned_launch_by_name() {
-        let canned = LaunchSpec {
-            auth: Auth::Canned,
-            ..agy_spec()
-        };
-        assert!(matches!(
-            AntigravityAdapter.compile(&canned, &ctx()),
-            Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
-                if what.contains("no canned provider route")
-        ));
+    fn agy_refuses_a_canned_or_endpoint_launch_by_name() {
+        for auth in [Auth::Canned, Auth::Endpoint] {
+            let overlaid = LaunchSpec { auth, ..agy_spec() };
+            assert!(
+                matches!(
+                    AntigravityAdapter.compile(&overlaid, &ctx()),
+                    Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
+                        if what.contains("no canned or endpoint provider route")
+                ),
+                "{auth:?}"
+            );
+        }
     }
 
     /// **Every row states how a headless node is let call marion's tools, and the launch carries

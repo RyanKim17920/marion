@@ -3803,7 +3803,7 @@ mod tests {
                 assert!(
                     canned
                         .as_deref()
-                        .is_some_and(|e| e.contains("no canned provider route")),
+                        .is_some_and(|e| e.contains("no canned or endpoint provider route")),
                     "{name}: {canned:?}"
                 );
                 RootSpec {
