@@ -568,7 +568,13 @@ warning. `AGY_CLI_DISABLE_AUTO_UPDATE=true` is the only update switch; a pushed
 `notifications/message` is surfaced nowhere (`Push::None`); `clientInfo.name` is
 `antigravity-client`. **No canned route** (an API-key route would need the profile relocated): the
 adapter refuses a canned launch by name, so no canned matrix cell names agy. Built-ins `agy` and
-`agy-impl`; the native lane ships disabled.
+`agy-impl`; the native lane ships disabled. **Verified live end to end (2026-09-27, agy 1.2.8,
+`gemini-3.6-flash-low`):** `MARION_LIVE_AGY=1 cargo test -p marion-supervisor --test agy_live` ran
+one `agy-impl` child through `run_spawn` on the operator's login; it wrote `agy-live.txt` in its
+worktree, its `report` was approved by the operator rule (narrative the child's own), the parent's
+`grep -qx` verification passed in the worktree, and the file landed on `marion/agy-live`. A
+verification line mutated to expect other content failed the same run `Failed` (`1 of 1 commands
+did not exit 0`).
 
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
