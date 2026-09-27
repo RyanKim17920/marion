@@ -549,8 +549,39 @@ pub struct Agent {
     /// What this agent was measured to do with a `session/prompt` sent while one is in flight,
     /// overriding the row's [`MidTurn::Queue`]; `None` where it was not measured.
     pub mid_turn: Option<MidTurn>,
+    /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
+    /// which is how a binary behind any command line is recognised as this row. Held to the row's
+    /// S33 capture by the sweep test.
+    pub agent_info: &'static str,
+    /// The user-level command that installs it, quoted where the binary is missing.
+    pub install: &'static str,
+    /// How far `session/new` got on the machine that measured it (S33), held to the capture.
+    pub reach: Reach,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
+}
+
+/// How far an agent's `session/new` got when it was measured — without an account marion made,
+/// a login marion ran, or any `authenticate` request.
+///
+/// **A record, not a gate.** The driver never reads it: what a live session offers is read off
+/// the live answer ([`session_select`]), and a refusal arrives in the agent's own words. The row
+/// carries it so the doctor and the docs can say which agents opened a session and which stop at
+/// an account wall, and the sweep test keeps it true against the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// `session/new` answered with a session.
+    Opened {
+        /// Only once the agent was pointed at a provider through its own env (a dummy key, a
+        /// loopback base URL) — on an operator's machine, their own provider configuration.
+        provider: bool,
+        /// The answer advertised a [`MODEL_CATEGORY`] select.
+        model: bool,
+        /// The answer advertised a [`MODE_CATEGORY`] select (a config option or `modes`).
+        mode: bool,
+    },
+    /// `session/new` was refused — an account wall, or a vendor-side refusal.
+    Refused,
 }
 
 /// The channel marion's bridge is declared on for one agent.
@@ -614,6 +645,13 @@ pub const OPENCODE: Agent = Agent {
     // S31 `p0a/acp-opencode-fold` (opencode 1.18.32): the second prompt is folded into the running
     // loop and both responses arrive when it drains.
     mid_turn: Some(MidTurn::Fold),
+    agent_info: "OpenCode",
+    install: "brew install opencode",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S21: initialize, session/new, session/prompt and a real `marion_report` tool call, \
            against opencode 1.17.3. Its canned recipe is inferred from S13 over the same binary, \
            not measured on the `acp` subcommand",
@@ -633,6 +671,9 @@ pub const GEMINI: Agent = Agent {
     declaration: Declaration::Session,
     // No turn has ever run, so nothing mid-turn was measured.
     mid_turn: None,
+    agent_info: "gemini-cli",
+    install: "npm i -g @google/gemini-cli",
+    reach: Reach::Refused,
     note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
            ineligibility). No turn has run, so no tool spelling has been measured",
 };
@@ -652,6 +693,13 @@ pub const CLAUDE_ACP: Agent = Agent {
     // S31 `p0a/acp-claude-acp-fold`, measured on 0.81.0 rather than this row's pinned 0.66.0: the
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
+    agent_info: "@agentclientprotocol/claude-agent-acp",
+    install: "npm i -g @agentclientprotocol/claude-agent-acp",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
 };
@@ -674,6 +722,13 @@ pub const CODEX_ACP: Agent = Agent {
     // S31 `p0a/acp-codex-acp` (1.13.0): the second prompt is steered into the turn and the first
     // is never answered, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    agent_info: "@agentclientprotocol/codex-acp",
+    install: "npm i -g @agentclientprotocol/codex-acp",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
            (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
@@ -698,6 +753,13 @@ pub const COPILOT: Agent = Agent {
     // S31 `p0a/acp-copilot` (1.0.87): the second prompt supersedes the first, which returns an
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    agent_info: "Copilot",
+    install: "npm i -g @github/copilot",
+    reach: Reach::Opened {
+        provider: false,
+        model: false,
+        mode: true,
+    },
     note: "S28: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
@@ -2384,6 +2446,51 @@ mod tests {
             })
             .unwrap_or_else(|| panic!("{p} carries no frame with id {id}"))
             .to_string()
+    }
+
+    /// **Every refinement row is a measurement, and this is the sweep that holds it to one.**
+    ///
+    /// Each row in [`AGENTS`] has an S33 capture named for its id, and every per-agent fact the row
+    /// states that the wire can witness is read back off that capture rather than trusted: the
+    /// identity it answers `initialize` with ([`Agent::agent_info`]), whether `session/new` opened
+    /// a session or was refused ([`Agent::reach`]), and — for an opened session — whether the
+    /// answer advertised a `model` and a `mode` select, read with the very [`session_select`] the
+    /// driver uses. A row added without a capture, or a capture that drifts from its row, fails
+    /// here by the row's name.
+    #[test]
+    fn every_refinement_row_matches_its_s33_capture() {
+        for a in AGENTS {
+            let id = a.id;
+            assert!(!a.agent_info.is_empty(), "`{id}` states no agentInfo");
+            assert!(!a.install.is_empty(), "`{id}` states no install command");
+            assert!(!a.note.is_empty(), "`{id}` states no note");
+            let hs = AgentHandshake::parse(&s33_frame(id, 0))
+                .unwrap_or_else(|e| panic!("`{id}`'s capture is no handshake: {e}"));
+            assert_eq!(hs.name, a.agent_info, "`{id}` answers as another agent");
+            let answer = s33_frame(id, 1);
+            match a.reach {
+                Reach::Opened { model, mode, .. } => {
+                    assert!(
+                        session_id(&answer).is_ok(),
+                        "`{id}` is recorded as opening a session: {answer}"
+                    );
+                    assert_eq!(
+                        session_select(&answer, MODEL_CATEGORY).is_some(),
+                        model,
+                        "`{id}`'s model select"
+                    );
+                    assert_eq!(
+                        session_select(&answer, MODE_CATEGORY).is_some(),
+                        mode,
+                        "`{id}`'s mode select"
+                    );
+                }
+                Reach::Refused => assert!(
+                    matches!(session_id(&answer), Err(AcpError::Refused { .. })),
+                    "`{id}` is recorded as refused: {answer}"
+                ),
+            }
+        }
     }
 
     /// **Which MCP transports an agent takes is advertised, so it is read, never tabled.** ACP's

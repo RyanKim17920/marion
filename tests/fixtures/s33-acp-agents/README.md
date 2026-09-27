@@ -79,4 +79,8 @@ Host, username and credential scan: clean (no `$HOME`, no user name, no key mate
 
 ## Which tests read it
 
-- `crates/marion-harness/src/acp.rs` — `the_mcp_transports_an_agent_advertises_are_read_off_its_handshake`.
+- `crates/marion-harness/src/acp.rs` — `the_mcp_transports_an_agent_advertises_are_read_off_its_handshake`,
+  and `every_refinement_row_matches_its_s33_capture`, the sweep that holds each `acp::AGENTS` row's
+  `agent_info` and `reach` (opened or refused; the `model` and `mode` selects) to its file here.
+  `docker-agent.jsonl` is evidence only: its launch needs an operator's agent file, so it has no
+  row.
