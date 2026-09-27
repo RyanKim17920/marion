@@ -87,28 +87,15 @@ pub fn read(
     }
 }
 
-/// The contract's task as the node received it, with marion's appended report instruction split
-/// off the prompt so a reader can tell the operator's words from marion's.
+/// The contract's task as the node received it.
 fn task_sent(c: &TaskContract) -> TaskSent {
-    let delivered = &c.instructions.value;
-    let suffix = format!("\n\n{}", crate::bridge::REPORT_INSTRUCTION);
-    let (prompt, appended) = match delivered.strip_suffix(&suffix) {
-        Some(head) => (
-            head.to_string(),
-            Some(crate::bridge::REPORT_INSTRUCTION.to_string()),
-        ),
-        None => (delivered.clone(), None),
-    };
-    TaskSent {
-        prompt,
-        appended,
-        acceptance: c
-            .acceptance_criteria
+    task_of(
+        &c.instructions.value,
+        c.acceptance_criteria
             .iter()
             .map(|a| a.value.clone())
             .collect(),
-        verification: c
-            .verification
+        c.verification
             .iter()
             .map(|v| {
                 std::iter::once(&v.program)
@@ -118,6 +105,25 @@ fn task_sent(c: &TaskContract) -> TaskSent {
                     .join(" ")
             })
             .collect(),
+    )
+}
+
+/// A task from the prompt as delivered, with marion's appended report instruction split off so a
+/// reader can tell the operator's words from marion's.
+pub fn task_of(delivered: &str, acceptance: Vec<String>, verification: Vec<String>) -> TaskSent {
+    let suffix = format!("\n\n{}", crate::bridge::REPORT_INSTRUCTION);
+    let (prompt, appended) = match delivered.strip_suffix(&suffix) {
+        Some(head) => (
+            head.to_string(),
+            Some(crate::bridge::REPORT_INSTRUCTION.to_string()),
+        ),
+        None => (delivered.to_string(), None),
+    };
+    TaskSent {
+        prompt,
+        appended,
+        acceptance,
+        verification,
     }
 }
 

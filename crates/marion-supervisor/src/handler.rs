@@ -1431,6 +1431,10 @@ pub struct RegistryHandle {
     /// [`Self::quit`] uses and for the same reason — it makes a read and the write derived from it
     /// one indivisible decision, not a throughput device.
     spawn_decision: Mutex<()>,
+    /// **What this supervisor sent each child it started**, for `node/get` to show while the child
+    /// runs: its contract file is written when it ends, and until then nothing on disk holds the
+    /// prompt. In memory only, like [`NodeHandle`]; after the run the contract is the record.
+    sent: Mutex<HashMap<AgentId, marion_core::proto::result::TaskSent>>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1573,6 +1577,7 @@ impl RegistryHandle {
             #[cfg(test)]
             pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
+            sent: Mutex::new(HashMap::new()),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
             stopped_reported: AtomicBool::new(false),
@@ -1719,10 +1724,13 @@ impl RegistryHandle {
         .map(|(node, inputs, project)| {
             // The detail's file reads happen here, after the registry lock is released: a long
             // stream or a slow disk must never hold up the tree for everyone else.
-            let detail = match (inputs, project) {
+            let mut detail: marion_core::proto::result::NodeDetail = match (inputs, project) {
                 (Some(i), Some(p)) => crate::node_detail::read(&p, id, &i, cursor),
                 _ => Default::default(),
             };
+            if detail.task.is_none() {
+                detail.task = lock(&self.sent).get(id).cloned();
+            }
             NodeGetResult { node, detail }
         })
     }
@@ -3209,8 +3217,22 @@ impl RegistryHandle {
         let answered_task_id = task_id.clone();
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
+        // The prompt as the child will receive it, resolved the way `run_spawn_watched` resolves
+        // it, before `req` moves into the launch.
+        let delivered = crate::run::agent_types(&req.repo)
+            .ok()
+            .and_then(|t| t.resolve(&req.agent_type))
+            .map(|t| crate::run::child_prompt(&t, &req.prompt));
+        let acceptance = req.acceptance_criteria.clone();
+        let verification = req.verification.clone();
         let (agent_id, state) =
             self.launch_child(me, env, req, task_id, caller, repo, decision, announce_to)?;
+        if let Some(prompt) = delivered {
+            lock(&self.sent).insert(
+                agent_id.clone(),
+                crate::node_detail::task_of(&prompt, acceptance, verification),
+            );
+        }
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
