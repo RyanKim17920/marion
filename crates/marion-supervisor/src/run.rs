@@ -2265,7 +2265,20 @@ pub(crate) fn write_config_documents(
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, contents)?;
+        // Owner-only: a document can carry the node's capability token and, on an endpoint node,
+        // the user's key. The mode is set again after the write for a file that already existed.
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            f.write_all(contents.as_bytes())?;
+        }
         written.push(path);
     }
     Ok(written)
@@ -3818,6 +3831,30 @@ mod tests {
             matches!(agent_types(&repo), Err(SpawnError::AgentTypesFile { .. })),
             "only NotFound means the built-ins"
         );
+    }
+
+    /// **A node's config documents are the owner's alone.** They carry the node's capability token
+    /// in the bridge declaration and, on an endpoint node, the user's key (opencode's provider
+    /// block, cline's `providers.json`), so no other user on the machine may read them.
+    #[test]
+    fn config_documents_are_written_owner_only_even_over_a_wider_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("config-docs-mode");
+        let path = root.join("nested/dir/doc.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let fresh = root.join("fresh/doc.toml");
+        write_config_documents(vec![
+            (path.clone(), "{}".into()),
+            (fresh.clone(), "x = 1".into()),
+        ])
+        .unwrap();
+        for p in [&path, &fresh] {
+            let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", p.display());
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
     }
 
     /// **A row's `provider` must be one the user has** — a built-in, or one in their own
