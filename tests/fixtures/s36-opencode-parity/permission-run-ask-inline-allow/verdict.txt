@@ -1,0 +1,3 @@
+as permission-run-ask, with OPENCODE_CONFIG_CONTENT={"permission":{"slow_*":"allow"}}
+tool_use slow_report status=completed
+PASS: an inline allow merged over the file config wins

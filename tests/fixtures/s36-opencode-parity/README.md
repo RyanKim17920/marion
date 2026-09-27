@@ -102,3 +102,19 @@ parks the child on its second request, after the first response named the sessio
 the resume is measured working (`a_lost_opencode_child_resumes_its_own_session_under_its_parent_
 and_takes_its_next_turn`). A way past the gap, not yet taken: marion titles every opencode session
 `marion-<agent id>`, so the id could be looked up by title in the node's own `OPENCODE_DB`.
+
+## `permission-*` — an operator's `"ask"` on a tool marion's node calls
+
+| probe | shape | verdict |
+|---|---|---|
+| `permission-run-ask` | `opencode run`, config `permission: {"slow_report": "ask"}` | **FAIL** — `auto-rejecting` on stderr, the tool part `error` *The user rejected permission…*, exit 0 |
+| `permission-run-ask-inline-allow` | the same, with `OPENCODE_CONFIG_CONTENT={"permission":{"slow_*":"allow"}}` | **PASS** — the inline allow, merged over the file, wins |
+| `permission-acp-ask` | `opencode acp`, the same config | **PASS** — `session/request_permission` with `allow_once`/`allow_always`/`reject_once`; answered `once`, the call completed |
+
+So a headless `opencode run` node whose operator configured `"ask"` for marion's tools has them
+silently refused (the row's grammar fails a refused `report`, so the run is not a false success,
+but a root's `spawn` is lost). Over ACP the same ask reaches marion, which answers `allow_once` by
+kind, as it does for every agent. marion's live inline document does not yet pre-approve its own
+verbs for a headless node the way claude's `--allowedTools` does: the same document is the native
+injection, where the operator is present to answer, so the grant belongs on the headless launch
+alone (see MILESTONES).

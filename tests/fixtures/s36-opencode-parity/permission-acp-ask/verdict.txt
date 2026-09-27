@@ -1,0 +1,3 @@
+config permission {"slow_report": "ask"}; opencode acp calls slow_report
+session/request_permission arrived (options allow_once "once", allow_always, reject_once); the client answered "once"; the call completed
+PASS: opencode acp asks the ACP client, and marion answers allow_once by kind
