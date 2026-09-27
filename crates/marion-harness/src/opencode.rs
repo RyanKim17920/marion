@@ -138,7 +138,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: "OPENCODE_DISABLE_PROJECT_CONFIG",
             val: Val::Lit("1"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "OPENCODE_DISABLE_MODELS_FETCH",
