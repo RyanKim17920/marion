@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{AgentId, Oid};
+use crate::harness::Harness;
 
 /// How severe a finding is. Ordered so that `Critical > High > Medium > Low`.
 ///
@@ -58,7 +59,7 @@ pub const MAX_ROUNDS_CEILING: u8 = 3;
 #[serde(try_from = "RawReviewSpec", into = "RawReviewSpec")]
 pub struct ReviewSpec {
     /// The agent type that reviews; `None` lets the supervisor pick one from a different model
-    /// family than the author's (see `model_family`).
+    /// family than the author's (see [`model_family`]).
     pub agent_type: Option<String>,
     /// The least severe grounded finding that blocks.
     pub block_on: Severity,
@@ -471,6 +472,81 @@ pub struct ReviewRecord {
     pub outcome: ReviewOutcome,
     #[serde(default)]
     pub rounds: Vec<ReviewRound>,
+}
+
+/// Model families by model-name prefix. A prefix matches at the start of the model name and must
+/// be followed by the end or a non-letter, so `o3` matches `o3-mini` but not `o3de`.
+///
+/// Data, not code: a new family or alias is a row.
+const MODEL_PREFIX_FAMILY: &[(&str, &str)] = &[
+    ("claude", "anthropic"),
+    ("opus", "anthropic"),
+    ("sonnet", "anthropic"),
+    ("haiku", "anthropic"),
+    ("gpt", "openai"),
+    ("chatgpt", "openai"),
+    ("codex", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("gemini", "google"),
+    ("gemma", "google"),
+    ("qwen", "alibaba"),
+];
+
+/// Provider segments of a `provider/model` spelling (`anthropic/claude-sonnet-4`,
+/// `openrouter/google/gemini-2.5-pro`).
+const PROVIDER_FAMILY: &[(&str, &str)] = &[
+    ("anthropic", "anthropic"),
+    ("openai", "openai"),
+    ("google", "google"),
+    ("alibaba", "alibaba"),
+    ("qwen", "alibaba"),
+];
+
+/// The family a harness serves when its model is unnamed or unrecognised: the harnesses that are a
+/// vendor's own CLI. Every other harness is model-agnostic and is known only by its model.
+const HARNESS_FAMILY: &[(Harness, &str)] = &[
+    (Harness::ClaudeCode, "anthropic"),
+    (Harness::Codex, "openai"),
+    (Harness::Gemini, "google"),
+];
+
+fn prefix_family(name: &str) -> Option<&'static str> {
+    MODEL_PREFIX_FAMILY.iter().find_map(|(prefix, family)| {
+        let rest = name.strip_prefix(prefix)?;
+        let boundary = rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic());
+        boundary.then_some(*family)
+    })
+}
+
+/// The model family a node runs, for picking a reviewer from a *different* family than the
+/// author's. `None` means unknown, which the caller must not treat as "different".
+///
+/// A recognised model name wins over the harness, because a vendor CLI pointed at a gateway can
+/// run another vendor's model; the harness's own family is the fallback for an unnamed or
+/// unrecognised model (`claude-code` with no `--model` is still anthropic). Model-agnostic
+/// harnesses (opencode, copilot, goose, cline, qwen, acp) are known only by the model string.
+pub fn model_family(harness: Harness, model: Option<&str>) -> Option<&'static str> {
+    let from_model = model.and_then(|m| {
+        let m = m.trim().to_ascii_lowercase();
+        let mut segments = m.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>();
+        let name = segments.pop()?;
+        prefix_family(name).or_else(|| {
+            segments.iter().rev().find_map(|seg| {
+                PROVIDER_FAMILY
+                    .iter()
+                    .find(|(p, _)| p == seg)
+                    .map(|(_, f)| *f)
+            })
+        })
+    });
+    from_model.or_else(|| {
+        HARNESS_FAMILY
+            .iter()
+            .find(|(h, _)| *h == harness)
+            .map(|(_, f)| *f)
+    })
 }
 
 #[cfg(test)]
@@ -1024,5 +1100,78 @@ mod tests {
             serde_json::from_str(r#"{"outcome":{"kind":"skipped","reason":"no reviewer"}}"#)
                 .unwrap();
         assert!(r.rounds.is_empty());
+    }
+
+    #[test]
+    fn a_vendor_cli_with_no_model_is_its_vendors_family() {
+        assert_eq!(model_family(Harness::ClaudeCode, None), Some("anthropic"));
+        assert_eq!(model_family(Harness::Codex, None), Some("openai"));
+        assert_eq!(model_family(Harness::Gemini, None), Some("google"));
+        // An alias the table does not know still falls back to the vendor.
+        assert_eq!(
+            model_family(Harness::ClaudeCode, Some("best")),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn a_model_agnostic_harness_is_known_only_by_its_model() {
+        for h in [
+            Harness::OpenCode,
+            Harness::Copilot,
+            Harness::Goose,
+            Harness::Cline,
+            Harness::Qwen,
+            Harness::Acp,
+        ] {
+            assert_eq!(model_family(h, None), None, "{h}");
+            assert_eq!(model_family(h, Some("mystery-7b")), None, "{h}");
+        }
+        let cases = [
+            (
+                Harness::OpenCode,
+                "anthropic/claude-sonnet-4-5",
+                "anthropic",
+            ),
+            (Harness::Copilot, "gpt-5", "openai"),
+            (Harness::Copilot, "claude-sonnet-4.5", "anthropic"),
+            (Harness::Goose, "gemini-2.5-pro", "google"),
+            (Harness::Cline, "o3-mini", "openai"),
+            (Harness::Qwen, "qwen3-coder-plus", "alibaba"),
+            (
+                Harness::OpenCode,
+                "openrouter/google/gemini-2.5-flash",
+                "google",
+            ),
+            (Harness::OpenCode, "openai/some-new-name", "openai"),
+            (Harness::Acp, "Claude-Opus-4", "anthropic"),
+        ];
+        for (h, m, want) in cases {
+            assert_eq!(model_family(h, Some(m)), Some(want), "{h} {m}");
+        }
+    }
+
+    #[test]
+    fn a_recognised_model_wins_over_the_harness() {
+        assert_eq!(
+            model_family(Harness::ClaudeCode, Some("gemini-2.5-pro")),
+            Some("google")
+        );
+        assert_eq!(
+            model_family(Harness::ClaudeCode, Some("haiku")),
+            Some("anthropic")
+        );
+        assert_eq!(
+            model_family(Harness::Codex, Some("gpt-5-codex")),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn a_prefix_matches_only_at_a_word_boundary() {
+        assert_eq!(model_family(Harness::Goose, Some("o3de")), None);
+        assert_eq!(model_family(Harness::Goose, Some("gptx")), None);
+        assert_eq!(model_family(Harness::Goose, Some("gpt4o")), Some("openai"));
+        assert_eq!(model_family(Harness::Goose, Some("o4")), Some("openai"));
     }
 }
