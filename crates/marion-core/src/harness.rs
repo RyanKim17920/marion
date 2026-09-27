@@ -145,15 +145,20 @@ impl Harness {
 /// marion has never heard of.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, \
-     goose, cline, qwen, acp"
+    "unknown harness {0:?}; known harnesses are claude, codex, gemini, opencode, copilot, goose, \
+     cline, qwen, acp (claude-code is accepted for claude)"
 )]
 pub struct UnknownHarness(pub String);
 
 impl FromStr for Harness {
     type Err = UnknownHarness;
 
+    /// The wire spelling, plus `claude` for Claude Code: the name a person types everywhere else
+    /// (agent types, `marion claude`), accepted as input while the wire keeps `claude-code`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "claude" {
+            return Ok(Harness::ClaudeCode);
+        }
         Harness::ALL
             .into_iter()
             .find(|h| h.as_str() == s)
@@ -236,6 +241,18 @@ mod tests {
                 ("acp", true),
             ]
         );
+    }
+
+    /// **`claude` is the spelling a person types**: agent types, `marion claude` and the README
+    /// all say it, so `.marion/agents.toml`'s `harness =` and `doctor --harness` accept it. The
+    /// wire spelling stays `claude-code`, which persisted contracts carry, and still parses.
+    #[test]
+    fn claude_parses_as_claude_code_and_the_wire_spelling_is_unchanged() {
+        assert_eq!("claude".parse::<Harness>(), Ok(Harness::ClaudeCode));
+        assert_eq!("claude-code".parse::<Harness>(), Ok(Harness::ClaudeCode));
+        assert_eq!(Harness::ClaudeCode.as_str(), "claude-code");
+        let e = "clod".parse::<Harness>().unwrap_err().to_string();
+        assert!(e.contains("known harnesses are claude,"), "{e}");
     }
 
     #[test]

@@ -662,11 +662,15 @@ pub enum AgentTypesError {
     },
 }
 
-/// `Harness::ALL`'s wire spellings, joined for [`AgentTypesError::UnknownHarness`].
+/// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: Claude Code as
+/// `claude`, the name a person types, with its wire spelling beside it.
 fn known_harnesses() -> String {
     Harness::ALL
         .iter()
-        .map(|h| h.as_str())
+        .map(|h| match h {
+            Harness::ClaudeCode => "claude (or claude-code)",
+            other => other.as_str(),
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -1439,12 +1443,12 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
         let row = |harness: &str| {
             format!("[[agent]]\nname = \"r\"\nharness = \"{harness}\"\ndescription = \"x\"\n")
         };
-        let e = AgentTypes::parse(&row("claude")).unwrap_err();
+        let e = AgentTypes::parse(&row("clod")).unwrap_err();
         assert_eq!(
             e,
             AgentTypesError::UnknownHarness {
                 name: "r".into(),
-                harness: "claude".into()
+                harness: "clod".into()
             }
         );
         let msg = e.to_string();
@@ -1452,6 +1456,16 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
             assert!(msg.contains(h.as_str()), "{msg} must name {h}");
         }
         assert!(msg.contains("acp:<command>"), "{msg}");
+        assert!(msg.contains("known harnesses are claude "), "{msg}");
+        // `claude` is the spelling a person types; `claude-code`, the wire's, still loads too.
+        for spelling in ["claude", "claude-code"] {
+            let t = AgentTypes::parse(&row(spelling)).unwrap();
+            assert_eq!(
+                t.resolve("r").unwrap().harness,
+                Harness::ClaudeCode,
+                "{spelling}"
+            );
+        }
         assert!(
             matches!(
                 AgentTypes::parse(&row("acp:")),
