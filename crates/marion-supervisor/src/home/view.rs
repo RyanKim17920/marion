@@ -404,7 +404,12 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
         live,
         task: d.task.as_ref().map(|t| TaskView {
             prompt: t.prompt.clone(),
-            appended: t.appended.clone(),
+            // marion's own report instruction, named rather than quoted: the sentence is the same
+            // on every node and pushed the operator's criteria off a short screen.
+            appended: t
+                .appended
+                .as_ref()
+                .map(|_| "report when finished".to_string()),
             acceptance: t.acceptance.clone(),
             verification: t.verification.clone(),
         }),
