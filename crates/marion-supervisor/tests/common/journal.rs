@@ -74,3 +74,25 @@ pub fn a_finished_node(
         },
     }));
 }
+
+/// Every record in the journal at `path`, decoded with `marion_core`'s own decoder, in order.
+/// A missing journal is no records.
+pub fn records(path: &Path) -> Vec<RecordKind> {
+    std::fs::read(path)
+        .unwrap_or_default()
+        .split(|b| *b == b'\n')
+        .filter_map(marion_core::journal::decode)
+        .map(|r| r.kind)
+        .collect()
+}
+
+/// `(message_id, via)` of every `MessageDelivered` for `agent`.
+pub fn delivered_to(path: &Path, agent: &AgentId) -> Vec<(String, String)> {
+    records(path)
+        .into_iter()
+        .filter_map(|k| match k {
+            RecordKind::MessageDelivered(d) if &d.agent_id == agent => Some((d.message_id, d.via)),
+            _ => None,
+        })
+        .collect()
+}

@@ -21,6 +21,11 @@ the current value, and `fake/beta`) and a `mode` select (`ask`, the current valu
 it answers `session/set_config_option` for both — accepting an offered value and refusing any other
 with `-32602`, as `opencode acp` 1.18.32 was measured to do.
 
+And a backgrounding root, for turn delivery: `bgspawn:<agent type>|<child prompt>|<log path>`
+calls `spawn` with `background: true`, ends its turn at once, and from then on appends the text of
+every `session/prompt` it is sent (that one included) to `<log path>` as a JSON line and answers
+`end_turn` — so a test can see what marion sent it as later turns.
+
 Runs nothing but the servers it is handed; no model, no network, no credential.
 """
 import json
@@ -35,6 +40,7 @@ NARRATIVE = "Edited the worktree over ACP from an agent marion had never heard o
 TOOL_TITLE = "marion/report"
 SPAWN_TITLE = "marion/spawn"
 SPAWN_MODE = "spawn:"
+BG_MODE = "bgspawn:"
 
 out_lock = threading.Lock()
 
@@ -180,6 +186,25 @@ def delegate(sid, rid, text):
     send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
 
 
+def log_prompt(text):
+    with open(session["log"], "a") as fh:
+        fh.write(json.dumps({"text": text}) + "\n")
+
+
+def background(sid, rid, text):
+    """The backgrounding mode: one real `spawn` with `background: true`, then every prompt logged."""
+    agent_type, _, rest = text[text.index(BG_MODE) + len(BG_MODE):].partition("|")
+    child_prompt, _, log = rest.rpartition("|")
+    session["log"] = log.strip()
+    log_prompt(text)
+    marion = next((s for s in servers if s.name == "marion" and "spawn" in s.tools), None)
+    if marion is not None:
+        mirrored_call(sid, marion, SPAWN_TITLE, "spawn",
+                      {"agent_type": agent_type.strip(), "prompt": child_prompt.strip(),
+                       "background": True})
+    send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+
+
 def handle(frame):
     method = frame.get("method")
     rid = frame.get("id")
@@ -218,6 +243,13 @@ def handle(frame):
     elif method == "session/prompt":
         sid = params.get("sessionId") or session["id"]
         text = prompt_text(params)
+        if session.get("log"):
+            log_prompt(text)
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+            return
+        if BG_MODE in text:
+            background(sid, rid, text)
+            return
         if SPAWN_MODE in text:
             delegate(sid, rid, text)
             return

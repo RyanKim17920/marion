@@ -20,6 +20,8 @@ use marion_core::registry::{Replay, ReplayedNode};
 use marion_supervisor::run::run_bounded;
 use marion_testsupport::{fixture_repo, on_path, scratch};
 
+mod common;
+
 /// A bound that exists only to fail: the fake answers in milliseconds.
 const RUN_BOUND: Duration = Duration::from_secs(120);
 
@@ -130,4 +132,82 @@ fn an_acp_root_delegates_to_a_child_and_is_watched_live() {
         !stderr.contains("no `type` field"),
         "an ACP frame is rendered by its shape, not reported as an unknown one:\n{stderr}"
     );
+}
+
+/// **An ACP root's background child ends while the root is held, and the end is the root's next
+/// prompt** (turn delivery). The root backgrounds a child and ends its first prompt at once; marion
+/// holds its session open while the child's end is owed, sends the end as a second
+/// `session/prompt` when it lands, journals it delivered once, and only then ends the root.
+#[test]
+fn an_acp_roots_background_childs_end_is_its_next_prompt() {
+    if !on_path("python3") {
+        eprintln!("skipped: `python3` is not installed, so the fake ACP agent cannot run");
+        return;
+    }
+    let dir = scratch("acp-root-push");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let prompts = dir.join("root-prompts.jsonl");
+    let agent_type = format!("acp:python3 {}", fake());
+
+    let out = run_bounded(
+        Command::new(env!("CARGO_BIN_EXE_marion"))
+            .args([
+                "run",
+                &agent_type,
+                "--prompt",
+                &format!("bgspawn:{agent_type}|write the file|{}", prompts.display()),
+                "--repo",
+                &repo.to_string_lossy(),
+                "--state-dir",
+                &state.to_string_lossy(),
+                "--timeout",
+                "90",
+            ])
+            .current_dir(&dir),
+        RUN_BOUND,
+    )
+    .expect("marion run starts");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.timed_out, "marion run hung\nstderr:\n{stderr}");
+    assert_eq!(out.code, Some(0), "stderr:\n{stderr}");
+
+    let texts: Vec<String> = std::fs::read_to_string(&prompts)
+        .expect("the root logged its prompts")
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        texts.len(),
+        2,
+        "the launch prompt and the child's end: {texts:#?}"
+    );
+    assert!(
+        texts[1].contains("you backgrounded as task_id"),
+        "the second prompt is the child's end: {}",
+        texts[1]
+    );
+
+    let nodes = journal_nodes(&state, &repo);
+    let root = nodes.iter().find(|n| n.depth() == Some(0)).expect("a root");
+    let child = nodes
+        .iter()
+        .find(|n| n.parent_id() == Some(&root.agent_id))
+        .expect("the root's background child");
+    assert_eq!(root.state, NodeState::Exited(ExitStatus::Ok), "{root:#?}");
+    assert!(
+        texts[1].contains(&child.contracts[0].task_id.0),
+        "it names the child's task: {}",
+        texts[1]
+    );
+    let project = ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo));
+    let delivered = common::journal::delivered_to(&project.journal(), &root.agent_id);
+    assert_eq!(delivered.len(), 1, "delivered exactly once: {delivered:?}");
+    assert_eq!(delivered[0].1, "acp:next-turn");
 }

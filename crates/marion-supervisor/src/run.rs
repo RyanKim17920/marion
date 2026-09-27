@@ -1571,8 +1571,8 @@ pub fn run_spawn_watched(
             }
         }
     };
-    // The child's inbox, for the typed paths' turns after the first: a steer, or the end of a child
-    // it backgrounded. A child is always headless (a pane belongs to a root).
+    // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
+    // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
     let turns = observer.turn_source(&agent_id).map(|source| {
         crate::inbox::TurnFeed::new(
             source,
@@ -1608,7 +1608,7 @@ pub fn run_spawn_watched(
             bound,
             on_started: &announce_started,
             on_line: None,
-            turns: None,
+            turns,
         })
         .map(|r| ChildRun {
             stdout: r.stdout,

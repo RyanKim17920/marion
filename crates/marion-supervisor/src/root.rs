@@ -1903,7 +1903,7 @@ fn launch_acp(
         bound,
         on_started,
         on_line: Some(&on_line),
-        turns: None,
+        turns: node.turns.clone(),
     })?;
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     Ok(RootOutcome {

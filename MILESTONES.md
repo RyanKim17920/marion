@@ -144,7 +144,7 @@ Not measured: `-p` never enqueues the event, so the headless shape carries no fl
 parent still calls `wait`; every other row pushes MCP's `notifications/message`, which no harness has
 been observed to show the model. Claude Code auto-backgrounds a blocking `spawn` past ~2 min itself.
 
-**Turn delivery — `node/steer` queues; nothing delivers yet (2026-09-22).** Push and steer are one
+**Turn delivery — `node/steer` queues (2026-09-22; typed lanes deliver since 2026-09-27, below).** Push and steer are one
 mechanism: a message for a node's next turn. The supervisor keeps one inbox per node it owns
 (`inbox.rs`: opened at claim, sealed with every waiting message dropped when the node ends;
 `take_or_seal` closes the late-steer race under one lock), and `node/steer` is answered
@@ -155,9 +155,9 @@ ended node is refused pointing at `node/resume`, a spawning one says retry, and 
 `TurnDelivery` is `None` for the node's shape is `Unsupported`, quoting the row. The result is
 `queued: true` with a `message_id`; the journal gets `MessageQueued`/`Delivered`/`Dropped` with the
 length and SHA-256 only, and a restarted supervisor drops what its predecessor left queued
-(`restart::drop_undelivered`, reason `supervisor restarted`). **No delivery port is wired** — the
-duplex, ACP, continuation, pty and bridge lanes are later phases — so today an accepted steer waits
-and is dropped, journaled, when its node ends; a node this supervisor's `agent/spawn` did not launch
+(`restart::drop_undelivered`, reason `supervisor restarted`). The typed lanes (duplex, ACP) now
+deliver (next paragraph); the continuation, pty and bridge lanes are later phases, so on those an
+accepted steer still waits and is dropped, journaled, when its node ends; a node this supervisor's `agent/spawn` did not launch
 (a native session, or one an earlier supervisor launched) has no inbox and is refused
 `Unimplemented`. `node/prompt` stays `Unimplemented` and points at `node/steer`.
 Witnesses: `inbox::tests` (FIFO, sealed/None/not-ready refusals, the barrier race, text never
@@ -202,6 +202,31 @@ refusals and handles (`REPORT_ON_A_ROOT`, the top-level `report` refusal, `wait`
 and already-collected, identity refusals) no longer cite design sections — a model cannot look up
 "§5.4" (`mcp::tests::model_facing_sentences_cite_no_spec_sections`); `SpawnError`'s own texts in
 `spawn.rs` still do.
+
+**Turn delivery — the typed lanes deliver (2026-09-27).** A supervisor-owned headless node on a typed
+surface takes every turn its inbox holds. `run_spawn` and `prepare_watched` bind the node's inbox
+(`SpawnObserver::turn_source`) with the row's headless `MidTurn` into a `TurnFeed`; `marion run`'s
+own `Unwatched` owner keeps none, so a root it launches alone is unchanged. **Duplex (claude
+stream-json):** after each `result` the driver takes the next message as the next user turn
+(`stream-json:next-turn`); a node owed a background child's end (`Inboxes::owe`) is held open,
+bounded by its wall-clock watchdog, and the session ends only through a `take_or_seal` that seals.
+On the `Fold` row a message queued mid-turn is written at once (`stream-json:mid-turn`); when claude
+runs it as a turn of its own (the in-flight request was the turn's last) a 1.5 s settle after the
+`result` keeps stdin open for its `system/init`, and anything said after stdin closes is still
+recorded. The node's usage sums every `result`. **ACP:** prompt ids count up from 2; every prompt in
+flight settles before the next queued message goes out as its own `session/prompt`
+(`acp:next-turn`); opencode and claude-agent-acp (`Fold`) get a mid-turn prompt at once
+(`acp:mid-turn`) and both answers are awaited; codex-acp, copilot and unmeasured agents wait for
+the boundary. A background child's end is queued by the supervisor (`announce_child_end`) for every
+parent whose row delivers by inbox; a headless claude parent's bridge still emits its channel frame,
+which `-p` was measured not to enqueue (2.1.268). Witnesses: `duplex::tests`
+(next turn after a result, fold into a held request, a fold run as its own turn driven to its
+`result` with stdin open — RED with the settle at zero, held until the announcement, held bounded by
+the wall clock — all five RED with no feed), `acp_child::tests` (queue only after the first settles,
+fold mid-turn with both answered, held until the announcement — RED with no boundary loop), and
+end to end `acp_root::an_acp_roots_background_childs_end_is_its_next_prompt` (the fake ACP agent's
+new `bgspawn:` mode; RED with the root's feed unwired: one prompt logged). Not yet: the
+continuation, pane and bridge lanes; `node/prompt`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
