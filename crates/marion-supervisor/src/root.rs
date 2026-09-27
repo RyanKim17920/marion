@@ -3884,9 +3884,13 @@ mod tests {
                     // The bridge rides the channel the agent's row names: the protocol's own
                     // `session/new`, or — on a row measured to ignore it — the agent's argv flag,
                     // whose document then carries the same env (and the session block is empty).
-                    let selector = acp_agent.as_deref().expect("an ACP type names its agent");
+                    let selector = agent_type
+                        .acp_agent
+                        .as_deref()
+                        .expect("an ACP type names its agent");
                     let binding = marion_harness::acp::Binding::resolve(selector).unwrap();
-                    let (var, decl): (Box<dyn Fn(&str) -> Option<String>>, String) =
+                    type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
+                    let (var, decl): (EnvLookup, String) =
                         match (&node.session_declaration, binding.declaration()) {
                             (Some(decl), marion_harness::acp::Declaration::Session) => {
                                 assert_eq!(decl["method"], "session/new", "{name}");
