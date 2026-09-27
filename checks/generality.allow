@@ -1,0 +1,41 @@
+# Harness-generality allowlist — read by crates/marion-testsupport/tests/three_axis (run: scripts/three-axis.sh).
+#
+# Format: `path:item  one-line reason`. `item` is the enclosing fn/const/impl type, `::`-joined.
+# A finding not listed here fails the check; an entry nothing matches fails it too, so a fix
+# deletes its line. THIS LIST ONLY SHRINKS: every entry below is debt with a named way out.
+#
+# Known per-harness code a syntax check cannot see (tracked in the same wave, not listed here
+# because nothing here would match it): duplex's `TypedKind::StreamJson | AppServer` launch-path
+# mapping, bin/marion.rs's stream-json frame renderers, doctor's `Option<acp::Binding>` paths.
+
+# --- tracked: generalization wave B1–B8 ---------------------------------------------------------
+crates/marion-harness/src/adapter.rs:adapter_for  tracked: generalization wave B1–B8 (registry lookup instead of a per-variant match)
+crates/marion-harness/src/adapter.rs:adapter_for_type  tracked: generalization wave B1–B8 (ACP selector special case)
+crates/marion-harness/src/adapter.rs:harness_spec  tracked: generalization wave B1–B8 (spec table belongs on each row)
+crates/marion-harness/src/adapter.rs:ClaudeCodeAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not claude_code.rs)
+crates/marion-harness/src/adapter.rs:CodexAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not codex.rs)
+crates/marion-harness/src/adapter.rs:GeminiAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not gemini.rs)
+crates/marion-harness/src/adapter.rs:OpenCodeAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not opencode.rs)
+crates/marion-harness/src/adapter.rs:CopilotAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not copilot.rs)
+crates/marion-harness/src/adapter.rs:GooseAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not goose.rs)
+crates/marion-harness/src/adapter.rs:ClineAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not cline.rs)
+crates/marion-harness/src/adapter.rs:QwenAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not qwen.rs)
+crates/marion-harness/src/adapter.rs:AntigravityAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not antigravity.rs)
+crates/marion-core/src/agent_type.rs:FileRow::into_type  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix and Harness::Acp compare)
+crates/marion-core/src/agent_type.rs:acp_command  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix parse)
+crates/marion-supervisor/src/doctor.rs:probe  tracked: generalization wave B1–B8 (doctor ACP special case)
+crates/marion-supervisor/src/mcp.rs:tool_spawn  tracked: generalization wave B1–B8 ("codex-impl" default agent type)
+crates/marion-supervisor/src/root.rs:prepare_watched  tracked: generalization wave B1–B8 (root pushes ANTHROPIC_* env instead of asking the row)
+
+# --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
+crates/marion-harness/src/caps.rs:advertised  untracked: per-harness capability table outside the rows; move each arm onto its row
+crates/marion-harness/src/spec.rs:Push::argv  untracked: `Push::ClaudeChannel` strategy is named for one harness; rename it for its mechanism
+crates/marion-supervisor/src/bridge.rs:initialize_result  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename
+crates/marion-supervisor/src/bridge.rs:push_frame  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename
+crates/marion-core/src/agent_type.rs:known_harnesses  untracked: special-cases ClaudeCode where `Harness::cli_name` already says "claude"
+crates/marion-core/src/agent_type.rs:builtin_names  untracked: a second hand-kept list of the built-in names; derive it from BUILTINS
+
+# --- verified row data, not a branch ------------------------------------------------------------
+crates/marion-core/src/agent_type.rs:BUILTINS  row data: the built-in agent-type table, one row per harness type, is the registry itself
+crates/marion-core/src/provider.rs:PROVIDERS  row data: provider registry rows name each provider's own key variable
+crates/marion-core/src/provider.rs:Wire::as_str  `Wire::Gemini` is Google's generateContent wire format (a provider API), not the gemini harness
