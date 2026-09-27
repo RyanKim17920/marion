@@ -10,7 +10,13 @@
 //! - `secret-format`: a formatting/logging macro reads a secret-named value.
 //! - `secret-doc-mode`: a file that writes credential-bearing documents creates one without an
 //!   owner-only mode in the same function.
-//! - `secret-argv`: a secret-named value, or a `--api-key`-style flag, goes onto a command line.
+//! - `secret-argv`: a secret-named value, or a `--api-key`-style flag, goes onto a command line —
+//!   including a node's whole bridge (`bridge_env(…)`, whose declaration carries the node token)
+//!   written into an argv-bound place: a row's config `pairs`, an ACP agent's `agent_args`, an
+//!   invocation's `args`, a native `argv_prefix`.
+//! - `token-carrier`: a harness row (`HarnessSpec { … }`) whose MCP route rides argv in some auth
+//!   mode, or an ACP row (`Agent { … }`) declaring on argv, without a token carrier that withholds
+//!   the node token from that declaration — so the token would be embedded in an argv string.
 //! - `test-login`: test code spells a login command or device flow.
 
 use proc_macro2::{TokenStream, TokenTree};
@@ -50,8 +56,11 @@ const SECRET_IDENTS: &[&str] = &[
 /// Methods that hand out a secret's plaintext: formatting their result is exposure by definition.
 const EXPOSING_METHODS: &[&str] = &["expose", "expose_secret", "reveal"];
 
-/// A type named `CredentialId`, `TokenKind` or `KeyError` names *about* a secret, not one.
-const NON_SECRET_TAIL_WORDS: &[&str] = &["Id", "Error", "Kind", "Name", "Label", "Ref", "Source"];
+/// A type named `CredentialId`, `TokenKind` or `KeyError` names *about* a secret, not one; nor
+/// does `TokenCarrier`, which names how a secret travels.
+const NON_SECRET_TAIL_WORDS: &[&str] = &[
+    "Id", "Error", "Kind", "Name", "Label", "Ref", "Source", "Carrier", "Carriers",
+];
 const SECRET_SUFFIXES: &[&str] = &["_api_key", "_apikey", "_token", "_secret", "_password"];
 
 /// A value read through one of these is not the secret itself.
@@ -86,6 +95,20 @@ const FORMAT_MACROS: &[&str] = &[
 /// mode, the provider key), writes such documents.
 const SECRET_DOC_MARKERS: &[&str] = &["mcp.json", "credentials", "auth.json", "oauth"];
 const SECRET_DOC_CALLS: &[&str] = &["config_files"];
+
+/// Fields whose contents become argv: a row's config pairs, an ACP agent's own argv, a compiled
+/// invocation's argv, a native launch's argv prefix.
+const ARGV_SINKS: &[&str] = &["pairs", "agent_args", "args", "argv_prefix"];
+
+/// Methods that put a value into a collection.
+const FILLING_METHODS: &[&str] = &["push", "extend", "insert", "append"];
+
+/// The one function that builds a node's **whole** bridge — node token included — rather than a
+/// declaration's view of it (`declared_bridge`, which a withholding carrier has stripped).
+const FULL_BRIDGE_FNS: &[&str] = &["bridge_env"];
+
+/// Token-carrier variants that keep the node token out of the declaration.
+const WITHHOLDING_CARRIERS: &[&str] = &["InheritedEnv", "ForwardedEnv"];
 
 /// Test-code literals that start a login: an argv token (`"login"`, `"/login"`, a device-flow
 /// flag) or a short command line (`"codex login"`, `"gemini auth login"`). Prose that mentions a
@@ -358,8 +381,198 @@ pub fn check_call(s: &mut Scanner, c: &syn::ExprCall) {
     }
 }
 
+/// Does this expression carry a node token: a whole bridge built by [`FULL_BRIDGE_FNS`], the
+/// token's variable name, a `node_token` read, or an exposed secret?
+fn reads_node_token(tokens: &TokenStream) -> bool {
+    let flat: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    for (idx, t) in flat.iter().enumerate() {
+        match t {
+            TokenTree::Group(g) if reads_node_token(&g.stream()) => return true,
+            TokenTree::Ident(id) => {
+                let name = id.to_string();
+                let called = matches!(
+                    flat.get(idx + 1),
+                    Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Parenthesis
+                );
+                let harmless = matches!(flat.get(idx + 1), Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                    && matches!(flat.get(idx + 2), Some(TokenTree::Ident(m)) if HARMLESS_METHODS.contains(&m.to_string().as_str()));
+                if (FULL_BRIDGE_FNS.contains(&name.as_str()) && called)
+                    || name == "NODE_TOKEN_ENV"
+                    || (name == "node_token" && !harmless)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    flat.windows(2).any(|w| {
+        matches!((&w[0], &w[1]), (TokenTree::Punct(p), TokenTree::Ident(m))
+            if p.as_char() == '.' && EXPOSING_METHODS.contains(&m.to_string().as_str()))
+    })
+}
+
+/// The argv-bound field an expression names — `f.pairs`, `self.agent_args` — if it names one.
+fn argv_sink(e: &syn::Expr) -> Option<String> {
+    let syn::Expr::Field(f) = e else { return None };
+    let syn::Member::Named(name) = &f.member else {
+        return None;
+    };
+    let name = name.to_string();
+    ARGV_SINKS.contains(&name.as_str()).then_some(name)
+}
+
+fn emit_token_argv(s: &mut Scanner, span: proc_macro2::Span, sink: &str) {
+    s.emit(
+        Axis::Security,
+        "secret-argv",
+        span,
+        format!(
+            "a node token reaches `{sink}`, which becomes argv where `ps` shows it; declare from \
+             the carrier's view (`declared_bridge`) and let the row's token carrier set it on the \
+             environment"
+        ),
+    );
+}
+
+/// `f.pairs = …` / `f.agent_args = …` with a node token in the value.
+pub fn check_assign(s: &mut Scanner, a: &syn::ExprAssign) {
+    let Some(sink) = argv_sink(&a.left) else {
+        return;
+    };
+    let right = &a.right;
+    if reads_node_token(&quote::quote!(#right)) {
+        emit_token_argv(s, a.span(), &sink);
+    }
+}
+
+/// Whether a token-carrier expression withholds the token: `Some(true)` for a withholding
+/// variant, `Some(false)` for `Declaration`, `None` where the expression is not a carrier this
+/// check can read.
+fn carrier_withholds(e: &syn::Expr) -> Option<bool> {
+    let last = |p: &syn::Path| p.segments.last().map(|s| s.ident.to_string());
+    let name = match e {
+        syn::Expr::Struct(st) => last(&st.path),
+        syn::Expr::Path(p) => last(&p.path),
+        _ => None,
+    }?;
+    if WITHHOLDING_CARRIERS.contains(&name.as_str()) {
+        Some(true)
+    } else if name == "Declaration" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn field<'a>(st: &'a syn::ExprStruct, name: &str) -> Option<&'a syn::Expr> {
+    st.fields.iter().find_map(|f| match &f.member {
+        syn::Member::Named(n) if n == name => Some(&f.expr),
+        _ => None,
+    })
+}
+
+fn path_tail(e: &syn::Expr) -> Option<String> {
+    match e {
+        syn::Expr::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        syn::Expr::Call(c) => path_tail(&c.func),
+        syn::Expr::Struct(st) => st.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// `(canned, live)` from a `token:` value: `TokenCarriers::DECLARATION`,
+/// `TokenCarriers::both(c)` or `TokenCarriers { canned, live }`. Each `None` where unreadable.
+fn carriers(e: Option<&syn::Expr>) -> (Option<bool>, Option<bool>) {
+    match e {
+        None => (Some(false), Some(false)),
+        Some(syn::Expr::Path(p))
+            if p.path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "DECLARATION") =>
+        {
+            (Some(false), Some(false))
+        }
+        Some(syn::Expr::Call(c)) if path_tail(&c.func).as_deref() == Some("both") => {
+            let one = c.args.first().and_then(carrier_withholds);
+            (one, one)
+        }
+        Some(syn::Expr::Struct(st)) => (
+            field(st, "canned").and_then(carrier_withholds),
+            field(st, "live").and_then(carrier_withholds),
+        ),
+        Some(_) => (None, None),
+    }
+}
+
+/// A `HarnessSpec { … }` or ACP `Agent { … }` literal whose argv declaration is not paired with a
+/// carrier that withholds the node token.
+pub fn check_struct_literal(s: &mut Scanner, st: &syn::ExprStruct) {
+    let Some(kind) = st.path.segments.last().map(|seg| seg.ident.to_string()) else {
+        return;
+    };
+    match kind.as_str() {
+        "HarnessSpec" => {
+            let routes = match field(st, "mcp") {
+                Some(syn::Expr::Struct(r)) => r,
+                _ => return,
+            };
+            let (canned, live) = carriers(field(st, "token"));
+            for (mode, withholds) in [("canned", canned), ("live", live)] {
+                let argv = field(routes, mode)
+                    .and_then(path_tail)
+                    .is_some_and(|t| t == "Argv");
+                if argv && withholds != Some(true) {
+                    s.emit(
+                        Axis::Security,
+                        "token-carrier",
+                        st.span(),
+                        format!(
+                            "the row's {mode} MCP declaration rides argv and its `token` carrier \
+                             does not withhold the node token, so the token is embedded in an \
+                             argv string"
+                        ),
+                    );
+                }
+            }
+        }
+        "Agent" => {
+            let Some(decl) = field(st, "declaration") else {
+                return;
+            };
+            if path_tail(decl).as_deref() != Some("Argv") {
+                return;
+            }
+            let withholds = match decl {
+                syn::Expr::Struct(d) => field(d, "token").and_then(carrier_withholds),
+                _ => None,
+            };
+            if withholds != Some(true) {
+                s.emit(
+                    Axis::Security,
+                    "token-carrier",
+                    st.span(),
+                    "the ACP row declares its bridge on argv without a token carrier that \
+                     withholds the node token, so the token is embedded in an argv string"
+                        .to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn check_method(s: &mut Scanner, m: &syn::ExprMethodCall) {
     let method = m.method.to_string();
+    if FILLING_METHODS.contains(&method.as_str())
+        && let Some(sink) = argv_sink(&m.receiver)
+    {
+        let args = &m.args;
+        if reads_node_token(&quote::quote!(#args)) {
+            emit_token_argv(s, m.span(), &sink);
+        }
+    }
     match method.as_str() {
         "mode" | "set_permissions" | "set_mode" => {
             if let Some(f) = s.current_fn() {

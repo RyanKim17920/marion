@@ -340,6 +340,20 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
         visit::visit_expr_call(self, i);
     }
 
+    fn visit_expr_assign(&mut self, i: &'ast syn::ExprAssign) {
+        if !self.in_test() {
+            security::check_assign(self, i);
+        }
+        visit::visit_expr_assign(self, i);
+    }
+
+    fn visit_expr_struct(&mut self, i: &'ast syn::ExprStruct) {
+        if !self.in_test() {
+            security::check_struct_literal(self, i);
+        }
+        visit::visit_expr_struct(self, i);
+    }
+
     fn visit_expr_method_call(&mut self, i: &'ast syn::ExprMethodCall) {
         if !self.in_test() {
             efficiency::check_method(self, i);

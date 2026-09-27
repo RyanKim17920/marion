@@ -239,6 +239,100 @@ fn secrets_on_argv_are_flagged() {
     assert!(rules(r#"fn f() { cmd.arg("--model").env("API_KEY", k); }"#).is_empty());
 }
 
+/// The two shapes that once embedded the node token in an argv string: a whole bridge serialised
+/// into an argv-bound field, and a row whose argv declaration names no withholding carrier.
+#[test]
+fn a_node_token_embedded_in_an_argv_string_is_flagged() {
+    // A whole bridge, token included, into a row's `-c` pairs or an ACP agent's argv.
+    assert!(
+        rules("fn f() { f.pairs = overrides(&bridge_env(spec, ctx)); }").contains(&"secret-argv")
+    );
+    assert!(
+        rules("fn f() { f.agent_args.push(json(&bridge_env(spec, ctx)).to_string()); }")
+            .contains(&"secret-argv")
+    );
+    assert!(
+        rules("fn f() { inv.args.extend([b.node_token.unwrap().expose().into()]); }")
+            .contains(&"secret-argv")
+    );
+    // The carrier's view, a presence check, or a non-argv field is not.
+    assert!(rules("fn f() { f.pairs = overrides(&declared_bridge(self, spec, ctx)); }").is_empty());
+    assert!(rules("fn f() { f.extra_env = token_env(&bridge_env(spec, ctx)); }").is_empty());
+    assert!(rules("fn f() { if b.node_token.is_some() { f.agent_args.push(x); } }").is_empty());
+
+    // A row declaring on argv needs a carrier that withholds, in that mode.
+    let row = |token: &str| {
+        format!(
+            "const SPEC: HarnessSpec = HarnessSpec {{ mcp: McpRoutes {{ canned: McpRoute::Document, \
+             live: McpRoute::Argv(KEY) }}, {token} }};"
+        )
+    };
+    assert!(
+        rules(&row("")).contains(&"token-carrier"),
+        "no carrier at all"
+    );
+    assert!(rules(&row("token: TokenCarriers::DECLARATION,")).contains(&"token-carrier"));
+    assert!(
+        rules(&row(
+            "token: TokenCarriers { canned: TokenCarrier::InheritedEnv { note: \"n\" }, \
+             live: TokenCarrier::Declaration },"
+        ))
+        .contains(&"token-carrier"),
+        "withholding in the wrong mode"
+    );
+    assert!(
+        rules(&row(
+            "token: TokenCarriers { canned: TokenCarrier::Declaration, \
+             live: TokenCarrier::ForwardedEnv { note: \"n\" } },"
+        ))
+        .is_empty()
+    );
+    assert!(
+        rules(&row(
+            "token: TokenCarriers::both(TokenCarrier::InheritedEnv { note: \"n\" }),"
+        ))
+        .is_empty()
+    );
+    // A document route may carry the token inside its declaration.
+    assert!(
+        rules(
+            "const SPEC: HarnessSpec = HarnessSpec { mcp: McpRoutes { canned: McpRoute::Document, \
+         live: McpRoute::Document }, token: TokenCarriers::DECLARATION };"
+        )
+        .is_empty()
+    );
+
+    // An ACP row declaring on argv, in the old one-flag form and with a carrier that keeps it.
+    assert!(
+        rules("const A: Agent = Agent { declaration: Declaration::Argv(FLAG) };")
+            .contains(&"token-carrier")
+    );
+    assert!(
+        rules(
+            "const A: Agent = Agent { declaration: Declaration::Argv { flag: FLAG, \
+             token: TokenCarrier::Declaration } };"
+        )
+        .contains(&"token-carrier")
+    );
+    assert!(
+        rules(
+            "const A: Agent = Agent { declaration: Declaration::Argv { flag: FLAG, \
+             token: TokenCarrier::InheritedEnv { note: \"n\" } } };"
+        )
+        .is_empty()
+    );
+    assert!(rules("const A: Agent = Agent { declaration: Declaration::Session };").is_empty());
+}
+
+#[test]
+fn a_type_named_for_how_a_secret_travels_is_not_a_secret() {
+    assert!(
+        rules("#[derive(Debug)] enum TokenCarrier { InheritedEnv { note: &'static str } }")
+            .is_empty()
+    );
+    assert!(rules("#[derive(Debug)] struct NodeToken(String);").contains(&"secret-debug"));
+}
+
 #[test]
 fn credential_docs_need_an_owner_only_mode() {
     let unsafe_write = r#"fn f() { std::fs::write(dir.join("mcp.json"), doc); }"#;
