@@ -2757,6 +2757,40 @@ mod tests {
         assert_eq!(identity_note(&generic, &stranger), None);
     }
 
+    /// **Every agent that opened a session is a built-in type, named for its row, and no other.**
+    ///
+    /// An operator reaches an agent through an agent *type*, so a row that opened a session and
+    /// has no type is reachable only by typing its command. The rule is mechanical so neither side
+    /// can drift: row `<id>` with [`Reach::Opened`] is built-in `acp-<id>`, bound to that row by
+    /// id; a refused row has no type (it could not run a node); and every `acp-` built-in names a
+    /// row.
+    #[test]
+    fn every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row() {
+        use marion_core::agent_type::{builtin, builtin_names};
+        for a in AGENTS {
+            let name = format!("acp-{}", a.id);
+            match (a.reach, builtin(&name)) {
+                (Reach::Opened { .. }, Some(t)) => {
+                    assert_eq!(t.harness, Harness::Acp, "{name}");
+                    assert_eq!(t.acp_agent.as_deref(), Some(a.id), "{name}");
+                    assert!(
+                        builtin_names().contains(&name.as_str()),
+                        "{name} is not listed"
+                    );
+                }
+                (Reach::Opened { .. }, None) => {
+                    panic!("`{}` opened a session and has no {name}", a.id)
+                }
+                (Reach::Refused, Some(_)) => panic!("`{}` was refused and still has {name}", a.id),
+                (Reach::Refused, None) => {}
+            }
+        }
+        for name in builtin_names().iter().filter(|n| n.starts_with("acp-")) {
+            let id = &name["acp-".len()..];
+            assert!(agent(id).is_some(), "{name} names no refinement row");
+        }
+    }
+
     /// **Each row launches the argv its capture was taken with, and states nothing unmeasured.**
     ///
     /// The argv is the one S33 probed (and S20–S28 before it); a refinement a row does not have

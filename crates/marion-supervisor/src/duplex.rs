@@ -985,6 +985,17 @@ mod tests {
         assert_eq!(
             got,
             vec![
+                // The ACP built-ins, every one on the second typed path it exists for.
+                ("acp-claude-acp", Some(LaunchPath::Acp)),
+                ("acp-codex-acp", Some(LaunchPath::Acp)),
+                ("acp-copilot", Some(LaunchPath::Acp)),
+                ("acp-fast-agent", Some(LaunchPath::Acp)),
+                ("acp-goose", Some(LaunchPath::Acp)),
+                ("acp-kilo", Some(LaunchPath::Acp)),
+                ("acp-opencode", Some(LaunchPath::Acp)),
+                ("acp-qwen", Some(LaunchPath::Acp)),
+                ("acp-vibe", Some(LaunchPath::Acp)),
+                ("acp-vtcode", Some(LaunchPath::Acp)),
                 ("claude", Some(LaunchPath::Duplex)),
                 ("claude-orchestrator", Some(LaunchPath::Duplex)),
                 ("codex", Some(LaunchPath::LaunchOnly)),
@@ -998,8 +1009,6 @@ mod tests {
                 ("cline", Some(LaunchPath::LaunchOnly)),
                 ("qwen", Some(LaunchPath::LaunchOnly)),
                 ("qwen-orchestrator", Some(LaunchPath::LaunchOnly)),
-                // The one built-in on the second typed path, and the reason that path exists.
-                ("acp-opencode", Some(LaunchPath::Acp)),
                 ("agy", Some(LaunchPath::LaunchOnly)),
                 ("agy-orchestrator", Some(LaunchPath::LaunchOnly)),
             ]

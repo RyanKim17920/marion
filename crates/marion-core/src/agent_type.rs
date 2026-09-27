@@ -559,12 +559,16 @@ const BUILTINS: &[Builtin] = &[
     // named after the harness because there the harness *is* the program. Here it is not: a type
     // named `acp` would have to pick an agent, and §6.4 says marion may not.
     //
+    // The rule is mechanical: every `marion_harness::acp::AGENTS` row whose `session/new` opened a
+    // session (S33) is `acp-<row id>`, bound to that row, and a row stopped at an account wall has
+    // none. `marion_harness`'s `every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row`
+    // holds the two lists together.
+    //
     // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a recipe
     // for marion's canned provider, which is what lets an ACP node run in the default suite at
-    // $0.00. The two ACP Registry shims are measured too (S22) but reach a provider only through
-    // the operator's own vendor login, so a built-in for either would be a type that cannot run
-    // without real spend; they stay reachable through `acp::AGENTS` — the doctor probes them — and
-    // earn a row when a canned recipe for them is measured.
+    // $0.00 — so it is also the one that states a model. Every other ACP type runs on the
+    // operator's own login or provider configuration for that agent (marion inherits it, never
+    // chooses it), in the model that configuration selects unless `spawn` names one.
     Builtin {
         canonical: "acp-opencode",
         aliases: &[],
@@ -574,6 +578,87 @@ const BUILTINS: &[Builtin] = &[
         model: Some(OPENCODE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: Some("opencode"),
+    },
+    Builtin {
+        canonical: "acp-claude-acp",
+        aliases: &[],
+        description: "Implements a well-specified change on Claude Code through the claude-agent-acp shim.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("claude-acp"),
+    },
+    Builtin {
+        canonical: "acp-codex-acp",
+        aliases: &[],
+        description: "Implements a well-specified change on Codex through the codex-acp shim.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("codex-acp"),
+    },
+    Builtin {
+        canonical: "acp-copilot",
+        aliases: &[],
+        description: "Implements a well-specified change on the GitHub Copilot CLI over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("copilot"),
+    },
+    Builtin {
+        canonical: "acp-kilo",
+        aliases: &[],
+        description: "Implements a well-specified change on Kilo over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("kilo"),
+    },
+    Builtin {
+        canonical: "acp-qwen",
+        aliases: &[],
+        description: "Implements a well-specified change on Qwen Code over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("qwen"),
+    },
+    Builtin {
+        canonical: "acp-goose",
+        aliases: &[],
+        description: "Implements a well-specified change on goose over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("goose"),
+    },
+    Builtin {
+        canonical: "acp-fast-agent",
+        aliases: &[],
+        description: "Implements a well-specified change on fast-agent over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("fast-agent"),
+    },
+    Builtin {
+        canonical: "acp-vibe",
+        aliases: &[],
+        description: "Implements a well-specified change on Mistral Vibe over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("vibe"),
+    },
+    Builtin {
+        canonical: "acp-vtcode",
+        aliases: &[],
+        description: "Implements a well-specified change on VT Code over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("vtcode"),
     },
 ];
 
@@ -629,6 +714,16 @@ fn acp_command(name: &str) -> Option<AgentType> {
 /// its type would print the same type twice under two names.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
+        "acp-claude-acp",
+        "acp-codex-acp",
+        "acp-copilot",
+        "acp-fast-agent",
+        "acp-goose",
+        "acp-kilo",
+        "acp-opencode",
+        "acp-qwen",
+        "acp-vibe",
+        "acp-vtcode",
         "claude",
         "claude-orchestrator",
         "codex",
@@ -642,7 +737,6 @@ pub fn builtin_names() -> &'static [&'static str] {
         "cline",
         "qwen",
         "qwen-orchestrator",
-        "acp-opencode",
         "agy",
         "agy-orchestrator",
     ]
@@ -968,6 +1062,16 @@ mod tests {
     #[test]
     fn each_builtin_names_its_own_harness_and_no_name_is_a_second_definition() {
         for (name, h) in [
+            ("acp-claude-acp", Harness::Acp),
+            ("acp-codex-acp", Harness::Acp),
+            ("acp-copilot", Harness::Acp),
+            ("acp-fast-agent", Harness::Acp),
+            ("acp-goose", Harness::Acp),
+            ("acp-kilo", Harness::Acp),
+            ("acp-opencode", Harness::Acp),
+            ("acp-qwen", Harness::Acp),
+            ("acp-vibe", Harness::Acp),
+            ("acp-vtcode", Harness::Acp),
             ("claude", Harness::ClaudeCode),
             ("claude-orchestrator", Harness::ClaudeCode),
             ("cline", Harness::Cline),
@@ -981,7 +1085,6 @@ mod tests {
             ("opencode", Harness::OpenCode),
             ("qwen", Harness::Qwen),
             ("qwen-orchestrator", Harness::Qwen),
-            ("acp-opencode", Harness::Acp),
             ("agy", Harness::Antigravity),
             ("agy-orchestrator", Harness::Antigravity),
         ] {
@@ -990,7 +1093,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            16,
+            25,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
