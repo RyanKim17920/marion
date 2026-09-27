@@ -2,7 +2,7 @@
 //! pick up again, and — on the row above the box — the `marion run` command all of that is.
 
 use super::GUTTER;
-use super::text::{fit, lr, pad, rpad, shell_line};
+use super::text::{fit, lr, pad, rpad, shell_line, width};
 use super::theme::{CARET, Ready, Theme, bad, bold, dim};
 use super::widgets::{code_spans, expansion, rule, section, span};
 use crate::tree::Tone;
@@ -63,6 +63,18 @@ pub struct StartView {
 
 /// The harness name and version columns.
 const NAME_W: usize = 13;
+/// The widest the name column grows for a long harness name (`acp claude-agent-acp`).
+const NAME_MAX: usize = 26;
+
+/// The harness name column for `rows`: wide enough for the longest name and a gap, within
+/// [`NAME_W`]..=[`NAME_MAX`], so a long name is never clipped against its version.
+pub fn name_col(rows: &[HarnessRow]) -> usize {
+    rows.iter()
+        .map(|h| width(&h.name) + 2)
+        .max()
+        .unwrap_or(0)
+        .clamp(NAME_W, NAME_MAX)
+}
 const VERSION_W: usize = 10;
 /// Labels of the choice rows (`TYPE`, `MODEL`, `OPTIONS`).
 const CHOICE_W: usize = 10;
@@ -87,13 +99,14 @@ pub fn render(v: &StartView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         w as u16,
     );
     let mut y = area.y + 2;
+    let name_w = name_col(&v.harnesses);
     for (i, h) in v.harnesses.iter().enumerate() {
         let sel = i == v.cursor;
         put(
             buf,
             area.x,
             y,
-            &harness_line(h, sel, frame + i, theme, w + GUTTER as usize, None),
+            &harness_line(h, name_w, sel, frame + i, theme, w + GUTTER as usize, None),
         );
         y += 1;
         if sel
@@ -183,8 +196,10 @@ pub fn readiness(rows: &[HarnessRow], checking: bool) -> String {
 
 /// A harness row: caret, glyph, name, version, note, and — when `surfaces_at` is given — the
 /// surfaces from that column on. Shared with Setup, which shows the surfaces.
+#[allow(clippy::too_many_arguments)]
 pub fn harness_line<'a>(
     h: &HarnessRow,
+    name_w: usize,
     sel: bool,
     frame: usize,
     theme: Theme,
@@ -197,7 +212,7 @@ pub fn harness_line<'a>(
         span(h.ready.glyph(frame), h.ready.style(theme)),
         Span::raw(" "),
         span(
-            pad(&h.name, NAME_W),
+            pad(&h.name, name_w),
             if sel { bold() } else { Style::default() },
         ),
         span(pad(h.version.as_deref().unwrap_or("—"), VERSION_W), dim()),
@@ -238,4 +253,32 @@ fn choices<'a>(
         }
     }
     Line::from(fit(l, w))
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    fn row(name: &str) -> HarnessRow {
+        HarnessRow {
+            name: name.into(),
+            version: None,
+            ready: Ready::Absent,
+            note: String::new(),
+            surfaces: String::new(),
+            fix: None,
+            detail: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_name_column_fits_the_longest_name_within_bounds() {
+        assert_eq!(name_col(&[row("codex")]), NAME_W, "short names keep the floor");
+        assert_eq!(
+            name_col(&[row("codex"), row("acp claude-agent-acp")]),
+            "acp claude-agent-acp".len() + 2,
+            "a long name gets its width and a gap, never clipped against its version"
+        );
+        assert_eq!(name_col(&[row(&"x".repeat(60))]), NAME_MAX);
+    }
 }

@@ -3,7 +3,7 @@
 //! `marion login` has stored; and profiles. `n` opens the agent-type form in place of all that.
 
 use super::GUTTER;
-use super::start::{HarnessRow, harness_line, readiness};
+use super::start::{HarnessRow, harness_line, name_col, readiness};
 use super::text::{clip, fit, pad};
 use super::theme::{CARET, Ready, Theme, bad, bold, dim, good};
 use super::widgets::{code_spans, expansion, section, span};
@@ -139,10 +139,11 @@ fn body_lines<'a>(
         section("Harnesses", &readiness(&v.harnesses, v.checking)),
     ));
     blank(&mut out);
+    let name_w = name_col(&v.harnesses);
     for (i, h) in v.harnesses.iter().enumerate() {
         let sel = i == v.cursor;
         let start = out.len();
-        let l = harness_line(h, sel, frame + i, theme, w + g as usize, Some(NOTE_W));
+        let l = harness_line(h, name_w, sel, frame + i, theme, w + g as usize, Some(NOTE_W));
         out.push((0, l));
         if sel && v.expanded {
             let mut rows: Vec<(String, Vec<Span>)> = h
