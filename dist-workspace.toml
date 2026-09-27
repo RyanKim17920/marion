@@ -10,12 +10,16 @@ members = ["cargo:."]
 # dist, so the workflow and this file move together.
 cargo-dist-version = "0.33.0"
 ci = "github"
-# A curl-able shell installer and a Homebrew formula. No updater: marion is updated by the same
-# channel that installed it (brew upgrade, or re-running the installer), not by itself.
-installers = ["shell", "homebrew"]
+# A curl-able shell installer, a Homebrew formula, and an npm package that downloads the archive
+# for the platform it runs on. No updater: marion is updated by the same channel that installed it
+# (brew upgrade, npm update, or re-running the installer), not by itself.
+installers = ["shell", "homebrew", "npm"]
 install-updater = false
 tap = "RyanKim17920/homebrew-tap"
-publish-jobs = ["homebrew"]
+# Plain `marion` is taken on npm; the package is `@ryankim17920/marion` (npm-package is set on the
+# crate, in crates/marion-supervisor/Cargo.toml).
+npm-scope = "@ryankim17920"
+publish-jobs = ["homebrew", "npm"]
 # macOS and glibc Linux, both architectures. No Windows (marion needs PTYs and Unix sockets) and
 # no musl yet: nothing in CI has linked against it, so shipping it would be shipping a guess.
 targets = [

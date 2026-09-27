@@ -86,3 +86,4 @@ insta = "1"
 [package.metadata.dist]
 dist = true
 formula = "marion"
+npm-package = "marion"

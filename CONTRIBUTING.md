@@ -109,11 +109,13 @@ new fixture goes through it before it is committed.
 Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`, 0.33.0).
 `dist-workspace.toml` is the configuration; `.github/workflows/release.yml` is generated from it
 by `dist generate` and is never edited by hand. One archive per target (macOS and glibc Linux,
-arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer and
-a Homebrew formula named `marion`.
+arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer, a
+Homebrew formula named `marion`, and the npm package `@ryankim17920/marion` (plain `marion` is
+taken on npm), whose install step downloads the archive for the platform it runs on.
 
 To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The workflow
-builds every target, creates the GitHub Release, and pushes the formula to the tap. Pull
+builds every target, creates the GitHub Release, pushes the formula to the tap and publishes the
+npm package. Pull
 requests run `dist plan` only.
 
 Before changing the configuration, check it locally:
@@ -131,8 +133,12 @@ dist generate --check                                 # release.yml matches the 
 2. Create a fine-grained personal access token with **Contents: read and write** on that tap
    repository only, and add it to this repository as the Actions secret `HOMEBREW_TAP_TOKEN`
    (Settings → Secrets and variables → Actions). The publish job fails without it.
+3. On npmjs.com, as the `ryankim17920` user (the scope must match it or an organization of that
+   name), create a **granular access token** with read and write on packages in the
+   `@ryankim17920` scope, and add it as the Actions secret `NPM_TOKEN`. The first publish creates
+   the public package `@ryankim17920/marion`; the npm publish job fails without the secret.
 
 The workflow asks for `contents: write` itself, so no repository-wide Actions setting changes.
 
-After that, `brew install RyanKim17920/tap/marion` and the `curl … | sh` line on the release
-page both work.
+After that, `brew install RyanKim17920/tap/marion`, `npm install -g @ryankim17920/marion` and the
+`curl … | sh` line on the release page all work.
