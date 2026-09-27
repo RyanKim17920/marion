@@ -36,6 +36,7 @@ use marion_core::provider::Wire;
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
+use crate::jsonl_channel::JsonlChannel;
 use crate::mcp_bridge::BridgeEnv;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
@@ -925,6 +926,10 @@ pub enum Surfaces {
     /// The prompt rides argv, nothing is displayed, the JSONL is read: `codex exec`'s shape, which
     /// is not one of the four presets.
     LaunchOnly,
+    /// Headless over a JSONL command channel ([`TypedKind::JsonlRpc`]), **with its vocabulary**:
+    /// the channel is part of the choice, so a row cannot select the surface without stating
+    /// what to write on it. A row without one stays [`Self::LaunchOnly`].
+    JsonlRpc(&'static JsonlChannel),
 }
 
 impl Surfaces {
@@ -932,6 +937,15 @@ impl Surfaces {
         match self {
             Surfaces::Headless(kind) => ExecutionSurfaces::headless(kind),
             Surfaces::LaunchOnly => ExecutionSurfaces::launch_only_with_protocol_events(),
+            Surfaces::JsonlRpc(_) => ExecutionSurfaces::headless(TypedKind::JsonlRpc),
+        }
+    }
+
+    /// The row's JSONL command channel, where it drives one.
+    pub fn channel(self) -> Option<&'static JsonlChannel> {
+        match self {
+            Surfaces::JsonlRpc(c) => Some(c),
+            Surfaces::Headless(_) | Surfaces::LaunchOnly => None,
         }
     }
 }

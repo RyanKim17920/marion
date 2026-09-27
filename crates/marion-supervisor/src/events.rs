@@ -1420,6 +1420,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     sink: Some(&record),
                     on_started: None,
                     turns: None,
+                    dialect: crate::duplex::Dialect::StreamJson,
                 },
             )
             .expect("the run returns");

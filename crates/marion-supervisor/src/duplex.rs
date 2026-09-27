@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration as StdDuration, Instant};
 
+use marion_harness::jsonl_channel::JsonlChannel;
 use marion_harness::{ControlTransport, ExecutionSurfaces, surfaces::TypedKind};
 use serde_json::{Value, json};
 
@@ -101,11 +102,92 @@ pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
         // a *third* typed protocol a compile error here rather than a node driven with the wrong
         // frames — `AppServer` (M4) is the one that will hit it.
         ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
-        ControlTransport::Typed(TypedKind::StreamJson | TypedKind::AppServer) => {
-            Some(LaunchPath::Duplex)
-        }
+        // A row's JSONL command channel is driven by the same loop as stream-json, in the row's
+        // own vocabulary ([`Dialect::Jsonl`]).
+        ControlTransport::Typed(
+            TypedKind::StreamJson | TypedKind::AppServer | TypedKind::JsonlRpc,
+        ) => Some(LaunchPath::Duplex),
         ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
         ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
+    }
+}
+
+/// **What a typed pipe pair speaks**: the one thing that differs between the nodes [`run_duplex`]
+/// drives. The loop — readiness marker, one handshake round trip, the prompt, turn boundaries, a
+/// fold or a queue for each message after it, the wall clock — is the same for every dialect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    /// Claude Code's `stream-json`: `initialize` control request, `user` frames, `system/init` and
+    /// `result` as turn boundaries, `can_use_tool` answered.
+    StreamJson,
+    /// A row's JSONL command channel ([`marion_harness::jsonl_channel`]): every frame marion writes
+    /// and every boundary it reads is the row's data. Its abort is written when the wall clock
+    /// expires, before the kill.
+    Jsonl(&'static JsonlChannel),
+}
+
+impl Dialect {
+    /// The dialect a row's surfaces select: its JSONL channel where it has one, else stream-json.
+    pub fn of(row: &marion_harness::spec::HarnessSpec) -> Self {
+        row.surfaces
+            .channel()
+            .map_or(Dialect::StreamJson, Dialect::Jsonl)
+    }
+
+    fn handshake(self, id: &str) -> String {
+        match self {
+            Dialect::StreamJson => initialize_request(id),
+            Dialect::Jsonl(c) => c.handshake.render(Some((c.id, id)), "").to_string(),
+        }
+    }
+
+    fn is_handshake_reply(self, frame: &Value, id: &str) -> bool {
+        match self {
+            Dialect::StreamJson => is_control_response_to(frame, id),
+            Dialect::Jsonl(c) => c.is_reply_to(frame, id),
+        }
+    }
+
+    /// `text` as a turn: the next one (`mid_turn: false`) or folded into the running one.
+    fn turn(self, text: &str, mid_turn: bool) -> String {
+        match self {
+            Dialect::StreamJson => user_message(text),
+            Dialect::Jsonl(c) if mid_turn => c.steer.render(None, text).to_string(),
+            Dialect::Jsonl(c) => c.prompt.render(None, text).to_string(),
+        }
+    }
+
+    fn seen(self, frame: &Value) -> Seen {
+        match self {
+            Dialect::StreamJson => match frame.get("type").and_then(Value::as_str) {
+                Some("result") => Seen::TurnEnded,
+                Some("system") if frame.get("subtype").and_then(Value::as_str) == Some("init") => {
+                    Seen::TurnStarted
+                }
+                _ => Seen::Other,
+            },
+            Dialect::Jsonl(c) if c.closes_turn(frame) => Seen::TurnEnded,
+            Dialect::Jsonl(c) if c.opens_turn(frame) => Seen::TurnStarted,
+            Dialect::Jsonl(_) => Seen::Other,
+        }
+    }
+
+    /// The frame that ends a running turn early, where the dialect has one.
+    fn abort(self) -> Option<String> {
+        match self {
+            Dialect::StreamJson => None,
+            Dialect::Jsonl(c) => Some(c.abort.render(None, "").to_string()),
+        }
+    }
+
+    /// `MessageDelivered.via`.
+    fn via(self, mid_turn: bool) -> &'static str {
+        match (self, mid_turn) {
+            (Dialect::StreamJson, true) => VIA_MID_TURN,
+            (Dialect::StreamJson, false) => VIA_NEXT_TURN,
+            (Dialect::Jsonl(_), true) => VIA_JSONL_MID_TURN,
+            (Dialect::Jsonl(_), false) => VIA_JSONL_NEXT_TURN,
+        }
     }
 }
 
@@ -403,6 +485,8 @@ pub struct DuplexSpec<'a> {
     /// otherwise; after each `result` the driver takes the next message, or holds while the node
     /// is owed a background child's end, and only a `take_or_seal` that seals ends the session.
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// What the pipes speak ([`Dialect::of`] the node's row).
+    pub dialect: Dialect,
 }
 
 /// Hand-written because a [`StreamSink`] is a `dyn Fn` and cannot derive it. The sink is reported as
@@ -420,6 +504,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("sink", &self.sink.map(|_| "<sink>"))
             .field("on_started", &self.on_started.map(|_| "<on_started>"))
             .field("turns", &self.turns)
+            .field("dialect", &self.dialect)
             .finish()
     }
 }
@@ -534,7 +619,18 @@ pub fn run_duplex(
         }
         let _ = forward.send(Event::Eof);
     });
-    let guard = RunGuard::start(pid, spec.wall_clock, stderr, stdout);
+    // A dialect that can abort a turn is given the chance to end on its own when the wall clock
+    // expires: the driver writes the abort at the bound, and the watchdog's kill waits
+    // [`ABORT_GRACE`] longer as the backstop.
+    let abort_at = spec
+        .wall_clock
+        .filter(|_| spec.dialect.abort().is_some())
+        .map(|bound| Instant::now() + bound);
+    let backstop = match abort_at {
+        Some(_) => spec.wall_clock.map(|bound| bound + ABORT_GRACE),
+        None => spec.wall_clock,
+    };
+    let guard = RunGuard::start(pid, backstop, stderr, stdout);
 
     let mut outcome = DuplexOutcome::default();
 
@@ -547,21 +643,21 @@ pub fn run_duplex(
     }
 
     // One round trip through the harness's event loop, after the tool list was flushed to it.
-    writeln!(stdin, "{}", initialize_request(&spec.init_id))?;
+    writeln!(stdin, "{}", spec.dialect.handshake(&spec.init_id))?;
     stdin.flush()?;
     if !await_initialize(&rx, spec, &mut outcome) {
         guard.stop(true, &mut child);
         return Err(DuplexError::DiedBeforeInitialize);
     }
 
-    writeln!(stdin, "{}", user_message(spec.prompt))?;
+    writeln!(stdin, "{}", spec.dialect.turn(spec.prompt, false))?;
     stdin.flush()?;
     if let Some(feed) = &spec.turns {
         feed.source.attach_port(Arc::new(WakePort(events)));
     } else {
         drop(events);
     }
-    drive(&rx, &mut stdin, spec, &mut outcome)?;
+    drive(&rx, &mut stdin, spec, abort_at, &mut outcome)?;
 
     // Closing stdin is what ends a `--input-format stream-json` session.
     drop(stdin);
@@ -578,7 +674,8 @@ pub fn run_duplex(
     outcome.stderr = stderr;
     outcome.exit_code = status.code();
     outcome.signal = status.signal();
-    outcome.timed_out = timed_out;
+    // Either the watchdog killed the node or the driver aborted its turn at the bound.
+    outcome.timed_out |= timed_out;
     Ok(outcome)
 }
 
@@ -703,6 +800,14 @@ impl crate::inbox::DeliveryPort for WakePort {
 /// node's next turn.
 pub const VIA_MID_TURN: &str = "stream-json:mid-turn";
 pub const VIA_NEXT_TURN: &str = "stream-json:next-turn";
+/// The same two, for a message written on a row's JSONL command channel.
+pub const VIA_JSONL_MID_TURN: &str = "jsonl-rpc:mid-turn";
+pub const VIA_JSONL_NEXT_TURN: &str = "jsonl-rpc:next-turn";
+
+/// How long a node whose turn marion aborted at its wall clock has to end that turn before the
+/// watchdog kills it. pi 0.80.2 ended an aborted turn at once (`pi-rpc-abort-mid-tool`: the
+/// in-flight call completed and the next model request ended `aborted`).
+const ABORT_GRACE: StdDuration = StdDuration::from_secs(5);
 
 /// **How long after a `result` the driver watches for a turn the node queued itself.** S31
 /// (`p0a/b`, `p0a/b2`): a frame written mid-turn while the turn's *last* request is in flight is not
@@ -726,7 +831,7 @@ fn await_initialize(
                 let Some(frame) = record_line(spec, outcome, &line) else {
                     continue;
                 };
-                let done = is_control_response_to(&frame, &spec.init_id);
+                let done = spec.dialect.is_handshake_reply(&frame, &spec.init_id);
                 outcome.transcript.push(frame);
                 if done {
                     return true;
@@ -758,15 +863,10 @@ fn handle_line(
     let Some(frame) = record_line(spec, outcome, line) else {
         return Ok(Seen::Other);
     };
-    answer_control_request(stdin, spec, &frame, outcome)?;
-    let kind = frame.get("type").and_then(Value::as_str);
-    let seen = match kind {
-        Some("result") => Seen::TurnEnded,
-        Some("system") if frame.get("subtype").and_then(Value::as_str) == Some("init") => {
-            Seen::TurnStarted
-        }
-        _ => Seen::Other,
-    };
+    if spec.dialect == Dialect::StreamJson {
+        answer_control_request(stdin, spec, &frame, outcome)?;
+    }
+    let seen = spec.dialect.seen(&frame);
     outcome.transcript.push(frame);
     Ok(seen)
 }
@@ -775,12 +875,14 @@ fn handle_line(
 /// is gone — the message is dropped by name and the node's own exit says why.
 fn deliver(
     stdin: &mut std::process::ChildStdin,
+    spec: &DuplexSpec<'_>,
     feed: &crate::inbox::TurnFeed,
     msg: &crate::inbox::Message,
-    via: &str,
+    mid_turn: bool,
 ) -> bool {
-    let written = writeln!(stdin, "{}", user_message(&crate::inbox::render(msg)))
-        .and_then(|()| stdin.flush());
+    let via = spec.dialect.via(mid_turn);
+    let frame = spec.dialect.turn(&crate::inbox::render(msg), mid_turn);
+    let written = writeln!(stdin, "{frame}").and_then(|()| stdin.flush());
     match written {
         Ok(()) => {
             feed.source.delivered(&msg.id, via);
@@ -806,6 +908,7 @@ fn drive(
     rx: &Receiver<Event>,
     stdin: &mut std::process::ChildStdin,
     spec: &DuplexSpec<'_>,
+    abort_at: Option<Instant>,
     outcome: &mut DuplexOutcome,
 ) -> std::io::Result<()> {
     let feed = spec.turns.as_ref();
@@ -815,23 +918,27 @@ fn drive(
     let mut unsettled = false;
     loop {
         if running {
-            match rx.recv() {
-                Ok(Event::Line(line)) => {
+            let Some(event) = next_before(rx, abort_at) else {
+                outcome.timed_out = true;
+                return abort_turn(rx, stdin, spec, outcome);
+            };
+            match event {
+                Event::Line(line) => {
                     if handle_line(stdin, spec, outcome, &line)? == Seen::TurnEnded {
                         running = false;
                     }
                 }
-                Ok(Event::Wake) => {
+                Event::Wake => {
                     if let Some(feed) = feed.filter(|_| folds) {
                         while let Some(msg) = feed.source.take_next() {
-                            if !deliver(stdin, feed, &msg, VIA_MID_TURN) {
+                            if !deliver(stdin, spec, feed, &msg, true) {
                                 return Ok(());
                             }
                             unsettled = true;
                         }
                     }
                 }
-                Ok(Event::Eof) | Err(_) => return Ok(()),
+                Event::Eof => return Ok(()),
             }
             continue;
         }
@@ -861,22 +968,74 @@ fn drive(
         }
         match feed.source.take_or_seal() {
             Some(msg) => {
-                if !deliver(stdin, feed, &msg, VIA_NEXT_TURN) {
+                if !deliver(stdin, spec, feed, &msg, false) {
                     return Ok(());
                 }
                 running = true;
             }
-            None if feed.source.held() => match rx.recv() {
+            None if feed.source.held() => match next_before(rx, abort_at) {
                 // A turn the node queued itself, starting late.
-                Ok(Event::Line(line)) => {
+                Some(Event::Line(line)) => {
                     if handle_line(stdin, spec, outcome, &line)? == Seen::TurnStarted {
                         running = true;
                     }
                 }
-                Ok(Event::Wake) => {}
-                Ok(Event::Eof) | Err(_) => return Ok(()),
+                Some(Event::Wake) => {}
+                Some(Event::Eof) => return Ok(()),
+                // The clock ran out while the node was idle and held: there is no turn to abort,
+                // and closing stdin ends the session.
+                None => {
+                    outcome.timed_out = true;
+                    return Ok(());
+                }
             },
             None => return Ok(()),
+        }
+    }
+}
+
+/// The next event, or `None` once `abort_at` has passed — never, with no bound. A closed channel is
+/// the node's end of stdout.
+fn next_before(rx: &Receiver<Event>, abort_at: Option<Instant>) -> Option<Event> {
+    match abort_at {
+        None => Some(rx.recv().unwrap_or(Event::Eof)),
+        Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => Some(Event::Eof),
+        },
+    }
+}
+
+/// **The wall clock expired mid-turn on a dialect that can abort**: write the abort, then read
+/// until the node closes the turn or [`ABORT_GRACE`] passes. The caller then closes stdin, which
+/// ends the session; the watchdog's kill, [`ABORT_GRACE`] after the bound, is the backstop for a
+/// node that ignores both.
+fn abort_turn(
+    rx: &Receiver<Event>,
+    stdin: &mut std::process::ChildStdin,
+    spec: &DuplexSpec<'_>,
+    outcome: &mut DuplexOutcome,
+) -> std::io::Result<()> {
+    let Some(abort) = spec.dialect.abort() else {
+        return Ok(());
+    };
+    if writeln!(stdin, "{abort}")
+        .and_then(|()| stdin.flush())
+        .is_err()
+    {
+        return Ok(());
+    }
+    let until = Instant::now() + ABORT_GRACE;
+    loop {
+        match next_before(rx, Some(until)) {
+            Some(Event::Line(line)) => {
+                if handle_line(stdin, spec, outcome, &line)? == Seen::TurnEnded {
+                    return Ok(());
+                }
+            }
+            Some(Event::Wake) => {}
+            Some(Event::Eof) | None => return Ok(()),
         }
     }
 }
@@ -1107,6 +1266,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect("the run returns");
@@ -1217,6 +1377,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect("the run returns");
@@ -1274,6 +1435,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 sink: None,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect("the run returns");
@@ -1325,6 +1487,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: spec_sink,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect("the run returns")
@@ -1556,6 +1719,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: None,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -1592,6 +1756,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 sink: None,
                 on_started: None,
                 turns: None,
+                dialect: Dialect::StreamJson,
             },
         )
         .expect("the bounded run returns");
@@ -1700,6 +1865,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
             sink: None,
             on_started: None,
             turns: Some(feed.clone()),
+            dialect: Dialect::StreamJson,
         }
     }
 
@@ -1972,5 +2138,245 @@ exit 0"#
         assert!(out.timed_out, "held past its bound");
         assert!(started.elapsed() < StdDuration::from_secs(10));
         assert_eq!(results(&out), ["one"]);
+    }
+
+    // --- a row's JSONL command channel ([`Dialect::Jsonl`]) -------------------------------------
+
+    use marion_harness::grammar::Cond;
+    use marion_harness::jsonl_channel::Command;
+
+    /// A channel of the pi shape (S34): row data, so the driver is exercised on vocabulary alone.
+    static TEST_CHANNEL: JsonlChannel = JsonlChannel {
+        id: "id",
+        reply: &[Cond::Eq("/type", "response")],
+        handshake: Command {
+            fields: &[("type", "get_state")],
+            text: None,
+        },
+        prompt: Command {
+            fields: &[("type", "prompt")],
+            text: Some("message"),
+        },
+        steer: Command {
+            fields: &[("type", "prompt"), ("streamingBehavior", "steer")],
+            text: Some("message"),
+        },
+        abort: Command {
+            fields: &[("type", "abort")],
+            text: None,
+        },
+        turn_started: &[Cond::Eq("/type", "agent_start")],
+        turn_ended: &[
+            Cond::Eq("/type", "agent_end"),
+            Cond::Eq("/willRetry", "false"),
+        ],
+        note: "duplex test channel",
+    };
+
+    const JSONL_REPLY: &str =
+        r#"{"id":"marion-init-test","type":"response","command":"get_state","success":true}"#;
+    const AGENT_START: &str = r#"{"type":"agent_start"}"#;
+
+    fn agent_end(text: &str) -> String {
+        format!(r#"{{"type":"agent_end","willRetry":false,"text":"{text}"}}"#)
+    }
+
+    fn jsonl_spec<'a>(
+        marker: &'a Path,
+        feed: &TurnFeed,
+        wall_clock: StdDuration,
+    ) -> DuplexSpec<'a> {
+        DuplexSpec {
+            dialect: Dialect::Jsonl(&TEST_CHANNEL),
+            ..fed_spec(marker, feed, wall_clock)
+        }
+    }
+
+    fn frame_in(path: &Path) -> Value {
+        let line = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("the node never read a command into {path:?}: {e}"));
+        serde_json::from_str(line.trim()).expect("a command")
+    }
+
+    fn ends(out: &DuplexOutcome) -> Vec<String> {
+        out.transcript
+            .iter()
+            .filter(|f| f["type"] == "agent_end")
+            .map(|f| f["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// **The channel's handshake, then its prompt, then a queued message as the next turn** — each
+    /// frame in the row's vocabulary, the handshake carrying the node's id, the later turn a
+    /// `prompt` written only after the first `agent_end`.
+    #[test]
+    fn a_jsonl_node_is_handshaken_prompted_and_given_its_next_turn_in_the_rows_vocabulary() {
+        let dir = scratch("duplex-jsonl-next");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (hs, first, turn2) = (dir.join("hs"), dir.join("first"), dir.join("turn2"));
+        // Queue, so the waiting message is held for the boundary rather than folded at once.
+        let fx = fed(MidTurn::Queue);
+        let (id, want) = fx.steer("also check the docs");
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs; printf '%s\n' "$hs" > '{hs}'
+printf '%s\n' '{JSONL_REPLY}'
+read -r first; printf '%s\n' "$first" > '{first}'
+printf '%s\n' '{AGENT_START}' '{end1}'
+read -r next; printf '%s\n' "$next" > '{turn2}'
+printf '%s\n' '{AGENT_START}' '{end2}'
+read -r more && exit 3
+exit 0"#,
+            hs = hs.display(),
+            first = first.display(),
+            turn2 = turn2.display(),
+            end1 = agent_end("one"),
+            end2 = agent_end("two"),
+        );
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &jsonl_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+        )
+        .expect("the run returns");
+        assert_eq!(
+            frame_in(&hs),
+            serde_json::json!({"id": "marion-init-test", "type": "get_state"})
+        );
+        assert_eq!(
+            frame_in(&first),
+            serde_json::json!({"type": "prompt", "message": "do the task"})
+        );
+        assert_eq!(
+            frame_in(&turn2),
+            serde_json::json!({"type": "prompt", "message": want})
+        );
+        assert_eq!(ends(&out), ["one", "two"]);
+        assert_eq!(fx.delivered(), [(id, VIA_JSONL_NEXT_TURN.to_string())]);
+        assert!(fx.sealed());
+        assert_eq!(out.exit_code, Some(0), "stdin closed after the last turn");
+    }
+
+    /// **A message for a running JSONL node is written at once as the row's steer**, and the one
+    /// `agent_end` that follows answers both: the driver neither writes it again nor waits for a
+    /// second end.
+    #[test]
+    fn a_message_for_a_running_jsonl_node_is_written_as_the_rows_steer() {
+        let dir = scratch("duplex-jsonl-fold");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (held, folded) = (dir.join("held"), dir.join("folded"));
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs
+printf '%s\n' '{JSONL_REPLY}'
+read -r first
+printf '%s\n' '{AGENT_START}'
+: > '{held}'
+read -r mid; printf '%s\n' "$mid" > '{folded}'
+printf '%s\n' '{end}'
+read -r more && exit 3
+exit 0"#,
+            held = held.display(),
+            folded = folded.display(),
+            end = agent_end("both"),
+        );
+        let steer = std::thread::scope(|s| {
+            let fx = &fx;
+            let held = &held;
+            let run = s.spawn(move || {
+                run_duplex(
+                    SysCommand::new("sh").args(["-c", &script]),
+                    &jsonl_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+                )
+            });
+            wait_for_file(held);
+            let steer = fx.steer("look at the tests too");
+            let out = run.join().unwrap().expect("the run returns");
+            assert_eq!(ends(&out), ["both"]);
+            assert_eq!(out.exit_code, Some(0), "no second write reached the node");
+            steer
+        });
+        let (id, want) = steer;
+        assert_eq!(
+            frame_in(&folded),
+            serde_json::json!({"type": "prompt", "streamingBehavior": "steer", "message": want})
+        );
+        assert_eq!(fx.delivered(), [(id, VIA_JSONL_MID_TURN.to_string())]);
+    }
+
+    /// **A run the harness will retry is not the turn's end**: nothing queued is written until the
+    /// `agent_end` the row reads as final.
+    #[test]
+    fn a_retried_agent_end_is_not_a_turn_boundary() {
+        let dir = scratch("duplex-jsonl-retry");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (early, turn2) = (dir.join("early"), dir.join("turn2"));
+        let fx = fed(MidTurn::Queue);
+        let (_, want) = fx.steer("the next task");
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs
+printf '%s\n' '{JSONL_REPLY}'
+read -r first
+printf '%s\n' '{AGENT_START}' '{{"type":"agent_end","willRetry":true}}'
+if read -r -t 1 x; then printf '%s\n' "$x" > '{early}'; fi
+printf '%s\n' '{AGENT_START}' '{end1}'
+read -r next; printf '%s\n' "$next" > '{turn2}'
+printf '%s\n' '{AGENT_START}' '{end2}'
+read -r more && exit 3
+exit 0"#,
+            early = early.display(),
+            turn2 = turn2.display(),
+            end1 = agent_end("one"),
+            end2 = agent_end("two"),
+        );
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &jsonl_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+        )
+        .expect("the run returns");
+        assert!(!early.exists(), "a message was written at a retried end");
+        assert_eq!(frame_in(&turn2)["message"], want);
+        assert_eq!(ends(&out), ["", "one", "two"]);
+    }
+
+    /// **The wall clock expires mid-turn: marion writes the row's abort, the node ends its turn and
+    /// exits on its own when stdin closes** — timed out, but never signalled. A dialect with no
+    /// abort is still killed by the watchdog (`a_held_node_is_still_bounded_by_its_wall_clock`).
+    #[test]
+    fn a_jsonl_node_past_its_wall_clock_is_aborted_rather_than_killed() {
+        let dir = scratch("duplex-jsonl-abort");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let aborted = dir.join("aborted");
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs
+printf '%s\n' '{JSONL_REPLY}'
+read -r first
+printf '%s\n' '{AGENT_START}'
+read -r abort; printf '%s\n' "$abort" > '{aborted}'
+printf '%s\n' '{end}'
+while read -r rest; do :; done
+exit 0"#,
+            aborted = aborted.display(),
+            end = agent_end("aborted"),
+        );
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &jsonl_spec(&marker, &fx.feed, StdDuration::from_millis(1500)),
+        )
+        .expect("the run returns");
+        assert_eq!(frame_in(&aborted), serde_json::json!({"type": "abort"}));
+        assert!(out.timed_out, "the bound expired");
+        assert_eq!(out.signal, None, "ended by its own exit, not marion's kill");
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(ends(&out), ["aborted"]);
+        assert!(started.elapsed() < StdDuration::from_secs(10));
     }
 }

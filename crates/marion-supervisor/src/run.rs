@@ -995,6 +995,8 @@ struct ChildDuplex<'a> {
     session: &'a crate::session_watch::SessionWatch<'a>,
     /// The node's inbox, for its turns after the first ([`DuplexSpec::turns`]).
     turns: Option<crate::inbox::TurnFeed>,
+    /// What the child's pipes speak ([`DuplexSpec::dialect`]).
+    dialect: duplex::Dialect,
 }
 
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
@@ -1008,6 +1010,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         on_started,
         session,
         turns,
+        dialect,
     } = child;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -1047,6 +1050,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             sink,
             on_started: Some(on_started),
             turns,
+            dialect,
         },
     )?;
     Ok(ChildRun {
@@ -1728,6 +1732,7 @@ pub fn run_spawn_watched(
                 on_started: &announce_started,
                 session: &session,
                 turns,
+                dialect: duplex::Dialect::of(adapter.spec()),
             },
         ),
     };

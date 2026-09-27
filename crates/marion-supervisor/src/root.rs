@@ -2593,6 +2593,7 @@ fn launch_duplex(
             // See `launch_inner` for the hook and `spawned_record` for the record.
             on_started: Some(on_started),
             turns: node.turns.clone(),
+            dialect: duplex::Dialect::of(marion_harness::adapter::harness_spec(node.harness)),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

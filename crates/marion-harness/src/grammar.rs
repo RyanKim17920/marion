@@ -138,7 +138,7 @@ pub struct Where {
 }
 
 /// One condition on a JSON value.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Cond {
     /// The text at the pointer equals the value.
     Eq(&'static str, &'static str),
@@ -365,6 +365,12 @@ fn words(v: &Value, ptrs: &[&str]) -> Option<String> {
         }
         _ => None,
     })
+}
+
+/// Does `v` satisfy every condition? The one reading of [`Cond`], shared with the JSONL channel
+/// (`crate::jsonl_channel`) so a turn boundary and a stream unit are matched alike.
+pub fn frame_matches(v: &Value, conds: &[Cond]) -> bool {
+    matches(v, conds)
 }
 
 fn matches(v: &Value, conds: &[Cond]) -> bool {
