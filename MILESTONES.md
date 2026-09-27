@@ -684,6 +684,38 @@ kills the gate** with every other hook (`results/f/`), so no gate can ride the h
 **Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
 session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
 
+**Every ACP agent that installs without an account, probed to `session/new` (S33, 2026-09-27,
+`tests/fixtures/s33-acp-agents/`, $0.13 metered).** The ACP registry lists ~50 agents; twelve were
+installed user-level (npm -g, uv tool, brew) and probed with marion's own `initialize` and a
+`session/new`, never an `authenticate`. **Opened** with no account: opencode 1.18.32, kilo 7.8.1;
+under the operator's existing logins: claude-agent-acp 0.66.0 and 0.81.2, codex-acp 1.13.1, copilot
+1.0.83; only once pointed at a provider through the agent's own env (dummy key, loopback URL):
+qwen 0.23.0, goose 1.52.0, fast-agent-acp 0.10.37, mistral-vibe 2.25.8, vtcode 0.169.0 (which also
+needs `VT_ACP_ENABLED=1`), docker-agent 1.144.0 (needs an agent file, so evidence only).
+**Refused — probed only to the account wall:** gemini-cli 0.53.0 (vendor ineligibility, as S20),
+auggie 0.36.0, qoder-cli 1.1.64, cline 3.0.61, pi-acp 0.0.34 (shim/pi version skew, not auth), and
+droid 0.228.0, whose `session/new` **starts a device pairing** — so it is deliberately not a row
+(the doctor's `--adapter` mode opens a session on every row). Turns at $0.00 against a local
+endpoint: qwen, goose, fast-agent and docker-agent to `end_turn`; fast-agent asked
+`session/request_permission` and a real `tools/call` reached the bridge (model-facing
+`marion__report`, ACP title `marion/report`, read by the generic reading); docker-agent names MCP
+tools by an opaque `acp_<hash>`, so no reading can find marion's verb in its transcript; qwen
+started the bridge but deferred its tools behind `tool_search`; copilot 1.0.83 still ignores the
+`session/new` bridge. Live, on the operator's logins: `marion run acp-claude-acp --model haiku`
+($0.13) and `marion run acp-codex-acp --model gpt-5.6-luna` (subscription) each wrote
+`hello.txt` = `marion` in a scratch repo. **Carried as data:** ten new `acp::AGENTS` rows (kilo, qwen,
+goose, fast-agent, vibe, vtcode; auggie, qoder, cline, pi-acp), each row now stating its
+`agent_info`, `install` and `Reach` (opened with/without a provider and its model/mode selects, or
+refused), held to its capture by `every_refinement_row_matches_its_s33_capture`; a built-in
+`acp-<id>` type for every opened row (`every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row`).
+**Read at runtime, not tabled:** the MCP transports an agent advertises (`AgentHandshake::mcp_transports`,
+published by the doctor) and its identity (`acp::identity_note`: an `acp:<command>` that is a known
+row, or a row whose binary now answers as another agent). The doctor also stopped waiting 30 s on an
+agent that exits at startup and quotes its stderr (`an_acp_agent_that_exits_before_answering_is_reported_at_once_with_its_stderr`).
+Not installable without an account or a pipe-to-shell installer: Kiro, Cursor agent, Junie, Kimi
+Code (the `kimi-cli` package is its archived predecessor), OpenHands, Code Assistant, Amp, Blackbox;
+Crush's ACP server is an unmerged PR and Warp exposes none.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
