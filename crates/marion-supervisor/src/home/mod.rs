@@ -23,6 +23,7 @@
 
 pub mod session;
 pub mod view;
+pub mod wake;
 
 use marion_core::contract::AgentId;
 use marion_core::proto::NodeSummary;
@@ -304,6 +305,17 @@ impl Home {
         match &self.watch.detail {
             Some((id, d)) if *id == sel.agent_id => Some(d),
             _ => None,
+        }
+    }
+
+    /// Whether anything the current tab shows moves with time — a running node's elapsed time and
+    /// spinner on Watch, a harness still being checked on Start or Setup — and so needs a clock.
+    /// `false` is the idle screen, which sleeps until something happens.
+    pub fn animating(&self) -> bool {
+        match self.tab {
+            Tab::Watch => self.watch.nodes.iter().any(|n| !n.state.is_exited()),
+            Tab::Start | Tab::Setup => self.checking,
+            Tab::Help => false,
         }
     }
 

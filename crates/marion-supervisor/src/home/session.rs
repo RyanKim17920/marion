@@ -30,12 +30,31 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-/// How long the keyboard is waited on when there is no supervisor stream to pace the loop.
-const POLL: Duration = Duration::from_millis(50);
-/// How often a missing supervisor is looked for again.
+use super::wake::{self, Wake, Waker};
+
+/// A side thread's way to report: the report on the channel, then a wake so the loop reads it.
+#[derive(Clone)]
+struct Reporter {
+    tx: Sender<Report>,
+    waker: Waker,
+}
+
+impl Reporter {
+    /// `false` once the screen has gone and nobody will read it.
+    fn send(&self, r: Report) -> bool {
+        let sent = self.tx.send(r).is_ok();
+        self.waker.wake();
+        sent
+    }
+}
+
+/// How often a missing supervisor is looked for again: the one wait with nothing to wake it,
+/// since no descriptor exists until a supervisor does.
 const REDIAL: Duration = Duration::from_secs(1);
-/// How often the selected node's detail and stream are asked for.
-const DETAIL: Duration = Duration::from_millis(400);
+/// How often the screen redraws while something on it moves with time — a running node's
+/// elapsed time and spinner, a harness still being checked — and how often a running selected
+/// node's detail and stream are read again. Nothing ticks while nothing moves.
+const TICK: Duration = Duration::from_secs(1);
 
 /// Where the home screen is looking.
 #[derive(Debug, Clone)]
@@ -124,12 +143,19 @@ struct Session {
     theme: Theme,
     sub: Option<Subscription>,
     last_dial: Option<Instant>,
-    last_detail: Option<Instant>,
+    /// The selected node's detail must be read again: the selection, the tab or the forest
+    /// changed, or a tick passed over a running node.
+    detail_stale: bool,
     /// A root a run just started, to select once the forest shows it.
     pending_select: Option<String>,
     reports: Receiver<Report>,
-    tx: Sender<Report>,
+    reporter: Reporter,
+    wake: Wake,
+    /// Seconds of animation: spinners advance one frame per tick.
     tick: usize,
+    next_tick: Instant,
+    /// Something changed since the last paint.
+    dirty: bool,
 }
 
 impl Session {
@@ -147,6 +173,11 @@ impl Session {
             &key,
         );
         let (tx, reports) = channel();
+        let wake = Wake::new().expect("a socket pair for the screen's wakes");
+        let reporter = Reporter {
+            tx,
+            waker: wake.waker(),
+        };
         let mut s = Session {
             home: Home::new(opts.tab),
             places: Places {
@@ -163,11 +194,14 @@ impl Session {
             theme: Theme::from_env(),
             sub: None,
             last_dial: None,
-            last_detail: None,
+            detail_stale: true,
             pending_select: None,
             reports,
-            tx,
+            reporter,
+            wake,
             tick: 0,
+            next_tick: Instant::now(),
+            dirty: true,
         };
         s.load_types();
         s.recheck();
@@ -176,46 +210,103 @@ impl Session {
 
     /// One stay on the screen: until the operator quits or asks for something that needs the
     /// whole terminal. The terminal is restored on every way out.
+    ///
+    /// Event-driven: it paints only when something changed, then sleeps in one `poll(2)` over the
+    /// keyboard, the supervisor's stream and the wake pair until one of them has something. The
+    /// timeout is the soonest thing the screen needs on its own — a [`TICK`] while something on it
+    /// moves, a [`REDIAL`] while no supervisor is there — and none at all otherwise, so an idle
+    /// screen over an idle forest makes no wakeups.
     fn draw_loop(&mut self, screen: Screen, cols: u16, rows: u16) -> Result<Handoff, String> {
         let mut stdin = marion_tui::guard::Keyboard::open(0)
             .map_err(|e| format!("watching the keyboard: {e}"))?;
         let mut terminal = Terminal::new(ScreenBackend::new(screen, cols, rows))
             .map_err(|e| format!("starting the renderer: {e}"))?;
         let leave = |t: &Terminal<ScreenBackend>| t.backend().screen().leave();
+        self.wake.watch_resizes();
         let mut size = (cols, rows);
         let mut buf = [0u8; 1024];
+        self.dirty = true;
         loop {
-            if let Some(now) = marion_tui::guard::window_size(0)
-                && now != size
-            {
-                size = now;
-                terminal.backend_mut().set_size(size.0, size.1);
-            }
-            self.reports();
-            self.follow_forest();
+            self.timers();
             self.follow_selection();
-            self.paint(&mut terminal);
-            self.tick = self.tick.wrapping_add(1);
-            // With a subscription its read bound paced this pass; without one the keyboard does.
-            let wait = if self.sub.is_some() {
-                Duration::ZERO
-            } else {
-                POLL
-            };
-            let n = match stdin.read_within(&mut buf, wait) {
-                Ok(Some(0)) => {
-                    leave(&terminal);
-                    return Ok(Handoff::Quit);
+            if self.dirty {
+                self.paint(&mut terminal);
+                self.dirty = false;
+            }
+            let timeout = self.timeout();
+            // SAFETY: fd 0 is the operator's terminal, open for the whole of this loop.
+            let stdin_fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
+            let mut fds = vec![stdin_fd, self.wake.fd()];
+            if let Some(sub) = &self.sub {
+                fds.push(sub.fd());
+            }
+            let ready = wake::wait(&fds, timeout).unwrap_or_else(|_| vec![false; fds.len()]);
+            drop(fds);
+            if ready[1] {
+                if self.wake.drain()
+                    && let Some(now) = marion_tui::guard::window_size(0)
+                    && now != size
+                {
+                    size = now;
+                    terminal.backend_mut().set_size(size.0, size.1);
+                    self.dirty = true;
                 }
-                Ok(Some(n)) => n,
-                Ok(None) | Err(_) => 0,
-            };
-            for key in keys::decode(&buf[..n]) {
-                if let Some(handoff) = self.key(key) {
-                    leave(&terminal);
-                    return Ok(handoff);
+                self.reports();
+            }
+            if ready.get(2).copied().unwrap_or(false) {
+                self.follow_forest();
+            }
+            if ready[0] {
+                let n = match stdin.read_within(&mut buf, Duration::ZERO) {
+                    Ok(Some(0)) => {
+                        leave(&terminal);
+                        return Ok(Handoff::Quit);
+                    }
+                    Ok(Some(n)) => n,
+                    Ok(None) | Err(_) => 0,
+                };
+                for key in keys::decode(&buf[..n]) {
+                    self.dirty = true;
+                    if let Some(handoff) = self.key(key) {
+                        leave(&terminal);
+                        return Ok(handoff);
+                    }
+                    // A key may have moved the selection or come to Watch: read what it shows.
+                    self.detail_stale |= self.home.tab == Tab::Watch;
                 }
             }
+        }
+    }
+
+    /// How long the loop may sleep: until the next tick while something on screen moves, until
+    /// the next look for a supervisor while there is none, else for as long as nothing happens.
+    fn timeout(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let tick = self
+            .home
+            .animating()
+            .then(|| self.next_tick.saturating_duration_since(now));
+        let redial = self.sub.is_none().then(|| match self.last_dial {
+            Some(t) => REDIAL.saturating_sub(t.elapsed()),
+            None => Duration::ZERO,
+        });
+        tick.into_iter().chain(redial).min()
+    }
+
+    /// What is due on the clock: a tick, and a look for a missing supervisor.
+    fn timers(&mut self) {
+        let now = Instant::now();
+        if now >= self.next_tick {
+            self.next_tick = now + TICK;
+            if self.home.animating() {
+                self.tick = self.tick.wrapping_add(1);
+                self.dirty = true;
+                // A running selected node's stream moves with it.
+                self.detail_stale |= self.home.tab == Tab::Watch;
+            }
+        }
+        if self.sub.is_none() && self.last_dial.is_none_or(|t| t.elapsed() >= REDIAL) {
+            self.dial();
         }
     }
 
@@ -285,7 +376,7 @@ impl Session {
         }
         let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
         let mut c = self.marion(&args);
-        let tx = self.tx.clone();
+        let tx = self.reporter.clone();
         self.home.notice = Some("starting…".into());
         std::thread::spawn(move || {
             let report = match c.stdin(std::process::Stdio::null()).output() {
@@ -314,36 +405,44 @@ impl Session {
                     root: None,
                 },
             };
-            let _ = tx.send(report);
+            tx.send(report);
         });
     }
 
-    /// Keep the forest current: dial when there is no subscription (at most once a [`REDIAL`]),
-    /// fold one notification when there is.
+    /// Look for this project's supervisor, and subscribe to its forest when there is one.
+    fn dial(&mut self) {
+        self.last_dial = Some(Instant::now());
+        if let Ok(mut sub) = Subscription::open(&self.repo, &self.state) {
+            if sub.nonblocking().is_err() {
+                return;
+            }
+            self.home.set_nodes(sub.nodes.clone());
+            self.sub = Some(sub);
+            self.forest_moved();
+        }
+    }
+
+    /// Fold what the supervisor's stream has sent; a closed stream is a supervisor gone.
     fn follow_forest(&mut self) {
-        match &mut self.sub {
-            Some(sub) => match sub.poll() {
-                Ok(Some(_)) => {
-                    let nodes = sub.nodes.clone();
-                    self.home.set_nodes(nodes);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    self.sub = None;
-                    self.home.lost_supervisor();
-                }
-            },
-            None => {
-                if self.last_dial.is_some_and(|t| t.elapsed() < REDIAL) {
-                    return;
-                }
-                self.last_dial = Some(Instant::now());
-                if let Ok(sub) = Subscription::open(&self.repo, &self.state) {
-                    self.home.set_nodes(sub.nodes.clone());
-                    self.sub = Some(sub);
-                }
+        let Some(sub) = &mut self.sub else { return };
+        match sub.drain() {
+            Ok(true) => {
+                let nodes = sub.nodes.clone();
+                self.home.set_nodes(nodes);
+                self.forest_moved();
+            }
+            Ok(false) => {}
+            Err(_) => {
+                self.sub = None;
+                self.home.lost_supervisor();
+                self.dirty = true;
             }
         }
+    }
+
+    fn forest_moved(&mut self) {
+        self.dirty = true;
+        self.detail_stale = true;
         if let Some(id) = self.pending_select.clone()
             && self.home.select(&id)
         {
@@ -351,16 +450,14 @@ impl Session {
         }
     }
 
-    /// Ask for the selected node's detail and the next page of its stream, at most every
-    /// [`DETAIL`], while Watch is showing.
+    /// Read the selected node's detail and the next page of its stream, while Watch shows it:
+    /// when it is stale (a new selection, a forest change, a tick over a running node), never on a
+    /// timer of its own.
     fn follow_selection(&mut self) {
-        if self.home.tab != Tab::Watch || self.sub.is_none() {
+        if !self.detail_stale || self.home.tab != Tab::Watch || self.sub.is_none() {
             return;
         }
-        if self.last_detail.is_some_and(|t| t.elapsed() < DETAIL) {
-            return;
-        }
-        self.last_detail = Some(Instant::now());
+        self.detail_stale = false;
         let Some(id) = self.home.selected().map(|n| n.agent_id.clone()) else {
             return;
         };
@@ -370,6 +467,7 @@ impl Session {
         };
         if let Ok(r) = crate::courier::node_get_with(&self.socket, &id, Some(cursor)) {
             self.home.absorb_detail(id, r.detail);
+            self.dirty = true;
         }
     }
 
@@ -383,7 +481,7 @@ impl Session {
             input: frame.input.clone(),
             hints: frame.hints.clone(),
             notice: self.home.notice.clone(),
-            frame: self.tick / 2,
+            frame: self.tick,
         };
         let _ = terminal.draw(|f| f.render_widget(&screen, f.area()));
     }
@@ -477,7 +575,7 @@ impl Session {
                 detail: Vec::new(),
             })
             .collect();
-        let tx = self.tx.clone();
+        let tx = self.reporter.clone();
         std::thread::spawn(move || {
             for h in H::ALL {
                 let rows = doctor::run(&doctor::Options {
@@ -486,16 +584,17 @@ impl Session {
                     model: None,
                     acp_command: None,
                 });
-                if tx.send(Report::Doctor(rows)).is_err() {
+                if !tx.send(Report::Doctor(rows)) {
                     return;
                 }
             }
-            let _ = tx.send(Report::DoctorDone);
+            tx.send(Report::DoctorDone);
         });
     }
 
     fn reports(&mut self) {
         while let Ok(r) = self.reports.try_recv() {
+            self.dirty = true;
             match r {
                 Report::Doctor(rows) => {
                     for h in harnesses_of(&rows) {
@@ -510,6 +609,7 @@ impl Session {
                     self.home.notice = Some(line);
                     if ok {
                         self.home.tab = Tab::Watch;
+                        self.detail_stale = true;
                         // Look again now: the run may have just started this project's supervisor.
                         self.last_dial = None;
                         self.pending_select = root;

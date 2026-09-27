@@ -462,3 +462,25 @@ fn can_names_only_the_few_things_the_home_keys_do() {
         "{names:?}"
     );
 }
+
+/// The clock the loop may wake for: only while something on the tab moves with time. An idle
+/// forest, an ended one, or a tab with nothing animated makes the screen sleep until an event.
+#[test]
+fn only_a_moving_screen_asks_for_a_clock() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    h.set_nodes(vec![]);
+    assert!(!h.animating(), "an empty forest sleeps");
+    h.set_nodes(vec![node("a", None, NodeState::Exited(ExitStatus::Ok))]);
+    assert!(!h.animating(), "an ended forest sleeps");
+    h.set_nodes(vec![node("a", None, NodeState::Running)]);
+    assert!(h.animating(), "a running node's elapsed time ticks");
+    h.tab = Tab::Help;
+    assert!(!h.animating(), "not while another tab hides it");
+    h.tab = Tab::Setup;
+    assert!(!h.animating());
+    h.checking = true;
+    assert!(h.animating(), "a harness still being checked spins");
+    h.tab = Tab::Start;
+    assert!(h.animating());
+}
