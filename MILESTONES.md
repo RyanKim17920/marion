@@ -613,6 +613,57 @@ worktree, its `report` was approved by the operator rule (narrative the child's 
 verification line mutated to expect other content failed the same run `Failed` (`1 of 1 commands
 did not exit 0`).
 
+**`codex app-server` 0.155.1 over stdio, measured for the planned transport (S36, 2026-09-27,
+`tests/fixtures/app-server-0.155.1/`, $0.00 metered).** marion's `canned` behind a hold/script
+proxy, a scratch `CODEX_HOME` holding the canned `config_toml`, marion's real bridge; no login.
+**P1:** `turn/steer`, `turn/interrupt`, `thread/resume` and `mcpServerStatus/list` are stable
+(not behind `experimentalApi`); `thread/queue/*` is experimental. v2 approvals answer
+`{decision: accept|acceptForSession|decline|cancel|…}` (MCP: elicitation `{action, content,
+_meta}`); the legacy `ReviewDecision` requests were never sent to a v2 thread.
+`schema-subset.json` holds the methods marion will use. **P2:** no `"jsonrpc"` member either way;
+notifications carry a top-level `emittedAtMs`; before `initialize` `-32600 Not initialized`;
+`thread/start` before the `initialized` notification is accepted; stdout is JSON only. **P3 — the
+readiness gate is marion's job:** marion's server starts from `config.toml`, argv `-c`, or
+`thread/start.config` (dotted or nested), per thread; `thread/start` returns in ~20 ms and
+`turn/start` at once, and the first provider request waits at most ~1 s for a starting server and
+then goes out **without** marion's tools. Wait for `mcpServer/startupStatus/updated` `ready` on the
+thread (or `mcpServerStatus/list`, which blocks until startup ends) before the first `turn/start`.
+`thread/start.sandbox` beats `config.toml` and argv `-c sandbox_mode`; the response echoes
+`sandbox` (a `SandboxPolicy`) and `approvalPolicy`. Without `omit_tools_from = ["deferred"]` the
+default model (`gpt-6-astra`) is shown none of marion's verbs, canned config included. **P4:**
+`item/started`/`item/completed` for `userMessage`, `mcpToolCall`, `commandExecution`,
+`fileChange`, `agentMessage`; `thread/tokenUsage/updated` after each provider response (`total`
+cumulative, `last` per response, plus `modelContextWindow`); `turn/completed` carries no usage and
+only the final message. **P5 (`on-request`):** an escalated shell →
+`item/commandExecution/requestApproval` (its `availableDecisions` omit `decline`, which still
+works); a patch outside the workspace → `item/fileChange/requestApproval`; sandboxed writes and
+network are refused by the sandbox with no request; MCP under `default_tools_approval_mode =
+"prompt"` → `mcpServer/elicitation/request` with `_meta.codex_approval_kind = "mcp_tool_call"`.
+decline → item `declined` and the model reads "rejected by user"; **cancel → the turn ends
+`interrupted`**; a JSON-RPC error → `failed`/`declined`, "approval request failed". Each answer is
+followed by `serverRequest/resolved`. Under `approvalPolicy: never` a prompting MCP tool fails
+visibly ("requires approval, but approval policy is never"). **P6 — steer folds into the same
+turn:** `turn/steer` answers `{turnId}` mid tool, while a request is held, during a pending
+approval and twice in a row; the text is a plain user message in the **next provider request of
+the same turn**, with no new `turn/started` and one `turn/completed`; a steer during the turn's last
+request adds a request rather than dropping it. Errors are `-32600` (wrong/missing
+`expectedTurnId`, unknown thread, `no active turn to steer`). **`turn/start` on an active turn is
+a steer** (answers the active turn id; nothing is queued). **P7:** `turn/interrupt` → `{}` and
+`turn/completed` `interrupted` at once, but **the running command keeps running** and its
+`item/completed` arrives after `turn/completed` under the old `turnId`; a second interrupt of the
+just-interrupted turn got **no response** in 60 s. **P8:** after SIGKILL + relaunch
+`thread/resume` of an `ephemeral: false` thread carries its history; resume takes
+`sandbox`/`approvalPolicy` overrides; an ephemeral thread is gone (`no rollout found`); a `codex
+exec` thread resumes under app-server and an app-server thread under `codex exec resume`, both
+with history. **P9:** stdin EOF or SIGTERM → exit 0 in ≤ 80 ms, idle or mid-turn (no
+`turn/completed` for the dropped turn), and the bridge, code-mode host and shell are all gone; no
+plugin fetch with `features.plugins = false`. **P10:** `optOutNotificationMethods` suppresses
+exactly the listed methods. **Design consequences:** gate the first turn on MCP `ready`; codex is
+a `Fold` row for mid-turn input on this surface (steer, or even `turn/start`), with one completion
+per turn preserved; never answer an approval with `cancel` unless ending the turn is meant; an
+interrupt must be followed by killing the turn's processes and must not await a second interrupt's
+response; a reader must accept items for a turn that has already completed.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
