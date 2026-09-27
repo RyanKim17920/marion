@@ -3,8 +3,9 @@
 //!
 //! Three properties, and each one is asserted for codex, gemini and opencode separately:
 //!
-//! 1. a root whose turn never reached marion's bridge **fails loudly, naming the cause** — it does
-//!    not exit 0 having emitted plain text, which §6.1 calls out as the failure the readiness gate
+//! 1. a root whose turn never reached marion's bridge **and produced no answer** (no frame, a
+//!    non-zero exit, or a failure in its stream) **fails loudly, naming the cause** — it does
+//!    not exit 0 having emitted nothing readable, which §6.1 calls out as the failure the readiness gate
 //!    exists for and §12 records happening for real;
 //! 2. the same run with one marion tool call in its stream **succeeds** — so property 1 is a check
 //!    that can pass, not an assertion that always fires;
@@ -148,7 +149,7 @@ const CODEX: Node = Node {
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     harness: Harness::Gemini,
     program: "gemini",
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
@@ -197,7 +198,7 @@ fn reached_the_bridge(node: &Node) -> String {
         // Unreachable by construction — the table has three entries and claude-code is not one of
         // them — and a `panic!` rather than a fabricated frame, because a duplex harness arriving
         // here would mean this file had grown a root path it does not test.
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen => {
+        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen | Harness::Antigravity => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
@@ -352,7 +353,11 @@ fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String]
                 "{h}: the prompt is the trailing positional argument (§6.1 step 8): {args:?}"
             );
         }
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen => {
+        Harness::Copilot
+        | Harness::Goose
+        | Harness::Cline
+        | Harness::Qwen
+        | Harness::Antigravity => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
@@ -380,7 +385,11 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
         Harness::Codex => ("CODEX_HOME", &["config.toml"]),
         Harness::Gemini => ("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &[]),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen => {
+        Harness::Copilot
+        | Harness::Goose
+        | Harness::Cline
+        | Harness::Qwen
+        | Harness::Antigravity => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
@@ -441,13 +450,13 @@ fn marion_run(dir: &Path, node: &Node, bin: &Path, prompt: &str, timeout_secs: &
         repo.to_string_lossy().into_owned(),
         "--state-dir".into(),
         state.to_string_lossy().into_owned(),
-        // Nothing listens here. The stub is the whole model side of this run, and a URL that
-        // resolves would only invite a real request. `--canned` is what makes that legible to the
+        // Listening and silent. The stub is the whole model side of this run, and a provider that
+        // answered would only invite a real request. `--canned` is what makes that legible to the
         // binary: a loopback endpoint under real vendor auth is refused at argument parsing,
         // because it aims the operator's credential at a fake server.
         "--canned".into(),
         "--base-url".into(),
-        "http://127.0.0.1:9/v1".into(),
+        marion_testsupport::silent_canned_endpoint(),
         "--timeout".into(),
         timeout_secs.into(),
     ];
@@ -526,15 +535,23 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
     // configured rather than merely started.
     assert_launched_the_way_this_harness_is_launched(node, &recorded_argv(&dir), prompt);
     assert_the_bridge_declaration_was_written(node, &dir);
-    // Pushed onto every canned `LaunchOnly` root by `root::launch_only`, not by the adapter: codex's
-    // generated config names `MARION_DUMMY_KEY` as its provider `env_key` and a provider whose key
-    // is unset refuses to start. Asserted for all three because it is marion's launch that sets it,
-    // so a marion that dropped it would break codex alone and silently.
-    assert!(
-        recorded_env(&dir, "MARION_DUMMY_KEY").is_some_and(|v| !v.is_empty()),
-        "{}: marion pushes a per-run MARION_DUMMY_KEY onto every canned LaunchOnly root",
-        node.harness
-    );
+    // codex's generated config names `MARION_PROVIDER_KEY` as its provider `env_key`, and a
+    // provider whose key is unset refuses to start. The row compiles it from the launch's own
+    // credential (the per-run token here); no other harness reads it, so none is handed it.
+    let key = recorded_env(&dir, "MARION_PROVIDER_KEY");
+    if node.harness == marion_core::harness::Harness::Codex {
+        assert!(
+            key.is_some_and(|v| !v.is_empty()),
+            "codex: the canned LaunchOnly root carries the key its provider names"
+        );
+    } else {
+        assert!(
+            key.is_none(),
+            "{}: only codex reads MARION_PROVIDER_KEY",
+            node.harness
+        );
+    }
+    assert!(recorded_env(&dir, "MARION_DUMMY_KEY").is_none());
 }
 
 #[test]
@@ -550,6 +567,45 @@ fn a_gemini_root_that_never_reached_the_bridge_fails_loudly_instead_of_exiting_z
 #[test]
 fn an_opencode_root_that_never_reached_the_bridge_fails_loudly_instead_of_exiting_zero() {
     a_silent_root_is_refused(&OPENCODE, "silent-opencode");
+}
+
+/// **A root that answered in-stream and exited 0 without calling marion is a normal run.** The
+/// stub emits one JSON frame — an answer, in the stream the harness writes — so there is a
+/// transcript, a clean exit and no failure claim. Measured live: `marion run codex --prompt "say
+/// hello"` printed "Hello!" and exited 1. Now it exits 0 and says nothing was delegated.
+fn a_root_that_answered_plainly_exits_zero_with_a_note(node: &Node, name: &str) {
+    let dir = scratch(&format!("lo-{name}"));
+    let bin = stub_harness(
+        &dir,
+        node,
+        "",
+        "printf '%s\\n' '{\"type\":\"answer\",\"text\":\"Hello!\"}'\nexit 0",
+    );
+    let run = marion_run(&dir, node, &bin, "say hello", "30");
+    assert_eq!(
+        run.code,
+        Some(0),
+        "{}: a plain answer is a normal run\nstderr:\n{}",
+        node.harness,
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("nothing was delegated"),
+        "{}: and it says so:\n{}",
+        node.harness,
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("never reached marion's bridge"),
+        "{}:\n{}",
+        node.harness,
+        run.stderr
+    );
+}
+
+#[test]
+fn a_codex_root_that_answered_plainly_exits_zero_with_a_note() {
+    a_root_that_answered_plainly_exits_zero_with_a_note(&CODEX, "plain-codex");
 }
 
 // --- property 2: one marion call is enough ------------------------------------------------------
@@ -657,7 +713,7 @@ fn refused_at_the_bridge(node: &Node) -> String {
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")
         ),
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen => {
+        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen | Harness::Antigravity => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),

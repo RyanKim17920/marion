@@ -94,7 +94,7 @@ pub fn start_run(
     let child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             &format!("{root_marker}: delegate the marker-file task to a child."),
             "--repo",

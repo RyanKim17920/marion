@@ -407,7 +407,7 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
         pinned_version("claude")
     );
     let cell = Cell {
-        agent_type: "claude",
+        agent_type: "claude-orchestrator",
         // Claude Code's `--model` is legitimately omissible and the canned provider ignores it, so
         // the cell asserts the absence rather than pinning a vendor id marion has no basis for.
         model: None,
@@ -459,7 +459,7 @@ fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
         pinned_version("gemini")
     );
     let cell = Cell {
-        agent_type: "gemini",
+        agent_type: "gemini-orchestrator",
         // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
         model: Some("gemini-2.5-flash"),
         script: Script {
@@ -528,7 +528,7 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
         pinned_version("copilot")
     );
     let cell = Cell {
-        agent_type: "copilot",
+        agent_type: "copilot-orchestrator",
         // Explicit: BYOK refuses to start without one (`BYOK providers require an explicit model`,
         // exit 1), and the adapter refuses first. The canned provider ignores the name.
         model: Some("canned-1"),
@@ -541,7 +541,7 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_harness: Harness::Copilot,
         expected_model: Some("canned-1"),
         // A real allowlist, in copilot's pattern grammar and prefixed with the axis: the literal
-        // `--allow-tool=marion(report)`, which is what `-p` mode checks the call against. `copilot`
+        // `--allow-tool=marion(report)`, which is what `-p` mode checks the call against. `copilot-orchestrator`
         // declares no tools, so no `allow-tool:write` joins it.
         expected_allowed_tools: &["allow-tool:marion(report)"],
         expected_wire: "openai",
@@ -569,7 +569,7 @@ fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
         pinned_version("goose")
     );
     let cell = Cell {
-        agent_type: "goose",
+        agent_type: "goose-orchestrator",
         // `GOOSE_MODEL` is mandatory: without one the `openai` provider has no model to name and
         // the CLI refuses before any request. The canned provider ignores the name.
         model: Some("canned-1"),
@@ -583,7 +583,7 @@ fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_model: Some("canned-1"),
         // On goose the built-in extension **is** the constraint: `--no-profile` loads nothing but
         // marion, and a `write` declaration adds `--with-builtin developer`, which is `edit`,
-        // `shell`, `write`, `tree` and `read_image` as one unit. `goose` declares no tools, so the
+        // `shell`, `write`, `tree` and `read_image` as one unit. `goose-orchestrator` declares no tools, so the
         // record says the default — no builtin at all.
         expected_allowed_tools: &["with-builtin:none"],
         expected_wire: "openai",
@@ -648,7 +648,7 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
         pinned_version("qwen")
     );
     let cell = Cell {
-        agent_type: "qwen",
+        agent_type: "qwen-orchestrator",
         // `OPENAI_MODEL` is how the provider is told what to name; the adapter refuses a canned
         // launch without one. The canned provider ignores the name.
         model: Some("canned-1"),
@@ -660,8 +660,8 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_harness: Harness::Qwen,
         expected_model: Some("canned-1"),
         // A real allowlist: `--core-tools` is what the model is offered (s25 item 5), and the
-        // record is its literal contents prefixed with the axis. `qwen` declares no tools, so
-        // marion's own verb is the whole list.
+        // record is its literal contents prefixed with the axis. `qwen-orchestrator` declares no
+        // tools, so marion's own verb is the whole list.
         expected_allowed_tools: &["core-tools:mcp__marion__report"],
         expected_wire: "openai",
     };

@@ -285,6 +285,9 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // `resume` grammar, not this table's `resume` capability, whose meaning §3.3 keys on a
         // supervisor-driven surface no LaunchOnly row has. `false` here is "not measured".
         Harness::Qwen => Capabilities::NONE,
+        // Nothing measured beyond what the row compiles: `--conversation` is the row's resume
+        // grammar (s32), not this table's supervisor-driven `resume`. `false` is "not measured".
+        Harness::Antigravity => Capabilities::NONE,
         // **The one row where `advertised` describes a protocol rather than a program**, because
         // §5.2's `acp` adapter serves many agents and the version here is not even readable until
         // one of them has answered `initialize`. So `version` is deliberately unused: it keys the

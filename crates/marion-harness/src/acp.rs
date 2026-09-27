@@ -53,8 +53,8 @@ use crate::grammar::{
     ActivityRule, Cond, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
 use crate::spec::{
-    Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push, Spelling,
-    Surfaces, TurnDelivery, UpdatePolicy,
+    Approval, Arg, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, Push,
+    Spelling, Surfaces, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -107,6 +107,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
     push: Push::None,
+    // The protocol's own permission surface: the ACP driver answers `session/request_permission`
+    // itself, selecting an offered allow option (S21); an agent type's `approval_mode` is set on
+    // the session's mode select before the prompt (2026-09-22, all four measured agents).
+    approval: Approval::SessionMode {
+        category: MODE_CATEGORY,
+        note: "S21: marion's client answers session/request_permission with the agent's own \
+               allow option; 2026-09-22: an agent type's approval_mode is set on the session's \
+               `mode` select (claude-agent-acp, codex-acp, copilot, opencode)",
+    },
     client_name: None,
     delivery: Deliveries {
         // Protocol-generic: any agent takes a second `session/prompt` after the first resolved.
@@ -124,6 +133,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "ACP has no interactive shape: no pane row and no native lane",
         },
     },
+    // None: ACP has no provider channel in its handshake, and the per-agent canned recipes are not endpoint recipes yet. An endpoint launch of an ACP type is refused by name.
+    wires: &[],
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \
@@ -911,6 +922,9 @@ pub const SESSION: SessionId = SessionId {
         unit: &[],
     },
     path: "/result/sessionId",
+    // A resume is a `session/load` of the journaled id, whose answer names no session at all, so
+    // there is no first session unit to check against it.
+    resumes_in_place: false,
 };
 
 /// What an ACP node has been doing, read off the protocol's own `session/update` notifications:

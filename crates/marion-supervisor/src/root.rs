@@ -357,9 +357,9 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
-    /// Carried onto the node because the credential decision is not finished at `compile`: the
-    /// `LaunchOnly` run below pushes `MARION_DUMMY_KEY`, and under [`Auth::Inherited`] it must not.
-    pub auth: Auth,
+    /// An endpoint root's resolution: its provider for the journal, its key so what the root
+    /// writes is redacted before it is kept. `None` on a canned or live root.
+    pub endpoint: Option<crate::endpoint::Endpoint>,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -376,11 +376,28 @@ pub struct RootNode {
     /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
     /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
     pub acp_agent: Option<String>,
-    /// The root's inbox and its row's mid-turn behaviour, for a typed root whose owner keeps one
-    /// (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's end
-    /// reach the root as a turn after its first. `None` on the pane and `LaunchOnly` paths, which
-    /// have no typed channel to carry one.
+    /// The root's inbox and its row's mid-turn behaviour, for a headless root whose owner keeps
+    /// one (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's
+    /// end reach the root as a turn after its first: through the typed driver on the duplex and
+    /// ACP paths, as a continuation ([`Self::relaunch`]) on the `LaunchOnly` one. `None` on the
+    /// pane, which takes its turns from a human.
     pub turns: Option<crate::inbox::TurnFeed>,
+    /// The harness session this launch resumes, where it resumes one — what the stream is checked
+    /// against ([`marion_harness::HarnessAdapter::resume_refusal`]).
+    pub resumed: Option<String>,
+    /// What a `LaunchOnly` root's next generation is compiled from — the launch and context its
+    /// first was, which a continuation resumes under the observed session with the message as the
+    /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
+    /// no measured continuation (`TurnDelivery::Continuation`).
+    pub relaunch: Option<RootRelaunch>,
+}
+
+/// The inputs of a `LaunchOnly` root's compile, kept for its continuations. See
+/// [`RootNode::relaunch`].
+#[derive(Debug, Clone)]
+pub struct RootRelaunch {
+    launch: LaunchSpec,
+    ctx: SpawnCtx,
 }
 
 /// What the root's run produced.
@@ -407,7 +424,18 @@ pub struct RootOutcome {
     /// failing with exit 1 and an empty stderr. `None` never means "it succeeded" — only that the
     /// stream itself claimed nothing (see [`marion_harness::StreamOutcome::failure`]).
     pub failure: Option<String>,
+    /// A `LaunchOnly` root that answered and exited cleanly **without calling any marion tool** —
+    /// a legitimate run (a prompt that needed no delegation), reported as `Ok` with
+    /// [`ANSWERED_WITHOUT_DELEGATING`] in its exit description. Set only by the post-hoc check,
+    /// the one place that can tell; `false` everywhere else.
+    pub bridge_unused: bool,
 }
+
+/// The note an `Ok` root's exit description carries when it answered without calling any marion
+/// tool. `marion run` prints it, so a run that delegated nothing still says so rather than
+/// ending in silence.
+pub const ANSWERED_WITHOUT_DELEGATING: &str =
+    "the root answered without calling any marion tool, so nothing was delegated";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RootError {
@@ -425,6 +453,9 @@ pub enum RootError {
     Harness(#[from] marion_harness::HarnessError),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The root names a provider marion cannot point it at ([`crate::endpoint::EndpointError`]).
+    #[error("{0}")]
+    Endpoint(#[from] crate::endpoint::EndpointError),
     /// §9's grant gate: the type declared a built-in tool and marion cannot record what the root
     /// does with it.
     ///
@@ -659,6 +690,13 @@ pub fn prepare_watched(
     // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
     // protocol, and the agent type's `acp_agent` names the agent.
     let adapter = adapter_for_type(harness, agent_type.acp_agent.as_deref())?;
+    // Endpoint mode, where the root's type or model names a provider — refused by name here, before
+    // anything is written, where it is unknown, logged out or shares no wire with this harness.
+    let endpoint = crate::endpoint::resolve_for_launch(
+        spec.model.as_deref(),
+        &agent_type,
+        &adapter.endpoint_wires(),
+    )?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
     // harness; the pane is a fact about the run. Selecting here — once, before anything is
     // compiled — is what keeps the two from being decided in two places and disagreeing: the
@@ -687,7 +725,7 @@ pub fn prepare_watched(
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
     // name a document nobody wrote.
-    let launch = root_launch_spec(
+    let mut launch = root_launch_spec(
         spec,
         path,
         tools,
@@ -700,6 +738,9 @@ pub fn prepare_watched(
             ..Extras::default()
         },
     );
+    if let Some(ep) = &endpoint {
+        crate::endpoint::apply(&mut launch, ep);
+    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -750,7 +791,9 @@ pub fn prepare_watched(
     // already withheld the three env vars it compiles; a push here would put two of them straight
     // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
     // that is supposed to be using it.
-    if path == RootPath::Duplex && spec.auth == Auth::Canned {
+    // Read off the launch, not the spec: an endpoint root's type or model named a provider, its
+    // key is already compiled, and the per-run token pushed here would replace it.
+    if path == RootPath::Duplex && launch.auth == Auth::Canned {
         // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
         // silently wins (§6.4), so it is set to empty rather than left inherited.
         invocation
@@ -805,18 +848,31 @@ pub fn prepare_watched(
         root_grant_record(&agent_id, &change_base, &launch.tools),
     );
 
-    // Bound before `agent_id` moves into the node. Headless, since only a typed path takes it.
-    let turns = matches!(path, RootPath::Duplex | RootPath::Acp)
-        .then(|| observer.turn_source(&agent_id))
-        .flatten()
-        .map(|source| {
-            crate::inbox::TurnFeed::new(
-                source,
-                adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
-            )
-        });
+    // Bound before `agent_id` moves into the node. Headless, since a pane takes no queued turn.
+    let turns = matches!(
+        path,
+        RootPath::Duplex | RootPath::Acp | RootPath::LaunchOnly
+    )
+    .then(|| observer.turn_source(&agent_id))
+    .flatten()
+    .map(|source| {
+        crate::inbox::TurnFeed::new(
+            source,
+            adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        )
+    });
+    // Only where the row measured a resume that continues the session (`TurnDelivery::Continuation`).
+    let continues = matches!(
+        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+        marion_harness::spec::TurnDelivery::Continuation { .. }
+    );
+    let relaunch = (path == RootPath::LaunchOnly && continues).then(|| RootRelaunch {
+        launch: launch.clone(),
+        ctx: ctx.clone(),
+    });
     Ok(RootNode {
         turns,
+        relaunch,
         agent_id,
         project,
         agent_dir,
@@ -828,13 +884,14 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
-        auth: spec.auth,
+        endpoint,
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
         },
         session_declaration: session,
         acp_agent: agent_type.acp_agent.clone(),
+        resumed: spec.resume.as_ref().map(|(_, session)| session.clone()),
     })
 }
 
@@ -1011,9 +1068,14 @@ fn root_launch_spec(
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
             // — so there is nothing for the post-`compile` push below to do.
             (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.to_string()),
+            // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
+            (Auth::Endpoint, _) => None,
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
+        // Filled by endpoint resolution, where the root names a provider.
+        wire: None,
+        provider: None,
         extra,
     }
 }
@@ -1250,7 +1312,14 @@ fn launch_inner(
         // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
-        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started, &session),
+        RootPath::LaunchOnly => launch_only(
+            node,
+            bound,
+            events.as_mut(),
+            &started,
+            &unaccountable,
+            &session,
+        ),
         // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
         // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
         // the byte-level record is `AgentDir::pty_cast()`.
@@ -1385,6 +1454,10 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
     let description = match &outcome.failure {
         Some(f) => format!("{description}; the root's stream reported: {f}"),
         None => description,
+    };
+    let description = match outcome.bridge_unused && status == ExitStatus::Ok {
+        true => format!("{description}; {ANSWERED_WITHOUT_DELEGATING}"),
+        false => description,
     };
     (
         status,
@@ -1793,6 +1866,12 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
             // resolves to an honest `cannot-tell`.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         }),
+        provider: node.endpoint.as_ref().map(|e| e.provider.clone()),
+        route: node
+            .endpoint
+            .as_ref()
+            .map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        credential: node.endpoint.as_ref().map(|e| e.credential.to_string()),
     }
 }
 
@@ -1813,40 +1892,204 @@ fn launch_only(
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
     on_started: &dyn Fn(i32),
+    unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
     session: &crate::session_watch::SessionWatch<'_>,
 ) -> Result<RootOutcome, RootError> {
-    let inv = &node.invocation;
+    let adapter = adapter_for(node.harness)?;
+    let deadline = std::time::Instant::now() + bound;
+    // **The root's inbox, on the continuation lane** (`crate::continuation`): attached before the
+    // first launch, so a message queued while it runs is waiting at its stop.
+    let turns = node
+        .relaunch
+        .as_ref()
+        .and(node.turns.as_ref())
+        .map(|feed| crate::continuation::Turns::attach(std::sync::Arc::clone(&feed.source)));
+    let mut outcome = launch_only_generation(
+        node,
+        &node.invocation,
+        bound,
+        events.as_deref_mut(),
+        on_started,
+        session,
+        adapter.as_ref(),
+    )?;
+    // **Every stop is a turn boundary.** A root has no §7.6 gate of its own (it has no contract
+    // to hold), so its only hold is the inbox's: while a background child's end is owed it waits
+    // for it on its own clock, and a message waiting or arriving is its next generation — the same
+    // launch resumed under the session its stream named, with the message as the prompt.
+    let mut generation = 1u32;
+    loop {
+        let stop = crate::spawn::ChildOutcome {
+            exit_code: outcome.exit_code,
+            timed_out: outcome.timed_out,
+            failure: outcome.failure.clone(),
+            ..Default::default()
+        };
+        let mut gate =
+            |_: &crate::spawn::ChildOutcome,
+             _: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+                crate::descendant_gate::Waited::Settled(crate::descendant_gate::Gated::default())
+            };
+        let (message, resume) = match crate::continuation::boundary(
+            turns.as_ref(),
+            &stop,
+            session.session().as_deref(),
+            deadline,
+            &mut gate,
+        ) {
+            crate::continuation::Turn::Last(_) => break,
+            crate::continuation::Turn::Next { message, session } => (message, session),
+        };
+        let (Some(turns), Some(relaunch)) = (turns.as_ref(), node.relaunch.as_ref()) else {
+            unreachable!("a next turn is only ever taken from a LaunchOnly root's inbox")
+        };
+        generation += 1;
+        let via = format!("continuation:gen{generation}");
+        let launch = LaunchSpec {
+            resume: Some(resume),
+            prompt: crate::inbox::render(&message),
+            ..relaunch.launch.clone()
+        };
+        let inv = adapter
+            .config_files(&launch, &relaunch.ctx)
+            .map_err(RootError::from)
+            .and_then(|files| crate::run::write_config_documents(files).map_err(RootError::from))
+            .and_then(|_| compile_root(adapter.as_ref(), false, &launch, &relaunch.ctx));
+        let inv = match inv {
+            Ok(inv) => inv,
+            Err(e) => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it could not be compiled: {e}"),
+                );
+                continue;
+            }
+        };
+        // Delivered at the instant the process that carries it exists and is journaled — the
+        // generation's own `Spawned`, through the first generation's confirmation.
+        let carried = std::cell::Cell::new(false);
+        let started = |pid: i32| {
+            on_started(pid);
+            let failed = unaccountable.take();
+            if failed.is_none() {
+                turns.delivered(&message.id, &via);
+                carried.set(true);
+            }
+            unaccountable.set(failed);
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let next = launch_only_generation(
+            node,
+            &inv,
+            left,
+            events.as_deref_mut(),
+            &started,
+            session,
+            adapter.as_ref(),
+        );
+        match next {
+            Ok(later) => outcome = fold_generations(outcome, later),
+            Err(e) if !carried.get() => turns.dropped(
+                &message.id,
+                &format!("the continuation that would carry it did not start: {e}"),
+            ),
+            Err(e) => return Err(e),
+        }
+        // A generation marion could not journal is killed; `launch_inner` reports it as such.
+        if !carried.get() && unaccountable_is_set(unaccountable) {
+            turns.dropped(
+                &message.id,
+                "the continuation's process could not be journaled",
+            );
+            break;
+        }
+    }
+    // Evaluated **after** the transcript is assembled and before anything is returned, so the
+    // refusal is the run's outcome rather than a warning printed beside a success — over every
+    // generation's calls, since a resumed turn need not call marion again.
+    //
+    // A root marion killed on its own bound also reached no bridge, trivially — but "it never got
+    // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
+    // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
+    // other claim about the same run.
+    if !outcome.timed_out {
+        let delegated = started_a_child(node);
+        assert_the_root_delegated(node.harness, &outcome, delegated)?;
+        outcome.bridge_unused = !delegated && outcome.marion_calls.is_empty();
+    }
+    Ok(outcome)
+}
+
+fn unaccountable_is_set(cell: &std::cell::Cell<Option<crate::journal::JournalError>>) -> bool {
+    let failed = cell.take();
+    let set = failed.is_some();
+    cell.set(failed);
+    set
+}
+
+/// **A root's outcome after one more generation**: the process facts (exit, expiry, the stream's
+/// failure claim) are the last generation's, and what was said and called accumulates in order.
+fn fold_generations(earlier: RootOutcome, later: RootOutcome) -> RootOutcome {
+    let mut transcript = earlier.transcript;
+    transcript.extend(later.transcript);
+    let mut marion_calls = earlier.marion_calls;
+    marion_calls.extend(later.marion_calls);
+    let mut denied_permissions = earlier.denied_permissions;
+    denied_permissions.extend(later.denied_permissions);
+    RootOutcome {
+        exit_code: later.exit_code,
+        transcript,
+        stderr: match (earlier.stderr.is_empty(), later.stderr.is_empty()) {
+            (_, true) => earlier.stderr,
+            (true, false) => later.stderr,
+            (false, false) => format!("{}\n{}", earlier.stderr, later.stderr),
+        },
+        denied_permissions,
+        marion_calls,
+        timed_out: later.timed_out,
+        failure: later.failure,
+        bridge_unused: false,
+    }
+}
+
+/// One process of a `LaunchOnly` root: `inv` run under `bound`, its stream watched for the session
+/// and recorded whole, read into an outcome.
+fn launch_only_generation(
+    node: &RootNode,
+    inv: &Invocation,
+    bound: StdDuration,
+    events: Option<&mut crate::events::EventSink>,
+    on_started: &dyn Fn(i32),
+    session: &crate::session_watch::SessionWatch<'_>,
+    adapter: &dyn HarnessAdapter,
+) -> Result<RootOutcome, RootError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if node.auth == Auth::Canned {
-        // Codex's generated `config.toml` names this as its provider `env_key`, and a provider
-        // whose key is unset refuses to start. The per-run token rather than a constant, for
-        // the same reason `ANTHROPIC_AUTH_TOKEN` carries it on the duplex path: it attributes a
-        // request log to one run. It is not a credential — the endpoint is the canned server.
-        //
-        // Under `Inherited` there is no canned endpoint to name a key for, and pushing one would
-        // put a placeholder credential beside the operator's real login.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
     // The one live seam this path has, and the session watch is its one reader: the first frame
     // names the session, and a root lost mid-run never reaches the capture below.
     let on_line = |line: &str| session.observe_line(line);
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let redact = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        match node.endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+            Some(key) => crate::endpoint::redact(&text, key.expose()),
+            None => text,
+        }
+    };
+    let stdout = redact(&out.stdout);
+    let stderr = redact(&out.stderr);
     // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
     // `transcript` is `json_frames(&stdout)`, which keeps only the parseable lines. S12 measured
     // gemini interleaving `[STARTUP] Phase 1` and `Warning: Basic terminal detected` on stdout, and
     // a recording built from `transcript` would drop exactly those — rendering a root that printed
     // a stack trace as an unexplained silence, which is the failure `duplex::StreamEvent` has two
     // variants to prevent.
-    if let Some(es) = events.as_mut() {
+    if let Some(es) = events {
         es.record_capture(&stdout);
     }
-    let adapter = adapter_for(node.harness)?;
-    let outcome = RootOutcome {
+    Ok(RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),
         marion_calls: adapter.marion_calls(&stdout),
@@ -1855,23 +2098,16 @@ fn launch_only(
         // a refused call, not the run failing. Measured live (2026-09-22): an opencode root's
         // refused `report` read as "the child's marion_report call ended in error" and failed a run
         // whose child finished `Ok`. A root has no `TaskContract` to record the claim in, so its
-        // only destination is the refusal below and `roots_exit`.
-        failure: adapter.stream_failure(&stdout),
+        // only destination is the refusal below and `roots_exit`. A resume the harness answered
+        // with a fresh session is the more specific claim.
+        failure: adapter
+            .resume_refusal(&stdout, node.resumed.as_deref())
+            .or_else(|| adapter.stream_failure(&stdout)),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
-    };
-    // Evaluated **after** the transcript is assembled and before anything is returned, so the
-    // refusal is the run's outcome rather than a warning printed beside a success.
-    //
-    // A root marion killed on its own bound also reached no bridge, trivially — but "it never got
-    // marion's tools" is the wrong diagnosis for it, and the expiry is the one marion observed. So
-    // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
-    // other claim about the same run.
-    if !outcome.timed_out {
-        assert_the_root_delegated(node.harness, &outcome, started_a_child(node))?;
-    }
-    Ok(outcome)
+        bridge_unused: false,
+    })
 }
 
 /// The ACP root: one driven turn, with every agent line teed live to `tee` as it arrives.
@@ -1919,6 +2155,7 @@ fn launch_acp(
         // nothing — the same reading `run_spawn`'s ACP arm records.
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2141,13 +2378,6 @@ fn launch_terminal(
         // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
         // about the pty this launcher just opened, which no adapter can know.
         .env("TERM", PANE_TERM);
-    if node.auth == Auth::Canned {
-        // The same push `launch_only` makes and for the same reason: codex's generated
-        // `config.toml` names this as its provider `env_key`, and a provider whose key is unset
-        // refuses to start. Claude Code's pane compiles its own credential in `compile_pane`, so
-        // this is here for the second harness to declare a pane rather than for the first.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
 
     // The pid is announced by `spawn_pty` itself, through `on_started`, between `spawn()` and the
     // first byte — that is the only instant at which a durable record can name this process while
@@ -2194,6 +2424,7 @@ fn launch_terminal(
         stderr: String::new(),
         denied_permissions: vec![],
         timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -2243,6 +2474,19 @@ fn launch_terminal(
 /// closing that needs a recording, not a cleverer predicate.
 fn assert_a_verb_was_answered(harness: Harness, outcome: &RootOutcome) -> Result<(), RootError> {
     if outcome.marion_calls.iter().any(|c| c.outcome.is_answered()) {
+        return Ok(());
+    }
+    // **A plain answer is a normal run.** No marion call, a clean exit, a stream with frames in
+    // it and no failure claim: the root answered a prompt that needed no delegation (measured
+    // live: `marion run codex --prompt "say hello"` → "Hello!"). It is `Ok` with a note
+    // ([`ANSWERED_WITHOUT_DELEGATING`]) rather than silent, which is what §6.1 step 8 forbids.
+    // The loud refusal below is kept for what a broken bridge actually looks like: no frame at
+    // all, a non-zero exit, or the stream's own failure claim.
+    if outcome.marion_calls.is_empty()
+        && outcome.exit_code == Some(0)
+        && outcome.failure.is_none()
+        && !outcome.transcript.is_empty()
+    {
         return Ok(());
     }
     // Pre-formatted once, so both variants below quote the run's own words the same way.
@@ -2358,6 +2602,7 @@ fn launch_duplex(
         // for a stream failure claim to be read from here.
         failure: None,
         timed_out: out.timed_out,
+        bridge_unused: false,
     })
 }
 
@@ -3127,7 +3372,7 @@ mod tests {
             "marion must never compile --disallowedTools (§3.1)"
         );
 
-        let (tools, allowed) = axis("claude");
+        let (tools, allowed) = axis("claude-orchestrator");
         assert_eq!(
             tools, "",
             "an orchestrator type declares nothing and must still get the flag, empty"
@@ -3263,7 +3508,7 @@ mod tests {
         }
 
         // 2. Nothing declared, same directory: unchanged, and that is the co-extensive half.
-        let a = prepare(&root_spec(&outside, "claude"))
+        let a = prepare(&root_spec(&outside, "claude-orchestrator"))
             .expect("a root that declares no tool still runs outside a repository");
         match &a.change_base {
             RootChangeBase::Unavailable { reason } => assert!(
@@ -3398,7 +3643,7 @@ mod tests {
             stderr: String::new(),
         };
         let dir = temp("refused-after-spawned");
-        let ran = prepare(&root_spec(&dir, "claude")).unwrap();
+        let ran = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(ran.project.journal()).unwrap());
         let n = tree.get(&ran.agent_id).unwrap();
@@ -3416,7 +3661,7 @@ mod tests {
         ));
 
         let never_dir = temp("refused-before-spawned");
-        let never = prepare(&root_spec(&never_dir, "claude")).unwrap();
+        let never = prepare(&root_spec(&never_dir, "claude-orchestrator")).unwrap();
         let unstarted = RootError::UnaccountableNode { why: "full".into() };
         journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
@@ -3429,11 +3674,11 @@ mod tests {
     #[test]
     fn a_roots_scope_is_a_ceiling_with_no_request_beside_it() {
         let dir = temp("scope");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         match &node.scope {
             RootScope::CeilingOnly { ceiling } => assert_eq!(
                 ceiling,
-                &builtin("claude").unwrap().scope_ceiling,
+                &builtin("claude-orchestrator").unwrap().scope_ceiling,
                 "the agent type's own ceiling, not a copy that could drift"
             ),
             other => panic!("{other:?}"),
@@ -3549,8 +3794,25 @@ mod tests {
         marion_testsupport::fixture_repo(&dir);
         let mut acp_roots = 0;
         for name in marion_core::agent_type::builtin_names() {
-            let node = prepare(&root_spec(&dir, name))
-                .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
+            // agy has no canned route and refuses one by name; its root is prepared live.
+            let agy = builtin(name).unwrap().harness == Harness::Antigravity;
+            let spec = if agy {
+                let canned = prepare(&root_spec(&dir, name)).err().map(|e| e.to_string());
+                assert!(
+                    canned
+                        .as_deref()
+                        .is_some_and(|e| e.contains("no canned or endpoint provider route")),
+                    "{name}: {canned:?}"
+                );
+                RootSpec {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    ..root_spec(&dir, name)
+                }
+            } else {
+                root_spec(&dir, name)
+            };
+            let node = prepare(&spec).unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge here — in a document, or, on goose,
             // as the one `--with-extension marion:…` argv token its row routes through
             // (`McpRoute::Argv`), which `verify` has already checked the argv for. An ACP root's
@@ -3571,7 +3833,12 @@ mod tests {
                     node.invocation.args
                 ),
             }
-            let in_argv = node.invocation.args.iter().any(|a| a == "delegate it");
+            // Verbatim, or (agy) headed by the working-directory preamble its adapter states.
+            let in_argv = node
+                .invocation
+                .args
+                .iter()
+                .any(|a| a == "delegate it" || a.ends_with("\n\ndelegate it"));
             match node.path {
                 RootPath::LaunchOnly => {
                     assert!(
@@ -3660,10 +3927,10 @@ mod tests {
         use marion_harness::ControlTransport;
 
         let dir = temp("pane-selection");
-        let headless = prepare(&root_spec(&dir, "claude")).expect("a claude root");
+        let headless = prepare(&root_spec(&dir, "claude-orchestrator")).expect("a claude root");
         let paned = prepare(&RootSpec {
             pane: true,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .expect("a claude root with a pane");
 
@@ -3784,7 +4051,13 @@ mod tests {
     fn asking_for_a_pane_a_harness_does_not_have_is_refused_rather_than_downgraded() {
         let dir = temp("pane-refusal");
         let mut refused = 0;
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let has_pane = adapter_for(builtin(name).unwrap().harness)
                 .unwrap()
                 .pane_surfaces()
@@ -3827,7 +4100,13 @@ mod tests {
     #[test]
     fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
         let dir = temp("depth");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let doc = std::fs::read_to_string(node.mcp_config.as_ref().unwrap()).unwrap();
             assert!(
@@ -3893,7 +4172,13 @@ mod tests {
         // Distinctive enough that it cannot collide with an id, a path or a model name.
         const TOKEN: &str = "root-node-token-8f1c-4a20-b7de";
         let dir = temp("node-token");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "codex-impl",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
@@ -3919,7 +4204,12 @@ mod tests {
     #[test]
     fn only_the_duplex_root_carries_the_anthropic_env_pair() {
         let dir = temp("token");
-        for name in ["claude", "codex", "gemini", "opencode"] {
+        for name in [
+            "claude-orchestrator",
+            "codex",
+            "gemini-orchestrator",
+            "opencode",
+        ] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
             let has = |k: &str| node.invocation.env.iter().any(|(n, _)| n == k);
             assert_eq!(
@@ -3952,7 +4242,7 @@ mod tests {
         let node = prepare(&RootSpec {
             base_url: None,
             auth: Auth::Inherited,
-            ..root_spec(&dir, "claude")
+            ..root_spec(&dir, "claude-orchestrator")
         })
         .unwrap();
         for k in [
@@ -4013,7 +4303,7 @@ mod tests {
             "marion wrote into {} on a route whose only readable config.toml is ~/.codex/config.toml",
             node.agent_dir.config_dir().display()
         );
-        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+        for k in ["CODEX_HOME", "MARION_PROVIDER_KEY"] {
             assert!(
                 !node.invocation.env.iter().any(|(n, _)| n == k),
                 "{k} must be absent, not blank: {:?}",
@@ -4043,7 +4333,7 @@ mod tests {
     #[test]
     fn a_canned_root_still_carries_the_pair_exactly_where_it_always_did() {
         let dir = temp("canned-auth");
-        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let node = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         let get = |k: &str| {
             node.invocation
                 .env
@@ -4108,33 +4398,55 @@ mod tests {
         }
     }
 
-    /// **§6.1 step 8's post-hoc assertion, and the failure it exists for.** A `LaunchOnly` root that
-    /// never reached marion's bridge exited 0 having done nothing — the §12 shape — so it must be a
-    /// refusal that *names the cause*, never a success.
+    /// **A root that answered plainly and exited cleanly is a normal run, not a refusal.**
+    ///
+    /// Measured live: `marion run codex --prompt "say hello"` printed "Hello!" and marion exited 1
+    /// with "the root never reached marion's bridge". A prompt that needs no delegation is a
+    /// legitimate use, so the run is `Ok` and carries a note saying nothing was delegated — the
+    /// note is what keeps it from being the silent success §6.1 step 8 refuses.
     #[test]
-    fn a_launch_only_root_that_never_reached_the_bridge_is_a_refusal_not_an_exit_zero() {
-        let clean_looking = ran(&[], 3, Some(0), "");
-        let err = assert_a_verb_was_answered(Harness::Codex, &clean_looking)
-            .expect_err("a run with no marion call must not be reported as a success");
-        let msg = err.to_string();
-        assert!(msg.contains("codex"), "it must name the harness: {msg}");
+    fn a_launch_only_root_that_answered_without_marion_is_ok_with_a_note() {
+        let answered = ran(&[], 3, Some(0), "");
+        assert!(assert_a_verb_was_answered(Harness::Codex, &answered).is_ok());
+        let (status, exit) = roots_exit(&RootOutcome {
+            bridge_unused: true,
+            ..answered
+        });
+        assert_eq!(status, ExitStatus::Ok);
         assert!(
-            msg.contains("never reached marion's bridge"),
-            "it must name the cause, not just fail: {msg}"
+            exit.description.contains(ANSWERED_WITHOUT_DELEGATING),
+            "{}",
+            exit.description
         );
-        assert!(
-            msg.contains("Some(0)"),
-            "and it must say that the exit code looked clean, which is the whole trap: {msg}"
-        );
-        assert!(matches!(
-            err,
-            RootError::BridgeNeverReached {
-                harness: Harness::Codex,
-                frames: 3,
-                exit: Some(0),
-                ..
-            }
-        ));
+        // A root that did call marion gets no such note.
+        let (_, delegated) = roots_exit(&ran(&["spawn"], 3, Some(0), ""));
+        assert!(!delegated.description.contains(ANSWERED_WITHOUT_DELEGATING));
+    }
+
+    /// **What still guards a genuinely broken run**: no marion call *and* no answer (no frame at
+    /// all), a non-zero exit, or a stream that reported a failure is still the loud refusal.
+    #[test]
+    fn a_launch_only_root_that_never_reached_the_bridge_and_did_not_answer_is_a_refusal() {
+        for (label, o) in [
+            ("no frame", ran(&[], 0, Some(0), "")),
+            ("non-zero exit", ran(&[], 3, Some(1), "")),
+            (
+                "stream failure",
+                RootOutcome {
+                    failure: Some("APIError".into()),
+                    ..ran(&[], 3, Some(0), "")
+                },
+            ),
+        ] {
+            let err = assert_a_verb_was_answered(Harness::Codex, &o)
+                .expect_err(label)
+                .to_string();
+            assert!(
+                err.contains("never reached marion's bridge"),
+                "{label}: {err}"
+            );
+            assert!(err.starts_with("codex: "), "{label}: {err}");
+        }
     }
 
     /// **The refusal must carry the harness's own words when the exit code has none.** Measured
@@ -4234,7 +4546,10 @@ mod tests {
         let refused = || CallOutcome::Refused("§5.4 rejects `report` on a root".into());
         // (label, the run's marion calls, does the gate pass)
         let cases = [
-            ("no call at all", vec![], false),
+            // A clean exit with frames and no call is a plain answer, passed with a note; see
+            // `a_launch_only_root_that_answered_without_marion_is_ok_with_a_note`. The failing
+            // no-call shapes are in the test beside that one.
+            ("no call at all, a plain answer", vec![], true),
             (
                 "one answered call",
                 vec![("spawn", CallOutcome::Answered)],

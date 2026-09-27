@@ -38,6 +38,7 @@
 //!   `cline history --json`. `--id <session-id>` forces interactive mode before anything else and
 //!   exits 1 headless, so the row's `resume` is `None`.
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -50,8 +51,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -103,17 +105,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: DIR_ENV,
             val: Val::Under(CONFIG_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: DATA_DIR_ENV,
             val: Val::Under(DATA_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Both modes: the one file cline reads from a path its own variable names.
         Env {
@@ -168,6 +170,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // `--auto-approve true`, because `false` declines every call inside cline at exit 0 (S27).
+    approval: Approval::CliFlag {
+        flag: "--auto-approve",
+        scope: "every tool cline offers, all 26 builtins included",
+        note: "S27 on 3.0.61: `--auto-approve false` declines the report call at exit 0",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::None {
@@ -178,6 +186,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "cline is not installed for S31 and its native lane ships disabled",
         },
     },
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: the generated `providers.json` is `openai-compatible`.",
+    }],
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

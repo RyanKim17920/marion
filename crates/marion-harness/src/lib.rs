@@ -10,6 +10,7 @@
 
 pub mod acp;
 pub mod adapter;
+pub mod antigravity;
 pub(crate) mod auth;
 pub mod caps;
 pub mod claude_code;
@@ -30,8 +31,8 @@ pub mod surfaces;
 
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    AcpAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, CopilotAdapter, Extras,
-    GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
+    AcpAdapter, AntigravityAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, CopilotAdapter,
+    Extras, GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
     McpRoute, OpenCodeAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
 };
 pub use auth::{Auth, auth_failure_line};

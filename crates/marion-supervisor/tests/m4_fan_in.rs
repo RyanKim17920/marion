@@ -330,8 +330,22 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         root_intent.get("task_id").is_none_or(Value::is_null),
         "§9: a root has no contract, so its intent carries no task id"
     );
-    let root_spawned =
-        records[only_index(&records, "Spawned", &root_id)]["kind"]["Spawned"].clone();
+    // **Three `Spawned`, and the first is the launch.** A codex root's turn ends with its process,
+    // so each background child's end — queued for it as a message even though its own `wait`
+    // already collected the contract — is a later turn, a relaunch of the same node under its
+    // thread (turn delivery by continuation). Two children, so two continuations.
+    let root_spawns: Vec<&Value> = records
+        .iter()
+        .filter(|r| {
+            r.pointer("/kind/Spawned/agent_id").and_then(Value::as_str) == Some(root_id.as_str())
+        })
+        .collect();
+    assert_eq!(
+        root_spawns.len(),
+        3,
+        "the root's launch, then one continuation per background child's end"
+    );
+    let root_spawned = root_spawns[0]["kind"]["Spawned"].clone();
     assert!(
         root_spawned["pid"].as_i64().is_some_and(|p| p > 0),
         "a root with no recorded pid is not a process this criterion can call real: {root_spawned}"
@@ -377,7 +391,8 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         .filter(|i| i["parent_id"].as_str() == Some(root_id.as_str()))
         .map(|i| {
             assert_eq!(i["harness"], json!("claude-code"), "{i}");
-            assert_eq!(i["agent_type"], json!("claude-impl"), "{i}");
+            // The journal records the canonical name; `claude-impl` is its alias.
+            assert_eq!(i["agent_type"], json!("claude"), "{i}");
             assert_eq!(i["depth"], json!(1), "{i}");
             (
                 i["agent_id"].as_str().unwrap().to_string(),

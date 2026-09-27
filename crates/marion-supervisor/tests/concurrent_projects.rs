@@ -351,10 +351,10 @@ fn spawn_run_with(
             &repo.to_string_lossy(),
             "--state-dir",
             &fleet.state.to_string_lossy(),
-            // Nothing listens there; the stub is the whole model side of the run.
+            // Listening but silent; the stub is the whole model side of the run.
             "--canned",
             "--base-url",
-            "http://127.0.0.1:9/v1",
+            &marion_testsupport::silent_canned_endpoint(),
             "--timeout",
             "120",
         ])

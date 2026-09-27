@@ -31,6 +31,7 @@
 use std::path::PathBuf;
 
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
@@ -110,6 +111,13 @@ pub struct HarnessSpec {
     /// Rendered by the one renderer into the pane shape and the native prefix only ([`Push`]
     /// says why never headless), so no interactive launch can forget the flag that enables it.
     pub push: Push,
+    /// How a **headless** node is let call marion's tools with no operator there to answer a
+    /// prompt — the grant, as one of a few measured shapes. Every harness was measured denying,
+    /// cancelling or classifier-declining an unapproved marion call at exit 0, so a row that
+    /// forgot its grant would launch nodes that report nothing and say nothing. Rendered by the
+    /// row's own argv, env and documents where marion compiles it; reported by `marion doctor`
+    /// where the operator must ([`Approval::OperatorAllowlist`]).
+    pub approval: Approval,
     /// The `clientInfo.name` this harness sends in MCP `initialize`, where it is measured — so a
     /// bridge the harness started itself (`marion mcp` in an operator's own MCP configuration,
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
@@ -120,8 +128,26 @@ pub struct HarnessSpec {
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
     /// surfaces_can_carry` checks each strategy against the rest of the row.
     pub delivery: Deliveries,
+    /// The wires this harness can be pointed at in **endpoint mode**, as recipes, in its order of
+    /// preference — only ones this row can actually render, so a provider serving a wire the
+    /// harness could speak but the row cannot yet aim it at is refused rather than half-configured.
+    /// Endpoint resolution takes the first one the provider serves natively, and the renderer
+    /// applies that recipe; empty refuses every endpoint launch of this harness by name.
+    pub wires: &'static [WireRecipe],
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
+    pub note: &'static str,
+}
+
+/// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that
+/// selects it on top of the row's own overlay rows — empty where the overlay already speaks it,
+/// a switch such as copilot's `COPILOT_PROVIDER_WIRE_API` where the harness speaks several. A
+/// variable the recipe names replaces the overlay row's value of the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireRecipe {
+    pub wire: Wire,
+    pub env: &'static [(&'static str, &'static str)],
+    /// **Mandatory**: how the recipe was established, as for a row's own `note`.
     pub note: &'static str,
 }
 
@@ -150,8 +176,10 @@ pub enum Push {
     /// on every row that carries it: it is what the protocol lets any server send, and what a
     /// client may show, log or drop. No launch flag.
     McpLog,
-    /// Nothing is pushed. ACP: the declaration is a `session/new` request after launch, so
-    /// there is no stdio pipe of marion's to push on.
+    /// Nothing is pushed, or nothing pushed was **measured delivered**. ACP: the declaration is a
+    /// `session/new` request after launch, so there is no stdio pipe of marion's to push on. agy
+    /// 1.2.8: a `notifications/message` pushed after a call reached the pipe and the harness
+    /// surfaced it nowhere, headless or in its TUI (s32).
     None,
 }
 
@@ -284,6 +312,97 @@ pub fn delivery_for(row: &HarnessSpec, shape: NodeShape) -> TurnDelivery {
     match shape {
         NodeShape::Headless => row.delivery.headless,
         NodeShape::Interactive => row.delivery.interactive,
+    }
+}
+
+/// **How a headless node is let call marion's tools** — the grant a launch needs where no operator
+/// is there to answer a prompt, as one of a small closed set of measured shapes.
+///
+/// A statement about the launch, not a second copy of it: where marion compiles the grant, the
+/// row's own [`Arg`]s, [`Env`]s and declaration documents render it and the sweep
+/// `every_row_states_how_its_headless_node_is_approved_to_call_marions_tools` holds them to this
+/// value; where the operator must grant it, marion writes nothing and `marion doctor` reports
+/// whether the grant is there. Every variant carries the `note` naming the measurement, and the
+/// launch-wide switches carry a `scope` saying how much **more** than marion's tools they approve,
+/// because that is the reach an operator is agreeing to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// A per-tool allow list on argv naming marion's tools — claude's `--allowedTools`,
+    /// copilot's `--allow-tool=marion(report)`. The narrowest shape: nothing else is approved.
+    AllowedToolsArg {
+        flag: &'static str,
+        note: &'static str,
+    },
+    /// A key on marion's **own** server declaration approves that server's tools and nothing
+    /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
+    DeclarationKey {
+        key: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide flag on argv — qwen's `--yolo`, cline's `--auto-approve`.
+    CliFlag {
+        flag: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide environment variable — goose's `GOOSE_MODE=auto`.
+    EnvVar {
+        key: &'static str,
+        value: &'static str,
+        scope: &'static str,
+        note: &'static str,
+    },
+    /// A protocol's own permission surface, answered by marion's client — ACP's
+    /// `session/request_permission`, which the ACP driver answers itself with the agent's own
+    /// allow option. An operator who wants the agent to stop asking names one of its modes as the
+    /// agent type's `approval_mode`, which the driver sets on the session's `category` select
+    /// (`acp::MODE_CATEGORY`) through the same `acp::SelectChannel` a model rides, refusing a
+    /// session that does not offer it. The modes are the agent's own strings, read off its
+    /// `session/new` answer; the row states only the select's category, never a second list.
+    SessionMode {
+        category: &'static str,
+        note: &'static str,
+    },
+    /// Only the **operator's own settings** can grant it, and marion never edits them: `rule`
+    /// in the JSON array at `pointer` of `file`, a path under the operator's `HOME`. No flag,
+    /// environment variable or marion-owned document was measured approving marion's tools
+    /// without also approving everything else, so the grant is the operator's to add, once, and
+    /// `marion doctor` names the line when it is missing.
+    OperatorAllowlist {
+        file: &'static str,
+        pointer: &'static str,
+        rule: &'static str,
+        note: &'static str,
+    },
+    /// The harness asks nothing headless for an MCP tool: its default is allow.
+    None { note: &'static str },
+}
+
+impl Approval {
+    /// The measurement behind the row's grant.
+    pub const fn note(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { note, .. }
+            | Approval::DeclarationKey { note, .. }
+            | Approval::CliFlag { note, .. }
+            | Approval::EnvVar { note, .. }
+            | Approval::SessionMode { note, .. }
+            | Approval::OperatorAllowlist { note, .. }
+            | Approval::None { note } => note,
+        }
+    }
+
+    /// The shape's stable name, for `marion doctor` and for the sweep that pins each row's.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Approval::AllowedToolsArg { .. } => "allowed-tools-arg",
+            Approval::DeclarationKey { .. } => "declaration-key",
+            Approval::CliFlag { .. } => "cli-flag",
+            Approval::EnvVar { .. } => "env-var",
+            Approval::SessionMode { .. } => "session-mode",
+            Approval::OperatorAllowlist { .. } => "operator-allowlist",
+            Approval::None { .. } => "none",
+        }
     }
 }
 
@@ -435,14 +554,14 @@ pub enum Arg {
     /// one; nothing where it does not. A shape whose argv has no `Resume` slot, or a row whose
     /// `resume` is `None`, **refuses** a launch that asks for one.
     Resume,
-    /// `<flag> <config_dir>/<child>` **under [`When::Canned`] only** — an isolation flag, the argv
-    /// counterpart of an [`Env`] row whose `val` is [`Val::Under`] and whose `when` is `Canned`.
+    /// `<flag> <config_dir>/<child>` **under [`When::Overlay`] only** — an isolation flag, the argv
+    /// counterpart of an [`Env`] row whose `val` is [`Val::Under`] and whose `when` is `Overlay`.
     /// cline's `--config`/`--data-dir`, which s27 measured as load-bearing *beside* the relocation
     /// variables (flags alone leak `~/.cline/data/db/sessions.db`; variables alone fork a hub
     /// daemon), and which a live node must not carry: pointing them at marion's directory is what
     /// hides the operator's own configuration.
     Isolation(&'static str, &'static str),
-    /// A literal token **under [`When::Canned`] only** — a switch that keeps the operator's own
+    /// A literal token **under [`When::Overlay`] only** — a switch that keeps the operator's own
     /// configuration out of the node. A live node must not carry one: its premise is the
     /// operator's harness as they configured it, and that configuration is where a credential can
     /// live (claude's `--setting-sources ""` drops a settings `apiKeyHelper` or `env` block;
@@ -476,9 +595,12 @@ pub enum Val {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum When {
     Always,
-    /// Only under [`Auth::Canned`] — the isolation and the provider overlay, which is what live
-    /// mode removes (§6.4).
-    Canned,
+    /// Only where marion overlays the provider ([`Auth::overlays`]: canned or endpoint) — the
+    /// isolation and the provider overlay, which is what live mode removes (§6.4).
+    Overlay,
+    /// Only under [`Auth::Endpoint`] — what a real third-party endpoint needs that marion's own
+    /// canned one does not.
+    Endpoint,
     /// Only when the field carries a value. Claude Code blanks `ANTHROPIC_API_KEY` **beside** a
     /// token, and only beside one.
     Present(Field),
@@ -517,6 +639,9 @@ pub struct Fields {
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
     pub auth: Auth,
+    /// The wire an endpoint launch speaks — `LaunchSpec::wire`, seeded neutrally — whose
+    /// [`WireRecipe`] the renderer applies. `None` on canned and live launches.
+    pub wire: Option<Wire>,
     /// The program, where the row's is `None`.
     pub program: Option<String>,
     pub prompt: String,
@@ -600,7 +725,8 @@ pub fn render_env(rows: &[Env], f: &Fields) -> Vec<(String, String)> {
 fn env_applies(when: When, f: &Fields) -> bool {
     match when {
         When::Always => true,
-        When::Canned => f.auth == Auth::Canned,
+        When::Overlay => f.auth.overlays(),
+        When::Endpoint => f.auth == Auth::Endpoint,
         When::Present(field) => f.value(field).is_some(),
     }
 }
@@ -637,6 +763,8 @@ pub enum Refusal {
     /// The launch asks to resume a session and this shape of this harness has no measured way to
     /// name one.
     NoResume,
+    /// An endpoint launch names a wire this row has no [`WireRecipe`] for — or names none.
+    NoWireRecipe,
 }
 
 /// The items a list [`Field`] contributes to a shape's argv.
@@ -681,9 +809,9 @@ fn arg_each_eq(flag: &str, field: Field, spec: &HarnessSpec, f: &Fields) -> Vec<
         .collect()
 }
 
-/// [`Arg::Isolation`]: the isolation flag, under [`Auth::Canned`] alone.
+/// [`Arg::Isolation`]: the isolation flag, where marion overlays the provider alone.
 fn arg_isolation(flag: &str, child: &str, f: &Fields) -> Vec<String> {
-    if f.auth != Auth::Canned {
+    if !f.auth.overlays() {
         return Vec::new();
     }
     let path = f.config_dir.join(child).to_string_lossy().into_owned();
@@ -721,11 +849,27 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
             .collect(),
         Arg::Items(field) => items(spec, f, field),
         Arg::Isolation(flag, child) => arg_isolation(flag, child, f),
-        Arg::CannedLit(s) => match f.auth {
-            Auth::Canned => vec![s.to_string()],
-            Auth::Inherited => Vec::new(),
+        Arg::CannedLit(s) => match f.auth.overlays() {
+            true => vec![s.to_string()],
+            false => Vec::new(),
         },
         Arg::Resume => arg_resume(spec, f),
+    }
+}
+
+/// The row's recipe for `wire`, where it has one.
+pub fn recipe_for(spec: &HarnessSpec, wire: Option<Wire>) -> Option<&'static WireRecipe> {
+    let wire = wire?;
+    spec.wires.iter().find(|r| r.wire == wire)
+}
+
+/// A recipe's variables over the overlay's: a name both carry takes the recipe's value, in place.
+fn apply_recipe(env: &mut Vec<(String, String)>, recipe: &WireRecipe) {
+    for (k, v) in recipe.env {
+        match env.iter_mut().find(|(n, _)| n == k) {
+            Some(slot) => slot.1 = v.to_string(),
+            None => env.push((k.to_string(), v.to_string())),
+        }
     }
 }
 
@@ -752,6 +896,12 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         args.extend(render_arg(*arg, spec, f));
     }
     let mut env = render_env(spec.env, f);
+    if f.auth == Auth::Endpoint {
+        apply_recipe(
+            &mut env,
+            recipe_for(spec, f.wire).ok_or(Refusal::NoWireRecipe)?,
+        );
+    }
     env.extend(spec.updates.env());
     env.extend(f.extra_env.iter().cloned());
     Ok(Invocation {
@@ -800,6 +950,7 @@ impl Surfaces {
 /// | copilot 1.0.83 | `marion-report` | s24 |
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
 /// | goose 1.49.0, cline 3.0.61 | `marion__report` | S26, S27 |
+/// | agy 1.2.8 | `call_mcp_tool{ServerName: marion, ToolName: report}`, shown as `marion/report` | s32 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
@@ -814,6 +965,10 @@ pub enum ToolSpelling {
     McpDotted,
     /// `<server>__<tool>` — the `mcp__` form without its prefix.
     ServerDoubleUnderscoreTool,
+    /// `<server>/<tool>` — agy's own name for an MCP tool, in its TUI and its permission rules
+    /// (`mcp(marion/report)`). The model calls it through the generic `call_mcp_tool` with the
+    /// two halves as separate arguments, so a stream is read by server and verb, not this string.
+    ServerSlashTool,
 }
 
 impl ToolSpelling {
@@ -825,6 +980,7 @@ impl ToolSpelling {
             Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
             Self::ServerDoubleUnderscoreTool => format!("{MCP_ALIAS}__{tool}"),
+            Self::ServerSlashTool => format!("{MCP_ALIAS}/{tool}"),
         }
     }
 }
@@ -888,6 +1044,16 @@ pub enum LiveDeclaration {
         key: &'static str,
         body: fn(&BridgeEnv) -> String,
     },
+    /// `<flag> <dir>/<root>` on argv, naming a **directory** the harness reads a document out of:
+    /// the document is written to `<root>/<file>` under the node's own directory — agy's
+    /// `--add-dir <root>`, which loads `<root>/.agents/mcp_config.json` as a workspace's own MCP
+    /// declaration (s32). The root is marion's and holds nothing else.
+    ArgvRoot {
+        flag: &'static str,
+        root: &'static str,
+        file: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
 }
 
 impl LiveDeclaration {
@@ -895,9 +1061,9 @@ impl LiveDeclaration {
     /// carries it.
     pub fn route(self) -> McpRoute {
         match self {
-            LiveDeclaration::ArgvDocument { .. } | LiveDeclaration::EnvDocument { .. } => {
-                McpRoute::Document
-            }
+            LiveDeclaration::ArgvDocument { .. }
+            | LiveDeclaration::EnvDocument { .. }
+            | LiveDeclaration::ArgvRoot { .. } => McpRoute::Document,
             LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
             LiveDeclaration::ArgvPairs { key, .. } | LiveDeclaration::ArgvInline { key, .. } => {
                 McpRoute::Argv(key)

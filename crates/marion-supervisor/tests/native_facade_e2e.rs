@@ -85,10 +85,23 @@ struct Bed {
 
 impl Bed {
     fn new(tag: &str) -> Bed {
+        // Canned: a native node is the operator's own login and never dials this.
+        Bed::serving(tag, "http://127.0.0.1:8099/v1", false)
+    }
+
+    /// A bed whose supervisor compiles `base_url` into the declarations of the children it spawns.
+    /// `repo`: the project is a one-commit repository, for a run whose native root delegates — a
+    /// child gets a §6.6 worktree of it.
+    fn serving(tag: &str, base_url: &str, repo: bool) -> Bed {
         let work = scratch(tag);
         let state = work.join("state");
-        let project = work.join("project");
-        std::fs::create_dir_all(&project).unwrap();
+        let project = if repo {
+            marion_testsupport::fixture_repo(&work)
+        } else {
+            let project = work.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            project
+        };
         let key = project_root(&project);
         let paths = socket_paths(&state, &key, own_uid());
         assert!(
@@ -109,8 +122,7 @@ impl Bed {
             state: state.clone(),
             project_root: key.clone(),
             bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-            // Canned: a native node is the operator's own login and never dials this.
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            base_url: Some(base_url.into()),
             auth: marion_harness::Auth::Canned,
         };
         let handle = RegistryHandle::owning(live, env.clone());
@@ -248,7 +260,10 @@ impl Operator {
     /// the operator's screen can be read back through `marion_term` exactly as `pane_attach.rs`
     /// reads it. `spawn_pty` performs the `setsid` + `TIOCSCTTY` the facade's controlling-TTY
     /// witness requires.
-    fn facade(bed: &Bed, harness: &str, tail: &[&str]) -> Operator {
+    ///
+    /// `env` is set on the client, which is how it reaches the node: a native node's environment
+    /// is the operator's (`assemble_native` carries the client's minus `MARION_*`).
+    fn facade(bed: &Bed, harness: &str, flags: &[String], env: &[(String, String)]) -> Operator {
         let cast = bed.state.join(format!("operator-{harness}.cast"));
         let master = PtyMaster::open(OPERATOR_SIZE).expect("the operator's pty");
         // The baseline is read through a slave held open until the client owns one: a master whose
@@ -268,10 +283,13 @@ impl Operator {
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
         cmd.arg(harness)
-            .args(tail)
+            .args(flags)
             .current_dir(&bed.project)
             .env("MARION_STATE_DIR", &bed.state)
             .env("TERM", "xterm-256color");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
         let witness = marion_harness::ExecutionSurfaces::opaque()
             .display_plane()
             .expect("the opaque shape declares a display plane");
@@ -570,11 +588,21 @@ fn unexpected_client_exit(op: Operator, bed: &Bed, when: &str) -> ! {
 /// Run one enabled lane up to its first screen, or `None` with a loud skip if the harness is not
 /// installed. Every other clause builds on the returned pair.
 fn first_screen(bed: &Bed, harness: &str) -> Option<(Operator, AgentId)> {
+    first_screen_with(bed, harness, &[], &[])
+}
+
+/// [`first_screen`] with the operator's own flags and environment.
+fn first_screen_with(
+    bed: &Bed,
+    harness: &str,
+    flags: &[String],
+    env: &[(String, String)],
+) -> Option<(Operator, AgentId)> {
     if !on_path(harness) {
         eprintln!("SKIP: `{harness}` is not on PATH, so its native facade E2E did not run");
         return None;
     }
-    let op = Operator::facade(bed, harness, &[]);
+    let op = Operator::facade(bed, harness, flags, env);
     let agent = bed.native_root();
     let node_cast = bed.node_cast(&agent);
     assert!(
@@ -933,4 +961,378 @@ fn the_native_opencode_tui_lists_marion_connected_under_mcp() {
     let node = bed.kill_and_await_exit(&agent);
     assert!(node.state.is_exited(), "{:?}", node.state);
     let _ = op.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Turn delivery by paste: every lane whose interactive row is `TerminalPaste`
+// ---------------------------------------------------------------------------------------------
+
+/// The marker the canned provider answers the native root's pasted turn by. Only the root's own
+/// transcript carries it: the steer that starts the root's first turn is the only text it is in.
+const PASTE_ROOT_MARKER: &str = "PASTE-ROOT-7f3a";
+
+/// How one `TerminalPaste` lane's operator points their own harness at a loopback provider, the
+/// way an operator would: files in a home the harness is told about, and variables. A native node
+/// places no provider of its own (§6.4), so this is the only route, exactly as
+/// `native_facade_spawn.rs` points `marion claude` at one through `ANTHROPIC_BASE_URL`.
+struct CannedOperator {
+    tail: Vec<String>,
+    env: Vec<(String, String)>,
+    /// marion's `spawn` in the spelling this lane's wire declares it under, when the lane's root is
+    /// driven through a background delegation too; `None` for a lane whose TUI asks before an MCP
+    /// call, so a canned turn cannot reach the bridge without an operator answering it.
+    spawn_tool: Option<&'static str>,
+}
+
+/// The setup for `harness`, with its files written under `home`; `None` for a lane this suite has
+/// no loopback setup for, which the caller turns into a loud failure rather than a skip.
+fn canned_operator(
+    harness: marion_core::harness::Harness,
+    base_url: &str,
+    home: &Path,
+    project: &Path,
+) -> Option<CannedOperator> {
+    use marion_core::harness::Harness;
+    let s = |v: &str| v.to_string();
+    match harness {
+        Harness::Codex => {
+            // The canned row's own provider table (`codex::config_toml`), with a key variable
+            // outside `MARION_*` (the native environment drops that prefix) and the project
+            // trusted up front so the TUI's first screen is its composer.
+            let codex_home = home.join("codex");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            let project = std::fs::canonicalize(project).unwrap();
+            std::fs::write(
+                codex_home.join("config.toml"),
+                format!(
+                    "model_provider = \"canned\"\napproval_policy = \"never\"\n\
+                     sandbox_mode = \"workspace-write\"\n\n[features]\nplugins = false\n\n\
+                     [model_providers.canned]\nname = \"canned\"\nbase_url = \"{base_url}\"\n\
+                     wire_api = \"responses\"\nenv_key = \"CANNED_PROVIDER_KEY\"\n\n\
+                     [projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                    project.display()
+                ),
+            )
+            .unwrap();
+            Some(CannedOperator {
+                tail: Vec::new(),
+                env: vec![
+                    (s("CODEX_HOME"), codex_home.display().to_string()),
+                    (s("CANNED_PROVIDER_KEY"), s("canned")),
+                ],
+                spawn_tool: Some("spawn"),
+            })
+        }
+        Harness::OpenCode => {
+            // The canned row's isolation (`HOME` and the XDG roots under one directory) and its
+            // provider document, written where that relocated root reads it.
+            use marion_harness::opencode::{ConfigSpec, ModelRef, config_json, config_path};
+            let path = config_path(home);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let doc = config_json(
+                &ConfigSpec {
+                    model: ModelRef {
+                        provider: s("canned"),
+                        model: s("canned-1"),
+                    },
+                    base_url: base_url.to_string(),
+                    api_key: Some(s("canned")),
+                },
+                None,
+            );
+            std::fs::write(&path, doc.to_string()).unwrap();
+            let under = |d: &str| home.join(d).display().to_string();
+            Some(CannedOperator {
+                tail: Vec::new(),
+                env: vec![
+                    (s("HOME"), home.display().to_string()),
+                    (s("XDG_CONFIG_HOME"), under("config")),
+                    (s("XDG_DATA_HOME"), under("data")),
+                    (s("XDG_CACHE_HOME"), under("cache")),
+                    (s("XDG_STATE_HOME"), under("state")),
+                ],
+                spawn_tool: None,
+            })
+        }
+        Harness::Copilot => {
+            // The canned row's BYOK variables and relocated home, with the project trusted.
+            use marion_harness::copilot as c;
+            let copilot_home = home.join("copilot");
+            std::fs::create_dir_all(&copilot_home).unwrap();
+            let project = std::fs::canonicalize(project).unwrap();
+            std::fs::write(
+                copilot_home.join("config.json"),
+                serde_json::json!({ "trusted_folders": [project] }).to_string(),
+            )
+            .unwrap();
+            Some(CannedOperator {
+                tail: vec![s("--model"), s("canned-1")],
+                env: vec![
+                    (s(c::HOME_ENV), copilot_home.display().to_string()),
+                    (s(c::PROVIDER_BASE_URL_ENV), base_url.to_string()),
+                    (s(c::PROVIDER_TYPE_ENV), s(c::PROVIDER_TYPE)),
+                    (s(c::PROVIDER_WIRE_API_ENV), s(c::WIRE_API)),
+                    (s(c::PROVIDER_API_KEY_ENV), s("canned")),
+                    (s(c::OFFLINE_ENV), s("true")),
+                    (s(c::AUTO_UPDATE_ENV), s("false")),
+                ],
+                spawn_tool: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The text of every user message in a provider request, on either wire this suite drives:
+/// Responses (`input[]` items with `role: user`) and Chat Completions (`messages[]`).
+fn user_texts(request: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let items = request
+        .pointer("/body/input")
+        .or_else(|| request.pointer("/body/messages"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        .flat_map(|m| match m.get("content") {
+            Some(Value::String(text)) => vec![text.clone()],
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str).map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The first request whose user messages carry `needle`, bounded.
+fn user_turn_carrying(
+    server: &marion_provider::CannedServer,
+    needle: &str,
+) -> Option<serde_json::Value> {
+    let mut found = None;
+    until(|| {
+        found = server.requests().ok().and_then(|rs| {
+            rs.into_iter()
+                .find(|r| user_texts(r).iter().any(|t| t.contains(needle)))
+        });
+        found.is_some()
+    });
+    found
+}
+
+/// Every `MessageDelivered` the journal holds for `agent`, as `(message id, via)`.
+fn deliveries_to(bed: &Bed, agent: &AgentId) -> Vec<(String, String)> {
+    let path = bed.project_dir.journal();
+    std::fs::read(path)
+        .unwrap_or_default()
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(marion_core::journal::decode)
+        .filter_map(|r| match r.kind {
+            marion_core::journal::RecordKind::MessageDelivered(d) if &d.agent_id == agent => {
+                Some((d.message_id, d.via))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn steer(bed: &Bed, agent: &AgentId, text: &str) -> String {
+    let mut client = Client::dial(&bed.paths);
+    let id = client.send(marion_core::proto::Call::NodeSteer(
+        marion_core::proto::params::NodeSteerParams {
+            agent_id: agent.clone(),
+            text: text.to_string(),
+            caller: None,
+        },
+    ));
+    let (_, outcome) = client.read_to_response(id);
+    let marion_core::proto::Outcome::Result(body) = outcome else {
+        panic!("node/steer was refused: {outcome:?}")
+    };
+    let Ok(marion_core::proto::MethodResult::NodeSteer(result)) =
+        marion_core::proto::Method::NodeSteer.decode_result(&body)
+    else {
+        panic!("node/steer answered with the wrong result: {body:?}")
+    };
+    assert!(result.queued, "node/steer did not queue: {result:?}");
+    result.message_id.expect("a queued steer names its message")
+}
+
+/// **An operator's steer, and a background child's end, reach a native TUI as user turns** — for
+/// every enabled lane whose interactive row is `TerminalPaste` (the row decides; no lane is named).
+///
+/// The far end is the provider's request log: the message typed into the node's terminal is only
+/// delivered if the harness submitted it as a turn, which is a request carrying it as a user
+/// message. The journal's `MessageDelivered { via: "pty:paste" }` is marion's half of the same
+/// claim, and the node's cast carries the paste under marion's own marker.
+///
+/// A lane whose loopback setup has a `spawn_tool` also backgrounds a child from that pasted turn:
+/// the child is a canned codex node, and when it ends its end is queued for the native root and
+/// pasted in, and the root's next request carries it.
+///
+/// Gated like every clause here: a lane whose harness is not on PATH skips by name.
+#[test]
+fn a_steer_and_a_background_childs_end_reach_every_native_paste_lane_as_user_turns() {
+    use marion_harness::spec::{NodeShape, TurnDelivery, delivery_for};
+    let registry = marion_core::production_native_facades();
+    let lanes: Vec<(&str, marion_core::harness::Harness)> = registry
+        .enabled_native_commands()
+        .into_iter()
+        .filter_map(|lane| Some((lane, lane.parse().ok()?)))
+        .filter(|(_, harness)| {
+            matches!(
+                delivery_for(
+                    marion_harness::adapter::harness_spec(*harness),
+                    NodeShape::Interactive
+                ),
+                TurnDelivery::TerminalPaste { .. }
+            )
+        })
+        .collect();
+    assert!(
+        !lanes.is_empty(),
+        "no enabled native lane takes turns by paste, so this matrix is empty"
+    );
+    for (lane, harness) in lanes {
+        let reqlog = scratch(&format!("native-paste-provider-{lane}"));
+        let home = scratch(&format!("native-paste-home-{lane}"));
+        // Built before the server so the script can name the lane's spawn spelling.
+        let probe =
+            canned_operator(harness, "http://127.0.0.1:1/v1", &home, &home).unwrap_or_else(|| {
+                panic!(
+                    "[{lane}] takes turns by paste but this suite has no loopback setup for it: \
+                     add it to `canned_operator`"
+                )
+            });
+        let turns = probe
+            .spawn_tool
+            .map(|tool| {
+                vec![marion_provider::script::ScriptedCall::new(
+                    tool,
+                    serde_json::json!({
+                        "agent_type": "codex-impl",
+                        "prompt": "Add the marker file under src/ and report back.",
+                        "acceptance_criteria": ["a file exists under src/ containing the marker"],
+                        "writable_scope": ["src/**"],
+                        "background": true,
+                    }),
+                )]
+            })
+            .unwrap_or_default();
+        let server = marion_provider::CannedServer::start(marion_provider::Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: reqlog.join("provider-requests.jsonl"),
+            script: marion_provider::Script {
+                nodes: vec![marion_provider::script::NodeScript {
+                    marker: PASTE_ROOT_MARKER.to_string(),
+                    call_prefix: "paste_root".to_string(),
+                    turns,
+                    final_text: "Noted.".to_string(),
+                }],
+                ..marion_provider::Script::default()
+            },
+        })
+        .expect("the canned provider binds");
+        let base_url = server.base_url();
+        let bed = Bed::serving(&format!("native-paste-{lane}"), &base_url, true);
+        let setup = canned_operator(harness, &base_url, &home, &bed.project)
+            .expect("the same lane as the probe");
+
+        let Some((op, root)) = first_screen_with(&bed, lane, &setup.tail, &setup.env) else {
+            continue;
+        };
+        let mut client = Client::dial(&bed.paths);
+        assert!(
+            until(|| client
+                .tree()
+                .iter()
+                .any(|n| n.agent_id == root && n.state == marion_core::node::NodeState::Running)),
+            "[{lane}] the native root never projected as Running"
+        );
+
+        // ---- the operator's steer is typed in and submitted ----
+        let text = format!("{PASTE_ROOT_MARKER}: take the next task in the background.");
+        let message = steer(&bed, &root, &text);
+        let turn = user_turn_carrying(
+            &server,
+            &format!("marion: message from the operator: {text}"),
+        );
+        if turn.is_none() && op.exited() {
+            unexpected_client_exit(op, &bed, &format!("[{lane}] before the steer arrived"));
+        }
+        assert!(
+            turn.is_some(),
+            "[{lane}] no provider request carried the steer as a user message. deliveries: {:?}\n\
+             node screen:\n{}\nrequests: {:?}",
+            deliveries_to(&bed, &root),
+            tail(&cast_text(&bed.node_cast(&root), "o")),
+            server
+                .requests()
+                .map(|rs| rs.iter().map(user_texts).collect::<Vec<_>>())
+        );
+        assert!(
+            deliveries_to(&bed, &root).contains(&(message.clone(), "pty:paste".to_string())),
+            "[{lane}] the journal does not say the steer was delivered by paste: {:?}",
+            deliveries_to(&bed, &root)
+        );
+        let node_cast = bed.node_cast(&root);
+        assert!(
+            cast_records(&node_cast)
+                .iter()
+                .any(|(code, data)| code == "m" && data.contains(&message)),
+            "[{lane}] the node's cast carries no marion marker naming the pasted message"
+        );
+
+        // ---- a background child's end is pasted in as the root's next turn ----
+        if setup.spawn_tool.is_some() {
+            let mut child = None;
+            assert!(
+                until(|| {
+                    child = bed
+                        .replayed_nodes()
+                        .into_iter()
+                        .find(|n| n.parent_id() == Some(&root) && n.exit.is_some());
+                    child.is_some() || op.exited()
+                }),
+                "[{lane}] no background child of the native root ended: {:?}",
+                bed.replayed_nodes()
+            );
+            let Some(child) = child else {
+                unexpected_client_exit(op, &bed, &format!("[{lane}] before its child ended"));
+            };
+            let turn = user_turn_carrying(&server, "you backgrounded as task_id");
+            assert!(
+                turn.is_some(),
+                "[{lane}] the child {} ended but no provider request carried its end as a user \
+                 message. deliveries: {:?}\nnode screen:\n{}",
+                child.agent_id.0,
+                deliveries_to(&bed, &root),
+                tail(&cast_text(&node_cast, "o"))
+            );
+            assert_eq!(
+                deliveries_to(&bed, &root)
+                    .iter()
+                    .filter(|(_, via)| via == "pty:paste")
+                    .count(),
+                2,
+                "[{lane}] the steer and the child's end, each pasted once"
+            );
+        }
+
+        let node = bed.kill_and_await_exit(&root);
+        assert!(node.state.is_exited(), "[{lane}] {:?}", node.state);
+        let _ = op.finish();
+        eprintln!(
+            "[{lane}] paste delivery E2E: steer{} reached the provider as user turns",
+            if setup.spawn_tool.is_some() {
+                " and a background child's end"
+            } else {
+                ""
+            }
+        );
+    }
 }

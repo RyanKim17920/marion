@@ -72,6 +72,10 @@ impl RequestLog {
             "wire": wire,
             "headers": headers_value(headers),
         });
+        let credentials = credentials_value(headers);
+        if credentials.as_object().is_some_and(|m| !m.is_empty()) {
+            record["credentials"] = credentials;
+        }
         match serde_json::from_slice::<Value>(body) {
             Ok(v) => record["body"] = v,
             Err(e) => {
@@ -96,6 +100,32 @@ impl RequestLog {
             .map(|l| serde_json::from_str(l).map_err(io::Error::other))
             .collect()
     }
+}
+
+/// A fingerprint of a credential header's value: FNV-1a over its bytes, as `fnv1a64:<hex>`.
+///
+/// Evidence of **which** credential arrived — a test compares it against the fingerprint of its
+/// own fixture key — without the log holding the credential. Not a cryptographic hash, and it need
+/// not be: the canned server only ever sees fixture keys, and the value is never a lookup key.
+pub fn fingerprint(value: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in value.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{h:016x}")
+}
+
+/// The redacted headers' [`fingerprint`]s, by lowercased name.
+fn credentials_value(headers: &[(String, String)]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (name, value) in headers {
+        let key = name.to_ascii_lowercase();
+        if REDACTED.contains(&key.as_str()) {
+            map.insert(key, Value::String(fingerprint(value)));
+        }
+    }
+    Value::Object(map)
 }
 
 fn headers_value(headers: &[(String, String)]) -> Value {
@@ -182,6 +212,30 @@ mod tests {
             back[1]["headers"]["authorization"], "<redacted>",
             "opencode sends its key as a bearer token"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **Which credential arrived is evidence; the credential is not.** An endpoint test must be
+    /// able to say "this request presented `Bearer sk-endpoint-test`" without the log holding it,
+    /// so each redacted header also records a fingerprint the test can compute from its own
+    /// fixture key.
+    #[test]
+    fn a_redacted_credential_is_recorded_by_fingerprint() {
+        let path = tmp("fingerprint");
+        let _ = std::fs::remove_file(&path);
+        let log = RequestLog::create(&path).unwrap();
+        let headers = vec![("Authorization".into(), "Bearer sk-endpoint-test".into())];
+        log.append("POST", "/v1/chat/completions", &headers, b"{}", None)
+            .unwrap();
+        let back = RequestLog::read(&path).unwrap();
+        assert_eq!(back[0]["headers"]["authorization"], "<redacted>");
+        assert_eq!(
+            back[0]["credentials"]["authorization"],
+            fingerprint("Bearer sk-endpoint-test")
+        );
+        assert_ne!(fingerprint("Bearer a"), fingerprint("Bearer b"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sk-endpoint-test"));
         let _ = std::fs::remove_file(&path);
     }
 

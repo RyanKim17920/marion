@@ -1,0 +1,18 @@
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   <scratch>/proj
+▎ Debug mode enabled · logging to
+▎ <scratch>/e/debug.log
+  1 more notice hidden
+❯ Reply with the single word OK.
+⏺ OK
+⏺ Ran 5 stop hooks
+  ⎿  Stop hook error: GATE-op: before stopping, reply with exactly the word PINEAPPLE-op and nothing else.
+⏺ PINEAPPLE-op
+✻ Worked for 3s · done 2:24 PM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [14:24] proj | main | Haiku 4.5
+  ctx: [##--------] 19% of 200k
+  ⏸ manual mode on · ← for agents

@@ -34,8 +34,10 @@
 //!
 //! # What this module does not do
 //!
-//! Steps 2 and 4 — the `Stop`-hook re-prompt and the grace turn — need a mechanism per harness and
-//! are not here. A hookless node that stops voluntarily is **not** exempt for want of one (§7.6:
+//! Step 2's re-prompt is the node's inbox: [`gate_or_woken`] spends the hold's pauses waiting for a
+//! message for the node's next turn, and one that arrives ends the hold so the driver can take that
+//! turn and gate again at the next stop. Step 4's grace turn needs a mechanism per harness and is
+//! not here. A hookless node that stops voluntarily is **not** exempt for want of one (§7.6:
 //! "skipping steps 2–4 for want of a mechanism never skips the gate"); it goes straight to the
 //! hold, which is exactly what [`Verdict::Hold`] is. An owner that holds no registry
 //! ([`crate::run::Unwatched`]) cannot see the tree and the gate leaves the two flags unset — the
@@ -147,17 +149,37 @@ pub enum Held {
 /// Poll `live` until it is empty or `deadline` passes. The set is re-read on every pass and the
 /// **final** reading is what an expiry reports, so the contract names what was live at the
 /// moment the flag was set (§7.6: "records the set at whichever moment set the flag").
-pub fn hold(mut live: impl FnMut() -> Vec<AgentId>, deadline: Instant, poll: Duration) -> Held {
+pub fn hold(live: impl FnMut() -> Vec<AgentId>, deadline: Instant, poll: Duration) -> Held {
+    let slept = hold_until::<std::convert::Infallible>(live, deadline, poll, &mut |d| {
+        std::thread::sleep(d);
+        None
+    });
+    match slept {
+        Ok(held) => held,
+        Err(never) => match never {},
+    }
+}
+
+/// [`hold`], with each pause spent in `wait` rather than asleep: `wait(d)` blocks up to `d` and
+/// returns what woke it, which ends the hold as `Err`. `Ok` is the hold's own ending.
+fn hold_until<T>(
+    mut live: impl FnMut() -> Vec<AgentId>,
+    deadline: Instant,
+    poll: Duration,
+    wait: &mut dyn FnMut(Duration) -> Option<T>,
+) -> Result<Held, T> {
     loop {
         let now = live();
         if now.is_empty() {
-            return Held::Released;
+            return Ok(Held::Released);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Held::Expired(now);
+            return Ok(Held::Expired(now));
         }
-        std::thread::sleep(poll.min(remaining));
+        if let Some(woke) = wait(poll.min(remaining)) {
+            return Err(woke);
+        }
     }
 }
 
@@ -218,6 +240,48 @@ pub fn gate(
     spawned: std::time::SystemTime,
     bound: Duration,
 ) -> Gated {
+    let slept = gate_or_woken::<std::convert::Infallible>(
+        observer,
+        agent_id,
+        project,
+        outcome,
+        spawned,
+        bound,
+        &mut |d| {
+            std::thread::sleep(d);
+            None
+        },
+    );
+    match slept {
+        Waited::Settled(gated) => gated,
+        Waited::Woken(never) => match never {},
+    }
+}
+
+/// How [`gate_or_woken`] ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Waited<T> {
+    /// The gate decided, exactly as [`gate`] would have.
+    Settled(Gated),
+    /// Something woke the hold before it decided — a message for the node's next turn, which is
+    /// §7.6 step 2's re-prompt. The node takes that turn; nothing terminal was written.
+    Woken(T),
+}
+
+/// **[`gate`], with the hold's pauses spent waiting for the node's next turn.** `wait(d)` blocks
+/// up to one poll and returns the message that arrived, if one did; that ends the hold as
+/// [`Waited::Woken`] with the node journaled `Blocked(Descendants)` and nothing terminal written,
+/// so the caller can relaunch it and gate again at the next stop. Only a hold waits, so only a
+/// held node can be woken.
+pub fn gate_or_woken<T>(
+    observer: &dyn SpawnObserver,
+    agent_id: &AgentId,
+    project: &ProjectDir,
+    outcome: &ChildOutcome,
+    spawned: std::time::SystemTime,
+    bound: Duration,
+    wait: &mut dyn FnMut(Duration) -> Option<T>,
+) -> Waited<T> {
     let stop = Stop::of(outcome);
     let mut gated = Gated {
         // A fact about the stop, not about the tree: recorded whether or not the tree is readable.
@@ -227,7 +291,7 @@ pub fn gate(
         ..Gated::default()
     };
     let Some(live) = observer.live_descendants(agent_id) else {
-        return gated;
+        return Waited::Settled(gated);
     };
     match evaluate(stop, live) {
         Verdict::Admit => {}
@@ -257,11 +321,17 @@ pub fn gate(
                 live.len(),
                 names(&live)
             );
-            match hold(
+            let held = hold_until(
                 || observer.live_descendants(agent_id).unwrap_or_default(),
                 Instant::now() + remaining,
                 HOLD_POLL,
-            ) {
+                wait,
+            );
+            let held = match held {
+                Ok(held) => held,
+                Err(woke) => return Waited::Woken(woke),
+            };
+            match held {
                 Held::Released => {
                     gated.note = Some(format!(
                         "{entered}; the hold ended when every descendant was terminal"
@@ -281,7 +351,7 @@ pub fn gate(
             }
         }
     }
-    gated
+    Waited::Settled(gated)
 }
 
 #[cfg(test)]
@@ -334,6 +404,9 @@ mod tests {
             model: None,
             pid: Some(4242),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         })
     }
 
@@ -569,6 +642,74 @@ mod tests {
         assert!(comp.reported_early);
         assert!(!comp.held_to_timeout);
         assert_eq!(comp.live_descendants_at_report, vec![id("g")]);
+    }
+
+    /// An owner whose tree always has one live descendant under the node.
+    struct AlwaysLive;
+    impl SpawnObserver for AlwaysLive {
+        fn identified(&self, _: &AgentId) -> Option<String> {
+            None
+        }
+        fn started(&self, _: &AgentId, _: i32) {}
+        fn live_descendants(&self, _: &AgentId) -> Option<Vec<AgentId>> {
+            Some(vec![id("g")])
+        }
+    }
+
+    /// **§7.6's hold is the node's turn boundary, so a message ends it** (the re-prompt step 2
+    /// names): a wake during the hold returns what woke it, well inside the bound, and the hold was
+    /// journaled first. A wake that brings nothing leaves the hold running.
+    #[test]
+    fn a_message_during_the_hold_ends_it_with_that_message() {
+        let dir = marion_testsupport::scratch("descendant-gate-woken");
+        let project = ProjectDir::new(&dir.join("state"), std::path::Path::new("/nowhere"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let stopped = ChildOutcome {
+            exit_code: Some(0),
+            ..ChildOutcome::default()
+        };
+        let mut waits = 0;
+        let started = Instant::now();
+        let woken = gate_or_woken(
+            &AlwaysLive,
+            &id("n"),
+            &project,
+            &stopped,
+            std::time::SystemTime::now(),
+            Duration::from_secs(60),
+            &mut |d: Duration| {
+                assert!(d <= HOLD_POLL, "each wait is one poll at most: {d:?}");
+                waits += 1;
+                (waits == 3).then_some("the steer")
+            },
+        );
+        assert_eq!(woken, Waited::Woken("the steer"));
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "never the bound"
+        );
+        let journal = std::fs::read_to_string(project.journal()).unwrap();
+        assert!(
+            journal.contains("Descendants"),
+            "the hold was journaled: {journal}"
+        );
+
+        let settled = gate_or_woken::<()>(
+            &AlwaysLive,
+            &id("n"),
+            &project,
+            &stopped,
+            std::time::SystemTime::now(),
+            Duration::from_millis(50),
+            &mut |d: Duration| {
+                std::thread::sleep(d);
+                None
+            },
+        );
+        let Waited::Settled(g) = settled else {
+            panic!("nothing woke it, so the bound expired: {settled:?}")
+        };
+        assert!(g.held_to_timeout);
     }
 
     /// An owner that cannot see the tree leaves the gate's two flags unset and holds nothing — and

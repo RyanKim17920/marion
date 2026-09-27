@@ -16,10 +16,12 @@
 //! # What "accepted" means in this build
 //!
 //! The message is journaled (`MessageQueued`, length and digest only) and waits for the node's
-//! next turn boundary. **No delivery lane is wired yet** — duplex, ACP, continuation, pty and the
-//! bridge each attach a [`crate::inbox::DeliveryPort`] in their own phase — so today a queued
-//! message waits until its node ends and is then dropped, by name, on the journal. The result says
-//! `queued: true` and never claims a delivery.
+//! next turn boundary. A lane that delivers attaches a [`crate::inbox::DeliveryPort`]; a node whose
+//! lane has none yet keeps the message until it ends, and it is then dropped, by name, on the
+//! journal. The result says `queued: true` and never claims a delivery — `MessageDelivered` does,
+//! later. **Wired:** a `TerminalPaste` node whose terminal this supervisor hosts (a pane, or a
+//! native `marion <harness>` session) gets a [`crate::paste::PasteInjector`] the moment its pane
+//! is published ([`RegistryHandle::attach_paste_delivery`]).
 
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::harness::Harness;
@@ -29,6 +31,7 @@ use marion_core::proto::result::DeliveryResult;
 use marion_core::proto::{Delivery, RpcError, SpawnCaller};
 use marion_core::registry::Replay;
 use marion_harness::spec::{NodeShape, TurnDelivery, delivery_for};
+use std::sync::Arc;
 
 use super::{RegistryHandle, lock, root_spawn_authorized};
 use crate::inbox::{Refusal, Source};
@@ -119,6 +122,27 @@ impl RegistryHandle {
             NodeShape::Headless
         };
         delivery_for(marion_harness::adapter::harness_spec(harness), shape)
+    }
+
+    /// **`agent`'s terminal was just published: start its paste driver if its row takes turns by
+    /// pasting.** The shape is interactive by construction — `host` is the terminal — so the row's
+    /// interactive strategy decides, and only a `TerminalPaste` row gets a
+    /// [`crate::paste::PasteInjector`]. A node with no open inbox (one this supervisor did not
+    /// claim) gets none: the injector releases its thread when `attach_port` refuses.
+    pub(super) fn attach_paste_delivery(&self, agent: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+        self.live.refresh();
+        let Some(harness) = self
+            .live
+            .read(|r| r.tree().get(agent).and_then(|n| n.harness()))
+        else {
+            return;
+        };
+        let row = marion_harness::adapter::harness_spec(harness);
+        if let Some(params) =
+            crate::paste::PasteParams::of(delivery_for(row, NodeShape::Interactive))
+        {
+            let _ = crate::paste::PasteInjector::start(agent.clone(), host, &self.inboxes, params);
+        }
     }
 
     /// **A backgrounded child ended: queue its end for its parent's next turn** — the text the
@@ -311,6 +335,9 @@ mod tests {
                 model: None,
                 pid: Some(4242),
                 start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
             }));
             self.write(RecordKind::StateChanged(StateChanged {
                 agent_id: id(agent),
@@ -511,6 +538,9 @@ mod tests {
                 model: None,
                 pid: Some(4243),
                 start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
             }),
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("native"),
@@ -665,6 +695,132 @@ mod tests {
             turns.take_next(),
             None,
             "the grandchild's message is not the child's"
+        );
+    }
+
+    /// A raw pty whose host is `agent`'s terminal, with the node side already asking for
+    /// bracketed paste and a prompt drawn — what a TUI does at boot. Not registered: the caller does that.
+    fn pasting_terminal(
+        fx: &Fx,
+        agent: &str,
+        tag: &str,
+    ) -> (Arc<crate::pty::PtyHost>, std::fs::File) {
+        use std::io::Write;
+        let size = crate::pty::WinSize::new(80, 24);
+        let master = crate::pty::PtyMaster::open(size).unwrap();
+        let mut slave = std::fs::File::from(master.open_slave().unwrap());
+        let mut termios = rustix::termios::tcgetattr(&slave).unwrap();
+        termios.make_raw();
+        rustix::termios::tcsetattr(&slave, rustix::termios::OptionalActions::Now, &termios)
+            .unwrap();
+        let host = Arc::new(
+            crate::pty::PtyHost::start(
+                id(agent),
+                master,
+                &fx._dir.join(format!("{tag}.cast")),
+                size,
+                "xterm-256color",
+                std::time::Instant::now(),
+            )
+            .unwrap(),
+        );
+        slave.write_all(b"\x1b[?2004h> ").unwrap();
+        assert!(marion_testsupport::until(|| host.bracketed_paste()));
+        (host, slave)
+    }
+
+    /// Every `via` the journal gives message `m`'s deliveries.
+    fn deliveries(fx: &Fx, m: &str) -> Vec<String> {
+        std::fs::read(&fx.path)
+            .unwrap()
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .filter_map(marion_core::journal::decode)
+            .filter_map(|r| match r.kind {
+                RecordKind::MessageDelivered(d) if d.message_id == m => Some(d.via),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn operator_paste(text: &str) -> Vec<u8> {
+        let mut want =
+            crate::paste::frame(&format!("marion: message from the operator: {text}")).into_bytes();
+        want.push(b'\r');
+        want
+    }
+
+    /// **A steer into a codex pane is typed into its terminal.** The pane's registration is what
+    /// attaches the row's `TerminalPaste` driver: the operator's message reaches the node's pty as
+    /// one bracketed paste of the rendered text and a CR, and is journaled delivered by paste.
+    #[test]
+    fn a_steer_into_a_terminal_paste_pane_is_pasted_into_its_pty() {
+        let fx = fx("steer-paste");
+        fx.running("pane", None, Harness::Codex);
+        let (host, mut slave) = pasting_terminal(&fx, "pane", "pane");
+        fx.handle.register_pane(&id("pane"), Arc::clone(&host));
+
+        let m = assert_queued(fx.steer("pane", None));
+        let want = operator_paste("use the v2 API");
+        let got = crate::paste::tests::read_slave_within(
+            &mut slave,
+            want.len(),
+            std::time::Duration::from_secs(20),
+        );
+        assert_eq!(got, want);
+        assert!(marion_testsupport::until(|| !deliveries(&fx, &m).is_empty()));
+        assert_eq!(deliveries(&fx, &m), vec![crate::paste::VIA.to_string()]);
+        fx.handle
+            .mark_finished(&id("pane"), super::super::NodeOutcome::Root(Ok(())));
+    }
+
+    /// **A replaced pane takes the paste, not the terminal it replaced** — a resume re-registers
+    /// the node's pane, and the new host's injector becomes the inbox's port (the old one is
+    /// closed by the replacement), so the message is typed once, into the live terminal.
+    #[test]
+    fn a_replaced_pane_gets_the_paste_and_the_old_one_does_not() {
+        let fx = fx("steer-paste-replaced");
+        fx.running("pane", None, Harness::Codex);
+        let (old, _old_slave) = pasting_terminal(&fx, "pane", "old");
+        fx.handle.register_pane(&id("pane"), Arc::clone(&old));
+        let (new, mut slave) = pasting_terminal(&fx, "pane", "new");
+        fx.handle.register_pane(&id("pane"), Arc::clone(&new));
+
+        let m = assert_queued(fx.steer("pane", None));
+        let want = operator_paste("use the v2 API");
+        let got = crate::paste::tests::read_slave_within(
+            &mut slave,
+            want.len(),
+            std::time::Duration::from_secs(20),
+        );
+        assert_eq!(got, want);
+        assert!(marion_testsupport::until(|| !deliveries(&fx, &m).is_empty()));
+        assert_eq!(deliveries(&fx, &m).len(), 1, "typed once");
+        fx.handle
+            .mark_finished(&id("pane"), super::super::NodeOutcome::Root(Ok(())));
+    }
+
+    /// **A pane whose row does not paste gets no injector**: claude's interactive row is its MCP
+    /// channel, so a steer into a claude pane is queued and nothing is typed into its terminal.
+    #[test]
+    fn a_pane_whose_row_does_not_paste_is_never_typed_into() {
+        let fx = fx("steer-no-paste");
+        fx.running("pane", None, Harness::ClaudeCode);
+        let (host, _slave) = pasting_terminal(&fx, "pane", "pane");
+        fx.handle.register_pane(&id("pane"), host);
+        let m = assert_queued(fx.steer("pane", None));
+        fx.handle
+            .mark_finished(&id("pane"), super::super::NodeOutcome::Root(Ok(())));
+        assert!(deliveries(&fx, &m).is_empty());
+        let dropped = std::fs::read(&fx.path)
+            .unwrap()
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .filter_map(marion_core::journal::decode)
+            .any(|r| matches!(r.kind, RecordKind::MessageDropped(d) if d.message_id == m));
+        assert!(
+            dropped,
+            "the message waited for a lane and went down with the node"
         );
     }
 

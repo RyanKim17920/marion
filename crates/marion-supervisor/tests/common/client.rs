@@ -187,7 +187,7 @@ impl Client {
         let id = self.send(Call::AgentSpawn(
             marion_core::proto::params::AgentSpawnParams {
                 notify_parent: false,
-                agent_type: "claude".into(),
+                agent_type: "claude-orchestrator".into(),
                 prompt: prompt.into(),
                 native_launch: None,
                 caller: None,

@@ -340,8 +340,8 @@ unsafe extern "C" {
 /// Not a secret and not checked by anything: the endpoint is marion's canned provider or its proxy,
 /// which authenticates nothing. It exists because a harness can refuse to *start* over an absent
 /// credential — see the `api_key` field in [`run_spawn`]'s `LaunchSpec` — and because codex's
-/// generated config has always named a variable that had to hold something (`env_key =
-/// "MARION_DUMMY_KEY"`).
+/// generated config names a variable that has to hold something (`env_key =
+/// "MARION_PROVIDER_KEY"`, compiled from this field by codex's row).
 pub const PLACEHOLDER_API_KEY: &str = "dummy";
 
 /// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
@@ -819,11 +819,19 @@ pub(crate) mod at_contract_write {
 /// codex, whose `exec` surface takes no model argument. And, as with `allowed_tools`, the contract
 /// records **the compiled value, not the asked-for one**: `TaskContract.child.model` is read off
 /// the compiled `Invocation`, so a codex contract records `None` however loudly a caller asked.
+///
+/// On a live run the type's default is [`AgentType::default_model`]'s: one that names marion's
+/// canned plumbing is dropped, so the harness uses the operator's own default model.
+///
+/// [`AgentType::default_model`]: marion_core::agent_type::AgentType::default_model
 fn resolve_model(
     req: &SpawnRequest,
     agent_type: &marion_core::agent_type::AgentType,
+    auth: Auth,
 ) -> Option<String> {
-    req.model.clone().or_else(|| agent_type.model.clone())
+    req.model
+        .clone()
+        .or_else(|| agent_type.default_model(auth == Auth::Canned))
 }
 
 /// The `request_id` a node's `initialize` goes out with — **one derivation, three readers**.
@@ -896,26 +904,28 @@ struct ChildRun {
 /// readiness *post hoc* from their own streams instead.
 fn launch_only_child(
     inv: &Invocation,
-    auth: Auth,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
+    secret: Option<&str>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if auth == Auth::Canned {
-        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
-    }
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again:
     // every child path now records its lines live, so nothing is read back after the fact.
+    // An endpoint node's key is redacted from each line before it is kept, as the whole capture
+    // is afterwards: the live record would otherwise be the one place it survived.
     let on_line = |line: &str| {
         if let Some(es) = events {
-            es.record_line(line);
+            match secret {
+                Some(key) => es.record_line(&crate::endpoint::redact(line, key)),
+                None => es.record_line(line),
+            }
         }
         session.observe_line(line);
     };
@@ -987,11 +997,7 @@ struct ChildDuplex<'a> {
     turns: Option<crate::inbox::TurnFeed>,
 }
 
-fn duplex_child(
-    inv: &Invocation,
-    auth: Auth,
-    child: ChildDuplex<'_>,
-) -> Result<ChildRun, SpawnError> {
+fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
     let ChildDuplex {
         agent_id,
         ready_file,
@@ -1007,9 +1013,6 @@ fn duplex_child(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if auth == Auth::Canned {
-        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
-    }
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
     // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
     // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
@@ -1236,10 +1239,39 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
             });
         }
     };
-    AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
-        path,
+    let types = AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
+        path: path.clone(),
         error: e.to_string(),
-    })
+    })?;
+    check_providers(&types, crate::credentials::user_registry)
+        .map_err(|error| SpawnError::AgentTypesFile { path, error })?;
+    Ok(types)
+}
+
+/// Every row's `provider` is one the user's registry knows. `registry` is called only when some
+/// row names a provider, so a tree that uses none never depends on the user's `providers.toml`.
+fn check_providers(
+    types: &AgentTypes,
+    registry: impl FnOnce() -> Result<marion_core::provider::Registry, String>,
+) -> Result<(), String> {
+    let named: Vec<(&str, &str)> = types
+        .user()
+        .iter()
+        .filter_map(|t| t.provider.as_deref().map(|p| (t.name.as_str(), p)))
+        .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    let registry = registry()?;
+    for (name, provider) in named {
+        if registry.get(provider).is_none() {
+            return Err(format!(
+                "agent type {name:?} names provider `{provider}`, which is neither built in nor \
+                 in your providers.toml; `marion login --list` shows the ones marion knows"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The prompt a node of `ty` is given for `prompt`: the type's `prompt_prefix` in front of it,
@@ -1326,6 +1358,16 @@ pub fn run_spawn_watched(
     // The verification lines ride on the intent below, so a set too large to journal is refused
     // here, with the other refusals and before the node has an identity at all.
     check_verification_size(&req.verification)?;
+    // Endpoint mode, where the child's type or model names a provider: refused by name here, with
+    // the other refusals and before the node has an identity. The wires are the row's; an adapter
+    // that cannot be built at all is refused below, in its own words, as it always was.
+    let endpoint = crate::endpoint::resolve_for_launch(
+        req.model.as_deref(),
+        &agent_type,
+        &adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())
+            .map(|a| a.endpoint_wires())
+            .unwrap_or_default(),
+    )?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
     // **A resume reuses the node's own id; a fresh spawn mints one** — `root::prepare_watched`'s
@@ -1425,7 +1467,10 @@ pub fn run_spawn_watched(
     let path = launch_path(&adapter.surfaces())
         .ok_or(SpawnError::UnsupportedChildSurface(agent_type.harness))?;
     let ready_file = child_ready_file(path, &agent_dir);
-    let launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+    let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+    if let Some(ep) = &endpoint {
+        crate::endpoint::apply(&mut launch, ep);
+    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The **canonical** name, read off the resolved type rather than off `req.agent_type`: the
@@ -1465,11 +1510,10 @@ pub fn run_spawn_watched(
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    write_config_documents(adapter.config_files(&launch, &ctx)?)?;
     // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the one
     // sentence on this path a reader of the journal needs verbatim, so it is filed for the abort
     // record on the way out rather than replaced by the guard's generic reason.
-    let inv = resolution.filed(adapter.compile(&launch, &ctx).map_err(SpawnError::from))?;
+    let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it
@@ -1563,7 +1607,13 @@ pub fn run_spawn_watched(
     let announce_started = |pid: i32| {
         let appended = crate::journal::confirm_spawned(
             &env.project_dir,
-            child_spawned_record(&agent_id, &version, inv.model.as_deref(), pid),
+            child_spawned_record(
+                &agent_id,
+                &version,
+                inv.model.as_deref(),
+                pid,
+                endpoint.as_ref(),
+            ),
         );
         match appended {
             // **After the append, never before.** The owner's whole reason for wanting this instant
@@ -1589,6 +1639,19 @@ pub fn run_spawn_watched(
             adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
         )
     });
+    // **The same inbox, on the lane whose next turn is a relaunch** (`crate::continuation`): a
+    // `LaunchOnly` node whose row measured a resume that continues its session. Attached before
+    // the first launch, so a message queued while it runs is waiting at its stop. The typed lanes
+    // take their turns inside their own drivers, from `turns`.
+    let continuation = match (
+        path,
+        adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
+    ) {
+        (LaunchPath::LaunchOnly, marion_harness::spec::TurnDelivery::Continuation { .. }) => turns
+            .as_ref()
+            .map(|feed| crate::continuation::Turns::attach(Arc::clone(&feed.source))),
+        _ => None,
+    };
     let run = match path {
         // **A contracted child does not get a pane, and the refusal is the design rather than a
         // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
@@ -1601,11 +1664,14 @@ pub fn run_spawn_watched(
         }
         LaunchPath::LaunchOnly => launch_only_child(
             &inv,
-            env.auth,
             bound,
             &announce_started,
             &session,
             events.as_ref(),
+            endpoint
+                .as_ref()
+                .and_then(|e| e.key.as_ref())
+                .map(|k| k.expose()),
         ),
         // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
         // children through the single ACP adapter*, and until this arm existed the only thing that
@@ -1626,9 +1692,14 @@ pub fn run_spawn_watched(
             prompt: &req.prompt,
             bound,
             on_started: &announce_started,
+            // An endpoint node's key is redacted from each line before it is kept, as the
+            // launch-only path's are.
             on_line: Some(&|line: &str| {
                 if let Some(es) = events.as_ref() {
-                    es.record_line(line);
+                    match endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+                        Some(key) => es.record_line(&crate::endpoint::redact(line, key.expose())),
+                        None => es.record_line(line),
+                    }
                 }
                 session.observe_line(line);
             }),
@@ -1650,7 +1721,6 @@ pub fn run_spawn_watched(
         .map_err(SpawnError::from),
         LaunchPath::Duplex => duplex_child(
             &inv,
-            env.auth,
             ChildDuplex {
                 agent_id: &agent_id,
                 ready_file: ready_file
@@ -1680,7 +1750,13 @@ pub fn run_spawn_watched(
             why: why.to_string(),
         });
     }
-    let run = run?;
+    let mut run = run?;
+    // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
+    // its credential in an error would otherwise put it in the contract and the event log.
+    if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+        run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
+        run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
+    }
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
@@ -1700,23 +1776,138 @@ pub fn run_spawn_watched(
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
     // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
-    let outcome = ChildOutcome::from_stream(
-        adapter.parse_stream(&run.stdout, run.exit),
-        run.exit,
-        run.stderr.clone(),
-    );
+    let mut parsed = adapter.parse_stream(&run.stdout, run.exit);
+    // A resume the harness answered with a fresh session (agy's unknown `--conversation`, exit 0)
+    // is a run with none of the resumed node's history: the more specific claim, so it wins.
+    if let Some(why) =
+        adapter.resume_refusal(&run.stdout, req.resume.as_ref().map(|r| r.session.as_str()))
+    {
+        parsed.failure = Some(why);
+    }
+    let mut outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
     // verdict is applied to the contract below once `build_contract` has assembled it.
-    let gated = crate::descendant_gate::gate(
-        observer,
-        &agent_id,
-        &env.project_dir,
-        &outcome,
-        spawned_at.0,
-        bound,
-    );
+    //
+    // **And every stop is a turn boundary** (`crate::continuation::boundary`): on the
+    // continuation lane a message waiting now, or arriving during the hold, relaunches this same
+    // node under its observed session as its next generation, on what is left of the one `bound`.
+    // The gate runs again at that generation's stop, over the outcome folded so far, and only the
+    // last stop's verdict reaches the contract. Every other lane passes no inbox and gates once.
+    let deadline =
+        Instant::now() + bound.saturating_sub(spawned_at.0.elapsed().unwrap_or_default());
+    let mut generation = 1u32;
+    let gated = loop {
+        let mut gate =
+            |o: &ChildOutcome,
+             wait: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+                crate::descendant_gate::gate_or_woken(
+                    observer,
+                    &agent_id,
+                    &env.project_dir,
+                    o,
+                    spawned_at.0,
+                    bound,
+                    wait,
+                )
+            };
+        let turn = crate::continuation::boundary(
+            continuation.as_ref(),
+            &outcome,
+            session.session().as_deref(),
+            deadline,
+            &mut gate,
+        );
+        let (message, resume) = match turn {
+            crate::continuation::Turn::Last(gated) => break gated,
+            crate::continuation::Turn::Next { message, session } => (message, session),
+        };
+        let Some(turns) = continuation.as_ref() else {
+            unreachable!("a next turn is only ever taken from an inbox")
+        };
+        generation += 1;
+        let via = format!("continuation:gen{generation}");
+        // The same launch, resumed: `node/resume`'s spelling (the row's resume grammar), with the
+        // message as the prompt, compiled and declared exactly as the first generation was.
+        let next_launch = LaunchSpec {
+            resume: Some(resume),
+            prompt: crate::inbox::render(&message),
+            ..launch.clone()
+        };
+        let next_inv = match declare_and_compile(adapter.as_ref(), &next_launch, &ctx) {
+            Ok(inv) => inv,
+            Err(e) => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it could not be compiled: {e}"),
+                );
+                continue;
+            }
+        };
+        // Delivered at the instant the process that carries it exists and is journaled — the
+        // generation's own `Spawned`, through the first generation's confirmation.
+        let carried = std::cell::Cell::new(false);
+        let announce_generation = |pid: i32| {
+            announce_started(pid);
+            let failed = unaccountable.take();
+            if failed.is_none() {
+                turns.delivered(&message.id, &via);
+                carried.set(true);
+            }
+            unaccountable.set(failed);
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        let next = launch_only_child(
+            &next_inv,
+            left,
+            &announce_generation,
+            &session,
+            events.as_ref(),
+            endpoint
+                .as_ref()
+                .and_then(|e| e.key.as_ref())
+                .map(|k| k.expose()),
+        );
+        if let Some(why) = unaccountable.take() {
+            turns.dropped(
+                &message.id,
+                "the continuation's process could not be journaled",
+            );
+            return Err(SpawnError::UnaccountableNode {
+                agent_id: agent_id.clone(),
+                why: why.to_string(),
+            });
+        }
+        let mut next = match next {
+            Ok(next) => next,
+            // A process that never started carried nothing; one that did was already delivered to,
+            // and its failure is the node's outcome of the turn it did not finish.
+            Err(e) if !carried.get() => {
+                turns.dropped(
+                    &message.id,
+                    &format!("the continuation that would carry it did not start: {e}"),
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        // Redacted like the first generation's capture, and for the same reason.
+        if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+            next.stdout = crate::endpoint::redact(&next.stdout, key.expose());
+            next.stderr = crate::endpoint::redact(&next.stderr, key.expose());
+        }
+        let later = ChildOutcome::from_stream(
+            adapter.parse_stream(&next.stdout, next.exit),
+            next.exit,
+            next.stderr.clone(),
+        );
+        outcome = crate::continuation::fold(outcome, later);
+        run = ChildRun {
+            capture_truncated: run.capture_truncated || next.capture_truncated,
+            ..next
+        };
+    };
 
     // **§6.7's honest degradation, and the `Option` is the whole of it.**
     //
@@ -1798,6 +1989,12 @@ pub fn run_spawn_watched(
     // `None` for codex, whose `exec` surface carries no model argument, even when the request or
     // the agent type named one.
     contract.child.model = inv.model.clone();
+    // Where an endpoint node's requests went, beside the model that went there.
+    contract.child.provider = endpoint.as_ref().map(|e| e.provider.clone());
+    contract.child.route = endpoint
+        .as_ref()
+        .map(|_| crate::endpoint::ROUTE_NATIVE.to_string());
+    contract.child.credential = endpoint.as_ref().map(|e| e.credential.to_string());
     // **The third field sourced from what ran rather than from what was asked for**, joining
     // `harness` and `model` above (`32ec905`). §6.7's `allowed_tools` records *"the compiled,
     // harness-native constraint — or the harness's coarsest equivalent where it has no per-tool
@@ -1997,7 +2194,7 @@ fn child_launch_spec(
         // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
         // resolved and dispatched — and then refused at `compile`, since both adapters make an
         // explicit model a MUST. See `resolve_model`.
-        model: resolve_model(req, agent_type),
+        model: resolve_model(req, agent_type, env.auth),
         // §6.1 step 8: on a typed control plane the prompt is a frame written **after** the
         // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
         // string — the neutral vocabulary's own signal for "written after launch".
@@ -2043,7 +2240,7 @@ fn child_launch_spec(
         // specify the GEMINI_API_KEY environment variable"* when the variable it named is absent.
         // A hard `None` here made that harness unlaunchable through `spawn` no matter what the
         // adapter compiled. codex has always been seeded the same way — its generated config names
-        // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
+        // `env_key = "MARION_PROVIDER_KEY"` and its row compiles it from this field — so this generalises an
         // existing decision rather than making a new one.
         //
         // Under `Auth::Inherited` there is nothing to placehold: the endpoint is the vendor's, the
@@ -2051,7 +2248,9 @@ fn child_launch_spec(
         // would be a second credential competing with the real one.
         api_key: match env.auth {
             Auth::Canned => Some(PLACEHOLDER_API_KEY.to_string()),
-            Auth::Inherited => None,
+            // A supervisor never runs in endpoint mode; a node's stored key is placed by
+            // `resolve_endpoint`.
+            Auth::Inherited | Auth::Endpoint => None,
         },
         auth: env.auth,
         config_dir: ch.to_path_buf(),
@@ -2067,6 +2266,9 @@ fn child_launch_spec(
         // every fresh spawn. A row whose caps refuse resume refuses the launch by name here rather
         // than starting fresh under a resumed node's id.
         resume: req.resume.as_ref().map(|r| r.session.clone()),
+        // Filled by endpoint resolution, where the child names a provider.
+        wire: None,
+        provider: None,
         extra: Extras {
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
@@ -2074,6 +2276,19 @@ fn child_launch_spec(
             ..Extras::default()
         },
     }
+}
+
+/// **One launch of a node, declared and compiled**: the adapter's configuration documents written,
+/// then its invocation compiled from the same spec. A node's first generation and every
+/// continuation of it (`crate::continuation`) go through this one step, so a relaunch is declared
+/// exactly as the launch it resumes was.
+fn declare_and_compile(
+    adapter: &dyn marion_harness::HarnessAdapter,
+    launch: &LaunchSpec,
+    ctx: &SpawnCtx,
+) -> Result<Invocation, SpawnError> {
+    write_config_documents(adapter.config_files(launch, ctx)?)?;
+    Ok(adapter.compile(launch, ctx)?)
 }
 
 /// Write the configuration documents an adapter decided on, creating each document's directory.
@@ -2092,7 +2307,20 @@ pub(crate) fn write_config_documents(
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, contents)?;
+        // Owner-only: a document can carry the node's capability token and, on an endpoint node,
+        // the user's key. The mode is set again after the write for a file that already existed.
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            f.write_all(contents.as_bytes())?;
+        }
         written.push(path);
     }
     Ok(written)
@@ -2116,6 +2344,7 @@ fn child_spawned_record(
     version: &str,
     model: Option<&str>,
     pid: i32,
+    endpoint: Option<&crate::endpoint::Endpoint>,
 ) -> Spawned {
     Spawned {
         agent_id: agent_id.clone(),
@@ -2132,6 +2361,9 @@ fn child_spawned_record(
             // and a wrong identity would be far worse than a missing one.
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         },
+        provider: endpoint.map(|e| e.provider.clone()),
+        route: endpoint.map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        credential: endpoint.map(|e| e.credential.to_string()),
     }
 }
 
@@ -2569,6 +2801,53 @@ mod tests {
             !marker.exists(),
             "a descendant survived the killed process group"
         );
+    }
+
+    /// **An endpoint child's key never reaches its live event record.** `launch_only_child`
+    /// records each line as it lands, before the capture is redacted, so the redaction has to
+    /// happen on the line; a harness echoing its key in an error is the case this defends.
+    #[test]
+    fn a_launch_only_childs_live_record_carries_no_endpoint_key() {
+        let dir = scratch("run-live-redact");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let id = AgentId("n-redact".into());
+        let events_path = dir.join("events.jsonl");
+        let sink = crate::events::EventSink::new(
+            crate::events::EventWriter::open_path(&events_path, &id).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        let key = "sk-endpoint-9f2c1e7a";
+        let inv = Invocation {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(r#"echo '{{"type":"error","message":"bad key {key}"}}'"#),
+            ],
+            env: vec![],
+            cwd: dir.to_path_buf(),
+            model: None,
+            session_mode: None,
+        };
+        let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
+        let run = launch_only_child(
+            &inv,
+            StdDuration::from_secs(20),
+            &|_| {},
+            &watch,
+            Some(&sink),
+            Some(key),
+        )
+        .unwrap();
+        drop(sink);
+        assert!(
+            run.stdout.contains(key),
+            "the capture is redacted by the caller, later"
+        );
+        let recorded = std::fs::read_to_string(&events_path).unwrap();
+        assert!(recorded.contains("bad key ***"), "{recorded}");
+        assert!(!recorded.contains(key), "{recorded}");
     }
 
     /// `kill(pid, 0)`: `ESRCH` is the only answer that means *gone*. `EPERM` means the process
@@ -3292,6 +3571,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }
@@ -3337,7 +3618,7 @@ mod tests {
         // The orchestrator type through the same path: unchanged, which is what keeps this
         // additive.
         let orchestrator = LaunchSpec {
-            tools: builtin("claude").unwrap().tools,
+            tools: builtin("claude-orchestrator").unwrap().tools,
             ..spec
         };
         let args = adapter.compile(&orchestrator, &launch_ctx()).unwrap().args;
@@ -3345,7 +3626,7 @@ mod tests {
         assert_eq!(
             args[i + 1],
             "",
-            "a `claude` child is read-only as it always was"
+            "a `claude-orchestrator` child is read-only, as plain `claude` used to be"
         );
     }
 
@@ -3443,7 +3724,7 @@ mod tests {
     fn the_new_harnesses_now_compile_because_their_agent_types_carry_a_model() {
         for name in ["gemini", "opencode"] {
             let t = builtin(name).unwrap();
-            let model = resolve_model(&request(name, None), &t);
+            let model = resolve_model(&request(name, None), &t, Auth::Canned);
             assert!(
                 model.is_some(),
                 "{name}: its adapter refuses without one, so its built-in must state one"
@@ -3492,20 +3773,51 @@ mod tests {
     fn the_request_overrides_the_agent_types_default_and_absence_stays_absence() {
         let gemini = builtin("gemini").unwrap();
         assert_eq!(
-            resolve_model(&request("gemini", Some("gemini-2.5-pro")), &gemini).as_deref(),
+            resolve_model(
+                &request("gemini", Some("gemini-2.5-pro")),
+                &gemini,
+                Auth::Canned
+            )
+            .as_deref(),
             Some("gemini-2.5-pro"),
         );
         assert_eq!(
-            resolve_model(&request("gemini", None), &gemini).as_deref(),
+            resolve_model(&request("gemini", None), &gemini, Auth::Canned).as_deref(),
             Some("gemini-2.5-flash"),
         );
         for name in ["codex-impl", "claude"] {
             assert_eq!(
-                resolve_model(&request(name, None), &builtin(name).unwrap()),
+                resolve_model(&request(name, None), &builtin(name).unwrap(), Auth::Canned),
                 None,
                 "{name}: a default here would change an argv that is measured, for nothing"
             );
         }
+    }
+
+    /// **A live child of a type whose default names marion's canned plumbing runs on the
+    /// operator's own default model**: `marion/default` names a provider block only a canned run
+    /// writes, so passing it live made every opencode child fail at launch.
+    #[test]
+    fn a_live_spawn_does_not_inherit_a_canned_plumbing_default_model() {
+        let opencode = builtin("opencode").unwrap();
+        assert_eq!(
+            resolve_model(&request("opencode", None), &opencode, Auth::Inherited),
+            None
+        );
+        assert_eq!(
+            resolve_model(&request("opencode", None), &opencode, Auth::Canned).as_deref(),
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL)
+        );
+        assert_eq!(
+            resolve_model(
+                &request("opencode", Some("a/b")),
+                &opencode,
+                Auth::Inherited
+            )
+            .as_deref(),
+            Some("a/b"),
+            "an explicit model is always honoured"
+        );
     }
 
     /// **The contract records the wire, not the ask** — the same rule that made `child.harness`
@@ -3514,7 +3826,11 @@ mod tests {
     #[test]
     fn a_model_asked_for_on_a_harness_that_takes_none_is_never_recorded_as_used() {
         let t = builtin("codex-impl").unwrap();
-        let asked = resolve_model(&request("codex-impl", Some("gpt-5.6-sol")), &t);
+        let asked = resolve_model(
+            &request("codex-impl", Some("gpt-5.6-sol")),
+            &t,
+            Auth::Canned,
+        );
         assert_eq!(
             asked.as_deref(),
             Some("gpt-5.6-sol"),
@@ -3585,6 +3901,64 @@ mod tests {
             matches!(agent_types(&repo), Err(SpawnError::AgentTypesFile { .. })),
             "only NotFound means the built-ins"
         );
+    }
+
+    /// **A node's config documents are the owner's alone.** They carry the node's capability token
+    /// in the bridge declaration and, on an endpoint node, the user's key (opencode's provider
+    /// block, cline's `providers.json`), so no other user on the machine may read them.
+    #[test]
+    fn config_documents_are_written_owner_only_even_over_a_wider_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("config-docs-mode");
+        let path = root.join("nested/dir/doc.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let fresh = root.join("fresh/doc.toml");
+        write_config_documents(vec![
+            (path.clone(), "{}".into()),
+            (fresh.clone(), "x = 1".into()),
+        ])
+        .unwrap();
+        for p in [&path, &fresh] {
+            let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", p.display());
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    /// **A row's `provider` must be one the user has** — a built-in, or one in their own
+    /// `providers.toml` — checked at load, so a tree naming a provider nobody defined refuses every
+    /// spawn by name instead of failing only the node that reaches for it. The registry is read
+    /// only when some row names a provider.
+    #[test]
+    fn a_rows_provider_must_be_in_the_users_registry() {
+        let parse = |p: &str| {
+            marion_core::agent_type::AgentTypes::parse(&format!(
+                "[[agent]]\nname = \"x\"\nharness = \"codex\"\ndescription = \"d\"\n{p}"
+            ))
+            .unwrap()
+        };
+        let seed = || Ok(marion_core::provider::Registry::seed());
+        assert!(check_providers(&parse("provider = \"openrouter\"\n"), seed).is_ok());
+        let err = check_providers(&parse("provider = \"nope\"\n"), seed).unwrap_err();
+        assert!(
+            err.contains("`nope`") && err.contains("marion login"),
+            "{err}"
+        );
+        let custom = || {
+            marion_core::provider::Registry::with_custom(
+                "[providers.mine]\nbase_url = \"https://x/v1\"\nwires = [\"openai-chat\"]\n",
+            )
+            .map_err(|e| e.to_string())
+        };
+        assert!(check_providers(&parse("provider = \"mine\"\n"), custom).is_ok());
+        // No row names a provider: the registry is never consulted, so a broken file cannot
+        // refuse a tree that does not use it.
+        let unread = || -> Result<marion_core::provider::Registry, String> {
+            panic!("the registry was read for a tree that names no provider")
+        };
+        assert!(check_providers(&parse(""), unread).is_ok());
     }
 
     /// A type the tree's file does not define is refused before any side effect, exactly as an
@@ -3944,7 +4318,7 @@ mod tests {
             "a child of a depth-1 caller is at depth 2, and its bridge must be told so:\n{config}"
         );
         assert!(
-            config.contains(r#"MARION_AGENT_TYPE = "codex-impl""#),
+            config.contains(r#"MARION_AGENT_TYPE = "codex""#),
             "and told its own canonical type, whose max_depth its own spawns are gated on:\n{config}"
         );
     }

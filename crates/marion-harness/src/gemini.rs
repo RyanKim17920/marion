@@ -9,6 +9,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
@@ -17,8 +18,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -59,7 +61,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: CLI_HOME_ENV,
             val: Val::Under(""),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: SYSTEM_SETTINGS_PATH_ENV,
@@ -76,19 +78,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: FORCE_FILE_STORAGE_ENV,
             val: Val::Lit("true"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Gated on the mode as well as on the value: a live spec handed an endpoint or a key gets
         // neither pushed, rather than an overlay that quietly outranks the operator's own resolution.
         Env {
             key: BASE_URL_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
     ],
     stream: Some(&STREAM),
@@ -145,6 +147,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
+    // On marion's own `mcpServers.marion` entry: without it the tool is dropped from the request
+    // body at exit 0 (S12). `--yolo` is the only other route, and an admin can veto it.
+    approval: Approval::DeclarationKey {
+        key: "trust",
+        note: "S12 on 0.53.0: `trust: true` puts marion's tool in the request body; without it \
+               the tool is omitted, no prompt, exit 0",
+    },
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::None {
@@ -155,6 +164,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
         },
     },
+    wires: &[WireRecipe {
+        wire: Wire::Gemini,
+        env: &[],
+        note: "Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.",
+    }],
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
@@ -240,6 +254,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/session_id",
+        resumes_in_place: false,
     }),
     // The terminal `result` frame's `stats` (`s12/README.md`) totals the run. **Unmeasured past
     // that one README line**, whose `cached` is 0: that `input_tokens` counts cached tokens (and

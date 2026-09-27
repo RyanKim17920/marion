@@ -2035,7 +2035,7 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
     let short = marion_supervisor::tree::short_id(&child.0);
     assert!(
         text.contains(&format!(
-            "reaches codex-impl {short} at its next tool round or turn"
+            "reaches codex {short} at its next tool round or turn"
         )),
         "{text}"
     );

@@ -16,7 +16,7 @@
 //! session could not be journaled is a node that cannot be resumed later, and that is a loss to
 //! report — not a reason to kill a run that is otherwise fine.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 
 use marion_core::contract::{AgentId, Workspace};
 use marion_core::harness::Harness;
@@ -46,7 +46,8 @@ pub(crate) struct SessionWatch<'a> {
     /// The adapter that reads a session id off a frame, or `None` for a harness with none — nothing
     /// is observed, honestly, and the node replays with `harness_session: None`.
     reader: Option<Box<dyn HarnessAdapter + Send + Sync>>,
-    seen: Cell<bool>,
+    /// The session journaled for this node, once a frame has named one.
+    session: RefCell<Option<String>>,
 }
 
 impl<'a> SessionWatch<'a> {
@@ -63,7 +64,7 @@ impl<'a> SessionWatch<'a> {
             pane,
             workspace: None,
             reader: adapter_for(harness).ok(),
-            seen: Cell::new(false),
+            session: RefCell::new(None),
         }
     }
 
@@ -79,7 +80,7 @@ impl<'a> SessionWatch<'a> {
 
     /// One stdout line as it landed. A line that is not JSON is not a frame and carries nothing.
     pub(crate) fn observe_line(&self, line: &str) {
-        if self.seen.get() {
+        if self.session.borrow().is_some() {
             return;
         }
         if let Ok(frame) = serde_json::from_str::<Value>(line) {
@@ -97,12 +98,12 @@ impl<'a> SessionWatch<'a> {
     /// One parsed frame. Journals the session the first time a frame names one; every later frame
     /// is ignored without being read.
     pub(crate) fn observe_frame(&self, frame: &Value) {
-        if self.seen.get() {
+        if self.session.borrow().is_some() {
             return;
         }
         let Some(reader) = &self.reader else { return };
         if let Some(id) = reader.session_id(frame) {
-            self.seen.set(true);
+            *self.session.borrow_mut() = Some(id.clone());
             crate::journal::record(
                 self.project,
                 RecordKind::SessionObserved(SessionObserved {
@@ -116,10 +117,16 @@ impl<'a> SessionWatch<'a> {
         }
     }
 
+    /// The session journaled for this node, if a frame has named one — the handle a continuation
+    /// relaunches the node under.
+    pub(crate) fn session(&self) -> Option<String> {
+        self.session.borrow().clone()
+    }
+
     /// Whether a session has been journaled for this node.
     #[cfg(test)]
     pub(crate) fn seen(&self) -> bool {
-        self.seen.get()
+        self.session.borrow().is_some()
     }
 }
 
@@ -161,6 +168,7 @@ mod tests {
         watch.observe_line("Reading additional input from stdin...");
         watch.observe_line(r#"{"type":"turn.started"}"#);
         assert!(!watch.seen());
+        assert_eq!(watch.session(), None);
         assert_eq!(records(&project), 0, "nothing named a session yet");
         watch.observe_line(r#"{"type":"thread.started","thread_id":"t-first"}"#);
         assert!(watch.seen());
@@ -170,6 +178,11 @@ mod tests {
         ));
         assert_eq!(records(&project), 1, "one record, on first sighting");
         assert_eq!(sessions(&project), vec!["t-first".to_string()]);
+        assert_eq!(
+            watch.session().as_deref(),
+            Some("t-first"),
+            "the session a continuation resumes is the one journaled"
+        );
     }
 
     /// A duplex frame is observed through the same rule as a line, and an ACP node's session is the

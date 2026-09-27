@@ -90,7 +90,7 @@ fn a_childs_start_reaches_the_terminal_before_the_spawn_that_created_it_returns(
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
             "--repo",

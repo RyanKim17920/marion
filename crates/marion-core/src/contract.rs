@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::encoding::{Duration, Millis, SystemTime};
 use crate::harness::Harness;
 use crate::ids::{RAND_BYTES, uuid_v7};
+use crate::review::{Findings, ReviewRecord};
 
 /// A value that may have been shortened by §6.7's cap rules.
 ///
@@ -233,6 +234,19 @@ pub struct ChildRef {
     /// this field existed still deserializes, with `None` meaning exactly what it means today.
     #[serde(default)]
     pub model: Option<String>,
+    /// The provider an **endpoint** node's requests went to, by registry id
+    /// (`marion_core::provider`) — `None` on a canned or live node. Additive: skipped when absent,
+    /// so every record without one is byte-identical to what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// How an endpoint node's requests reached [`Self::provider`]: `native` where the provider
+    /// serves the harness's own wire. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    /// Which of the provider's credentials the node presented, by id (`openrouter:work`) — never
+    /// the key. `None` wherever `provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the
@@ -294,6 +308,19 @@ pub struct Completion {
     /// child fills and marion does not check, this is the commit marion itself read back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<Oid>,
+    /// **The review this node's work went through**, when its agent type asks for one: how it
+    /// ended and every round's verdict. marion-owned; the verdict is marion's, decided from the
+    /// reviewer's grounded findings, never the reviewer's own word (see [`crate::review`]).
+    ///
+    /// Absent on the wire when `None`, so an unreviewed completion is byte-identical to one an
+    /// earlier build wrote, following `branch` and `commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewRecord>,
+    /// **This node's own report, when it was a reviewer**: its reply read by
+    /// [`crate::review::parse`] and grounded by [`crate::review::decide`]. Reviewer-sourced text,
+    /// capped per string where it was read and elided by cap rules 5(f) and 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Findings>,
 }
 
 impl Completion {

@@ -155,7 +155,7 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "claude",
+                "claude-orchestrator",
                 "--prompt",
                 "Delegate the marker-file task to a codex child.",
                 "--repo",

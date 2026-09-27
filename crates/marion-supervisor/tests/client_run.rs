@@ -685,7 +685,7 @@ fn a_run_whose_supervisor_cannot_start_is_refused_and_journals_nothing() {
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            "claude-orchestrator",
             "--prompt",
             "this must never launch",
             "--repo",
@@ -694,7 +694,9 @@ fn a_run_whose_supervisor_cannot_start_is_refused_and_journals_nothing() {
             &state.to_string_lossy(),
             "--canned",
             "--base-url",
-            "http://127.0.0.1:9/v1",
+            // Listening, so the run gets past the canned reachability probe to the supervisor
+            // start this test seals off; nothing ever dials it.
+            &marion_testsupport::silent_canned_endpoint(),
             "--timeout",
             "5",
         ])

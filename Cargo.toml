@@ -11,6 +11,9 @@ members = [
 ]
 
 [workspace.package]
+# One version for the whole workspace: `marion --version` and `marion-supervisor --version`
+# print it, and the two binaries must always ship as a pair.
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
 # Inherited by every member crate. `publish = false`: marion is one workspace of
@@ -28,3 +31,8 @@ thiserror = "2"
 # The one file format marion reads for itself: `.marion/agents.toml` (`marion_core::agent_type`).
 # Parse only; nothing writes TOML.
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# The profile `dist build` compiles release artifacts with (see dist-workspace.toml).
+[profile.dist]
+inherits = "release"
+lto = "thin"

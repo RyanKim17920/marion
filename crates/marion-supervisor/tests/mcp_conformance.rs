@@ -978,7 +978,7 @@ fn tools_list_names_the_trees_user_defined_agent_types() {
         "the row and its description are offered to the node: {description}"
     );
     assert!(
-        description.contains("codex-impl") && description.contains("claude"),
+        description.contains("codex (") && description.contains("claude ("),
         "beside the built-ins: {description}"
     );
 }
@@ -1001,5 +1001,5 @@ fn tools_list_carries_the_agent_types_files_own_refusal() {
         !description.contains("reviewer ("),
         "a row from a refused file is not offered: {description}"
     );
-    assert!(description.contains("codex-impl"), "{description}");
+    assert!(description.contains("codex ("), "{description}");
 }

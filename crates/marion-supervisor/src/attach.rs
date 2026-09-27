@@ -778,9 +778,8 @@ impl Session {
         };
         attached.pane.ok_or_else(|| {
             format!(
-                "node `{}` has no display plane, so there is no pane to attach to. §3.4 gives a \
-                 node a pty only where its surfaces declare `NativePty`; this one renders as \
-                 structured events. `marion run` shows those live, and the node's transcript is \
+                "node `{}` has no display plane, so there is no pane to attach to: it runs headless \
+                 and renders as structured events. `marion run` shows those live, and the node's transcript is \
                  replayable with `node/attach` from a client that draws them.",
                 self.id.0
             )

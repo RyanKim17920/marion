@@ -407,7 +407,7 @@ mod tests {
         let bound = super::bind_native_launch(ready_selection(&registry, "atlas"), &context)
             .expect("authorized current evidence binds");
 
-        assert_eq!(bound.agent_type.name, "codex-impl");
+        assert_eq!(bound.agent_type.name, "codex");
     }
 
     #[test]

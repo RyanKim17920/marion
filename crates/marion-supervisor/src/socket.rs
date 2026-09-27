@@ -477,6 +477,16 @@ pub fn read_identity(paths: &SocketPaths) -> Option<SupervisorIdentity> {
     serde_json::from_str(&raw).ok()
 }
 
+/// The negation of [`someone_is_serving`], for the one caller outside this module that has to ask.
+///
+/// `true` is a **proof**, not a guess: the lock was free at the moment of the call, and a supervisor
+/// holds its lock for its entire serving life, so no supervisor existed then. It says nothing about
+/// the next instant — a stage 3 between its `exec` and its `flock` is invisible to it — which is why
+/// [`crate::detach::MAX_START_ATTEMPTS`] bounds what may be done on the strength of it.
+pub fn nobody_is_serving(paths: &SocketPaths) -> bool {
+    !someone_is_serving(paths.lock())
+}
+
 /// Whether the supervisor lock is held, without ever holding it.
 ///
 /// `create(false)`, deliberately: a *reader* that created a lock file would leave one behind for
@@ -489,16 +499,6 @@ pub fn read_identity(paths: &SocketPaths) -> Option<SupervisorIdentity> {
 /// It is visible to a concurrent [`acquire`] for the handful of syscalls it lasts, which that
 /// function already treats as provisional: a lock it cannot take sends it back to dialing, and its
 /// loop is written for exactly this kind of transient (see the module doc on why it re-asks).
-/// The negation of [`someone_is_serving`], for the one caller outside this module that has to ask.
-///
-/// `true` is a **proof**, not a guess: the lock was free at the moment of the call, and a supervisor
-/// holds its lock for its entire serving life, so no supervisor existed then. It says nothing about
-/// the next instant — a stage 3 between its `exec` and its `flock` is invisible to it — which is why
-/// [`crate::detach::MAX_START_ATTEMPTS`] bounds what may be done on the strength of it.
-pub fn nobody_is_serving(paths: &SocketPaths) -> bool {
-    !someone_is_serving(paths.lock())
-}
-
 fn someone_is_serving(lock: &Path) -> bool {
     let Ok(f) = std::fs::OpenOptions::new().read(true).open(lock) else {
         return false;

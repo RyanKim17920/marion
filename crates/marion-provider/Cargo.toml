@@ -1,6 +1,6 @@
 [package]
 name = "marion-provider"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,3 +15,9 @@ serde_json.workspace = true
 # Test-only, by the same rule the crate itself follows: nothing in it belongs inside the shipped
 # command. Brings the one bounded-wait helper the workspace's `#[cfg(test)]` modules share.
 marion-testsupport = { path = "../marion-testsupport" }
+
+# The canned provider as a process, for `marion run --canned` outside the test suite. Named for
+# what it is on a PATH; `cargo install --path crates/marion-provider` puts it beside `marion`.
+[[bin]]
+name = "marion-canned"
+path = "src/bin/canned.rs"

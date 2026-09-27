@@ -107,21 +107,21 @@ struct Node {
 }
 
 const CLAUDE: Node = Node {
-    agent_type: "claude",
+    agent_type: "claude-orchestrator",
     harness: Harness::ClaudeCode,
     model: None,
     program: "claude",
 };
 
 const CODEX: Node = Node {
-    agent_type: "codex-impl",
+    agent_type: "codex",
     harness: Harness::Codex,
     model: None,
     program: "codex",
 };
 
 const GEMINI: Node = Node {
-    agent_type: "gemini",
+    agent_type: "gemini-orchestrator",
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
     model: Some("gemini-2.5-flash"),
     harness: Harness::Gemini,
@@ -218,6 +218,7 @@ fn script(root: &Node, child: &Node) -> Script {
         Harness::Goose => unreachable!("no cell of this matrix names `goose` yet"),
         Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
         Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
+        Harness::Antigravity => unreachable!("no cell names `agy`: it has no canned route"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
@@ -687,7 +688,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "claude",
+                "claude-orchestrator",
                 "--prompt",
                 "Delegate the marker-file task to a codex child.",
                 "--repo",
@@ -772,7 +773,8 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
     assert_eq!(child.parent_id(), Some(&root_id));
     assert_eq!(child.depth(), Some(1), "one level below its caller");
     assert_eq!(child.harness(), Some(Harness::Codex));
-    assert_eq!(child.agent_type(), Some("codex-impl"));
+    // `codex-impl` is the alias the script spawns; the journal records the canonical name.
+    assert_eq!(child.agent_type(), Some("codex"));
     assert!(child.spawn_confirmed);
 
     // ---- same terminal states. ---------------------------------------------------------------
@@ -957,7 +959,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     let contract = run_spawn(
         &env,
         &SpawnRequest {
-            agent_type: "claude".into(),
+            agent_type: "claude-orchestrator".into(),
             prompt: "Try the verb you were not given.".into(),
             repo: repo.clone(),
             acceptance_criteria: vec![],

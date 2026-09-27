@@ -544,6 +544,9 @@ mod tests {
             model: None,
             pid: Some(7),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         })
     }
 

@@ -771,6 +771,9 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             model: None,
             pid: Some(pid),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         }),
     );
     seed(
@@ -1018,7 +1021,7 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
 
     // And the site that decides where a run's records land agrees with it.
     let spec = |repo: &Path| marion_supervisor::root::RootSpec {
-        agent_type: "claude".into(),
+        agent_type: "claude-orchestrator".into(),
         prompt: "unused: nothing is launched here".into(),
         native_launch: None,
         repo: repo.to_path_buf(),

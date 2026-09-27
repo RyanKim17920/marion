@@ -70,8 +70,9 @@ fn hyphenate(b: &[u8; 16]) -> String {
 
 /// The millisecond timestamp a v7 id was minted at, or `None` if `s` is not a well-formed one.
 ///
-/// Lets a replayer order records, and lets `marion doctor` spot an id from a foreign generator.
-pub fn timestamp_millis(s: &str) -> Option<u64> {
+/// The tests' oracle for what [`uuid_v7`] encodes; nothing outside them reads an id's time.
+#[cfg(test)]
+fn timestamp_millis(s: &str) -> Option<u64> {
     if !is_uuid_v7(s) {
         return None;
     }

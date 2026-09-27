@@ -174,8 +174,13 @@ pub enum GateFailure {
     /// `<program> --version` could not be run or did not exit 0: the binary is absent. Callers
     /// phrase this one themselves ("put `codex` on PATH").
     Absent,
-    /// The binary ran and is not one the table admits; the diagnosis names both versions.
+    /// The binary ran and printed no version this can read: it is not identifiable as the
+    /// harness at all, so no mode lets it through.
     Refused(String),
+    /// The binary ran and reported `found`, a version the table does not admit; the diagnosis
+    /// names both versions. [`crate::on_path`] fails on it, or under `MARION_GATE=warn` warns and
+    /// runs it.
+    Unadmitted { found: String, diagnosis: String },
 }
 
 /// One directory of symlinks, filled lazily, one entry per pinned harness at most.
@@ -184,6 +189,7 @@ pub struct Shim {
     stores: ReleaseStores,
     inherited_path: OsString,
     table: &'static [PinnedHarness],
+    installs_pins: bool,
     resolved: Mutex<BTreeMap<&'static str, Resolution>>,
 }
 
@@ -202,8 +208,20 @@ impl Shim {
             stores,
             inherited_path,
             table,
+            installs_pins: true,
             resolved: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Never `npm install` a pinned release: a harness with none on disk falls through to `PATH`.
+    ///
+    /// What `MARION_GATE=warn` asks for. That mode means "run the harness I have and say so", and
+    /// fetching an old release over the network would answer a question nobody asked in it — the
+    /// nightly canary, which installs the newest of each harness to find out whether it still
+    /// works, would otherwise be handed the pin it is trying to look past.
+    pub fn without_pin_installs(mut self) -> Self {
+        self.installs_pins = false;
+        self
     }
 
     /// The directory the symlinks live in.
@@ -255,6 +273,7 @@ impl Shim {
         };
         let mut found = on_disk(self);
         if found.is_none()
+            && self.installs_pins
             && let ReleaseStore::Npm(pkg) = pin.store
             && !self.path_binary_is_admitted(pin)
         {
@@ -339,21 +358,29 @@ impl Shim {
         if !out.status.success() {
             return Err(GateFailure::Absent);
         }
-        check_version(
-            pin,
-            &String::from_utf8_lossy(&out.stdout),
-            &String::from_utf8_lossy(&out.stderr),
-        )
-        .map_err(|diagnosis| match resolution {
-            Resolution::PathOnly { looked } => GateFailure::Refused(format!(
-                "{diagnosis}\nThe binary that answered is the one first on PATH, because there is \
-                 no pinned release on disk to shim in ahead of it (looked in {looked})."
-            )),
-            Resolution::Pinned { version, release } => GateFailure::Refused(format!(
-                "{diagnosis}\nThe shim pointed `{program}` at {} expecting {version}, and it did \
-                 not answer with that version.",
-                release.display()
-            )),
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        check_version(pin, &stdout, &String::from_utf8_lossy(&out.stderr)).map_err(|diagnosis| {
+            let diagnosis = match resolution {
+                Resolution::PathOnly { looked } => format!(
+                    "{diagnosis}\nThe binary that answered is the one first on PATH, because there \
+                     is no pinned release on disk to shim in ahead of it (looked in {looked})."
+                ),
+                Resolution::Pinned { version, release } => format!(
+                    "{diagnosis}\nThe shim pointed `{program}` at {} expecting {version}, and it \
+                     did not answer with that version.",
+                    release.display()
+                ),
+            };
+            // `check_version` refuses a version it read only because the table lacks it, so a
+            // version read here is an unadmitted one and no version at all is an unidentified
+            // binary.
+            match parse_version(&stdout) {
+                Some(found) => GateFailure::Unadmitted {
+                    found: found.to_string(),
+                    diagnosis,
+                },
+                None => GateFailure::Refused(diagnosis),
+            }
         })
     }
 }
@@ -368,6 +395,26 @@ fn version_probe(pin: &PinnedHarness, path: &OsStr) -> Command {
         .envs(pin.probe_env.iter().copied())
         .arg("--version");
     probe
+}
+
+/// The version of `pin.program` first on this process's `PATH`, read exactly as the gate reads it
+/// (the row's no-self-update env, the same parser) — but **not** through the shim and not judged
+/// against the table. `Err` says why there is no version: absent, failed, or unreadable.
+///
+/// For the nightly canary's drift report (`examples/harness_drift.rs`), which asks what is
+/// installed rather than whether a test may drive it.
+pub fn installed_version(pin: &PinnedHarness) -> Result<String, String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let out = version_probe(pin, &path)
+        .output()
+        .map_err(|e| format!("not runnable: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("`--version` exited {}", out.status));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_version(&stdout)
+        .map(str::to_string)
+        .ok_or_else(|| format!("no version in {:?}", stdout.trim()))
 }
 
 /// The env var `scripts/cargo-runner.sh` sets to the per-process shim directory it made.
@@ -401,12 +448,16 @@ pub fn process_shim() -> &'static Shim {
         );
         let inherited: OsString =
             std::env::join_paths(components).expect("PATH's own components carry no separator");
-        Shim::new(
+        let shim = Shim::new(
             PathBuf::from(dir),
             ReleaseStores::from_env(),
             inherited,
             PINNED_HARNESSES,
-        )
+        );
+        match crate::gate_mode() {
+            crate::GateMode::Strict => shim,
+            crate::GateMode::Warn => shim.without_pin_installs(),
+        }
     })
 }
 
@@ -483,7 +534,7 @@ mod tests {
 
     fn refused(r: Result<(), GateFailure>) -> String {
         match r {
-            Err(GateFailure::Refused(d)) => d,
+            Err(GateFailure::Refused(d) | GateFailure::Unadmitted { diagnosis: d, .. }) => d,
             other => panic!("expected the gate to refuse with a diagnosis, got {other:?}"),
         }
     }
@@ -602,6 +653,74 @@ mod tests {
             "nothing was installed for a binary the gate already passes"
         );
         assert!(!dir.join("shim/copilot").exists());
+    }
+
+    /// A fake `npm` on the inherited PATH that records being run instead of installing anything.
+    fn recording_npm(dir: &Path) -> PathBuf {
+        let marker = dir.join("npm-ran");
+        let npm = dir.join("bin/npm");
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        std::fs::write(
+            &npm,
+            format!("#!/bin/sh\n/usr/bin/touch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        marker
+    }
+
+    /// The default shim fetches a missing npm pin; `without_pin_installs` never does, and the gate
+    /// then names the PATH binary as unadmitted with the version it found.
+    #[test]
+    fn a_shim_without_pin_installs_leaves_an_unadmitted_npm_binary_to_the_gate() {
+        let installing = scratch("shim-npm-installs");
+        let ran = recording_npm(&installing);
+        fake_release(
+            &installing.join("bin/copilot"),
+            "GitHub Copilot CLI 1.0.99.",
+        );
+        let shim = shim_in(
+            &installing,
+            table("copilot", &["1.0.83"], ReleaseStore::Npm("@github/copilot")),
+        );
+        let _ = shim.gate("copilot");
+        assert!(ran.exists(), "the default shim tries to install the pin");
+
+        let dir = scratch("shim-npm-no-installs");
+        let ran = recording_npm(&dir);
+        fake_release(&dir.join("bin/copilot"), "GitHub Copilot CLI 1.0.99.");
+        let shim = shim_in(
+            &dir,
+            table("copilot", &["1.0.83"], ReleaseStore::Npm("@github/copilot")),
+        )
+        .without_pin_installs();
+        match shim.gate("copilot") {
+            Err(GateFailure::Unadmitted { found, diagnosis }) => {
+                assert_eq!(found, "1.0.99");
+                assert!(diagnosis.contains("1.0.83"), "{diagnosis}");
+            }
+            other => panic!("expected an unadmitted 1.0.99, got {other:?}"),
+        }
+        assert!(!ran.exists(), "no npm install without pin installs");
+        assert_eq!(
+            shim.resolve("copilot"),
+            Resolution::PathOnly {
+                looked: shim.stores.describe(shim.pin("copilot"))
+            }
+        );
+    }
+
+    /// A binary with no readable version is refused outright, never reported as unadmitted: warn
+    /// mode relaxes the version, not the identification.
+    #[test]
+    fn an_unidentified_binary_is_refused_not_unadmitted() {
+        let dir = scratch("shim-unidentified");
+        fake_release(&dir.join("bin/goose"), "goose stub");
+        let shim = shim_in(&dir, table("goose", &["1.49.0"], ReleaseStore::PathOnly));
+        assert!(
+            matches!(shim.gate("goose"), Err(GateFailure::Refused(_))),
+            "a stub is not a harness in any mode"
+        );
     }
 
     /// The switch the fake self-updating harness reads: copilot's `COPILOT_AUTO_UPDATE` in
