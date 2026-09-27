@@ -396,6 +396,66 @@ pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> 
     }
 }
 
+/// **A node's usage, kept current frame by frame as its stream is recorded**, across every process
+/// the node runs as.
+///
+/// A node can be several processes in turn — a `LaunchOnly` node's next turn is a relaunch under
+/// its session (a continuation generation) — and a row's fold describes **one process's** stream:
+/// a `Last` row's terminal frame totals that process's run, as every capture behind such a row was
+/// one process. So the fold runs within a generation and generations add: a `Sum` row's units add
+/// throughout, and a `Last` row's final unit of each generation is added to the others'.
+///
+/// O(1) state: a running fold, never the units, so a long-lived node's meter does not grow.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageMeter {
+    rule: &'static UsageRule,
+    /// Every generation already ended, added.
+    ended: Option<TokenUsage>,
+    /// The running generation, folded under the rule.
+    current: Option<TokenUsage>,
+}
+
+impl UsageMeter {
+    pub fn new(rule: &'static UsageRule) -> Self {
+        Self {
+            rule,
+            ended: None,
+            current: None,
+        }
+    }
+
+    /// Fold one frame of the running generation in; a frame that is no usage unit changes nothing.
+    pub fn observe(&mut self, frame: &Value) {
+        for unit in usage_units(self.rule, std::slice::from_ref(frame)) {
+            self.current = Some(match (self.rule.fold, self.current) {
+                (UsageFold::Sum, Some(so_far)) => so_far + unit,
+                _ => unit,
+            });
+        }
+    }
+
+    /// The running generation's process has ended: what it spent is settled, and the next frame
+    /// belongs to the next generation.
+    pub fn end_generation(&mut self) {
+        self.ended = add_claims(self.ended, self.current.take());
+    }
+
+    /// Everything the node's stream says it spent so far. `None` when no unit was ever read — no
+    /// claim, which is not a claim of zero.
+    pub fn usage(&self) -> Option<TokenUsage> {
+        add_claims(self.ended, self.current)
+    }
+}
+
+/// Two usage claims added, where either may be absent: an absent claim adds nothing, and only two
+/// absences stay absent.
+pub fn add_claims(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Each turn's (or step's) total spend, oldest first, where the row's units are turns — a `Sum`
 /// row. Empty for a `Last` row, whose units are running totals rather than turns.
 pub fn turns(rule: &UsageRule, units: &[TokenUsage]) -> Vec<u64> {
@@ -1038,6 +1098,61 @@ mod tests {
             ..RULE
         };
         assert_eq!(usage(&write, &[frame]), Some(tokens(12, 0, 5)));
+    }
+
+    static LAST: UsageRule = RULE;
+    static SUM: UsageRule = UsageRule {
+        fold: UsageFold::Sum,
+        ..RULE
+    };
+
+    /// **A meter folds within a generation and adds across generations.** A `Last` row's final
+    /// unit of each process is that process's total, so two generations add their finals rather
+    /// than the second replacing the first; a `Sum` row adds every unit throughout; and a frame
+    /// read in pieces folds to what the whole-stream reading says.
+    #[test]
+    fn a_meter_folds_each_generation_under_the_rule_and_adds_the_generations() {
+        let gen1 = [done(10, 1, 2), done(30, 3, 4)];
+        let gen2 = [done(5, 1, 0)];
+        let meter = |rule: &'static UsageRule| {
+            let mut m = UsageMeter::new(rule);
+            gen1.iter().for_each(|f| m.observe(f));
+            assert_eq!(
+                m.usage(),
+                usage(rule, &gen1),
+                "one generation is the plain reading"
+            );
+            m.end_generation();
+            gen2.iter().for_each(|f| m.observe(f));
+            m.usage()
+        };
+        assert_eq!(meter(&LAST), Some(tokens(35, 4, 4)));
+        assert_eq!(meter(&SUM), Some(tokens(45, 5, 6)));
+    }
+
+    /// **No unit is no claim, however many generations pass**; a generation that reported nothing
+    /// adds nothing to one that did.
+    #[test]
+    fn a_meter_that_read_no_unit_claims_nothing_and_a_silent_generation_adds_nothing() {
+        let mut m = UsageMeter::new(&LAST);
+        m.observe(&serde_json::json!({"type": "other"}));
+        m.end_generation();
+        m.end_generation();
+        assert_eq!(m.usage(), None);
+        m.observe(&done(0, 0, 0));
+        assert_eq!(
+            m.usage(),
+            Some(TokenUsage::default()),
+            "a zero unit is a claim"
+        );
+        m.end_generation();
+        m.end_generation();
+        assert_eq!(m.usage(), Some(TokenUsage::default()));
+        assert_eq!(add_claims(None, None), None);
+        assert_eq!(
+            add_claims(Some(tokens(1, 2, 3)), None),
+            Some(tokens(1, 2, 3))
+        );
     }
 
     /// **A reasoning counter beside output is added in; one within it is only named.** Either way
