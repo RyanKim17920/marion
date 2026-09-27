@@ -4884,7 +4884,7 @@ mod tests {
             );
         }
         let declared = mcp_tool_names();
-        assert_eq!(declared.len(), 5, "{declared:?}");
+        assert_eq!(declared.len(), 6, "{declared:?}");
         assert!(
             u.contains(&format!(
                 "{} tools — {}",
