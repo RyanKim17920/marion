@@ -701,7 +701,9 @@ pub const CLAUDE_ACP: Agent = Agent {
         mode: true,
     },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
-           `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
+           `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220. S33: \
+           0.66.0 still opens a session; 0.81.2 (the registry's current) starts the declared \
+           bridge at session/new",
 };
 
 /// `@agentclientprotocol/codex-acp` — the second ACP Registry shim, over the local `codex`.
@@ -730,8 +732,9 @@ pub const CODEX_ACP: Agent = Agent {
         mode: true,
     },
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
-           `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
-           (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
+           `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. S33: 1.13.1 \
+           opens a session under the same login and starts the declared bridge at session/new. \
+           Install it rather than relying on `npx -y`",
 };
 
 /// `copilot --acp` — GitHub Copilot CLI's own ACP server, measured to a real `report` call (S28).
@@ -763,12 +766,210 @@ pub const COPILOT: Agent = Agent {
     note: "S28: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
-           this version, so a generic launch of it reaches no bridge",
+           this version, so a generic launch of it reaches no bridge (S33 reconfirmed on 1.0.83 \
+           with COPILOT_AUTO_UPDATE=false: the declared server never started)",
+};
+
+/// `kilo acp` — Kilo Code's CLI, an opencode fork, and the one S33 agent that opened a session
+/// with no account and no configuration at all.
+pub const KILO: Agent = Agent {
+    id: "kilo",
+    argv: &["kilo", "acp"],
+    tools: None,
+    // opencode's config document is likely its shape too, and that is exactly an unmeasured claim.
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "Kilo",
+    install: "npm i -g @kilocode/cli",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: true,
+    },
+    note: "S33: kilo 7.8.1 opens a session with no account and starts the stdio bridge declared \
+           in session/new; a prompt needs a Kilo login or a provider in its own config, so no \
+           turn has run",
+};
+
+/// `qwen --acp` — refused by S28 with no provider, opened by S33 with one.
+pub const QWEN: Agent = Agent {
+    id: "qwen",
+    argv: &["qwen", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "qwen-code",
+    install: "npm i -g @qwen-code/qwen-code",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: qwen-code 0.23.0 refuses session/new until a provider is configured (S28), and \
+           with OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL set it opens and runs a turn to \
+           end_turn against a local endpoint. It starts the declared bridge but defers MCP tools \
+           behind its own tool_search, so the model is not offered marion's verbs up front",
+};
+
+/// `goose acp` — Block's goose, opened on the provider its own config names.
+pub const GOOSE: Agent = Agent {
+    id: "goose",
+    argv: &["goose", "acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "goose",
+    install: "brew install block-goose-cli",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: goose 1.52.0 refuses session/new with a bare -32603 until a provider is \
+           configured (GOOSE_PROVIDER, or its own config), then opens and runs a turn to \
+           end_turn against a local endpoint. The declared bridge was not started within 8 s of \
+           session/new",
+};
+
+/// `fast-agent-acp` — fast-agent's ACP entrypoint, measured to a real call on marion's bridge.
+pub const FAST_AGENT: Agent = Agent {
+    id: "fast-agent",
+    argv: &["fast-agent-acp", "-x"],
+    // S33 watched a real `tools/call` reach the bridge, titled `marion/report` — which the generic
+    // reading already reads, so no spelling of its own is recorded.
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "fast-agent-acp",
+    install: "uv tool install fast-agent-acp",
+    reach: Reach::Opened {
+        provider: true,
+        model: false,
+        mode: true,
+    },
+    note: "S33: fast-agent-acp 0.10.37 exits at initialize with no model configured \
+           (FAST_AGENT_MODEL or its own config). Configured, it opens (modes only, no config \
+           options), asks session/request_permission for marion's tool, and a real call reached \
+           the bridge — offered to the model as `marion__report`, titled `marion/report`",
+};
+
+/// `vibe-acp` — Mistral Vibe's ACP entrypoint.
+pub const VIBE: Agent = Agent {
+    id: "vibe",
+    argv: &["vibe-acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "@mistralai/mistral-vibe",
+    install: "uv tool install mistral-vibe",
+    reach: Reach::Opened {
+        provider: true,
+        model: true,
+        mode: true,
+    },
+    note: "S33: mistral-vibe 2.25.8 refuses session/new without MISTRAL_API_KEY, opens with one \
+           and starts the declared bridge; a prompt goes to Mistral's own API, so no turn has run",
+};
+
+/// `vtcode acp` — VT Code, whose ACP server is off until the operator turns it on.
+pub const VTCODE: Agent = Agent {
+    id: "vtcode",
+    argv: &["vtcode", "acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "vtcode",
+    install: "brew install vtcode",
+    reach: Reach::Opened {
+        provider: false,
+        model: true,
+        mode: false,
+    },
+    note: "S33: vtcode 0.169.0 exits \"Agent Client Protocol integration is disabled\" unless \
+           VT_ACP_ENABLED=1 or `[acp]` in its vtcode.toml. Enabled, it opens with no key; its \
+           agent select carries no `mode` category, so an approval_mode finds no select. The \
+           declared bridge was not started at session/new, and a prompt needs a provider key",
+};
+
+/// `auggie --acp` — Augment's CLI, stopped at its account wall.
+pub const AUGGIE: Agent = Agent {
+    id: "auggie",
+    argv: &["auggie", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "auggie",
+    install: "npm i -g @augmentcode/auggie",
+    reach: Reach::Refused,
+    note: "S33: auggie 0.36.0 offers no authMethods and refuses session/new until the operator \
+           runs `auggie login` in a terminal (an Augment account)",
+};
+
+/// `qodercli --acp` — Qoder's CLI, stopped at its account wall.
+pub const QODER: Agent = Agent {
+    id: "qoder",
+    argv: &["qodercli", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "qoder-cli",
+    install: "npm i -g @qoder-ai/qodercli",
+    reach: Reach::Refused,
+    note: "S33: qoder-cli 1.1.64 refuses session/new until the operator runs `qodercli login` \
+           (a Qoder account)",
+};
+
+/// `cline --acp` — the Cline CLI's ACP mode, which wants the protocol's `authenticate` first.
+pub const CLINE: Agent = Agent {
+    id: "cline",
+    argv: &["cline", "--acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "cline",
+    install: "npm i -g cline",
+    reach: Reach::Refused,
+    note: "S33: cline 3.0.61 refuses session/new with \"Call authenticate before starting a \
+           session\" — an `authenticate` request choosing one of its sign-in methods, a choice \
+           marion leaves to the operator",
+};
+
+/// `pi-acp` — the community shim over the `pi` coding agent, refused by a version skew.
+pub const PI_ACP: Agent = Agent {
+    id: "pi-acp",
+    argv: &["pi-acp"],
+    tools: None,
+    canned: None,
+    declaration: Declaration::Session,
+    mid_turn: None,
+    agent_info: "pi-acp",
+    install: "npm i -g pi-acp",
+    reach: Reach::Refused,
+    note: "S33: pi-acp 0.0.34 refuses session/new -32603 because it calls \
+           `get_available_thinking_levels`, which the installed pi 0.80.2 does not have — a skew \
+           between the shim and pi, not an account wall",
 };
 
 /// Every ACP agent marion has a refinement row for. Naming one is not having measured it — see
 /// [`Agent::tools`] — and not being named is not being refused: see [`Binding`].
-pub const AGENTS: [Agent; 5] = [OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT];
+///
+/// **Not every probed agent is a row.** Factory's `droid` answers `session/new` without a key by
+/// *starting a device pairing* and printing its code (S33), and the doctor's `--adapter` mode opens
+/// a session on every row — so a row would make a routine probe start a login flow. It stays
+/// reachable as the operator's own `acp:droid exec --output-format acp-daemon`.
+pub const AGENTS: [Agent; 15] = [
+    OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT, KILO, QWEN, GOOSE, FAST_AGENT, VIBE, VTCODE,
+    AUGGIE, QODER, CLINE, PI_ACP,
+];
 
 /// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
 /// [`Binding::resolve`] falls back to the generic path.
@@ -2491,6 +2692,78 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// **Each row launches the argv its capture was taken with, and states nothing unmeasured.**
+    ///
+    /// The argv is the one S33 probed (and S20–S28 before it); a refinement a row does not have
+    /// — a tool spelling nobody watched a model type, a mid-turn answer nobody measured, a canned
+    /// recipe nobody ran — is `None` and leaves the generic path's answer in force, never a
+    /// neighbour's. The table is written out whole so a new row is a line here as well as a line
+    /// in [`AGENTS`].
+    #[test]
+    fn every_row_launches_its_probed_argv_and_claims_only_what_was_measured() {
+        type Row = (
+            &'static str,
+            &'static [&'static str],
+            Option<ToolSpelling>,
+            Option<MidTurn>,
+        );
+        let expected: &[Row] = &[
+            (
+                "opencode",
+                &["opencode", "acp"],
+                Some(ToolSpelling::ServerUnderscoreTool),
+                Some(MidTurn::Fold),
+            ),
+            ("gemini", &["gemini", "--acp"], None, None),
+            (
+                "claude-acp",
+                &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
+                Some(ToolSpelling::McpDoubleUnderscore),
+                Some(MidTurn::Fold),
+            ),
+            (
+                "codex-acp",
+                &["codex-acp"],
+                Some(ToolSpelling::McpDotted),
+                Some(MidTurn::Queue),
+            ),
+            (
+                "copilot",
+                &["copilot", "--acp"],
+                Some(ToolSpelling::ServerHyphenTool),
+                Some(MidTurn::Queue),
+            ),
+            ("kilo", &["kilo", "acp"], None, None),
+            ("qwen", &["qwen", "--acp"], None, None),
+            ("goose", &["goose", "acp"], None, None),
+            ("fast-agent", &["fast-agent-acp", "-x"], None, None),
+            ("vibe", &["vibe-acp"], None, None),
+            ("vtcode", &["vtcode", "acp"], None, None),
+            ("auggie", &["auggie", "--acp"], None, None),
+            ("qoder", &["qodercli", "--acp"], None, None),
+            ("cline", &["cline", "--acp"], None, None),
+            ("pi-acp", &["pi-acp"], None, None),
+        ];
+        let actual: Vec<Row> = AGENTS
+            .iter()
+            .map(|a| (a.id, a.argv, a.tools, a.mid_turn))
+            .collect();
+        assert_eq!(actual, expected);
+        // Only opencode has a measured canned recipe, and only copilot a measured quirk in how the
+        // bridge reaches it; every other row takes the protocol's own channel.
+        for a in AGENTS {
+            assert_eq!(a.canned.is_some(), a.id == "opencode", "`{}`", a.id);
+            assert_eq!(
+                a.declaration != Declaration::Session,
+                a.id == "copilot",
+                "`{}`",
+                a.id
+            );
+        }
+        // The generic path's witness stays outside the table (`tests/fixtures/acp/README.md`).
+        assert!(AGENTS.iter().all(|a| a.agent_info != "fake-acp-agent"));
     }
 
     /// **Which MCP transports an agent takes is advertised, so it is read, never tabled.** ACP's
