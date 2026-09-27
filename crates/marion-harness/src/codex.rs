@@ -501,6 +501,7 @@ env_key = "MARION_DUMMY_KEY"
 command = {bridge}
 args = [{args}]
 default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
 env = {{ {env_table} }}
 "#
     )
@@ -931,6 +932,29 @@ mod tests {
                 r#"["deferred"]"#.to_string()
             )),
             "a live codex child that has to search for `report` is a child that never calls it"
+        );
+    }
+
+    /// The canned document owes the same key as the live pairs. A canned node names no model, so
+    /// 0.155.1 runs it on its catalog default (`gpt-6-astra`, a code-mode model), and measured
+    /// 2026-09-27 through `codex app-server` against the canned provider
+    /// (`tests/fixtures/app-server-0.155.1/`, P3): without `omit_tools_from` the `exec`
+    /// declaration listed none of `mcp__marion__*`, and with it every verb was listed. Canned
+    /// cells stayed green only because the canned script calls `report` without reading the
+    /// declaration first.
+    #[test]
+    fn marions_tools_are_never_deferred_behind_tool_search_on_the_canned_route() {
+        let t = config_toml(&bridge_env(), "http://x/v1");
+        let table = t
+            .split("[mcp_servers.marion]")
+            .nth(1)
+            .expect("the document declares marion's server");
+        assert!(
+            table
+                .lines()
+                .take_while(|l| !l.starts_with('['))
+                .any(|l| l == r#"omit_tools_from = ["deferred"]"#),
+            "the key must sit inside [mcp_servers.marion], as on the live route:\n{t}"
         );
     }
 

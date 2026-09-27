@@ -630,7 +630,10 @@ then goes out **without** marion's tools. Wait for `mcpServer/startupStatus/upda
 thread (or `mcpServerStatus/list`, which blocks until startup ends) before the first `turn/start`.
 `thread/start.sandbox` beats `config.toml` and argv `-c sandbox_mode`; the response echoes
 `sandbox` (a `SandboxPolicy`) and `approvalPolicy`. Without `omit_tools_from = ["deferred"]` the
-default model (`gpt-6-astra`) is shown none of marion's verbs, canned config included. **P4:**
+default model (`gpt-6-astra`) is shown none of marion's verbs, canned config included; the canned
+`config_toml` now emits the key as the live `-c` pairs already did
+(`codex::tests::marions_tools_are_never_deferred_behind_tool_search_on_the_canned_route`, RED with
+the key missing from `[mcp_servers.marion]`). **P4:**
 `item/started`/`item/completed` for `userMessage`, `mcpToolCall`, `commandExecution`,
 `fileChange`, `agentMessage`; `thread/tokenUsage/updated` after each provider response (`total`
 cumulative, `last` per response, plus `modelContextWindow`); `turn/completed` carries no usage and

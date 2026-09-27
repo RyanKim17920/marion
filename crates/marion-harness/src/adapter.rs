@@ -2820,7 +2820,8 @@ mod tests {
             let len: usize = files.iter().map(|(_, c)| c.len()).sum();
             let want = match name {
                 "claude" => 491,
-                "codex" => 1275,
+                // 1275 pre-axis, + 31 for `omit_tools_from = ["deferred"]\n` (2026-09-27).
+                "codex" => 1306,
                 "gemini" => 718,
                 "opencode" => 962,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
