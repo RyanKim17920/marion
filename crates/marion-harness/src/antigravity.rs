@@ -31,8 +31,8 @@ use marion_core::harness::Harness;
 use serde_json::json;
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, UsageFold, UsageRule,
-    Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
+    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -204,6 +204,36 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         cache_write: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
+    }),
+    // Every step is a `step_update` revised in place by `step_index`, so a tool seen `ACTIVE` and
+    // then `DONE` is one call; the model's words stream as `agent_response` steps' `text_delta`s
+    // (`tests/fixtures/s32/`).
+    activity: Some(ActivityRule {
+        calls: &[ToolUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/event", "step_update"),
+                    Cond::Eq("/step_update/step_type", "tool"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            name: "/step_update/tool_name",
+            args: "/step_update/tool_info/parameters",
+            id: Some("/step_update/step_index"),
+        }],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/event", "step_update"),
+                    Cond::Eq("/step_update/step_type", "agent_response"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            path: "/step_update/text_delta",
+            joins: true,
+        }],
     }),
 };
 
