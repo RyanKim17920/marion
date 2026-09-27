@@ -2915,8 +2915,9 @@ mod tests {
                 // the provider's `env_key` became `MARION_PROVIDER_KEY`.
                 "codex" => 1309,
                 "gemini" => 718,
-                // +27: `"timeout": 86400000` on marion's server (s36).
-                "opencode" => 989,
+                // +27: `"timeout": 86400000` on marion's server; +47: the `permission` grant for
+                // marion's own tools (both s36).
+                "opencode" => 1036,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
                 "copilot" => 529,
                 _ => unreachable!(),
@@ -9233,7 +9234,7 @@ mod tests {
                 ("claude-code", "allowed-tools-arg"),
                 ("codex", "declaration-key"),
                 ("gemini", "declaration-key"),
-                ("opencode", "none"),
+                ("opencode", "declaration-key"),
                 ("copilot", "allowed-tools-arg"),
                 ("goose", "env-var"),
                 ("cline", "cli-flag"),

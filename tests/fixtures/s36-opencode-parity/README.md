@@ -111,10 +111,9 @@ and_takes_its_next_turn`). A way past the gap, not yet taken: marion titles ever
 | `permission-run-ask-inline-allow` | the same, with `OPENCODE_CONFIG_CONTENT={"permission":{"slow_*":"allow"}}` | **PASS** — the inline allow, merged over the file, wins |
 | `permission-acp-ask` | `opencode acp`, the same config | **PASS** — `session/request_permission` with `allow_once`/`allow_always`/`reject_once`; answered `once`, the call completed |
 
-So a headless `opencode run` node whose operator configured `"ask"` for marion's tools has them
-silently refused (the row's grammar fails a refused `report`, so the run is not a false success,
-but a root's `spawn` is lost). Over ACP the same ask reaches marion, which answers `allow_once` by
-kind, as it does for every agent. marion's live inline document does not yet pre-approve its own
-verbs for a headless node the way claude's `--allowedTools` does: the same document is the native
-injection, where the operator is present to answer, so the grant belongs on the headless launch
-alone (see MILESTONES).
+So a headless `opencode run` node whose operator configured `"ask"` for marion's tools had them
+silently refused (the row's grammar fails a refused `report`, so the run was not a false success,
+but a root's `spawn` was lost). marion's declaration now carries `permission: {"marion_*":
+"allow"}` beside its `mcp` block on every route, the way codex's and gemini's declarations approve
+their server's tools. Over ACP the same ask reaches marion, which answers `allow_once` by kind, as
+it does for every agent.

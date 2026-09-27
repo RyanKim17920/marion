@@ -227,11 +227,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
-    // opencode's default permission for an MCP tool is allow, measured; marion compiles nothing
-    // into `OPENCODE_PERMISSION`, which would narrow every node (S13).
-    approval: Approval::None {
-        note: "S13 on 1.17.3: with no `permission` entry for marion's tool the call runs; \
-               `ask` auto-rejects at exit 0, so marion states no permission at all",
+    // opencode's default permission for an MCP tool is allow (S13), but an operator's `"ask"`
+    // auto-rejects a headless call at exit 0 (s36), so marion's declaration grants its own tools —
+    // `marion_*` and nothing else, never `OPENCODE_PERMISSION`, which would narrow every tool.
+    approval: Approval::DeclarationKey {
+        key: APPROVAL_KEY,
+        note: "s36 on 1.18.32: config `permission: {\"slow_report\": \"ask\"}` auto-rejects the \
+               call headless at exit 0; an inline `permission: {\"slow_*\": \"allow\"}` merged \
+               over it lets it run",
     },
     client_name: None,
     delivery: Deliveries {
@@ -501,6 +504,7 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
 
     if let Some(b) = mcp {
         config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
+        config[APPROVAL_KEY] = approval_block();
     }
     config
 }
@@ -547,8 +551,23 @@ fn mcp_block(b: &BridgeEnv) -> Value {
     })
 }
 
+/// The `permission` key that approves marion's own tools — `marion_*`, opencode's spelling of
+/// them ([`SPEC`]'s `ServerUnderscoreTool`) — and nothing else ([`SPEC`]'s `approval`). Beside the
+/// `mcp` block on every route that declares it, so a headless node's calls are not auto-rejected
+/// by an operator's `"ask"`.
+pub const APPROVAL_KEY: &str = "permission";
+
+fn approval_block() -> Value {
+    let mut grant = serde_json::Map::new();
+    grant.insert(
+        ToolSpelling::ServerUnderscoreTool.spell("*"),
+        json!("allow"),
+    );
+    Value::Object(grant)
+}
+
 /// The document [`CONFIG_CONTENT_ENV`] carries on a live node: **marion's MCP declaration and
-/// nothing else**.
+/// the grant for its own tools, nothing else**.
 ///
 /// No `provider` block and no `small_model`, and both omissions are deliberate rather than
 /// minimalism. This text is *merged over* the operator's own config (S13), so a `provider` entry
@@ -560,6 +579,7 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
     let mut config = json!({});
     if let Some(b) = mcp {
         config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
+        config[APPROVAL_KEY] = approval_block();
     }
     config
 }
@@ -826,6 +846,30 @@ mod tests {
         );
     }
 
+    /// **marion's own tools are approved by the declaration that names them**, as codex's
+    /// `default_tools_approval_mode` and gemini's `trust` are: an operator whose config says
+    /// `"ask"` would otherwise have every marion call of a headless node auto-rejected at exit 0
+    /// (s36 `permission-run-ask/`), and s36 measured an inline `permission` allow merged over the
+    /// config winning (`permission-run-ask-inline-allow/`). The grant names marion's tools by
+    /// opencode's own spelling and nothing else.
+    #[test]
+    fn the_declaration_approves_marions_own_tools_and_nothing_else() {
+        for (route, v) in [
+            ("canned", config_json(&cfg(), Some(&bridge()))),
+            ("live", live_config_json(Some(&bridge()))),
+        ] {
+            assert_eq!(
+                v["permission"],
+                json!({ "marion_*": "allow" }),
+                "{route}: without it an operator's `ask` refuses marion's verbs headless"
+            );
+        }
+        assert!(
+            config_json(&cfg(), None).get("permission").is_none(),
+            "no bridge, nothing to approve"
+        );
+    }
+
     #[test]
     fn the_bridge_declaration_carries_the_nodes_identity() {
         let mut b = bridge();
@@ -1043,8 +1087,8 @@ mod tests {
         }
         assert_eq!(
             v.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["mcp"],
-            "marion's bridge and nothing else"
+            vec!["mcp", "permission"],
+            "marion's bridge and the grant for its own tools, nothing else"
         );
         assert!(live_config_json(None).as_object().unwrap().is_empty());
     }
