@@ -254,12 +254,17 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // `gemini -p` refused by the vendor on this machine, so no capability has been observed to
         // work — including through ACP, where S20 found `session/new` refused outright.
         Harness::Gemini => Capabilities::NONE,
-        // Nothing measured through the surface this adapter uses. S20 measured `opencode acp`
-        // advertising `sessionCapabilities {close, fork, list, resume}`, but that is the *ACP*
-        // surface's handshake, not `opencode run --pure --format json`, and §3.3 keys on surfaces
-        // precisely so one cannot be read as the other. See `crate::acp` for where S20's answer is
-        // actually consumed.
-        Harness::OpenCode => Capabilities::NONE,
+        // S31 `p0b/opencode`: `opencode run --session <id>` continues the first run's session on
+        // 1.18.32, once `OPENCODE_DB` is a file (`:memory:` failed with `Session not found`) —
+        // the same claim codex's row makes of `codex exec resume`, and clipped the same way by
+        // the `run` surface's `LaunchOnly` ceiling. Nothing else is measured through this
+        // surface: S20's `sessionCapabilities {close, fork, list, resume}` is the *ACP* surface's
+        // handshake, not `opencode run`'s, and §3.3 keys on surfaces precisely so one cannot be
+        // read as the other (see `crate::acp` for where S20's answer is consumed).
+        Harness::OpenCode => Capabilities {
+            resume: at_least(version, (1, 18, 32)),
+            ..Capabilities::NONE
+        },
         // Nothing measured through the `-p` surface. s24 drove it to a tool call and back and
         // watched `session.error` and a denied call, none of which is one of the ten; `--resume`,
         // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
@@ -392,6 +397,18 @@ mod tests {
             static_caps(Harness::Codex, v, &app_server).resume,
             "a typed plane can carry `continue_`, so the same binary publishes it there"
         );
+    }
+
+    /// The same sentence for opencode: S31 `p0b/opencode` measured `run --session <id>` continuing
+    /// the first run's session on 1.18.32, once the store was a file — so the binary advertises
+    /// `resume` there, the `run` surface's `LaunchOnly` ceiling clips it, and nothing earlier than
+    /// the version it was measured on is claimed.
+    #[test]
+    fn opencode_can_resume_from_the_version_it_was_measured_on_and_its_surface_clips_it() {
+        assert!(advertised(Harness::OpenCode, "1.18.32").resume);
+        assert!(!advertised(Harness::OpenCode, "1.17.3").resume);
+        let shipped = adapter_for(Harness::OpenCode).unwrap().surfaces();
+        assert!(!static_caps(Harness::OpenCode, "1.18.32", &shipped).resume);
     }
 
     /// **The ACP row of `advertised`, field by field, with the reason each `true` is a `true`.**
