@@ -688,9 +688,18 @@ fn a_rate_limited_key_fails_over_to_the_next_stated_credential_before_the_first_
         summary(&ev)
     );
     assert_eq!(contract.child.credential.as_deref(), Some("canned-rot:b"));
+    // One move, by id, with the one classifier's cause and the harness's own sentence.
+    let moves = json.unwrap()["child"]["credential_failover"].clone();
+    assert_eq!(moves.as_array().map(Vec::len), Some(1), "{moves}");
     assert_eq!(
-        json.unwrap()["child"]["credential_failover"],
-        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "rate_limit"}]),
+        (&moves[0]["from"], &moves[0]["to"]),
+        (&json!("canned-rot:a"), &json!("canned-rot:b"))
+    );
+    assert!(
+        moves[0]["cause"]["RateLimit"]["line"]
+            .as_str()
+            .is_some_and(|l| l.contains("429")),
+        "{moves}"
     );
     let first_b = ev
         .requests
@@ -726,9 +735,18 @@ fn rotation_tries_each_credential_once_and_then_fails() {
         .unwrap_or_else(|e| panic!("run_spawn failed: {e}\n{}", summary(&ev)));
     let comp = contract.completion.as_ref().expect("a finished run");
     assert_ne!(comp.status, ExitStatus::Ok);
+    // One move, by id, with the one classifier's cause and the harness's own sentence.
+    let moves = json.unwrap()["child"]["credential_failover"].clone();
+    assert_eq!(moves.as_array().map(Vec::len), Some(1), "{moves}");
     assert_eq!(
-        json.unwrap()["child"]["credential_failover"],
-        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "auth"}]),
+        (&moves[0]["from"], &moves[0]["to"]),
+        (&json!("canned-rot:a"), &json!("canned-rot:b"))
+    );
+    assert!(
+        moves[0]["cause"]["Auth"]["line"]
+            .as_str()
+            .is_some_and(|l| l.contains("401")),
+        "{moves}"
     );
     assert!(ev.requests.iter().any(|r| presented(r, KEY_B)));
     assert_no_key_kept(&ev);

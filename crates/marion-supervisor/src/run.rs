@@ -902,26 +902,60 @@ struct ChildRun {
     denied_permissions: Vec<String>,
 }
 
-/// **Whether a finished endpoint launch rotates to its next credential**, and why — `None` for any
-/// run that must stand as it is.
-///
-/// Rotates only where every one of these holds: the node runs on an endpoint with a credential
-/// left to try that has a stored key; the process ended on its own, with wall clock left to spend;
-/// it failed (a nonzero exit or a stream that says so) with no report and nothing changed in its
-/// worktree — the evidence available that no turn of it succeeded; and what it said names a
-/// failure another key could fare differently on ([`marion_harness::failover_cause`]).
-fn rotation(
+/// What a failed attempt relaunches on, where it relaunches at all.
+enum Next {
+    /// The endpoint's next stated API key.
+    Credential(crate::endpoint::Endpoint),
+    /// The next profile the agent type listed, by index into the node's profiles.
+    Profile(usize),
+}
+
+/// **The node's billing**: an endpoint node spends an API key, and every other node the operator's
+/// own login — a subscription, whether or not it runs on a profile.
+fn billing(endpoint: Option<&crate::endpoint::Endpoint>) -> marion_harness::Billing {
+    match endpoint {
+        Some(_) => marion_harness::Billing::ApiKey,
+        None => marion_harness::Billing::Subscription,
+    }
+}
+
+/// **What a finished attempt said about why it failed** — the one classifier
+/// ([`marion_harness::failure_cause`]) over its stderr, its stream's own failure claim and its
+/// error-shaped frames, read with the node's billing.
+fn attempt_cause(
+    run: &ChildRun,
+    stream_failure: Option<&str>,
     endpoint: Option<&crate::endpoint::Endpoint>,
+) -> Option<marion_core::contract::FailureCause> {
+    let said = format!("{}\n{}", run.stderr, stream_failure.unwrap_or_default());
+    marion_harness::failure_cause(&said, &run.stdout, billing(endpoint))
+}
+
+/// **The one relaunch policy**: whether a finished attempt relaunches, on what, and why — `None`
+/// for any run that must stand as it is.
+///
+/// A relaunch needs every one of these: the process ended on its own, with wall clock left to
+/// spend; it failed (a nonzero exit or a stream that says so) with no report and nothing changed
+/// in its worktree — the evidence available that no turn of it succeeded; and the cause, from the
+/// one classifier, is one the next attempt may fare differently on. Then:
+///
+/// * an **endpoint** node rotates to its next stated API key on a rate limit, a refused key or an
+///   outage — each credential tried once;
+/// * a node on the operator's **own login** fails over to the next profile its type listed on an
+///   auth failure only;
+/// * a **usage limit** relaunches nothing, on either: it is reported and never worked around.
+#[allow(clippy::too_many_arguments)]
+fn next_attempt(
+    endpoint: Option<&crate::endpoint::Endpoint>,
+    profiles: &crate::profiles::Launch,
+    at: usize,
     run: &ChildRun,
     adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
     wt: &Path,
     base: Option<&Oid>,
     remaining: StdDuration,
-) -> Option<(
-    crate::endpoint::Endpoint,
-    marion_core::contract::FailoverCause,
-)> {
-    let ep = endpoint.filter(|e| !e.fallbacks.is_empty())?;
+) -> Option<(Next, marion_core::contract::FailureCause)> {
+    use marion_core::contract::FailureCause;
     if run.exit.timed_out || remaining.is_zero() {
         return None;
     }
@@ -933,11 +967,21 @@ fn rotation(
     if base.is_some_and(|b| changed_paths(wt, b).map_or(true, |c| !c.is_empty())) {
         return None;
     }
-    let said = format!("{}\n{}", run.stderr, stream.failure.unwrap_or_default());
-    let cause = marion_harness::failover_cause(&said)?;
-    // A store that cannot be read now is no reason to lose the failed run's own contract: the run
-    // stands as it ended, and the failure it recorded says why.
-    let next = crate::endpoint::next_for_launch(ep).ok().flatten()?;
+    let cause = attempt_cause(run, stream.failure.as_deref(), endpoint)?;
+    let next = match (endpoint, &cause) {
+        (
+            Some(ep),
+            FailureCause::RateLimit { .. }
+            | FailureCause::Auth { .. }
+            | FailureCause::Outage { .. },
+        ) if !ep.fallbacks.is_empty() => {
+            // A store that cannot be read now is no reason to lose the failed run's own contract:
+            // the run stands as it ended, and the failure it recorded says why.
+            Next::Credential(crate::endpoint::next_for_launch(ep).ok().flatten()?)
+        }
+        (None, FailureCause::Auth { .. }) => Next::Profile(profiles.next_after(at)?),
+        _ => return None,
+    };
     Some((next, cause))
 }
 
@@ -1830,46 +1874,36 @@ pub fn run_spawn_watched(
             run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
             run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
         }
-        if let Some((next, cause)) = rotation(
+        match next_attempt(
             endpoint.as_ref(),
+            &profiles,
+            at,
             &run,
             adapter.as_ref(),
             &wt,
             base.as_ref(),
             bound.saturating_sub(launched_at.elapsed()),
         ) {
-            failovers.push(marion_core::contract::CredentialFailover {
-                from: endpoint
-                    .as_ref()
-                    .map(|e| e.credential.to_string())
-                    .unwrap_or_default(),
-                to: next.credential.to_string(),
-                cause,
-            });
-            endpoint = Some(next);
-            clear_ready_marker(ready_file.as_deref());
-            continue;
+            Some((Next::Credential(next), cause)) => {
+                failovers.push(marion_core::contract::CredentialFailover {
+                    from: endpoint
+                        .as_ref()
+                        .map(|e| e.credential.to_string())
+                        .unwrap_or_default(),
+                    to: next.credential.to_string(),
+                    cause,
+                });
+                endpoint = Some(next);
+            }
+            // Journaled before the relaunch, as the profile it names.
+            Some((Next::Profile(next), cause)) => {
+                profiles.record_failover(at, next, &cause, &env.project_dir, &agent_id);
+                at = next;
+                session.restart(at);
+            }
+            None => break (launch, inv, run, version),
         }
-        // **A profile failover**: a run on the operator's own login whose login was refused, that
-        // reported nothing, relaunches on the next profile its agent type listed — journaled
-        // first. A usage limit or an outage never gets here (`profiles::Launch::failover`), and an
-        // endpoint node's credential is the endpoint's, never a profile's.
-        let reported = adapter
-            .parse_stream(&run.stdout, run.exit)
-            .narrative
-            .is_some();
-        if endpoint.is_none()
-            && !reported
-            && !run.exit.timed_out
-            && let Some(next) =
-                profiles.failover(at, &run.stdout, &run.stderr, &env.project_dir, &agent_id)
-        {
-            at = next;
-            session.restart(at);
-            clear_ready_marker(ready_file.as_deref());
-            continue;
-        }
-        break (launch, inv, run, version);
+        clear_ready_marker(ready_file.as_deref());
     };
     let announce_started =
         |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());
@@ -2096,12 +2130,12 @@ pub fn run_spawn_watched(
         .as_ref()
         .is_some_and(|c| c.status != marion_core::contract::ExitStatus::Ok)
     {
+        let stream = adapter.parse_stream(&run.stdout, run.exit);
         profiles.settle(
             at,
             adapter.harness(),
             &mut contract,
-            &run.stdout,
-            &run.stderr,
+            attempt_cause(&run, stream.failure.as_deref(), endpoint.as_ref()),
         );
     }
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the

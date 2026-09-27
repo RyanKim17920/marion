@@ -668,20 +668,24 @@ impl Launch {
         }
     }
 
-    /// **Whether attempt `at` fails over**, and to which attempt. Only a run whose output says
-    /// its login was refused, and only while the agent type listed another profile; the failover
-    /// is journaled before the relaunch. A usage limit never reaches this answer: [`classify`]
-    /// ranks it above auth.
-    pub fn failover(
+    /// **The profile after attempt `at`**, if the agent type listed one. The failover decision is
+    /// the run's (`run::next_attempt`: an auth failure only, never a usage limit); this is only
+    /// where it would go.
+    pub fn next_after(&self, at: usize) -> Option<usize> {
+        let next = at + 1;
+        (next < self.chain.len()).then_some(next)
+    }
+
+    /// **Journal a failover from attempt `at` to `next`**, before the relaunch runs.
+    pub fn record_failover(
         &self,
         at: usize,
-        stdout: &str,
-        stderr: &str,
+        next: usize,
+        cause: &FailureCause,
         project: &marion_core::paths::ProjectDir,
         agent_id: &marion_core::contract::AgentId,
-    ) -> Option<usize> {
-        let cause = classify(stdout, stderr);
-        let next = failover_target(&self.chain, at, cause.as_ref())?;
+    ) {
+        debug_assert_eq!(failover_target(&self.chain, at, Some(cause)), Some(next));
         crate::journal::record(
             project,
             marion_core::journal::RecordKind::ProfileFailover(
@@ -694,11 +698,11 @@ impl Launch {
                 },
             ),
         );
-        Some(next)
     }
 
-    /// **The run's cause, onto its contract**: [`Completion::failure_cause`] always, and for a
-    /// usage limit the notice leads the exit description — the sentence a parent's `wait` and the
+    /// **The run's cause, onto its contract** (the one classifier's, read with the node's own
+    /// billing): [`Completion::failure_cause`] always, and for a usage limit the notice leads the
+    /// exit description — the sentence a parent's `wait` and the
     /// announcement of a backgrounded child's end both quote — and the reading is kept for
     /// `marion profile list`. Nothing else happens on a limit.
     ///
@@ -708,10 +712,9 @@ impl Launch {
         at: usize,
         harness: Harness,
         contract: &mut marion_core::contract::TaskContract,
-        stdout: &str,
-        stderr: &str,
+        cause: Option<FailureCause>,
     ) {
-        let Some(cause) = classify(stdout, stderr) else {
+        let Some(cause) = cause else {
             return;
         };
         let Some(completion) = contract.completion.as_mut() else {
@@ -749,12 +752,6 @@ pub fn check_child_profile(
         ));
     }
     Ok(())
-}
-
-/// A run's cause, from its whole output. One name for the classifier so the failover decision and
-/// the contract read the same answer.
-pub fn classify(stdout: &str, stderr: &str) -> Option<FailureCause> {
-    marion_harness::failure_cause(stderr, stdout)
 }
 
 /// The variable an operator sets to choose a native session's profile: `MARION_PROFILE=personal
