@@ -153,7 +153,10 @@ fn bracketed_paste_off_holds_then_refuses_after_the_grace() {
 fn only_a_terminal_paste_row_gets_an_injector() {
     assert!(PasteParams::of(PASTE).is_some());
     for other in [
-        TurnDelivery::TypedTurn { note: "" },
+        TurnDelivery::TypedTurn {
+            mid_turn: marion_harness::spec::MidTurn::Queue,
+            note: "",
+        },
         TurnDelivery::Continuation { note: "" },
         TurnDelivery::McpChannel { note: "" },
         TurnDelivery::None { note: "" },
