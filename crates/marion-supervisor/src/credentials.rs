@@ -16,8 +16,9 @@
 //! # What a key never does
 //!
 //! It is never printed, journaled, written into a contract or left in captured output. [`Secret`]
-//! is the type that makes the first of those structural: its `Debug` prints `***` and it has no
-//! `Display`, so a `{:?}` in an error path cannot leak it.
+//! (`marion_core::secret`, the one type every key and token marion holds is kept in) makes the
+//! first of those structural: its `Debug` prints `***` and it has no `Display`, so a `{:?}` in an
+//! error path cannot leak it. [`parse_key`] is the one way a typed or piped key becomes one.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -31,35 +32,20 @@ pub const STORE_ENV: &str = "MARION_CREDENTIAL_STORE";
 /// The Keychain service every marion item is filed under; the account is the provider id.
 pub const KEYCHAIN_SERVICE: &str = "marion";
 
-/// A provider key. `Debug` prints `***`; there is no `Display`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
+pub use marion_core::secret::Secret;
 
-impl Secret {
-    /// A key, validated: non-empty, and only `[A-Za-z0-9._~+/=-]`. Every published key format
-    /// fits, and refusing everything else keeps a key from carrying a newline or quote into the
-    /// Keychain's command line or a harness's config document.
-    pub fn new(key: &str) -> Result<Self, CredentialError> {
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(CredentialError::EmptyKey);
-        }
-        if !key.chars().all(valid_key_char) {
-            return Err(CredentialError::BadKeyChars);
-        }
-        Ok(Secret(key.to_string()))
+/// A provider key, validated: non-empty, and only `[A-Za-z0-9._~+/=-]`. Every published key format
+/// fits, and refusing everything else keeps a key from carrying a newline or quote into the
+/// Keychain's command line or a harness's config document.
+pub fn parse_key(key: &str) -> Result<Secret, CredentialError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(CredentialError::EmptyKey);
     }
-
-    /// The key itself, for the one place that hands it to a harness.
-    pub fn expose(&self) -> &str {
-        &self.0
+    if !key.chars().all(valid_key_char) {
+        return Err(CredentialError::BadKeyChars);
     }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Secret(***)")
-    }
+    Ok(Secret::new(key))
 }
 
 fn valid_key_char(c: char) -> bool {
@@ -353,7 +339,7 @@ impl CredentialStore for FileStore {
     fn get(&self, provider: &str) -> Result<Option<Secret>, CredentialError> {
         check_provider(provider)?;
         match self.load()?.get(provider) {
-            Some(k) => Secret::new(k).map(Some),
+            Some(k) => parse_key(k).map(Some),
             None => Ok(None),
         }
     }
@@ -439,7 +425,7 @@ impl CredentialStore for Keychain {
             None,
         )?;
         match code {
-            0 => Secret::new(out.trim_end_matches('\n')).map(Some),
+            0 => parse_key(out.trim_end_matches('\n')).map(Some),
             ERR_ITEM_NOT_FOUND => Ok(None),
             c => Err(CredentialError::Keychain(format!(
                 "find-generic-password exited {c}"
@@ -509,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_secret_debugs_as_stars_and_never_as_itself() {
-        let s = Secret::new("sk-very-secret-123").unwrap();
+        let s = parse_key("sk-very-secret-123").unwrap();
         let shown = format!("{s:?} {:?}", Some(&s));
         assert!(!shown.contains("very-secret"), "{shown}");
         assert!(shown.contains("***"));
@@ -518,12 +504,12 @@ mod tests {
     #[test]
     fn a_key_with_a_character_no_provider_uses_is_refused() {
         for bad in ["", "   ", "sk key", "sk\nkey", "sk\"key", "sk;rm", "sk'k"] {
-            assert!(Secret::new(bad).is_err(), "{bad:?}");
+            assert!(parse_key(bad).is_err(), "{bad:?}");
         }
         for good in ["sk-proj-AbC_123", "abc.def~g+h/i=j", "  sk-trim  "] {
-            assert!(Secret::new(good).is_ok(), "{good:?}");
+            assert!(parse_key(good).is_ok(), "{good:?}");
         }
-        assert_eq!(Secret::new("  sk-trim ").unwrap().expose(), "sk-trim");
+        assert_eq!(parse_key("  sk-trim ").unwrap().expose(), "sk-trim");
     }
 
     #[test]
@@ -531,10 +517,8 @@ mod tests {
         let dir = tmp("roundtrip").join("marion");
         let store = FileStore::at(dir.join("credentials.json"));
         assert!(store.get("openai").unwrap().is_none());
-        store
-            .put("openai", &Secret::new("sk-one").unwrap())
-            .unwrap();
-        store.put("groq", &Secret::new("gsk-two").unwrap()).unwrap();
+        store.put("openai", &parse_key("sk-one").unwrap()).unwrap();
+        store.put("groq", &parse_key("gsk-two").unwrap()).unwrap();
         assert_eq!(store.get("openai").unwrap().unwrap().expose(), "sk-one");
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir.join("credentials.json")), 0o600);
@@ -570,10 +554,7 @@ mod tests {
         let store = FileStore::at(tmp("badid").join("c.json"));
         for bad in ["", "Open AI", "a;b", "-x", "a b"] {
             assert!(store.get(bad).is_err(), "{bad:?}");
-            assert!(
-                store.put(bad, &Secret::new("k").unwrap()).is_err(),
-                "{bad:?}"
-            );
+            assert!(store.put(bad, &parse_key("k").unwrap()).is_err(), "{bad:?}");
         }
     }
 
@@ -581,10 +562,10 @@ mod tests {
     fn a_labelled_credential_is_its_own_entry_beside_the_default() {
         let store = FileStore::at(tmp("labels").join("c.json"));
         store
-            .put("openrouter", &Secret::new("sk-default").unwrap())
+            .put("openrouter", &parse_key("sk-default").unwrap())
             .unwrap();
         store
-            .put("openrouter:work", &Secret::new("sk-work").unwrap())
+            .put("openrouter:work", &parse_key("sk-work").unwrap())
             .unwrap();
         assert_eq!(
             store.get("openrouter").unwrap().unwrap().expose(),
@@ -638,7 +619,7 @@ mod tests {
         }
         let kc = Keychain::system();
         let id = format!("marion-keychain-test-{}", std::process::id());
-        let key = Secret::new("sk-keychain-test-value").unwrap();
+        let key = parse_key("sk-keychain-test-value").unwrap();
         kc.put(&id, &key).unwrap();
         assert_eq!(kc.get(&id).unwrap(), Some(key));
         assert!(kc.delete(&id).unwrap());

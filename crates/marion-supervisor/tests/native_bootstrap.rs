@@ -710,7 +710,7 @@ mod enabled_launch {
             native_launch: None,
             caller: Some(marion_core::proto::SpawnCaller {
                 agent_id: root.clone(),
-                node_token: token,
+                node_token: token.into(),
             }),
             // Forbidden beside a caller: the supervisor knows which tree this node lives in.
             repo: None,

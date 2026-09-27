@@ -52,7 +52,7 @@ pub(crate) struct NativeNodeClaim {
     pub(crate) agent_id: AgentId,
     /// §5.4's per-node capability, or `None` where the supervisor could mint none — a native
     /// session that runs and cannot delegate, never one with a guessable capability.
-    pub(crate) node_token: Option<String>,
+    pub(crate) node_token: Option<marion_core::secret::Secret>,
 }
 
 /// Descriptor-specific assembly, injected so this generic executor never guesses vendor flags,
@@ -832,7 +832,7 @@ mod tests {
     fn fixture_claim(agent_id: &AgentId) -> NativeNodeClaim {
         NativeNodeClaim {
             agent_id: agent_id.clone(),
-            node_token: Some(FIXTURE_NODE_TOKEN.to_string()),
+            node_token: Some(FIXTURE_NODE_TOKEN.into()),
         }
     }
 

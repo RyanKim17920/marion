@@ -303,8 +303,8 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     // A key-less local server still gets the placeholder canned mode uses: several harnesses
     // refuse to start over an empty credential slot, and the server authenticates nothing.
     launch.api_key = Some(match &ep.key {
-        Some(k) => k.expose().to_string(),
-        None => crate::run::PLACEHOLDER_API_KEY.to_string(),
+        Some(k) => k.clone(),
+        None => crate::run::PLACEHOLDER_API_KEY.into(),
     });
     launch.model = Some(ep.model.clone());
     launch.wire = Some(ep.wire);
@@ -342,7 +342,7 @@ pub fn redact(text: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{CredentialError, Secret};
+    use crate::credentials::{CredentialError, Secret, parse_key};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -359,12 +359,7 @@ mod tests {
 
     impl CredentialStore for MemStore {
         fn get(&self, p: &str) -> Result<Option<Secret>, CredentialError> {
-            Ok(self
-                .0
-                .lock()
-                .unwrap()
-                .get(p)
-                .map(|k| Secret::new(k).unwrap()))
+            Ok(self.0.lock().unwrap().get(p).map(|k| parse_key(k).unwrap()))
         }
         fn put(&self, p: &str, k: &Secret) -> Result<(), CredentialError> {
             self.0.lock().unwrap().insert(p.into(), k.expose().into());
@@ -545,7 +540,7 @@ mod tests {
             provider: "groq".into(),
             wire: Wire::OpenAiChat,
             base_url: "https://api.groq.com/openai/v1".into(),
-            key: Some(Secret::new("gsk-test-key-1").unwrap()),
+            key: Some(parse_key("gsk-test-key-1").unwrap()),
             credential: CredentialId::default_for("groq"),
             fallbacks: vec![],
             model: "llama".into(),
@@ -557,7 +552,10 @@ mod tests {
             launch.base_url.as_deref(),
             Some("https://api.groq.com/openai/v1")
         );
-        assert_eq!(launch.api_key.as_deref(), Some("gsk-test-key-1"));
+        assert_eq!(
+            launch.api_key.as_ref().map(|k| k.expose()),
+            Some("gsk-test-key-1")
+        );
         assert_eq!(launch.model.as_deref(), Some("llama"));
         assert_eq!(launch.wire, Some(Wire::OpenAiChat));
         assert_eq!(launch.provider.as_deref(), Some("groq"));
@@ -642,7 +640,7 @@ mod tests {
         assert!(ep.fallbacks.is_empty());
         // The type's own list wins over the file's order.
         store
-            .put("openrouter:work", &Secret::new("sk-work-1").unwrap())
+            .put("openrouter:work", &parse_key("sk-work-1").unwrap())
             .unwrap();
         let mut t = ty(Harness::OpenCode, None, None);
         t.credentials = vec!["openrouter:personal".into(), "openrouter:work".into()];
@@ -705,7 +703,7 @@ mod tests {
         let id = |s: &str| CredentialId::parse(s).unwrap();
         let store = MemStore::with("openrouter:a", "sk-key-a-0001");
         store
-            .put("openrouter:c", &Secret::new("sk-key-c-0003").unwrap())
+            .put("openrouter:c", &parse_key("sk-key-c-0003").unwrap())
             .unwrap();
         let mut t = ty(Harness::OpenCode, None, None);
         t.credentials = vec![

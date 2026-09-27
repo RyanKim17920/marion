@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use crate::contract::{AgentId, Isolation};
 use crate::harness::Harness;
+use crate::secret::Secret;
 use serde::{Deserialize, Serialize};
 
 use crate::proto::model::{
@@ -310,7 +311,7 @@ pub struct SpawnCaller {
     ///
     /// **No `#[serde(default)]`.** An omitted token must be a deserialization failure rather than
     /// the empty string, or the credential becomes one every process on the machine already has.
-    pub node_token: String,
+    pub node_token: Secret,
 }
 
 /// `agent/spawn` — a client creating a **root**, or a node spawning a **child**.
@@ -921,5 +922,19 @@ mod tests {
             "the refusal must be a sentence, got: {e}"
         );
         assert!(e.to_string().contains("§11 item 23"), "{e}");
+    }
+
+    /// **A node token never reaches a debug print.** `SpawnCaller` rides every child spawn and
+    /// steer, so a `{:?}` in a panic, a trace or a test failure would otherwise hand the caller's
+    /// capability to whoever reads the output.
+    #[test]
+    fn a_callers_node_token_never_appears_in_its_debug_form() {
+        let caller = SpawnCaller {
+            agent_id: AgentId("p".into()),
+            node_token: "tok-SENTINEL-9f2c".into(),
+        };
+        let printed = format!("{caller:?} {caller:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert!(printed.contains("agent_id"), "{printed}");
     }
 }

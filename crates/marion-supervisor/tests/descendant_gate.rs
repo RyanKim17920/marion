@@ -190,7 +190,7 @@ fn spawn_over_socket(
         native_launch: None,
         caller: caller.map(|c| SpawnCaller {
             agent_id: c.agent_id.clone(),
-            node_token: c.token.clone(),
+            node_token: c.token.clone().into(),
         }),
         ..p
     };

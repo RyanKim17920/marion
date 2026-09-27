@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 
 /// An argv + env pair, ready to spawn. Nothing here reaches a shell.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is hand-written: see the impl below.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Invocation {
     pub program: String,
     pub args: Vec<String>,
@@ -45,5 +47,75 @@ impl Invocation {
             cmd.env_remove(key);
         }
         cmd
+    }
+}
+
+/// **`env` prints its names, never its values.** The environment is the channel every credential
+/// marion hands a harness travels on — the canned run token as `ANTHROPIC_AUTH_TOKEN`, an endpoint
+/// key as the row's key variable, a node's capability as `MARION_NODE_TOKEN`, a whole config
+/// document with a key inside it — and an `Invocation` is what a launch failure has in hand. The
+/// names alone still say what was set, which is what a reader of a failure needs.
+///
+/// Destructured rather than read field by field, so a field added to the struct is a compile error
+/// here until someone decides how it prints.
+impl std::fmt::Debug for Invocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Invocation {
+            program,
+            args,
+            env,
+            cwd,
+            model,
+            session_mode,
+            env_remove,
+        } = self;
+        struct Names<'a>(&'a [(String, String)]);
+        impl std::fmt::Debug for Names<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list()
+                    .entries(self.0.iter().map(|(k, _)| format!("{k}=***")))
+                    .finish()
+            }
+        }
+        f.debug_struct("Invocation")
+            .field("program", program)
+            .field("args", args)
+            .field("env", &Names(env))
+            .field("cwd", cwd)
+            .field("model", model)
+            .field("session_mode", session_mode)
+            .field("env_remove", env_remove)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_names_every_variable_and_prints_no_value() {
+        let inv = Invocation {
+            program: "claude".into(),
+            args: vec!["-p".into()],
+            env: vec![
+                ("ANTHROPIC_AUTH_TOKEN".into(), "marion-run-SENTINEL".into()),
+                ("ANTHROPIC_API_KEY".into(), String::new()),
+            ],
+            cwd: "/repo".into(),
+            model: Some("haiku".into()),
+            session_mode: None,
+            env_remove: vec![],
+        };
+        let printed = format!("{inv:?} {inv:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        for shown in [
+            "ANTHROPIC_AUTH_TOKEN=***",
+            "ANTHROPIC_API_KEY=***",
+            "\"-p\"",
+            "haiku",
+        ] {
+            assert!(printed.contains(shown), "{shown} missing from {printed}");
+        }
     }
 }

@@ -201,7 +201,7 @@ pub struct LaunchSpec {
     /// **inside the generated config** at `provider.<id>.options.apiKey` — so the root's
     /// post-`compile` push of `ANTHROPIC_AUTH_TOKEN` (`marion-supervisor::root`) is not a pattern
     /// that generalises. `None` on the canned-provider path, which authenticates nothing.
-    pub api_key: Option<String>,
+    pub api_key: Option<marion_core::secret::Secret>,
     /// Whether this node presents a credential marion minted, or the operator's own login.
     ///
     /// Distinct from `api_key` being `None`, which already means several things (a caller that
@@ -257,7 +257,7 @@ pub struct SpawnCtx {
     /// `None` where no owner minted one — every spawn path but the supervisor's own `agent/spawn`,
     /// until steps 5 and 6 land. A node with no token declares no key at all rather than an empty
     /// one, so its bridge states no capability rather than a worthless one.
-    pub node_token: Option<String>,
+    pub node_token: Option<marion_core::secret::Secret>,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` for a surface whose prompt rides argv and so has no frame to withhold.
     pub ready_file: Option<PathBuf>,
@@ -1926,7 +1926,10 @@ impl HarnessAdapter for PiAdapter {
                 return Err(missing);
             };
             // pi lists a model only when its provider has a key; the canned endpoint ignores it.
-            let key = spec.api_key.as_deref().unwrap_or("marion-canned");
+            let key = spec
+                .api_key
+                .as_ref()
+                .map_or("marion-canned", |k| k.expose());
             files.push((
                 pi::models_path(&spec.config_dir),
                 serde_json::to_string_pretty(&pi::models_json(url, key, model))
@@ -4861,6 +4864,35 @@ mod tests {
                 "{h}: the token VALUE must be carried, not just its key:\n{doc}"
             );
         }
+    }
+
+    /// **The operator's endpoint key never reaches a debug print of a launch.** `LaunchSpec` is
+    /// what every refusal and every failing compile assertion has in hand, so a `{:?}` of it
+    /// would otherwise print the key `marion login` stored.
+    #[test]
+    fn an_endpoint_key_never_appears_in_its_launch_specs_debug_form() {
+        let spec = LaunchSpec {
+            api_key: Some("sk-SENTINEL-launch-2b7e".into()),
+            auth: Auth::Endpoint,
+            ..claude_spec()
+        };
+        let printed = format!("{spec:?} {spec:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert!(printed.contains("api_key"), "{printed}");
+    }
+
+    /// **A node's token never reaches a debug print of its spawn context.** `SpawnCtx` is threaded
+    /// through every compile, so a `{:?}` in a refusal, a panic or a failing assertion would
+    /// otherwise print the node's capability.
+    #[test]
+    fn a_nodes_capability_token_never_appears_in_its_spawn_contexts_debug_form() {
+        let ctx = SpawnCtx {
+            node_token: Some("MARION-TOKEN-VALUE-4e1b".into()),
+            ..ctx()
+        };
+        let printed = format!("{ctx:?} {ctx:#?}");
+        assert!(!printed.contains("MARION-TOKEN-VALUE"), "{printed}");
+        assert!(printed.contains("node_token"), "{printed}");
     }
 
     /// **Present or absent, never empty** — [`mcp_bridge::BASE_URL_ENV`]'s rule, applied to the one

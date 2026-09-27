@@ -368,7 +368,7 @@ pub fn declared_pairs(b: &BridgeEnv) -> Vec<(String, String)> {
 pub fn inherited_env(b: &BridgeEnv) -> Vec<(String, String)> {
     b.node_token
         .iter()
-        .map(|t| (NODE_TOKEN_ENV.to_string(), t.clone()))
+        .map(|t| (NODE_TOKEN_ENV.to_string(), t.expose().to_string()))
         .collect()
 }
 

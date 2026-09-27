@@ -344,7 +344,10 @@ mod tests {
                 state: NodeState::Running,
             }));
             self.handle.live.refresh();
-            self.handle.claim(&id(agent), None, "/repo".into())
+            self.handle
+                .claim(&id(agent), None, "/repo".into())
+                .expose()
+                .to_string()
         }
 
         fn intent(&self, agent: &str, parent: Option<&str>, harness: Harness) {
