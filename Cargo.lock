@@ -568,7 +568,10 @@ name = "marion-testsupport"
 version = "0.1.0"
 dependencies = [
  "marion-core",
+ "proc-macro2",
+ "quote",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

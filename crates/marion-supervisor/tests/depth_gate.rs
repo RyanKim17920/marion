@@ -292,6 +292,7 @@ fn script(node: &Node) -> Script {
         Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
         Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
         Harness::Antigravity => unreachable!("no cell names `agy`: it has no canned route"),
+        Harness::Pi => unreachable!("no cell of this matrix names `pi` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

@@ -328,6 +328,20 @@ const QWEN: Node = Node {
     program: "qwen",
 };
 
+const PI: Node = Node {
+    // The plain name is pi's implementer and `-orchestrator` its read-only flavour, so the roles
+    // swap spellings relative to the older rows: the root asks for nothing, the child for
+    // `[read, write]`, which `--tools` turns into `read,write,edit`.
+    agent_type: "pi-orchestrator",
+    child_agent_type: "pi",
+    harness: Harness::Pi,
+    // Explicit: `models.json` names a model and the adapter refuses to write one that names none.
+    model: "canned-1",
+    child_model: Some("canned-1"),
+    wire: "openai",
+    program: "pi",
+};
+
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
 ///
 /// Three of the four are the adapter's own `marion_tool_name`, which is the whole point of §3.1
@@ -503,6 +517,18 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
             "no cell names a qwen child: its write_file refuses the relative path every child \
              cell writes (s25 item 17)"
         ),
+        // The pi child writes before it reports, through the built-in `write` that `pi`'s
+        // `tools: [read, write]` puts on `--tools` — absent without the grant (s34-pi item 3).
+        // `{path, content}` is read off the live `tools[]` schema, and pi takes a relative path
+        // against its cwd, which is what proves where marion placed the node.
+        Harness::Pi => {
+            s.openai_report_tool = report;
+            s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "write".into(),
+                args: json!({ "path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
+        }
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
@@ -1609,4 +1635,43 @@ fn zzk_qwen_root_spawns_a_goose_child_and_receives_its_contract() {
 #[test]
 fn zzl_qwen_root_spawns_a_cline_child_and_receives_its_contract() {
     cell(&QWEN, &CLINE);
+}
+
+// The pi **row and column**: the ninth harness, the first with no MCP client of its own, reached
+// through marion's own `-e` extension. As a child it writes through `write` and reports; as a root
+// it spawns through the same extension, whose `tools/call` blocks until marion answers.
+
+#[test]
+fn zzm_claude_root_spawns_a_pi_child_and_receives_its_contract() {
+    cell(&CLAUDE, &PI);
+}
+
+#[test]
+fn zzn_codex_root_spawns_a_pi_child_and_receives_its_contract() {
+    cell(&CODEX, &PI);
+}
+
+#[test]
+fn zzo_opencode_root_spawns_a_pi_child_and_receives_its_contract() {
+    cell(&OPENCODE, &PI);
+}
+
+#[test]
+fn zzp_pi_root_spawns_a_claude_child_and_receives_its_contract() {
+    cell(&PI, &CLAUDE);
+}
+
+#[test]
+fn zzq_pi_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&PI, &CODEX);
+}
+
+#[test]
+fn zzr_pi_root_spawns_an_opencode_child_and_receives_its_contract() {
+    cell(&PI, &OPENCODE);
+}
+
+#[test]
+fn zzs_pi_root_spawns_a_pi_child_and_receives_its_contract() {
+    cell(&PI, &PI);
 }

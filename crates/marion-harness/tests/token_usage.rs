@@ -70,6 +70,13 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
             fixture!("s26/goose-report.stdout.jsonl"),
             Some(tokens(20, 10, 0, 0)),
         ),
+        // One unit per assistant message, summed: the call, then the closing words.
+        (
+            "pi s34",
+            Harness::Pi,
+            fixture!("s34-pi/pi-report.stdout.jsonl"),
+            Some(tokens(22, 14, 0, 0)),
+        ),
         (
             "cline s27",
             Harness::Cline,

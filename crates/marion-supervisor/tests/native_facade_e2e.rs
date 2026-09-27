@@ -1079,6 +1079,31 @@ fn canned_operator(
                 spawn_tool: None,
             })
         }
+        Harness::Pi => {
+            // The canned row's relocated agent dir and the `models.json` it reads there
+            // (`pi::models_json`), selected on the tail the way the headless row selects it.
+            use marion_harness::pi;
+            let agent_dir = pi::agent_dir(home);
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            std::fs::write(
+                pi::models_path(home),
+                pi::models_json(base_url, "canned", "canned-1").to_string(),
+            )
+            .unwrap();
+            Some(CannedOperator {
+                tail: vec![
+                    s("--provider"),
+                    s(pi::PROVIDER),
+                    s("--model"),
+                    s("canned-1"),
+                ],
+                env: vec![
+                    (s(pi::AGENT_DIR_ENV), agent_dir.display().to_string()),
+                    (s("PI_SKIP_VERSION_CHECK"), s("1")),
+                ],
+                spawn_tool: None,
+            })
+        }
         _ => None,
     }
 }

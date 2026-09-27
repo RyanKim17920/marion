@@ -3794,24 +3794,32 @@ mod tests {
         marion_testsupport::fixture_repo(&dir);
         let mut acp_roots = 0;
         for name in marion_core::agent_type::builtin_names() {
-            // agy has no canned route and refuses one by name; its root is prepared live.
-            let agy = builtin(name).unwrap().harness == Harness::Antigravity;
-            let spec = if agy {
-                let canned = prepare(&root_spec(&dir, name)).err().map(|e| e.to_string());
+            // Canned wherever the type can be: every harness row but agy, and an ACP type whose
+            // agent has a measured canned recipe. agy and an ACP agent without one run only on the
+            // operator's own login and refuse canned by name, so that type is prepared live —
+            // compiled, never launched. Asked of the row and the binding, not of a name list.
+            let mut spec = root_spec(&dir, name);
+            let agent_type = builtin(name).unwrap();
+            if agent_type.harness == Harness::Antigravity {
+                let canned = prepare(&spec).err().map(|e| e.to_string());
                 assert!(
                     canned
                         .as_deref()
                         .is_some_and(|e| e.contains("no canned or endpoint provider route")),
                     "{name}: {canned:?}"
                 );
-                RootSpec {
-                    auth: Auth::Inherited,
-                    base_url: None,
-                    ..root_spec(&dir, name)
-                }
-            } else {
-                root_spec(&dir, name)
-            };
+                spec.auth = Auth::Inherited;
+                spec.base_url = None;
+            }
+            if let Some(selector) = &agent_type.acp_agent
+                && marion_harness::acp::Binding::resolve(selector)
+                    .unwrap()
+                    .canned()
+                    .is_none()
+            {
+                spec.auth = Auth::Inherited;
+                spec.base_url = None;
+            }
             let node = prepare(&spec).unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge here — in a document, or, on goose,
             // as the one `--with-extension marion:…` argv token its row routes through
@@ -3871,20 +3879,56 @@ mod tests {
                         node.ready_file.is_none(),
                         "{name}: the answer to `session/new` is the gate, not a marker"
                     );
-                    let decl = node
-                        .session_declaration
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{name}: no `session/new` declaration"));
-                    assert_eq!(decl["method"], "session/new", "{name}");
-                    let env = decl["params"]["mcpServers"][0]["env"]
-                        .as_array()
-                        .unwrap_or_else(|| panic!("{name}: no bridge env in {decl}"));
-                    let var = |k: &str| {
-                        env.iter()
-                            .find(|e| e["name"] == k)
-                            .and_then(|e| e["value"].as_str())
-                            .map(str::to_string)
-                    };
+                    // The bridge rides the channel the agent's row names: the protocol's own
+                    // `session/new`, or — on a row measured to ignore it — the agent's argv flag,
+                    // whose document then carries the same env (and the session block is empty).
+                    let selector = agent_type
+                        .acp_agent
+                        .as_deref()
+                        .expect("an ACP type names its agent");
+                    let binding = marion_harness::acp::Binding::resolve(selector).unwrap();
+                    type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
+                    let (var, decl): (EnvLookup, String) =
+                        match (&node.session_declaration, binding.declaration()) {
+                            (Some(decl), marion_harness::acp::Declaration::Session) => {
+                                assert_eq!(decl["method"], "session/new", "{name}");
+                                let env = decl["params"]["mcpServers"][0]["env"]
+                                    .as_array()
+                                    .unwrap_or_else(|| panic!("{name}: no bridge env in {decl}"))
+                                    .clone();
+                                (
+                                    Box::new(move |k: &str| {
+                                        env.iter()
+                                            .find(|e| e["name"] == k)
+                                            .and_then(|e| e["value"].as_str())
+                                            .map(str::to_string)
+                                    }),
+                                    decl.to_string(),
+                                )
+                            }
+                            (None, marion_harness::acp::Declaration::Argv(flag)) => {
+                                let args = &node.invocation.args;
+                                let at = args.iter().position(|a| a == flag).unwrap_or_else(|| {
+                                    panic!("{name}: no `{flag}` on argv: {args:?}")
+                                });
+                                let doc: Value = serde_json::from_str(&args[at + 1]).unwrap();
+                                let env = doc
+                                    .pointer(&format!(
+                                        "/mcpServers/{}/env",
+                                        marion_harness::acp::MCP_SERVER_NAME
+                                    ))
+                                    .unwrap_or_else(|| panic!("{name}: no bridge env in {doc}"))
+                                    .clone();
+                                (
+                                    Box::new(move |k: &str| env[k].as_str().map(str::to_string)),
+                                    doc.to_string(),
+                                )
+                            }
+                            (decl, channel) => panic!(
+                                "{name}: the bridge is declared on {channel:?}, and the session \
+                                 block is {decl:?}"
+                            ),
+                        };
                     assert_eq!(
                         var(DEPTH_ENV).as_deref(),
                         Some("0"),

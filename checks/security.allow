@@ -1,0 +1,32 @@
+# Security allowlist — read by crates/marion-testsupport/tests/three_axis (run: scripts/three-axis.sh).
+#
+# Format: `path:item  one-line reason`. A finding not listed here fails the check; an entry nothing
+# matches fails it too, so a fix deletes its line. Only VERIFIED-SAFE cases belong here, each
+# saying why — plus the `untracked` findings below, listed so the check can gate new code today
+# while they are fixed; those are real and are the first to remove.
+
+# --- untracked: secret-bearing structs that derive Debug (a `{:?}` anywhere prints the secret) ---
+crates/marion-harness/src/adapter.rs:LaunchSpec  untracked: `api_key: Option<String>` (the operator's endpoint key) under derive(Debug)
+crates/marion-harness/src/spec.rs:Fields  untracked: `api_key` string under derive(Debug)
+crates/marion-harness/src/cline.rs:ProviderSpec  untracked: `api_key` string under derive(Debug)
+crates/marion-harness/src/opencode.rs:ConfigSpec  untracked: `api_key` string under derive(Debug)
+crates/marion-harness/src/adapter.rs:SpawnCtx  untracked: per-node bridge `node_token` under derive(Debug)
+crates/marion-harness/src/mcp_bridge.rs:BridgeEnv  untracked: per-node bridge `node_token` under derive(Debug)
+crates/marion-core/src/proto/params.rs:SpawnCaller  untracked: per-node bridge `node_token` under derive(Debug)
+crates/marion-supervisor/src/root.rs:RootNode  untracked: per-run bearer `token` under derive(Debug) (canned endpoint only, still a capability)
+
+# --- verified safe --------------------------------------------------------------------------------
+crates/marion-harness/src/adapter.rs:AcpAdapter::config_files  safe: `api_key` is a field init inside the opencode config document, written 0600 by run::write_config_documents
+crates/marion-harness/src/adapter.rs:GooseAdapter::fields  safe: `token` is a whitespace-split argv word in an error message, not a credential
+crates/marion-supervisor/src/credentials.rs:Keychain::put  safe: the exposed key is formatted into the `security -i` command line sent on stdin, never argv or a log
+crates/marion-supervisor/src/root.rs:record_the_roots_change  safe: writes root-change.json (file counts only, no credential); root.rs is marked only because it asks for config_files
+crates/marion-supervisor/src/run.rs:persist_then_cap  safe: writes the task contract, which carries credential ids never keys; run.rs's key-bearing docs go through the 0600 write_config_documents
+crates/marion-supervisor/tests/endpoint_matrix.rs:a_provider_with_no_stored_key_is_refused_by_name_with_the_login_command  safe: "marion login …" is the expected refusal text, never run
+crates/marion-supervisor/tests/login.rs:a_custom_provider_is_added_listed_and_can_hold_a_key  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:a_key_piped_with_stdin_is_stored_in_the_file_backend_and_never_printed  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:a_repositorys_own_providers_toml_is_never_read  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:an_unknown_provider_is_refused_by_name_with_the_command_to_define_it  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:from_env_imports_the_providers_own_variable_with_explicit_consent  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:list_shows_every_provider_and_which_are_stored_but_never_the_key  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:several_labelled_keys_for_one_provider_are_stored_listed_and_removed_one_by_one  safe: marion's own `marion login` against a scratch HOME/XDG and the file store with a fixture key; no vendor login
+crates/marion-supervisor/tests/login.rs:without_a_terminal_and_without_a_flag_login_refuses_and_waits_for_nothing  safe: marion's own `marion login` refusing without a terminal; nothing is stored or started

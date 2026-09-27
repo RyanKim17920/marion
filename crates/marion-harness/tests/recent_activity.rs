@@ -84,6 +84,13 @@ fn each_harness_reads_its_calls_and_words_from_the_stream_it_was_measured_emitti
             "Reported back through marion. Done.",
         ),
         (
+            "pi s34",
+            Harness::Pi,
+            fixture!("s34-pi/pi-report.stdout.jsonl"),
+            &["mcp__marion__report"],
+            "reported.",
+        ),
+        (
             "goose s26",
             Harness::Goose,
             fixture!("s26/goose-report.stdout.jsonl"),
