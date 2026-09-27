@@ -195,7 +195,7 @@ pub struct LaunchSpec {
     /// **inside the generated config** at `provider.<id>.options.apiKey` — so the root's
     /// post-`compile` push of `ANTHROPIC_AUTH_TOKEN` (`marion-supervisor::root`) is not a pattern
     /// that generalises. `None` on the canned-provider path, which authenticates nothing.
-    pub api_key: Option<String>,
+    pub api_key: Option<marion_core::secret::Secret>,
     /// Whether this node presents a credential marion minted, or the operator's own login.
     ///
     /// Distinct from `api_key` being `None`, which already means several things (a caller that
@@ -4627,6 +4627,21 @@ mod tests {
                 "{h}: the token VALUE must be carried, not just its key:\n{doc}"
             );
         }
+    }
+
+    /// **The operator's endpoint key never reaches a debug print of a launch.** `LaunchSpec` is
+    /// what every refusal and every failing compile assertion has in hand, so a `{:?}` of it
+    /// would otherwise print the key `marion login` stored.
+    #[test]
+    fn an_endpoint_key_never_appears_in_its_launch_specs_debug_form() {
+        let spec = LaunchSpec {
+            api_key: Some("sk-SENTINEL-launch-2b7e".into()),
+            auth: Auth::Endpoint,
+            ..claude_spec()
+        };
+        let printed = format!("{spec:?} {spec:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert!(printed.contains("api_key"), "{printed}");
     }
 
     /// **A node's token never reaches a debug print of its spawn context.** `SpawnCtx` is threaded

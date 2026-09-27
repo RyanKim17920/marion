@@ -990,7 +990,7 @@ fn canned_operator(
                         model: s("canned-1"),
                     },
                     base_url: base_url.to_string(),
-                    api_key: Some(s("canned")),
+                    api_key: Some("canned".into()),
                 },
                 None,
             );

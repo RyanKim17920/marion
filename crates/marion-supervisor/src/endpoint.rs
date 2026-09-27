@@ -253,8 +253,8 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     // A key-less local server still gets the placeholder canned mode uses: several harnesses
     // refuse to start over an empty credential slot, and the server authenticates nothing.
     launch.api_key = Some(match &ep.key {
-        Some(k) => k.expose().to_string(),
-        None => crate::run::PLACEHOLDER_API_KEY.to_string(),
+        Some(k) => k.expose().into(),
+        None => crate::run::PLACEHOLDER_API_KEY.into(),
     });
     launch.model = Some(ep.model.clone());
     launch.wire = Some(ep.wire);
@@ -505,7 +505,10 @@ mod tests {
             launch.base_url.as_deref(),
             Some("https://api.groq.com/openai/v1")
         );
-        assert_eq!(launch.api_key.as_deref(), Some("gsk-test-key-1"));
+        assert_eq!(
+            launch.api_key.as_ref().map(|k| k.expose()),
+            Some("gsk-test-key-1")
+        );
         assert_eq!(launch.model.as_deref(), Some("llama"));
         assert_eq!(launch.wire, Some(Wire::OpenAiChat));
         assert_eq!(launch.provider.as_deref(), Some("groq"));

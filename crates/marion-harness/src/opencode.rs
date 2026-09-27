@@ -416,7 +416,7 @@ pub struct ConfigSpec {
     /// `@ai-sdk/openai-compatible` wants **verbatim**: it appends `/chat/completions` (S13,
     /// confirmed on the wire). No `/v1` derivation here, unlike gemini and Claude Code.
     pub base_url: String,
-    pub api_key: Option<String>,
+    pub api_key: Option<marion_core::secret::Secret>,
 }
 
 /// The opencode config document, written under `$XDG_CONFIG_HOME/opencode/`.
@@ -957,5 +957,18 @@ mod tests {
         c.api_key = None;
         let v = config_json(&c, None);
         assert!(v["provider"]["canned"]["options"]["apiKey"].is_null());
+    }
+
+    /// The key is written into `opencode.json` verbatim, and never into a debug print.
+    #[test]
+    fn the_provider_key_reaches_the_config_but_never_a_debug_print() {
+        let mut c = cfg();
+        c.api_key = Some("sk-SENTINEL-opencode-0d3c".into());
+        let printed = format!("{c:?} {c:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert_eq!(
+            config_json(&c, None)["provider"]["canned"]["options"]["apiKey"],
+            "sk-SENTINEL-opencode-0d3c"
+        );
     }
 }

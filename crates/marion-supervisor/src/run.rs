@@ -2236,7 +2236,7 @@ fn child_launch_spec(
         // credential is the operator's already-established login, and a placeholder pushed beside it
         // would be a second credential competing with the real one.
         api_key: match env.auth {
-            Auth::Canned => Some(PLACEHOLDER_API_KEY.to_string()),
+            Auth::Canned => Some(PLACEHOLDER_API_KEY.into()),
             // A supervisor never runs in endpoint mode; a node's stored key is placed by
             // `resolve_endpoint`.
             Auth::Inherited | Auth::Endpoint => None,

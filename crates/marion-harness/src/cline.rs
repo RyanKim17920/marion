@@ -356,7 +356,7 @@ pub fn mcp_settings_path(config_dir: &Path) -> PathBuf {
 pub struct ProviderSpec {
     pub model: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: marion_core::secret::Secret,
 }
 
 /// The `providers.json` document, byte-for-byte the shape `cline auth openai-compatible` writes
@@ -664,5 +664,23 @@ mod tests {
         for frame in crate::stream::json_frames(REPORT_OK) {
             assert_eq!(crate::grammar::session_id(&STREAM, &frame), None);
         }
+    }
+
+    /// The key is written into `providers.json` verbatim, and never into a debug print.
+    #[test]
+    fn the_provider_key_reaches_the_document_but_never_a_debug_print() {
+        let p = ProviderSpec {
+            model: "canned-1".into(),
+            base_url: "http://127.0.0.1:8127/v1".into(),
+            api_key: "sk-SENTINEL-cline-51aa".into(),
+        };
+        let printed = format!("{p:?} {p:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert!(
+            providers_json(&p)
+                .to_string()
+                .contains("\"sk-SENTINEL-cline-51aa\""),
+            "the key must still be carried"
+        );
     }
 }

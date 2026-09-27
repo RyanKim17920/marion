@@ -649,7 +649,7 @@ pub struct Fields {
     /// The ACP session mode the driver sets ([`Invocation::session_mode`]); never on argv.
     pub session_mode: Option<String>,
     pub base_url: Option<String>,
-    pub api_key: Option<String>,
+    pub api_key: Option<marion_core::secret::Secret>,
     pub axes: Axes,
     pub mcp_config: Option<String>,
     pub pairs: Vec<(String, String)>,
@@ -679,7 +679,7 @@ impl Fields {
             Field::Mode => self.axes.mode.clone(),
             Field::McpConfig => self.mcp_config.clone(),
             Field::BaseUrl => self.base_url.clone(),
-            Field::ApiKey => self.api_key.clone(),
+            Field::ApiKey => self.api_key.as_ref().map(|k| k.expose().to_string()),
             Field::InlineConfig => self.inline_config.clone(),
             Field::Title => self.title.clone(),
             Field::OutputSchema => self.output_schema.as_ref().and_then(path),
@@ -1137,4 +1137,25 @@ pub enum Constraint {
         prefix: &'static str,
         value: &'static str,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row reads the key through [`Field::ApiKey`] to place it where its harness looks; a
+    /// `{:?}` of the fields it reads from must not show it.
+    #[test]
+    fn the_endpoint_key_is_readable_by_a_row_but_never_a_debug_print() {
+        let f = Fields {
+            api_key: Some("sk-SENTINEL-fields-93e0".into()),
+            ..Fields::default()
+        };
+        let printed = format!("{f:?} {f:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        assert_eq!(
+            f.value(Field::ApiKey).as_deref(),
+            Some("sk-SENTINEL-fields-93e0")
+        );
+    }
 }

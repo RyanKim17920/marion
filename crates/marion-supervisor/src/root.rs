@@ -1067,7 +1067,7 @@ fn root_launch_spec(
             // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
             // — so there is nothing for the post-`compile` push below to do.
-            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.to_string()),
+            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.into()),
             // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
             (Auth::Endpoint, _) => None,
         },
