@@ -604,6 +604,11 @@ mod tests {
         assert!(!dir.join("shim/copilot").exists());
     }
 
+    /// The switch the fake self-updating harness reads: copilot's `COPILOT_AUTO_UPDATE` in
+    /// behaviour, but a name no operator exports, so a shell that sets the real one (as this
+    /// repo's copilot runs advise) cannot turn the bare probe below into a pinned one.
+    const SELF_UPDATE_OFF: &str = "MARION_TEST_FAKE_AUTO_UPDATE";
+
     /// **The case that happened on 2026-09-22.** The gate must read the version of the build a
     /// node runs, and a node runs with the row's no-self-update env; a bare probe reads the build
     /// the harness downloaded for itself instead.
@@ -612,7 +617,7 @@ mod tests {
         let dir = scratch("shim-probe-env");
         self_updating_release(
             &dir.join("bin/copilot"),
-            "COPILOT_AUTO_UPDATE",
+            SELF_UPDATE_OFF,
             "false",
             "GitHub Copilot CLI 1.0.83.",
             "GitHub Copilot CLI 1.0.87.",
@@ -623,7 +628,7 @@ mod tests {
                 "copilot",
                 &["1.0.83"],
                 ReleaseStore::PathOnly,
-                &[("COPILOT_AUTO_UPDATE", "false")],
+                &[(SELF_UPDATE_OFF, "false")],
             ),
         );
         shim.gate("copilot")
@@ -632,7 +637,7 @@ mod tests {
         let bare = scratch("shim-probe-no-env");
         self_updating_release(
             &bare.join("bin/copilot"),
-            "COPILOT_AUTO_UPDATE",
+            SELF_UPDATE_OFF,
             "false",
             "GitHub Copilot CLI 1.0.83.",
             "GitHub Copilot CLI 1.0.87.",
@@ -653,7 +658,7 @@ mod tests {
         let dir = scratch("shim-npm-probe-env");
         self_updating_release(
             &dir.join("bin/copilot"),
-            "COPILOT_AUTO_UPDATE",
+            SELF_UPDATE_OFF,
             "false",
             "GitHub Copilot CLI 1.0.83.",
             "GitHub Copilot CLI 1.0.87.",
@@ -664,7 +669,7 @@ mod tests {
                 "copilot",
                 &["1.0.83"],
                 ReleaseStore::Npm("@github/copilot"),
-                &[("COPILOT_AUTO_UPDATE", "false")],
+                &[(SELF_UPDATE_OFF, "false")],
             ),
         );
         shim.gate("copilot")
