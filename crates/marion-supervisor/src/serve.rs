@@ -2029,7 +2029,10 @@ mod tests {
                 panic!("a handler blew up");
             }
             match call {
-                Call::NodeGet(_) => Ok(MethodResult::NodeGet(NodeGetResult { node: a_node() })),
+                Call::NodeGet(_) => Ok(MethodResult::NodeGet(NodeGetResult {
+                    node: a_node(),
+                    detail: Default::default(),
+                })),
                 Call::TreeSubscribe(_) => {
                     lock(&self.subs).push(out.clone());
                     Ok(MethodResult::TreeSubscribe(TreeSubscribeResult {
@@ -2755,7 +2758,10 @@ mod tests {
         };
         assert_eq!(
             Method::NodeGet.decode_result(&body).unwrap(),
-            MethodResult::NodeGet(NodeGetResult { node: a_node() })
+            MethodResult::NodeGet(NodeGetResult {
+                node: a_node(),
+                detail: Default::default()
+            })
         );
     }
 

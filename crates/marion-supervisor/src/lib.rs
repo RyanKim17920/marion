@@ -87,6 +87,8 @@ pub(crate) mod native_launch;
 ))]
 pub(crate) mod native_relay;
 mod native_tty;
+/// `node/get`'s detail: task, activity, usage, workspace and completion, read beside the journal.
+pub mod node_detail;
 mod pane_client;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.

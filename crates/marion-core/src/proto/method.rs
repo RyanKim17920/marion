@@ -337,7 +337,10 @@ mod tests {
                 Call::NodeGet(NodeGetParams {
                     agent_id: agent("a"),
                 }),
-                MethodResult::NodeGet(NodeGetResult { node: node() }),
+                MethodResult::NodeGet(NodeGetResult {
+                    node: node(),
+                    detail: Default::default(),
+                }),
             ),
             (
                 Call::NodeAttach(NodeAttachParams {
@@ -662,7 +665,11 @@ mod tests {
         // The client's pending-request map is what supplies the method; if it supplies the wrong
         // one, the error has to say which one failed or a client with fifteen in flight cannot act
         // on it.
-        let body = MethodResult::NodeGet(NodeGetResult { node: node() }).to_body();
+        let body = MethodResult::NodeGet(NodeGetResult {
+            node: node(),
+            detail: Default::default(),
+        })
+        .to_body();
         let e = Method::DoctorRun.decode_result(&body).unwrap_err();
         assert!(
             e.message.starts_with("doctor/run result did not parse"),

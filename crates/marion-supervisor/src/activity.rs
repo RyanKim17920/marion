@@ -78,11 +78,22 @@ pub fn render(a: &RecentActivity) -> String {
 /// Every harness frame in the last [`TAIL_BYTES`] of `path`, in order. A missing or unreadable
 /// file is no frames: a peek is a view and never a reason to fail the answer it rides on.
 fn tail_frames(path: &Path) -> Vec<Value> {
+    frames_within(path, TAIL_BYTES)
+}
+
+/// Every harness frame in `path`, in order: for a reading that must see the whole run, such as a
+/// usage fold that sums per-turn counters. Missing or unreadable is no frames, as for a peek.
+pub fn all_frames(path: &Path) -> Vec<Value> {
+    frames_within(path, u64::MAX)
+}
+
+/// The harness frames in the last `limit` bytes of `path`.
+fn frames_within(path: &Path, limit: u64) -> Vec<Value> {
     let Ok(mut file) = std::fs::File::open(path) else {
         return Vec::new();
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(limit);
     let mut bytes = Vec::new();
     if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
         return Vec::new();

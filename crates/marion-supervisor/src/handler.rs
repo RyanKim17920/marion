@@ -1678,8 +1678,17 @@ impl RegistryHandle {
                 "§3.2",
             )),
             Some(node) => summarize(node, pane)
-                .map(|node| NodeGetResult { node })
+                .map(|summary| (summary, crate::node_detail::inputs(node), r.project()))
                 .map_err(|e| e.as_error(id)),
+        })
+        .map(|(node, inputs, project)| {
+            // The detail's file reads happen here, after the registry lock is released: a long
+            // stream or a slow disk must never hold up the tree for everyone else.
+            let detail = match (inputs, project) {
+                (Some(i), Some(p)) => crate::node_detail::read(&p, id, &i),
+                _ => Default::default(),
+            };
+            NodeGetResult { node, detail }
         })
     }
 

@@ -8,7 +8,7 @@
 //! A result is a struct even where it holds one field. `node/get` returning a bare `NodeSummary`
 //! would be shorter and would make the first added field a wire break for every client.
 
-use crate::contract::{AgentId, TaskId};
+use crate::contract::{AgentId, Oid, ResultStatus, TaskId, TokenUsage, Workspace};
 use crate::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,60 @@ pub struct TreeSubscribeResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeGetResult {
     pub node: NodeSummary,
+    /// What a person looking at this one node wants beside its row: the task, what it is doing,
+    /// what it spent, where it works and how it ended. `#[serde(default)]`, so a client one version
+    /// older keeps parsing and one talking to an older supervisor reads an empty detail.
+    #[serde(default, skip_serializing_if = "NodeDetail::is_empty")]
+    pub detail: NodeDetail,
+}
+
+/// `node/get`'s detail. Every field is optional because a node reports them at different times: a
+/// spawning node has no activity, a running one no completion, a root no contract and so no task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDetail {
+    /// The instructions of its latest contract, as given. A root has no contract and so `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The bounded activity peek (its last tool calls and words), while it has not exited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    /// The tokens its stream says it spent so far. `None` when the harness states none — which is
+    /// not zero. Tokens only: marion never prices a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    /// Where it works: its worktree and branch, or the checkout it shares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Workspace>,
+    /// How its latest contract ended, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<CompletionSummary>,
+}
+
+impl NodeDetail {
+    pub fn is_empty(&self) -> bool {
+        self == &NodeDetail::default()
+    }
+}
+
+/// A [`crate::contract::Completion`], cut to what a row can show: the full record stays in the
+/// contract file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionSummary {
+    pub status: ResultStatus,
+    /// The narrative the node reported, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrative: Option<String>,
+    /// The branch its work landed on, and that branch's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Oid>,
+    /// How many paths it changed.
+    #[serde(default)]
+    pub changed_paths: usize,
+    /// The process exit, as marion described it.
+    #[serde(default)]
+    pub exit: String,
 }
 
 /// `node/attach`. The mode is §7.3.3's per-node answer; see [`AttachMode`].
@@ -239,6 +293,54 @@ mod tests {
     use super::*;
     use crate::contract::ExitStatus;
     use crate::proto::model::{DetachGuidance, ResidentReason, SupervisorDisposition};
+
+    /// **`node/get`'s detail is additive**: an answer from a supervisor that predates it parses
+    /// with an empty detail, an empty detail is not written, and a full one round-trips.
+    #[test]
+    fn node_get_detail_is_optional_on_the_wire() {
+        let node = serde_json::json!({
+            "agent_id": "a", "parent_id": null, "name": null, "agent_type": "codex",
+            "harness": "codex", "harness_version": null, "depth": 0, "state": "Running",
+            "reap_state": "Live", "timeout": 60000
+        });
+        let old: NodeGetResult =
+            serde_json::from_value(serde_json::json!({ "node": node })).expect("an old answer");
+        assert!(old.detail.is_empty());
+        let written = serde_json::to_value(&old).unwrap();
+        assert!(written.get("detail").is_none(), "{written}");
+
+        let full = NodeGetResult {
+            node: old.node.clone(),
+            detail: NodeDetail {
+                task: Some("add a limiter".into()),
+                activity: Some("Recent activity (oldest first):".into()),
+                usage: Some(TokenUsage {
+                    input: 10,
+                    output: 2,
+                    cache_read: 5,
+                    cache_write: 0,
+                }),
+                workspace: Some(Workspace::Worktree {
+                    path: "/w/t-1".into(),
+                    branch: "marion/t-1".into(),
+                }),
+                completion: Some(CompletionSummary {
+                    status: ExitStatus::Ok,
+                    narrative: Some("done".into()),
+                    branch: Some("marion/t-1".into()),
+                    commit: Some(Oid("abc".into())),
+                    changed_paths: 3,
+                    exit: "exit 0".into(),
+                }),
+            },
+        };
+        let s = serde_json::to_string(&full).unwrap();
+        assert_eq!(
+            full,
+            serde_json::from_str::<NodeGetResult>(&s).unwrap(),
+            "{s}"
+        );
+    }
 
     #[test]
     fn results_round_trip() {
