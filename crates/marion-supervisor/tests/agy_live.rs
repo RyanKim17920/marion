@@ -3,7 +3,7 @@
 //! agy has no canned provider route, so nothing about its row can be proven hermetically past the
 //! committed s32 fixtures: the `--add-dir` root, the operator's `permissions.allow` rule, the
 //! working-directory preamble and the `--conversation`-free fresh launch only meet a real model
-//! here. A root asks for one `agy-impl` child through the real `run_spawn`; the child must write a
+//! here. A root asks for one `agy` child through the real `run_spawn`; the child must write a
 //! file in its own worktree and call marion's `report`, and the parent's verification line reads
 //! the file back — so an `Ok` here means the write landed where the node works, the report was
 //! approved rather than auto-denied, and marion's own check agreed.
@@ -83,7 +83,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         auth: marion_harness::Auth::Inherited,
     };
     let req = SpawnRequest {
-        agent_type: "agy-impl".into(),
+        agent_type: "agy".into(),
         prompt: format!(
             "Create a file named {FILE} in your working directory whose entire content is the \
              single line: {CONTENT}\nThen call marion's report tool with a one-sentence summary."
@@ -108,7 +108,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
     assert_eq!(returned.child.harness, Harness::Antigravity);
     let wt = match &returned.workspace {
         Workspace::Worktree { path, .. } => path.clone(),
-        other => panic!("an agy-impl child runs in a worktree, got {other:?}"),
+        other => panic!("an agy child runs in a worktree, got {other:?}"),
     };
 
     let c = persisted_contract(&state, task);

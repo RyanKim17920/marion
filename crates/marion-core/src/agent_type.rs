@@ -523,24 +523,25 @@ const BUILTINS: &[Builtin] = &[
         acp_agent: None,
     },
     // The ninth binary, run only on the operator's own login: agy has no canned provider route.
+    // The default `request-review` mode auto-denies a headless write, and a `write` declaration
+    // is what compiles `--mode accept-edits` (s32), so the grant lives on the type.
     Builtin {
         canonical: "agy",
-        aliases: &[],
-        description: "Implements a well-specified change on Google's Antigravity CLI.",
-        harness: Harness::Antigravity,
-        model: Some(AGY_DEFAULT_MODEL),
-        tools: &[],
-        acp_agent: None,
-    },
-    // The implementer flavour: the default `request-review` mode auto-denies a headless write,
-    // and a `write` declaration is what compiles `--mode accept-edits` (s32).
-    Builtin {
-        canonical: "agy-impl",
-        aliases: &[],
-        description: "Implements a well-specified change on Google's Antigravity CLI.",
+        aliases: &["agy-impl"],
+        description: "Implementer on Google's Antigravity CLI: may read and write files.",
         harness: Harness::Antigravity,
         model: Some(AGY_DEFAULT_MODEL),
         tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "agy-orchestrator",
+        aliases: &[],
+        description: "Orchestrator on Google's Antigravity CLI: plans and delegates through \
+                      marion; cannot write files.",
+        harness: Harness::Antigravity,
+        model: Some(AGY_DEFAULT_MODEL),
+        tools: &[],
         acp_agent: None,
     },
     // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
@@ -632,7 +633,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "qwen-orchestrator",
         "acp-opencode",
         "agy",
-        "agy-impl",
+        "agy-orchestrator",
     ]
 }
 
@@ -938,7 +939,7 @@ mod tests {
             ("qwen-orchestrator", Harness::Qwen),
             ("acp-opencode", Harness::Acp),
             ("agy", Harness::Antigravity),
-            ("agy-impl", Harness::Antigravity),
+            ("agy-orchestrator", Harness::Antigravity),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
@@ -1107,7 +1108,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude" | "gemini" | "copilot" | "qwen" | "agy-impl" => {
+                "claude" | "gemini" | "copilot" | "qwen" | "agy" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
                 // `write` alone: goose's developer extension has no read-only tool to answer
