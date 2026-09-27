@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use marion_core::provider::{self, AuthKind, CredentialId, ProviderDef, Registry, Wire};
 
-use crate::credentials::{self, CredentialStore, Logins, Secret};
+use crate::credentials::{self, CredentialStore, Logins, Secret, parse_key};
 
 const USAGE: &str = "\
 usage: marion login <provider>[:<label>] [--label <label>] [--from-env | --stdin]
@@ -138,14 +138,14 @@ fn store_key(id: &CredentialId, source: Source, out: &mut dyn Write) -> Result<(
         Source::Stdin => {
             let mut text = String::new();
             io::stdin().read_to_string(&mut text)?;
-            Secret::new(&text)?
+            parse_key(&text)?
         }
         Source::Env => {
             let var = p.import_env.as_deref().ok_or_else(|| {
                 Failure::Refused(format!("{} names no environment variable to import", p.id))
             })?;
             match std::env::var(var) {
-                Ok(v) if !v.trim().is_empty() => Secret::new(&v)?,
+                Ok(v) if !v.trim().is_empty() => parse_key(&v)?,
                 _ => return Err(Failure::Refused(format!("{var} is not set"))),
             }
         }
@@ -183,14 +183,14 @@ fn read_from_terminal(p: &ProviderDef) -> Result<Secret, Failure> {
         let mut answer = String::new();
         stdin.lock().read_line(&mut answer)?;
         if matches!(answer.trim(), "y" | "Y" | "yes") {
-            return Ok(Secret::new(&std::env::var(var).unwrap_or_default())?);
+            return Ok(parse_key(&std::env::var(var).unwrap_or_default())?);
         }
     }
     write!(err, "Paste your {} key (input hidden): ", p.name)?;
     err.flush()?;
     let line = read_hidden_line()?;
     writeln!(err)?;
-    Ok(Secret::new(&line)?)
+    Ok(parse_key(&line)?)
 }
 
 /// One line from the terminal on stdin with echo off, the terminal restored on every path.

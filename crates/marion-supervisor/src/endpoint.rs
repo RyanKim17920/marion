@@ -253,7 +253,7 @@ pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
     // A key-less local server still gets the placeholder canned mode uses: several harnesses
     // refuse to start over an empty credential slot, and the server authenticates nothing.
     launch.api_key = Some(match &ep.key {
-        Some(k) => k.expose().into(),
+        Some(k) => k.clone(),
         None => crate::run::PLACEHOLDER_API_KEY.into(),
     });
     launch.model = Some(ep.model.clone());
@@ -291,7 +291,7 @@ pub fn redact(text: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{CredentialError, Secret};
+    use crate::credentials::{CredentialError, Secret, parse_key};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -308,12 +308,7 @@ mod tests {
 
     impl CredentialStore for MemStore {
         fn get(&self, p: &str) -> Result<Option<Secret>, CredentialError> {
-            Ok(self
-                .0
-                .lock()
-                .unwrap()
-                .get(p)
-                .map(|k| Secret::new(k).unwrap()))
+            Ok(self.0.lock().unwrap().get(p).map(|k| parse_key(k).unwrap()))
         }
         fn put(&self, p: &str, k: &Secret) -> Result<(), CredentialError> {
             self.0.lock().unwrap().insert(p.into(), k.expose().into());
@@ -494,7 +489,7 @@ mod tests {
             provider: "groq".into(),
             wire: Wire::OpenAiChat,
             base_url: "https://api.groq.com/openai/v1".into(),
-            key: Some(Secret::new("gsk-test-key-1").unwrap()),
+            key: Some(parse_key("gsk-test-key-1").unwrap()),
             credential: CredentialId::default_for("groq"),
             fallbacks: vec![],
             model: "llama".into(),
@@ -592,7 +587,7 @@ mod tests {
         assert!(ep.fallbacks.is_empty());
         // The type's own list wins over the file's order.
         store
-            .put("openrouter:work", &Secret::new("sk-work-1").unwrap())
+            .put("openrouter:work", &parse_key("sk-work-1").unwrap())
             .unwrap();
         let mut t = ty(Harness::OpenCode, None, None);
         t.credentials = vec!["openrouter:personal".into(), "openrouter:work".into()];
