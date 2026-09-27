@@ -21,6 +21,7 @@ crates/marion-harness/src/adapter.rs:GooseAdapter  tracked: generalization wave 
 crates/marion-harness/src/adapter.rs:ClineAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not cline.rs)
 crates/marion-harness/src/adapter.rs:QwenAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not qwen.rs)
 crates/marion-harness/src/adapter.rs:AntigravityAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not antigravity.rs)
+crates/marion-harness/src/adapter.rs:PiAdapter  tracked: generalization wave B1–B8 (per-harness impl lives in adapter.rs, not pi.rs)
 crates/marion-core/src/agent_type.rs:FileRow::into_type  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix and Harness::Acp compare)
 crates/marion-core/src/agent_type.rs:acp_command  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix parse)
 crates/marion-supervisor/src/doctor.rs:probe  tracked: generalization wave B1–B8 (doctor ACP special case)
