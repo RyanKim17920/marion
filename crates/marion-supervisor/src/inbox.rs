@@ -673,9 +673,10 @@ mod tests {
             ended,
             child_ended_text("codex-impl", false, "t-1", "use the v2 API")
         );
-        assert!(ended.starts_with(
-            "marion: the codex-impl child you backgrounded as task_id \"t-1\" has ended."
-        ));
+        assert!(
+            ended
+                .starts_with("The codex-impl child you backgrounded as task_id \"t-1\" has ended.")
+        );
         assert!(ended.ends_with("\n\nuse the v2 API"));
     }
 }
