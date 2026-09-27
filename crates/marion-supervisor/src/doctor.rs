@@ -1691,7 +1691,6 @@ fn probe_ctx() -> SpawnCtx {
     }
 }
 
-/// The report an operator reads.
 /// The newest version of each harness marion's own suite was last verified against:
 /// `(harness, program, version)`. **Not a second table** — it is the newest entry of
 /// `marion_testsupport::PINNED_HARNESSES` per program, which the shipped binary cannot link, and
