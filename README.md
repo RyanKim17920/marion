@@ -80,6 +80,10 @@ marion steer 8ea3 "use the v2 API, not v1"
 # Store a provider key for endpoint mode (read with echo off; or pipe it with --stdin).
 marion login openrouter
 marion login --list
+
+# Any harness on that provider: a registry id before the model picks the endpoint (endpoint mode).
+marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
+
 ```
 
 - **The first `marion claude` in a folder** shows Claude Code's own dialogs: whether you trust the folder, then a one-time "Loading development channels" warning, because marion loads its channel so that a background child's result reaches the session without a `wait`. `marion codex` asks its own trust question. They are the harness's prompts, so you answer them; marion never answers them for you.

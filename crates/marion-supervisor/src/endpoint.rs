@@ -47,7 +47,7 @@ pub enum EndpointError {
     )]
     UnknownProvider(String),
     #[error(
-        "provider `{0}` needs a model to ask for; name one (`-m {0}:<model>`, or `model` on the \
+        "provider `{0}` needs a model to ask for; name one (`--model {0}:<model>`, or `model` on the \
          agent type)"
     )]
     NoModel(String),
