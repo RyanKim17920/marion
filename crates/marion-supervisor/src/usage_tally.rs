@@ -43,6 +43,9 @@ pub struct Tallies {
     nodes: Mutex<HashMap<AgentId, Tally>>,
     /// Ended nodes read since they ended: their total cannot move again. A leaf lock, taken alone.
     settled: Mutex<std::collections::HashSet<AgentId>>,
+    /// Bumped whenever a reading moves a node's total: the tree's "anything new to tell?" asks
+    /// this beside the registry's generation, since a total moves without a journal record.
+    version: std::sync::atomic::AtomicU64,
 }
 
 impl Tallies {
@@ -60,6 +63,10 @@ impl Tallies {
         let mut map = self.lock();
         let current = map.entry(id.clone()).or_default();
         if current.offset == before.offset && current.units.len() == before.units.len() {
+            if current.total != after.total {
+                self.version
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             *current = after;
         }
         Spent {
@@ -72,6 +79,12 @@ impl Tallies {
     /// snapshot shows on a row.
     pub fn total(&self, id: &AgentId) -> Option<u64> {
         self.lock().get(id).and_then(|t| t.total)
+    }
+
+    /// How many times a reading has moved some node's total — a change counter, not a count of
+    /// anything a client sees.
+    pub fn version(&self) -> u64 {
+        self.version.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether `id` ended and has been read since: nothing it could append would move its total.

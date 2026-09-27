@@ -712,8 +712,9 @@ struct Shared {
     clients: HashSet<ConnId>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
-    /// The [`Registry::generation`] `collect` last ran against. See [`RegistryHandle::flush`].
-    collected_at: Option<u64>,
+    /// The [`Registry::generation`] and [`crate::usage_tally::Tallies::version`] `collect` last ran
+    /// against. See [`RegistryHandle::flush`].
+    collected_at: Option<(u64, u64)>,
     #[cfg(test)]
     collects: usize,
 }
@@ -1714,13 +1715,14 @@ impl RegistryHandle {
         // diff has no audience, and `subscribe` runs `collect` itself before its snapshot, so the
         // told-set is caught up the moment one arrives. With an unchanged generation the tree is
         // the one already told — the pane set only shapes a *new* node's summary, and a new node
-        // is a new generation.
+        // is a new generation. A node's token total moves without a journal record, so the
+        // tallies' own change counter is the other half of "unchanged".
         let events = self.live.read(|r| {
-            let generation = r.generation();
-            if g.subs.is_empty() || g.collected_at == Some(generation) {
+            let seen = (r.generation(), self.tallies.version());
+            if g.subs.is_empty() || g.collected_at == Some(seen) {
                 return Vec::new();
             }
-            g.collected_at = Some(generation);
+            g.collected_at = Some(seen);
             collect(r, &mut g, &panes, &self.tallies)
         });
         deliver(&mut g, &events);
@@ -1807,7 +1809,7 @@ impl RegistryHandle {
         // under one lock, so there is no instant at which a notification could slip between the
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
-            g.collected_at = Some(r.generation());
+            g.collected_at = Some((r.generation(), self.tallies.version()));
             let events = collect(r, &mut g, &panes, &self.tallies);
             let nodes = project(r.tree(), &mut g, &panes, &self.tallies);
             (events, nodes, r.read_point())
