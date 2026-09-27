@@ -185,7 +185,10 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.deepseek.com",
         wires: &[
             (Wire::OpenAiChat, "https://api.deepseek.com/v1"),
-            (Wire::AnthropicMessages, "https://api.deepseek.com/anthropic"),
+            (
+                Wire::AnthropicMessages,
+                "https://api.deepseek.com/anthropic",
+            ),
         ],
         auth: API,
         import_env: Some("DEEPSEEK_API_KEY"),
@@ -358,7 +361,9 @@ pub enum ProviderError {
     ShadowsSeed(String),
     #[error("provider `{id}`: base_url `{url}` must start with http:// or https://")]
     BadUrl { id: String, url: String },
-    #[error("provider `{id}`: unknown wire `{wire}` (known: anthropic, openai-chat, openai-responses, gemini)")]
+    #[error(
+        "provider `{id}`: unknown wire `{wire}` (known: anthropic, openai-chat, openai-responses, gemini)"
+    )]
     UnknownWire { id: String, wire: String },
     #[error("provider `{0}` declares no wires")]
     NoWires(String),
@@ -654,11 +659,22 @@ mod tests {
         let reg = Registry::seed();
         let (p, m) = reg.split_model("ollama:qwen3:32b").unwrap();
         assert_eq!((p.id.as_str(), m), ("ollama", "qwen3:32b"));
-        let (p, m) = reg.split_model("openrouter:anthropic/claude-sonnet-4").unwrap();
-        assert_eq!((p.id.as_str(), m), ("openrouter", "anthropic/claude-sonnet-4"));
-        assert!(reg.split_model("qwen3:32b").is_none(), "qwen3 is no provider");
+        let (p, m) = reg
+            .split_model("openrouter:anthropic/claude-sonnet-4")
+            .unwrap();
+        assert_eq!(
+            (p.id.as_str(), m),
+            ("openrouter", "anthropic/claude-sonnet-4")
+        );
+        assert!(
+            reg.split_model("qwen3:32b").is_none(),
+            "qwen3 is no provider"
+        );
         assert!(reg.split_model("gpt-5").is_none());
-        assert!(reg.split_model("openai:").is_none(), "an empty model is no split");
+        assert!(
+            reg.split_model("openai:").is_none(),
+            "an empty model is no split"
+        );
     }
 
     #[test]
@@ -707,7 +723,10 @@ mod tests {
                 "[providers.x]\nbase_url=\"https://x\"\nwires=[\"soap\"]",
                 "unknown wire",
             ),
-            ("[providers.x]\nbase_url=\"https://x\"\nwires=[]", "no wires"),
+            (
+                "[providers.x]\nbase_url=\"https://x\"\nwires=[]",
+                "no wires",
+            ),
             (
                 "[providers.x]\nbase_url=\"https://x\"\nwires=[\"gemini\"]\nauth=\"oauth\"",
                 "auth",

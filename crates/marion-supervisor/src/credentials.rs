@@ -127,7 +127,9 @@ pub fn default_store() -> Result<Box<dyn CredentialStore>, CredentialError> {
     if cfg!(target_os = "macos") && !forced_file {
         return Ok(Box::new(Keychain::system()));
     }
-    Ok(Box::new(FileStore::at(config_dir()?.join("credentials.json"))))
+    Ok(Box::new(FileStore::at(
+        config_dir()?.join("credentials.json"),
+    )))
 }
 
 /// The seed providers plus the user's `providers.toml`, if there is one. **Only** the user-level
@@ -173,7 +175,11 @@ impl FileStore {
             Err(e) => return Err(self.err(e)),
         };
         // A key file others can read is refused rather than used, as ssh refuses such a key.
-        let mode = file.metadata().map_err(|e| self.err(e))?.permissions().mode();
+        let mode = file
+            .metadata()
+            .map_err(|e| self.err(e))?
+            .permissions()
+            .mode();
         if mode & 0o077 != 0 {
             return Err(self.err(format!(
                 "is readable by other users (mode {:o}); run `chmod 600` on it",
@@ -182,8 +188,13 @@ impl FileStore {
         }
         let mut text = String::new();
         file.read_to_string(&mut text).map_err(|e| self.err(e))?;
-        let doc: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| self.err(format!("is not valid JSON (line {}, column {})", e.line(), e.column())))?;
+        let doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            self.err(format!(
+                "is not valid JSON (line {}, column {})",
+                e.line(),
+                e.column()
+            ))
+        })?;
         let mut out = BTreeMap::new();
         if let Some(map) = doc.get("providers").and_then(|p| p.as_object()) {
             for (k, v) in map {
@@ -418,7 +429,9 @@ mod tests {
         let dir = tmp("roundtrip").join("marion");
         let store = FileStore::at(dir.join("credentials.json"));
         assert!(store.get("openai").unwrap().is_none());
-        store.put("openai", &Secret::new("sk-one").unwrap()).unwrap();
+        store
+            .put("openai", &Secret::new("sk-one").unwrap())
+            .unwrap();
         store.put("groq", &Secret::new("gsk-two").unwrap()).unwrap();
         assert_eq!(store.get("openai").unwrap().unwrap().expose(), "sk-one");
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -455,7 +468,10 @@ mod tests {
         let store = FileStore::at(tmp("badid").join("c.json"));
         for bad in ["", "Open AI", "a;b", "-x", "a b"] {
             assert!(store.get(bad).is_err(), "{bad:?}");
-            assert!(store.put(bad, &Secret::new("k").unwrap()).is_err(), "{bad:?}");
+            assert!(
+                store.put(bad, &Secret::new("k").unwrap()).is_err(),
+                "{bad:?}"
+            );
         }
     }
 
