@@ -166,7 +166,10 @@ fn recent(nodes: &[NodeSummary]) -> Vec<RecentRow> {
         .rev()
         .filter(|n| n.parent_id.is_none())
         .map(|n| RecentRow {
-            when: short_id(&n.agent_id.0).to_string(),
+            // When it started, in local time; its short id where no start was recorded.
+            when: n
+                .started_at
+                .map_or_else(|| short_id(&n.agent_id.0).to_string(), |t| local_clock(t.0)),
             tone: crate::tree::row(n).tone,
             who: n.agent_type.clone(),
             prompt: n.name.clone().unwrap_or_default(),

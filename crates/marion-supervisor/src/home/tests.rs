@@ -843,3 +843,29 @@ fn setup_shows_long_paths_by_their_ends() {
     let keychain = "macOS Keychain (service \"marion\")";
     assert_eq!(view::short_place(keychain), keychain);
 }
+
+#[test]
+fn recent_runs_say_when_they_started() {
+    let mut started = node(
+        "0199aaaa-1111-7000-8000-000000000001",
+        None,
+        NodeState::Running,
+    );
+    started.started_at = Some(marion_core::encoding::SystemTime(
+        std::time::SystemTime::now(),
+    ));
+    let unknown = node(
+        "0199aaaa-2222-7000-8000-000000000002",
+        None,
+        NodeState::Running,
+    );
+    let mut h = home();
+    h.set_nodes(vec![started, unknown]);
+    let f = view::frame(&h, &view::Places::default());
+    let whens: Vec<&str> = f.start.recent.iter().map(|r| r.when.as_str()).collect();
+    assert_eq!(whens[0], "2222", "no start: the short id");
+    assert!(
+        whens[1].len() == 5 && whens[1].as_bytes()[2] == b':',
+        "a start: hh:mm, {whens:?}"
+    );
+}
