@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use marion_harness::grammar;
-use marion_harness::spec::{Approval, MidTurn, NodeShape, TurnDelivery, UpdatePolicy};
+use marion_harness::spec::{
+    Approval, DialogAnswer, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
+};
 use marion_harness::stream::{CallOutcome, ChildExit, json_frames};
 use marion_supervisor::duplex::LaunchPath;
 use serde_json::{Value, json};
@@ -1363,6 +1365,46 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
         "note",
         &json!({"first screen": first_screen, "quiet": painted}),
     );
+    // The row's boot dialogs (`HarnessSpec::boot_dialogs`), read off the rendered screen: its
+    // lines joined, words by one space — the reading the pty host applies to raw output. The
+    // probe's scratch is a directory marion created, which is where the row's keys may answer.
+    let on_screen = |lines: &[String]| {
+        let text = lines
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        c.t.spec
+            .boot_dialogs
+            .dialogs
+            .iter()
+            .find(|d| text.contains(d.needle))
+    };
+    let dialog = on_screen(&first_screen);
+    // What the screen showed after the row's keys, where it was one of the row's dialogs.
+    let mut then = None;
+    let answered = match dialog.map(|d| d.answer) {
+        None => true,
+        Some(DialogAnswer::Keys(keys)) => {
+            let mut before = 0;
+            tty.wait(Duration::ZERO, |b, _| {
+                before = b.len();
+                true
+            });
+            tty.write(keys);
+            // The redraw first, then its quiet: the first screen was already quiet.
+            tty.wait(Duration::from_secs(20), |b, _| b.len() > before);
+            tty.quiet(quiet, Duration::from_secs(20));
+            let after: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
+            s.log.w(
+                "note",
+                &json!({"screen after the row's dialog keys": after}),
+            );
+            then = on_screen(&after);
+            then.is_none()
+        }
+        Some(DialogAnswer::Hold) => false,
+    };
     let paste = |text: &str| {
         tty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
         std::thread::sleep(Duration::from_millis(50));
@@ -1376,9 +1418,8 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
     };
     paste(&prompt(marker));
     let submitted = asked(Duration::from_secs(20));
-    // No row names a first-paint dialog, so the probe cannot answer one; it records it. A dialog
-    // that takes the CR (a trust prompt's default) swallows the first paste, and a second one
-    // shows whether the composer behind it submits.
+    // A dialog no row names (or one the row's keys did not dismiss) swallows the first paste; a
+    // second one shows whether the composer behind it submits.
     let retried = !submitted && {
         tty.quiet(quiet, Duration::from_secs(10));
         s.log.w(
@@ -1398,10 +1439,28 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
     s.log.w("note", &json!({"/mcp screen": mcp_screen}));
     let mcp_listed = mcp_screen.iter().any(|l| l.contains("marion"));
     let observed = format!(
-        "DECSET 2004 at boot: {decset}; first screen {:?}; bracketed paste + CR submitted: \
-         {}; output quiet {} ms after the turn: {settled}; `/mcp` screen names marion: \
-         {mcp_listed}",
+        "DECSET 2004 at boot: {decset}; first screen {:?}; boot dialog {}; bracketed paste + \
+         CR submitted: {}; output quiet {} ms after the turn: {settled}; `/mcp` screen names \
+         marion: {mcp_listed}",
         tail(&first_screen, 6),
+        match dialog {
+            None => "none of the row's on the first screen".to_string(),
+            Some(d) => format!(
+                "{:?} ({}) {}",
+                d.needle,
+                match d.answer {
+                    DialogAnswer::Keys(k) =>
+                        format!("answered with {:?}", String::from_utf8_lossy(k)),
+                    DialogAnswer::Hold => "held by the row".into(),
+                },
+                match then {
+                    _ if answered => "and dismissed".to_string(),
+                    Some(next) if next != d =>
+                        format!("and dismissed, then {:?} ({})", next.needle, next.note),
+                    _ => "and NOT dismissed".to_string(),
+                }
+            ),
+        },
         if submitted {
             "on the first paste"
         } else if retried {
@@ -1413,8 +1472,9 @@ fn p_tui(c: &mut Ctx<'_>) -> Outcome {
     );
     Outcome::judged(
         P,
-        decset && submitted && settled,
-        "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet \
+        decset && answered && submitted && settled,
+        "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys \
+         dismiss, a bracketed paste + CR then submits, and the terminal goes quiet \
          (IdleSignal::OutputQuiet) once the turn is done",
         observed,
     )
