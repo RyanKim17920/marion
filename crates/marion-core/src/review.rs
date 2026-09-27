@@ -138,6 +138,225 @@ impl From<ReviewSpec> for RawReviewSpec {
     }
 }
 
+/// What the reviewer itself concluded. Recorded, never obeyed: see `decide`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelVerdict {
+    Allow,
+    Block,
+}
+
+/// Per-string byte caps on reviewer text. A reviewer is a foreign agent, so every string it
+/// writes is bounded where it enters, like a contract's narrative.
+pub const SUMMARY_CAP: usize = 1024;
+pub const CLAIM_CAP: usize = 512;
+pub const EVIDENCE_CAP: usize = 1024;
+pub const RECOMMENDATION_CAP: usize = 512;
+pub const FILE_CAP: usize = 512;
+
+/// One finding, as recorded. `grounded` is marion's, not the reviewer's: true iff `file` is one of
+/// the paths the reviewed change touched (set by `decide`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Finding {
+    pub severity: Severity,
+    pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub claim: String,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub recommendation: String,
+    #[serde(default)]
+    pub grounded: bool,
+}
+
+/// A reviewer's report: its own verdict, a summary, and its findings.
+///
+/// `findings_omitted` counts findings dropped by `MAX_FINDINGS`; absent on the wire when zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Findings {
+    pub verdict: ModelVerdict,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub findings: Vec<Finding>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub findings_omitted: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Which of the three readings produced a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseRoute {
+    /// The whole reply was the JSON report.
+    Json,
+    /// The first ```json (or bare ```) fenced block was the JSON report.
+    Fenced,
+    /// No JSON; the first non-empty line began `ALLOW:` or `BLOCK:`.
+    Line,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parsed {
+    pub findings: Findings,
+    pub route: ParseRoute,
+}
+
+/// A reply none of the three readings could read. An error, **not** a block.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unreadable review: {0}")]
+pub struct Unparseable(pub String);
+
+/// The report exactly as a reviewer writes it, before validation.
+#[derive(Deserialize)]
+struct WireReport {
+    verdict: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    findings: Vec<WireFinding>,
+}
+
+#[derive(Deserialize)]
+struct WireFinding {
+    severity: String,
+    file: String,
+    #[serde(default)]
+    line: Option<u32>,
+    claim: String,
+    #[serde(default)]
+    evidence: String,
+    #[serde(default)]
+    recommendation: String,
+}
+
+/// Largest whole-character prefix of `s` within `max` bytes, marked with `…` when shortened.
+fn cap_text(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    format!("{}…", &s[..i])
+}
+
+fn read_report(json: &str) -> Result<Findings, String> {
+    let wire: WireReport = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let verdict = match wire.verdict.trim().to_ascii_lowercase().as_str() {
+        "allow" => ModelVerdict::Allow,
+        "block" => ModelVerdict::Block,
+        other => return Err(format!("verdict {other:?} is neither allow nor block")),
+    };
+    let mut findings = Vec::with_capacity(wire.findings.len());
+    for f in wire.findings {
+        let severity = Severity::from_reviewer(&f.severity)
+            .ok_or_else(|| format!("severity {:?} is not critical/high/medium/low", f.severity))?;
+        findings.push(Finding {
+            severity,
+            file: cap_text(f.file.trim(), FILE_CAP),
+            line: f.line,
+            claim: cap_text(&f.claim, CLAIM_CAP),
+            evidence: cap_text(&f.evidence, EVIDENCE_CAP),
+            recommendation: cap_text(&f.recommendation, RECOMMENDATION_CAP),
+            grounded: false,
+        });
+    }
+    Ok(Findings {
+        verdict,
+        summary: cap_text(&wire.summary, SUMMARY_CAP),
+        findings,
+        findings_omitted: 0,
+    })
+}
+
+/// The body of the first fenced block tagged `json` or untagged, if the reply has one.
+fn first_json_fence(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let Some(info) = line.trim_start().strip_prefix("```") else {
+            continue;
+        };
+        let info = info.trim();
+        if !(info.is_empty() || info.eq_ignore_ascii_case("json")) {
+            // A fence in another language: skip its body so its closing ``` is not read as an
+            // opening one.
+            for inner in lines.by_ref() {
+                if inner.trim_start().starts_with("```") {
+                    break;
+                }
+            }
+            continue;
+        }
+        let mut body = String::new();
+        for inner in lines.by_ref() {
+            if inner.trim_start().starts_with("```") {
+                return Some(body);
+            }
+            body.push_str(inner);
+            body.push('\n');
+        }
+        // An unclosed fence is not a block.
+        return None;
+    }
+    None
+}
+
+/// Read a reviewer's reply: the whole reply as the JSON report, else the first ```json (or bare
+/// ```) fenced block as the JSON report, else a first non-empty line beginning `ALLOW:` or
+/// `BLOCK:` (the rest of the line is the summary). Anything else is [`Unparseable`].
+///
+/// Strings are capped as they are read. Nothing is decided here; see `decide`.
+pub fn parse(narrative: &str) -> Result<Parsed, Unparseable> {
+    let trimmed = narrative.trim();
+    let strict = read_report(trimmed);
+    if let Ok(findings) = strict {
+        return Ok(Parsed {
+            findings,
+            route: ParseRoute::Json,
+        });
+    }
+    let fenced = first_json_fence(narrative).map(|body| read_report(body.trim()));
+    if let Some(Ok(findings)) = fenced {
+        return Ok(Parsed {
+            findings,
+            route: ParseRoute::Fenced,
+        });
+    }
+    if let Some(first) = trimmed.lines().map(str::trim).find(|l| !l.is_empty()) {
+        let line = |verdict, rest: &str| Parsed {
+            findings: Findings {
+                verdict,
+                summary: cap_text(rest.trim(), SUMMARY_CAP),
+                findings: Vec::new(),
+                findings_omitted: 0,
+            },
+            route: ParseRoute::Line,
+        };
+        if let Some(rest) = first.strip_prefix("ALLOW:") {
+            return Ok(line(ModelVerdict::Allow, rest));
+        }
+        if let Some(rest) = first.strip_prefix("BLOCK:") {
+            return Ok(line(ModelVerdict::Block, rest));
+        }
+    }
+    // Name the most specific failure: a fenced block that did not validate, else the reply as JSON
+    // when it looked like JSON, else that nothing matched.
+    let reason = match (fenced, strict) {
+        (Some(Err(e)), _) => format!("fenced JSON block is not a review report: {e}"),
+        (_, Err(e)) if trimmed.starts_with('{') => format!("reply is not a review report: {e}"),
+        _ if trimmed.is_empty() => "the reviewer replied with nothing".to_string(),
+        _ => "no JSON report, fenced JSON block, or ALLOW:/BLOCK: first line".to_string(),
+    };
+    Err(Unparseable(reason))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +465,174 @@ mod tests {
         };
         let back: ReviewSpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    const REPORT: &str = r#"{"verdict":"block","summary":"one bug","findings":[
+        {"severity":"high","file":"src/a.rs","line":12,"claim":"off by one",
+         "evidence":"loop runs to len","recommendation":"use <"}]}"#;
+
+    fn finding(sev: Severity, file: &str) -> Finding {
+        Finding {
+            severity: sev,
+            file: file.into(),
+            line: None,
+            claim: "c".into(),
+            evidence: String::new(),
+            recommendation: String::new(),
+            grounded: false,
+        }
+    }
+
+    #[test]
+    fn a_reply_that_is_the_json_report_is_read_strictly() {
+        let p = parse(&format!("  \n{REPORT}\n ")).unwrap();
+        assert_eq!(p.route, ParseRoute::Json);
+        assert_eq!(p.findings.verdict, ModelVerdict::Block);
+        assert_eq!(p.findings.summary, "one bug");
+        assert_eq!(
+            p.findings.findings,
+            vec![Finding {
+                severity: Severity::High,
+                file: "src/a.rs".into(),
+                line: Some(12),
+                claim: "off by one".into(),
+                evidence: "loop runs to len".into(),
+                recommendation: "use <".into(),
+                grounded: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_first_json_fenced_block_is_read_when_the_reply_is_prose() {
+        let reply = format!("I looked.\n\n```json\n{REPORT}\n```\n\nThanks.");
+        let p = parse(&reply).unwrap();
+        assert_eq!(p.route, ParseRoute::Fenced);
+        assert_eq!(p.findings.findings.len(), 1);
+        // An untagged fence counts too.
+        let bare = format!("```\n{REPORT}\n```");
+        assert_eq!(parse(&bare).unwrap().route, ParseRoute::Fenced);
+    }
+
+    #[test]
+    fn a_fence_in_another_language_is_skipped_whole() {
+        let reply =
+            "```rust\nfn main() {}\n```\n```json\n{\"verdict\":\"allow\",\"summary\":\"ok\"}\n```";
+        let p = parse(reply).unwrap();
+        assert_eq!(p.route, ParseRoute::Fenced);
+        assert_eq!(p.findings.verdict, ModelVerdict::Allow);
+    }
+
+    #[test]
+    fn a_first_line_verdict_is_read_when_there_is_no_json() {
+        let a = parse("\n  ALLOW: looks fine\nmore text").unwrap();
+        assert_eq!(a.route, ParseRoute::Line);
+        assert_eq!(a.findings.verdict, ModelVerdict::Allow);
+        assert_eq!(a.findings.summary, "looks fine");
+        assert!(a.findings.findings.is_empty());
+        let b = parse("BLOCK: tests delete prod data").unwrap();
+        assert_eq!(b.findings.verdict, ModelVerdict::Block);
+        assert_eq!(b.findings.summary, "tests delete prod data");
+    }
+
+    #[test]
+    fn a_verdict_word_anywhere_but_the_first_line_or_in_lower_case_is_not_a_verdict() {
+        for reply in [
+            "Summary first.\nBLOCK: late",
+            "block: lower case",
+            "Allow: me to explain",
+        ] {
+            assert!(parse(reply).is_err(), "{reply:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_reply_is_an_error_naming_why_never_a_block() {
+        let e = parse("I think it is mostly fine?").unwrap_err();
+        assert!(e.0.contains("no JSON report"), "{e}");
+        let e = parse("   ").unwrap_err();
+        assert!(e.0.contains("replied with nothing"), "{e}");
+        let e = parse(r#"{"verdict":"maybe"}"#).unwrap_err();
+        assert!(e.0.contains("neither allow nor block"), "{e}");
+        let e = parse("```json\n{\"verdict\":\"allow\",\"findings\":[{\"severity\":\"severe\",\"file\":\"a\",\"claim\":\"c\"}]}\n```").unwrap_err();
+        assert!(e.0.contains("fenced JSON block"), "{e}");
+        assert!(e.0.contains("severe"), "{e}");
+    }
+
+    #[test]
+    fn an_unclosed_fence_is_not_a_block() {
+        let reply = format!("```json\n{REPORT}");
+        assert!(parse(&reply).is_err());
+    }
+
+    #[test]
+    fn a_fenced_block_that_does_not_validate_falls_through_to_the_first_line() {
+        let p = parse("BLOCK: see below\n```json\nnot json\n```").unwrap();
+        assert_eq!(p.route, ParseRoute::Line);
+        assert_eq!(p.findings.verdict, ModelVerdict::Block);
+    }
+
+    #[test]
+    fn verdict_and_severity_spellings_are_case_insensitive_and_optional_keys_default() {
+        let p = parse(
+            r#"{"verdict":"ALLOW","findings":[{"severity":"Low","file":" ./x.rs ","claim":"nit"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.findings.verdict, ModelVerdict::Allow);
+        assert_eq!(p.findings.summary, "");
+        let f = &p.findings.findings[0];
+        assert_eq!(f.severity, Severity::Low);
+        assert_eq!(f.file, "./x.rs");
+        assert_eq!((f.line, f.evidence.as_str()), (None, ""));
+    }
+
+    #[test]
+    fn a_duplicated_key_in_a_report_is_refused() {
+        assert!(parse(r#"{"verdict":"allow","verdict":"block"}"#).is_err());
+    }
+
+    #[test]
+    fn every_reviewer_string_is_capped_on_a_character_boundary() {
+        let long = "é".repeat(4000);
+        let json = serde_json::json!({
+            "verdict": "block",
+            "summary": long,
+            "findings": [{"severity":"high","file":long,"claim":long,"evidence":long,"recommendation":long}]
+        })
+        .to_string();
+        let p = parse(&json).unwrap();
+        let f = &p.findings.findings[0];
+        for (s, cap) in [
+            (&p.findings.summary, SUMMARY_CAP),
+            (&f.file, FILE_CAP),
+            (&f.claim, CLAIM_CAP),
+            (&f.evidence, EVIDENCE_CAP),
+            (&f.recommendation, RECOMMENDATION_CAP),
+        ] {
+            assert!(s.ends_with('…'), "marked as shortened");
+            assert!(s.len() <= cap + '…'.len_utf8(), "{} > {cap}", s.len());
+        }
+        assert_eq!(parse("ALLOW: short").unwrap().findings.summary, "short");
+    }
+
+    #[test]
+    fn a_report_round_trips_and_omits_a_zero_omitted_count() {
+        let r = Findings {
+            verdict: ModelVerdict::Block,
+            summary: "s".into(),
+            findings: vec![finding(Severity::Critical, "a.rs")],
+            findings_omitted: 0,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("findings_omitted"), "{json}");
+        assert!(!json.contains("\"line\""), "{json}");
+        assert_eq!(serde_json::from_str::<Findings>(&json).unwrap(), r);
+        let omitted = Findings {
+            findings_omitted: 3,
+            ..r
+        };
+        let json = serde_json::to_string(&omitted).unwrap();
+        assert!(json.contains(r#""findings_omitted":3"#), "{json}");
+        assert_eq!(serde_json::from_str::<Findings>(&json).unwrap(), omitted);
     }
 }
