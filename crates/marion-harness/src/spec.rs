@@ -750,7 +750,9 @@ pub struct Axes {
 
 /// Everything a row reads. Built by the adapter's `fields` hook — seeded neutrally from the
 /// launch, then adjusted by whatever that harness has measured.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Debug` is hand-written: see the impl below.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Fields {
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
@@ -786,6 +788,74 @@ pub struct Fields {
     /// Environment the hook derived that no row names — appended after the row's own. ACP's
     /// per-agent canned recipe is the one user.
     pub extra_env: Vec<(String, String)>,
+}
+
+/// **The strings a declaration or a credential can travel in print their shape, never their
+/// value**: the key through `Secret`, a config pair or variable by its name, an inline document or
+/// a declaration by its length, an ACP agent's argv by its count. A `Fields` is what a failing
+/// render or a refusal has in hand, and each of those once held the node token or a document
+/// with a key inside it. Destructured, so a field added to the struct is a compile error here
+/// until someone decides how it prints.
+impl std::fmt::Debug for Fields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Fields {
+            cwd,
+            config_dir,
+            auth,
+            wire,
+            key_header,
+            program,
+            prompt,
+            model,
+            session_mode,
+            base_url,
+            api_key,
+            axes,
+            mcp_config,
+            pairs,
+            inline_config,
+            title,
+            output_schema,
+            output_last_message,
+            agent_args,
+            resume,
+            profile_dir,
+            extra_env,
+        } = self;
+        struct Names<'a>(&'a [(String, String)]);
+        impl std::fmt::Debug for Names<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list()
+                    .entries(self.0.iter().map(|(k, _)| format!("{k}=***")))
+                    .finish()
+            }
+        }
+        let bytes = |s: &Option<String>| s.as_ref().map(|s| format!("<{} bytes>", s.len()));
+        f.debug_struct("Fields")
+            .field("cwd", cwd)
+            .field("config_dir", config_dir)
+            .field("auth", auth)
+            .field("wire", wire)
+            .field("key_header", key_header)
+            .field("program", program)
+            .field("prompt", prompt)
+            .field("model", model)
+            .field("session_mode", session_mode)
+            .field("base_url", base_url)
+            .field("api_key", api_key)
+            .field("axes", axes)
+            .field("mcp_config", &bytes(mcp_config))
+            .field("pairs", &Names(pairs))
+            .field("inline_config", &bytes(inline_config))
+            .field("title", title)
+            .field("output_schema", output_schema)
+            .field("output_last_message", output_last_message)
+            .field("agent_args", &format!("<{} args>", agent_args.len()))
+            .field("resume", resume)
+            .field("profile_dir", profile_dir)
+            .field("extra_env", &Names(extra_env))
+            .finish()
+    }
 }
 
 impl Fields {
@@ -1389,5 +1459,30 @@ mod tests {
             f.value(Field::ApiKey).as_deref(),
             Some("sk-SENTINEL-fields-93e0")
         );
+    }
+
+    /// **Every string a declaration or a credential has travelled in prints without its value**:
+    /// config pairs and variables by name, documents by length, an agent's argv by count. Each of
+    /// these once held the node token.
+    #[test]
+    fn no_field_that_can_carry_the_node_token_prints_it() {
+        const T: &str = "tok-SENTINEL-fields-1f4a";
+        let f = Fields {
+            mcp_config: Some(format!("{{\"MARION_NODE_TOKEN\":\"{T}\"}}")),
+            pairs: vec![("mcp_servers.marion.env.MARION_NODE_TOKEN".into(), T.into())],
+            inline_config: Some(format!("{{\"MARION_NODE_TOKEN\":\"{T}\"}}")),
+            agent_args: vec!["--additional-mcp-config".into(), T.into()],
+            extra_env: vec![("MARION_NODE_TOKEN".into(), T.into())],
+            ..Fields::default()
+        };
+        let printed = format!("{f:?} {f:#?}");
+        assert!(!printed.contains("SENTINEL"), "{printed}");
+        for shown in [
+            "mcp_servers.marion.env.MARION_NODE_TOKEN=***",
+            "MARION_NODE_TOKEN=***",
+            "<2 args>",
+        ] {
+            assert!(printed.contains(shown), "{shown} missing from {printed}");
+        }
     }
 }
