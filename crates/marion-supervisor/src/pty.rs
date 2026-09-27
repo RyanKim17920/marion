@@ -3672,7 +3672,8 @@ impl PtyHost {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "refusing to inject bytes that are not valid UTF-8 (at offset {}): the                          cast's `i` record could not say what was typed",
+                        "refusing to inject bytes that are not valid UTF-8 (at offset {}): the \
+                         cast's `i` record could not say what was typed",
                         e.valid_up_to()
                     ),
                 )
