@@ -865,14 +865,15 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
-    // Disabled 2026-09-27: the `-e <extension>` declaration channel was measured on the headless
-    // `-p --mode json` surface (S34) and pi's interactive TUI has not been driven at all.
+    // Enabled 2026-09-27: pi's TUI loads the same `-e <extension>` the headless row names
+    // (`spikes/s34/pi_tui.py`: marion's tool is offered, a bracketed paste submits, no dialog
+    // stands between launch and the composer), and `native_facade_e2e` drives this lane.
     NativeFacadeDescriptor {
         identity: VendorIdentity::new("pi"),
         command: "pi",
         aliases: &[],
         native: Some(Lane::new(
-            false,
+            true,
             NativeLane::new("pi", "pi", NativeAdapterId::new("pi")),
         )),
         structured: None,
@@ -1281,7 +1282,7 @@ mod tests {
         );
         assert_eq!(
             registry.enabled_native_commands(),
-            vec!["claude", "codex", "gemini", "opencode", "copilot"],
+            vec!["claude", "codex", "gemini", "opencode", "copilot", "pi"],
             "the enabled lanes are exactly those whose interactive shape was measured \
              (`tests/native_facade_e2e.rs`); `gemini`'s settings merge was measured per key \
              (`tests/fixtures/s30/`), so it is among them"

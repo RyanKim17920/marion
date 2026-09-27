@@ -130,10 +130,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         headless: TurnDelivery::Continuation {
             note: "S34 pi-resume-turn-2 (0.80.2): `--session <id> -p …` continues the session",
         },
-        interactive: TurnDelivery::None {
-            note: "pi's TUI was not measured (S34 drove only `-p --mode json`), and its native \
-                   lane ships disabled",
-        },
+        interactive: TurnDelivery::bracketed_paste(
+            "S34 spikes/s34/pi_tui.py (0.80.2): DECSET 2004 on; a bracketed multi-line paste then \
+             CR submits and reaches the provider byte-exact; idle output 0 B over 10 s, busy \
+             repaints at <= 88 ms gaps; Enter while busy folds as a steer after the tool result",
+        ),
     },
     note: "S34 on pi 0.80.2: -p --mode json over a canned models.json provider, marion's own MCP \
            client extension loaded with -e as the declaration in both modes, --tools as the one \

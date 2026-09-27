@@ -8877,7 +8877,7 @@ mod tests {
             (Harness::Qwen, "continuation", "none"),
             // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
             (Harness::Antigravity, "continuation", "paste"),
-            (Harness::Pi, "continuation", "none"),
+            (Harness::Pi, "continuation", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(

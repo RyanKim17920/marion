@@ -31,6 +31,7 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
 | `pi-resume-unknown.*` | `--session <unknown id>`: `No session found matching '…'`, exit 1, no stdout |
 | `pi-rpc-steer-mid-tool.*` | `--mode rpc` driven by `spikes/s34/pi_rpc.py`. A `prompt` is sent, then during the (3 s, `slow`) MCP call three more commands go in: a bare `prompt`, which is refused (`success: false`, "Agent is already processing. Specify streamingBehavior…"); a `steer`, which lands as a `user` message after the tool result in the **same turn's next request**; and a `follow_up`, which becomes its own request after the turn's last answer. A second `prompt` after `agent_end` is a new turn in the same process and session. `requests.json` lists each provider request's messages |
 | `pi-rpc-abort-mid-tool.*` | `abort` during the MCP call: the call still completes, and the next model request ends `stopReason: "aborted"`, `errorMessage: "Request was aborted."`. The process stays up until stdin closes, then exits 0 |
+| `pi-tui.facts.json` | `spikes/s34/pi_tui.py`: the interactive TUI on a 120×40 pty with the same `-e` extension. It sets DECSET 2004 (bracketed paste) and 2026 (synchronized output). A multi-line bracketed paste followed by CR 50 ms later reaches the provider byte-exact as one user message. Idle output was 0 B over 10 s, and busy repaints came at ≤ 88 ms gaps. A paste plus CR written while a tool call runs is folded after the tool result into the same turn. No trust, login or changelog screen appeared on the canned agent dir, and there was no OSC 9;4 progress signal |
 | `pi-bridge-missing.*` | the extension naming a server that cannot start: `Failed to load extension … marion's MCP server did not start`, exit 1, no request made |
 
 ## What was learned
@@ -83,3 +84,8 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
     took ~3 s with the extension loading. marion does not drive this surface yet; the row stays
     `LaunchOnly` with `Continuation` delivery. rpc is what a typed row would use (see
     `marion_harness::pi`).
+13. **The TUI takes a paste the way S31's four do.** Bracketed paste plus `\r` submits, and output
+    goes quiet when pi is idle, so the row's interactive delivery is
+    `TurnDelivery::bracketed_paste` (`OutputQuiet{1500}`). The native lane `marion pi` is enabled,
+    and `native_facade_e2e` drives it in front of the operator's own pi. That run keeps the
+    operator's extensions and adds marion's with `-e`.
