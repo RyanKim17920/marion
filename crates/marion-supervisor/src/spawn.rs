@@ -40,6 +40,10 @@ pub enum SpawnError {
     Json(#[from] serde_json::Error),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The launch names a provider marion cannot point it at — unknown, logged out, no model, or
+    /// no wire shared with the harness. Refused before the node exists.
+    #[error("{0}")]
+    Endpoint(#[from] crate::endpoint::EndpointError),
     /// The tree's `.marion/agents.toml` exists and cannot be used — unreadable, or refused by
     /// `marion_core::agent_type::AgentTypes::parse`. Its own variant rather than
     /// [`Self::UnknownAgentType`], because the fix is in the file rather than the request, and

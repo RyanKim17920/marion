@@ -1352,6 +1352,16 @@ pub fn run_spawn_watched(
     // The verification lines ride on the intent below, so a set too large to journal is refused
     // here, with the other refusals and before the node has an identity at all.
     check_verification_size(&req.verification)?;
+    // Endpoint mode, where the child's type or model names a provider: refused by name here, with
+    // the other refusals and before the node has an identity. The wires are the row's; an adapter
+    // that cannot be built at all is refused below, in its own words, as it always was.
+    let endpoint = crate::endpoint::resolve_for_launch(
+        req.model.as_deref(),
+        &agent_type,
+        adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())
+            .map(|a| a.endpoint_wires())
+            .unwrap_or(&[]),
+    )?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
     // **A resume reuses the node's own id; a fresh spawn mints one** — `root::prepare_watched`'s
@@ -1451,7 +1461,10 @@ pub fn run_spawn_watched(
     let path = launch_path(&adapter.surfaces())
         .ok_or(SpawnError::UnsupportedChildSurface(agent_type.harness))?;
     let ready_file = child_ready_file(path, &agent_dir);
-    let launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+    let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+    if let Some(ep) = &endpoint {
+        crate::endpoint::apply(&mut launch, ep);
+    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The **canonical** name, read off the resolved type rather than off `req.agent_type`: the
@@ -1707,7 +1720,13 @@ pub fn run_spawn_watched(
             why: why.to_string(),
         });
     }
-    let run = run?;
+    let mut run = run?;
+    // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
+    // its credential in an error would otherwise put it in the contract and the event log.
+    if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+        run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
+        run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
+    }
     record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal

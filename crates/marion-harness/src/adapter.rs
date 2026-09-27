@@ -1141,6 +1141,9 @@ impl HarnessAdapter for GeminiAdapter {
     }
 }
 
+/// The provider-block id an opencode endpoint node's generated config uses.
+const ENDPOINT_PROVIDER_BLOCK: &str = "marion";
+
 /// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpenCodeAdapter;
@@ -1174,6 +1177,15 @@ impl OpenCodeAdapter {
                        your own login does not use. Pass a provider/model from your opencode \
                        config (-m provider/model), or pass none to use opencode's own default",
             });
+        }
+        // A real endpoint is asked for its model verbatim — OpenRouter's ids carry a slash of their
+        // own — under a provider block of marion's name, which merges with none of opencode's
+        // built-in providers.
+        if spec.auth == Auth::Endpoint {
+            return Ok(Some(opencode::ModelRef {
+                provider: ENDPOINT_PROVIDER_BLOCK.to_string(),
+                model: m.to_string(),
+            }));
         }
         opencode::ModelRef::parse(m)
             .map(Some)
@@ -3709,8 +3721,18 @@ mod tests {
                     .map(|(p, _)| p)
                     .collect())
             };
+            let endpoint_only: Vec<&str> = adapter
+                .spec()
+                .env
+                .iter()
+                .filter(|e| e.when == crate::spec::When::Endpoint)
+                .map(|e| e.key)
+                .collect();
             match (keys(&canned), keys(&endpoint)) {
-                (Ok(c), Ok(e)) => assert_eq!(c, e, "{h}: env keys"),
+                (Ok(c), Ok(mut e)) => {
+                    e.retain(|k| !endpoint_only.contains(&k.as_str()));
+                    assert_eq!(c, e, "{h}: env keys")
+                }
                 (Err(_), Err(_)) => continue,
                 (c, e) => panic!("{h}: canned {c:?} but endpoint {e:?}"),
             }
@@ -3747,6 +3769,91 @@ mod tests {
             };
             assert_eq!(wires, want, "{h}");
         }
+    }
+
+    fn endpoint(spec: LaunchSpec, model: &str) -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Endpoint,
+            base_url: Some("https://provider.example/v1".into()),
+            api_key: Some("sk-endpoint-test".into()),
+            model: Some(model.into()),
+            ..spec
+        }
+    }
+
+    fn env_of(inv: &Invocation, key: &str) -> Option<String> {
+        inv.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// **A Claude Code endpoint node names no Claude model to a third party.** Its background
+    /// calls (titles, summaries) default to a Haiku id; pointed at another provider, both the small
+    /// and the default-Haiku model are the chosen one. Canned mode sets neither.
+    #[test]
+    fn a_claude_endpoint_node_routes_its_background_model_to_the_chosen_one() {
+        let inv = ClaudeCodeAdapter
+            .compile(&endpoint(claude_spec(), "glm-4.6"), &ctx())
+            .unwrap();
+        for k in [
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ] {
+            assert_eq!(env_of(&inv, k).as_deref(), Some("glm-4.6"), "{k}");
+        }
+        assert_eq!(
+            env_of(&inv, "ANTHROPIC_AUTH_TOKEN").as_deref(),
+            Some("sk-endpoint-test")
+        );
+        assert_eq!(env_of(&inv, "ANTHROPIC_API_KEY").as_deref(), Some(""));
+        assert_eq!(
+            env_of(&inv, "ANTHROPIC_BASE_URL").as_deref(),
+            Some("https://provider.example")
+        );
+        let canned = ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap();
+        assert_eq!(env_of(&canned, "ANTHROPIC_SMALL_FAST_MODEL"), None);
+    }
+
+    /// **An opencode endpoint node asks for the model verbatim**, slashes and all, under a
+    /// provider block of marion's own name — a registry id like `openrouter` would merge with
+    /// opencode's built-in provider of that name.
+    #[test]
+    fn an_opencode_endpoint_node_asks_for_the_model_verbatim_under_marions_block() {
+        let spec = endpoint(opencode_spec(), "anthropic/claude-sonnet-4");
+        let inv = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
+        assert_eq!(
+            inv.model.as_deref(),
+            Some("marion/anthropic/claude-sonnet-4")
+        );
+        let files = OpenCodeAdapter.config_files(&spec, &ctx()).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        let block = &doc["provider"]["marion"];
+        assert_eq!(block["options"]["baseURL"], "https://provider.example/v1");
+        assert_eq!(block["options"]["apiKey"], "sk-endpoint-test");
+        assert!(
+            block["models"]["anthropic/claude-sonnet-4"].is_object(),
+            "{doc}"
+        );
+    }
+
+    /// **A codex endpoint node names its model**, which a canned one never does: the canned
+    /// server ignores it, a real endpoint serves exactly what it is asked for.
+    #[test]
+    fn a_codex_endpoint_node_names_its_model_and_its_key() {
+        let inv = CodexAdapter
+            .compile(&endpoint(codex_spec(), "gpt-5.1-codex"), &ctx())
+            .unwrap();
+        assert_eq!(inv.model.as_deref(), Some("gpt-5.1-codex"));
+        assert!(
+            inv.args.windows(2).any(|w| w == ["-m", "gpt-5.1-codex"]),
+            "{:?}",
+            inv.args
+        );
+        assert_eq!(
+            env_of(&inv, "MARION_PROVIDER_KEY").as_deref(),
+            Some("sk-endpoint-test")
+        );
     }
 
     /// **An endpoint node's bridge is told the supervisor's mode, never the node's provider.** A

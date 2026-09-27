@@ -357,6 +357,9 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
+    /// An endpoint root's stored key, so what the root writes is redacted before it is kept.
+    /// `None` on a canned or live root, which presents no key of the user's.
+    pub endpoint_key: Option<crate::credentials::Secret>,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -450,6 +453,9 @@ pub enum RootError {
     Harness(#[from] marion_harness::HarnessError),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The root names a provider marion cannot point it at ([`crate::endpoint::EndpointError`]).
+    #[error("{0}")]
+    Endpoint(#[from] crate::endpoint::EndpointError),
     /// §9's grant gate: the type declared a built-in tool and marion cannot record what the root
     /// does with it.
     ///
@@ -684,6 +690,13 @@ pub fn prepare_watched(
     // `adapter_for_type`, the seam `run_spawn` uses for a child: on ACP the harness names a
     // protocol, and the agent type's `acp_agent` names the agent.
     let adapter = adapter_for_type(harness, agent_type.acp_agent.as_deref())?;
+    // Endpoint mode, where the root's type or model names a provider — refused by name here, before
+    // anything is written, where it is unknown, logged out or shares no wire with this harness.
+    let endpoint = crate::endpoint::resolve_for_launch(
+        spec.model.as_deref(),
+        &agent_type,
+        adapter.endpoint_wires(),
+    )?;
     // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
     // harness; the pane is a fact about the run. Selecting here — once, before anything is
     // compiled — is what keeps the two from being decided in two places and disagreeing: the
@@ -712,7 +725,7 @@ pub fn prepare_watched(
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
     // name a document nobody wrote.
-    let launch = root_launch_spec(
+    let mut launch = root_launch_spec(
         spec,
         path,
         tools,
@@ -725,6 +738,9 @@ pub fn prepare_watched(
             ..Extras::default()
         },
     );
+    if let Some(ep) = &endpoint {
+        crate::endpoint::apply(&mut launch, ep);
+    }
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -775,7 +791,9 @@ pub fn prepare_watched(
     // already withheld the three env vars it compiles; a push here would put two of them straight
     // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
     // that is supposed to be using it.
-    if path == RootPath::Duplex && spec.auth == Auth::Canned {
+    // Read off the launch, not the spec: an endpoint root's type or model named a provider, its
+    // key is already compiled, and the per-run token pushed here would replace it.
+    if path == RootPath::Duplex && launch.auth == Auth::Canned {
         // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
         // silently wins (§6.4), so it is set to empty rather than left inherited.
         invocation
@@ -866,6 +884,7 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
+        endpoint_key: endpoint.and_then(|e| e.key),
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
@@ -2046,8 +2065,15 @@ fn launch_only_generation(
     // names the session, and a root lost mid-run never reaches the capture below.
     let on_line = |line: &str| session.observe_line(line);
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let redact = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        match &node.endpoint_key {
+            Some(key) => crate::endpoint::redact(&text, key.expose()),
+            None => text,
+        }
+    };
+    let stdout = redact(&out.stdout);
+    let stderr = redact(&out.stderr);
     // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
     // `transcript` is `json_frames(&stdout)`, which keeps only the parseable lines. S12 measured
     // gemini interleaving `[STARTUP] Phase 1` and `Warning: Basic terminal detected` on stdout, and

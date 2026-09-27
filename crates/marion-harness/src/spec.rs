@@ -586,6 +586,9 @@ pub enum When {
     /// Only where marion overlays the provider ([`Auth::overlays`]: canned or endpoint) — the
     /// isolation and the provider overlay, which is what live mode removes (§6.4).
     Overlay,
+    /// Only under [`Auth::Endpoint`] — what a real third-party endpoint needs that marion's own
+    /// canned one does not.
+    Endpoint,
     /// Only when the field carries a value. Claude Code blanks `ANTHROPIC_API_KEY` **beside** a
     /// token, and only beside one.
     Present(Field),
@@ -708,6 +711,7 @@ fn env_applies(when: When, f: &Fields) -> bool {
     match when {
         When::Always => true,
         When::Overlay => f.auth.overlays(),
+        When::Endpoint => f.auth == Auth::Endpoint,
         When::Present(field) => f.value(field).is_some(),
     }
 }

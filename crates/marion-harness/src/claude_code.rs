@@ -126,6 +126,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Lit(""),
             when: When::Present(Field::ApiKey),
         },
+        // Claude Code's background calls (titles, summaries) name a Haiku id by default. On a
+        // third-party endpoint that is a Claude model sent to someone else, so both are the node's
+        // own model there. Canned mode needs neither: marion's endpoint ignores the name.
+        Env {
+            key: "ANTHROPIC_SMALL_FAST_MODEL",
+            val: Val::Field(Field::Model),
+            when: When::Endpoint,
+        },
+        Env {
+            key: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            val: Val::Field(Field::Model),
+            when: When::Endpoint,
+        },
     ],
     stream: Some(&STREAM),
     // `read` → `Read`, `write` → `Write`, measured on 2.1.222 (`tests/fixtures/s14/`): `--tools

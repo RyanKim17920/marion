@@ -1595,15 +1595,28 @@ ever runs a real login.
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
   fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
   on another branch.
-- **Endpoint auth mode — plumbed, not yet reachable.** `Auth::Endpoint` is a per-node mode that
+- **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
   overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
-  endpoint's env keys, documents and MCP route equal to canned's on every harness); a node's bridge
+  endpoint's env keys, documents and MCP route equal to canned's on every harness, bar the
+  endpoint-only rows below); a node's bridge
   is told the supervisor's own mode, never the provider. Codex's provider key is one row variable,
   `MARION_PROVIDER_KEY`, compiled from the launch's credential — it replaced four post-compile
   `MARION_DUMMY_KEY` pushes with the same values (child placeholder, root per-run token).
 - **`provider` on agent types — built.** `.marion/agents.toml` rows may name `provider = "<id>"`;
   a malformed id is a parse error, and an id neither built in nor in the user's `providers.toml`
   refuses every spawn against that tree by name.
+- **Endpoint resolution — built.** `marion_supervisor::endpoint::resolve_endpoint`, called by
+  `run_spawn_watched` (before the intent is journaled) and `root::prepare`: the provider is the
+  request model's registry-id prefix, else the type's `provider`, else the type model's prefix;
+  the wire is the first of the harness row's `endpoint_wires` the provider serves natively (claude
+  anthropic; codex openai-responses; gemini gemini; opencode, copilot, goose, cline, qwen
+  openai-chat; ACP none, refused by name); a missing key, unknown provider, missing model or no
+  shared wire is refused naming the command or both wire lists. A Claude Code endpoint node also
+  gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
+  per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
+  provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
+  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
