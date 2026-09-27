@@ -5577,6 +5577,55 @@ mod tests {
         );
     }
 
+    /// **A live qwen node's `--mcp-config` document is argv, so it carries no token**: qwen hands
+    /// its MCP server its own environment, and the token rides that. A canned node's token stays
+    /// in its 0600 `settings.json`.
+    #[test]
+    fn a_live_qwen_nodes_token_rides_its_environment_and_not_its_inline_document() {
+        let minted = SpawnCtx {
+            node_token: Some("tok-SENTINEL-qwen-0c55".into()),
+            ..ctx()
+        };
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: None,
+            ..qwen_spec()
+        };
+        let inv = QwenAdapter.compile(&live, &minted).unwrap();
+        let joined = inv.args.join(" ");
+        assert!(joined.contains("--mcp-config"), "{joined}");
+        assert!(
+            !joined.contains("SENTINEL"),
+            "the token is on argv: {joined}"
+        );
+        assert!(!joined.contains(mcp_bridge::NODE_TOKEN_ENV), "{joined}");
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == mcp_bridge::NODE_TOKEN_ENV && v == "tok-SENTINEL-qwen-0c55"),
+            "{:?}",
+            inv.env
+        );
+
+        let canned = QwenAdapter.compile(&qwen_spec(), &minted).unwrap();
+        assert!(
+            !canned
+                .env
+                .iter()
+                .any(|(k, _)| k == mcp_bridge::NODE_TOKEN_ENV),
+            "{:?}",
+            canned.env
+        );
+        let files = QwenAdapter.config_files(&qwen_spec(), &minted).unwrap();
+        assert!(
+            files
+                .iter()
+                .any(|(_, doc)| doc.contains("tok-SENTINEL-qwen-0c55"))
+        );
+    }
+
     /// The native lane reads the same live carrier: `marion codex` puts the same `-c` pairs in
     /// front of the operator's own flags, and the token reaches the assembled environment — past
     /// the rule that strips every `MARION_` name the operator's own environment carried.
