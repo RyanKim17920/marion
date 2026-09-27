@@ -312,23 +312,46 @@ fn counter(unit: &Value, ptr: Option<&str>) -> u64 {
 /// that never reached its usage frame made no claim about spend, and zero would be one. A unit of
 /// zeros is `Some` of zero: a run that reported spending nothing did report.
 pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
-    let mut per_unit = units(frames, &rule.at).into_iter().map(|unit| {
-        let cache_read = counter(unit, rule.cache_read);
-        let input = counter(unit, Some(rule.input));
-        TokenUsage {
-            input: if rule.input_includes_cache {
-                input.saturating_sub(cache_read)
-            } else {
-                input
-            },
-            output: counter(unit, Some(rule.output)),
-            cache_read,
-            cache_write: counter(unit, rule.cache_write),
-        }
-    });
+    fold_usage(rule, &usage_units(rule, frames))
+}
+
+/// Every usage unit in `frames` under `rule`, oldest first, each as the counts it states. Units
+/// are read frame by frame, so a caller reading a stream in pieces may read each piece's units and
+/// append them: the run's usage is then [`fold_usage`] over the whole list.
+pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
+    units(frames, &rule.at)
+        .into_iter()
+        .map(|unit| {
+            let cache_read = counter(unit, rule.cache_read);
+            let input = counter(unit, Some(rule.input));
+            TokenUsage {
+                input: if rule.input_includes_cache {
+                    input.saturating_sub(cache_read)
+                } else {
+                    input
+                },
+                output: counter(unit, Some(rule.output)),
+                cache_read,
+                cache_write: counter(unit, rule.cache_write),
+            }
+        })
+        .collect()
+}
+
+/// The run's usage from its units under the row's fold. `None` for no units.
+pub fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
     match rule.fold {
-        UsageFold::Last => per_unit.next_back(),
-        UsageFold::Sum => per_unit.reduce(|a, b| a + b),
+        UsageFold::Last => units.last().copied(),
+        UsageFold::Sum => units.iter().copied().reduce(|a, b| a + b),
+    }
+}
+
+/// Each turn's (or step's) total spend, oldest first, where the row's units are turns — a `Sum`
+/// row. Empty for a `Last` row, whose units are running totals rather than turns.
+pub fn turns(rule: &UsageRule, units: &[TokenUsage]) -> Vec<u64> {
+    match rule.fold {
+        UsageFold::Sum => units.iter().map(TokenUsage::total).collect(),
+        UsageFold::Last => Vec::new(),
     }
 }
 
@@ -894,6 +917,27 @@ mod tests {
             ..RULE
         };
         assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
+    }
+
+    /// **Per-turn spend is the units themselves, on a row whose units are turns.** A `Sum` row's
+    /// units are each one turn's or step's spend, which is what a sparkline draws; a `Last` row's
+    /// units are running totals, so it has no per-turn series to offer and says so with none.
+    #[test]
+    fn per_turn_spend_is_read_off_a_sum_row_and_never_invented_for_a_last_row() {
+        let frames = [done(10, 1, 2), done(30, 3, 4)];
+        let sum = UsageRule {
+            fold: UsageFold::Sum,
+            ..RULE
+        };
+        let units = usage_units(&sum, &frames);
+        assert_eq!(units, vec![tokens(10, 1, 2), tokens(30, 3, 4)]);
+        assert_eq!(fold_usage(&sum, &units), usage(&sum, &frames));
+        assert_eq!(turns(&sum, &units), vec![13, 37]);
+        assert_eq!(
+            turns(&RULE, &usage_units(&RULE, &frames)),
+            Vec::<u64>::new()
+        );
+        assert_eq!(fold_usage(&sum, &[]), None, "no unit is no claim, not zero");
     }
 
     #[test]

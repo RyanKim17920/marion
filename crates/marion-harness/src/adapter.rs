@@ -541,8 +541,14 @@ pub trait HarnessAdapter {
     /// harness that reports no token count) and when the stream never reached the unit that
     /// carries one: an absent claim is not a claim of zero.
     fn usage(&self, frames: &[serde_json::Value]) -> Option<TokenUsage> {
-        let rule = self.spec().stream?.usage.as_ref()?;
-        grammar::usage(rule, frames)
+        grammar::usage(self.usage_rule()?, frames)
+    }
+
+    /// The rule this node's usage is read by: the row's [`grammar::StreamGrammar::usage`], or
+    /// `None` where it states none. A caller folding usage incrementally reads units with it
+    /// ([`grammar::usage_units`]) rather than re-reading a whole stream per question.
+    fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
+        self.spec().stream?.usage.as_ref()
     }
 
     /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
@@ -2229,8 +2235,8 @@ impl HarnessAdapter for AcpAdapter {
 
     /// The protocol's own `session/prompt` response shape ([`acp::USAGE`]), whatever the agent and
     /// whether or not one is bound: spend is a protocol fact, not an agent refinement.
-    fn usage(&self, frames: &[serde_json::Value]) -> Option<TokenUsage> {
-        grammar::usage(&acp::USAGE, frames)
+    fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
+        Some(&acp::USAGE)
     }
 }
 
