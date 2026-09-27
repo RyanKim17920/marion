@@ -31,8 +31,8 @@ pub struct Endpoint {
     pub key: Option<Secret>,
     /// Which of the provider's credentials [`Self::key`] is — recorded, never the key itself.
     pub credential: CredentialId,
-    /// The credentials after it in the order tried — what a rotation would move to next. Nothing
-    /// moves through them yet.
+    /// The credentials after it in the order tried — what a rotation moves to next
+    /// ([`next_credential`]).
     pub fallbacks: Vec<CredentialId>,
     /// The model id the provider is asked for, prefix removed.
     pub model: String,
@@ -218,6 +218,41 @@ pub fn resolve_endpoint_with(
         model,
         key_header: provider.key_header,
     }))
+}
+
+/// **The endpoint on the next credential**: the first of `ep`'s fallbacks with a stored key, the
+/// rest after it as its own fallbacks — or `None` once none is left. Everything but the credential
+/// is `ep`'s, so a rotation changes only which key is presented. API keys alone reach here: a
+/// provider that needs no credential has no fallbacks, and no subscription login is ever a
+/// credential of a provider.
+pub fn next_credential(
+    ep: &Endpoint,
+    store: &dyn CredentialStore,
+) -> Result<Option<Endpoint>, EndpointError> {
+    for (i, c) in ep.fallbacks.iter().enumerate() {
+        let key = store
+            .get(&c.to_string())
+            .map_err(|e| EndpointError::Config(e.to_string()))?;
+        if let Some(k) = key {
+            return Ok(Some(Endpoint {
+                key: Some(k),
+                credential: c.clone(),
+                fallbacks: ep.fallbacks[i + 1..].to_vec(),
+                ..ep.clone()
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// [`next_credential`] against the user's own credential store — what a rotating launch calls.
+pub fn next_for_launch(ep: &Endpoint) -> Result<Option<Endpoint>, EndpointError> {
+    if ep.fallbacks.is_empty() {
+        return Ok(None);
+    }
+    let store =
+        crate::credentials::default_store().map_err(|e| EndpointError::Config(e.to_string()))?;
+    next_credential(ep, store.as_ref())
 }
 
 /// [`resolve_endpoint`] against the user's own registry and credential store — what a launch
@@ -649,6 +684,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ep.key_header, KeyHeader::Bearer);
+    }
+
+    /// **The next credential is the next stated one with a key**, carrying the rest as its own
+    /// fallbacks — so a chain of rotations visits each credential once and then ends.
+    #[test]
+    fn the_next_credential_skips_ids_with_no_key_and_ends_after_the_last() {
+        let id = |s: &str| CredentialId::parse(s).unwrap();
+        let store = MemStore::with("openrouter:a", "sk-key-a-0001");
+        store
+            .put("openrouter:c", &Secret::new("sk-key-c-0003").unwrap())
+            .unwrap();
+        let mut t = ty(Harness::OpenCode, None, None);
+        t.credentials = vec![
+            "openrouter:a".into(),
+            "openrouter:b".into(),
+            "openrouter:c".into(),
+        ];
+        let ep = resolve_endpoint(Some("openrouter:m"), &t, CHAT, &Registry::seed(), &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.credential, id("openrouter:a"));
+        let next = next_credential(&ep, &store).unwrap().expect("c has a key");
+        assert_eq!(
+            next.credential,
+            id("openrouter:c"),
+            "b has no key and is skipped"
+        );
+        assert_eq!(next.key.as_ref().unwrap().expose(), "sk-key-c-0003");
+        assert!(next.fallbacks.is_empty());
+        assert_eq!((next.model.as_str(), next.wire), ("m", Wire::OpenAiChat));
+        assert_eq!(
+            next_credential(&next, &store).unwrap(),
+            None,
+            "each is tried once"
+        );
     }
 
     #[test]

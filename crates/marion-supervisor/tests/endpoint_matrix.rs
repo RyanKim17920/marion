@@ -23,6 +23,9 @@ use marion_testsupport::{fixture_repo, scratch};
 
 /// The fixture key. The test writes it; nothing in marion ever mints it.
 const KEY: &str = "sk-endpoint-test";
+/// Two labelled keys of `canned-rot`, tried in the stated order `a` then `b`.
+const KEY_A: &str = "sk-rotate-key-a-0001";
+const KEY_B: &str = "sk-rotate-key-b-0002";
 
 struct Fixture {
     config: PathBuf,
@@ -40,7 +43,8 @@ fn fixture() -> &'static Fixture {
             &config.join("credentials.json"),
             &format!(
                 "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\", \
-                 \"canned-anthropic-bearer\": \"{KEY}\", \"canned-chat-xkey\": \"{KEY}\"}}}}\n"
+                 \"canned-anthropic-bearer\": \"{KEY}\", \"canned-chat-xkey\": \"{KEY}\", \
+                 \"canned-rot:a\": \"{KEY_A}\", \"canned-rot:b\": \"{KEY_B}\"}}}}\n"
             ),
         );
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has read the
@@ -71,7 +75,8 @@ fn write_owner_only(path: &Path, body: &str) {
 /// four wires, `canned-chat` serving Chat Completions alone, `canned-anthropic` serving Anthropic
 /// Messages alone and reading its key from `x-api-key` as Anthropic's own API does,
 /// `canned-anthropic-bearer` the same wire reading a Bearer key as the gateways do, `canned-nokey`
-/// with no stored key, `canned-chat-xkey` serving Chat Completions and reading `x-api-key`.
+/// with no stored key, `canned-chat-xkey` serving Chat Completions and reading `x-api-key`,
+/// `canned-rot` holding two labelled keys in a stated order.
 fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
     static CELLS: Mutex<()> = Mutex::new(());
     let guard = CELLS.lock().unwrap_or_else(|p| p.into_inner());
@@ -88,7 +93,10 @@ fn providers_at(base_url: &str) -> MutexGuard<'static, ()> {
              key_header = \"x-api-key\"\n\n\
              [providers.canned-anthropic-bearer]\nbase_url = \"{root}\"\nwires = [\"anthropic\"]\n\n\
              [providers.canned-chat-xkey]\nbase_url = \"{base_url}\"\nwires = [\"openai-chat\"]\n\
-             key_header = \"x-api-key\"\n",
+             key_header = \"x-api-key\"\n\n\
+             [providers.canned-rot]\nbase_url = \"{base_url}\"\n\
+             wires = [\"openai-chat\", \"openai-responses\"]\n\n\
+             [credentials]\ncanned-rot = [\"canned-rot:a\", \"canned-rot:b\"]\n",
             // An Anthropic base is the root, as the seed rows spell it: the SDK appends `/v1`.
             root = base_url.trim_end_matches("/v1")
         ),
@@ -553,4 +561,158 @@ fn an_opencode_child_presents_an_x_api_key_to_a_chat_provider_that_reads_one() {
         wire: "openai",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+// ---- credential rotation: API keys only, before the first successful turn ----------------------
+
+/// A codex child on `canned-rot`, whose provider refuses the keys in `refused` with `status`.
+fn drive_rotation(tag: &str, refused: &[&str], status: u16) -> (Evidence, Result<Value, String>) {
+    let reqlog_dir = scratch(&format!("endpoint-reqlog-rot-{tag}"));
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            child_narrative: NARRATIVE.into(),
+            refusals: refused
+                .iter()
+                .map(|k| marion_provider::KeyRefusal {
+                    key: k.to_string(),
+                    status,
+                })
+                .collect(),
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+    let _cells = providers_at(&base_url);
+    let t = tree(&format!("rot-{tag}"), Some(base_url));
+    let contract = run_spawn(
+        &t.env,
+        &request(&t, "codex-impl", &format!("canned-rot:{MODEL}")),
+        &TaskId(format!("endpoint-rot-{tag}")),
+        &Caller::root(
+            "root",
+            marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+        ),
+    )
+    .map_err(|e| e.to_string());
+    let as_json = contract
+        .as_ref()
+        .map(|c| serde_json::to_value(c).unwrap())
+        .map_err(Clone::clone);
+    let requests = server.requests().unwrap_or_default();
+    let walked = persisted_contracts(&t.state);
+    let journal = std::fs::read_to_string(t.env.project_dir.journal()).unwrap_or_default();
+    drop(server);
+    let leaked = survivors(&t.state.parent().unwrap().to_string_lossy());
+    for (pid, _) in &leaked {
+        kill_hard(*pid);
+    }
+    let persisted = judge(&walked.expect("the state dir walks"))
+        .into_iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    (
+        Evidence {
+            contract,
+            persisted,
+            requests,
+            journal,
+            leaked: leaked.into_iter().map(|(_, l)| l).collect(),
+        },
+        as_json,
+    )
+}
+
+fn presented(r: &Value, key: &str) -> bool {
+    r["credentials"]["authorization"] == fingerprint(&format!("Bearer {key}"))
+}
+
+fn assert_no_key_kept(ev: &Evidence) {
+    for key in [KEY_A, KEY_B] {
+        for (what, text) in [
+            (
+                "the persisted contract",
+                ev.persisted
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<String>(),
+            ),
+            ("the journal", ev.journal.clone()),
+        ] {
+            assert!(!text.contains(key), "the key is in {what}");
+        }
+    }
+    assert!(ev.leaked.is_empty(), "leaked {:?}", ev.leaked);
+}
+
+/// **A rate-limited first key rotates to the next, before any turn succeeded**: the provider
+/// answers key `a` with 429, so the node is relaunched fresh on `b`, succeeds there, and its
+/// contract records the failover by id — never a key.
+#[test]
+fn a_rate_limited_key_fails_over_to_the_next_stated_credential_before_the_first_turn() {
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let (ev, json) = drive_rotation("429", &[KEY_A], 429);
+    let contract = ev
+        .contract
+        .as_ref()
+        .unwrap_or_else(|e| panic!("run_spawn failed: {e}\n{}", summary(&ev)));
+    let comp = contract.completion.as_ref().expect("a finished run");
+    assert_eq!(
+        comp.status,
+        ExitStatus::Ok,
+        "{}\n{}",
+        comp.exit.description,
+        summary(&ev)
+    );
+    assert_eq!(contract.child.credential.as_deref(), Some("canned-rot:b"));
+    assert_eq!(
+        json.unwrap()["child"]["credential_failover"],
+        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "rate_limit"}]),
+    );
+    let first_b = ev
+        .requests
+        .iter()
+        .position(|r| presented(r, KEY_B))
+        .unwrap_or_else(|| panic!("key b was never presented\n{}", summary(&ev)));
+    assert!(
+        first_b > 0 && presented(&ev.requests[0], KEY_A),
+        "a first\n{}",
+        summary(&ev)
+    );
+    assert!(
+        ev.requests[first_b..].iter().all(|r| presented(r, KEY_B)),
+        "after the failover only b is presented\n{}",
+        summary(&ev)
+    );
+    assert_no_key_kept(&ev);
+}
+
+/// **Rotation is bounded**: every stated key refused, each is tried once and the node fails,
+/// naming the one failover it took.
+#[test]
+fn rotation_tries_each_credential_once_and_then_fails() {
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let (ev, json) = drive_rotation("all-401", &[KEY_A, KEY_B], 401);
+    let contract = ev
+        .contract
+        .as_ref()
+        .unwrap_or_else(|e| panic!("run_spawn failed: {e}\n{}", summary(&ev)));
+    let comp = contract.completion.as_ref().expect("a finished run");
+    assert_ne!(comp.status, ExitStatus::Ok);
+    assert_eq!(
+        json.unwrap()["child"]["credential_failover"],
+        json!([{"from": "canned-rot:a", "to": "canned-rot:b", "cause": "auth"}]),
+    );
+    assert!(ev.requests.iter().any(|r| presented(r, KEY_B)));
+    assert_no_key_kept(&ev);
 }

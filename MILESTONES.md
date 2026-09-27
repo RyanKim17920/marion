@@ -1698,15 +1698,28 @@ ever runs a real login.
   `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
   (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
   ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
-- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+- **Credential choice — built.** A launch tries its provider's
   credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
   checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
   and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
   rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
-  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
-  5xx/connection failure *before* the child's first successful turn, relaunch on the next
-  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
-  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  are kept as `Endpoint::fallbacks`. A resume re-resolves by the stated order rather than the
+  journaled credential.
+- **API-key rotation — built for children.** A child endpoint launch whose process failed with no
+  report and nothing changed in its worktree (the evidence available that no turn succeeded), and
+  whose stderr or stream failure names a rate limit (`429`, `rate limit`), a refused key
+  (`401`/`403` and the shared auth markers) or an outage (`5xx`, overload, a refused or reset
+  connection) — `marion_harness::failover_cause`, row-independent marker lists in `auth.rs` — is
+  relaunched fresh in the same node on the next stated credential with a key
+  (`endpoint::next_credential`), sharing the node's one wall clock. Each credential is tried once;
+  only a finished process is rotated, never mid-turn; the relaunch writes a second `Spawned`
+  (generation two, the new pid and credential id). The contract's `child.credential_failover`
+  lists each move as `{from, to, cause}` (`auth` | `rate_limit` | `outage`), ids only. API keys
+  alone: a subscription login is never a credential of a provider. Canned cells green on
+  2026-09-27 (codex 0.155.1): key `a` answered 429 fails over to `b` and succeeds; both answered 401
+  fail after one failover. **Not built:** rotation for a root (`root::prepare`), and a stricter
+  "no successful turn" signal than no-report-and-no-change (a run that made tool calls without
+  editing and then hit a 429 would rotate). **TODO, not built:** a
   `profile` field selecting one of several native harness profiles the user set up
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that

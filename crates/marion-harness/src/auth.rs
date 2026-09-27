@@ -120,6 +120,73 @@ fn has_status_401(lower: &str) -> bool {
     })
 }
 
+/// Phrases that mean the provider **rate-limited** the request, lowercased; a bare `429` is
+/// matched as a token of its own. Row-independent: these are the HTTP and SDK spellings every
+/// OpenAI- and Anthropic-compatible client shares.
+const RATE_LIMIT_MARKERS: &[&str] = &["rate limit", "rate_limit", "ratelimit", "too many requests"];
+
+/// Phrases that mean the provider was **failing or unreachable**, lowercased; a bare 5xx status is
+/// matched as a token ([`SERVER_FAILURE_STATUSES`]).
+const UNREACHABLE_MARKERS: &[&str] = &[
+    "overloaded",
+    "service unavailable",
+    "internal server error",
+    "bad gateway",
+    "gateway timeout",
+    "connection refused",
+    "econnrefused",
+    "connection reset",
+    "econnreset",
+    "error sending request",
+    "failed to connect",
+    "could not connect",
+    "dns error",
+    "enotfound",
+];
+
+const SERVER_FAILURE_STATUSES: &[&str] = &["500", "502", "503", "504", "529"];
+
+/// **Why an endpoint's request failed, where another API key could fare differently** — or `None`
+/// for any other failure. Read over what the harness said (its stderr and its stream's own failure
+/// line), with precedence rate limit > auth > outage over the whole text. A 403 counts as auth
+/// here, beside [`auth_failure_line`]'s vocabulary: a key refused a resource is a key to rotate.
+pub fn failover_cause(text: &str) -> Option<marion_core::contract::FailoverCause> {
+    use marion_core::contract::FailoverCause;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .collect();
+    let any = |f: &dyn Fn(&str) -> bool| lines.iter().any(|l| f(l));
+    if any(&|l| RATE_LIMIT_MARKERS.iter().any(|m| l.contains(m)) || status_token(l, "429")) {
+        return Some(FailoverCause::RateLimit);
+    }
+    if any(&|l| {
+        is_auth_failure_line(l)
+            || status_token(l, "403")
+            || l.contains("forbidden")
+            || l.contains("permission_error")
+    }) {
+        return Some(FailoverCause::Auth);
+    }
+    if any(&|l| {
+        UNREACHABLE_MARKERS.iter().any(|m| l.contains(m))
+            || SERVER_FAILURE_STATUSES.iter().any(|s| status_token(l, s))
+    }) {
+        return Some(FailoverCause::Outage);
+    }
+    None
+}
+
+/// `status` as a token of its own — not the tail of a port, a pid or an id (`14290`).
+fn status_token(lower: &str, status: &str) -> bool {
+    lower.match_indices(status).any(|(i, _)| {
+        let before = lower[..i].chars().next_back();
+        let after = lower[i + status.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +237,58 @@ mod tests {
             "model gemini-2.5-flash-lite is no longer available",
         ] {
             assert_eq!(auth_failure_line(stderr), None, "{stderr}");
+        }
+    }
+
+    // ---- endpoint credential failover: rate limit > auth > outage ----
+
+    /// **Each measured or documented spelling of the three rotatable failures**: codex 0.155.1's
+    /// `turn.failed` messages for 429 and 401 (measured against the canned provider), a 403, the
+    /// vendors' 5xx and overload words, and a connection that never reached the provider.
+    #[test]
+    fn each_rotatable_endpoint_failure_is_classified() {
+        use marion_core::contract::FailoverCause::{Auth, Outage, RateLimit};
+        for (text, want) in [
+            (
+                "exceeded retry limit, last status: 429 Too Many Requests",
+                RateLimit,
+            ),
+            ("Rate limit reached for requests", RateLimit),
+            ("{\"type\":\"rate_limit_error\"}", RateLimit),
+            (
+                "unexpected status 401 Unauthorized: bad key, url: http://127.0.0.1:1/v1/responses",
+                Auth,
+            ),
+            ("HTTP 403 Forbidden", Auth),
+            ("Invalid API key provided", Auth),
+            ("unexpected status 503 Service Unavailable", Outage),
+            ("{\"type\":\"overloaded_error\"}", Outage),
+            (
+                "error sending request for url (http://127.0.0.1:9/v1): Connection refused",
+                Outage,
+            ),
+            ("fetch failed: ECONNREFUSED 127.0.0.1:9", Outage),
+        ] {
+            assert_eq!(failover_cause(text), Some(want), "{text}");
+        }
+        // A limit line beside an auth-looking one is a limit.
+        assert_eq!(
+            failover_cause("401 retry\nlast status: 429 Too Many Requests"),
+            Some(RateLimit)
+        );
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_a_reason_to_rotate() {
+        for text in [
+            "",
+            "Model metadata for `m` not found. Defaulting to fallback metadata",
+            "listening on 127.0.0.1:14290",
+            "pid 5031 exited",
+            "the child could not find src/main.rs",
+            "context length exceeded (400 Bad Request)",
+        ] {
+            assert_eq!(failover_cause(text), None, "{text}");
         }
     }
 
