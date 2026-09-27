@@ -302,17 +302,30 @@ pub struct UsageRule {
     pub output: &'static str,
     pub cache_read: Option<&'static str>,
     pub cache_write: Option<&'static str>,
-    /// A counter the harness reports **beside** `output` although the model generated it — its
-    /// reasoning tokens — which the reader adds into output, so that output counts every generated
-    /// token as codex's and claude's counters already do. `None` where `output` includes them or
-    /// no split was measured. opencode's `tokens.reasoning` (s36: `output` 43 + `reasoning` 7 of
-    /// the provider's 50 completion tokens).
-    pub reasoning: Option<&'static str>,
+    /// Where the harness counts the model's reasoning tokens, and whether its `output` already
+    /// holds them. `None` where no split was measured: the reading then says nothing about
+    /// reasoning rather than zero.
+    pub reasoning: Option<Reasoning>,
     /// The harness's `input` already counts its cache reads (codex's `input_tokens` does), so the
     /// reader subtracts `cache_read` from it. Cache *writes* are not subtracted: no harness was
     /// measured folding them into input with a non-zero write count to prove it.
     pub input_includes_cache: bool,
     pub fold: UsageFold,
+}
+
+/// A reasoning counter, and how it relates to the row's `output` counter. Either way the reading's
+/// `output` counts every generated token and its `reasoning` says how many of those were reasoning,
+/// so a consumer never has to know which harness split them which way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reasoning {
+    /// Counted **beside** `output`, which excludes it; the reader adds it back. opencode's
+    /// `tokens.reasoning` (s36: `output` 43 + `reasoning` 7 of the provider's 50 completion
+    /// tokens).
+    Beside(&'static str),
+    /// Counted **within** `output`, which already includes it: codex's `reasoning_output_tokens`,
+    /// agy's `thinking_tokens` (sC: 146 output of which 86 thinking, `total_tokens` = input +
+    /// output).
+    Within(&'static str),
 }
 
 /// How a stream's usage units make up the run's usage.
@@ -347,16 +360,29 @@ pub fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
         .map(|unit| {
             let cache_read = counter(unit, rule.cache_read);
             let input = counter(unit, Some(rule.input));
+            let output = counter(unit, Some(rule.output));
+            let (output, reasoning) = match rule.reasoning {
+                None => (output, None),
+                Some(Reasoning::Beside(ptr)) => {
+                    let r = counter(unit, Some(ptr));
+                    (output.saturating_add(r), Some(r))
+                }
+                // A reasoning count larger than the output it is part of is bad arithmetic; the
+                // part is capped at the whole rather than claiming more reasoning than output.
+                Some(Reasoning::Within(ptr)) => {
+                    (output, Some(counter(unit, Some(ptr)).min(output)))
+                }
+            };
             TokenUsage {
                 input: if rule.input_includes_cache {
                     input.saturating_sub(cache_read)
                 } else {
                     input
                 },
-                output: counter(unit, Some(rule.output))
-                    .saturating_add(counter(unit, rule.reasoning)),
+                output,
                 cache_read,
                 cache_write: counter(unit, rule.cache_write),
+                reasoning,
             }
         })
         .collect()
@@ -925,6 +951,7 @@ mod tests {
             output,
             cache_read,
             cache_write: 0,
+            reasoning: None,
         }
     }
 
@@ -1011,6 +1038,40 @@ mod tests {
             ..RULE
         };
         assert_eq!(usage(&write, &[frame]), Some(tokens(12, 0, 5)));
+    }
+
+    /// **A reasoning counter beside output is added in; one within it is only named.** Either way
+    /// the reading's `output` is every generated token and `reasoning` the part of it that was
+    /// reasoning, and a row with no reasoning pointer claims no split at all.
+    #[test]
+    fn reasoning_beside_output_is_added_in_and_within_output_is_only_named() {
+        let frame = serde_json::json!({"type": "done", "usage": {"in": 10, "out": 43, "think": 7}});
+        let frames = std::slice::from_ref(&frame);
+        let beside = UsageRule {
+            reasoning: Some(Reasoning::Beside("/usage/think")),
+            ..RULE
+        };
+        let got = usage(&beside, frames).unwrap();
+        assert_eq!((got.output, got.reasoning), (50, Some(7)));
+        let within = UsageRule {
+            reasoning: Some(Reasoning::Within("/usage/think")),
+            ..RULE
+        };
+        let got = usage(&within, frames).unwrap();
+        assert_eq!((got.output, got.reasoning), (43, Some(7)));
+        assert_eq!(usage(&RULE, frames).unwrap().reasoning, None);
+        // A part larger than its whole is a harness's bad arithmetic, capped at the whole.
+        let bad = serde_json::json!({"type": "done", "usage": {"in": 1, "out": 3, "think": 9}});
+        assert_eq!(usage(&within, &[bad]).unwrap().reasoning, Some(3));
+        // A Sum row adds the splits of its units as it adds their counters.
+        let sum = UsageRule {
+            fold: UsageFold::Sum,
+            ..within
+        };
+        assert_eq!(
+            usage(&sum, &[frame.clone(), frame]).unwrap().reasoning,
+            Some(14)
+        );
     }
 
     /// A rule over a made-up stream: `call` frames with an id, `say` frames whole, `delta`

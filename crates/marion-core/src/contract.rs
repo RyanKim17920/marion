@@ -386,6 +386,11 @@ pub struct TokenUsage {
     pub cache_read: u64,
     #[serde(default)]
     pub cache_write: u64,
+    /// Of `output`, the tokens the model spent reasoning — **a part of `output`, never beside it**,
+    /// so [`Self::total`] does not count them again. `None` where the harness does not split them
+    /// out, which is not a claim of zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
 }
 
 impl TokenUsage {
@@ -409,6 +414,11 @@ impl std::ops::Add for TokenUsage {
             output: self.output.saturating_add(other.output),
             cache_read: self.cache_read.saturating_add(other.cache_read),
             cache_write: self.cache_write.saturating_add(other.cache_write),
+            // A split either side reported is a split; only two silences stay silent.
+            reasoning: match (self.reasoning, other.reasoning) {
+                (None, None) => None,
+                (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+            },
         }
     }
 }
@@ -458,6 +468,7 @@ mod tests {
         output: 5,
         cache_read: 11008,
         cache_write: 0,
+        reasoning: None,
     };
 
     #[test]
@@ -473,6 +484,7 @@ mod tests {
             output: 2,
             cache_read: 3,
             cache_write: 4,
+            reasoning: None,
         };
         assert_eq!(
             A + b,
@@ -481,6 +493,7 @@ mod tests {
                 output: 7,
                 cache_read: 11011,
                 cache_write: 4,
+                reasoning: None,
             }
         );
         // A harness's counter is foreign data: a hostile or buggy stream must not panic a debug
@@ -508,5 +521,28 @@ mod tests {
         );
         let back: TokenUsage = serde_json::from_str(&serde_json::to_string(&A).unwrap()).unwrap();
         assert_eq!(back, A);
+    }
+
+    /// **Reasoning is a part of output, so it moves no total, and its absence is not zero.** Two
+    /// runs that did not split reasoning out sum to no split; one that did makes the sum a split,
+    /// the other side contributing nothing it did not claim.
+    #[test]
+    fn reasoning_is_inside_output_and_an_unreported_split_stays_unreported() {
+        let split = TokenUsage {
+            output: 50,
+            reasoning: Some(7),
+            ..TokenUsage::default()
+        };
+        assert_eq!(split.total(), 50, "reasoning is already in output");
+        assert_eq!((A + A).reasoning, None);
+        assert_eq!((A + split).reasoning, Some(7));
+        assert_eq!((split + split).reasoning, Some(14));
+        assert!(
+            !serde_json::to_string(&A).unwrap().contains("reasoning"),
+            "no split writes no key, so a record reads as it did before the field existed"
+        );
+        let back: TokenUsage =
+            serde_json::from_str(&serde_json::to_string(&split).unwrap()).unwrap();
+        assert_eq!(back, split);
     }
 }

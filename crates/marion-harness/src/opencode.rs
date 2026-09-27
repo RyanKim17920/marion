@@ -19,7 +19,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, Reasoning, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
@@ -332,7 +332,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/part/tokens/output",
         cache_read: Some("/part/tokens/cache/read"),
         cache_write: Some("/part/tokens/cache/write"),
-        reasoning: Some("/part/tokens/reasoning"),
+        reasoning: Some(Reasoning::Beside("/part/tokens/reasoning")),
         input_includes_cache: false,
         fold: UsageFold::Sum,
     }),

@@ -31,7 +31,7 @@ use marion_core::harness::Harness;
 use serde_json::json;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, Reasoning, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
@@ -194,7 +194,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         resumes_in_place: true,
     }),
     // The terminal `result` totals the run; `input_tokens` excludes cache reads (sC: 12733 input
-    // beside 32519 cache reads, `total_tokens` = input + output).
+    // beside 32519 cache reads, `total_tokens` = input + output), and `thinking_tokens` is part of
+    // `output_tokens` (86 of 146, with the total 9456 = 9310 + 146).
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/event", "result")],
@@ -205,7 +206,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/result/usage/output_tokens",
         cache_read: Some("/result/usage/cache_read_tokens"),
         cache_write: None,
-        reasoning: None,
+        reasoning: Some(Reasoning::Within("/result/usage/thinking_tokens")),
         input_includes_cache: false,
         fold: UsageFold::Last,
     }),

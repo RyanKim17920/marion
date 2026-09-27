@@ -581,6 +581,7 @@ mod tests {
                 output: 14,
                 cache_read: 0,
                 cache_write: 0,
+                reasoning: None,
             })
         );
     }

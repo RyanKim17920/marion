@@ -9121,6 +9121,7 @@ mod tests {
                 output: 8,
                 cache_read: 2,
                 cache_write: 4,
+                reasoning: None,
             })
         );
         assert_eq!(

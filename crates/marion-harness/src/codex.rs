@@ -15,7 +15,7 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId,
+    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, PathList, Reasoning, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
@@ -282,6 +282,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), each that turn's spend, so the
     // run is their sum. `input_tokens` **counts** `cached_input_tokens` (14997 of which 11008
     // cached in `stream-none.jsonl`), and the reader takes the cache back out.
+    // `reasoning_output_tokens` is part of `output_tokens`, as OpenAI counts completion tokens.
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/type", "turn.completed")],
@@ -292,7 +293,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/usage/output_tokens",
         cache_read: Some("/usage/cached_input_tokens"),
         cache_write: Some("/usage/cache_write_input_tokens"),
-        reasoning: None,
+        reasoning: Some(Reasoning::Within("/usage/reasoning_output_tokens")),
         input_includes_cache: true,
         fold: UsageFold::Sum,
     }),

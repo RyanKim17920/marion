@@ -24,6 +24,15 @@ fn tokens(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TokenUs
         output,
         cache_read,
         cache_write,
+        reasoning: None,
+    }
+}
+
+/// `u` with a reasoning split of `r`, for a row that states one.
+fn reasoning(u: TokenUsage, r: u64) -> TokenUsage {
+    TokenUsage {
+        reasoning: Some(r),
+        ..u
     }
 }
 
@@ -49,7 +58,14 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
             "codex s4",
             Harness::Codex,
             fixture!("s4/codex/stream-none.jsonl"),
-            Some(tokens(3989, 5, 11008, 0)),
+            Some(reasoning(tokens(3989, 5, 11008, 0), 0)),
+        ),
+        // agy's `thinking_tokens` is part of `output_tokens`: 86 of 146, `total_tokens` 9456.
+        (
+            "antigravity s32",
+            Harness::Antigravity,
+            fixture!("s32/report-answered.stream.jsonl"),
+            Some(reasoning(tokens(9310, 146, 20328, 0), 86)),
         ),
         (
             "claude-code s4",
@@ -100,7 +116,7 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
             "opencode s13",
             Harness::OpenCode,
             OPENCODE_STEP_FINISH,
-            Some(TokenUsage::default()),
+            Some(reasoning(TokenUsage::default(), 0)),
         ),
     ];
     for (name, h, stdout, want) in cases {
@@ -119,7 +135,7 @@ fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
 fn opencodes_measured_step_finish_counts_reasoning_as_output_and_sums_to_its_own_total() {
     let stdout = fixture!("s36-opencode-parity/run-usage.stdout.jsonl");
     let usage = usage_of(Harness::OpenCode, None, stdout).expect("a step_finish was read");
-    assert_eq!(usage, tokens(700, 50, 300, 0));
+    assert_eq!(usage, reasoning(tokens(700, 50, 300, 0), 7));
     let reported_total = json_frames(stdout)
         .iter()
         .find_map(|f| f.pointer("/part/tokens/total").and_then(|t| t.as_u64()))
@@ -147,7 +163,7 @@ fn per_step_harnesses_sum_their_steps_and_whole_run_harnesses_take_the_last_tota
     .join("\n");
     assert_eq!(
         usage_of(Harness::OpenCode, None, &steps),
-        Some(tokens(120, 10, 150, 50))
+        Some(reasoning(tokens(120, 10, 150, 50), 0))
     );
     // goose's `complete` is a whole-run total: a second one supersedes the first.
     let completes = [

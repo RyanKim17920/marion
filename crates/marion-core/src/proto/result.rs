@@ -422,6 +422,7 @@ mod tests {
                     output: 2,
                     cache_read: 5,
                     cache_write: 0,
+                    reasoning: None,
                 }),
                 workspace: Some(Workspace::Worktree {
                     path: "/w/t-1".into(),
