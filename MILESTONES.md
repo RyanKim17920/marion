@@ -1595,6 +1595,12 @@ ever runs a real login.
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
   fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
   on another branch.
+- **Several credentials per provider — stored and listed; rotation not built.** A credential is
+  `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
+  work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
+  `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
+  (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
+  ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
   overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
   endpoint's env keys, documents and MCP route equal to canned's on every harness, bar the

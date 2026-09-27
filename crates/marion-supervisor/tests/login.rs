@@ -185,7 +185,7 @@ fn list_shows_every_provider_and_which_are_stored_but_never_the_key() {
     }
     let or = list_row(&run, "openrouter");
     assert!(or.contains("openai-chat,anthropic"), "{or}");
-    assert!(or.trim_end().ends_with("stored"), "{or}");
+    assert!(or.trim_end().ends_with("openrouter"), "{or}");
     assert!(list_row(&run, "openai").trim_end().ends_with('-'));
     assert!(list_row(&run, "ollama").contains("not needed"));
 }
@@ -228,7 +228,7 @@ fn a_custom_provider_is_added_listed_and_can_hold_a_key() {
     let list = marion(&home, &["login", "--list"], None, &[]);
     let row = list_row(&list, "my-gw");
     assert!(
-        row.contains("(custom)") && row.trim_end().ends_with("stored"),
+        row.contains("(custom)") && row.trim_end().ends_with("my-gw"),
         "{row}"
     );
     // A custom id may not shadow a built-in.
@@ -271,4 +271,61 @@ fn a_repositorys_own_providers_toml_is_never_read() {
         &[],
     );
     assert_ne!(run.code, 0, "{}", run.all());
+}
+
+#[test]
+fn several_labelled_keys_for_one_provider_are_stored_listed_and_removed_one_by_one() {
+    let home = scratch("labels");
+    const WORK: &str = "sk-work-key-DO-NOT-PRINT-1";
+    const PERSONAL: &str = "sk-personal-key-DO-NOT-PRINT-2";
+    let work = marion(
+        &home,
+        &["login", "openrouter", "--label", "work", "--stdin"],
+        Some(WORK),
+        &[],
+    );
+    assert_eq!(work.code, 0, "{}", work.all());
+    assert!(work.stdout.contains("openrouter:work"), "{}", work.stdout);
+    let personal = marion(
+        &home,
+        &["login", "openrouter:personal", "--stdin"],
+        Some(PERSONAL),
+        &[],
+    );
+    assert_eq!(personal.code, 0, "{}", personal.all());
+    let list = marion(&home, &["login", "--list"], None, &[]);
+    assert_eq!(list.code, 0, "{}", list.all());
+    let row = list_row(&list, "openrouter");
+    assert!(
+        row.trim_end()
+            .ends_with("openrouter:work, openrouter:personal"),
+        "login order, ids only: {row}"
+    );
+    assert!(!list.all().contains(WORK) && !list.all().contains(PERSONAL));
+    let out = marion(
+        &home,
+        &["logout", "openrouter", "--label", "work"],
+        None,
+        &[],
+    );
+    assert_eq!(out.code, 0, "{}", out.all());
+    let text = std::fs::read_to_string(stored_file(&home)).unwrap();
+    assert!(
+        !text.contains(WORK) && text.contains(PERSONAL),
+        "only the work key went"
+    );
+    let list = marion(&home, &["login", "--list"], None, &[]);
+    assert!(
+        list_row(&list, "openrouter")
+            .trim_end()
+            .ends_with("openrouter:personal")
+    );
+    // A label outside the id grammar is refused before anything is read.
+    let bad = marion(
+        &home,
+        &["login", "openrouter", "--label", "Work Laptop", "--stdin"],
+        Some(WORK),
+        &[],
+    );
+    assert_ne!(bad.code, 0);
 }

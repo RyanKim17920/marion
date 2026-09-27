@@ -24,7 +24,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use marion_core::provider::Registry;
+use marion_core::provider::{CredentialId, Registry};
 
 /// The environment variable that forces the file backend.
 pub const STORE_ENV: &str = "MARION_CREDENTIAL_STORE";
@@ -76,7 +76,9 @@ pub enum CredentialError {
          = -); check what was pasted"
     )]
     BadKeyChars,
-    #[error("`{0}` is not a provider id marion can file a key under")]
+    #[error(
+        "`{0}` is not a credential id (`<provider>` or `<provider>:<label>`) marion can file a key under"
+    )]
     BadProvider(String),
     #[error("{path}: {why}")]
     File { path: PathBuf, why: String },
@@ -96,13 +98,13 @@ pub trait CredentialStore {
     fn describe(&self) -> String;
 }
 
-/// A provider id as the stores accept it — the registry's own id grammar, so a store key can never
-/// carry a character the Keychain's command line or a JSON key would need to escape.
-fn check_provider(provider: &str) -> Result<(), CredentialError> {
-    if marion_core::provider::valid_id(provider) {
-        Ok(())
-    } else {
-        Err(CredentialError::BadProvider(provider.to_string()))
+/// A credential id as the stores accept it — `provider` or `provider:label`, each half the
+/// registry's own id grammar ([`CredentialId`]), so a store key can never carry a character the
+/// Keychain's command line or a JSON key would need to escape.
+fn check_provider(id: &str) -> Result<(), CredentialError> {
+    match CredentialId::parse(id) {
+        Some(_) => Ok(()),
+        None => Err(CredentialError::BadProvider(id.to_string())),
     }
 }
 
@@ -207,7 +209,7 @@ impl FileStore {
     }
 
     fn save(&self, keys: &BTreeMap<String, String>) -> Result<(), CredentialError> {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let dir = self
             .path
             .parent()
@@ -221,27 +223,127 @@ impl FileStore {
             .map_err(|e| self.err(e))?;
         let doc = serde_json::json!({ "providers": keys });
         let body = serde_json::to_string_pretty(&doc).expect("a Value always serialises");
-        let mut nonce = [0u8; 8];
-        getrandom::fill(&mut nonce).map_err(|e| self.err(e))?;
-        let tmp = dir.join(format!(
-            ".credentials.json.{}.{}",
-            std::process::id(),
-            nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        ));
-        let written = (|| -> io::Result<()> {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            f.write_all(body.as_bytes())?;
-            f.write_all(b"\n")?;
-            f.sync_all()?;
-            std::fs::rename(&tmp, &self.path)
-        })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(self.err(e));
+        write_private(&self.path, &body).map_err(|e| self.err(e))
+    }
+}
+
+/// Replace `path` with `body`, mode `0600`, through an `O_EXCL` temp file beside it and a rename,
+/// so a reader never sees a partial file and no other user ever sees any.
+fn write_private(path: &Path, body: &str) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("has no parent directory"))?;
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(
+        ".{name}.{}.{}",
+        std::process::id(),
+        nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ));
+    let written = (|| -> io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(body.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// **Which credentials the user has logged in, in login order** — the non-secret index beside
+/// the store (`logins.json`: ids only, never a key). The Keychain cannot be listed without reading
+/// every item, so this is what `marion login --list` groups and what a launch falls back to for
+/// the order to try a provider's credentials in when the user stated none.
+pub struct Logins {
+    path: PathBuf,
+}
+
+impl Logins {
+    pub fn user() -> Result<Self, CredentialError> {
+        Ok(Logins::at(config_dir()?.join("logins.json")))
+    }
+
+    pub fn at(path: PathBuf) -> Self {
+        Logins { path }
+    }
+
+    fn err(&self, why: impl std::fmt::Display) -> CredentialError {
+        CredentialError::File {
+            path: self.path.clone(),
+            why: why.to_string(),
+        }
+    }
+
+    /// Every logged-in credential, in login order. An absent index is none.
+    pub fn all(&self) -> Result<Vec<CredentialId>, CredentialError> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(self.err(e)),
+        };
+        let doc: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| self.err(format!("is not valid JSON (line {})", e.line())))?;
+        Ok(doc
+            .get("logins")
+            .and_then(|l| l.as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_str().and_then(CredentialId::parse))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// `provider`'s logged-in credentials, in login order.
+    pub fn of(&self, provider: &str) -> Result<Vec<CredentialId>, CredentialError> {
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|c| c.provider == provider)
+            .collect())
+    }
+
+    fn save(&self, ids: &[CredentialId]) -> Result<(), CredentialError> {
+        use std::os::unix::fs::DirBuilderExt;
+        if let Some(dir) = self.path.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| self.err(e))?;
+        }
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        let body = serde_json::to_string_pretty(&serde_json::json!({ "logins": ids }))
+            .expect("a Value always serialises");
+        write_private(&self.path, &body).map_err(|e| self.err(e))
+    }
+
+    /// Note `id` as logged in (at the end, if it is new).
+    pub fn add(&self, id: &CredentialId) -> Result<(), CredentialError> {
+        let mut ids = self.all()?;
+        if !ids.contains(id) {
+            ids.push(id.clone());
+            self.save(&ids)?;
+        }
+        Ok(())
+    }
+
+    /// Forget `id`.
+    pub fn remove(&self, id: &CredentialId) -> Result<(), CredentialError> {
+        let mut ids = self.all()?;
+        let before = ids.len();
+        ids.retain(|c| c != id);
+        if ids.len() != before {
+            self.save(&ids)?;
         }
         Ok(())
     }
@@ -473,6 +575,51 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_labelled_credential_is_its_own_entry_beside_the_default() {
+        let store = FileStore::at(tmp("labels").join("c.json"));
+        store
+            .put("openrouter", &Secret::new("sk-default").unwrap())
+            .unwrap();
+        store
+            .put("openrouter:work", &Secret::new("sk-work").unwrap())
+            .unwrap();
+        assert_eq!(
+            store.get("openrouter").unwrap().unwrap().expose(),
+            "sk-default"
+        );
+        assert_eq!(
+            store.get("openrouter:work").unwrap().unwrap().expose(),
+            "sk-work"
+        );
+        assert!(store.get("openrouter:personal").unwrap().is_none());
+        assert!(store.get("openrouter:Work").is_err());
+    }
+
+    #[test]
+    fn the_logins_index_keeps_login_order_and_holds_no_key() {
+        let dir = tmp("logins");
+        let logins = Logins::at(dir.join("logins.json"));
+        assert!(logins.all().unwrap().is_empty());
+        let id = |s: &str| CredentialId::parse(s).unwrap();
+        for s in ["openrouter:work", "groq", "openrouter", "openrouter:work"] {
+            logins.add(&id(s)).unwrap();
+        }
+        assert_eq!(
+            logins.of("openrouter").unwrap(),
+            vec![id("openrouter:work"), id("openrouter")]
+        );
+        logins.remove(&id("openrouter:work")).unwrap();
+        assert_eq!(logins.of("openrouter").unwrap(), vec![id("openrouter")]);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("logins.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -13,17 +13,18 @@
 use std::io::{self, BufRead, Read, Write};
 use std::process::ExitCode;
 
-use marion_core::provider::{self, AuthKind, ProviderDef, Registry, Wire};
+use marion_core::provider::{self, AuthKind, CredentialId, ProviderDef, Registry, Wire};
 
-use crate::credentials::{self, CredentialStore, Secret};
+use crate::credentials::{self, CredentialStore, Logins, Secret};
 
 const USAGE: &str = "\
-usage: marion login <provider> [--from-env | --stdin]
+usage: marion login <provider>[:<label>] [--label <label>] [--from-env | --stdin]
        marion login --list
        marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--name <name>] [--auth api-key|none]
-       marion logout <provider>
+       marion logout <provider>[:<label>] [--label <label>]
 
   <provider>   a provider id; `marion login --list` shows them all
+  --label      keep this key beside the provider's others (`openrouter:work`)
   --stdin      read the key from standard input instead of a terminal
   --from-env   import the key from the provider's own environment variable
   wires:       anthropic, openai-chat, openai-responses, gemini";
@@ -83,16 +84,40 @@ fn login(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
         Some("--list") if args.len() == 1 => list(out),
         Some("custom") => custom(&args[1..], out),
         Some(id) if !id.starts_with('-') => {
-            let source = match &args[1..] {
-                [] => Source::Terminal,
-                [f] if f == "--stdin" => Source::Stdin,
-                [f] if f == "--from-env" => Source::Env,
-                _ => return Err(Failure::Usage),
-            };
-            store_key(id, source, out)
+            let mut source = Source::Terminal;
+            let mut label = None;
+            let mut it = args[1..].iter();
+            while let Some(flag) = it.next() {
+                match flag.as_str() {
+                    "--stdin" if source == Source::Terminal => source = Source::Stdin,
+                    "--from-env" if source == Source::Terminal => source = Source::Env,
+                    "--label" if label.is_none() => label = Some(it.next().ok_or(Failure::Usage)?),
+                    _ => return Err(Failure::Usage),
+                }
+            }
+            store_key(&credential_id(id, label)?, source, out)
         }
         _ => Err(Failure::Usage),
     }
+}
+
+/// `<provider>[:<label>]`, with `--label` as the other spelling of the same label.
+fn credential_id(id: &str, label: Option<&String>) -> Result<CredentialId, Failure> {
+    let spelled = match label {
+        Some(l) if id.contains(':') => {
+            return Err(Failure::Refused(format!(
+                "`{id}` already names a label; drop `--label {l}` or the `:` part"
+            )));
+        }
+        Some(l) => format!("{id}:{l}"),
+        None => id.to_string(),
+    };
+    CredentialId::parse(&spelled).ok_or_else(|| {
+        Failure::Refused(format!(
+            "`{spelled}` is not a credential id: a provider id, optionally `:` and a label, each \
+             lowercase letters, digits and `-`"
+        ))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +127,9 @@ enum Source {
     Env,
 }
 
-fn store_key(id: &str, source: Source, out: &mut dyn Write) -> Result<(), Failure> {
+fn store_key(id: &CredentialId, source: Source, out: &mut dyn Write) -> Result<(), Failure> {
     let reg = registry()?;
-    let p = known(&reg, id)?;
+    let p = known(&reg, &id.provider)?;
     if !p.auth.needs_credential() {
         writeln!(out, "{} needs no key; nothing stored.", p.name)?;
         return Ok(());
@@ -127,8 +152,9 @@ fn store_key(id: &str, source: Source, out: &mut dyn Write) -> Result<(), Failur
         Source::Terminal => read_from_terminal(p)?,
     };
     let store = store()?;
-    store.put(&p.id, &key)?;
-    writeln!(out, "Stored a key for {} in {}.", p.id, store.describe())?;
+    store.put(&id.to_string(), &key)?;
+    Logins::user()?.add(id)?;
+    writeln!(out, "Stored a key for {id} in {}.", store.describe())?;
     Ok(())
 }
 
@@ -184,20 +210,22 @@ fn read_hidden_line() -> io::Result<String> {
     Ok(line)
 }
 
-/// `marion login --list`: id, name, wires, whether a key is stored. Never the key.
+/// `marion login --list`: id, name, wires, and the credential ids stored for each provider in
+/// login order. Never a key.
 fn list(out: &mut dyn Write) -> Result<(), Failure> {
     let reg = registry()?;
     let store = store()?;
-    writeln!(out, "{:<16} {:<28} {:<40} KEY", "PROVIDER", "NAME", "WIRES")?;
+    let logins = Logins::user()?;
+    writeln!(
+        out,
+        "{:<16} {:<28} {:<40} KEYS",
+        "PROVIDER", "NAME", "WIRES"
+    )?;
     for p in reg.iter() {
         let stored = if !p.auth.needs_credential() {
             "not needed".to_string()
         } else {
-            match store.get(&p.id) {
-                Ok(Some(_)) => "stored".to_string(),
-                Ok(None) => "-".to_string(),
-                Err(e) => format!("unreadable: {e}"),
-            }
+            stored_ids(store.as_ref(), &logins, &p.id)
         };
         let name = if p.custom {
             format!("{} (custom)", p.name)
@@ -216,22 +244,43 @@ fn list(out: &mut dyn Write) -> Result<(), Failure> {
     Ok(())
 }
 
+/// The stored credential ids for `provider`, comma-joined in login order — the unlabelled one
+/// first where no login index names it — or `-` for none.
+fn stored_ids(store: &dyn CredentialStore, logins: &Logins, provider: &str) -> String {
+    let mut ids = logins.of(provider).unwrap_or_default();
+    let default = CredentialId::default_for(provider);
+    if !ids.contains(&default) {
+        ids.insert(0, default);
+    }
+    let mut stored = Vec::new();
+    for id in ids {
+        match store.get(&id.to_string()) {
+            Ok(Some(_)) => stored.push(id.to_string()),
+            Ok(None) => {}
+            Err(e) => stored.push(format!("{id} (unreadable: {e})")),
+        }
+    }
+    if stored.is_empty() {
+        "-".to_string()
+    } else {
+        stored.join(", ")
+    }
+}
+
 fn logout(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
-    let [id] = args else {
-        return Err(Failure::Usage);
+    let id = match args {
+        [id] => credential_id(id, None)?,
+        [id, flag, label] if flag == "--label" => credential_id(id, Some(label))?,
+        _ => return Err(Failure::Usage),
     };
     let reg = registry()?;
-    let p = known(&reg, id)?;
+    known(&reg, &id.provider)?;
     let store = store()?;
-    if store.delete(&p.id)? {
-        writeln!(
-            out,
-            "Removed the key for {} from {}.",
-            p.id,
-            store.describe()
-        )?;
+    Logins::user()?.remove(&id)?;
+    if store.delete(&id.to_string())? {
+        writeln!(out, "Removed the key for {id} from {}.", store.describe())?;
     } else {
-        writeln!(out, "No key was stored for {}.", p.id)?;
+        writeln!(out, "No key was stored for {id}.")?;
     }
     Ok(())
 }
