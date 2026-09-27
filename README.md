@@ -115,7 +115,7 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `claude` (Claude Code) | 2.1.220 | yes, with a pane shape | yes | `claude-acp` |
 | `codex` (Codex CLI) | 0.146.0 | yes, with a pane shape | yes | `codex-acp` |
 | `gemini` (Gemini CLI) | 0.53.0 | yes | yes | `gemini` |
-| `opencode` | 1.17.3 | yes | yes | `opencode` / `acp-opencode` |
+| `opencode` | 1.17.3 (measured through 1.18.32) | yes | yes | `opencode` / `acp-opencode` |
 | `copilot` (Copilot CLI) | 1.0.83 | yes | yes | `copilot` |
 | `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
 | `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
@@ -123,6 +123,23 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `acp:<command>` | n/a | — | — | the generic path |
 
 The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion` offers them in its picker.
+
+**opencode, in all three of its shapes, against the two harnesses marion is most used with** —
+each `yes` is a test that drives the real binary against the canned provider, or for `status` and usage a reader held to a real capture (`MILESTONES.md`, s36):
+
+| | `claude` | `codex` | `opencode` (`run`) | `acp-opencode` | `marion opencode` |
+|---|---|---|---|---|---|
+| child: spawn, report, worktree, verification, landed branch | yes (verification and branch untested) | yes | yes | yes (verification on a fake agent) | — (a root) |
+| parent: `spawn` reaches marion, contract comes back | yes | yes | yes | yes | yes |
+| a steer reaches it | mid-turn fold | next generation | next generation (`--session`) | mid-turn fold | pasted |
+| a background child's end reaches it | next turn | next generation | next generation | next prompt | pasted |
+| resumed after the supervisor is killed | unit-tested only | yes | yes | yes (`session/load`) | — |
+| `status` shows its recent calls; usage read | yes | yes | yes (reasoning counted) | yes | — (no stream) |
+| an expired child leaves no tool process | — | yes | yes | yes | — |
+| marion's tools approved at launch | `--allowedTools` | declaration key | declaration key | answers the ask | declaration key |
+
+One gap is opencode's own: `opencode run` names its session only once its first response streams,
+so a node whose supervisor dies during its first request has nothing to resume.
 
 ![marion tree: a codex-impl root whose child is marked blocked:descendants because its own grandchild is still spawning; the detail pane shows type, harness, state, surface, depth, timeout and id.](docs/media/tree-descendant-gate.png)
 
