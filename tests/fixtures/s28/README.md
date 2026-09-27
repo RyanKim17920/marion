@@ -65,3 +65,9 @@ a session, take the turn, and report nothing.
 Every one of them is marion's server alias and the verb, joined by some separator, sometimes under
 an `mcp` prefix. That pair — not any one spelling — is what `acp::Reading::Generic` recognises, and
 `the_generic_reading_finds_every_measured_agents_report` asserts it finds all four captures above.
+
+## Scrubbed
+
+In both `copilot-acp-session*.jsonl` captures the `available_commands_update` frame keeps copilot's
+built-in commands and replaces the operator's own installed skills with one `example-skill` stub.
+No test reads the catalogue; the frame is kept because its presence is a protocol fact.

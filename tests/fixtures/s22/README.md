@@ -158,4 +158,7 @@ it was 38 KB and 84 KB of the operator's own skill, plugin and command catalogue
 operator's environment"* class, and it carried an account display name. The frame is kept because
 its presence is a protocol fact; its contents were never the measurement.
 
+For the same reason `claude-agent-acp`'s `agent` select keeps only its `default` option plus one
+`example-agent` stub; the rest listed the operator's own installed agents.
+
 Token counts are **kept**, as in S21: they are the evidence behind the `usage` capability.

@@ -74,7 +74,9 @@ defined by ACP and **none of them was driven here**, so all five stay `false`.
 
 ## Files
 
-* `opencode-acp-session.jsonl` — the agent's own stdout, verbatim, one frame per line.
+* `opencode-acp-session.jsonl` — the agent's own stdout, verbatim, one frame per line, except
+  that the `available_commands_update` frame keeps only opencode's built-in `init` and `review`:
+  the rest was the operator's own skill catalogue, which no test reads.
 * `opencode-acp-mcp.jsonl` — the MCP server's transcript, both directions.
 * `opencode-acp-prompt-response.json` — the `session/prompt` response.
 
