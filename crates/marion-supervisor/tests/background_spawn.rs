@@ -1973,7 +1973,7 @@ fn marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one() {
     assert!(out.contains("queued as m-"), "{out}");
     assert!(
         out.contains("reaches codex")
-            && out.contains(&format!(" {root_short} at its next turn boundary")),
+            && out.contains(&format!(" {root_short} at its next tool round or turn")),
         "{out}"
     );
     assert!(
@@ -2035,7 +2035,7 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
     let short = marion_supervisor::tree::short_id(&child.0);
     assert!(
         text.contains(&format!(
-            "reaches codex-impl {short} at its next turn boundary"
+            "reaches codex-impl {short} at its next tool round or turn"
         )),
         "{text}"
     );

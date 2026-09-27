@@ -343,7 +343,9 @@ pub struct Steered {
 impl Steered {
     /// **The one sentence every steer surface prints on acceptance**: the message's id and when the
     /// node takes it. "Queued", never "delivered", while the supervisor says `queued` — a queued
-    /// message reaches the model only at the node's next turn boundary.
+    /// message reaches the model only at a boundary: its next tool round on a harness that folds a
+    /// message into work in progress, its next turn otherwise. Which one is the node's row, which
+    /// this sentence does not read, so it names both.
     pub fn sentence(&self) -> String {
         let short = crate::tree::short_id(&self.agent_id.0);
         let who = match &self.agent_type {
@@ -356,7 +358,7 @@ impl Steered {
             .as_deref()
             .map_or_else(String::new, |m| format!(" as {m}"));
         if self.result.queued {
-            format!("queued{id}; reaches {who} at its next turn boundary")
+            format!("queued{id}; reaches {who} at its next tool round or turn")
         } else {
             format!("delivered{id} to {who}")
         }
@@ -667,7 +669,7 @@ mod tests {
         };
         assert_eq!(
             typed.sentence(),
-            "queued as m-7; reaches codex-impl 8ea3 at its next turn boundary"
+            "queued as m-7; reaches codex-impl 8ea3 at its next tool round or turn"
         );
         let untyped = Steered {
             agent_id: id,
@@ -676,7 +678,7 @@ mod tests {
         };
         assert_eq!(
             untyped.sentence(),
-            "queued as m-7; reaches 8ea3 at its next turn boundary"
+            "queued as m-7; reaches 8ea3 at its next tool round or turn"
         );
     }
 }
