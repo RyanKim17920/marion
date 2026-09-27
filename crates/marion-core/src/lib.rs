@@ -21,6 +21,7 @@ pub mod node;
 pub mod paths;
 pub mod proto;
 pub mod registry;
+pub mod review;
 pub mod root_change;
 pub mod scope;
 
