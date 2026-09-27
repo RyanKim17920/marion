@@ -142,3 +142,37 @@ The workflow asks for `contents: write` itself, so no repository-wide Actions se
 
 After that, `brew install RyanKim17920/tap/marion`, `npm install -g @ryankim17920/marion` and the
 `curl … | sh` line on the release page all work.
+
+## Windows
+
+Windows users run marion under WSL 2, where it is a Linux program and every channel above works.
+Native Windows is not supported, and is a port, not a build flag. What stands in the way,
+measured against the current tree:
+
+- **The pty host.** `marion-supervisor/src/pty.rs` and `pty/` drive harness TUIs through a POSIX
+  pseudo-terminal (`openpty`, `setsid`, controlling-terminal ioctls, `termios` raw mode), and the
+  native facade (`native_tty`, `native_relay`) verifies the operator's terminal by the same
+  ioctls. Windows has ConPTY instead, with a different lifecycle and no controlling-terminal
+  concept.
+- **Unix domain sockets and what rides on them.** The supervisor socket (`socket.rs`), the
+  detach/attach path and the native bootstrap use `AF_UNIX`, peer credentials
+  (`getpeereid`/`SO_PEERCRED`) for authentication, and `SCM_RIGHTS` to pass terminal descriptors
+  between processes. Windows has `AF_UNIX` without descriptor passing or peer credentials; named
+  pipes plus `DuplicateHandle` and the pipe client's process id are the equivalents.
+- **Process groups and signals.** Kill, timeout and reap (`kill.rs`, `run.rs`, `detach.rs`) signal
+  whole process groups and mask signals per thread. The Windows shape is a Job Object per node
+  and `GenerateConsoleCtrlEvent`/`TerminateJobObject`.
+- **Around the edges:** hand-declared `tcgetattr`/`tcsetattr` raw mode in `marion-tui`, `flock`
+  on the journal, `/tmp`-style paths in `scripts/cargo-runner.sh`, and every test fixture that
+  opens a pty.
+
+Rough effort: several weeks of focused work before `marion run` and `marion attach` pass on
+Windows, most of it in the pty and socket layers and their tests, and more before the native
+facade does. The lanes whose harnesses are themselves Unix-only gain nothing.
+
+Suggested approach, if it is ever wanted: first turn `pty` and `socket` into seams — one trait
+each for "spawn a child on a terminal, read, write, resize, wait" and "listen, accept, identify
+the peer, pass a terminal" — with today's POSIX code as the only implementation and no behaviour
+change. Then add ConPTY and named-pipe implementations behind them, a Job Object behind `kill`,
+and a Windows runner in `ci.yml`. The native facade's descriptor-passing capability would need
+its own design on Windows rather than a translation.
