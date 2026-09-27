@@ -55,6 +55,11 @@ marion-term = { path = "../marion-term" }
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false }
 rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
+# Setup's agent-type form: `.marion/agents.toml` is edited in place so the operator's comments and
+# layout survive, and the change is shown as a line diff before it is written. Both were already in
+# the build (through `toml` and `insta`).
+similar = "2"
+toml_edit = "0.22"
 # `MessageQueued.sha256`: the journal audits a queued message by its digest, never its text.
 sha2 = "0.11"
 

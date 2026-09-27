@@ -22,6 +22,7 @@
 //! echo cannot drift apart.
 
 pub mod session;
+pub mod types_form;
 pub mod view;
 
 use marion_core::contract::AgentId;

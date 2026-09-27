@@ -1258,7 +1258,13 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
             });
         }
     };
-    let types = AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
+    agent_types_text(path, &text)
+}
+
+/// [`agent_types`]' checks over `text` as the contents of `path`, without reading it: so a writer
+/// can hold a new file to the very rules a spawn will, before it replaces the old one.
+pub fn agent_types_text(path: PathBuf, text: &str) -> Result<AgentTypes, SpawnError> {
+    let types = AgentTypes::parse(text).map_err(|e| SpawnError::AgentTypesFile {
         path: path.clone(),
         error: e.to_string(),
     })?;
