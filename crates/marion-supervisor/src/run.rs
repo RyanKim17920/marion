@@ -947,7 +947,6 @@ fn launch_only_child(
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
-    secret: Option<&str>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -957,14 +956,11 @@ fn launch_only_child(
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
     // ([`record_capture_after_the_fact`] skips this path).
-    // An endpoint node's key is redacted from each line before it is kept, as the whole capture
-    // is afterwards: the live record would otherwise be the one place it survived.
+    // An endpoint node's key is scrubbed by the sink itself (`EventSink::scrub_key`), on this
+    // live seam as on every other, before a line is kept.
     let on_line = |line: &str| {
         if let Some(es) = events {
-            match secret {
-                Some(key) => es.record_line(&crate::endpoint::redact(line, key)),
-                None => es.record_line(line),
-            }
+            es.record_line(line);
         }
         session.observe_line(line);
     };
@@ -1734,10 +1730,6 @@ pub fn run_spawn_watched(
                 &announce_started,
                 &session,
                 events.as_ref(),
-                endpoint
-                    .as_ref()
-                    .and_then(|e| e.key.as_ref())
-                    .map(|k| k.expose()),
             ),
             // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
             // children through the single ACP adapter*, and until this arm existed the only thing that
@@ -1940,10 +1932,6 @@ pub fn run_spawn_watched(
             &announce_generation,
             &session,
             events.as_ref(),
-            endpoint
-                .as_ref()
-                .and_then(|e| e.key.as_ref())
-                .map(|k| k.expose()),
         );
         if let Some(why) = unaccountable.take() {
             turns.dropped(
@@ -2905,8 +2893,8 @@ mod tests {
     }
 
     /// **An endpoint child's key never reaches its live event record.** `launch_only_child`
-    /// records each line as it lands, before the capture is redacted, so the redaction has to
-    /// happen on the line; a harness echoing its key in an error is the case this defends.
+    /// records each line as it lands, before the capture is redacted, so the node's sink has to
+    /// scrub the line; a harness echoing its key in an error is the case this defends.
     #[test]
     fn a_launch_only_childs_live_record_carries_no_endpoint_key() {
         let dir = scratch("run-live-redact");
@@ -2918,7 +2906,8 @@ mod tests {
             crate::events::EventWriter::open_path(&events_path, &id).unwrap(),
             Harness::Codex,
             "unused".into(),
-        );
+        )
+        .scrubbing(Some("sk-endpoint-9f2c1e7a"));
         let key = "sk-endpoint-9f2c1e7a";
         let inv = Invocation {
             program: "sh".into(),
@@ -2938,7 +2927,6 @@ mod tests {
             &|_| {},
             &watch,
             Some(&sink),
-            Some(key),
         )
         .unwrap();
         drop(sink);
