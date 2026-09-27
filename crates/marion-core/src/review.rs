@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::contract::{AgentId, Oid};
+
 /// How severe a finding is. Ordered so that `Critical > High > Medium > Low`.
 ///
 /// The variants are declared lowest first so the derived `Ord` is the severity order; the wire
@@ -428,6 +430,47 @@ pub fn decide(parsed: Parsed, changed_paths: &[PathBuf], block_on: Severity) -> 
         blocking,
         findings: report,
     }
+}
+
+/// One review round: which commit was reviewed, by which reviewer node, and marion's verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRound {
+    /// 1-based; at most [`MAX_ROUNDS_CEILING`].
+    pub round: u8,
+    /// The commit reviewed as `base..commit`; `None` when the change was not committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Oid>,
+    /// The reviewer node, so its own contract and transcript can be found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<AgentId>,
+    pub verdict: Verdict,
+}
+
+/// How a review ended.
+///
+/// `Skipped` and `Errored` are not `Allowed`: a review that did not run, or ran and could not be
+/// read, must never serialize as a clean result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Allowed,
+    Blocked,
+    /// No review ran (no reviewer available, nothing changed, hooks disabled, ...).
+    Skipped {
+        reason: String,
+    },
+    /// A review was attempted and failed (timeout, reviewer crashed, [`Unparseable`] reply).
+    Errored {
+        reason: String,
+    },
+}
+
+/// The review record a reviewed node's completion carries: the outcome and every round run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    pub outcome: ReviewOutcome,
+    #[serde(default)]
+    pub rounds: Vec<ReviewRound>,
 }
 
 #[cfg(test)]
@@ -903,5 +946,83 @@ mod tests {
             ]
         );
         assert_eq!(v.findings.findings_omitted, 0);
+    }
+
+    fn round(decision: Decision) -> ReviewRound {
+        ReviewRound {
+            round: 1,
+            commit: Some(Oid("0123456789abcdef0123456789abcdef01234567".into())),
+            reviewer: Some(AgentId("reviewer-1".into())),
+            verdict: Verdict {
+                decision,
+                blocking: usize::from(decision == Decision::Block),
+                findings: Findings {
+                    verdict: ModelVerdict::Block,
+                    summary: "s".into(),
+                    findings: vec![Finding {
+                        grounded: true,
+                        ..finding(Severity::High, "src/a.rs")
+                    }],
+                    findings_omitted: 2,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn every_review_outcome_round_trips_with_a_kind_tag() {
+        let cases = [
+            (ReviewOutcome::Allowed, r#"{"kind":"allowed"}"#),
+            (ReviewOutcome::Blocked, r#"{"kind":"blocked"}"#),
+            (
+                ReviewOutcome::Skipped {
+                    reason: "hooks disabled".into(),
+                },
+                r#"{"kind":"skipped","reason":"hooks disabled"}"#,
+            ),
+            (
+                ReviewOutcome::Errored {
+                    reason: "timed out".into(),
+                },
+                r#"{"kind":"errored","reason":"timed out"}"#,
+            ),
+        ];
+        for (outcome, wire) in cases {
+            assert_eq!(serde_json::to_string(&outcome).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<ReviewOutcome>(wire).unwrap(),
+                outcome
+            );
+        }
+    }
+
+    #[test]
+    fn a_review_record_round_trips_with_its_rounds() {
+        let r = ReviewRecord {
+            outcome: ReviewOutcome::Blocked,
+            rounds: vec![
+                round(Decision::Block),
+                ReviewRound {
+                    round: 2,
+                    commit: None,
+                    reviewer: None,
+                    ..round(Decision::Allow)
+                },
+            ],
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(serde_json::from_str::<ReviewRecord>(&json).unwrap(), r);
+        // Absent optionals are absent keys, not nulls.
+        let second = serde_json::to_value(&r.rounds[1]).unwrap();
+        assert!(second.get("commit").is_none() && second.get("reviewer").is_none());
+        assert_eq!(second["verdict"]["decision"], "allow");
+    }
+
+    #[test]
+    fn a_record_without_rounds_reads() {
+        let r: ReviewRecord =
+            serde_json::from_str(r#"{"outcome":{"kind":"skipped","reason":"no reviewer"}}"#)
+                .unwrap();
+        assert!(r.rounds.is_empty());
     }
 }
