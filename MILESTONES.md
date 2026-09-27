@@ -514,8 +514,33 @@ claude-agent-acp `Fold`, codex-acp and copilot `Queue`
 (`a_typed_turns_mid_turn_behaviour_is_the_rows_and_an_acp_agent_refines_it`). Every other
 strategy delivers at a turn boundary. Pinned by
 `adapter::tests::every_row_resolves_one_turn_delivery_per_shape_as_s31_measured` and the sweep
-`every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). **Row
-data only**: nothing delivers through it yet.
+`every_row_states_a_turn_delivery_its_surfaces_can_carry` (RED with `no field delivery`). The
+`TerminalPaste` rows now deliver (next paragraph); the other strategies are still row data here.
+
+**A queued message is typed into an interactive node's terminal (`TerminalPaste`, 2026-09-27).**
+A pane or a native `marion codex|opencode|copilot` session whose row pastes gets a
+`paste::PasteInjector` the moment `register_pane` publishes its pty (a replacement host gets a
+fresh one): the inbox's `node/steer` messages and background children's ends are written as one
+`ESC[200~…ESC[201~` (every control but newline and tab stripped, so a quoted `ESC[201~` cannot end
+it early), then `\r` 50 ms later, under the same write lock the operator's keys take, and
+journaled `MessageDelivered { via: "pty:paste" }`; the cast carries an `m` marker naming the
+message ahead of marion's `i` records. It types only when the node has DECSET 2004 on (dropped by
+name after 30 s without it), the operator's composer is presumed empty (their last key was Enter,
+or none) and they have been quiet 1.5 s. **Before the first paste the TUI must also have booted**
+— drawn text under bracketed paste, then the row's `OutputQuiet{1500}` of silence: copilot 1.0.83
+turns 2004 on in its first write and then drew nothing for ~20 s, and a paste in that window was
+journaled delivered and discarded (measured in the E2E below). Past boot the busy TUI is typed into
+at once, as S31 measured safe. Proved by `paste::tests` (framing, delay, operator-quiet and
+composer holds observed through the injector's decisions, 2004-off drop, boot hold, cast marker,
+8 KiB byte-exact), `handler::steer::tests` (a steer into a registered codex pane is pasted; a
+replaced pane gets it; a claude pane, whose row is its channel, is never typed into) and
+`native_facade_e2e::a_steer_and_a_background_childs_end_reach_every_native_paste_lane_as_user_turns`:
+on codex (pinned 0.147.0), opencode 1.18.32 and copilot 1.0.83 against the canned provider through
+the operator's own home, the steer arrives in the provider log as a user message, and on codex the
+pasted turn backgrounds a canned codex child whose end then arrives as the root's next user turn.
+**Not covered:** interactive claude stays on its MCP channel (refused under API-key auth; no paste
+fallback yet), and a message held by an injector whose pane is replaced is dropped rather than
+handed to the new one.
 
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
