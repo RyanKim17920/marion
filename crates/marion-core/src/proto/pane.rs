@@ -50,9 +50,16 @@ impl<'de> Deserialize<'de> for OpaquePaneBytesV1 {
     }
 }
 
-/// A byte-exact, fixed-width token proving readiness at a pane replay boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A byte-exact, fixed-width token proving readiness at a pane replay boundary. `Debug` prints
+/// `PaneReadyTokenV1(***)`: the bytes are the value the boundary checks.
+#[derive(Clone, Eq, PartialEq)]
 pub struct PaneReadyTokenV1([u8; 32]);
+
+impl std::fmt::Debug for PaneReadyTokenV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PaneReadyTokenV1(***)")
+    }
+}
 
 impl PaneReadyTokenV1 {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -130,5 +137,22 @@ where
         Ok(version)
     } else {
         Err(D::Error::custom("unsupported pane frame version"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The token answers a pane replay boundary on the connection it was issued to; printing it
+    /// hands a reader of a log the one value that boundary checks.
+    #[test]
+    fn a_pane_ready_token_never_debug_prints_its_bytes() {
+        let t = PaneReadyTokenV1::new([0xab; 32]);
+        let printed = format!("{t:?} {t:#?}");
+        assert!(!printed.contains("171"), "{printed}");
+        assert!(!printed.to_ascii_lowercase().contains("ab"), "{printed}");
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<PaneReadyTokenV1>(&json).unwrap(), t);
     }
 }
