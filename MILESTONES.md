@@ -152,6 +152,12 @@ operator's stream is byte for byte the node's output plus marion's row, clear an
 equals the node's own recording replayed at its own size; green
 on claude 2.1.280, codex 0.155.1, gemini 0.53.0, opencode 1.18.32 and copilot 1.0.88 (run with
 those versions admitted locally, not committed — the pin table still names the measured ones).
+Re-run green 2026-09-27 on claude 2.1.283, codex 0.155.1, gemini 0.53.0, opencode 1.18.32 and
+copilot 1.0.83 (claude and opencode widened locally the same way, uncommitted), with the
+`pane_attach.rs` claude and codex cells. Live renders on codex and opencode agree: before the
+reservation the row covered codex's model/path footer on a 14-row terminal and toggle-off left
+it blank, and on opencode toggle-off left an unpainted bottom row; with it, both harnesses lay
+out above the row and repaint their last line when it goes.
 
 **Parent ping (2026-09-11).** A backgrounded child's end now reaches its parent's model
 without a `wait`: after the handle's reply, the bridge watches the node on its own clock and pushes
