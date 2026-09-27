@@ -1,0 +1,30 @@
+{
+ "path": "/v1/chat/completions",
+ "headers": {
+  "User-Agent": "OpenAI/JS 6.26.0",
+  "authorization": "<36 chars>"
+ },
+ "body": {
+  "model": "canned-1",
+  "messages": [
+   {
+    "role": "system",
+    "content": "<system prompt, 1664 chars>"
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "do the task"
+     }
+    ]
+   }
+  ],
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  },
+  "store": false
+ }
+}

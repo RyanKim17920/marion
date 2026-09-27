@@ -1,0 +1,22 @@
+{
+ "argv": [
+  "pi",
+  "-p",
+  "--mode",
+  "json",
+  "--no-extensions",
+  "--provider",
+  "marion",
+  "--model",
+  "canned-1",
+  "--tools",
+  "mcp__marion__report",
+  "-e",
+  "<RUN-DIR>/marion-pi.js",
+  "x"
+ ],
+ "exit": 1,
+ "wall_s": 0.8,
+ "requests": 0,
+ "stderr": "Error: Failed to load extension \"<RUN-DIR>/marion-pi.js\": Failed to load extension: marion's MCP server did not start: spawn /nonexistent/bridge ENOENT\nHint: Start without extensions using \"pi -ne\"."
+}
