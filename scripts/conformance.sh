@@ -9,6 +9,15 @@
 # PATH are skipped by name. Writes <out>/<row>-<version>/ transcripts and <out>/matrix.{json,md}
 # (default out: tests/fixtures/conformance/). With --baseline, a cell that was PASS in that matrix
 # and is not now fails the run.
+#
+# Callers: scripts/admit-harness.sh runs it for the admitted programs against the committed matrix.
+# TODO(release-canary): the nightly canary (.github/workflows/canary.yml on branch release-canary,
+# not yet landed) should run, after its harness_drift step and on the newest installed harnesses,
+#   scripts/conformance.sh --all --out "$RUNNER_TEMP/conformance" \
+#       --baseline tests/fixtures/conformance/matrix.json
+# and attach "$RUNNER_TEMP/conformance/matrix.md" to the drift PR it opens, so a behaviour change
+# the suites do not assert (MCP readiness, provider faults, mid-turn writes) is seen the night it
+# ships rather than at the next admission.
 set -u
 
 here=$(cd "$(dirname "$0")/.." && pwd) || exit 1
