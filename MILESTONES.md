@@ -1565,6 +1565,21 @@ route with no settings file written. Antigravity shares `~/.gemini/` and owns th
 `service=gemini` Keychain item S12 found, so S12 is a starting point, but the CLI surface must be
 measured rather than assumed to carry over.
 
+### Endpoint mode — any harness on any provider the user holds a key for (started 2026-09-27)
+
+A third auth mode beside canned and live: a node is pointed at a real provider endpoint with a key
+the **user** stored through `marion login`. Scope rules that do not move: no vendor subscription
+login is ever reused outside its own harness, no client identity is spoofed, and no agent or test
+ever runs a real login.
+
+- **Provider registry — built.** `marion_core::provider`: `Wire` (anthropic, openai-chat,
+  openai-responses, gemini), `AuthKind`, and a seed table of fifteen providers (anthropic, openai,
+  openrouter, gemini, deepseek, moonshot, zai, groq, together, fireworks, mistral, xai,
+  vercel-gateway, ollama, lmstudio) with each native wire's base. Rows are transcribed from vendor
+  docs, **not measured**; beta or undocumented-by-marion wires are marked unverified on the row.
+  User-level custom providers parse from `providers.toml` text; `<provider>:<model>` splits on the
+  first colon only when the prefix is a registry id (`ollama:qwen3:32b`).
+
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
 round-tripping, and accurate token counts.
