@@ -296,6 +296,11 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
         Presents::XApiKey => ("x-api-key", fingerprint(KEY)),
     };
     for r in &ev.requests {
+        // claude 2.1.283 opens with `HEAD /api/hello` against the base URL, a reachability probe
+        // that carries no credential and no body: nothing to check, and nothing that could leak.
+        if r["method"] == "HEAD" && r["credentials"].is_null() && r["body"].is_null() {
+            continue;
+        }
         // The user's stored key on every request — never a placeholder.
         assert_eq!(
             r["credentials"][header],

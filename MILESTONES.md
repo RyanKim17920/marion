@@ -926,7 +926,11 @@ were marion's own: the run was on 2.1.280 (its `system/init` says so) and c9a240
 listing `report` to a declared root, so claude answered `No such tool available` and never asked.
 The probes now drop `MARION_DEPTH` from the root's declaration (test-side; production unchanged)
 and ask on 2.1.283 as the recording does. `turn_delivery` runs through the gate from this
-admission on. The probes under `spikes/` were not re-run.
+admission on. The probes under `spikes/` were not re-run. Endpoint mode on 2.1.283
+(`endpoint_matrix::a_claude_code_child_runs_on_the_users_provider_over_the_anthropic_wire`, first
+run 2026-09-27): every `POST /v1/messages` presented the stored key as `authorization: Bearer`
+and named only the chosen model; the run opens with `HEAD /api/hello` to the base URL, carrying
+no credential and no body, which the cell now skips.
 
 **goose 1.52.0, admitted 2026-09-27 via `scripts/admit-harness.sh`.** Homebrew replaced 1.51.0 in
 place. Green with only the entry widened: `marion-testsupport` (35), `cross_product` (57),
