@@ -1051,7 +1051,7 @@ fn canned_operator(
                     (s("XDG_CACHE_HOME"), under("cache")),
                     (s("XDG_STATE_HOME"), under("state")),
                 ],
-                spawn_tool: None,
+                spawn_tool: Some("marion_spawn"),
             })
         }
         Harness::Copilot => {
