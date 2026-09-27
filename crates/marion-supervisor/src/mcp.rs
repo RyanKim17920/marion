@@ -2190,6 +2190,8 @@ mod tests {
                 reap_state: ReapState::Live,
                 timeout: marion_core::encoding::Duration::from_secs(60),
                 pane: false,
+                started_at: None,
+                tokens: None,
             }
         }
         let fleet = vec![
@@ -2246,6 +2248,8 @@ mod tests {
             reap_state: ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(60),
             pane: false,
+            started_at: None,
+            tokens: None,
         };
         // a -> b -> a, with the caller pointing into it.
         let nodes = vec![cyclic("a", "b"), cyclic("b", "a"), cyclic("a", "me")];

@@ -65,6 +65,11 @@ pub struct NodeDetail {
     /// How its latest contract ended, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<CompletionSummary>,
+    /// The tokens each turn (or step) spent, oldest first, where the harness reports usage per
+    /// turn: the sparkline a watcher draws. Empty when it reports only a run total, or nothing —
+    /// a client then draws no sparkline rather than an empty one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<u64>,
 }
 
 /// The task as the node received it.
@@ -149,9 +154,21 @@ pub struct CompletionSummary {
     /// How many paths it changed.
     #[serde(default)]
     pub changed_paths: usize,
+    /// What its landed branch changed against the commit it started from, from git: `None` when
+    /// it landed no branch or git could not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffStat>,
     /// The process exit, as marion described it.
     #[serde(default)]
     pub exit: String,
+}
+
+/// Lines added and removed, and files touched: `git diff --shortstat`'s three numbers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffStat {
+    pub added: u32,
+    pub removed: u32,
+    pub files: u32,
 }
 
 /// `node/attach`. The mode is §7.3.3's per-node answer; see [`AttachMode`].
@@ -417,7 +434,9 @@ mod tests {
                     commit: Some(Oid("abc".into())),
                     changed_paths: 3,
                     exit: "exit 0".into(),
+                    diff: None,
                 }),
+                turns: Vec::new(),
             },
         };
         let s = serde_json::to_string(&full).unwrap();

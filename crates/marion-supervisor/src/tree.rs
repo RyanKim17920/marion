@@ -506,6 +506,8 @@ mod tests {
             reap_state: ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(900),
             pane,
+            started_at: None,
+            tokens: None,
         }
     }
 

@@ -83,7 +83,9 @@ pub fn read(
                 commit: c.commit,
                 changed_paths: c.changed_paths.len() + c.changed_paths_omitted,
                 exit: c.exit.description,
+                diff: None,
             }),
+        turns: Vec::new(),
     }
 }
 

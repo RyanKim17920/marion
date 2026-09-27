@@ -1714,6 +1714,8 @@ mod tests {
                     reap_state: ReapState::Live,
                     timeout: Duration::from_secs(900),
                     pane: true,
+                    started_at: None,
+                    tokens: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 0,

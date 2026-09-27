@@ -259,6 +259,8 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             (None, None) => unreachable!("refused above"),
         },
         pane,
+        started_at: None,
+        tokens: None,
     })
 }
 

@@ -2010,6 +2010,8 @@ mod tests {
             reap_state: ReapState::Live,
             timeout: EncDuration::from_secs(900),
             pane: false,
+            started_at: None,
+            tokens: None,
         }
     }
 

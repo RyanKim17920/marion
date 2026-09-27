@@ -21,6 +21,8 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         reap_state: ReapState::Live,
         timeout: Duration::from_secs(900),
         pane: false,
+        started_at: None,
+        tokens: None,
     }
 }
 
@@ -266,6 +268,7 @@ fn copy_merge_and_diff_need_a_landed_branch() {
                 commit: None,
                 changed_paths: 1,
                 exit: String::new(),
+                diff: None,
             }),
             ..Default::default()
         },
