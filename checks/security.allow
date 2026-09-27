@@ -37,3 +37,10 @@ crates/marion-supervisor/src/provider_check.rs:CredentialRow  `id` is a credenti
 crates/marion-harness/src/spec.rs:KeyRecipe  `note` is the row's measurement prose; the recipe names header spellings, never a key
 crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("Authorization: Bearer" / "x-api-key") into a refusal; no key is in scope
 crates/marion-supervisor/src/bin/marion.rs:tests::the_usage_text_names_login_and_logout  asserts the help text names `marion login --list`; runs nothing
+
+# --- verified safe: home-polish (2026-09-27) ---
+crates/marion-supervisor/src/bin/marion.rs:tests::every_home_effect_parses_back_to_itself  parses the home screen's `marion login <id>` / `marion logout <id>` echoes back through the argument parser; runs nothing
+crates/marion-supervisor/tests/home_e2e.rs:store_fake_key  safe: marion's own `marion login --stdin` into the test's scratch file store with a fixture key; no vendor login
+crates/marion-tui/src/home/help.rs:KeyRow  `key` is a keyboard key on the `?` page ("enter", "^c"), not a credential
+crates/marion-tui/src/home/keys.rs:Key  `Paste` is text the operator pasted into the prompt box; Key is never logged or written, only matched
+crates/marion-tui/src/home/watch.rs:TokenView  `window` is the sparkline's unit ("turn"); token counts only, never a credential
