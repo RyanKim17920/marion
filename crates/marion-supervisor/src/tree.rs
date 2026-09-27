@@ -402,6 +402,9 @@ pub struct Subscription {
     pub shown: String,
     /// §2's socket, for the errands.
     pub socket: PathBuf,
+    /// A frame whose end has not arrived yet: kept across reads, so a read that stops mid-line
+    /// (a read bound, or a non-blocking socket) loses nothing.
+    partial: Vec<u8>,
 }
 
 impl Subscription {
@@ -422,6 +425,7 @@ impl Subscription {
             nodes: Vec::new(),
             shown,
             socket,
+            partial: Vec::new(),
         };
         let mut early = Vec::new();
         let response = loop {
@@ -467,13 +471,46 @@ impl Subscription {
         }
     }
 
+    /// For a caller that waits on [`Self::fd`] itself: reads stop rather than block, and
+    /// [`Self::drain`] folds whatever has arrived.
+    pub fn nonblocking(&mut self) -> std::io::Result<()> {
+        self.lines.get_ref().set_nonblocking(true)
+    }
+
+    /// The socket, for a caller's `poll(2)`. Poll it only after [`Self::drain`] has returned:
+    /// until then the reader may hold whole frames the socket no longer shows as readable.
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.lines.get_ref().as_fd()
+    }
+
+    /// Fold every notification that has arrived, on a [`Self::nonblocking`] subscription.
+    /// `Ok(true)` when the forest changed; `Err` when the supervisor went away.
+    pub fn drain(&mut self) -> Result<bool, Refusal> {
+        let mut changed = false;
+        loop {
+            match self.frame()? {
+                Some(Frame::Notification(n)) => {
+                    changed |= fold_tree_event(&mut self.nodes, &n.event)
+                }
+                Some(_) => {}
+                None => return Ok(changed),
+            }
+        }
+    }
+
     fn frame(&mut self) -> Result<Option<Frame>, Refusal> {
-        let mut line = String::new();
-        match self.lines.read_line(&mut line) {
+        // Bytes, not a `String`: a read that stops inside a multi-byte character must keep the
+        // half it has, and `read_line` would drop it on the way to reporting the stop.
+        match self.lines.read_until(b'\n', &mut self.partial) {
             Ok(0) => Err("the supervisor closed the connection".into()),
-            Ok(_) => Frame::from_line(&line)
-                .map(Some)
-                .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}")),
+            Ok(_) if self.partial.last() != Some(&b'\n') => Ok(None),
+            Ok(_) => {
+                let line = std::mem::take(&mut self.partial);
+                Frame::from_line(&String::from_utf8_lossy(&line))
+                    .map(Some)
+                    .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}"))
+            }
             Err(e)
                 if matches!(
                     e.kind(),
@@ -492,6 +529,40 @@ mod tests {
     use super::*;
     use marion_core::contract::AgentId;
     use marion_core::harness::Harness;
+
+    /// The home screen polls the socket itself and reads it without blocking, so a frame can
+    /// arrive in pieces — even split inside a multi-byte character — and must be folded whole
+    /// once its end arrives, never dropped or garbled.
+    #[test]
+    fn a_nonblocking_subscription_keeps_a_frame_split_across_reads() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut sub = Subscription {
+            lines: BufReader::new(a),
+            nodes: Vec::new(),
+            shown: String::new(),
+            socket: PathBuf::new(),
+            partial: Vec::new(),
+        };
+        sub.nonblocking().unwrap();
+        assert_eq!(sub.drain(), Ok(false), "nothing yet, and no wait for it");
+        let mut node = summary("019f-a", Harness::Codex, false, None);
+        node.name = Some("é-worker".into());
+        let line = Frame::Notification(marion_core::proto::Notification::new(Event::NodeAdded {
+            node,
+            ts: marion_core::encoding::SystemTime(std::time::SystemTime::now()),
+        }))
+        .to_line();
+        let bytes = line.as_bytes();
+        let split = line.find('é').unwrap() + 1;
+        b.write_all(&bytes[..split]).unwrap();
+        assert_eq!(sub.drain(), Ok(false), "half a frame folds nothing");
+        b.write_all(&bytes[split..]).unwrap();
+        assert_eq!(sub.drain(), Ok(true));
+        assert_eq!(sub.nodes.len(), 1);
+        assert_eq!(sub.nodes[0].name.as_deref(), Some("é-worker"));
+        drop(b);
+        assert!(sub.drain().is_err(), "a closed supervisor is an error");
+    }
 
     fn summary(id: &str, harness: Harness, pane: bool, version: Option<&str>) -> NodeSummary {
         NodeSummary {
