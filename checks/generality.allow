@@ -40,3 +40,4 @@ crates/marion-core/src/agent_type.rs:builtin_names  untracked: a second hand-kep
 crates/marion-core/src/agent_type.rs:BUILTINS  row data: the built-in agent-type table, one row per harness type, is the registry itself
 crates/marion-core/src/provider.rs:PROVIDERS  row data: provider registry rows name each provider's own key variable
 crates/marion-core/src/provider.rs:Wire::as_str  `Wire::Gemini` is Google's generateContent wire format (a provider API), not the gemini harness
+crates/marion-supervisor/src/provider_check.rs:models_request  `Wire::Gemini` is Google's generativelanguage API wire, a protocol a provider serves (gemini, openrouter …), not the gemini harness; each wire's listing path and key header is a protocol fact — removable if Wire grows a listing-request method
