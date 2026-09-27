@@ -108,6 +108,7 @@ jobs:
           --test auth_public_paths
           --test mcp_bridge_public_paths
           --test native_injection_kernel
+          --test newer_harness_never_refused
 
       # l45_driver and l45_tree are the L4.5 snapshot gate that .githooks/pre-commit already runs
       # on every commit. They are here too because a hook is per-clone and opt-in.
