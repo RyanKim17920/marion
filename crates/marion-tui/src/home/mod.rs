@@ -32,7 +32,9 @@ pub use help::{HelpView, KeyRow};
 pub use setup::{AgentTypeRow, SetupView};
 pub use start::{HarnessRow, RecentRow, StartView};
 pub use theme::{Ready, Theme};
-pub use watch::{Expanded, FeedRow, NodeRow, ResultView, TokenView, WatchView};
+pub use watch::{
+    Expanded, FeedRow, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView, WatchView,
+};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

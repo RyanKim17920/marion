@@ -3,7 +3,7 @@
 //! it landed and the `git merge` that takes it).
 
 use super::GUTTER;
-use super::text::{clip, fit, pad, rpad, spans_width, tokens, width};
+use super::text::{clip, fit, pad, rpad, spans_width, tokens, width, wrap};
 use super::theme::{CARET, Theme, bad, bold, dim, good, spinner, warn};
 use super::widgets::{centred, code_spans, context_bar, expansion, rule, section, span, sparkline};
 use crate::tree::Tone;
@@ -34,20 +34,54 @@ pub struct NodeRow {
 }
 
 /// The selected node, expanded. Every field is optional because a node reports them at different
-/// times: a spawning node has no activity, a running one no result, a harness without usage
+/// times: a spawning node has no stream, a running one no result, a harness without usage
 /// reporting no tokens.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Expanded {
-    /// What it was asked to do.
-    pub task: Option<String>,
-    /// The latest activity the supervisor peeked (`cargo test · 142 passed`).
-    pub activity: Option<String>,
+    /// Still running: its stream section reads "Running" rather than "Ran".
+    pub live: bool,
+    /// What marion sent it. A root has no contract and so no task.
+    pub task: Option<TaskView>,
+    /// Messages queued for it (steers), oldest first, already worded.
+    pub messages: Vec<MessageView>,
+    /// Everything it has run, oldest first: the live action stream.
+    pub stream: Vec<StreamLine>,
+    /// How many lines up from the newest the stream window is scrolled; 0 follows the end.
+    pub stream_scroll: usize,
+    /// Why marion cannot show a stream for this node, when it cannot (not the same as "nothing").
+    pub stream_unread: Option<String>,
     /// Why it is waiting on the operator, when it is.
     pub needs: Option<String>,
     pub tokens: Option<TokenView>,
     pub result: Option<ResultView>,
     /// Where it works: its worktree, or the operator's checkout for a root.
     pub workspace: Option<String>,
+}
+
+/// The task as the node received it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskView {
+    pub prompt: String,
+    /// What marion appended (its report instruction): drawn dim, as marion's words.
+    pub appended: Option<String>,
+    pub acceptance: Vec<String>,
+    pub verification: Vec<String>,
+}
+
+/// One queued message: when, and the rest already worded (`operator · 41 bytes · delivered`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageView {
+    pub clock: String,
+    pub text: String,
+}
+
+/// One line of the action stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamLine {
+    pub clock: String,
+    /// Text it wrote, rather than a tool call: drawn dim.
+    pub said: bool,
+    pub text: String,
 }
 
 /// Token usage for one node. Counts only, never a price.
@@ -109,6 +143,11 @@ const WIDE: usize = 90;
 const LABEL_W: usize = 17;
 /// The spinner-and-elapsed column: `⠋ 12m04s`.
 const STATUS_W: usize = 9;
+/// Rows of prompt the Task section shows before it ellipsises.
+const PROMPT_ROWS: usize = 3;
+/// The stream window's height, when the screen has room for it.
+const STREAM_MIN: usize = 3;
+const STREAM_MAX: usize = 12;
 
 pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width <= GUTTER * 2 {
@@ -177,7 +216,15 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         if sel {
             if let Some(e) = &v.expanded {
                 let ew = w.saturating_sub(width(&through) + 2);
-                for l in expansion(expanded_rows(e, ew, theme), LABEL_W, ew) {
+                // The stream window gets the rows the rest of the list and block leave, within
+                // bounds: the one part of the block whose height is the screen's to choose.
+                // Compact when the full block would push the other rows off a short screen.
+                let room = list_rows(area).saturating_sub(v.rows.len());
+                let compact = expanded_rows(e, ew, theme, 0, false).len() + STREAM_MIN > room;
+                let fixed = expanded_rows(e, ew, theme, 0, compact).len();
+                let stream_h = room.saturating_sub(fixed).clamp(STREAM_MIN, STREAM_MAX);
+                let block = expanded_rows(e, ew, theme, stream_h, compact);
+                for l in expansion(block, LABEL_W, ew) {
                     // The tree's own lines carry on through the block, so the rows under it still
                     // read as siblings of the one above it.
                     let mut spans = vec![span(format!("  {through}  "), dim())];
@@ -189,7 +236,7 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         }
     }
     let list_top = area.y + 2;
-    let list_h = (area.bottom().saturating_sub(list_top)) as usize;
+    let list_h = list_rows(area);
     let skip = window(lines.len(), selected, list_h);
     let mut y = list_top;
     for (lx, l) in lines.iter().skip(skip).take(list_h) {
@@ -211,6 +258,11 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
             buf.set_line(x, fy, &Line::from(fit(l, w)), w as u16);
         }
     }
+}
+
+/// Rows the node list has: the body under its header and a blank row.
+fn list_rows(area: Rect) -> usize {
+    area.height.saturating_sub(2) as usize
 }
 
 /// The first line to draw so that lines `sel.0..sel.1` are visible in `rows` rows: scrolled only
@@ -301,24 +353,85 @@ fn row<'a>(
     Line::from(fit(l, w + GUTTER as usize))
 }
 
-/// The expansion's rows: label, then values; an empty label continues the row above.
-fn expanded_rows<'a>(e: &Expanded, w: usize, theme: Theme) -> Vec<(String, Vec<Span<'a>>)> {
+/// The expansion's rows: label, then values; an empty label continues the row above. The Running
+/// section gets `stream_h` rows of window (none when 0, which is how the caller measures the rest).
+fn expanded_rows<'a>(
+    e: &Expanded,
+    w: usize,
+    theme: Theme,
+    stream_h: usize,
+    compact: bool,
+) -> Vec<(String, Vec<Span<'a>>)> {
     let mut rows: Vec<(String, Vec<Span>)> = Vec::new();
     let value_w = w.saturating_sub(2 + LABEL_W);
-    let mut doing = Vec::new();
+
     if let Some(t) = &e.task {
-        doing.push(vec![span(t.clone(), Style::default())]);
+        let mut block = Vec::new();
+        let keep = if compact { 1 } else { PROMPT_ROWS };
+        let mut prompt = wrap(&t.prompt, value_w);
+        if prompt.len() > keep {
+            prompt.truncate(keep);
+            let last = prompt.last_mut().expect("keep > 0");
+            *last = clip(&format!("{last} …"), value_w);
+        }
+        block.extend(prompt.into_iter().map(|l| vec![span(l, Style::default())]));
+        if compact {
+            // The criteria and checks as counts, one row; the full list shows on a taller window.
+            let mut summary = Vec::new();
+            if !t.acceptance.is_empty() {
+                let n = t.acceptance.len();
+                summary.push(format!(
+                    "✓ {n} {}",
+                    if n == 1 { "criterion" } else { "criteria" }
+                ));
+            }
+            if !t.verification.is_empty() {
+                let n = t.verification.len();
+                summary.push(format!("$ {n} check{}", if n == 1 { "" } else { "s" }));
+            }
+            if !summary.is_empty() {
+                block.push(vec![span(summary.join(" · "), dim())]);
+            }
+        } else {
+            if let Some(a) = &t.appended {
+                block.push(vec![span("+ marion: ", dim()), span(a.clone(), dim())]);
+            }
+            for a in &t.acceptance {
+                block.push(vec![span("✓ ", dim()), span(a.clone(), Style::default())]);
+            }
+            for v in &t.verification {
+                block.push(vec![span("$ ", dim()), span(v.clone(), Style::default())]);
+            }
+        }
+        push_block(&mut rows, "Task", block);
     }
-    if let Some(a) = &e.activity {
-        doing.push(vec![
-            span("last ", dim()),
-            span(a.clone(), Style::default()),
-        ]);
+
+    if !e.messages.is_empty() {
+        // Compact keeps the latest steer only: the one an operator just sent.
+        let shown = if compact { e.messages.len() - 1 } else { 0 };
+        let block = e.messages[shown..]
+            .iter()
+            .map(|m| {
+                vec![
+                    span(format!("{}  ", m.clock), dim()),
+                    span(m.text.clone(), dim()),
+                ]
+            })
+            .collect();
+        push_block(&mut rows, "Steers", block);
     }
+
     if let Some(n) = &e.needs {
-        doing.push(vec![span("needs you: ", warn()), span(n.clone(), warn())]);
+        push_block(&mut rows, "Needs you", vec![vec![span(n.clone(), warn())]]);
     }
-    push_block(&mut rows, "What it's doing", doing);
+
+    let running = if e.live { "Running" } else { "Ran" };
+    if stream_h > 0 {
+        push_block(&mut rows, running, stream_block(e, stream_h, theme));
+    } else {
+        // Measuring the rest of the block: the section's label row still counts.
+        push_block(&mut rows, running, vec![vec![]]);
+    }
 
     if let Some(t) = &e.tokens {
         let mut block = vec![vec![
@@ -330,7 +443,7 @@ fn expanded_rows<'a>(e: &Expanded, w: usize, theme: Theme) -> Vec<(String, Vec<S
             span(" cached", dim()),
         ]];
         let bar_w = 16.min(value_w.saturating_sub(18));
-        if !t.rate.is_empty() && bar_w > 0 {
+        if !compact && !t.rate.is_empty() && bar_w > 0 {
             let peak = t.rate.iter().copied().max().unwrap_or(0);
             block.push(vec![
                 span(pad(&sparkline(&t.rate, bar_w), bar_w), theme.accent()),
@@ -380,10 +493,56 @@ fn expanded_rows<'a>(e: &Expanded, w: usize, theme: Theme) -> Vec<(String, Vec<S
         push_block(&mut rows, "Result", block);
     }
 
-    if let Some(ws) = &e.workspace {
+    if let Some(ws) = e.workspace.as_ref().filter(|_| !compact) {
         push_block(&mut rows, "Workspace", vec![vec![span(ws.clone(), dim())]]);
     }
     rows
+}
+
+/// The Running section: a window of `h` stream lines, the newest at the bottom unless scrolled,
+/// and a dim line saying what is above and below it when anything is.
+fn stream_block<'a>(e: &Expanded, h: usize, theme: Theme) -> Vec<Vec<Span<'a>>> {
+    if let Some(why) = &e.stream_unread {
+        return vec![vec![span(why.clone(), dim())]];
+    }
+    if e.stream.is_empty() {
+        return vec![vec![span("nothing recorded yet", dim())]];
+    }
+    let total = e.stream.len();
+    let overflow = total > h;
+    // One row of the window goes to the position line when the stream does not fit.
+    let rows = if overflow {
+        h.saturating_sub(1).max(1)
+    } else {
+        h
+    };
+    let scroll = e.stream_scroll.min(total.saturating_sub(rows));
+    let end = total - scroll;
+    let start = end.saturating_sub(rows);
+    let mut block: Vec<Vec<Span>> = e.stream[start..end]
+        .iter()
+        .map(|l| {
+            let text = if l.said {
+                span(format!("“{}”", l.text), dim())
+            } else {
+                span(l.text.clone(), Style::default())
+            };
+            vec![span(format!("{}  ", l.clock), dim()), text]
+        })
+        .collect();
+    if overflow {
+        let mut pos = vec![span(format!("↑ {start} earlier"), dim())];
+        if scroll > 0 {
+            pos.push(span(format!(" · ↓ {scroll} newer"), dim()));
+            pos.push(span("   J", theme.key()));
+            pos.push(span(" follows", dim()));
+        } else {
+            pos.push(span("   K", theme.key()));
+            pos.push(span(" scrolls back", dim()));
+        }
+        block.push(pos);
+    }
+    block
 }
 
 /// Label the first line of `block`, continue the rest under it.

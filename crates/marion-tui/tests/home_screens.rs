@@ -16,8 +16,8 @@
 
 use marion_tui::home::{
     self, AgentTypeRow, Body, Expanded, FeedRow, HarnessRow, HelpView, Hint, Input, KeyRow,
-    NodeRow, Ready, RecentRow, ResultView, Screen, SetupView, StartView, Theme, TokenView,
-    WatchView,
+    MessageView, NodeRow, Ready, RecentRow, ResultView, Screen, SetupView, StartView, StreamLine,
+    TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -278,8 +278,15 @@ fn rows() -> Vec<NodeRow> {
 
 fn landed() -> Expanded {
     Expanded {
-        task: Some(s("Add token-bucket limiter to /v1/orders")),
-        activity: Some(s("cargo test · 142 passed")),
+        live: false,
+        task: Some(task_view("Add token-bucket limiter to /v1/orders")),
+        messages: vec![MessageView {
+            clock: s("14:27"),
+            text: s("operator · 41 bytes · delivered via turn"),
+        }],
+        stream: stream(9),
+        stream_scroll: 0,
+        stream_unread: None,
         needs: None,
         tokens: Some(TokenView {
             input: 184_210,
@@ -304,6 +311,43 @@ fn landed() -> Expanded {
         }),
         workspace: Some(s("~/.local/state/marion/9f3e/worktrees/t-3c33")),
     }
+}
+
+fn task_view(prompt: &str) -> TaskView {
+    TaskView {
+        prompt: s(prompt),
+        appended: Some(s(
+            "When you have finished, call the `report` tool of the marion MCP server exactly once.",
+        )),
+        acceptance: vec![s("cargo test passes"), s("100 req/min per key, 429 after")],
+        verification: vec![s("cargo test -q limits")],
+    }
+}
+
+/// `n` lines of a child working, oldest first: calls in the default colour, words dim.
+fn stream(n: usize) -> Vec<StreamLine> {
+    let all = [
+        (false, "read_file(src/limits/mod.rs)"),
+        (false, "read_file(Cargo.toml)"),
+        (true, "I'll add a token bucket keyed by API key."),
+        (false, "apply_patch(src/limits/bucket.rs +61)"),
+        (false, "apply_patch(src/routes/orders.rs +18 -9)"),
+        (false, "command_execution(cargo build -q)"),
+        (false, "command_execution(cargo test -q limits)"),
+        (true, "142 passed; committing."),
+        (false, "command_execution(git commit -am limiter)"),
+        (false, "report({\"narrative\":\"limiter in, tests green\"})"),
+    ];
+    (0..n)
+        .map(|i| {
+            let (said, text) = all[i % all.len()];
+            StreamLine {
+                clock: format!("14:{:02}:{:02}", 24 + i / 6, (i * 7) % 60),
+                said,
+                text: s(text),
+            }
+        })
+        .collect()
 }
 
 fn feed() -> Vec<FeedRow> {
@@ -679,8 +723,9 @@ fn watch_done_node_with_landed_branch_and_tokens() {
 #[test]
 fn watch_blocked_node_says_what_it_needs() {
     let e = Expanded {
-        task: Some(s("Wire the limiter into CI")),
-        activity: Some(s("editing .github/workflows/ci.yml")),
+        live: true,
+        task: Some(task_view("Wire the limiter into CI")),
+        stream: stream(4),
         needs: Some(s("permission to write .github/workflows/ci.yml")),
         tokens: Some(TokenView {
             input: 38_000,
@@ -718,12 +763,95 @@ fn watch_no_supervisor() {
     insta::assert_snapshot!(report(&sc, 80, 24));
 }
 
+/// A running child's live stream, longer than its window and scrolled back: the window, and the
+/// line saying what is above and below it.
+#[test]
+fn watch_running_stream_scrolled_back() {
+    let e = Expanded {
+        live: true,
+        task: Some(task_view(
+            "Implement the bucket and wire it into /v1/orders; keep the existing middleware order and add a regression test for burst traffic",
+        )),
+        stream: stream(30),
+        stream_scroll: 6,
+        ..Default::default()
+    };
+    let v = watch_view(1, Some(e));
+    let input = command("marion attach 01a093dc-a1f0", "same as enter");
+    insta::assert_snapshot!(at_every_size(&screen(Body::Watch(&v), input, "watch")));
+}
+
+/// The TASK block by itself: the prompt ellipsised at three rows, marion's appended instruction dim,
+/// then the criteria and the checks.
+#[test]
+fn watch_task_block_shows_what_marion_sent() {
+    let e = Expanded {
+        live: true,
+        task: Some(task_view(
+            &"Add a token-bucket limiter to /v1/orders. ".repeat(8),
+        )),
+        ..Default::default()
+    };
+    let v = watch_view(1, Some(e));
+    let buf = draw(&screen(Body::Watch(&v), command("x", ""), "watch"), 100, 30);
+    let text = rows_of(&buf).join("\n");
+    let task_rows: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.contains("TASK"))
+        .take_while(|l| !l.contains("RAN") && !l.contains("RUNNING"))
+        .collect();
+    assert_eq!(task_rows.len(), 3 + 1 + 2 + 1, "{text}");
+    assert!(task_rows[2].trim_end().ends_with('…'), "{text}");
+    assert!(
+        task_rows[3].contains("+ marion: When you have finished"),
+        "{text}"
+    );
+    assert!(task_rows[4].contains("✓ cargo test passes"), "{text}");
+    assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
+}
+
+/// Following the end: a new line appears at the bottom of the window without any key pressed.
+#[test]
+fn a_following_stream_shows_the_newest_line() {
+    let mut e = Expanded {
+        live: true,
+        stream: stream(20),
+        ..Default::default()
+    };
+    let draw_text = |e: &Expanded| {
+        let v = watch_view(1, Some(e.clone()));
+        rows_of(&draw(
+            &screen(Body::Watch(&v), command("x", ""), "watch"),
+            100,
+            30,
+        ))
+        .join("\n")
+    };
+    let before = draw_text(&e);
+    e.stream.push(StreamLine {
+        clock: s("14:59:59"),
+        said: false,
+        text: s("command_execution(echo newest)"),
+    });
+    let after = draw_text(&e);
+    assert!(
+        !before.contains("echo newest") && after.contains("echo newest"),
+        "{after}"
+    );
+    e.stream_scroll = 3;
+    assert!(
+        !draw_text(&e).contains("echo newest"),
+        "scrolled back, the newest is below the window"
+    );
+}
+
 #[test]
 fn watch_compose_open() {
     let v = watch_view(
         1,
         Some(Expanded {
-            task: Some(s("Implement the bucket")),
+            live: true,
+            task: Some(task_view("Implement the bucket")),
             ..Default::default()
         }),
     );
@@ -739,7 +867,8 @@ fn watch_confirm_open() {
     let v = watch_view(
         1,
         Some(Expanded {
-            task: Some(s("Implement the bucket")),
+            live: true,
+            task: Some(task_view("Implement the bucket")),
             ..Default::default()
         }),
     );
