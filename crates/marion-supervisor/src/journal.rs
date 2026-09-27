@@ -291,7 +291,37 @@ fn entry<'a>(
 /// per-call open this function exists to remove.
 pub fn append_at(path: &Path, kind: RecordKind) -> Result<JournalRecord, JournalError> {
     let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    entry(&mut open, path)?.append(kind)
+    let appended = entry(&mut open, path)?.append(kind);
+    drop(open);
+    wake_listeners(path);
+    appended
+}
+
+/// Followers of a journal in this process, woken by this process's own appends to it.
+///
+/// The in-process half of `LiveRegistry`'s wake: the file watch sees every writer, but this one
+/// costs no kernel round trip and cannot be lost to a watch that failed to arm. Weak, so a follower
+/// that has gone is forgotten on the next append rather than kept alive by this list.
+static LISTENERS: std::sync::Mutex<Vec<(PathBuf, std::sync::Weak<crate::wake::Pipe>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Wake `pipe` whenever this process appends to `path`.
+pub(crate) fn listen(path: &Path, pipe: &std::sync::Arc<crate::wake::Pipe>) {
+    let mut listeners = LISTENERS.lock().unwrap_or_else(|e| e.into_inner());
+    listeners.retain(|(_, p)| p.strong_count() > 0);
+    listeners.push((path.to_path_buf(), std::sync::Arc::downgrade(pipe)));
+}
+
+/// Called after every append attempt, successful or not: a torn write changed the file too.
+fn wake_listeners(path: &Path) {
+    let listeners = LISTENERS.lock().unwrap_or_else(|e| e.into_inner());
+    for (p, pipe) in listeners.iter() {
+        if p == path
+            && let Some(pipe) = pipe.upgrade()
+        {
+            pipe.wake();
+        }
+    }
 }
 
 /// [`record`]'s destination with [`append_at`]'s failure policy: **one project's journal, and the
@@ -343,6 +373,8 @@ pub fn record(project: &ProjectDir, kind: RecordKind) {
         Ok(j) => j.record(kind),
         Err(e) => eprintln!("marion: cannot open the journal {}: {e}", path.display()),
     }
+    drop(open);
+    wake_listeners(&path);
 }
 
 /// **§6.1 step 7's confirmation for a managed node, and the `Running` beside it** — one rule for

@@ -129,6 +129,9 @@ pub(crate) mod spawn_receive_gate;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;
+/// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
+/// on instead of sleeping.
+pub mod wake;
 
 /// `marion tree` — §5.6's tree pane, and the half of §9's M5 clause 3 that decides what to grey.
 /// The drawing is `marion_tui::tree`; the deciding is here, through `doctor::capabilities_at`.

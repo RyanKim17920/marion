@@ -404,44 +404,88 @@ fn unparsable_reason(path: &Path, offset: u64) -> String {
 
 /// A [`Registry`] kept current by a thread of its own, shared with whoever reads it.
 ///
-/// This is the *running* half of plan item 3.3: a registry nobody has to remember to poll. No
-/// socket and no handler is built on it — those are later changes — so today its callers are its
-/// tests, which is what a substrate looks like before the thing it carries lands.
+/// This is the *running* half of plan item 3.3: a registry nobody has to remember to poll.
+///
+/// **Woken, not ticking.** The follower blocks until the journal can have changed: this process's
+/// own appends wake it through [`crate::journal::append_at`], another process's through the file's
+/// change notification ([`crate::wake::Watch`]), and a safety poll every `interval` covers anything
+/// neither reports. It used to poll every 10 ms, which on an idle supervisor was a hundred `open`s
+/// and a hundred wakeups a second of pure cost.
 pub struct LiveRegistry {
     inner: Arc<Mutex<Registry>>,
     stop: Arc<AtomicBool>,
+    /// Wakes the follower: this process's appends and [`Self::halt`]. `None` only when no
+    /// descriptor could be had, in which case the follower is on its safety poll alone.
+    wake: Option<Arc<crate::wake::Pipe>>,
+    changes: Arc<crate::wake::Signal>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl LiveRegistry {
-    /// Start following, polling every `interval`.
+    /// Start following: fold whenever the journal is written, and at least every `interval`.
     ///
     /// **The loop reads the stop flag *before* its poll and returns *after* it**, which is the same
     /// rule `bin/marion.rs`'s `follow_journal` is written to and for the same reason: records
     /// written in the last moments before a shutdown are exactly the ones a run cares about, and a
     /// loop that returned on the flag before polling would drop them and end the reading on a lie.
+    ///
+    /// **Drain, re-arm, then read**, every pass: a write that lands after the read leaves a wake
+    /// pending for the next wait, so no append can fall between a poll and the wait after it.
     pub fn follow(registry: Registry, interval: Duration) -> Self {
+        let path = registry.path().to_path_buf();
         let inner = Arc::new(Mutex::new(registry));
         let stop = Arc::new(AtomicBool::new(false));
+        let changes = crate::wake::Signal::new();
+        let wake = crate::wake::Pipe::new().ok().map(Arc::new);
+        if let Some(wake) = &wake {
+            crate::journal::listen(&path, wake);
+        }
         let thread = {
             let inner = Arc::clone(&inner);
             let stop = Arc::clone(&stop);
+            let changes = Arc::clone(&changes);
+            let wake = wake.clone();
             std::thread::spawn(move || {
+                let mut watch = crate::wake::Watch::new(&path);
                 loop {
                     let done = stop.load(Ordering::SeqCst);
-                    lock(&inner).poll();
+                    if let Some(wake) = &wake {
+                        wake.drain();
+                    }
+                    watch.rearm();
+                    fold(&inner, &changes);
                     if done {
                         return;
                     }
-                    std::thread::sleep(interval);
+                    let fds: Vec<_> = wake
+                        .as_ref()
+                        .map(|w| w.fd())
+                        .into_iter()
+                        .chain(watch.fd())
+                        .collect();
+                    if fds.is_empty() {
+                        std::thread::sleep(interval);
+                    } else {
+                        crate::wake::wait_readable(&fds, Some(interval));
+                    }
                 }
             })
         };
         Self {
             inner,
             stop,
+            wake,
+            changes,
             thread: Some(thread),
         }
+    }
+
+    /// **"The registry changed"**, for anyone who would otherwise poll it: notified whenever a
+    /// fold took in records or moved [`Registry::status`], and by the supervisor's handler when its
+    /// own state that the accept loop reads changes. Wait with [`crate::wake::Signal::wait_past`]
+    /// or attach a pipe to include it in a `poll`.
+    pub fn changes(&self) -> Arc<crate::wake::Signal> {
+        Arc::clone(&self.changes)
     }
 
     /// Read the registry under the lock.
@@ -467,7 +511,7 @@ impl LiveRegistry {
     /// The background follower remains the ordinary path; decision points use this synchronous
     /// path because ordering, not elapsed time, is their contract.
     pub fn refresh(&self) -> usize {
-        lock(&self.inner).poll()
+        fold(&self.inner, &self.changes)
     }
 
     /// Stop following and hand back the final reading, after one last poll.
@@ -478,6 +522,9 @@ impl LiveRegistry {
 
     fn halt(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(wake) = &self.wake {
+            wake.wake();
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -490,6 +537,20 @@ impl Drop for LiveRegistry {
     fn drop(&mut self) {
         self.halt();
     }
+}
+
+/// One poll, and a [`LiveRegistry::changes`] notification if it changed anything a reader can see.
+/// The notification is sent after the lock is released, so a woken reader never queues on it.
+fn fold(inner: &Mutex<Registry>, changes: &crate::wake::Signal) -> usize {
+    let mut registry = lock(inner);
+    let before = registry.status.clone();
+    let folded = registry.poll();
+    let changed = folded > 0 || registry.status != before;
+    drop(registry);
+    if changed {
+        changes.notify();
+    }
+    folded
 }
 
 fn lock(inner: &Mutex<Registry>) -> std::sync::MutexGuard<'_, Registry> {
@@ -1086,6 +1147,127 @@ mod tests {
                 .is_exited(),
             "a follower that returns before its last poll ends the reading on a lie"
         );
+    }
+
+    /// A safety poll long enough that only a wake can explain a prompt pickup.
+    const NO_POLL: std::time::Duration = std::time::Duration::from_secs(3600);
+    /// How long a woken follower may take. Far below [`NO_POLL`], far above a scheduler hiccup.
+    const WAKE_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Wait for `cond` on a follower whose safety poll is [`NO_POLL`]. On failure the follower is
+    /// leaked rather than dropped, so a follower that only sleeps reports a failure instead of
+    /// hanging the suite in its `Drop` for an hour.
+    fn woken_within(
+        live: LiveRegistry,
+        cond: impl Fn(&Registry) -> bool,
+        why: &str,
+    ) -> LiveRegistry {
+        let ok = marion_testsupport::until_within(
+            WAKE_BOUND,
+            std::time::Duration::from_millis(5),
+            || live.read(&cond),
+        );
+        if !ok {
+            std::mem::forget(live);
+            panic!("{why}");
+        }
+        live
+    }
+
+    /// **Another process's append wakes the follower** — the supervisor of a different generation,
+    /// a bridge, a `marion run` — without waiting out the safety poll. The file's own change
+    /// notification is the only thing that can say so, since nothing in this process wrote it.
+    #[test]
+    fn a_foreign_append_wakes_the_follower_long_before_its_safety_poll() {
+        let dir = scratch("registry-wake-foreign");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        // Let the follower reach its wait: the pickup below must be a wake, not its first poll.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        append(&path, &line("other", 0, intent("child", Some("root"))));
+        let live = woken_within(
+            live,
+            |r| r.tree().get(&id("child")).is_some(),
+            "a foreign append waited for the safety poll",
+        );
+        live.stop();
+    }
+
+    /// **This process's own append wakes the follower directly**, through the journal's append path
+    /// rather than through the filesystem.
+    #[test]
+    fn an_in_process_append_wakes_the_follower_long_before_its_safety_poll() {
+        let dir = scratch("registry-wake-local");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        crate::journal::append_at(&path, intent("child", Some("root"))).unwrap();
+        let live = woken_within(
+            live,
+            |r| r.tree().get(&id("child")).is_some(),
+            "an in-process append waited for the safety poll",
+        );
+        live.stop();
+    }
+
+    /// A project that has never run has no journal. The first record creates it, and that creation
+    /// is noticed as promptly as an append to an existing file.
+    #[test]
+    fn a_journal_created_after_the_follow_began_is_noticed_without_the_safety_poll() {
+        let dir = scratch("registry-wake-create");
+        let path = dir.join("journal.jsonl");
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        append(&path, &line("other", 0, intent("root", None)));
+        let live = woken_within(
+            live,
+            |r| r.tree().get(&id("root")).is_some(),
+            "a journal's creation waited for the safety poll",
+        );
+        live.stop();
+    }
+
+    /// **The "registry changed" wait others block on** advances when records are folded, and
+    /// wakes a waiter that was already blocked.
+    #[test]
+    fn the_changes_signal_wakes_a_waiter_when_records_are_folded() {
+        let dir = scratch("registry-wake-signal");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let changes = live.changes();
+        let seen = changes.generation();
+        let waiter = std::thread::spawn(move || changes.wait_past(seen, WAKE_BOUND));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        append(&path, &line("other", 0, intent("child", Some("root"))));
+        assert_ne!(
+            waiter.join().unwrap(),
+            seen,
+            "the waiter timed out instead of being woken"
+        );
+        assert!(live.read(|r| r.tree().get(&id("child")).is_some()));
+        live.stop();
+    }
+
+    /// Stopping a follower whose safety poll is an hour returns at once, with the last poll still
+    /// taken after the stop was decided.
+    #[test]
+    fn stopping_a_follower_does_not_wait_out_its_safety_poll() {
+        let dir = scratch("registry-wake-stop");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(live.stop());
+        });
+        let last = rx
+            .recv_timeout(WAKE_BOUND)
+            .expect("stop waited out the safety poll");
+        assert!(last.tree().get(&id("root")).is_some());
     }
 
     /// **NC — a panicking reader must not end the registry.**

@@ -52,7 +52,7 @@ marion-term = { path = "../marion-term" }
 # and `marion-term` take it that way: none of the four shipped backends is wanted, and the one
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false }
-rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
+rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"] }
 # `MessageQueued.sha256`: the journal audits a queued message by its digest, never its text.
 sha2 = "0.11"
 # `profiles::ProfilesFile` reads `$XDG_CONFIG_HOME/marion/profiles.toml`, with the parser

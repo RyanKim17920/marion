@@ -738,14 +738,16 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
 /// `<state>/<hash>` going away is not an event any descriptor here delivers.
 const ENTITLEMENT_POLL: Duration = Duration::from_millis(500);
 
-/// How often the detached supervisor folds new journal bytes.
+/// The detached supervisor's **safety** poll of its journal.
 ///
-/// `journal.rs` group-commits on a ~50 ms timer, so a record becomes visible at that granularity and
-/// polling faster buys latency that does not exist. Ten milliseconds keeps the supervisor's view
-/// within one commit interval of the file without reading it in a spin — and every decision point
-/// (`session/quit`, the idle-exit predicate) calls `LiveRegistry::refresh` synchronously anyway,
-/// precisely so that no correctness claim rests on this number.
-const REGISTRY_POLL: Duration = Duration::from_millis(10);
+/// Not the latency: the follower is woken by every append — this process's through
+/// `journal::append_at`, a bridge's or another generation's through the file's change notification
+/// (`wake::Watch`) — so a record is folded as soon as it is written. This bounds only what those
+/// wakes could miss (a platform without a watch, a journal replaced under it). It used to be the
+/// latency, at 10 ms, which on an idle supervisor was a hundred `open`s and wakeups a second. Every
+/// decision point (`session/quit`, the idle-exit predicate) still calls `LiveRegistry::refresh`
+/// synchronously, so no correctness claim rests on this number.
+const REGISTRY_POLL: Duration = Duration::from_secs(1);
 
 /// Why stage 3 refused to serve. Both arms mean the double fork did not happen.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

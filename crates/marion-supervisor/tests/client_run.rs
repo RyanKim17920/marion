@@ -228,8 +228,8 @@ fn until(cond: impl FnMut() -> bool) -> bool {
 
 /// [`until`] with its own budget, for the one wait whose *expiry is itself a defect report*.
 ///
-/// The registry polls every 10 ms (`detach::REGISTRY_POLL`), so a supervisor catching up with a
-/// journal that has stopped growing is a matter of milliseconds. A wait for that which runs to
+/// The registry is woken by every journal append (`LiveRegistry::follow`), so a supervisor catching
+/// up with a journal that has stopped growing is a matter of milliseconds. A wait for that which runs to
 /// [`BOUND`] would turn a follower that has permanently lost a record — the seam defect criterion 2
 /// is about — into a three-minute timeout instead of a named failure. So the caller gives it a
 /// short budget and then *asserts about the numbers*, which is what says which record went missing.
