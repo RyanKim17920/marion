@@ -9,12 +9,13 @@
 //! the `node/get` it rides on, because the row itself is still true.
 
 use marion_core::agent_type;
+use marion_core::contract::Oid;
 use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
 use marion_core::harness::Harness;
 use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
-use marion_core::proto::result::{CompletionSummary, MessageLine, NodeDetail, TaskSent};
+use marion_core::proto::result::{CompletionSummary, DiffStat, MessageLine, NodeDetail, TaskSent};
 use marion_core::registry::ReplayedNode;
 use marion_harness::adapter::adapter_for_type;
 use std::path::Path;
@@ -50,11 +51,15 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
 
 /// The detail for node `id`, read from its files under `project`, with a page of its activity
 /// stream from `cursor` when one was asked for.
+///
+/// Usage and per-turn spend come from `tallies`, which reads only what the stream appended since
+/// the last question: a watcher asking once a second costs the new bytes, not the whole file.
 pub fn read(
     project: &ProjectDir,
     id: &AgentId,
     i: &Inputs,
     cursor: Option<ActivityCursor>,
+    tallies: &crate::usage_tally::Tallies,
 ) -> NodeDetail {
     let dir = project.agent(id);
     let events = dir.events();
@@ -62,31 +67,144 @@ pub fn read(
         let bytes = std::fs::read(dir.contract(t)).ok()?;
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
-    let usage = adapter_for_type(i.harness, i.acp_agent.as_deref())
+    let spent = adapter_for_type(i.harness, i.acp_agent.as_deref())
         .ok()
-        .and_then(|a| a.usage(&crate::activity::all_frames(&events)));
+        .and_then(|a| a.usage_rule())
+        .map(|rule| tallies.read(id, &events, rule))
+        .unwrap_or_default();
     NodeDetail {
-        task: contract.as_ref().map(task_sent),
+        // A child's task is its contract's; a root has none (§9), so its kept prompt.
+        task: contract.as_ref().map(task_sent).or_else(|| root_task(&dir)),
         messages: messages(&project.journal(), id),
         stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
-        usage,
+        usage: spent.usage,
         workspace: contract
             .as_ref()
             .map(|c| c.workspace.clone())
             .or_else(|| i.launch_workspace.clone()),
-        completion: contract
-            .and_then(|c| c.completion)
-            .map(|c| CompletionSummary {
+        completion: contract.and_then(|contract| {
+            let diff = landed_diff(&contract);
+            contract.completion.map(|c| CompletionSummary {
                 status: c.status,
                 narrative: c.narrative.map(|n| n.value),
                 branch: c.branch,
                 commit: c.commit,
                 changed_paths: c.changed_paths.len() + c.changed_paths_omitted,
                 exit: c.exit.description,
-                diff: None,
-            }),
-        turns: Vec::new(),
+                diff,
+            })
+        }),
+        turns: spent.turns,
     }
+}
+
+/// What a contract's landed branch changed against the commit it started from, when it landed
+/// one: `git diff --shortstat <base> <commit>` in the repository's common dir, where the branch's
+/// objects live even once its worktree is gone.
+fn landed_diff(c: &TaskContract) -> Option<DiffStat> {
+    let completion = c.completion.as_ref()?;
+    completion.branch.as_ref()?;
+    diff_stat(
+        c.repo.git_common_dir.as_ref()?,
+        c.base_commit.as_ref()?,
+        completion.commit.as_ref()?,
+    )
+}
+
+/// `git diff --shortstat base commit` against `git_dir`, **once per pair**: both are commits, so
+/// the answer never changes, and a watcher asking about a landed node every second must not run
+/// git every second. `None` when git cannot say (a missing object, no git on `PATH`).
+fn diff_stat(git_dir: &Path, base: &Oid, commit: &Oid) -> Option<DiffStat> {
+    type Key = (std::path::PathBuf, String, String);
+    type Cache = std::collections::HashMap<Key, Option<DiffStat>>;
+    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    let key = (git_dir.to_path_buf(), base.0.clone(), commit.0.clone());
+    if let Some(hit) = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .get(&key)
+    {
+        return *hit;
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .args(["diff", "--no-ext-diff", "--no-color", "--shortstat"])
+        .arg(&base.0)
+        .arg(&commit.0)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Through the spawn gate, as every process this supervisor starts is.
+    let stat = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut cmd)
+        .and_then(|child| child.wait_with_output())
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| parse_shortstat(&String::from_utf8_lossy(&out.stdout)));
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, stat);
+    stat
+}
+
+/// `--shortstat`'s line — ` 3 files changed, 84 insertions(+), 12 deletions(-)`, any clause of
+/// which may be absent — as its three numbers; an empty answer is no change. `None` for a line
+/// that is not one.
+fn parse_shortstat(out: &str) -> Option<DiffStat> {
+    let line = out.trim();
+    let mut stat = DiffStat::default();
+    if line.is_empty() {
+        return Some(stat);
+    }
+    for clause in line.split(',') {
+        let mut words = clause.split_whitespace();
+        let n: u32 = words.next()?.parse().ok()?;
+        match words.next()? {
+            w if w.starts_with("file") => stat.files = n,
+            w if w.starts_with("insertion") => stat.added = n,
+            w if w.starts_with("deletion") => stat.removed = n,
+            _ => return None,
+        }
+    }
+    Some(stat)
+}
+
+/// Keep the prompt a root was launched with beside its stream, owner-only, for [`read`] to show
+/// as its task. Best-effort by the same policy as its event record: a viewer never fails a run, so
+/// a write that fails is said on stderr and the run goes on.
+pub fn persist_root_prompt(dir: &marion_core::paths::AgentDir, prompt: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = dir.prompt();
+    let written = std::fs::create_dir_all(dir.path()).and_then(|()| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        // `mode` applies only to a file this call creates.
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(prompt.as_bytes())
+    });
+    if let Err(e) = written {
+        eprintln!(
+            "marion: cannot keep the root's prompt at {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// A root's kept prompt as its task, when there is one.
+fn root_task(dir: &marion_core::paths::AgentDir) -> Option<TaskSent> {
+    let prompt = std::fs::read_to_string(dir.prompt()).ok()?;
+    Some(task_of(&prompt, Vec::new(), Vec::new()))
 }
 
 /// The contract's task as the node received it.
@@ -280,7 +398,13 @@ mod tests {
         let task = TaskId("t-1".into());
         record_codex_stream(&p, &id);
         write_contract(&p, &id, &task, true);
-        let d = read(&p, &id, &inputs(true, Some(&task)), None);
+        let d = read(
+            &p,
+            &id,
+            &inputs(true, Some(&task)),
+            None,
+            &Default::default(),
+        );
         let t = d.task.clone().expect("a child has a task");
         assert_eq!(t.prompt, "add a token-bucket limiter");
         assert_eq!(
@@ -294,6 +418,12 @@ mod tests {
             d.usage.is_some(),
             "the codex stream states its usage: {d:?}"
         );
+        assert!(!d.turns.is_empty(), "codex sums per-turn units: {d:?}");
+        assert_eq!(
+            d.turns.iter().sum::<u64>(),
+            d.usage.unwrap().total(),
+            "the turns add up to the run"
+        );
         assert_eq!(
             d.workspace,
             Some(Workspace::Worktree {
@@ -306,13 +436,111 @@ mod tests {
         assert_eq!(c.commit, Some(Oid("0123456789abcdef".into())));
     }
 
+    /// **A root's task is the prompt it was launched with**, kept 0600 beside its stream because
+    /// a root has no contract to hold it; the prompt is shown, marion's own suffix split off as on
+    /// a child.
+    #[test]
+    fn a_root_shows_the_prompt_it_was_launched_with() {
+        let (p, id) = project("detail-root-prompt");
+        let dir = p.agent(&id);
+        persist_root_prompt(&dir, "list the limiter files");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.prompt())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the prompt is the operator's words: owner-only"
+        );
+        let d = read(&p, &id, &inputs(false, None), None, &Default::default());
+        let t = d.task.expect("a root with a kept prompt has a task");
+        assert_eq!(t.prompt, "list the limiter files");
+        assert!(t.acceptance.is_empty() && t.verification.is_empty());
+    }
+
+    /// **A landed branch's diff stat comes from git**, base to landed commit, and each of
+    /// `--shortstat`'s three clauses may be absent.
+    #[test]
+    fn a_landed_branch_is_measured_against_the_commit_it_started_from() {
+        assert_eq!(
+            parse_shortstat(" 3 files changed, 84 insertions(+), 12 deletions(-)\n"),
+            Some(DiffStat {
+                added: 84,
+                removed: 12,
+                files: 3
+            })
+        );
+        assert_eq!(
+            parse_shortstat(" 1 file changed, 1 deletion(-)"),
+            Some(DiffStat {
+                added: 0,
+                removed: 1,
+                files: 1
+            })
+        );
+        assert_eq!(
+            parse_shortstat(""),
+            Some(DiffStat::default()),
+            "no change is zero, said"
+        );
+        assert_eq!(parse_shortstat("fatal: bad revision"), None);
+
+        let dir = marion_testsupport::scratch("detail-diffstat");
+        let repo = marion_testsupport::fixture_repo(&dir);
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("src/keep.txt"), "kept\nand more\n").unwrap();
+        std::fs::write(repo.join("src/new.txt"), "new\n").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=m@example.invalid",
+            "-c",
+            "user.name=m",
+            "commit",
+            "-qm",
+            "landed",
+        ]);
+        let landed = git(&["rev-parse", "HEAD"]);
+        let common = repo.join(".git");
+        assert_eq!(
+            diff_stat(&common, &Oid(base.clone()), &Oid(landed.clone())),
+            Some(DiffStat {
+                added: 3,
+                removed: 1,
+                files: 2
+            })
+        );
+        assert_eq!(
+            diff_stat(&common, &Oid(base), &Oid("0".repeat(40))),
+            None,
+            "a commit git cannot find is no stat, not zero"
+        );
+    }
+
     /// A running node with no contract (a root): its stream page, the launch workspace, nothing
     /// invented.
     #[test]
     fn a_running_root_reports_its_stream_and_launch_workspace_only() {
         let (p, id) = project("detail-running");
         record_codex_stream(&p, &id);
-        let d = read(&p, &id, &inputs(false, None), Some(ActivityCursor::Tail));
+        let d = read(
+            &p,
+            &id,
+            &inputs(false, None),
+            Some(ActivityCursor::Tail),
+            &Default::default(),
+        );
         assert!(d.task.is_none() && d.completion.is_none(), "{d:?}");
         let page = d.stream.clone().expect("a page was asked for");
         assert!(page.unread.is_none() && !page.lines.is_empty(), "{page:?}");
@@ -334,6 +562,7 @@ mod tests {
             &id,
             &inputs(true, Some(&task)),
             Some(ActivityCursor::Tail),
+            &Default::default(),
         );
         assert!(
             d.task.is_none() && d.usage.is_none() && d.completion.is_none(),

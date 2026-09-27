@@ -266,6 +266,16 @@ impl EventSink {
         self.record_text_line(line, true);
     }
 
+    /// [`Self::record_line`], with an endpoint node's key redacted from the line first. The live
+    /// seam runs before any capture is redacted, so this is where the key must go: a harness that
+    /// echoes its key in an error frame would otherwise leave it here and nowhere else.
+    pub fn record_line_redacted(&self, line: &str, secret: Option<&str>) {
+        match secret {
+            Some(key) => self.record_line(&crate::endpoint::redact(line, key)),
+            None => self.record_line(line),
+        }
+    }
+
     /// One stdout line as a frame when it is a JSON object, else as the raw line; a blank line is
     /// nothing.
     fn record_text_line(&self, line: &str, live: bool) {

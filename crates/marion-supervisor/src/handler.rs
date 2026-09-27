@@ -259,9 +259,25 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             (None, None) => unreachable!("refused above"),
         },
         pane,
-        started_at: None,
+        started_at: clock(node).0,
+        ended_at: clock(node).1,
         tokens: None,
     })
+}
+
+/// When a node started and ended, in the journal's own times — never this process's clock (see
+/// `first_ts`): started at its latest `Spawned`, else its first record; ended at the record that
+/// moved it to `Exited`.
+fn clock(
+    node: &ReplayedNode,
+) -> (
+    Option<marion_core::encoding::SystemTime>,
+    Option<marion_core::encoding::SystemTime>,
+) {
+    (
+        node.spawned_ts.or(node.first_ts),
+        node.state.is_exited().then_some(node.state_ts).flatten(),
+    )
 }
 
 /// What a subscriber has already been told about one node.
@@ -269,6 +285,31 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
 struct Told {
     state: NodeState,
     reap_state: ReapState,
+    /// The summary's facts that move without a state change — its clock and its spend. A change
+    /// here re-sends the whole summary as `tree/node-added`, which every client, old or new, folds
+    /// as a replacement in place (`tree::fold_tree_event`); a new notification kind would make an
+    /// older client read a frame it cannot decode as the supervisor going away.
+    extra: Extra,
+}
+
+/// See [`Told::extra`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Extra {
+    started_at: Option<marion_core::encoding::SystemTime>,
+    ended_at: Option<marion_core::encoding::SystemTime>,
+    tokens: Option<u64>,
+}
+
+impl Extra {
+    /// Read without projecting the node: this runs for every node on every flush.
+    fn of(n: &ReplayedNode, tallies: &crate::usage_tally::Tallies) -> Extra {
+        let (started_at, ended_at) = clock(n);
+        Extra {
+            started_at,
+            ended_at,
+            tokens: tallies.total(&n.agent_id),
+        }
+    }
 }
 
 /// One client following one node's `events.jsonl`.
@@ -1437,6 +1478,12 @@ pub struct RegistryHandle {
     /// runs: its contract file is written when it ends, and until then nothing on disk holds the
     /// prompt. In memory only, like [`NodeHandle`]; after the run the contract is the record.
     sent: Mutex<HashMap<AgentId, marion_core::proto::result::TaskSent>>,
+    /// **What each node has spent so far**, folded from only what its stream appended since the
+    /// last reading ([`crate::usage_tally`]). Advanced by [`Self::flush`] for nodes whose total can
+    /// still move, at most every [`TALLY_EVERY`], and by `node/get` for the node it describes.
+    tallies: crate::usage_tally::Tallies,
+    /// When [`Self::flush`] last advanced the tallies.
+    tallied_at: Mutex<Option<std::time::Instant>>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1580,6 +1627,8 @@ impl RegistryHandle {
             pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
             sent: Mutex::new(HashMap::new()),
+            tallies: crate::usage_tally::Tallies::default(),
+            tallied_at: Mutex::new(None),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
             stopped_reported: AtomicBool::new(false),
@@ -1660,14 +1709,54 @@ impl RegistryHandle {
     /// can tell "nothing changed" from "nothing was delivered", which are the same zero from the
     /// socket's side and different problems.
     pub fn flush(&self) -> usize {
+        // File reads, so before either lock: a slow disk must never hold up the tree.
+        self.advance_tallies();
         // **Before the shared lock, never inside it.** See [`Panes`]: the two are separate maps
         // precisely so an operator's keystroke is not written under the lock every `tree/subscribe`
         // waits on, and taking them in the other order here would rebuild that coupling.
         let panes = self.pane_ids();
         let mut g = lock(&self.shared);
-        let events = self.live.read(|r| collect(r, &mut g, &panes));
+        let events = self
+            .live
+            .read(|r| collect(r, &mut g, &panes, &self.tallies));
         deliver(&mut g, &events);
         events.len()
+    }
+
+    /// Read what every node whose total can still move has appended to its stream, at most every
+    /// [`TALLY_EVERY`]: a running node, and an ended one not yet read since it ended (its last
+    /// unit lands at its exit). A tree with nothing running and everything read reads no file.
+    fn advance_tallies(&self) {
+        {
+            let mut at = lock(&self.tallied_at);
+            if at.is_some_and(|t| t.elapsed() < TALLY_EVERY) {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        let due: Vec<(AgentId, std::path::PathBuf, crate::node_detail::Inputs)> =
+            self.live.read(|r| {
+                let Some(project) = r.project() else {
+                    return Vec::new();
+                };
+                r.tree()
+                    .nodes()
+                    .iter()
+                    .filter(|n| !n.state.is_exited() || !self.tallies.settled(&n.agent_id))
+                    .filter_map(|n| {
+                        let i = crate::node_detail::inputs(n)?;
+                        Some((n.agent_id.clone(), project.agent(&n.agent_id).events(), i))
+                    })
+                    .collect()
+            });
+        for (id, events, i) in due {
+            if let Some(rule) = usage_rule(&i) {
+                self.tallies.read(&id, &events, rule);
+            }
+            if i.exited {
+                self.tallies.settle(&id);
+            }
+        }
     }
 
     /// The nodes this supervisor holds a pty for, as a snapshot.
@@ -1692,8 +1781,8 @@ impl RegistryHandle {
         // under one lock, so there is no instant at which a notification could slip between the
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
-            let events = collect(r, &mut g, &panes);
-            let nodes = project(r.tree(), &mut g, &panes);
+            let events = collect(r, &mut g, &panes, &self.tallies);
+            let nodes = project(r.tree(), &mut g, &panes, &self.tallies);
             (events, nodes, r.read_point())
         });
         deliver(&mut g, &events);
@@ -1727,9 +1816,13 @@ impl RegistryHandle {
             // The detail's file reads happen here, after the registry lock is released: a long
             // stream or a slow disk must never hold up the tree for everyone else.
             let mut detail: marion_core::proto::result::NodeDetail = match (inputs, project) {
-                (Some(i), Some(p)) => crate::node_detail::read(&p, id, &i, cursor),
+                (Some(i), Some(p)) => {
+                    crate::node_detail::read(&p, id, &i, cursor, &self.tallies)
+                }
                 _ => Default::default(),
             };
+            let mut node = node;
+            node.tokens = detail.usage.map(|u| u.total());
             if detail.task.is_none() {
                 detail.task = lock(&self.sent).get(id).cloned();
             }
@@ -4885,11 +4978,16 @@ impl Handle for RegistryHandle {
 /// `panes` is the set of nodes this supervisor holds a pty for, read **before** the shared lock was
 /// taken — see [`RegistryHandle::pane_ids`] for why it is a snapshot passed in rather than a map
 /// consulted here.
-fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeSummary> {
+fn project(
+    tree: &Replay,
+    g: &mut Shared,
+    panes: &HashSet<AgentId>,
+    tallies: &crate::usage_tally::Tallies,
+) -> Vec<NodeSummary> {
     let mut out = Vec::new();
     let mut lost = 0usize;
     for n in tree.nodes() {
-        match summarize(n, panes.contains(&n.agent_id)) {
+        match summarize_spent(n, panes.contains(&n.agent_id), tallies) {
             Ok(s) => out.push(s),
             Err(_) => lost += 1,
         }
@@ -4907,40 +5005,84 @@ fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeS
 /// Every `ts` is the journal's, never this process's clock — see
 /// [`marion_core::registry::ReplayedNode::first_ts`] for why a follower's `now()` is the wrong
 /// answer on a field a client renders as when the thing occurred.
-fn collect(r: &Registry, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<Event> {
+fn collect(
+    r: &Registry,
+    g: &mut Shared,
+    panes: &HashSet<AgentId>,
+    tallies: &crate::usage_tally::Tallies,
+) -> Vec<Event> {
     let mut events = Vec::new();
     for n in r.tree().nodes() {
         let now = Told {
             state: n.state,
             reap_state: n.reap_state,
+            extra: Extra::of(n, tallies),
         };
-        match g.told.get(&n.agent_id) {
+        let before = g.told.get(&n.agent_id).copied();
+        if before == Some(now) {
+            continue;
+        }
+        // Projected only when there is something to say, not for every node on every flush.
+        let summary = summarize_spent(n, panes.contains(&n.agent_id), tallies).ok();
+        match before {
             None => {
                 // A node marion cannot describe produces no `tree/node-added` — there is no summary
                 // to put in one — but it is still recorded as told, so it is not re-examined on
                 // every flush. `project` is what counts it.
-                if let Ok(node) = summarize(n, panes.contains(&n.agent_id)) {
+                if let Some(node) = summary {
                     events.push(Event::NodeAdded {
                         node,
                         ts: journal_ts(n.first_ts),
                     });
                 }
-                g.told.insert(n.agent_id.clone(), now);
             }
-            Some(before) if *before != now => {
-                events.push(Event::NodeState {
-                    agent_id: n.agent_id.clone(),
-                    state: n.state,
-                    reap_state: n.reap_state,
-                    ts: journal_ts(n.state_ts),
-                });
-                g.told.insert(n.agent_id.clone(), now);
+            Some(before) => {
+                if (before.state, before.reap_state) != (now.state, now.reap_state) {
+                    events.push(Event::NodeState {
+                        agent_id: n.agent_id.clone(),
+                        state: n.state,
+                        reap_state: n.reap_state,
+                        ts: journal_ts(n.state_ts),
+                    });
+                }
+                if before.extra != now.extra
+                    && let Some(node) = summary
+                {
+                    events.push(Event::NodeAdded {
+                        node,
+                        ts: journal_ts(n.state_ts.or(n.first_ts)),
+                    });
+                }
             }
-            Some(_) => {}
         }
+        g.told.insert(n.agent_id.clone(), now);
     }
     events
 }
+
+/// [`summarize`], with the node's spend so far from `tallies` — read from memory, no file.
+fn summarize_spent(
+    n: &ReplayedNode,
+    pane: bool,
+    tallies: &crate::usage_tally::Tallies,
+) -> Result<NodeSummary, Unprojectable> {
+    let mut s = summarize(n, pane)?;
+    s.tokens = tallies.total(&n.agent_id);
+    Ok(s)
+}
+
+/// The rule a node's usage is read by, from its adapter: no harness is named here.
+fn usage_rule(
+    i: &crate::node_detail::Inputs,
+) -> Option<&'static marion_harness::grammar::UsageRule> {
+    marion_harness::adapter::adapter_for_type(i.harness, i.acp_agent.as_deref())
+        .ok()?
+        .usage_rule()
+}
+
+/// How often [`RegistryHandle::flush`] reads running nodes' streams for their spend. A usage unit
+/// lands once per turn or step, so a watcher sees a new total within this of the unit.
+const TALLY_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The journal's own time for a transition.
 ///
@@ -5150,6 +5292,53 @@ mod tests {
             "nothing sets `Node.name` yet, so `None` is what the journal says rather than a \
              placeholder for what marion does not know"
         );
+    }
+
+    /// **A row's clock comes from the journal**: started at its latest `Spawned` (its process's
+    /// start, which a resume moves), ended at the record that moved it to `Exited`, so a client
+    /// words elapsed time without the supervisor ticking anything.
+    #[test]
+    fn a_summary_carries_when_the_node_started_and_ended() {
+        let spawned = |ms| {
+            line(
+                1,
+                ms,
+                RecordKind::Spawned(Spawned {
+                    agent_id: id("c"),
+                    harness_version: "0.9.0".into(),
+                    model: None,
+                    pid: Some(3),
+                    start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
+                }),
+            )
+        };
+        let intent_at = line(0, 1_000, intent("c", None, "codex-impl", 0));
+        let running = summarize(&node_of(std::slice::from_ref(&intent_at), "c"), false).unwrap();
+        assert_eq!(
+            running.started_at,
+            Some(SystemTime::from_unix_millis(1_000)),
+            "before any Spawned, the intent's time"
+        );
+        let exited = line(
+            2,
+            9_000,
+            RecordKind::Exited(Exited {
+                agent_id: id("c"),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "done".into(),
+                },
+            }),
+        );
+        let s = summarize(&node_of(&[intent_at, spawned(2_000), exited], "c"), false).unwrap();
+        assert_eq!(s.started_at, Some(SystemTime::from_unix_millis(2_000)));
+        assert_eq!(s.ended_at, Some(SystemTime::from_unix_millis(9_000)));
+        assert_eq!(running.ended_at, None, "a node still running has not ended");
     }
 
     /// **A recorded bound outranks the agent type's, because it is the one the node is under.**
@@ -5657,6 +5846,46 @@ mod tests {
             "§7.6 gates on the disjunction, so the two travel in one message"
         );
         assert_eq!(ts, SystemTime::from_unix_millis(3_500));
+
+        // The child's stream states what it spent: the row's total arrives as the whole summary
+        // again, the one notification an older client already folds as a replacement.
+        let events =
+            w.fx.handle
+                .live
+                .read(|r| r.project())
+                .expect("the fixture's journal names a project")
+                .agent(&id("child"))
+                .events();
+        std::fs::create_dir_all(events.parent().unwrap()).unwrap();
+        let sink = crate::events::EventSink::new(
+            crate::events::EventWriter::open_path(&events, &id("child")).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        for l in include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl").lines() {
+            sink.record_line(l);
+        }
+        let spent = marion_harness::adapter::adapter_for(Harness::Codex)
+            .unwrap()
+            .usage(&crate::activity::all_frames(&events))
+            .expect("the fixture states its usage")
+            .total();
+        let Frame::Notification(n) = next_frame(&mut r) else {
+            panic!("expected a notification")
+        };
+        let Event::NodeAdded { node, .. } = n.event else {
+            panic!(
+                "a total that moved must arrive as tree/node-added, got {:?}",
+                n.event.method()
+            )
+        };
+        assert_eq!(node.agent_id, id("child"));
+        assert_eq!(node.tokens, Some(spent));
+        assert_eq!(
+            node.state,
+            NodeState::Running,
+            "the replacement is the whole, current row"
+        );
     }
 
     /// **NC — a node the snapshot could not describe is excluded *and counted*, never silently

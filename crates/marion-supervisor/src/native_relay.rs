@@ -4113,6 +4113,7 @@ mod tests {
             timeout: marion_core::encoding::Duration::from_secs(900),
             pane: false,
             started_at: None,
+            ended_at: None,
             tokens: None,
         }
     }
@@ -4306,6 +4307,7 @@ mod tests {
                     timeout: Duration::from_secs(900),
                     pane: true,
                     started_at: None,
+                    ended_at: None,
                     tokens: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {

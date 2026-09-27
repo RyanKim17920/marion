@@ -22,6 +22,7 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         timeout: Duration::from_secs(900),
         pane: false,
         started_at: None,
+        ended_at: None,
         tokens: None,
     }
 }

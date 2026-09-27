@@ -83,6 +83,11 @@ pub struct NodeSummary {
     /// sends nothing and the row simply shows no time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<crate::encoding::SystemTime>,
+    /// When it ended: the time of the record that moved it to `Exited`. A client words an ended
+    /// node's time from it (`12m ago`) as it words a live one's elapsed from [`Self::started_at`].
+    /// `None` while it runs, and where the journal does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<crate::encoding::SystemTime>,
     /// Every token its stream says it has spent so far (`TokenUsage::total`), kept current as usage
     /// frames arrive. `None` when the harness has stated none — which is not zero. Tokens only:
     /// marion never prices a run.
@@ -697,6 +702,7 @@ mod tests {
             timeout: Duration(std::time::Duration::from_millis(900_500)),
             pane: true,
             started_at: None,
+            ended_at: None,
             tokens: None,
         };
         let wire = serde_json::to_string(&n).unwrap();

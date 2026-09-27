@@ -1715,6 +1715,7 @@ mod tests {
                     timeout: Duration::from_secs(900),
                     pane: true,
                     started_at: None,
+                    ended_at: None,
                     tokens: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
