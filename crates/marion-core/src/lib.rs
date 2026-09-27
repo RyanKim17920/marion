@@ -25,6 +25,7 @@ pub mod registry;
 pub mod review;
 pub mod root_change;
 pub mod scope;
+pub mod secret;
 
 pub use agent_type::{
     AgentType, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_DEPTH, DEFAULT_TIMEOUT_SECS,

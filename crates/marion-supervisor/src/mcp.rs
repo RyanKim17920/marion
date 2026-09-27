@@ -1072,7 +1072,7 @@ fn identity_from(
     })?;
     Ok(marion_core::proto::SpawnCaller {
         agent_id: AgentId(agent_id),
-        node_token,
+        node_token: node_token.into(),
     })
 }
 
@@ -1904,7 +1904,7 @@ mod tests {
         let c = identity_from(Some("019f-node".into()), Some("tok-abc".into()))
             .expect("a declaration carrying both resolves");
         assert_eq!(c.agent_id.0, "019f-node");
-        assert_eq!(c.node_token, "tok-abc");
+        assert_eq!(c.node_token.expose(), "tok-abc");
     }
 
     /// **The bound marion will hold a caller for is the node's own clock plus the grace** — and a

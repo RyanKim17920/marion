@@ -2828,7 +2828,7 @@ impl RegistryHandle {
             Some(n) => (n.token.clone(), Some(n.repo.clone())),
             None => (decoy_token().to_string(), None),
         };
-        if tokens_match(&stored, &c.node_token) & repo.is_some() {
+        if tokens_match(&stored, c.node_token.expose()) & repo.is_some() {
             repo
         } else {
             None
@@ -10611,7 +10611,7 @@ mod tests {
                     params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token,
+                            node_token: token.into(),
                         }),
                         1,
                     ),
@@ -10704,7 +10704,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("deep"),
-                        node_token: token,
+                        node_token: token.into(),
                     }),
                     1,
                 ),
@@ -10759,7 +10759,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("root"),
-                        node_token: token,
+                        node_token: token.into(),
                     }),
                     1,
                 ),
@@ -11189,7 +11189,7 @@ mod tests {
                     params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token,
+                            node_token: token.into(),
                         }),
                         1,
                     ),
@@ -11291,7 +11291,7 @@ mod tests {
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token,
+                            node_token: token.into(),
                         }),
                         1,
                     )
@@ -11440,7 +11440,7 @@ mod tests {
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),
-                            node_token: token,
+                            node_token: token.into(),
                         }),
                         1,
                     )
@@ -11580,7 +11580,7 @@ mod tests {
                     params(
                         Some(SpawnCaller {
                             agent_id: id(root),
-                            node_token: token,
+                            node_token: token.into(),
                         }),
                         5,
                     ),
@@ -11780,7 +11780,7 @@ mod tests {
                 params(
                     Some(SpawnCaller {
                         agent_id: id("root"),
-                        node_token: token,
+                        node_token: token.into(),
                     }),
                     secs,
                 ),

@@ -207,7 +207,7 @@ fn spawn_over_socket(
     let p = AgentSpawnParams {
         caller: caller.map(|c| SpawnCaller {
             agent_id: c.agent_id.clone(),
-            node_token: c.token.clone(),
+            node_token: c.token.clone().into(),
         }),
         ..p
     };
