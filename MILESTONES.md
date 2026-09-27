@@ -219,14 +219,24 @@ flight settles before the next queued message goes out as its own `session/promp
 (`acp:mid-turn`) and both answers are awaited; codex-acp, copilot and unmeasured agents wait for
 the boundary. A background child's end is queued by the supervisor (`announce_child_end`) for every
 parent whose row delivers by inbox; a headless claude parent's bridge still emits its channel frame,
-which `-p` was measured not to enqueue (2.1.268). Witnesses: `duplex::tests`
+which `-p` does not enqueue (2.1.268; again on 2.1.280 below), so the model reads the end once. Witnesses: `duplex::tests`
 (next turn after a result, fold into a held request, a fold run as its own turn driven to its
 `result` with stdin open — RED with the settle at zero, held until the announcement, held bounded by
 the wall clock — all five RED with no feed), `acp_child::tests` (queue only after the first settles,
 fold mid-turn with both answered, held until the announcement — RED with no boundary loop), and
 end to end `acp_root::an_acp_roots_background_childs_end_is_its_next_prompt` (the fake ACP agent's
-new `bgspawn:` mode; RED with the root's feed unwired: one prompt logged). Not yet: the
-continuation, pane and bridge lanes; `node/prompt`.
+new `bgspawn:` mode; RED with the root's feed unwired: one prompt logged), and with a real claude
+behind the canned provider (`tests/turn_delivery.rs`, $0): an operator `node/steer` written while
+a headless claude root's second request is held is in the request carrying the second call's result
+— the same turn — and not in the held one, delivered once `stream-json:mid-turn`; a background
+claude child held at the provider until its claude parent's first turn is over reaches the held
+parent as its next turn, delivered once `stream-json:next-turn`, and the parent's last request
+carries the end exactly once. Both RED with the root's duplex feed unwired (the steer never
+delivered; the end absent from the parent's requests — the channel frame alone did not reach the
+model). **Run on claude 2.1.280** (the release S31 measured, from the installer's version store and
+put first on the run's `PATH`), not on the admitted 2.1.269, which is not installed here; the
+suite's pin gate is not consulted by that file, and it skips loudly without 2.1.280 on disk. Not
+yet: the continuation, pane and bridge lanes; `node/prompt`.
 
 **E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
 the canned provider and skips loudly where a binary is absent; the version gate is
