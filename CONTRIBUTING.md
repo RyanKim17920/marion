@@ -48,6 +48,19 @@ admitting it — set `MARION_GATE=warn`. The gate then prints a banner naming th
 of failing, and does not fetch pinned npm releases. A green run under it is not admission
 evidence; `admit-harness.sh` always runs strict.
 
+`.github/workflows/canary.yml` does this every night on a macOS runner: it installs the newest
+release of every harness (npm, and Homebrew for goose; no logins), runs `doctor` and the whole
+suite against the canned provider under `MARION_GATE=warn`, and then either opens a pull request
+from `admit-harness.sh` for the releases that held, or opens (or comments on) an issue labelled
+`harness-canary` naming the failing tests and every installed version. Live cells — real model
+calls through a vendor login — are outside it and stay manual. The canary's PR carries the
+MILESTONES paragraph in its body; paste it into the branch before merging.
+
+For the canary to open pull requests, the owner enables Settings → Actions → General → "Allow
+GitHub Actions to create and approve pull requests" once. A PR opened with the default token does
+not start `ci.yml`; adding a secret `CANARY_TOKEN` (a fine-grained token with Contents and Pull
+requests write on this repository) makes it do so.
+
 ## The commit gate
 
 L4.5 — the snapshot layer — gates *commits*, not pushes. Install it once per clone:

@@ -1,0 +1,205 @@
+# The nightly harness canary: does marion still work against the NEWEST release of every harness?
+#
+# ci.yml runs with no harness binaries at all (MARION_CI_NO_HARNESSES=1), and the pin gate keeps
+# local runs on admitted releases, so nothing notices a harness release that breaks marion until an
+# operator's machine auto-updates into it. This workflow looks first. Each night it:
+#
+#   1. installs the latest release of every harness that installs without a prompt or a login
+#      (seven from npm, goose from Homebrew) — no credentials of any kind are configured;
+#   2. reports which installed releases PINNED_HARNESSES does not admit (the harness_drift example);
+#   3. runs `marion-supervisor doctor --capabilities`, then the whole workspace test suite with
+#      MARION_GATE=warn, so every suite that drives a real harness against marion's canned local
+#      provider runs against what was just installed. MARION_CI_NO_HARNESSES stays unset: a missing
+#      harness is a failure here, not a skip. The `--ignored` suites (restart_resume, acp_child)
+#      spend real tokens and stay out;
+#   4. on green with drift, runs scripts/admit-harness.sh for the drifted releases — the same ritual
+#      a person runs, strict, which widens the pin table (and, once it carries it, doctor's verified
+#      list) and re-runs the suites that drive those harnesses — and opens or updates one pull
+#      request with the result;
+#   5. on red anywhere, opens or updates one issue labelled `harness-canary` with the failing tests,
+#      their first panic lines and every harness version.
+#
+# What it cannot cover: anything behind a vendor login. The canned provider stands in for every
+# model, so live cells (real model calls through the operator's own account) stay manual, as do the
+# probes under spikes/. The PR it opens carries admit-harness.sh's MILESTONES paragraph in its body
+# for the reviewer to paste; CONTRIBUTING.md's rule that MILESTONES moves in the same commit still
+# applies before merging. Scheduled runs use the default branch.
+
+name: Harness canary
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: harness-canary
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  canary:
+    runs-on: macos-latest
+    timeout-minutes: 330
+    env:
+      # Three cores: the cells carry 60 s bounds that a fully parallel run starves on a loaded box
+      # (see the opencode 1.18.32 admission note in PINNED_HARNESSES).
+      RUST_TEST_THREADS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: test -x scripts/cargo-runner.sh
+      - name: Give git a committer identity
+        run: |
+          git config --global user.name "marion canary"
+          git config --global user.email "canary@marion.invalid"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install the newest release of every harness
+        run: |
+          npm install -g --no-fund --no-audit \
+            @anthropic-ai/claude-code@latest \
+            @openai/codex@latest \
+            opencode-ai@latest \
+            @github/copilot@latest \
+            @google/gemini-cli@latest \
+            cline@latest \
+            @qwen-code/qwen-code@latest
+          brew install block-goose-cli
+
+      - name: Harness versions
+        id: drift
+        run: |
+          cargo run -q -p marion-testsupport --example harness_drift > drift.txt 2> versions.txt
+          cat versions.txt
+          echo "pairs=$(tr '\n' ' ' < drift.txt | sed 's/ *$//')" >> "$GITHUB_OUTPUT"
+
+      - name: marion doctor
+        run: cargo run -q -p marion-supervisor --bin marion-supervisor -- doctor --capabilities 2>&1 | tee doctor.txt
+
+      - name: Matrix against the installed releases
+        env:
+          MARION_GATE: warn
+        run: cargo test --workspace --no-fail-fast 2>&1 | tee matrix.log
+
+      - name: Admit the drifted releases
+        id: admit
+        if: steps.drift.outputs.pairs != ''
+        env:
+          PAIRS: ${{ steps.drift.outputs.pairs }}
+        run: |
+          # Word splitting of $PAIRS is the point: it is `<harness> <version> ...`.
+          # shellcheck disable=SC2086
+          scripts/admit-harness.sh $PAIRS 2>&1 | tee admit.txt
+
+      - name: Pull request body
+        if: steps.admit.outcome == 'success'
+        env:
+          PAIRS: ${{ steps.drift.outputs.pairs }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "The nightly canary installed the newest harness releases and found these not yet admitted: \`$PAIRS\`."
+            echo "The whole workspace suite passed against them under \`MARION_GATE=warn\`, and \`scripts/admit-harness.sh\` then passed strict. Run: $RUN_URL"
+            echo
+            echo "**Before merging:** paste the MILESTONES paragraph below into \"Verified harness facts\", in this branch."
+            echo
+            echo '```'
+            sed -n '/^admit-harness: all green/,$p' admit.txt
+            echo '```'
+            echo
+            echo '<details><summary>Installed versions</summary>'
+            echo
+            echo '```'
+            cat versions.txt
+            echo '```'
+            echo '</details>'
+          } > pr-body.md
+
+      - name: Open or update the admission pull request
+        if: steps.admit.outcome == 'success'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # A PR opened with the default token does not trigger ci.yml; a CANARY_TOKEN secret (a
+          # token with contents and pull-requests write) makes it run. See CONTRIBUTING.md.
+          token: ${{ secrets.CANARY_TOKEN || github.token }}
+          branch: canary/admit-harnesses
+          delete-branch: true
+          add-paths: |
+            crates/marion-testsupport/src/lib.rs
+            crates/marion-supervisor/src/doctor.rs
+          commit-message: |
+            test: admit ${{ steps.drift.outputs.pairs }} to the pinned harness set
+
+            The nightly canary found these releases installed and unadmitted. The whole
+            workspace suite passed against them, and admit-harness.sh re-ran every suite that
+            drives them with only the accepted sets widened.
+          title: "test: admit ${{ steps.drift.outputs.pairs }} to the pinned harness set"
+          body-path: pr-body.md
+          labels: harness-canary
+
+      - name: Open or update the canary issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIRS: ${{ steps.drift.outputs.pairs }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          touch versions.txt matrix.log admit.txt
+          {
+            echo "The nightly harness canary failed on $(date -u +%Y-%m-%d). Run: $RUN_URL"
+            echo
+            echo "Unadmitted releases installed: \`${PAIRS:-none}\`"
+            echo
+            echo '### Installed versions'
+            echo '```'
+            cat versions.txt
+            echo '```'
+            echo
+            echo '### Failing tests'
+            echo '```'
+            grep -hE '^test .* FAILED$|^error: test failed' matrix.log admit.txt | sort -u | head -n 200
+            echo '```'
+            echo
+            echo '### First panic of each'
+            echo '```'
+            grep -hA2 'panicked at' matrix.log admit.txt | head -n 400
+            echo '```'
+          } | head -c 60000 > issue.md
+          gh label create harness-canary --color B60205 \
+            --description "Opened by the nightly harness canary" --force
+          number=$(gh issue list --label harness-canary --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file issue.md
+          else
+            gh issue create --title "Harness canary failing" --label harness-canary --body-file issue.md
+          fi
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-logs
+          path: |
+            versions.txt
+            drift.txt
+            doctor.txt
+            matrix.log
+            admit.txt
+          if-no-files-found: ignore
