@@ -293,7 +293,7 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
          operator redirects into a file\nstdout:\n{stdout}"
     );
     assert!(
-        stderr.contains("body not kept (§5.2)"),
+        stderr.contains("body not kept]"),
         "a withheld frame must be *said*, or a shortened stream is indistinguishable from a quiet \
          one\nstderr:\n{stderr}"
     );

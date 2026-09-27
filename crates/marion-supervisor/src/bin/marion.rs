@@ -1757,7 +1757,7 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
             out,
             "PERMIT",
             &format!(
-                "{} — marion has nobody to ask (§9); it will be denied when the Blocked bound expires",
+                "{} — nobody is attached to answer it; it will be denied when its wait runs out",
                 frame["request"]["tool_name"]
                     .as_str()
                     .unwrap_or("(unnamed tool)")
@@ -2206,22 +2206,21 @@ fn detach_report(
             let _ = writeln!(
                 out,
                 "marion: this project's supervisor is still running ({reason:?}); it holds work \
-                 this run did not finish, and the next marion will find it rather than start one \
-                 (§5.7)"
+                 this run did not finish, and the next marion will find it rather than start one"
             );
         }
         marion_core::proto::SupervisorDisposition::Exiting => {
             let _ = writeln!(
                 out,
-                "marion: nothing in §5.7's exclusion list holds this project's supervisor, so it \
-                 is leaving and journaling that it did"
+                "marion: nothing holds this project's supervisor any more, so it is leaving and \
+                 journaling that it did"
             );
         }
     }
     if !reaped.is_empty() {
         let _ = writeln!(
             out,
-            "marion: reaped and resumable: {} (§7.2: transcript intact, ownership retained)",
+            "marion: reaped and resumable: {} (transcript intact; `marion resume <id>` continues it)",
             reaped.join(", ")
         );
     }
@@ -2244,7 +2243,7 @@ fn detach_report(
                 out,
                 "marion: unattended at a permission gate: {} — each one \
                  that asks burns its bound and is denied, and the far side sees an is_error \
-                 tool_result rather than a question (§7.3.2, §11 item 22)",
+                 tool_result rather than a question",
                 names(gate_exposed)
             );
         }
@@ -3133,7 +3132,7 @@ fn watch_the_root(
                 // bound). It is not lost: `events.jsonl` carries it on the record, which is where a
                 // reader who wants to know *which* rule looks.
                 Payload::Withheld { key, bytes, .. } => self.show(StreamEvent::Unparsed(&format!(
-                    "[withheld: a `{key}` frame of {bytes} bytes, body not kept (§5.2)]"
+                    "[withheld: a `{key}` frame of {bytes} bytes, body not kept]"
                 ))),
                 Payload::Oversized { was, bytes } => self.show(StreamEvent::Unparsed(&format!(
                     "[marion shortened a {was:?} frame of {bytes} bytes]"
@@ -4994,8 +4993,12 @@ mod tests {
             "§7.3.2's stated cost of (b) names the exposed nodes: {report}"
         );
         assert!(
-            report.contains("§11 item 22"),
-            "and cites where the cost is recorded: {report}"
+            report.contains("denied"),
+            "and says what that costs: {report}"
+        );
+        assert!(
+            !report.contains('§'),
+            "a person meets no design-doc section numbers: {report}"
         );
         assert!(
             report.contains("`marion tree`") && report.contains("`marion attach root`"),
@@ -5084,6 +5087,38 @@ mod tests {
         .expect("a reap renders");
         assert!(reaped.contains("reaped and resumable: idle"), "{reaped}");
         assert!(reaped.contains("still running, detached: busy"), "{reaped}");
+        for r in [&report, &reaped] {
+            assert!(!r.contains('§'), "no design-doc section numbers: {r}");
+        }
+        let (_, resident) = detach_report(&marion_core::proto::QuitOutcome::Detached {
+            detached: ids(&["busy"]),
+            gate_exposed: Vec::new(),
+            guidance: guidance(),
+            supervisor: marion_core::proto::SupervisorDisposition::Resident(
+                marion_core::proto::ResidentReason::NonTerminalNode,
+            ),
+        })
+        .expect("a detach renders");
+        assert!(
+            !resident.contains('§'),
+            "no design-doc section numbers: {resident}"
+        );
+    }
+
+    /// **A permission ask a run cannot answer is said in words.** The line used to cite a design
+    /// section to a person who has never read it.
+    #[test]
+    fn an_unanswerable_permission_ask_names_no_spec_section() {
+        let frame = serde_json::json!({
+            "type": "control_request",
+            "request": {"subtype": "can_use_tool", "tool_name": "Bash"},
+        });
+        let mut out = Vec::new();
+        render_control_request(&frame, &mut out).expect("renders");
+        let line = String::from_utf8(out).expect("utf-8");
+        assert!(line.contains("Bash"), "{line}");
+        assert!(line.contains("denied"), "says what happens: {line}");
+        assert!(!line.contains('§'), "{line}");
     }
 
     /// **NC — the idle grace `marion run` asks for is §5.7's, not one this client invented.**

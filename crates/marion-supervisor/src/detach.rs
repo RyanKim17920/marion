@@ -209,7 +209,7 @@ pub enum DetachError {
         "marion started a supervisor for this project but could not reach {path} within \
          {waited_ms} ms. Nothing was assumed about whether one is running: the socket was dialed \
          and did not answer, and marion did not unlink it, because only the supervisor lock proves \
-         a socket is dead (§5.7)."
+         a socket is dead."
     )]
     NotReachable { path: PathBuf, waited_ms: u128 },
     #[error(transparent)]
@@ -588,7 +588,7 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
                  required and `--base-url` is required with `canned` and refused with \
                  `inherited`: a supervisor that guessed either would run a fleet against an \
                  endpoint nobody chose. A supervisor is started on demand by the first client that \
-                 dials and finds nothing listening (§5.7); it is not normally typed."
+                 dials and finds nothing listening; it is not normally typed."
             )),
         });
     };
@@ -792,6 +792,19 @@ pub fn ensure_detached(id: SupervisorIdentity) -> Result<(), NotDetached> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client that cannot reach the supervisor it started says so without citing a design
+    /// section to a person who has never read it.
+    #[test]
+    fn an_unreachable_supervisor_names_no_spec_section() {
+        let said = DetachError::NotReachable {
+            path: PathBuf::from("/s/p/supervisor.sock"),
+            waited_ms: 5000,
+        }
+        .to_string();
+        assert!(said.contains("/s/p/supervisor.sock"), "{said}");
+        assert!(!said.contains('§'), "{said}");
+    }
 
     /// The three stages carry **one** description of the project between them, so stage 3 cannot
     /// serve a different socket than the client that asked for it dialed.

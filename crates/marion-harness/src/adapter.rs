@@ -1875,8 +1875,8 @@ impl HarnessAdapter for AcpAdapter {
                     harness: Harness::Acp,
                     what: "ACP names no provider, base URL or credential at any point in its \
                            handshake, and marion has never measured a way to point this \
-                           particular agent at one. Run it against the operator's own login \
-                           (`--live`), or pick an agent whose canned recipe is measured",
+                           particular agent at one. Run it without --canned, on your own login, \
+                           or pick an agent whose canned recipe is measured",
                 });
             }
         };
@@ -6596,6 +6596,17 @@ mod tests {
                     }
                 ),
                 "`{}`: got {e}",
+                agent.id
+            );
+            let said = e.to_string();
+            assert!(
+                !said.contains("--live") && !said.contains('§'),
+                "`{}`: the refusal names no retired flag and no spec section: {said}",
+                agent.id
+            );
+            assert!(
+                said.contains("--canned"),
+                "`{}`: says what to drop: {said}",
                 agent.id
             );
             // And live mode is not refused for the same agent, or this would be a refusal of the
