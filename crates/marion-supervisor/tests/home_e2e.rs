@@ -426,7 +426,10 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     op.wait_for("the steer box", |s| {
         s.contains("steer ") && s.contains("enter sends")
     });
-    op.type_in(b"use a deque\r");
+    op.type_in(b"use a deque");
+    op.wait_for("the steer typed", |s| s.contains("use a deque"));
+    op.dump("real-watch-steer");
+    op.type_in(b"\r");
     op.wait_for("the supervisor's answer to the steer", |s| {
         s.contains("queued") || s.contains("delivered") || s.contains("steer refused")
     });
@@ -436,6 +439,7 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
     op.wait_for("the confirm", |s| {
         s.contains("Cancel codex") && s.contains("y yes")
     });
+    op.dump("real-watch-confirm");
     op.type_in(b"n");
     op.wait_for("the refusal to cancel", |s| s.contains("not cancelled"));
     op.type_in(b"x");
