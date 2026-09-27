@@ -257,6 +257,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/usage/output_tokens",
         cache_read: Some("/usage/cached_input_tokens"),
         cache_write: Some("/usage/cache_write_input_tokens"),
+        reasoning: None,
         input_includes_cache: true,
         fold: UsageFold::Sum,
     }),

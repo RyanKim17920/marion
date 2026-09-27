@@ -266,6 +266,12 @@ pub struct UsageRule {
     pub output: &'static str,
     pub cache_read: Option<&'static str>,
     pub cache_write: Option<&'static str>,
+    /// A counter the harness reports **beside** `output` although the model generated it — its
+    /// reasoning tokens — which the reader adds into output, so that output counts every generated
+    /// token as codex's and claude's counters already do. `None` where `output` includes them or
+    /// no split was measured. opencode's `tokens.reasoning` (s36: `output` 43 + `reasoning` 7 of
+    /// the provider's 50 completion tokens).
+    pub reasoning: Option<&'static str>,
     /// The harness's `input` already counts its cache reads (codex's `input_tokens` does), so the
     /// reader subtracts `cache_read` from it. Cache *writes* are not subtracted: no harness was
     /// measured folding them into input with a non-zero write count to prove it.
@@ -302,7 +308,7 @@ pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
             } else {
                 input
             },
-            output: counter(unit, Some(rule.output)),
+            output: counter(unit, Some(rule.output)).saturating_add(counter(unit, rule.reasoning)),
             cache_read,
             cache_write: counter(unit, rule.cache_write),
         }
@@ -736,6 +742,7 @@ mod tests {
         output: "/usage/out",
         cache_read: Some("/usage/cached"),
         cache_write: None,
+        reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
     };
@@ -773,6 +780,7 @@ mod tests {
     #[test]
     fn input_that_counts_its_cache_is_normalised_to_uncached_input() {
         let rule = UsageRule {
+            reasoning: None,
             input_includes_cache: true,
             ..RULE
         };

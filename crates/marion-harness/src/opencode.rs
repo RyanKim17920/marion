@@ -294,9 +294,11 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/sessionID",
     }),
-    // One `step_finish` per model step (`s13/README.md`), each that step's spend. **README-only**:
-    // every captured step reports zeros, so that `tokens.input` excludes `tokens.cache` is the
-    // documented shape, not a measured one.
+    // One `step_finish` per model step (`s13/README.md`), each that step's spend. **Measured
+    // non-zero on 1.18.32** (`s36-opencode-parity/run-usage.stdout.jsonl`): a provider answer of
+    // 1000 prompt tokens (300 cached) and 50 completion tokens (7 reasoning) became `input` 700,
+    // `cache.read` 300, `output` 43, `reasoning` 7 — so `input` excludes the cache and `output`
+    // excludes the reasoning, which this rule adds back.
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/type", "step_finish")],
@@ -307,6 +309,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/part/tokens/output",
         cache_read: Some("/part/tokens/cache/read"),
         cache_write: Some("/part/tokens/cache/write"),
+        reasoning: Some("/part/tokens/reasoning"),
         input_includes_cache: false,
         fold: UsageFold::Sum,
     }),
