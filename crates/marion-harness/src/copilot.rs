@@ -28,6 +28,7 @@
 //!   marion's canned placeholder does not appear in anything a child prints; a live key is the
 //!   operator's own and is never placed by marion.
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -42,7 +43,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -102,32 +103,32 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_BASE_URL_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_TYPE_ENV,
             val: Val::Lit(PROVIDER_TYPE),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_WIRE_API_ENV,
             val: Val::Lit(WIRE_API),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: OFFLINE_ENV,
             val: Val::Lit("true"),
-            when: When::Canned,
+            when: When::Overlay,
         },
     ],
     stream: Some(&STREAM),
@@ -204,6 +205,22 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 336 ms; OSC 9;4;0 also marks the turn end",
         ),
     },
+    // Chat first: it is the wire harness_matrix's copilot cell has always proved. Responses
+    // (`COPILOT_PROVIDER_WIRE_API=responses`) is documented and unmeasured, so it is not a recipe.
+    wires: &[
+        WireRecipe {
+            wire: Wire::OpenAiChat,
+            env: &[],
+            note: "the row's own BYOK overlay (openai type, completions wire); endpoint_matrix's \
+                   copilot chat cell",
+        },
+        WireRecipe {
+            wire: Wire::AnthropicMessages,
+            env: &[(PROVIDER_TYPE_ENV, "anthropic")],
+            note: "COPILOT_PROVIDER_TYPE=anthropic over the same base URL; endpoint_matrix's \
+                   copilot anthropic cell",
+        },
+    ],
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

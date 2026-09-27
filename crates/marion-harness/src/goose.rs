@@ -33,6 +33,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::grammar::{
     ActivityRule, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit, ToolUnit,
@@ -43,6 +44,7 @@ use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -79,12 +81,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOME_ENV,
             val: Val::Under(HOME_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: PROVIDER_ENV,
             val: Val::Lit(PROVIDER),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Present or absent: a live launch that names no model leaves the operator's own.
         Env {
@@ -95,18 +97,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: HOST_ENV,
             val: Val::Field(Field::BaseUrl),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // Together with the host: marion's `…/v1` base plus this is `/v1/chat/completions`.
         Env {
             key: BASE_PATH_ENV,
             val: Val::Lit(BASE_PATH),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: API_KEY_ENV,
             val: Val::Field(Field::ApiKey),
-            when: When::Canned,
+            when: When::Overlay,
         },
         // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated.
         Env {
@@ -174,6 +176,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "goose's TUI was not measured (S31), and its native lane ships disabled",
         },
     },
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.",
+    }],
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \

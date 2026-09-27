@@ -17,7 +17,10 @@
 //! 2. **Held, then released.** The child backgrounds a grandchild and ends its turn **without**
 //!    reporting. marion holds the node in `Blocked(Descendants)` — observable in the journal, which
 //!    is what this test waits on — and writes its `Exited` only after the grandchild's own. The
-//!    contract is `Unreported`, neither flag set, and its exit description names the rule.
+//!    grandchild's end is queued for the held child and is its next turn (§7.6 step 2's re-prompt,
+//!    delivered by continuation: `tests/continuation.rs`), so the child ends on its second
+//!    generation, whose relaunch the shim answers with a silent exit. The contract is `Unreported`,
+//!    neither flag set.
 //! 3. **Held to the bound.** As 2, with a short `timeout_secs`. The bound expires first, so the
 //!    node terminates `held_to_timeout: true` with the grandchild listed — and the grandchild
 //!    **outlives** it (§7.5: killing it would destroy work to tidy up bookkeeping).
@@ -509,12 +512,16 @@ fn a_codex_child_that_stops_unreported_with_a_live_grandchild_is_held_until_it_i
     assert_eq!(completion["status"], json!("Unreported"), "{completion}");
     assert_eq!(completion["reported_early"], json!(false), "{completion}");
     assert_eq!(completion["held_to_timeout"], json!(false), "{completion}");
-    let description = completion["exit"]["description"]
-        .as_str()
-        .unwrap_or_default();
-    assert!(
-        description.contains("descendant") && description.contains("§7.6"),
-        "the exit description must name the rule that held the node: {description:?}"
+    // Released by the grandchild's end as a message, not by the hold running dry: the end is the
+    // child's next turn, a relaunch the node's replay counts as its second generation.
+    let node = read_path(&bed.journal)
+        .expect("the journal reads back")
+        .get(&child)
+        .cloned()
+        .expect("the child");
+    assert_eq!(
+        node.spawn_generation, 2,
+        "the grandchild's end resumed the held child"
     );
 }
 

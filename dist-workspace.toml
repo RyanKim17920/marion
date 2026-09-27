@@ -1,0 +1,38 @@
+# Release configuration for cargo-dist (`dist`). `dist generate` turns this into
+# .github/workflows/release.yml; edit this file and regenerate, never the workflow by hand.
+# The one-time setup the owner does outside the repository is in CONTRIBUTING.md, "Releasing".
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# The dist release that generated release.yml. Bump it with `dist init` after installing a newer
+# dist, so the workflow and this file move together.
+cargo-dist-version = "0.33.0"
+ci = "github"
+# A curl-able shell installer, a Homebrew formula, and an npm package that downloads the archive
+# for the platform it runs on. No updater: marion is updated by the same channel that installed it
+# (brew upgrade, npm update, or re-running the installer), not by itself.
+installers = ["shell", "homebrew", "npm"]
+install-updater = false
+tap = "RyanKim17920/homebrew-tap"
+# Plain `marion` is taken on npm; the package is `@ryankim17920/marion` (npm-package is set on the
+# crate, in crates/marion-supervisor/Cargo.toml).
+npm-scope = "@ryankim17920"
+publish-jobs = ["homebrew", "npm"]
+# macOS, glibc Linux and musl Linux, both architectures. musl gives a static binary for Alpine and
+# other non-glibc systems; both musl targets were cross-linked with cargo-zigbuild on macOS and are
+# built natively on the release runners. No native Windows (marion needs POSIX PTYs and Unix
+# sockets; see CONTRIBUTING.md, "Windows").
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+install-path = "CARGO_HOME"
+# Pull requests get `dist plan` only: it checks this file and the workflow agree without spending
+# four release builds on every push.
+pr-run-mode = "plan"

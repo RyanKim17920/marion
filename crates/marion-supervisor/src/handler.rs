@@ -3795,7 +3795,12 @@ impl RegistryHandle {
             state: env.state.clone(),
             base_url: env.base_url.clone(),
             bridge: env.bridge.clone(),
-            model: node.model.clone(),
+            // An endpoint root re-resolves its journaled provider (and re-reads its key).
+            model: crate::endpoint::resume_model(
+                node.model.as_deref(),
+                node.provider.as_deref(),
+                &agent_type,
+            ),
             no_change_record: false,
             auth: env.auth,
             // **From the recorded value, never inferred** (`plan-restart-resume.md` step 6): the
@@ -3993,7 +3998,12 @@ impl RegistryHandle {
                 .unwrap_or_default(),
             writable_scope: vec![],
             timeout_secs: agent_type.timeout.0.as_secs(),
-            model: node.model.clone(),
+            // An endpoint child re-resolves its journaled provider (and re-reads its key).
+            model: crate::endpoint::resume_model(
+                node.model.as_deref(),
+                node.provider.as_deref(),
+                &agent_type,
+            ),
             // Read off the recorded workspace, so the answer and the directory cannot disagree.
             isolation: match workspace {
                 marion_core::contract::Workspace::Worktree { .. } => Isolation::Worktree,
@@ -5183,6 +5193,9 @@ mod tests {
                     model: None,
                     pid: Some(3),
                     start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
                 }),
             )],
             "no-intent",
@@ -5390,6 +5403,9 @@ mod tests {
             model: None,
             pid: Some(pid),
             start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
         })
     }
 
@@ -5663,6 +5679,9 @@ mod tests {
                     model: None,
                     pid: Some(9),
                     start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
                 }),
             ),
         );
@@ -12321,6 +12340,9 @@ mod tests {
                     model: None,
                     pid,
                     start_id,
+                    provider: None,
+                    route: None,
+                    credential: None,
                 }),
                 RecordKind::SessionObserved(marion_core::journal::SessionObserved {
                     agent_id: id("root"),
@@ -12355,6 +12377,9 @@ mod tests {
                     model: None,
                     pid: None,
                     start_id: None,
+                    provider: None,
+                    route: None,
+                    credential: None,
                 })
             };
             let session = |agent: &str, ws: Option<marion_core::contract::Workspace>| {

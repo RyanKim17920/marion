@@ -80,3 +80,21 @@ marion-testsupport = { path = "../marion-testsupport" }
 # screen's driver — it lives in this crate because this is where the greying is decided, and a
 # snapshot taken in `marion-tui` would be a snapshot of availability bits a test invented.
 insta = "1"
+
+# The one package cargo-dist ships (dist-workspace.toml). Every crate here is `publish = false`,
+# which dist reads as "not for release" unless told otherwise; this one carries both user-facing
+# binaries, `marion` and `marion-supervisor`, into a single archive, and the Homebrew formula is
+# named for the command people type rather than for the crate.
+[package.metadata.dist]
+dist = true
+formula = "marion"
+npm-package = "marion"
+
+# `cargo binstall` fetches the dist archive for the host instead of compiling. The crate is not on
+# crates.io (`publish = false`), so it is named by repository:
+# `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor`.
+# The archive holds `marion-supervisor-<target>/{marion,marion-supervisor}`; `{ bin }` covers both.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.xz"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "txz"

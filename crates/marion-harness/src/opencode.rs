@@ -11,6 +11,7 @@
 //! `OPENCODE_DISABLE_EXTERNAL_SKILLS` vars close a hazard `inherit_user_config: false` never
 //! contemplated (see [`isolation_env`]).
 
+use marion_core::provider::Wire;
 use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
@@ -25,7 +26,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -100,27 +101,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: "HOME",
             val: Val::Under(""),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_CONFIG_HOME",
             val: Val::Under(XDG_CONFIG_DIR),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_DATA_HOME",
             val: Val::Under("data"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_CACHE_HOME",
             val: Val::Under("cache"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "XDG_STATE_HOME",
             val: Val::Under("state"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "OPENCODE_DISABLE_CLAUDE_CODE",
@@ -137,7 +138,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Env {
             key: "OPENCODE_DISABLE_PROJECT_CONFIG",
             val: Val::Lit("1"),
-            when: When::Canned,
+            when: When::Overlay,
         },
         Env {
             key: "OPENCODE_DISABLE_MODELS_FETCH",
@@ -242,6 +243,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 361 ms; no structured turn-end signal",
         ),
     },
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiChat,
+        env: &[],
+        note: "Chat Completions: the generated provider block is `@ai-sdk/openai-compatible`. opencode bundles an Anthropic SDK too, but the row renders only this one.",
+    }],
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",

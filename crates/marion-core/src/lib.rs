@@ -20,7 +20,9 @@ pub mod native_facade;
 pub mod node;
 pub mod paths;
 pub mod proto;
+pub mod provider;
 pub mod registry;
+pub mod review;
 pub mod root_change;
 pub mod scope;
 

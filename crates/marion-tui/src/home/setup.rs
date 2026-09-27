@@ -160,7 +160,7 @@ pub fn render(v: &SetupView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         }
         None => {
             let l = code_spans(
-                "sign in with each harness's own CLI; `marion login` will do it from here",
+                "API keys: `marion login <provider>`; subscription logins stay with each harness's own CLI",
                 dim(),
                 theme,
             );

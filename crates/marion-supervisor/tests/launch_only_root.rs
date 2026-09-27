@@ -535,15 +535,23 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
     // configured rather than merely started.
     assert_launched_the_way_this_harness_is_launched(node, &recorded_argv(&dir), prompt);
     assert_the_bridge_declaration_was_written(node, &dir);
-    // Pushed onto every canned `LaunchOnly` root by `root::launch_only`, not by the adapter: codex's
-    // generated config names `MARION_DUMMY_KEY` as its provider `env_key` and a provider whose key
-    // is unset refuses to start. Asserted for all three because it is marion's launch that sets it,
-    // so a marion that dropped it would break codex alone and silently.
-    assert!(
-        recorded_env(&dir, "MARION_DUMMY_KEY").is_some_and(|v| !v.is_empty()),
-        "{}: marion pushes a per-run MARION_DUMMY_KEY onto every canned LaunchOnly root",
-        node.harness
-    );
+    // codex's generated config names `MARION_PROVIDER_KEY` as its provider `env_key`, and a
+    // provider whose key is unset refuses to start. The row compiles it from the launch's own
+    // credential (the per-run token here); no other harness reads it, so none is handed it.
+    let key = recorded_env(&dir, "MARION_PROVIDER_KEY");
+    if node.harness == marion_core::harness::Harness::Codex {
+        assert!(
+            key.is_some_and(|v| !v.is_empty()),
+            "codex: the canned LaunchOnly root carries the key its provider names"
+        );
+    } else {
+        assert!(
+            key.is_none(),
+            "{}: only codex reads MARION_PROVIDER_KEY",
+            node.harness
+        );
+    }
+    assert!(recorded_env(&dir, "MARION_DUMMY_KEY").is_none());
 }
 
 #[test]

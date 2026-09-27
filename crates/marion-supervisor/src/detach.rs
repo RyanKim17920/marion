@@ -529,6 +529,8 @@ fn paired_base_url(auth: marion_harness::Auth, base_url: Option<String>) -> Opti
         (marion_harness::Auth::Canned, _) => None,
         (marion_harness::Auth::Inherited, None) => Some(None),
         (marion_harness::Auth::Inherited, Some(_)) => None,
+        // Endpoint is a per-node resolution, never a supervisor's mode.
+        (marion_harness::Auth::Endpoint, _) => None,
     }
 }
 

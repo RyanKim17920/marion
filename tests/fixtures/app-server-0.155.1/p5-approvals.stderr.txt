@@ -1,0 +1,8 @@
+2026-09-27T19:30:56.519052Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"rejected by user\")" }
+2026-09-27T19:30:56.564393Z ERROR codex_core::tools::router: error=patch rejected by user
+2026-09-27T19:30:56.631575Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "TurnAborted" }
+2026-09-27T19:30:56.679061Z ERROR codex_core::tools::router: error=execution error: TurnAborted
+2026-09-27T19:30:56.718051Z ERROR codex_app_server::bespoke_event_handling: request failed with client error: JSONRPCErrorError { code: -32000, data: None, message: "p0c client refuses" }
+2026-09-27T19:30:56.718422Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"approval request failed\")" }
+2026-09-27T19:30:56.776843Z ERROR codex_app_server::bespoke_event_handling: request failed with client error: JSONRPCErrorError { code: -32000, data: None, message: "p0c client refuses" }
+2026-09-27T19:30:56.776941Z ERROR codex_core::tools::router: error=approval request failed

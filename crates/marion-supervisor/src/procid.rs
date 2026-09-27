@@ -749,6 +749,9 @@ mod tests {
                 model: None,
                 pid: Some(4242),
                 start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
             }),
         ]
         .into_iter()
@@ -861,6 +864,9 @@ mod tests {
                 model: None,
                 pid: Some(4243),
                 start_id: None,
+                provider: None,
+                route: None,
+                credential: None,
             }),
             RecordKind::Exited(marion_core::journal::Exited {
                 agent_id: decided.clone(),

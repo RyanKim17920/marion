@@ -12,6 +12,7 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::grammar::{
     ActivityRule, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar,
@@ -21,7 +22,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -111,11 +112,21 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // than a Keychain item, so leaving the variable alone is enough for the child to find the login
     // the operator already has. Omitted, never blanked: an empty `CODEX_HOME` would send codex
     // looking for `auth.json` in the process's cwd.
-    env: &[Env {
-        key: "CODEX_HOME",
-        val: Val::Under(""),
-        when: When::Canned,
-    }],
+    env: &[
+        Env {
+            key: "CODEX_HOME",
+            val: Val::Under(""),
+            when: When::Overlay,
+        },
+        // The variable the generated provider's `env_key` names ([`config_toml`]), carrying the
+        // launch's own credential: the canned placeholder or per-run token, or an endpoint node's
+        // stored key. Omitted, never blank, where the launch carries none.
+        Env {
+            key: PROVIDER_KEY_ENV,
+            val: Val::Field(Field::ApiKey),
+            when: When::Overlay,
+        },
+    ],
     stream: Some(&STREAM),
     // `write` → `sandbox:workspace-write`, §3.1's *"coarsest equivalent"* named for this exact
     // harness: `codex exec` has no `--tools` and no permission list, only `--sandbox`, and marion
@@ -190,6 +201,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
         ),
     },
+    wires: &[WireRecipe {
+        wire: Wire::OpenAiResponses,
+        env: &[],
+        note: "OpenAI Responses alone: `wire_api = \"chat\"` was removed from codex, and the generated provider names `responses`.",
+    }],
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
@@ -326,6 +342,11 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// `crate::adapter::CodexAdapter::tool_name` maps marion's `write` onto it as §3.1's *"coarsest
 /// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
 /// adapter would be reporting a mode the generated config does not set.
+/// The variable the generated provider's `env_key` names — [`config_toml`] spells it literally,
+/// and `a_canned_codex_node_carries_its_credential_in_the_variable_its_config_names` holds the two
+/// together.
+pub const PROVIDER_KEY_ENV: &str = "MARION_PROVIDER_KEY";
+
 pub const SANDBOX_MODE: &str = "workspace-write";
 
 /// The config key [`SANDBOX_MODE`] is set under, in the generated `config.toml` and on a live
@@ -495,12 +516,13 @@ plugins = false
 name = "canned"
 base_url = "{base_url}"
 wire_api = "responses"
-env_key = "MARION_DUMMY_KEY"
+env_key = "MARION_PROVIDER_KEY"
 
 [mcp_servers.marion]
 command = {bridge}
 args = [{args}]
 default_tools_approval_mode = "approve"
+omit_tools_from = ["deferred"]
 env = {{ {env_table} }}
 "#
     )
@@ -934,6 +956,29 @@ mod tests {
         );
     }
 
+    /// The canned document owes the same key as the live pairs. A canned node names no model, so
+    /// 0.155.1 runs it on its catalog default (`gpt-6-astra`, a code-mode model), and measured
+    /// 2026-09-27 through `codex app-server` against the canned provider
+    /// (`tests/fixtures/app-server-0.155.1/`, P3): without `omit_tools_from` the `exec`
+    /// declaration listed none of `mcp__marion__*`, and with it every verb was listed. Canned
+    /// cells stayed green only because the canned script calls `report` without reading the
+    /// declaration first.
+    #[test]
+    fn marions_tools_are_never_deferred_behind_tool_search_on_the_canned_route() {
+        let t = config_toml(&bridge_env(), "http://x/v1");
+        let table = t
+            .split("[mcp_servers.marion]")
+            .nth(1)
+            .expect("the document declares marion's server");
+        assert!(
+            table
+                .lines()
+                .take_while(|l| !l.starts_with('['))
+                .any(|l| l == r#"omit_tools_from = ["deferred"]"#),
+            "the key must sit inside [mcp_servers.marion], as on the live route:\n{t}"
+        );
+    }
+
     /// The runaway `git fetch` is prevented on the live route too — and it has to be prevented
     /// *here*, at config time, because after `exec` exits its descendants have reparented to pid 1
     /// and no ancestry walk can find them.
@@ -948,13 +993,13 @@ mod tests {
     }
 
     /// The live overlay adds exactly what the canned document adds and nothing that belongs to the
-    /// canned *provider*: naming `model_provider` or `MARION_DUMMY_KEY` here would point a node
+    /// canned *provider*: naming `model_provider` or `MARION_PROVIDER_KEY` here would point a node
     /// holding the operator's real credential at marion's fake endpoint.
     #[test]
     fn the_live_overlay_names_no_canned_provider_and_no_minted_key() {
         for (k, v) in live_config_overrides(&bridge_env()) {
             let pair = format!("{k}={v}");
-            for forbidden in ["model_provider", "MARION_DUMMY_KEY", "base_url ="] {
+            for forbidden in ["model_provider", "MARION_PROVIDER_KEY", "base_url ="] {
                 assert!(
                     !k.contains(forbidden),
                     "a live node uses codex's own default provider and the operator's own \

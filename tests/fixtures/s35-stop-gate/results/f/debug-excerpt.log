@@ -1,0 +1,12 @@
+2026-09-27T19:24:34.105Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-09-27T19:24:34.933Z [DEBUG] Loading hooks from plugin: ralph-wiggum
+2026-09-27T19:24:34.933Z [DEBUG] Loading hooks from plugin: watch
+2026-09-27T19:24:34.933Z [DEBUG] Loading hooks from plugin: vercel
+2026-09-27T19:24:34.933Z [DEBUG] Loading hooks from plugin: warp
+2026-09-27T19:24:34.933Z [DEBUG] Loading hooks from plugin: codex
+2026-09-27T19:24:34.941Z [DEBUG] Registered 17 hooks from 17 plugins
+2026-09-27T19:24:41.107Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
+2026-09-27T19:24:41.389Z [DEBUG] MCP server "s35probe": Channel notifications registered
+2026-09-27T19:24:45.066Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-09-27T19:24:45.068Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-09-27T19:24:46.791Z [DEBUG] [engine] turn 1 end (turns=1 usage in=907 out=71 cost=$0.0195 api=2409ms stop=end_turn resultLen=2)

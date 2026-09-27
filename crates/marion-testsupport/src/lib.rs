@@ -50,7 +50,8 @@ use serde_json::Value;
 
 mod shim;
 pub use shim::{
-    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, process_shim,
+    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, installed_version,
+    process_shim,
 };
 
 // --- waiting ------------------------------------------------------------------------------------
@@ -987,6 +988,24 @@ fn parse_version(output: &str) -> Option<&str> {
 /// day a CLI is upgraded; that cost is the correct one and it is bounded to a one-line edit next to
 /// the reason, made after re-running. The alternative cost is unbounded and silent.
 ///
+/// # The one exception: `MARION_GATE=warn`, asked for by name
+///
+/// A contributor whose `claude` updated overnight, and the nightly canary that installs the newest
+/// of every harness on purpose, both want the suite to *run* against what is installed and say so.
+/// `MARION_GATE=warn` ([`GATE_VAR`]) does that: an unadmitted version is driven, and a banner
+/// naming it and the accepted list goes to the **uncaptured** stderr handle (the one
+/// [`announce_skip`] uses, which libtest does not swallow), once per program per process. The shim
+/// also stops fetching npm pins (`Shim::without_pin_installs`), because "what I have" is the
+/// question. An unidentified binary — no version at all — still panics: warn relaxes the version,
+/// never the identification.
+///
+/// **Strict stays the default, locally as well as in CI.** A run that passed under warn is
+/// evidence about the installed release and not about the admitted ones, and a banner in the middle
+/// of a thousand-line log is still easy to miss at the end of a green run; the admission ritual
+/// (`scripts/admit-harness.sh`) and every claim of "the matrix passed" rest on the strict reading.
+/// Making the lenient reading opt-in keeps it the exception a person chose, and the strict panic
+/// names the variable so the choice is one line away.
+///
 /// # Why a pinned harness is probed through the shim
 ///
 /// Since 2026-09-06 the probe for a pinned harness goes through [`process_shim`]: the directory the
@@ -1012,7 +1031,81 @@ pub fn on_path(program: &str) -> bool {
         Ok(()) => true,
         Err(GateFailure::Absent) => false,
         Err(GateFailure::Refused(diagnosis)) => panic!("{diagnosis}"),
+        Err(GateFailure::Unadmitted { found, diagnosis }) => match gate_mode() {
+            GateMode::Strict => panic!(
+                "{diagnosis}\nTo run the suite against {program} {found} anyway, with a warning \
+                 instead of this failure, set {GATE_VAR}=warn; a run like that is not evidence \
+                 for admitting it."
+            ),
+            GateMode::Warn => {
+                warn_unadmitted_once(program, &found);
+                true
+            }
+        },
     }
+}
+
+/// The variable that chooses what [`on_path`] does with an unadmitted harness version.
+///
+/// Unset, empty or `strict`: fail (the default everywhere; see [`on_path`] for why). `warn`: run
+/// it, with a banner on stderr. Any other value is a typo and panics rather than guessing.
+pub const GATE_VAR: &str = "MARION_GATE";
+
+/// What [`on_path`] does with a harness that answered with a version the table does not admit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateMode {
+    /// Fail the test, naming both versions.
+    Strict,
+    /// Drive it, announcing it once per program on the uncaptured stderr.
+    Warn,
+}
+
+/// This process's [`GateMode`], read from [`GATE_VAR`].
+pub fn gate_mode() -> GateMode {
+    // Lossy, so a value that is not UTF-8 reaches the parse as a typo instead of reading as unset.
+    let value = std::env::var_os(GATE_VAR).map(|v| v.to_string_lossy().into_owned());
+    gate_mode_from(value.as_deref()).unwrap_or_else(|diagnosis| panic!("{diagnosis}"))
+}
+
+/// The parse behind [`gate_mode`], pure so its every branch is testable without `set_var`.
+fn gate_mode_from(value: Option<&str>) -> Result<GateMode, String> {
+    match value {
+        None | Some("" | "strict") => Ok(GateMode::Strict),
+        Some("warn") => Ok(GateMode::Warn),
+        Some(other) => Err(format!(
+            "{GATE_VAR}={other:?} is not a gate mode; use `strict` (the default) or `warn`"
+        )),
+    }
+}
+
+/// The banner `MARION_GATE=warn` prints for an unadmitted harness.
+fn unadmitted_warning(program: &str, found: &str, accepted: &[&str]) -> String {
+    format!(
+        "\n!!!! {GATE_VAR}=warn: running an UNADMITTED {program} {found} !!!!\n\
+         PINNED_HARNESSES admits {program} {accepted:?}. These tests drive {found} anyway, so \
+         their results say nothing about the admitted releases. If they hold, admit it with \
+         `scripts/admit-harness.sh {program} {found}` (run without {GATE_VAR}).\n"
+    )
+}
+
+/// [`unadmitted_warning`] on the real stderr, once per program per process: `on_path` is asked
+/// many times per suite and one banner per harness is loud enough.
+fn warn_unadmitted_once(program: &str, found: &str) {
+    static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    if warned.iter().any(|p| p == program) {
+        return;
+    }
+    warned.push(program.to_string());
+    let accepted = PINNED_HARNESSES
+        .iter()
+        .find(|p| p.program == program)
+        .map_or(&[][..], |p| p.accepted);
+    let _ = writeln!(
+        std::io::stderr(),
+        "{}",
+        unadmitted_warning(program, found, accepted)
+    );
 }
 
 /// The one variable that turns an absent harness into a named skip instead of a failure.
@@ -1824,6 +1917,35 @@ mod tests {
             .iter()
             .find(|p| p.program == program)
             .expect("pinned")
+    }
+
+    /// Strict unless `warn` is asked for by name; anything else is refused rather than guessed.
+    #[test]
+    fn the_gate_mode_is_strict_unless_warn_is_named() {
+        assert_eq!(gate_mode_from(None), Ok(GateMode::Strict));
+        assert_eq!(gate_mode_from(Some("")), Ok(GateMode::Strict));
+        assert_eq!(gate_mode_from(Some("strict")), Ok(GateMode::Strict));
+        assert_eq!(gate_mode_from(Some("warn")), Ok(GateMode::Warn));
+        for typo in ["WARN", "warning", "1", "off", "warn "] {
+            let e = gate_mode_from(Some(typo)).expect_err(typo);
+            assert!(e.contains(GATE_VAR) && e.contains("warn"), "{e}");
+        }
+    }
+
+    /// The warn banner names the program, the version it is about to run, what is admitted, and
+    /// the ritual that would admit it.
+    #[test]
+    fn the_unadmitted_warning_names_both_versions_and_the_admission_ritual() {
+        let w = unadmitted_warning("claude", "2.1.999", &["2.1.220", "2.1.280"]);
+        for needle in [
+            "claude 2.1.999",
+            "\"2.1.280\"",
+            "UNADMITTED",
+            "scripts/admit-harness.sh claude 2.1.999",
+            GATE_VAR,
+        ] {
+            assert!(w.contains(needle), "missing {needle:?} in {w}");
+        }
     }
 
     /// **The failure a wrong version produces, asserted rather than assumed** — because a check

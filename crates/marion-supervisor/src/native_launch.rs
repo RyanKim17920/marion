@@ -402,6 +402,9 @@ impl NativeNodeRecorder for NativeNodeJournal {
                 crate::procid::Read::Id(id) => Some(id),
                 crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
             },
+            provider: None,
+            route: None,
+            credential: None,
         }));
         // **`Running` from the instant the process holds its pane** — the same record, for the
         // same reason, that `journal::confirm_spawned` writes beside a managed node's `Spawned`:

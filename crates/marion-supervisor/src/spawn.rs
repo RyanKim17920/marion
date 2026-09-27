@@ -40,6 +40,10 @@ pub enum SpawnError {
     Json(#[from] serde_json::Error),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// The launch names a provider marion cannot point it at — unknown, logged out, no model, or
+    /// no wire shared with the harness. Refused before the node exists.
+    #[error("{0}")]
+    Endpoint(#[from] crate::endpoint::EndpointError),
     /// The tree's `.marion/agents.toml` exists and cannot be used — unreadable, or refused by
     /// `marion_core::agent_type::AgentTypes::parse`. Its own variant rather than
     /// [`Self::UnknownAgentType`], because the fix is in the file rather than the request, and
@@ -1289,6 +1293,10 @@ pub fn build_contract(
         // after the contract's measurements and before the worktree is reaped.
         branch: None,
         commit: None,
+        // Set by the review gate once a reviewer has judged the committed work.
+        review: None,
+        // Set only on a reviewer node's own completion, from its parsed reply.
+        findings: None,
     };
     TaskContract {
         task_id,
@@ -1299,6 +1307,9 @@ pub fn build_contract(
             harness: marion_core::Harness::Codex,
             version: "unknown".into(),
             model: None,
+            provider: None,
+            route: None,
+            credential: None,
         },
         repo,
         base_commit: base,

@@ -170,7 +170,7 @@ Not measured: `-p` never enqueues the event, so the headless shape carries no fl
 parent still calls `wait`; every other row pushes MCP's `notifications/message`, which no harness has
 been observed to show the model. Claude Code auto-backgrounds a blocking `spawn` past ~2 min itself.
 
-**Turn delivery — `node/steer` queues (2026-09-22; typed lanes deliver since 2026-09-27, below).** Push and steer are one
+**Turn delivery — `node/steer` queues (2026-09-22; typed and continuation lanes deliver since 2026-09-27, below).** Push and steer are one
 mechanism: a message for a node's next turn. The supervisor keeps one inbox per node it owns
 (`inbox.rs`: opened at claim, sealed with every waiting message dropped when the node ends;
 `take_or_seal` closes the late-steer race under one lock), and `node/steer` is answered
@@ -181,8 +181,8 @@ ended node is refused pointing at `node/resume`, a spawning one says retry, and 
 `TurnDelivery` is `None` for the node's shape is `Unsupported`, quoting the row. The result is
 `queued: true` with a `message_id`; the journal gets `MessageQueued`/`Delivered`/`Dropped` with the
 length and SHA-256 only, and a restarted supervisor drops what its predecessor left queued
-(`restart::drop_undelivered`, reason `supervisor restarted`). The typed lanes (duplex, ACP) now
-deliver (next paragraph); the continuation, pty and bridge lanes are later phases, so on those an
+(`restart::drop_undelivered`, reason `supervisor restarted`). The typed lanes (duplex, ACP) and the
+continuation lane now deliver (next paragraphs); the pty and bridge lanes are later phases, so on those an
 accepted steer still waits and is dropped, journaled, when its node ends; a node this supervisor's `agent/spawn` did not launch
 (a native session, or one an earlier supervisor launched) has no inbox and is refused
 `Unimplemented`. `node/prompt` stays `Unimplemented` and points at `node/steer`.
@@ -263,7 +263,44 @@ model). First run on claude 2.1.280 (the release S31 measured) from the installe
 2026-09-27 the file goes through the suite's pin gate like every other real-harness suite, so it
 runs on the admitted release and each admission re-runs it — the installer had pruned 2.1.280,
 and the file skipped. Not
-yet: the continuation, pane and bridge lanes; `node/prompt`.
+yet: the pane and bridge lanes; `node/prompt`.
+
+**Turn delivery — the continuation lane delivers (2026-09-27).** A supervisor-owned `LaunchOnly`
+node whose row's headless `TurnDelivery` is `Continuation` (codex, opencode, copilot, qwen) takes
+its next turn as a **relaunch of the same node**: at each stop of its process
+(`continuation::boundary`) a message already queued, or one arriving while §7.6 holds the node for
+its descendants (`descendant_gate::gate_or_woken`), or while a background child's end is owed
+(`TurnSource::held`, waited on the inbox's latched port and bounded by the node's clock — except
+after a report, which §7.6 accepts at once as reported early), is
+compiled into the same `LaunchSpec` with `resume` set to the session the node's stream named and
+the rendered message as the prompt (`run::declare_and_compile`, the path the first generation
+takes), and launched on what is left of the node's one wall clock. Its `Spawned` is the node's next
+generation (replay's `spawn_generation`, as `node/resume`'s), and the message is delivered
+`continuation:gen<N>` once that record is on disk. The report is the last one any generation made
+(`continuation::fold`); exit, expiry and the stream's failure are the last generation's; every
+generation's stdout goes to the event capture; the §7.6 verdict, `changed_paths`, the diff and
+verification are taken once, at the final stop. A death takes no further turn; a node whose stream
+named no session drops the message with that reason; a spent clock drops it too. Children
+(`run_spawn_watched`) and roots (`root::launch_only`, which has no §7.6 gate, only the inbox's hold)
+take the same boundary. Witnesses: `continuation::tests` (a waiting message, no session, a spent
+clock, a death, a message during the hold, an owed message waited for and not past the clock, not
+held after an early report, the fold), and end to end with a real codex (the admitted release on `PATH`) behind the canned provider
+(`tests/continuation.rs`, $0): an operator steer during a §7.6 hold resumes the codex child as
+generation two — `exec … resume <thread>` with the rendered steer on argv, every generation-two
+request replaying the first turn's calls, delivered once `continuation:gen2` — and the contract
+carries generation two's report, `reported_early` over the live grandchild; a grandchild's end
+during the hold resumes its codex parent, which reads and reports (`descendant_gate.rs`'s held
+child is now likewise resumed by its grandchild's end, as its second generation); a steer for a
+child whose stream named no thread is `MessageDropped` naming the session; a wedged continuation is
+killed on the first generation's bound (`TimedOut` inside it); a `marion run codex` root that
+backgrounds a codex child is relaunched with the child's end as generation two. All five RED with
+the lane unwired (one generation; the steer never delivered). opencode, copilot and qwen take the
+same code through their rows' measured resume spellings (S31) but are not driven end to end here.
+The canned run declares marion in codex's config document, which every generation re-reads; a live
+resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`). Not yet: a child's end is queued even when
+the parent's own `wait` already collected it (collection lives in the parent's bridge, which the
+supervisor does not hear from), so such a parent takes one more continuation per end —
+`m4_fan_in`'s codex root, which waits on both of its children, now runs three generations.
 
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
@@ -327,7 +364,8 @@ in its stream while it runs, `s` steers, `x` asks then cancels, Enter attaches t
 `^] d` returns ($0.00, no harness, no network). Not yet: per-row elapsed time and tokens for
 unselected nodes (the summary carries neither), a token-rate sparkline and context gauge (the
 widgets exist; no harness reports the rate or the window to marion), diff line counts, the agent
-type form, and logins, which remain each harness's own CLI.
+type form, and a logins view (Setup points at `marion login`, which stores API keys; subscription
+logins stay with each harness's own CLI).
 
 **Recent activity (2026-09-27).** A parent deciding whether to steer needs to see what its child is
 doing. Each `StreamGrammar` row now carries an `activity` rule — the units that are a call to **any**
@@ -612,6 +650,77 @@ worktree, its `report` was approved by the operator rule (narrative the child's 
 verification line mutated to expect other content failed the same run `Failed` (`1 of 1 commands
 did not exit 0`).
 
+**`codex app-server` 0.155.1 over stdio, measured for the planned transport (S36, 2026-09-27,
+`tests/fixtures/app-server-0.155.1/`, $0.00 metered).** marion's `canned` behind a hold/script
+proxy, a scratch `CODEX_HOME` holding the canned `config_toml`, marion's real bridge; no login.
+**P1:** `turn/steer`, `turn/interrupt`, `thread/resume` and `mcpServerStatus/list` are stable
+(not behind `experimentalApi`); `thread/queue/*` is experimental. v2 approvals answer
+`{decision: accept|acceptForSession|decline|cancel|…}` (MCP: elicitation `{action, content,
+_meta}`); the legacy `ReviewDecision` requests were never sent to a v2 thread.
+`schema-subset.json` holds the methods marion will use. **P2:** no `"jsonrpc"` member either way;
+notifications carry a top-level `emittedAtMs`; before `initialize` `-32600 Not initialized`;
+`thread/start` before the `initialized` notification is accepted; stdout is JSON only. **P3 — the
+readiness gate is marion's job:** marion's server starts from `config.toml`, argv `-c`, or
+`thread/start.config` (dotted or nested), per thread; `thread/start` returns in ~20 ms and
+`turn/start` at once, and the first provider request waits at most ~1 s for a starting server and
+then goes out **without** marion's tools. Wait for `mcpServer/startupStatus/updated` `ready` on the
+thread (or `mcpServerStatus/list`, which blocks until startup ends) before the first `turn/start`.
+`thread/start.sandbox` beats `config.toml` and argv `-c sandbox_mode`; the response echoes
+`sandbox` (a `SandboxPolicy`) and `approvalPolicy`. Without `omit_tools_from = ["deferred"]` the
+default model (`gpt-6-astra`) is shown none of marion's verbs, canned config included; the canned
+`config_toml` now emits the key as the live `-c` pairs already did
+(`codex::tests::marions_tools_are_never_deferred_behind_tool_search_on_the_canned_route`, RED with
+the key missing from `[mcp_servers.marion]`). **P4:**
+`item/started`/`item/completed` for `userMessage`, `mcpToolCall`, `commandExecution`,
+`fileChange`, `agentMessage`; `thread/tokenUsage/updated` after each provider response (`total`
+cumulative, `last` per response, plus `modelContextWindow`); `turn/completed` carries no usage and
+only the final message. **P5 (`on-request`):** an escalated shell →
+`item/commandExecution/requestApproval` (its `availableDecisions` omit `decline`, which still
+works); a patch outside the workspace → `item/fileChange/requestApproval`; sandboxed writes and
+network are refused by the sandbox with no request; MCP under `default_tools_approval_mode =
+"prompt"` → `mcpServer/elicitation/request` with `_meta.codex_approval_kind = "mcp_tool_call"`.
+decline → item `declined` and the model reads "rejected by user"; **cancel → the turn ends
+`interrupted`**; a JSON-RPC error → `failed`/`declined`, "approval request failed". Each answer is
+followed by `serverRequest/resolved`. Under `approvalPolicy: never` a prompting MCP tool fails
+visibly ("requires approval, but approval policy is never"). **P6 — steer folds into the same
+turn:** `turn/steer` answers `{turnId}` mid tool, while a request is held, during a pending
+approval and twice in a row; the text is a plain user message in the **next provider request of
+the same turn**, with no new `turn/started` and one `turn/completed`; a steer during the turn's last
+request adds a request rather than dropping it. Errors are `-32600` (wrong/missing
+`expectedTurnId`, unknown thread, `no active turn to steer`). **`turn/start` on an active turn is
+a steer** (answers the active turn id; nothing is queued). **P7:** `turn/interrupt` → `{}` and
+`turn/completed` `interrupted` at once, but **the running command keeps running** and its
+`item/completed` arrives after `turn/completed` under the old `turnId`; a second interrupt of the
+just-interrupted turn got **no response** in 60 s. **P8:** after SIGKILL + relaunch
+`thread/resume` of an `ephemeral: false` thread carries its history; resume takes
+`sandbox`/`approvalPolicy` overrides; an ephemeral thread is gone (`no rollout found`); a `codex
+exec` thread resumes under app-server and an app-server thread under `codex exec resume`, both
+with history. **P9:** stdin EOF or SIGTERM → exit 0 in ≤ 80 ms, idle or mid-turn (no
+`turn/completed` for the dropped turn), and the bridge, code-mode host and shell are all gone; no
+plugin fetch with `features.plugins = false`. **P10:** `optOutNotificationMethods` suppresses
+exactly the listed methods. **Design consequences:** gate the first turn on MCP `ready`; codex is
+a `Fold` row for mid-turn input on this surface (steer, or even `turn/start`), with one completion
+per turn preserved; never answer an approval with `cancel` unless ending the turn is meant; an
+interrupt must be followed by killing the turn's processes and must not await a second interrupt's
+response; a reader must accept items for a turn that has already completed.
+
+**A marion-owned Stop hook can gate native claude (S35, 2026-09-27, `tests/fixtures/s35-stop-gate/`,
+claude 2.1.283, operator's claude.ai login, haiku, $0.171 notional).** Interactive in a pty with
+`--dangerously-load-development-channels server:<key>` (channel registered), an overlay
+`--settings '{"hooks":{"Stop":[…]}}'` **fires** and a printed `{"decision":"block","reason":…}`
+**continues the turn with the reason in the model's context** (the model answered the reason's
+nonce; the second Stop call carries `stop_hook_active:true`) — `results/a/`. It **coexists** with
+the operator's hooks ("Ran 5 stop hooks": the overlay's plus the user-settings Stop hook and the
+codex, ralph-wiggum and warp plugin Stop hooks), and a hooks-only overlay **merges** with user
+settings (statusLine, user `UserPromptSubmit`/`SessionStart` hooks intact). **The last `--settings`
+wins**: with two flags only the later one's Stop hook ran (`results/e/`), so marion must merge an
+operator's own `--settings` into its overlay rather than append a second flag. **`disableAllHooks`
+kills the gate** with every other hook (`results/f/`), so no gate can ride the headless children's
+`{"disableAllHooks":true}` overlay; `allowManagedHooksOnly` from `--settings` is ignored
+(`results/g/`), and the managed-settings path was **not measured** (no managed file; root needed).
+**Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
+session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
+
 **No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
 codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
 printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
@@ -854,7 +963,11 @@ were marion's own: the run was on 2.1.280 (its `system/init` says so) and c9a240
 listing `report` to a declared root, so claude answered `No such tool available` and never asked.
 The probes now drop `MARION_DEPTH` from the root's declaration (test-side; production unchanged)
 and ask on 2.1.283 as the recording does. `turn_delivery` runs through the gate from this
-admission on. The probes under `spikes/` were not re-run.
+admission on. The probes under `spikes/` were not re-run. Endpoint mode on 2.1.283
+(`endpoint_matrix::a_claude_code_child_runs_on_the_users_provider_over_the_anthropic_wire`, first
+run 2026-09-27): every `POST /v1/messages` presented the stored key as `authorization: Bearer`
+and named only the chosen model; the run opens with `HEAD /api/hello` to the base URL, carrying
+no credential and no body, which the cell now skips.
 
 **goose 1.52.0, admitted 2026-09-27 via `scripts/admit-harness.sh`.** Homebrew replaced 1.51.0 in
 place. Green with only the entry widened: `marion-testsupport` (35), `cross_product` (57),
@@ -1492,6 +1605,98 @@ resolution runs: an operator who exports `GEMINI_API_KEY` or `GOOGLE_GENAI_USE_V
 route with no settings file written. Antigravity shares `~/.gemini/` and owns the
 `service=gemini` Keychain item S12 found, so S12 is a starting point, but the CLI surface must be
 measured rather than assumed to carry over.
+
+### Endpoint mode — any harness on any provider the user holds a key for (started 2026-09-27)
+
+A third auth mode beside canned and live: a node is pointed at a real provider endpoint with a key
+the **user** stored through `marion login`. Scope rules that do not move: no vendor subscription
+login is ever reused outside its own harness, no client identity is spoofed, and no agent or test
+ever runs a real login.
+
+- **Provider registry — built.** `marion_core::provider`: `Wire` (anthropic, openai-chat,
+  openai-responses, gemini), `AuthKind`, and a seed table of fifteen providers (anthropic, openai,
+  openrouter, gemini, deepseek, moonshot, zai, groq, together, fireworks, mistral, xai,
+  vercel-gateway, ollama, lmstudio) with each native wire's base. Rows are transcribed from vendor
+  docs, **not measured**; beta or undocumented-by-marion wires are marked unverified on the row.
+  User-level custom providers parse from `providers.toml` text; `<provider>:<model>` splits on the
+  first colon only when the prefix is a registry id (`ollama:qwen3:32b`).
+- **Credential store — built.** `marion_supervisor::credentials`: a `Secret` whose `Debug` is
+  `***`; the macOS login Keychain through `/usr/bin/security` (service `marion`, account the
+  provider id; writes via `security -i` with the command on stdin so the key never reaches argv;
+  keys and ids validated to characters that need no quoting), or a `0600` JSON file in a `0700`
+  `$XDG_CONFIG_HOME/marion/` replaced through an `O_EXCL` temp file and a rename;
+  `MARION_CREDENTIAL_STORE=file` forces the file. A key file other users can read is refused.
+  Custom providers load from the **user-level** `providers.toml` only. The Keychain round trip ran
+  green once with `MARION_KEYCHAIN_TEST=1`; it is skipped by default.
+- **`marion login` — built.** `marion login <provider>` (terminal prompt with echo off, offering
+  the provider's own env var with a y/N consent), `--stdin`, `--from-env`, `--list` (id, name,
+  wires, stored or not — never the key), `marion logout <provider>`, and `marion login custom <id>
+  --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
+  refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
+  `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
+  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
+  on another branch.
+- **Several credentials per provider — stored and listed; rotation not built.** A credential is
+  `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
+  work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
+  `--list` shows each provider's stored ids in login order from a non-secret `logins.json` index
+  (the Keychain cannot be listed), and `providers.toml` may state `[credentials] openrouter =
+  ["openrouter:work", "openrouter"]`, which `marion login custom` carries forward.
+- **Credential choice — built; rotation is a seam, not a feature.** A launch tries its provider's
+  credentials in the agent type's own `credentials = [...]` order (each an id of its `provider`,
+  checked at load), else the `[credentials]` order, else login order with the unlabelled id last,
+  and uses the first with a stored key; a refusal lists every id tried. The id — never the key —
+  rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
+  are kept as `Endpoint::fallbacks`. **TODO, not built:** rotation — on a 401/403, 429 or
+  5xx/connection failure *before* the child's first successful turn, relaunch on the next
+  fallback and record it; never mid-turn, and never between vendor subscription logins. A resume
+  re-resolves by the stated order rather than the journaled credential. **TODO, not built:** a
+  `profile` field selecting one of several native harness profiles the user set up
+  (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
+- **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that
+  overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
+  endpoint's env keys, documents and MCP route equal to canned's on every harness, bar the
+  endpoint-only rows below); a node's bridge
+  is told the supervisor's own mode, never the provider. Codex's provider key is one row variable,
+  `MARION_PROVIDER_KEY`, compiled from the launch's credential — it replaced four post-compile
+  `MARION_DUMMY_KEY` pushes with the same values (child placeholder, root per-run token).
+- **`provider` on agent types — built.** `.marion/agents.toml` rows may name `provider = "<id>"`;
+  a malformed id is a parse error, and an id neither built in nor in the user's `providers.toml`
+  refuses every spawn against that tree by name.
+- **Endpoint resolution — built.** `marion_supervisor::endpoint::resolve_endpoint`, called by
+  `run_spawn_watched` (before the intent is journaled) and `root::prepare`: the provider is the
+  request model's registry-id prefix, else the type's `provider`, else the type model's prefix;
+  the wire is the first of the harness row's `wires` recipes (a wire plus the env that selects it,
+  applied by the one renderer; the resolver names no harness) the provider serves natively (claude
+  anthropic; codex openai-responses; gemini gemini; copilot openai-chat then anthropic via
+  `COPILOT_PROVIDER_TYPE=anthropic`; opencode, goose, cline, qwen openai-chat; ACP none, refused by
+  name); a missing key, unknown provider, missing model or no
+  shared wire is refused naming the command or both wire lists. A Claude Code endpoint node also
+  gets `ANTHROPIC_SMALL_FAST_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL` set to its own model and no
+  per-run token push; an opencode endpoint node asks for the model verbatim under a `marion`
+  provider block. Captured stdout/stderr of an endpoint child, and of a `LaunchOnly` endpoint root,
+  is redacted of the key. **Gap:** a duplex node's live event stream is not redacted.
+  `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
+  Node config documents are now written `0600` (they carry the node token and, on opencode and
+  cline endpoint nodes, the key).
+- **Endpoint records and resume — built; tree display not yet.** `provider` and `route`
+  (`native`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
+  default, skipped when absent, so canned and live records are byte-identical to before). A resume
+  re-requests `<provider>:<model>` with the adapter's own spelling undone
+  (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
+  provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
+  `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
+- **Endpoint cells — green for codex, opencode and copilot (×2); claude written, not run.**
+  `tests/endpoint_matrix.rs` writes a fixture `credentials.json` (`sk-endpoint-test`) and a
+  `providers.toml` pointing `canned-test` (all four wires) and `canned-anthropic` at the canned
+  server, then spawns real children with `model = "<provider>:endpoint-model-7"`. Each cell asserts
+  from the request log (which now records a fingerprint beside every redacted credential header):
+  every request presents the stored key and no second credential, no header carries an OAuth
+  marker, every request body names exactly `endpoint-model-7`, the contract and journal name the
+  provider and route and hold no key. Measured on 2026-09-27: codex 0.147 on Responses, opencode on
+  Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
+  with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
+  is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state

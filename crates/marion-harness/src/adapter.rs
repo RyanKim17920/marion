@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use marion_core::agent_type;
 use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::harness::Harness;
+use marion_core::provider::Wire;
 
 use crate::acp;
 use crate::antigravity;
@@ -143,6 +144,12 @@ pub struct Extras {
     /// The agent type's `approval_mode`: an ACP session mode the driver sets over the protocol.
     /// Read only by [`AcpAdapter`]; any other adapter refuses a launch carrying one, by name.
     pub approval_mode: Option<String>,
+    /// The supervisor's own mode and endpoint, where this node's differs — set on an
+    /// [`Auth::Endpoint`] node alone. The bridge the node starts is told these, never the node's
+    /// provider: a spawn it serves is resolved afresh by the supervisor, and handing it the
+    /// provider's URL would point a grandchild's canned overlay at a third party.
+    pub tree_auth: Option<Auth>,
+    pub tree_base_url: Option<String>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -209,6 +216,12 @@ pub struct LaunchSpec {
     /// grammar for the shape asked for refuses the launch by name rather than starting fresh under
     /// a resumed session's id; nothing here is per harness.
     pub resume: Option<String>,
+    /// The wire this node speaks to its endpoint — chosen by endpoint resolution as the first of
+    /// the harness's wires the provider serves natively. `None` on canned and live nodes, whose
+    /// wire is the row's own.
+    pub wire: Option<Wire>,
+    /// The registry id of the provider an [`Auth::Endpoint`] node talks to; `None` otherwise.
+    pub provider: Option<String>,
     pub extra: Extras,
 }
 
@@ -437,6 +450,19 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
 
+    /// The wires this harness can be pointed at in endpoint mode, in preference order — the
+    /// wires of the row's [`spec::HarnessSpec::wires`] recipes.
+    fn endpoint_wires(&self) -> Vec<Wire> {
+        self.spec().wires.iter().map(|r| r.wire).collect()
+    }
+
+    /// The provider's model id behind an endpoint node's compiled model — the inverse of whatever
+    /// this adapter's `fields` did to spell it, so a resume can ask the provider for the same model
+    /// again. The identity everywhere the compiled model *is* the provider's id.
+    fn endpoint_model(&self, compiled: &str) -> String {
+        compiled.to_string()
+    }
+
     /// Which channel this launch's MCP declaration travels on — the row's [`spec::McpRoutes`] for
     /// the launch's auth mode, or [`McpRoute::None`] where no declaration was asked for.
     ///
@@ -446,7 +472,8 @@ pub trait HarnessAdapter {
     fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
         match (spec.mcp, spec.auth) {
             (McpDeclaration::None, _) => McpRoute::None,
-            (McpDeclaration::Marion, Auth::Canned) => self.spec().mcp.canned,
+            // Endpoint rides the canned route: the config dir is marion's in both.
+            (McpDeclaration::Marion, Auth::Canned | Auth::Endpoint) => self.spec().mcp.canned,
             (McpDeclaration::Marion, Auth::Inherited) => self.spec().mcp.live,
         }
     }
@@ -725,13 +752,14 @@ pub trait HarnessAdapter {
 /// is a removal"* is one rule and not five.
 fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
     let (base_url, api_key) = match spec.auth {
-        Auth::Canned => (spec.base_url.clone(), spec.api_key.clone()),
+        Auth::Canned | Auth::Endpoint => (spec.base_url.clone(), spec.api_key.clone()),
         Auth::Inherited => (None, None),
     };
     spec::Fields {
         cwd: spec.cwd.clone(),
         config_dir: spec.config_dir.clone(),
         auth: spec.auth,
+        wire: spec.wire,
         prompt: spec.prompt.clone(),
         model: spec.model.clone(),
         base_url,
@@ -757,8 +785,12 @@ fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
         args: ctx.bridge_args.clone(),
         repo: ctx.repo.clone(),
         state: ctx.state_dir.clone(),
-        base_url: spec.base_url.clone(),
-        auth: spec.auth,
+        // An endpoint node's bridge is told the supervisor's mode and endpoint, never the node's.
+        base_url: match spec.auth {
+            Auth::Endpoint => spec.extra.tree_base_url.clone(),
+            Auth::Canned | Auth::Inherited => spec.base_url.clone(),
+        },
+        auth: spec.extra.tree_auth.unwrap_or(spec.auth),
         agent_id: ctx.agent_id.clone(),
         agent_type: ctx.agent_type.clone(),
         depth: ctx.depth,
@@ -780,6 +812,11 @@ fn render_row(
         spec::Refusal::NoProgram => HarnessError::MissingInput {
             harness: row.harness,
             what: "the launch named no program and the row carries none",
+        },
+        spec::Refusal::NoWireRecipe => HarnessError::MissingInput {
+            harness: row.harness,
+            what: "an endpoint launch must name a wire this harness has a recipe for; endpoint \
+                   resolution chooses one from the row's `wires`",
         },
         spec::Refusal::NoResume => HarnessError::MissingInput {
             harness: row.harness,
@@ -965,12 +1002,13 @@ impl HarnessAdapter for CodexAdapter {
         // is byte-identical to what it was before `-m` was known to exist here.
         f.model = match spec.auth {
             Auth::Canned => None,
-            Auth::Inherited => spec.model.clone(),
+            // A real endpoint serves the model it is asked for, so it must be asked.
+            Auth::Inherited | Auth::Endpoint => spec.model.clone(),
         };
         // A live node reads no marion-written config, so the sandbox the contract records rides
         // `-c` first, bridge or no bridge (`codex::live_sandbox_override`).
         f.pairs = match (spec.auth, spec.mcp) {
-            (Auth::Canned, _) => Vec::new(),
+            (Auth::Canned | Auth::Endpoint, _) => Vec::new(),
             (Auth::Inherited, McpDeclaration::None) => vec![codex::live_sandbox_override()],
             (Auth::Inherited, McpDeclaration::Marion) => {
                 std::iter::once(codex::live_sandbox_override())
@@ -1101,8 +1139,10 @@ impl HarnessAdapter for GeminiAdapter {
         // operator's own — so any selection here would pin every operator to one route. The live
         // document selects nothing and leaves gemini's own `user || env` resolution to run.
         let document = match (spec.auth, bridge.as_ref()) {
-            (Auth::Canned, bridge) => serde_json::to_string_pretty(&gemini::settings_json(bridge))
-                .expect("a Value always serialises"),
+            (Auth::Canned | Auth::Endpoint, bridge) => {
+                serde_json::to_string_pretty(&gemini::settings_json(bridge))
+                    .expect("a Value always serialises")
+            }
             // The row's live declaration, byte for byte: a native root gets exactly this file.
             (Auth::Inherited, Some(bridge)) => gemini::live_settings_document(bridge),
             (Auth::Inherited, None) => {
@@ -1113,6 +1153,9 @@ impl HarnessAdapter for GeminiAdapter {
         Ok(vec![(Self::settings_path(spec), document)])
     }
 }
+
+/// The provider-block id an opencode endpoint node's generated config uses.
+const ENDPOINT_PROVIDER_BLOCK: &str = "marion";
 
 /// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
 #[derive(Debug, Clone, Copy, Default)]
@@ -1147,6 +1190,15 @@ impl OpenCodeAdapter {
                        your own login does not use. Pass a provider/model from your opencode \
                        config (-m provider/model), or pass none to use opencode's own default",
             });
+        }
+        // A real endpoint is asked for its model verbatim — OpenRouter's ids carry a slash of their
+        // own — under a provider block of marion's name, which merges with none of opencode's
+        // built-in providers.
+        if spec.auth == Auth::Endpoint {
+            return Ok(Some(opencode::ModelRef {
+                provider: ENDPOINT_PROVIDER_BLOCK.to_string(),
+                model: m.to_string(),
+            }));
         }
         opencode::ModelRef::parse(m)
             .map(Some)
@@ -1187,11 +1239,21 @@ impl HarnessAdapter for OpenCodeAdapter {
         // session identifiable in `opencode session list` without leaking the prompt.
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
         f.inline_config = match spec.auth {
-            Auth::Canned => None,
+            Auth::Canned | Auth::Endpoint => None,
             Auth::Inherited => (spec.mcp == McpDeclaration::Marion)
                 .then(|| opencode::live_config_document(&bridge_env(spec, ctx))),
         };
         Ok(f)
+    }
+
+    /// `marion/<model>` back to `<model>`: [`Self::model_ref`] put the provider's id under marion's
+    /// own block.
+    fn endpoint_model(&self, compiled: &str) -> String {
+        compiled
+            .strip_prefix(ENDPOINT_PROVIDER_BLOCK)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(compiled)
+            .to_string()
     }
 
     /// **No file at all under `Inherited`** — see [`HarnessAdapter::mcp_route`], which is what keeps
@@ -1312,7 +1374,7 @@ impl HarnessAdapter for CopilotAdapter {
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         match spec.auth {
-            Auth::Canned => {
+            Auth::Canned | Auth::Endpoint => {
                 // Both measured as hard refusals by the CLI itself, so marion refuses first and
                 // says why. Without a base URL there is no BYOK at all and the CLI goes looking
                 // for a GitHub login; without a model BYOK exits 1 before any request.
@@ -1410,7 +1472,7 @@ impl HarnessAdapter for GooseAdapter {
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         match spec.auth {
-            Auth::Canned => {
+            Auth::Canned | Auth::Endpoint => {
                 // Without a host the `openai` provider posts to api.openai.com with marion's
                 // placeholder key — a real vendor call on a run premised on making none.
                 if spec.base_url.is_none() {
@@ -1523,7 +1585,7 @@ impl HarnessAdapter for ClineAdapter {
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         match spec.auth {
-            Auth::Canned => {
+            Auth::Canned | Auth::Endpoint => {
                 Self::provider(spec)?;
             }
             // The canned default names marion's own endpoint's plumbing; a live node has none. Any
@@ -1560,7 +1622,7 @@ impl HarnessAdapter for ClineAdapter {
                 cline::mcp_settings_document(&bridge_env(spec, ctx)),
             ));
         }
-        if spec.auth == Auth::Canned {
+        if spec.auth.overlays() {
             files.push((
                 cline::providers_path(&spec.config_dir),
                 serde_json::to_string_pretty(&cline::providers_json(&Self::provider(spec)?))
@@ -1618,7 +1680,7 @@ impl HarnessAdapter for QwenAdapter {
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         match spec.auth {
-            Auth::Canned => {
+            Auth::Canned | Auth::Endpoint => {
                 // Without a base URL the OpenAI provider posts to the vendor with marion's
                 // placeholder key; without a model it has nothing to name.
                 if spec.base_url.is_none() {
@@ -1699,21 +1761,22 @@ impl HarnessAdapter for AntigravityAdapter {
 
     /// The refusal this harness owes, the root, and the working-directory preamble.
     ///
-    /// **Canned is refused by name.** agy has no measured way to point it at marion's canned
+    /// **Canned and endpoint are refused by name.** agy has no measured way to point it at another
     /// provider (an API-key route would need the operator's profile relocated, which loses the
     /// keychain login), so a "canned" node would spend the operator's real quota under a mode
-    /// that promises it spends nothing.
+    /// that promises it spends nothing, and an endpoint node would bill the operator's login
+    /// instead of the provider it names.
     fn fields(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        if spec.auth == Auth::Canned {
+        if spec.auth.overlays() {
             return Err(HarnessError::MissingInput {
                 harness: Harness::Antigravity,
-                what: "agy has no canned provider route: it runs only on the operator's own \
-                       login, so launch it live (marion run --live)",
+                what: "agy has no canned or endpoint provider route: it runs only on the \
+                       operator's own login, so launch it without --canned or a provider",
             });
         }
         let mut f = neutral_fields(spec, self.axes(spec)?);
@@ -1935,7 +1998,7 @@ impl HarnessAdapter for AcpAdapter {
             // opencode's own isolation rows, over the same binary: the relocations, the hygiene
             // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
             // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
-            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+            (Auth::Canned | Auth::Endpoint, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
                 let mut env = spec::render_env(opencode::SPEC.env, &f);
                 // And opencode's no-self-update switch, which is that row's policy rather than one
                 // of its `Env` rows — the same binary, one subcommand over, updates itself the same
@@ -1949,7 +2012,7 @@ impl HarnessAdapter for AcpAdapter {
             // either. Launching them anyway would point the operator's real credential at a vendor
             // while the contract records a canned run — §6.7's audit record asserting something
             // that never happened.
-            (Auth::Canned, None) => {
+            (Auth::Canned | Auth::Endpoint, None) => {
                 return Err(HarnessError::MissingInput {
                     harness: Harness::Acp,
                     what: "ACP names no provider, base URL or credential at any point in its \
@@ -1995,7 +2058,7 @@ impl HarnessAdapter for AcpAdapter {
         _ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
         let binding = self.binding(spec)?;
-        if spec.auth != Auth::Canned {
+        if !spec.auth.overlays() {
             return Ok(Vec::new());
         }
         match binding.canned() {
@@ -2435,6 +2498,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }
@@ -2452,6 +2517,8 @@ mod tests {
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             resume: None,
+            wire: None,
+            provider: None,
             extra: Extras::default(),
         }
     }
@@ -2820,7 +2887,9 @@ mod tests {
             let len: usize = files.iter().map(|(_, c)| c.len()).sum();
             let want = match name {
                 "claude" => 491,
-                "codex" => 1275,
+                // 1275 pre-axis, + 31 for `omit_tools_from = ["deferred"]\n` (2026-09-27), + 3 since
+                // the provider's `env_key` became `MARION_PROVIDER_KEY`.
+                "codex" => 1309,
                 "gemini" => 718,
                 "opencode" => 962,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
@@ -3644,6 +3713,263 @@ mod tests {
             Harness::Qwen => qwen_spec(),
             Harness::Antigravity => agy_spec(),
             Harness::Acp => acp_spec(),
+        }
+    }
+
+    /// **Endpoint overlays exactly what canned does**: the same isolation variables, the same
+    /// documents at the same paths, the same MCP route — only where they point differs. A row that
+    /// dropped an isolation variable under endpoint would run the operator's own harness config
+    /// against a third-party endpoint.
+    #[test]
+    fn an_endpoint_launch_carries_every_overlay_a_canned_one_does() {
+        for h in Harness::ALL {
+            let adapter = launch_adapter(h).unwrap();
+            let canned = LaunchSpec {
+                auth: Auth::Canned,
+                ..spec_for(h)
+            };
+            let endpoint = LaunchSpec {
+                auth: Auth::Endpoint,
+                wire: adapter.endpoint_wires().first().copied(),
+                ..spec_for(h)
+            };
+            let keys = |spec: &LaunchSpec| -> Result<Vec<String>, HarnessError> {
+                let inv = adapter.compile(spec, &ctx())?;
+                let mut k: Vec<String> = inv.env.into_iter().map(|(k, _)| k).collect();
+                k.sort();
+                Ok(k)
+            };
+            let paths = |spec: &LaunchSpec| -> Result<Vec<PathBuf>, HarnessError> {
+                Ok(adapter
+                    .config_files(spec, &ctx())?
+                    .into_iter()
+                    .map(|(p, _)| p)
+                    .collect())
+            };
+            let endpoint_only: Vec<&str> = adapter
+                .spec()
+                .env
+                .iter()
+                .filter(|e| e.when == crate::spec::When::Endpoint)
+                .map(|e| e.key)
+                .collect();
+            if adapter.endpoint_wires().is_empty() {
+                assert!(
+                    keys(&endpoint).is_err(),
+                    "{h}: no recipe, so no endpoint launch"
+                );
+                continue;
+            }
+            match (keys(&canned), keys(&endpoint)) {
+                (Ok(c), Ok(mut e)) => {
+                    e.retain(|k| !endpoint_only.contains(&k.as_str()));
+                    assert_eq!(c, e, "{h}: env keys")
+                }
+                (Err(_), Err(_)) => continue,
+                (c, e) => panic!("{h}: canned {c:?} but endpoint {e:?}"),
+            }
+            assert_eq!(
+                paths(&canned).unwrap(),
+                paths(&endpoint).unwrap(),
+                "{h}: documents"
+            );
+            assert_eq!(
+                adapter.mcp_route(&canned),
+                adapter.mcp_route(&endpoint),
+                "{h}: route"
+            );
+        }
+    }
+
+    /// **Every row's endpoint recipes are well-formed data**: a note on each, no wire twice, and
+    /// no recipe variable that is also an isolation row's — a recipe selects a wire, it never moves
+    /// where the harness keeps its state.
+    #[test]
+    fn every_rows_wire_recipes_are_noted_distinct_and_touch_no_isolation() {
+        for h in Harness::ALL {
+            let row = launch_adapter(h).unwrap().spec();
+            let mut seen = Vec::new();
+            for r in row.wires {
+                assert!(!r.note.trim().is_empty(), "{h}: {:?} has no note", r.wire);
+                assert!(!seen.contains(&r.wire), "{h}: {:?} twice", r.wire);
+                seen.push(r.wire);
+                for (k, _) in r.env {
+                    let isolation = row
+                        .env
+                        .iter()
+                        .any(|e| e.key == *k && matches!(e.val, crate::spec::Val::Under(_)));
+                    assert!(!isolation, "{h}: recipe variable {k} relocates state");
+                }
+            }
+        }
+    }
+
+    /// **An endpoint launch with no recipe for its wire is refused, never rendered half-aimed.**
+    #[test]
+    fn an_endpoint_launch_on_a_wire_the_row_cannot_render_is_refused() {
+        for wire in [None, Some(marion_core::provider::Wire::Gemini)] {
+            let spec = LaunchSpec {
+                auth: Auth::Endpoint,
+                wire,
+                ..codex_spec()
+            };
+            let err = CodexAdapter.compile(&spec, &ctx()).unwrap_err().to_string();
+            assert!(err.contains("recipe"), "{wire:?}: {err}");
+        }
+    }
+
+    /// **Every harness but the ACP protocol row and agy can be pointed at an endpoint**, on the
+    /// wire its canned overlay already renders — the row states it rather than a resolver guessing
+    /// it. agy has no overlay at all (it runs only on the operator's own login), so no wire.
+    #[test]
+    fn every_row_but_acp_states_the_endpoint_wire_its_overlay_renders() {
+        use marion_core::provider::Wire;
+        for h in Harness::ALL {
+            let wires = launch_adapter(h).unwrap().endpoint_wires();
+            let wires = wires.as_slice();
+            let want: &[Wire] = match h {
+                Harness::ClaudeCode => &[Wire::AnthropicMessages],
+                Harness::Codex => &[Wire::OpenAiResponses],
+                Harness::Gemini => &[Wire::Gemini],
+                Harness::Copilot => &[Wire::OpenAiChat, Wire::AnthropicMessages],
+                Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
+                    &[Wire::OpenAiChat]
+                }
+                Harness::Acp | Harness::Antigravity => &[],
+            };
+            assert_eq!(wires, want, "{h}");
+        }
+    }
+
+    /// `spec` as an endpoint launch of `h`, on the first wire its row has a recipe for — what
+    /// endpoint resolution chooses against a provider serving every wire.
+    fn endpoint(spec: LaunchSpec, model: &str, h: Harness) -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Endpoint,
+            wire: launch_adapter(h).unwrap().endpoint_wires().first().copied(),
+            base_url: Some("https://provider.example/v1".into()),
+            api_key: Some("sk-endpoint-test".into()),
+            model: Some(model.into()),
+            ..spec
+        }
+    }
+
+    fn env_of(inv: &Invocation, key: &str) -> Option<String> {
+        inv.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// **A Claude Code endpoint node names no Claude model to a third party.** Its background
+    /// calls (titles, summaries) default to a Haiku id; pointed at another provider, both the small
+    /// and the default-Haiku model are the chosen one. Canned mode sets neither.
+    #[test]
+    fn a_claude_endpoint_node_routes_its_background_model_to_the_chosen_one() {
+        let inv = ClaudeCodeAdapter
+            .compile(
+                &endpoint(claude_spec(), "glm-4.6", Harness::ClaudeCode),
+                &ctx(),
+            )
+            .unwrap();
+        for k in [
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ] {
+            assert_eq!(env_of(&inv, k).as_deref(), Some("glm-4.6"), "{k}");
+        }
+        assert_eq!(
+            env_of(&inv, "ANTHROPIC_AUTH_TOKEN").as_deref(),
+            Some("sk-endpoint-test")
+        );
+        assert_eq!(env_of(&inv, "ANTHROPIC_API_KEY").as_deref(), Some(""));
+        assert_eq!(
+            env_of(&inv, "ANTHROPIC_BASE_URL").as_deref(),
+            Some("https://provider.example")
+        );
+        let canned = ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap();
+        assert_eq!(env_of(&canned, "ANTHROPIC_SMALL_FAST_MODEL"), None);
+    }
+
+    /// **An opencode endpoint node asks for the model verbatim**, slashes and all, under a
+    /// provider block of marion's own name — a registry id like `openrouter` would merge with
+    /// opencode's built-in provider of that name.
+    #[test]
+    fn an_opencode_endpoint_node_asks_for_the_model_verbatim_under_marions_block() {
+        let spec = endpoint(
+            opencode_spec(),
+            "anthropic/claude-sonnet-4",
+            Harness::OpenCode,
+        );
+        let inv = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
+        assert_eq!(
+            inv.model.as_deref(),
+            Some("marion/anthropic/claude-sonnet-4")
+        );
+        let files = OpenCodeAdapter.config_files(&spec, &ctx()).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        let block = &doc["provider"]["marion"];
+        assert_eq!(block["options"]["baseURL"], "https://provider.example/v1");
+        assert_eq!(block["options"]["apiKey"], "sk-endpoint-test");
+        assert!(
+            block["models"]["anthropic/claude-sonnet-4"].is_object(),
+            "{doc}"
+        );
+    }
+
+    /// **A codex endpoint node names its model**, which a canned one never does: the canned
+    /// server ignores it, a real endpoint serves exactly what it is asked for.
+    #[test]
+    fn a_codex_endpoint_node_names_its_model_and_its_key() {
+        let inv = CodexAdapter
+            .compile(
+                &endpoint(codex_spec(), "gpt-5.1-codex", Harness::Codex),
+                &ctx(),
+            )
+            .unwrap();
+        assert_eq!(inv.model.as_deref(), Some("gpt-5.1-codex"));
+        assert!(
+            inv.args.windows(2).any(|w| w == ["-m", "gpt-5.1-codex"]),
+            "{:?}",
+            inv.args
+        );
+        assert_eq!(
+            env_of(&inv, "MARION_PROVIDER_KEY").as_deref(),
+            Some("sk-endpoint-test")
+        );
+    }
+
+    /// **An endpoint node's bridge is told the supervisor's mode, never the node's provider.** A
+    /// spawn the bridge serves is resolved afresh; handing it the provider's URL as
+    /// `MARION_BASE_URL` would aim a grandchild's canned overlay at a third party.
+    #[test]
+    fn an_endpoint_nodes_bridge_declares_the_tree_mode_and_not_the_provider() {
+        let provider_url = "https://provider.example/v1";
+        for (tree_auth, tree_url, want_auth) in [
+            (Auth::Inherited, None, "inherited"),
+            (Auth::Canned, Some("http://127.0.0.1:8099/v1"), "canned"),
+        ] {
+            let spec = LaunchSpec {
+                auth: Auth::Endpoint,
+                base_url: Some(provider_url.into()),
+                api_key: Some("sk-endpoint-test".into()),
+                extra: Extras {
+                    tree_auth: Some(tree_auth),
+                    tree_base_url: tree_url.map(str::to_string),
+                    ..Extras::default()
+                },
+                ..claude_spec()
+            };
+            let bridge = bridge_env(&spec, &ctx());
+            assert_eq!(bridge.auth.as_wire(), want_auth);
+            assert_eq!(bridge.base_url.as_deref(), tree_url);
+            let pairs = bridge.pairs();
+            assert!(
+                !pairs
+                    .iter()
+                    .any(|(_, v)| v.contains("provider.example") || v.contains("sk-endpoint")),
+                "{pairs:?}"
+            );
         }
     }
 
@@ -4598,14 +4924,39 @@ mod tests {
         );
     }
 
+    /// **The key codex's generated provider names is the row's, from the launch's own credential**
+    /// — one variable, compiled into the invocation, rather than a push each launch path had to
+    /// remember after `compile`. The config's `env_key` and the row's variable are the same name.
+    #[test]
+    fn a_canned_codex_node_carries_its_credential_in_the_variable_its_config_names() {
+        let spec = LaunchSpec {
+            api_key: Some("per-run-token".into()),
+            ..codex_spec()
+        };
+        let inv = CodexAdapter.compile(&spec, &ctx()).unwrap();
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "MARION_PROVIDER_KEY" && v == "per-run-token"),
+            "{:?}",
+            inv.env
+        );
+        let files = CodexAdapter.config_files(&spec, &ctx()).unwrap();
+        assert!(
+            files[0].1.contains("env_key = \"MARION_PROVIDER_KEY\""),
+            "{}",
+            files[0].1
+        );
+    }
+
     /// **Live mode is removal here too, and this is the list of what is removed** — asserted by
     /// name, because the failure defended against is one of the two creeping back. `CODEX_HOME`
     /// pointed anywhere but the operator's home hides the very `auth.json` the node exists to use,
-    /// and `MARION_DUMMY_KEY` is a minted placeholder standing beside a real credential.
+    /// and `MARION_PROVIDER_KEY` is a minted placeholder standing beside a real credential.
     #[test]
     fn a_live_codex_node_carries_neither_codex_home_nor_the_minted_key() {
         let inv = CodexAdapter.compile(&codex_live_spec(), &ctx()).unwrap();
-        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+        for k in ["CODEX_HOME", "MARION_PROVIDER_KEY"] {
             assert!(
                 !inv.env.iter().any(|(n, _)| n == k),
                 "{k} must be absent, not blank: {:?}",
@@ -7648,7 +7999,7 @@ mod tests {
         let isolation: Vec<&str> = row
             .env
             .iter()
-            .filter(|e| e.when == crate::spec::When::Canned)
+            .filter(|e| e.when == crate::spec::When::Overlay)
             .map(|e| e.key)
             .collect();
         for (k, _) in &d.overlay {
@@ -8666,16 +9017,18 @@ mod tests {
     }
 
     #[test]
-    fn agy_refuses_a_canned_launch_by_name() {
-        let canned = LaunchSpec {
-            auth: Auth::Canned,
-            ..agy_spec()
-        };
-        assert!(matches!(
-            AntigravityAdapter.compile(&canned, &ctx()),
-            Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
-                if what.contains("no canned provider route")
-        ));
+    fn agy_refuses_a_canned_or_endpoint_launch_by_name() {
+        for auth in [Auth::Canned, Auth::Endpoint] {
+            let overlaid = LaunchSpec { auth, ..agy_spec() };
+            assert!(
+                matches!(
+                    AntigravityAdapter.compile(&overlaid, &ctx()),
+                    Err(HarnessError::MissingInput { harness: Harness::Antigravity, what })
+                        if what.contains("no canned or endpoint provider route")
+                ),
+                "{auth:?}"
+            );
+        }
     }
 
     /// **Every row states how a headless node is let call marion's tools, and the launch carries

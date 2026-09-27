@@ -2489,9 +2489,8 @@ fn legacy_main() -> ExitCode {
         println!("marion {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    // **The whole of the second verb's dispatch.** A `match` on argv[0] would read better and
-    // would mean restructuring the bare-picker branch ([`pick_args`]), which is `run`'s and has
-    // its own stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
+    // **One `if` per verb**, each handing its argv to the verb's own function, and `run` the one
+    // left at the end.
     if argv.first().map(String::as_str) == Some("attach") {
         return attach_main(&argv);
     }
@@ -2518,6 +2517,9 @@ fn legacy_main() -> ExitCode {
     }
     if argv.first().map(String::as_str) == Some("doctor") {
         return doctor_main(&argv[1..]);
+    }
+    if matches!(argv.first().map(String::as_str), Some("login" | "logout")) {
+        return marion_supervisor::login::main(&argv);
     }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
@@ -2560,8 +2562,8 @@ fn doctor_main(args: &[String]) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The bare verb — `marion [<agent-type> <prompt> …]`, or the picker with no argv at all: start a
-/// root over the socket and render it until it ends.
+/// `marion run <agent-type> --prompt <text> …`: start a root over the socket and render it until it
+/// ends, or return once it has started under `--pane` or `--detach`.
 ///
 /// [`run`] answers with a `Result` so that every stage's refusal is one `?`. A refusal has already
 /// printed its sentence and carries only the exit code, so `Err` and `Ok` are both an exit code and
