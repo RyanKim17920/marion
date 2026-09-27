@@ -2328,6 +2328,7 @@ fn launch_duplex(
             // it"* — and the supervisor owning the root is precisely something outside that can.
             // See `launch_inner` for the hook and `spawned_record` for the record.
             on_started: Some(on_started),
+            turns: None,
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

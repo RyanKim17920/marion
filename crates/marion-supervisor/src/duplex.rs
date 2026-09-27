@@ -30,12 +30,13 @@
 //! - the `Blocked` budget a permission ask consumes before it is denied differs, so it is a field
 //!   rather than a constant.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command as SysCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration as StdDuration, Instant};
 
 use marion_harness::{ControlTransport, ExecutionSurfaces, surfaces::TypedKind};
@@ -394,6 +395,14 @@ pub struct DuplexSpec<'a> {
     /// that blocks delays the node's first turn; the one production hook appends one journal
     /// record and fsyncs it, which is the cost §6.1 step 7 is written to pay.
     pub on_started: Option<&'a dyn Fn(i32)>,
+    /// **The node's inbox**, for every turn after the first — `None` for a node that takes only
+    /// the one it was launched with (`marion run`, a test).
+    ///
+    /// With a feed the session does not end at the first `result`: a message queued while a turn
+    /// runs is written at once on a folding row ([`marion_harness::spec::MidTurn::Fold`]) and at the next boundary
+    /// otherwise; after each `result` the driver takes the next message, or holds while the node
+    /// is owed a background child's end, and only a `take_or_seal` that seals ends the session.
+    pub turns: Option<crate::inbox::TurnFeed>,
 }
 
 /// Hand-written because a [`StreamSink`] is a `dyn Fn` and cannot derive it. The sink is reported as
@@ -410,6 +419,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("wall_clock", &self.wall_clock)
             .field("sink", &self.sink.map(|_| "<sink>"))
             .field("on_started", &self.on_started.map(|_| "<on_started>"))
+            .field("turns", &self.turns)
             .finish()
     }
 }
@@ -468,7 +478,9 @@ pub enum DuplexError {
 /// 5. frames until the terminal `result`, answering `can_use_tool` on the way — and answering
 ///    **every other** inbound `control_request` too, with an error naming the unimplemented kind,
 ///    because §5.2 says each of them expects a `control_response` and one that never arrives hangs
-///    a root forever;
+///    a root forever — and, for a node with a [`DuplexSpec::turns`] feed, every turn after it:
+///    the next queued message after each `result`, a hold while a background child's end is owed,
+///    and on a folding row a message written into the running turn (see [`drive`]);
 /// 6. `drop(stdin)`, which is what ends a `--input-format stream-json` session.
 pub fn run_duplex(
     command: &mut SysCommand,
@@ -507,8 +519,22 @@ pub fn run_duplex(
     // this, and it is reused rather than re-derived — one stoppable reader, so an abandoned drain
     // leaves neither a live thread nor a live fd behind.
     let stderr = Drain::start(child.stderr.take().expect("stderr was piped"));
-    let mut lines = BufReader::new(stdout).lines();
-    let guard = RunGuard::start(pid, spec.wall_clock, stderr);
+    // stdout is read on [`Drain`]'s stoppable thread too, for the same reason, and its lines are
+    // forwarded into the one channel the driver waits on — beside the inbox's wakes, so a message
+    // queued mid-turn is seen while the node is still speaking, not after its next line.
+    let (events, rx) = std::sync::mpsc::channel();
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
+    let stdout = Drain::start_with_lines(stdout, Some(lines_tx));
+    let forward = events.clone();
+    std::thread::spawn(move || {
+        for line in lines_rx {
+            if forward.send(Event::Line(line)).is_err() {
+                return;
+            }
+        }
+        let _ = forward.send(Event::Eof);
+    });
+    let guard = RunGuard::start(pid, spec.wall_clock, stderr, stdout);
 
     let mut outcome = DuplexOutcome::default();
 
@@ -523,19 +549,32 @@ pub fn run_duplex(
     // One round trip through the harness's event loop, after the tool list was flushed to it.
     writeln!(stdin, "{}", initialize_request(&spec.init_id))?;
     stdin.flush()?;
-    if !await_initialize(&mut lines, spec, &mut outcome)? {
+    if !await_initialize(&rx, spec, &mut outcome) {
         guard.stop(true, &mut child);
         return Err(DuplexError::DiedBeforeInitialize);
     }
 
     writeln!(stdin, "{}", user_message(spec.prompt))?;
     stdin.flush()?;
-    drive_turn(&mut lines, &mut stdin, spec, &mut outcome)?;
+    if let Some(feed) = &spec.turns {
+        feed.source.attach_port(Arc::new(WakePort(events)));
+    } else {
+        drop(events);
+    }
+    drive(&rx, &mut stdin, spec, &mut outcome)?;
 
     // Closing stdin is what ends a `--input-format stream-json` session.
     drop(stdin);
     let status = child.wait()?;
     let (stderr, timed_out) = guard.stop(false, &mut child);
+    // What the node said after marion's last boundary — a turn it queued itself from a mid-turn
+    // write and ran with stdin already closed (see [`FOLD_SETTLE`]). Recorded, never answered: the
+    // stream that could carry an answer is gone, and claude errors such an ask rather than hanging.
+    while let Ok(Event::Line(line)) = rx.recv_timeout(DRAIN_GRACE) {
+        if let Some(frame) = record_line(spec, &mut outcome, &line) {
+            outcome.transcript.push(frame);
+        }
+    }
     outcome.stderr = stderr;
     outcome.exit_code = status.code();
     outcome.signal = status.signal();
@@ -556,12 +595,13 @@ struct RunGuard {
     expired: Arc<AtomicBool>,
     watchdog: Option<std::thread::JoinHandle<()>>,
     stderr: Drain,
+    stdout: Drain,
 }
 
 impl RunGuard {
     /// Start the wall clock, if there is one. A watchdog rather than a bound on each read: the
     /// reads are blocking and a node that hangs *between* frames must still be killed.
-    fn start(pid: i32, wall_clock: Option<StdDuration>, stderr: Drain) -> Self {
+    fn start(pid: i32, wall_clock: Option<StdDuration>, stderr: Drain, stdout: Drain) -> Self {
         let finished = Arc::new(AtomicBool::new(false));
         let expired = Arc::new(AtomicBool::new(false));
         let watchdog = wall_clock.map(|bound| {
@@ -576,6 +616,7 @@ impl RunGuard {
             expired,
             watchdog,
             stderr,
+            stdout,
         }
     }
 
@@ -595,7 +636,10 @@ impl RunGuard {
         if let Some(h) = self.watchdog {
             let _ = h.join();
         }
-        let (bytes, _complete) = self.stderr.finish(Instant::now() + DRAIN_GRACE);
+        let drained = Instant::now() + DRAIN_GRACE;
+        // Its lines have already gone to the driver's channel; the bytes are a copy.
+        let _ = self.stdout.finish(drained);
+        let (bytes, _complete) = self.stderr.finish(drained);
         let stderr = String::from_utf8_lossy(&bytes).into_owned();
         (stderr, self.expired.load(Ordering::Relaxed))
     }
@@ -637,47 +681,204 @@ fn record_line(spec: &DuplexSpec<'_>, outcome: &mut DuplexOutcome, line: &str) -
     frame
 }
 
+/// What the driver waits on: a line of the node's stdout, its end, or a wake from the node's inbox.
+enum Event {
+    Line(String),
+    Eof,
+    Wake,
+}
+
+/// The node's inbox's [`crate::inbox::DeliveryPort`]: a wake is one more event on the driver's
+/// channel. A wake after the driver has returned goes nowhere, which is right — the node's inbox
+/// is sealed by then, or its driver died and the supervisor drops what it queued.
+struct WakePort(Sender<Event>);
+
+impl crate::inbox::DeliveryPort for WakePort {
+    fn wake(&self) {
+        let _ = self.0.send(Event::Wake);
+    }
+}
+
+/// `MessageDelivered.via` for a message written while its turn ran, and for one written as the
+/// node's next turn.
+pub const VIA_MID_TURN: &str = "stream-json:mid-turn";
+pub const VIA_NEXT_TURN: &str = "stream-json:next-turn";
+
+/// **How long after a `result` the driver watches for a turn the node queued itself.** S31
+/// (`p0a/b`, `p0a/b2`): a frame written mid-turn while the turn's *last* request is in flight is not
+/// folded but run as the next turn, with a fresh `system/init` and its own `result`; nothing on the
+/// stream says which of the two a write became until that `system/init` arrives or does not. It
+/// follows the `result` at once when it comes (claude's queue is in-process), so this is margin,
+/// spent only after a turn that had a mid-turn write. Not the correctness oracle: a turn that
+/// starts later still has its frames recorded after stdin closes (`run_duplex`'s tail).
+const FOLD_SETTLE: StdDuration = StdDuration::from_millis(1500);
+
 /// Read frames until the node answers marion's `initialize` control request. `false` means stdout
 /// ended first.
 fn await_initialize(
-    lines: &mut std::io::Lines<BufReader<std::process::ChildStdout>>,
+    rx: &Receiver<Event>,
     spec: &DuplexSpec<'_>,
     outcome: &mut DuplexOutcome,
-) -> std::io::Result<bool> {
-    for line in lines {
-        let line = line?;
-        let Some(frame) = record_line(spec, outcome, &line) else {
-            continue;
-        };
-        let done = is_control_response_to(&frame, &spec.init_id);
-        outcome.transcript.push(frame);
-        if done {
-            return Ok(true);
+) -> bool {
+    loop {
+        match rx.recv() {
+            Ok(Event::Line(line)) => {
+                let Some(frame) = record_line(spec, outcome, &line) else {
+                    continue;
+                };
+                let done = is_control_response_to(&frame, &spec.init_id);
+                outcome.transcript.push(frame);
+                if done {
+                    return true;
+                }
+            }
+            Ok(Event::Wake) => {}
+            Ok(Event::Eof) | Err(_) => return false,
         }
     }
-    Ok(false)
 }
 
-/// Read frames until the terminal `result`, answering every inbound `control_request` on the way.
-fn drive_turn(
-    lines: &mut std::io::Lines<BufReader<std::process::ChildStdout>>,
+/// What one line said about the node's turns.
+#[derive(PartialEq)]
+enum Seen {
+    Other,
+    /// `system`/`init`: claude opens every turn with one (S31 `p0a/out/a`).
+    TurnStarted,
+    /// `result`: the turn is over.
+    TurnEnded,
+}
+
+/// Record one line, answer it if it is a `control_request`, and say what it meant for the turn.
+fn handle_line(
+    stdin: &mut std::process::ChildStdin,
+    spec: &DuplexSpec<'_>,
+    outcome: &mut DuplexOutcome,
+    line: &str,
+) -> std::io::Result<Seen> {
+    let Some(frame) = record_line(spec, outcome, line) else {
+        return Ok(Seen::Other);
+    };
+    answer_control_request(stdin, spec, &frame, outcome)?;
+    let kind = frame.get("type").and_then(Value::as_str);
+    let seen = match kind {
+        Some("result") => Seen::TurnEnded,
+        Some("system") if frame.get("subtype").and_then(Value::as_str) == Some("init") => {
+            Seen::TurnStarted
+        }
+        _ => Seen::Other,
+    };
+    outcome.transcript.push(frame);
+    Ok(seen)
+}
+
+/// Write a taken message as a user frame and journal how it went. `false` when the node's stdin
+/// is gone — the message is dropped by name and the node's own exit says why.
+fn deliver(
+    stdin: &mut std::process::ChildStdin,
+    feed: &crate::inbox::TurnFeed,
+    msg: &crate::inbox::Message,
+    via: &str,
+) -> bool {
+    let written = writeln!(stdin, "{}", user_message(&crate::inbox::render(msg)))
+        .and_then(|()| stdin.flush());
+    match written {
+        Ok(()) => {
+            feed.source.delivered(&msg.id, via);
+            true
+        }
+        Err(e) => {
+            feed.source
+                .dropped(&msg.id, &format!("the node's stdin closed: {e}"));
+            false
+        }
+    }
+}
+
+/// Drive the node from its first turn to its last, answering every inbound `control_request` on
+/// the way.
+///
+/// Without a feed that is one turn: frames until the `result`. With one, each `result` is a
+/// boundary where the next queued message is written as the next turn; an empty inbox that is
+/// still owed a background child's end is waited on (bounded by the wall clock's watchdog, whose
+/// kill ends stdout); and an empty inbox that seals ends the session. On a folding row a message
+/// queued mid-turn is written at once.
+fn drive(
+    rx: &Receiver<Event>,
     stdin: &mut std::process::ChildStdin,
     spec: &DuplexSpec<'_>,
     outcome: &mut DuplexOutcome,
 ) -> std::io::Result<()> {
-    for line in lines {
-        let line = line?;
-        let Some(frame) = record_line(spec, outcome, &line) else {
+    let feed = spec.turns.as_ref();
+    let folds = feed.is_some_and(crate::inbox::TurnFeed::folds);
+    let mut running = true;
+    // A mid-turn write in the turn that just ended, which the node may yet run as a turn of its own.
+    let mut unsettled = false;
+    loop {
+        if running {
+            match rx.recv() {
+                Ok(Event::Line(line)) => {
+                    if handle_line(stdin, spec, outcome, &line)? == Seen::TurnEnded {
+                        running = false;
+                    }
+                }
+                Ok(Event::Wake) => {
+                    if let Some(feed) = feed.filter(|_| folds) {
+                        while let Some(msg) = feed.source.take_next() {
+                            if !deliver(stdin, feed, &msg, VIA_MID_TURN) {
+                                return Ok(());
+                            }
+                            unsettled = true;
+                        }
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => return Ok(()),
+            }
             continue;
+        }
+        let Some(feed) = feed else {
+            return Ok(());
         };
-        answer_control_request(stdin, spec, &frame, outcome)?;
-        let terminal = frame.get("type").and_then(Value::as_str) == Some("result");
-        outcome.transcript.push(frame);
-        if terminal {
-            break;
+        if std::mem::take(&mut unsettled) {
+            let until = Instant::now() + FOLD_SETTLE;
+            loop {
+                let left = until.saturating_duration_since(Instant::now());
+                match rx.recv_timeout(left) {
+                    Ok(Event::Line(line)) => {
+                        if handle_line(stdin, spec, outcome, &line)? == Seen::TurnStarted {
+                            running = true;
+                            break;
+                        }
+                    }
+                    // Still queued; the boundary below takes it.
+                    Ok(Event::Wake) => {}
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Ok(Event::Eof) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                }
+            }
+            if running {
+                continue;
+            }
+        }
+        match feed.source.take_or_seal() {
+            Some(msg) => {
+                if !deliver(stdin, feed, &msg, VIA_NEXT_TURN) {
+                    return Ok(());
+                }
+                running = true;
+            }
+            None if feed.source.held() => match rx.recv() {
+                // A turn the node queued itself, starting late.
+                Ok(Event::Line(line)) => {
+                    if handle_line(stdin, spec, outcome, &line)? == Seen::TurnStarted {
+                        running = true;
+                    }
+                }
+                Ok(Event::Wake) => {}
+                Ok(Event::Eof) | Err(_) => return Ok(()),
+            },
+            None => return Ok(()),
         }
     }
-    Ok(())
 }
 
 /// Answer `frame` if it is a `control_request`: `can_use_tool` is denied with marion's reason, and
@@ -904,6 +1105,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 wall_clock: None,
                 sink: None,
                 on_started: None,
+                turns: None,
             },
         )
         .expect("the run returns");
@@ -1013,6 +1215,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 wall_clock: None,
                 sink: None,
                 on_started: None,
+                turns: None,
             },
         )
         .expect("the run returns");
@@ -1069,6 +1272,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 wall_clock: None,
                 sink: None,
                 on_started: None,
+                turns: None,
             },
         )
         .expect("the run returns");
@@ -1119,6 +1323,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 wall_clock: Some(StdDuration::from_secs(30)),
                 sink: spec_sink,
                 on_started: None,
+                turns: None,
             },
         )
         .expect("the run returns")
@@ -1349,6 +1554,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 wall_clock: Some(StdDuration::from_secs(10)),
                 sink: None,
                 on_started: None,
+                turns: None,
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -1384,6 +1590,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 wall_clock: Some(StdDuration::from_millis(500)),
                 sink: None,
                 on_started: None,
+                turns: None,
             },
         )
         .expect("the bounded run returns");
@@ -1394,5 +1601,375 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
         );
         assert!(out.timed_out, "marion's own attributed kill (§6.7)");
         assert_eq!(out.signal, Some(9));
+    }
+
+    // ---- turn delivery (S31): the node's inbox, delivered at turn boundaries and mid-turn ----
+
+    use crate::inbox::{BoundInbox, Inboxes, Message, Source, TurnFeed, render};
+    use marion_core::contract::{AgentId, TaskId};
+    use marion_core::journal::RecordKind;
+    use marion_harness::spec::{MidTurn, TurnDelivery};
+    use std::sync::Mutex;
+
+    const INIT_REPLY: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"marion-init-test","response":{}}}"#;
+
+    /// A node's inbox as the supervisor holds it, with its records captured, and the feed a driver
+    /// is handed for it.
+    struct Fed {
+        inboxes: Arc<Inboxes>,
+        log: Arc<Mutex<Vec<RecordKind>>>,
+        agent: AgentId,
+        feed: TurnFeed,
+    }
+
+    fn fed(mid_turn: MidTurn) -> Fed {
+        let (inboxes, log) = crate::inbox::tests::recording();
+        let inboxes = Arc::new(inboxes);
+        let agent = AgentId("node".into());
+        inboxes.open(&agent);
+        let feed = TurnFeed::new(
+            Arc::new(BoundInbox::new(Arc::clone(&inboxes), agent.clone())),
+            TurnDelivery::TypedTurn {
+                mid_turn,
+                note: "t",
+            },
+        );
+        Fed {
+            inboxes,
+            log,
+            agent,
+            feed,
+        }
+    }
+
+    impl Fed {
+        fn delivery(&self) -> TurnDelivery {
+            TurnDelivery::TypedTurn {
+                mid_turn: self.feed.mid_turn,
+                note: "t",
+            }
+        }
+        /// An operator steer, and the text the node's model must then read.
+        fn steer(&self, text: &str) -> (String, String) {
+            let id = self
+                .inboxes
+                .enqueue(&self.agent, self.delivery(), Source::Operator, text.into())
+                .expect("the node's inbox is open");
+            (id, self.rendered(Source::Operator, text))
+        }
+        fn rendered(&self, source: Source, text: &str) -> String {
+            render(&Message {
+                id: String::new(),
+                source,
+                text: text.into(),
+                queued_at: std::time::SystemTime::now(),
+            })
+        }
+        /// `(message_id, via)` of every `MessageDelivered`.
+        fn delivered(&self) -> Vec<(String, String)> {
+            crate::inbox::tests::records(&self.log)
+                .into_iter()
+                .filter_map(|r| match r {
+                    RecordKind::MessageDelivered(d) => Some((d.message_id, d.via)),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn sealed(&self) -> bool {
+            self.inboxes
+                .enqueue(
+                    &self.agent,
+                    self.delivery(),
+                    Source::Operator,
+                    "late".into(),
+                )
+                .is_err()
+        }
+    }
+
+    fn fed_spec<'a>(marker: &'a Path, feed: &TurnFeed, wall_clock: StdDuration) -> DuplexSpec<'a> {
+        DuplexSpec {
+            ready_file: marker,
+            prompt: "do the task",
+            init_id: "marion-init-test".into(),
+            mcp_ready_timeout: StdDuration::from_secs(5),
+            blocked_bound: StdDuration::ZERO,
+            depth: 1,
+            wall_clock: Some(wall_clock),
+            sink: None,
+            on_started: None,
+            turns: Some(feed.clone()),
+        }
+    }
+
+    /// The text of the user frame a script wrote to `path`.
+    fn user_text(path: &Path) -> String {
+        let line = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("the node never read a frame into {path:?}: {e}"));
+        let v: Value = serde_json::from_str(line.trim()).expect("a frame");
+        assert_eq!(v["type"], "user", "{v}");
+        v["message"]["content"][0]["text"]
+            .as_str()
+            .expect("one text block")
+            .to_string()
+    }
+
+    fn results(out: &DuplexOutcome) -> Vec<String> {
+        out.transcript
+            .iter()
+            .filter(|f| f["type"] == "result")
+            .map(|f| f["result"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    fn wait_for_file(path: &Path) {
+        let until = Instant::now() + StdDuration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < until, "{path:?} never appeared");
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+
+    /// **A message queued for a node on a queueing row is its next turn**: written after the first
+    /// `result`, answered by a second, journaled as delivered — and only then, with nothing left
+    /// and nothing owed, is the inbox sealed and the session ended.
+    #[test]
+    fn a_queued_message_is_the_nodes_next_turn_after_its_result() {
+        let dir = scratch("duplex-next-turn");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (turn2, extra) = (dir.join("turn2"), dir.join("extra"));
+        let fx = fed(MidTurn::Queue);
+        let (id, want) = fx.steer("also check the docs");
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"result","subtype":"success","result":"one"}}\n'
+read -r next
+printf '%s\n' "$next" > '{turn2}'
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"result","subtype":"success","result":"two"}}\n'
+read -r more && printf '%s\n' "$more" > '{extra}'
+exit 0"#,
+            turn2 = turn2.display(),
+            extra = extra.display()
+        );
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &fed_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+        )
+        .expect("the run returns");
+        assert_eq!(user_text(&turn2), want);
+        assert_eq!(
+            results(&out),
+            ["one", "two"],
+            "the last result is the node's answer"
+        );
+        assert_eq!(fx.delivered(), [(id, "stream-json:next-turn".to_string())]);
+        assert!(!extra.exists(), "a third turn was written");
+        assert!(
+            fx.sealed(),
+            "the driver ended the node through take_or_seal"
+        );
+        assert_eq!(out.exit_code, Some(0));
+    }
+
+    /// **On a folding row a message is written into the running turn** — here while the node's
+    /// request is held — and the node answers both with one `result` (S31 `p0a/b3`). The driver
+    /// neither waits for a second `result` nor writes the message twice.
+    #[test]
+    fn a_message_for_a_folding_row_is_written_into_the_running_turn() {
+        let dir = scratch("duplex-fold");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (held, folded, extra) = (dir.join("held"), dir.join("folded"), dir.join("extra"));
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"assistant","message":{{"content":[]}}}}\n'
+: > '{held}'
+read -r mid
+printf '%s\n' "$mid" > '{folded}'
+printf '{{"type":"result","subtype":"success","result":"one"}}\n'
+read -r more && printf '%s\n' "$more" > '{extra}'
+exit 0"#,
+            held = held.display(),
+            folded = folded.display(),
+            extra = extra.display()
+        );
+        let steer = std::thread::scope(|s| {
+            let steer = s.spawn(|| {
+                wait_for_file(&held);
+                fx.steer("switch to plan B")
+            });
+            let out = run_duplex(
+                SysCommand::new("sh").args(["-c", &script]),
+                &fed_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+            )
+            .expect("the run returns");
+            assert_eq!(results(&out), ["one"]);
+            steer.join().unwrap()
+        });
+        let (id, want) = steer;
+        assert_eq!(user_text(&folded), want, "written while the turn was held");
+        assert_eq!(fx.delivered(), [(id, "stream-json:mid-turn".to_string())]);
+        assert!(!extra.exists(), "the folded message was written twice");
+        assert!(fx.sealed());
+    }
+
+    /// **A mid-turn write the node runs as a turn of its own is driven like one** (S31 `p0a/b`: the
+    /// in-flight request was the turn's last). Its `result` is waited for with stdin still open,
+    /// which the permission ask it makes proves — a closed stdin would leave it unanswered.
+    #[test]
+    fn a_folded_message_the_node_runs_as_its_own_turn_is_driven_to_its_result() {
+        let dir = scratch("duplex-fold-own-turn");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (held, answer) = (dir.join("held"), dir.join("answer"));
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"system","subtype":"init"}}\n'
+: > '{held}'
+read -r mid
+printf '{{"type":"result","subtype":"success","result":"one"}}\n'
+sleep 0.2
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"Bash"}}}}\n'
+read -r reply
+printf '%s\n' "$reply" > '{answer}'
+printf '{{"type":"result","subtype":"success","result":"two"}}\n'
+read -r more
+exit 0"#,
+            held = held.display(),
+            answer = answer.display()
+        );
+        let (id, _) = std::thread::scope(|s| {
+            let steer = s.spawn(|| {
+                wait_for_file(&held);
+                fx.steer("one more thing")
+            });
+            let out = run_duplex(
+                SysCommand::new("sh").args(["-c", &script]),
+                &fed_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+            )
+            .expect("the run returns");
+            assert_eq!(results(&out), ["one", "two"]);
+            steer.join().unwrap()
+        });
+        assert!(!denial_message_for(&answer, "ask-1").is_empty());
+        assert_eq!(fx.delivered(), [(id, "stream-json:mid-turn".to_string())]);
+    }
+
+    fn denial_message_for(answer: &Path, request: &str) -> String {
+        let written = std::fs::read_to_string(answer).unwrap_or_default();
+        let reply: Value = serde_json::from_str(written.trim())
+            .unwrap_or_else(|e| panic!("marion never answered the ask ({e}): stdin was closed"));
+        assert_eq!(reply["response"]["request_id"], request);
+        reply["response"]["response"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// **A node owed a background child's end is held open after its `result`**, not ended: the
+    /// driver waits on its inbox, and the child's end, announced later, is the node's next turn.
+    #[test]
+    fn a_node_owed_a_childs_end_is_held_and_takes_it_as_its_next_turn() {
+        let dir = scratch("duplex-held");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (done, turn2) = (dir.join("done"), dir.join("turn2"));
+        let fx = fed(MidTurn::Fold);
+        assert!(fx.inboxes.owe(&fx.agent));
+        let ended = Source::ChildEnded {
+            child: AgentId("child".into()),
+            task_id: TaskId("t-child".into()),
+            status: "completed".into(),
+            agent_type: "codex".into(),
+            root: false,
+        };
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"result","subtype":"success","result":"one"}}\n'
+: > '{done}'
+read -r next
+printf '%s\n' "$next" > '{turn2}'
+printf '{{"type":"system","subtype":"init"}}\n'
+printf '{{"type":"result","subtype":"success","result":"two"}}\n'
+read -r more
+exit 0"#,
+            done = done.display(),
+            turn2 = turn2.display()
+        );
+        let id = std::thread::scope(|s| {
+            let child = s.spawn(|| {
+                wait_for_file(&done);
+                // Well past the boundary: the driver has found nothing and is holding.
+                std::thread::sleep(StdDuration::from_millis(300));
+                fx.inboxes
+                    .announce(
+                        &fx.agent,
+                        fx.delivery(),
+                        ended.clone(),
+                        "the contract".into(),
+                    )
+                    .expect("owed, so accepted")
+            });
+            let out = run_duplex(
+                SysCommand::new("sh").args(["-c", &script]),
+                &fed_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+            )
+            .expect("the run returns");
+            assert_eq!(results(&out), ["one", "two"]);
+            assert!(!out.timed_out);
+            child.join().unwrap()
+        });
+        assert_eq!(user_text(&turn2), fx.rendered(ended, "the contract"));
+        assert_eq!(fx.delivered(), [(id, "stream-json:next-turn".to_string())]);
+        assert!(fx.sealed());
+    }
+
+    /// A hold is bounded by the node's wall clock: a child's end that never comes costs the node
+    /// its bound, reported as marion's kill, and not an unbounded wait.
+    #[test]
+    fn a_held_node_is_still_bounded_by_its_wall_clock() {
+        let dir = scratch("duplex-held-bound");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let fx = fed(MidTurn::Queue);
+        assert!(fx.inboxes.owe(&fx.agent));
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"result","subtype":"success","result":"one"}}\n'
+read -r next
+exit 0"#
+        );
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &fed_spec(&marker, &fx.feed, StdDuration::from_millis(1500)),
+        )
+        .expect("the run returns");
+        assert!(out.timed_out, "held past its bound");
+        assert!(started.elapsed() < StdDuration::from_secs(10));
+        assert_eq!(results(&out), ["one"]);
     }
 }

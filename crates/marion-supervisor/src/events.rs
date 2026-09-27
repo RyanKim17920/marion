@@ -1366,6 +1366,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     wall_clock: Some(Duration::from_secs(30)),
                     sink: Some(&record),
                     on_started: None,
+                    turns: None,
                 },
             )
             .expect("the run returns");

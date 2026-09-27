@@ -1030,6 +1030,7 @@ fn duplex_child(
             wall_clock: Some(bound),
             sink,
             on_started: Some(on_started),
+            turns: None,
         },
     )?;
     Ok(ChildRun {

@@ -45,7 +45,7 @@ use marion_core::contract::{AgentId, TaskId};
 use marion_core::journal::{
     MessageDelivered, MessageDropped, MessageQueued, MessageSource, RecordKind,
 };
-use marion_harness::spec::TurnDelivery;
+use marion_harness::spec::{MidTurn, TurnDelivery};
 
 /// Marion's name for one message, shared by the records that audit it.
 pub type MessageId = String;
@@ -115,6 +115,40 @@ impl TurnSource for BoundInbox {
     }
     fn held(&self) -> bool {
         self.inboxes.held(&self.agent)
+    }
+}
+
+/// **Everything a typed-turn driver needs to take more than the turn it was launched with**: the
+/// node's inbox, and what its row does with a message that arrives while a turn is running
+/// ([`MidTurn`], measured per harness and per ACP agent in S31).
+#[derive(Clone)]
+pub struct TurnFeed {
+    pub source: Arc<dyn TurnSource>,
+    pub mid_turn: MidTurn,
+}
+
+impl TurnFeed {
+    /// The feed for a node whose row delivers by `delivery`. A strategy other than a typed turn
+    /// cannot reach a typed driver's node mid-turn, so it is held for the boundary.
+    pub fn new(source: Arc<dyn TurnSource>, delivery: TurnDelivery) -> Self {
+        let mid_turn = match delivery {
+            TurnDelivery::TypedTurn { mid_turn, .. } => mid_turn,
+            _ => MidTurn::Queue,
+        };
+        TurnFeed { source, mid_turn }
+    }
+
+    /// A message that arrives mid-turn is written at once rather than held for the boundary.
+    pub fn folds(&self) -> bool {
+        self.mid_turn == MidTurn::Fold
+    }
+}
+
+impl std::fmt::Debug for TurnFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnFeed")
+            .field("mid_turn", &self.mid_turn)
+            .finish_non_exhaustive()
     }
 }
 
@@ -511,7 +545,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -525,7 +559,7 @@ mod tests {
     };
 
     /// An inbox set whose records land in a vector the test reads back.
-    fn recording() -> (Inboxes, Arc<Mutex<Vec<RecordKind>>>) {
+    pub(crate) fn recording() -> (Inboxes, Arc<Mutex<Vec<RecordKind>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let sink_log = Arc::clone(&log);
         let inboxes = Inboxes::new(Box::new(move |k| {
@@ -535,7 +569,7 @@ mod tests {
         (inboxes, log)
     }
 
-    fn records(log: &Arc<Mutex<Vec<RecordKind>>>) -> Vec<RecordKind> {
+    pub(crate) fn records(log: &Arc<Mutex<Vec<RecordKind>>>) -> Vec<RecordKind> {
         log.lock().unwrap().clone()
     }
 
