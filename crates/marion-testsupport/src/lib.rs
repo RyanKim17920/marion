@@ -895,6 +895,24 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // resume and the fresh conversation an unknown id starts. See `marion_harness::antigravity`.
         accepted: &["1.2.8"],
     },
+    PinnedHarness {
+        program: "pi",
+        store: ReleaseStore::Npm("@earendil-works/pi-coding-agent"),
+        probe_env: &[("PI_SKIP_VERSION_CHECK", "1")],
+        // 0.80.2 is the pin: the npm `@earendil-works/pi-coding-agent` present on this machine on
+        // 2026-09-27 (under Homebrew's node prefix), and the version every S34 probe ran against —
+        // each against a canned local provider at $0.00 (`tests/fixtures/s34-pi/`).
+        //
+        // What was measured on it: no MCP client, and `-e <file>` loading marion's own extension for
+        // one run even under `--no-extensions`; a relocated `PI_CODING_AGENT_DIR` whose `models.json`
+        // names the canned provider; `--tools` as an allowlist over built-in and extension tools,
+        // where an empty list offers nothing; the `mcp__marion__report` spelling the extension
+        // registers; `tool_execution_start`/`_end` paired by `toolCallId` with `isError`; provider
+        // faults as `stopReason: "error"` in the final `agent_end` at exit 0; per-message usage net
+        // of cache reads; stdin read to EOF when it is not a terminal; `--session <id>` resuming
+        // under the same agent dir and cwd. See `marion_harness::pi`.
+        accepted: &["0.80.2"],
+    },
 ];
 
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].

@@ -865,6 +865,18 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
+    // Disabled 2026-09-27: the `-e <extension>` declaration channel was measured on the headless
+    // `-p --mode json` surface (S34) and pi's interactive TUI has not been driven at all.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("pi"),
+        command: "pi",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("pi", "pi", NativeAdapterId::new("pi")),
+        )),
+        structured: None,
+    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.

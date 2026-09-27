@@ -500,6 +500,7 @@ fn script(root: &Node, child: &Node) -> Script {
             "no cell names a qwen child: its write_file refuses the relative path every child \
              cell writes (s25 item 17)"
         ),
+        Harness::Pi => unreachable!("no cell of this matrix names `pi` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

@@ -62,8 +62,11 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
    `PI_CODING_AGENT_DIR` and cwd. An unknown id exits 1.
 9. **stdin is read to EOF when it is not a TTY**, and appended to the prompt. A launch with an open,
    silent stdin hangs, so marion's `Stdio::null()` is load-bearing.
-10. **No self-update.** Updates are manual (`pi update`). `PI_OFFLINE=1` turns off the startup
-    version check and package update checks, and install/update telemetry with them.
+10. **No self-update.** Updates are manual (`pi update`). The only update traffic at startup is
+    the version check, and `dist/utils/version-check.js` skips it when `PI_SKIP_VERSION_CHECK` or
+    `PI_OFFLINE` is set. These captures ran under `PI_OFFLINE=1`, which also turns off package
+    update checks and telemetry. The row carries the narrower `PI_SKIP_VERSION_CHECK=1`, because a
+    live node keeps the operator's own packages.
 11. **Isolation.** `PI_CODING_AGENT_DIR` relocates `auth.json`, `models.json`, `settings.json`,
     `sessions/` and extensions. It is also where the operator's credentials live, so a live node
     must not relocate it.

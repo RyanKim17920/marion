@@ -89,6 +89,14 @@ const CANNED_PLUMBING_MODELS: &[&str] = &[
 /// consumer quota (s32).
 pub const AGY_DEFAULT_MODEL: &str = "gemini-3.6-flash-low";
 
+/// The `pi` built-ins' default model.
+///
+/// pi's canned provider is a `models.json` document whose model list is mandatory, and marion's
+/// canned endpoint ignores the name — so this names marion's own plumbing, as
+/// [`COPILOT_DEFAULT_MODEL`] does, and the adapter refuses it by name under `--live`, where a real
+/// model rides `--model` and none at all leaves the operator's own default.
+pub const PI_DEFAULT_MODEL: &str = "marion-canned";
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -555,6 +563,26 @@ const BUILTINS: &[Builtin] = &[
         tools: &[],
         acp_agent: None,
     },
+    // The tenth binary. The adapter offers only what `--tools` names, extension tools included,
+    // so a grant has to live on a type (S34).
+    Builtin {
+        canonical: "pi",
+        aliases: &[],
+        description: "Implementer on pi: may read and write files.",
+        harness: Harness::Pi,
+        model: Some(PI_DEFAULT_MODEL),
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "pi-orchestrator",
+        aliases: &[],
+        description: "Orchestrator on pi: plans and delegates through marion; cannot write files.",
+        harness: Harness::Pi,
+        model: Some(PI_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
     // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
     // named after the harness because there the harness *is* the program. Here it is not: a type
     // named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -739,6 +767,8 @@ pub fn builtin_names() -> &'static [&'static str] {
         "qwen-orchestrator",
         "agy",
         "agy-orchestrator",
+        "pi",
+        "pi-orchestrator",
     ]
 }
 
@@ -1083,6 +1113,8 @@ mod tests {
             ("goose", Harness::Goose),
             ("goose-orchestrator", Harness::Goose),
             ("opencode", Harness::OpenCode),
+            ("pi", Harness::Pi),
+            ("pi-orchestrator", Harness::Pi),
             ("qwen", Harness::Qwen),
             ("qwen-orchestrator", Harness::Qwen),
             ("agy", Harness::Antigravity),
@@ -1093,7 +1125,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            25,
+            27,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -1255,7 +1287,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude" | "gemini" | "copilot" | "qwen" | "agy" => {
+                "claude" | "gemini" | "copilot" | "qwen" | "agy" | "pi" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
                 // `write` alone: goose's developer extension has no read-only tool to answer
@@ -1366,6 +1398,7 @@ mod tests {
             ("copilot-orchestrator", "copilot"),
             ("goose-orchestrator", "goose"),
             ("qwen-orchestrator", "qwen"),
+            ("pi-orchestrator", "pi"),
         ] {
             let o = builtin(orchestrator).unwrap();
             let i = builtin(implementer).unwrap();

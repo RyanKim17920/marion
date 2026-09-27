@@ -2779,6 +2779,7 @@ mod tests {
             Harness::Goose,
             Harness::Cline,
             Harness::Qwen,
+            Harness::Pi,
         ] {
             let rows = caps_rows(Some(h));
             let notes = rows[0].report.notes.join("\n");

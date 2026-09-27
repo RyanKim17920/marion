@@ -3517,6 +3517,8 @@ mod tests {
             ("cline", Harness::Cline),
             ("qwen", Harness::Qwen),
             ("qwen-impl", Harness::Qwen),
+            ("pi", Harness::Pi),
+            ("pi-orchestrator", Harness::Pi),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
@@ -3687,6 +3689,11 @@ mod tests {
                 Harness::Qwen,
                 vec!["core-tools:mcp__marion__report", "core-tools:write_file"],
             ),
+            // The `--tools` list itself: marion's verb, then both built-ins that change a file.
+            (
+                Harness::Pi,
+                vec!["tools:mcp__marion__report", "tools:write", "tools:edit"],
+            ),
         ] {
             let adapter = adapter_for(harness).unwrap();
             let launch = LaunchSpec {
@@ -3758,6 +3765,7 @@ mod tests {
             ("goose", Harness::Goose),
             ("cline", Harness::Cline),
             ("qwen", Harness::Qwen),
+            ("pi", Harness::Pi),
         ] {
             let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
             let err: SpawnError = adapter
