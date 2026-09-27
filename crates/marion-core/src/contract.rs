@@ -194,6 +194,30 @@ pub struct ProcessExit {
     pub description: String,
 }
 
+/// **Why a node's run failed, where the harness said so in words marion recognises** — the
+/// classification `marion_harness::auth::failure_cause` reads off stderr and the stream's error
+/// frames. Externally tagged, per §6.7's one convention.
+///
+/// Three causes because each has exactly one sanctioned reaction, and a reaction chosen for the
+/// wrong one is the harm: a **usage limit** is reported and never worked around (no relaunch, no
+/// failover, no suggestion to switch accounts); an **auth** failure may fail over to the next
+/// profile the agent type listed; an **outage** is the vendor's and is never a reason to change
+/// profile. `line` is the harness's own sentence, capped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureCause {
+    /// The account's own usage window is spent. `resets_at` is unix seconds, where the stream
+    /// stated one (claude's `rate_limit_event.resetsAt`, codex's `resets_at`).
+    UsageLimit {
+        line: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+    },
+    /// The login is missing, expired or refused.
+    Auth { line: String },
+    /// The vendor is overloaded or erroring (`overloaded_error`, a 529, a 5xx).
+    Outage { line: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskTimestamps {
     pub spawned: SystemTime,
