@@ -12,8 +12,8 @@
 //!    boundary: an operator's `node/steer` there ends it, and the child comes back as generation
 //!    two — a second `Spawned`, `exec resume <thread>` carrying the rendered message on argv, and a
 //!    provider request that replays the first turn's calls beside the message, delivered
-//!    `continuation:gen2`. The grandchild's later end is generation three, and the contract
-//!    carries generation two's report.
+//!    `continuation:gen2`. Generation two reports over the still-live grandchild, and the
+//!    contract carries that report, `reported_early`.
 //! 2. **A child's end during the hold resumes its parent**, which reads it and reports.
 //! 3. **No observed session, no continuation**: the message is dropped, naming why.
 //! 4. **The wall clock is the node's, not the generation's.** A wedged generation two is killed
@@ -496,9 +496,9 @@ fn requests_carrying(reqlog: &Path, needle: &str) -> Vec<Value> {
         .collect()
 }
 
-/// **An operator's steer during a §7.6 hold is the held codex child's next turn**, and the
-/// grandchild's later end is the turn after it: three generations of one node, each a relaunch
-/// under the thread codex named, each resolving its message `continuation:gen<N>`.
+/// **An operator's steer during a §7.6 hold is the held codex child's next turn**: a relaunch
+/// under the thread codex named, resolving the message `continuation:gen2`. Generation two reports
+/// with the grandchild still live, so §7.6 accepts it at once as reported early.
 #[test]
 fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_generation() {
     let bed = Bed::start("held-steer", CHILD_TIMEOUT_SECS);
@@ -507,23 +507,15 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
 
     let text = format!("{STEER_MARKER}: report what you have now");
     let message_id = steer(&bed.sup, &child, text.clone());
-    wait_for(&bed.journal, "the steer's MessageDelivered", |j| {
-        !deliveries(j, &child).is_empty()
-    });
-    assert_eq!(
-        deliveries(&bed.journal, &child),
-        vec![(message_id.clone(), "continuation:gen2".to_string())],
-        "the steer is delivered once, by the second generation"
-    );
-    // Released only now: whether its end lands while generation two runs or after it stops, the
-    // node is owed it and takes it as a third turn.
-    std::fs::write(&bed.gates.grandchild, b"go").unwrap();
     wait_for(&bed.journal, "the child's Exited", |j| is_exited(j, &child));
 
-    // One node, three process lifetimes: each relaunch is a generation of the same id.
+    // One node, two process lifetimes: the relaunch is a generation of the same id.
     let node = tree(&bed.journal).get(&child).cloned().expect("the child");
-    assert_eq!(node.spawn_generation, 3, "steer, then the grandchild's end");
-    assert_eq!(records_of(&bed.journal, "Spawned", &child).len(), 3);
+    assert_eq!(
+        node.spawn_generation, 2,
+        "the continuation is the node's second generation"
+    );
+    assert_eq!(records_of(&bed.journal, "Spawned", &child).len(), 2);
     let thread = thread_of(&bed.journal, &child);
 
     // The relaunch is the row's resume spelling with the rendered message as the prompt. (The
@@ -532,19 +524,14 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
     let argvs = bed.child_argvs();
     assert_eq!(
         argvs.len(),
-        3,
-        "one launch and two continuations: {argvs:#?}"
+        2,
+        "one launch and one continuation: {argvs:#?}"
     );
     let rendered = format!("marion: message from the operator: {text}");
     assert!(
         argvs[1].contains(&format!("resume {thread}")) && argvs[1].contains(&rendered),
         "generation two resumes thread {thread} with the rendered steer: {}",
         argvs[1]
-    );
-    assert!(
-        argvs[2].contains(&format!("resume {thread}")) && argvs[2].contains(PUSH_MARKER),
-        "generation three resumes thread {thread} with the grandchild's end: {}",
-        argvs[2]
     );
 
     // A real resume: the provider saw the first turn's calls replayed beside the message.
@@ -554,16 +541,17 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
         steered.iter().all(|r| r["body"]
             .to_string()
             .contains(&format!("{CHILD_CALL_PREFIX}_00"))),
-        "every later-generation request carries the first generation's turn"
+        "every generation-two request carries the first generation's turn"
     );
 
-    let delivered = deliveries(&bed.journal, &child);
-    assert_eq!(delivered.len(), 2, "{delivered:#?}");
-    assert_eq!(delivered[1].1, "continuation:gen3");
+    // The message is resolved by the lane's verb, once.
+    assert_eq!(
+        deliveries(&bed.journal, &child),
+        vec![(message_id, "continuation:gen2".to_string())]
+    );
     assert!(records_of(&bed.journal, "MessageDropped", &child).is_empty());
 
-    // The contract is the last reporting generation's: the third took its turn and said nothing
-    // more, which does not withdraw the second's report.
+    // The contract is the last reporting generation's.
     let completion = contract_of(&bed.state, &child)["completion"].clone();
     assert_eq!(completion["status"], json!("Ok"), "{completion}");
     assert!(
@@ -571,6 +559,11 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
             .to_string()
             .contains(STEERED_NARRATIVE),
         "the report generation two made is the contract's: {completion}"
+    );
+    assert_eq!(
+        completion["reported_early"],
+        json!(true),
+        "the grandchild is still live, and generation two reported: {completion}"
     );
     assert_eq!(completion["held_to_timeout"], json!(false), "{completion}");
 }

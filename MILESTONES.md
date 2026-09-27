@@ -270,7 +270,8 @@ node whose row's headless `TurnDelivery` is `Continuation` (codex, opencode, cop
 its next turn as a **relaunch of the same node**: at each stop of its process
 (`continuation::boundary`) a message already queued, or one arriving while §7.6 holds the node for
 its descendants (`descendant_gate::gate_or_woken`), or while a background child's end is owed
-(`TurnSource::held`, waited on the inbox's latched port and bounded by the node's clock), is
+(`TurnSource::held`, waited on the inbox's latched port and bounded by the node's clock — except
+after a report, which §7.6 accepts at once as reported early), is
 compiled into the same `LaunchSpec` with `resume` set to the session the node's stream named and
 the rendered message as the prompt (`run::declare_and_compile`, the path the first generation
 takes), and launched on what is left of the node's one wall clock. Its `Spawned` is the node's next
@@ -282,13 +283,14 @@ verification are taken once, at the final stop. A death takes no further turn; a
 named no session drops the message with that reason; a spent clock drops it too. Children
 (`run_spawn_watched`) and roots (`root::launch_only`, which has no §7.6 gate, only the inbox's hold)
 take the same boundary. Witnesses: `continuation::tests` (a waiting message, no session, a spent
-clock, a death, a message during the hold, an owed message waited for and not past the clock, the
-fold), and end to end with a real codex (the admitted release on `PATH`) behind the canned provider
+clock, a death, a message during the hold, an owed message waited for and not past the clock, not
+held after an early report, the fold), and end to end with a real codex (the admitted release on `PATH`) behind the canned provider
 (`tests/continuation.rs`, $0): an operator steer during a §7.6 hold resumes the codex child as
 generation two — `exec … resume <thread>` with the rendered steer on argv, every generation-two
-request replaying the first turn's calls, delivered once `continuation:gen2` — and the
-grandchild's later end is generation three, with the contract carrying generation two's report; a
-grandchild's end during the hold resumes its codex parent, which reads and reports; a steer for a
+request replaying the first turn's calls, delivered once `continuation:gen2` — and the contract
+carries generation two's report, `reported_early` over the live grandchild; a grandchild's end
+during the hold resumes its codex parent, which reads and reports (`descendant_gate.rs`'s held
+child is now likewise resumed by its grandchild's end, as its second generation); a steer for a
 child whose stream named no thread is `MessageDropped` naming the session; a wedged continuation is
 killed on the first generation's bound (`TimedOut` inside it); a `marion run codex` root that
 backgrounds a codex child is relaunched with the child's end as generation two. All five RED with

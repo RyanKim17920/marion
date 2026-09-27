@@ -17,7 +17,9 @@
 //!    the next turn — §7.6 step 2's re-prompt (`descendant_gate::gate_or_woken`).
 //! 4. **Once the gate settles, the inbox is taken or sealed in one step**, and while it is held
 //!    open for a message still owed ([`TurnSource::held`]) the driver waits for it on the node's
-//!    clock rather than seal.
+//!    clock rather than seal — **unless the node reported early**: §7.6 accepts a staged report
+//!    with live descendants as a deliberate conclusion at once, so nothing owed keeps it waiting,
+//!    and the child's end finds the node ended (its close settles the debt).
 //!
 //! A message that cannot be a turn — the node's stream never named a session, or its clock is
 //! spent — is dropped with that reason and the boundary is taken again.
@@ -100,10 +102,17 @@ pub(crate) fn boundary(
             Some(m) => m,
             None => match gate(outcome, &mut |d| turns.wait_take(d)) {
                 Waited::Woken(m) => m,
-                Waited::Settled(gated) => match take_or_seal(turns, deadline) {
-                    Some(m) => m,
-                    None => return Turn::Last(gated),
-                },
+                Waited::Settled(gated) => {
+                    let next = if gated.reported_early {
+                        turns.source.take_next()
+                    } else {
+                        take_or_seal(turns, deadline)
+                    };
+                    match next {
+                        Some(m) => m,
+                        None => return Turn::Last(gated),
+                    }
+                }
             },
         };
         match (session, deadline.saturating_duration_since(Instant::now())) {
@@ -448,6 +457,28 @@ mod tests {
         );
         assert!(matches!(t, Turn::Last(_)), "{t:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// **A node that reported early is not held for what it is owed**: §7.6 accepts the report at
+    /// once, so the boundary ends the node without waiting on the clock.
+    #[test]
+    fn a_node_that_reported_early_is_not_held_for_an_owed_message() {
+        let fx = fx();
+        fx.inboxes.owe(&fx.agent);
+        let turns = fx.turns();
+        let mut early = |_: &ChildOutcome, _: &mut dyn FnMut(Duration) -> Option<Message>| {
+            Waited::Settled(Gated {
+                reported_early: true,
+                ..Gated::default()
+            })
+        };
+        let started = Instant::now();
+        let t = boundary(Some(&turns), &stopped(), Some("s"), later(), &mut early);
+        let Turn::Last(gated) = t else {
+            panic!("{t:?}")
+        };
+        assert!(gated.reported_early);
+        assert!(started.elapsed() < Duration::from_secs(5), "not held");
     }
 
     /// Nothing waiting and nothing owed: the last turn, sealed.
