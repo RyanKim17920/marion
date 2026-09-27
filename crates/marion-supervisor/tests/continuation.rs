@@ -339,6 +339,8 @@ struct Bed {
     dir: marion_testsupport::Scratch,
     state: PathBuf,
     journal: PathBuf,
+    /// The child's `events.jsonl`.
+    events: PathBuf,
     gates: Gates,
     reqlog: PathBuf,
     server: Option<CannedServer>,
@@ -410,6 +412,7 @@ impl Bed {
         );
         Bed {
             journal: project.journal(),
+            events: project.agent(&child.agent_id).events(),
             dir,
             state,
             gates,
@@ -542,6 +545,14 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
             .to_string()
             .contains(&format!("{CHILD_CALL_PREFIX}_00"))),
         "every generation-two request carries the first generation's turn"
+    );
+
+    // Every generation's stream is the node's capture, recorded as it lands: generation two's
+    // report is in `events.jsonl`, not only in the contract.
+    let events = std::fs::read_to_string(&bed.events).expect("the child's events.jsonl reads");
+    assert!(
+        events.contains(STEERED_NARRATIVE),
+        "generation two's stream was recorded into the node's capture:\n{events}"
     );
 
     // The message is resolved by the lane's verb, once.
