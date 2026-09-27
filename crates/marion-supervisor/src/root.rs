@@ -3435,7 +3435,7 @@ mod tests {
             stderr: String::new(),
         };
         let dir = temp("refused-after-spawned");
-        let ran = prepare(&root_spec(&dir, "claude")).unwrap();
+        let ran = prepare(&root_spec(&dir, "claude-orchestrator")).unwrap();
         journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(ran.project.journal()).unwrap());
         let n = tree.get(&ran.agent_id).unwrap();
@@ -3453,7 +3453,7 @@ mod tests {
         ));
 
         let never_dir = temp("refused-before-spawned");
-        let never = prepare(&root_spec(&never_dir, "claude")).unwrap();
+        let never = prepare(&root_spec(&never_dir, "claude-orchestrator")).unwrap();
         let unstarted = RootError::UnaccountableNode { why: "full".into() };
         journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0");
         let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
