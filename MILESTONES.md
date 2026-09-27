@@ -297,7 +297,10 @@ backgrounds a codex child is relaunched with the child's end as generation two. 
 the lane unwired (one generation; the steer never delivered). opencode, copilot and qwen take the
 same code through their rows' measured resume spellings (S31) but are not driven end to end here.
 The canned run declares marion in codex's config document, which every generation re-reads; a live
-resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`).
+resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`). Not yet: a child's end is queued even when
+the parent's own `wait` already collected it (collection lives in the parent's bridge, which the
+supervisor does not hear from), so such a parent takes one more continuation per end —
+`m4_fan_in`'s codex root, which waits on both of its children, now runs three generations.
 
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
