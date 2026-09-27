@@ -94,7 +94,7 @@ with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — a
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0/0.155.1;
-gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0 and 1.51.0; cline 3.0.61;
+gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
 qwen 0.23.0.
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
@@ -663,6 +663,13 @@ in the matrix, so read a red there under load as the machine first.
 **goose 1.51.0, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the same run with the
 same suite counts. Homebrew replaced 1.50.0 in place. No test-side change was needed. Its only
 red cell, goose root with an opencode child, is the load finding under opencode 1.18.32 above.
+
+**goose 1.52.0, admitted 2026-09-27 via `scripts/admit-harness.sh`.** Homebrew replaced 1.51.0 in
+place. Green with only the entry widened: `marion-testsupport` (35), `cross_product` (57),
+`depth_gate` (4), `harness_matrix` (8), `journal_wiring` (18). A first run under load 43–104 on 12
+cores (other agents' runs) failed two opencode-child cells with no goose in them (opencode root and
+cline root, each with an opencode child); both passed alone, and the admitting run used
+`RUST_TEST_THREADS=2`. The probes under `spikes/` were not re-run.
 
 **codex 0.155.1, admitted 2026-09-22 via `scripts/admit-harness.sh`.** The installer moved
 `current` to 0.155.1, with 0.153.4 and 0.154.0 between. 0.147.0 was still on disk, so the shim had
