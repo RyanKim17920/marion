@@ -723,8 +723,16 @@ fn a_pi_child_reports_through_marions_bridge_over_the_openai_wire() {
         expected_harness: Harness::Pi,
         expected_model: Some("canned-1"),
         // A real allowlist: `--tools` names what the model is offered, extension tools included
-        // (s34-pi item 3). `pi-orchestrator` declares no tools, so marion's own verb is the list.
-        expected_allowed_tools: &["tools:mcp__marion__report"],
+        // (s34-pi item 3). `pi-orchestrator` declares no tools, so marion's own verbs are the list:
+        // `report` and the delegation verbs a depth-1 child is granted (`agent_type::child_verbs`).
+        expected_allowed_tools: &[
+            "tools:mcp__marion__report",
+            "tools:mcp__marion__spawn",
+            "tools:mcp__marion__status",
+            "tools:mcp__marion__wait",
+            "tools:mcp__marion__list",
+            "tools:mcp__marion__steer",
+        ],
         expected_wire: "openai",
     };
     let ev = drive(&cell);
