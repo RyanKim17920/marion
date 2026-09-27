@@ -1,0 +1,11 @@
+{"dir":"note","msg":{"args":["exec","-C","<SCRATCH>/p-tools-normal/repo","--json","--skip-git-repo-check","-c","check_for_update_on_startup=false","CONFTOOLS: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":62269,"spawned":"codex"},"t":0.001}
+{"dir":"err","msg":"Reading additional input from stdin...","t":0.042}
+{"dir":"s2c","msg":{"thread_id":"01a0e4a9-c34e-7ac0-b219-4619b71ad489","type":"thread.started"},"t":0.096}
+{"dir":"s2c","msg":{"type":"turn.started"},"t":0.139}
+{"dir":"prov","msg":{"marion_tools":false,"offers_tools":false,"req":1,"turn":["CONFTOOLS",0],"user_texts":["<environment_context>\n  <cwd><SCRATCH>/p-tools-normal/repo</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-09-27</current_date>\n  <timezone>America/Chicago</timezone>\n  <filesystem><workspace_roots><root><SCRATCH>/p-tools-normal/repo</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restrict…[548 more chars]","CONFTOOLS: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"responses"},"t":0.167}
+{"dir":"prov","msg":{"resp":"script","wire":"responses"},"t":0.169}
+{"dir":"s2c","msg":{"item":{"id":"item_0","text":"conformance tools ok","type":"agent_message"},"type":"item.completed"},"t":0.171}
+{"dir":"s2c","msg":{"type":"turn.completed","usage":{"cache_write_input_tokens":0,"cached_input_tokens":0,"input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}},"t":0.181}
+{"dir":"note","msg":{"code":0,"exited":62269,"signal":null},"t":0.388}
+{"dir":"note","msg":"normal: first request 0.2 s after the spawn, marion tools false","t":0.388}
+{"dir":"note","msg":"signal 9 to process group 62269","t":0.435}

@@ -1,0 +1,65 @@
+{
+  "result": {
+    "fixtures": "codex-0.155.1",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0e4a9-cb57-76d2-9996-f5b18dc6aec0 ; activity report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (declaration-key), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"failed\")), 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
+        "observed": "401: ended after 6.6 s, 6 request(s), exit 1; auth line None; stream failure None | 429: ended after 0.2 s, 1 request(s), exit 1; auth line None; stream failure None | 500: ended after 25.7 s, 30 request(s), exit 1; auth line None; stream failure None",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (exit 1); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"responses\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []",
+        "status": "PASS"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read once before the first request, never mid-run",
+        "reason": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read once before the first request, never mid-run",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0e4a9-d259-7440-ab7c-995dea6eedd0 -> 01a0e4a9-d259-7440-ab7c-995dea6eedd0; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `mcp__marion__report`: false; with the bridge 4 s slow and no gate of marion's, the first request came 1.2 s after the spawn and did NOT list marion's tools",
+        "status": "FAIL"
+      },
+      "P-tui": {
+        "expected": "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+        "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+        "status": "FAIL"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "0.155.1 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried",
+        "status": "PASS"
+      }
+    },
+    "version": "0.155.1"
+  },
+  "row": "codex"
+}

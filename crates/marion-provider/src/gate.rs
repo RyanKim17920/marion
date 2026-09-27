@@ -50,6 +50,46 @@ pub trait Hold: std::fmt::Debug + Send + Sync {
     /// `wire` is [`crate::wire_name`]'s spelling, or `None` for a request nothing could classify;
     /// `body` is the parsed request. A hold that returns is a request the server may now answer.
     fn wait_for(&self, wire: Option<&str>, body: &Value);
+
+    /// The reply to send **instead of** the script's, or `None` to let the script answer.
+    /// Consulted once [`Self::wait_for`] has returned, so a hold can park a request and then decide
+    /// how it ends. It is how a test scripts a provider **fault** — a 401, a 429, a 5xx — that no
+    /// [`crate::Script`] can express, because a script is a function of the body and always
+    /// succeeds. `path` is the request's, query included: Gemini's framing (SSE or one JSON body)
+    /// is decided by it rather than by the body. The default answers nothing, so every hold that
+    /// only waits is unchanged.
+    fn answer(&self, _wire: Option<&str>, _path: &str, _body: &Value) -> Option<Answer> {
+        None
+    }
+}
+
+/// A reply a [`Hold`] chose in place of the script's: an HTTP status, its content type and body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    pub content_type: String,
+    pub body: String,
+}
+
+impl Answer {
+    /// The status line's text: the code and its reason phrase (`429 Too Many Requests`). A code
+    /// with no phrase here is sent as the bare number, which HTTP/1.1 clients accept.
+    pub fn status_line(&self) -> String {
+        let reason = match self.status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            529 => "Overloaded",
+            _ => "",
+        };
+        format!("{} {reason}", self.status).trim_end().to_string()
+    }
 }
 
 /// A hold on one wire's turns. Shared with the server; a test keeps a clone to release it.

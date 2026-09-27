@@ -1,0 +1,66 @@
+{
+  "result": {
+    "fixtures": "copilot-1.0.83",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session 3a4a4b69-f2dc-4c42-b0b7-d2370d34c573 ; activity marion-report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (allowed-tools-arg), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"Permission denied and could not request permission from user\")), 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
+        "observed": "401: ended after 2.6 s, 3 request(s), exit 1; auth line None; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:54881/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\") | 429: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None | 500: ended after 35.5 s, 6 request(s), exit 1; auth line None; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 34.75 seconds) Last error: 500 internal server error\")",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(59154, \"/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,view,create,edit,apply_patch --allow-tool=marion(report) --allow-tool=write --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (59463, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+        "status": "FAIL"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/copilot (1.0.83): `-p … --resume=<sessionId>` continues the session",
+        "reason": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/copilot (1.0.83): `-p … --resume=<sessionId>` continues the session",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 134f9874-cf86-4483-9f4e-46ca70adcc99 -> 134f9874-cf86-4483-9f4e-46ca70adcc99; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`marion-report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "1.0.83 (admitted in PINNED_HARNESSES); no-self-update env COPILOT_AUTO_UPDATE=false carried",
+        "status": "PASS"
+      }
+    },
+    "version": "1.0.83"
+  },
+  "row": "copilot"
+}

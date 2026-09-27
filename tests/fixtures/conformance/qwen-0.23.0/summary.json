@@ -1,0 +1,66 @@
+{
+  "result": {
+    "fixtures": "qwen-0.23.0",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 337, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session 40f58e4d-2dfc-4e43-b0d8-b1f5c2077e93 ; activity mcp__marion__report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (cli-flag), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Refused(\"Qwen Code requires permission to use \\\"mcp__marion__report\\\", but that permission was declined (non-interactive mode cannot prompt for confirmation).\")), 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
+        "observed": "401: ended after 1.6 s, 1 request(s), exit 0; auth line None; stream failure None | 429: still running after 45.0 s, 20 request(s), still running; auth line None; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; auth line None; stream failure None",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84776, \"/opt/homebrew/Cellar/node/26.10.0_1/bin/node --expose-gc /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js --yolo --core-tools mcp__marion__report read_file write_file --exclude-tools agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings send_message skill task_stop tool_search update_goal -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format stream-json\"), (85384, \"/opt/homebrew/Cellar/node/26.10.0_1/bin/node --expose-gc /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js --yolo --core-tools mcp__marion__report read_file write_file --exclude-tools agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings send_message skill task_stop tool_search update_goal -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format stream-json\"), (85575, \"<WORKTREE>/target/debug/marion-supervisor mcp\"), (86227, \"caffeinate -is\")]",
+        "status": "FAIL"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/qwen (0.23.0): `--resume <session_id> -p …` continues the session",
+        "reason": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/qwen (0.23.0): `--resume <session_id> -p …` continues the session",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 9d3b7205-113b-4d1e-8459-98e24206d3ae -> 9d3b7205-113b-4d1e-8459-98e24206d3ae; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 7.7 s after the spawn and listed marion's tools",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "0.23.0 (admitted in PINNED_HARNESSES); no-self-update env QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true carried",
+        "status": "PASS"
+      }
+    },
+    "version": "0.23.0"
+  },
+  "row": "qwen"
+}

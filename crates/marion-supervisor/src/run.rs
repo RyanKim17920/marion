@@ -2168,7 +2168,10 @@ fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
 
 /// The child's launch, in the neutral vocabulary the adapter compiles from. Every field is either
 /// read off the resolved agent type or decided by the launch path — never by a harness name.
-fn child_launch_spec(
+///
+/// Public for its second reader, the conformance battery (`tests/conformance`), which must drive
+/// each harness under exactly the launch a spawn compiles rather than a copy that could drift.
+pub fn child_launch_spec(
     env: &Env,
     req: &SpawnRequest,
     agent_type: &AgentType,

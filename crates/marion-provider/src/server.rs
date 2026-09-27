@@ -357,13 +357,18 @@ fn serve_connection(
         // **A harness's own auxiliary request is never offered to a hold** ([`is_auxiliary`]): a
         // hold is about a node's turns, and whether a release sends a title request at all is
         // harness drift, so counting one would move "the n-th turn" from build to build.
+        let mut answer = None;
         if let Some(gate) = gate
             && !classified.is_some_and(|w| is_auxiliary(w, &body))
         {
             gate.wait_for(wire, &body);
+            answer = gate.answer(wire, &req.path, &body);
         }
 
-        let (status, content_type, payload) = handle(&req, script);
+        let (status, content_type, payload) = match answer {
+            Some(a) => (a.status_line(), a.content_type, a.body),
+            None => handle(&req, script),
+        };
         writer.write_all(&http_response(&status, &content_type, &payload))?;
         writer.flush()?;
 
@@ -676,6 +681,64 @@ mod tests {
         );
         gate.release();
         second.join().unwrap();
+        let _ = std::fs::remove_file(&reqlog);
+    }
+
+    /// A hold that answers a turn itself — a scripted fault — replaces the script's reply on the
+    /// wire, status line included, while the request is still logged; a hold that answers nothing
+    /// leaves the script's reply alone.
+    #[test]
+    fn a_hold_that_answers_replaces_the_scripted_reply_with_its_own_status_and_body() {
+        #[derive(Debug)]
+        struct Fault;
+        impl Hold for Fault {
+            fn wait_for(&self, _: Option<&str>, _: &Value) {}
+            fn answer(
+                &self,
+                _: Option<&str>,
+                _: &str,
+                body: &Value,
+            ) -> Option<crate::gate::Answer> {
+                crate::script::carries(body, "FAULT").then(|| crate::gate::Answer {
+                    status: 429,
+                    content_type: "application/json".into(),
+                    body: r#"{"error":{"type":"rate_limit_error"}}"#.into(),
+                })
+            }
+        }
+        let reqlog =
+            std::env::temp_dir().join(format!("marion-canned-answer-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&reqlog);
+        let server = CannedServer::start_held(
+            Config {
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                reqlog: reqlog.clone(),
+                script: Script::default(),
+            },
+            Some(Arc::new(Fault)),
+        )
+        .unwrap();
+        let tools = json!([{"name": "mcp__marion__spawn", "input_schema": {}}]);
+        let turn = |text: &str| {
+            let body = json!({"tools": tools, "messages": [{"role": "user", "content": text}]});
+            speak(server.addr(), &post("/v1/messages", &body.to_string()))
+        };
+        let faulted = turn("FAULT");
+        assert!(
+            faulted.starts_with("HTTP/1.1 429 Too Many Requests\r\n"),
+            "{faulted}"
+        );
+        assert!(
+            faulted.ends_with(r#"{"error":{"type":"rate_limit_error"}}"#),
+            "{faulted}"
+        );
+        let plain = turn("go");
+        assert!(plain.starts_with("HTTP/1.1 200 OK\r\n"), "{plain}");
+        assert_eq!(
+            server.requests().unwrap().len(),
+            2,
+            "both requests are logged"
+        );
         let _ = std::fs::remove_file(&reqlog);
     }
 

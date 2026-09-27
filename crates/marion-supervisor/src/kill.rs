@@ -180,7 +180,7 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
 /// — while `kill(pid, 0)` would misclassify it as alive. `ps` supplies that distinction. The bound
 /// is a safety refusal, not a grace period: SIGKILL has no graceful leg, and a caller that cannot
 /// observe death leaves its already-durable intent unconfirmed for §7.2-style recovery.
-pub(crate) fn kill_process_tree_and_wait(child_pid: i32) -> bool {
+pub fn kill_process_tree_and_wait(child_pid: i32) -> bool {
     kill_process_tree(child_pid);
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
