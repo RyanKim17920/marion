@@ -19,16 +19,25 @@
 //! * **The operator has been quiet for [`PastePolicy::operator_quiet`]** (1.5 s): a person
 //!   mid-thought is not interrupted by text appearing under their cursor.
 //!
-//! # Why the row's [`IdleSignal`] is not waited on
+//! And before the injector's **first** paste into a terminal, one more: **the TUI has booted** —
+//! it has drawn text since turning bracketed paste on, and then been quiet for the row's
+//! [`IdleSignal`] ([`Hold::Booting`]).
 //!
-//! The row carries `OutputQuiet{1500}` — the measured "the TUI is idle" signal — and this driver
-//! deliberately does **not** wait for it. S31 measured Enter while busy on all four TUIs (codex,
-//! opencode, copilot, claude): never dropped, never an interrupt, delivered right after the
+//! # Why the row's [`IdleSignal`] is waited on once, not before every paste
+//!
+//! The row carries `OutputQuiet{1500}` — the measured "the TUI is idle" signal. Past boot this
+//! driver deliberately does **not** wait for it. S31 measured Enter while busy on all four TUIs
+//! (codex, opencode, copilot, claude): never dropped, never an interrupt, delivered right after the
 //! in-flight model response (codex "submitted after next tool call", claude "steer in real-time",
 //! copilot "ctrl+q enqueue", opencode a pending message). Writing while busy is therefore safe on
 //! every measured row, and waiting for output quiet would only add latency — and never fire on a
-//! TUI that repaints a clock. The match in [`PasteParams::of`] names the signal so a new variant,
-//! or a row where busy input is *not* safe, has to decide here.
+//! TUI that repaints a clock.
+//!
+//! Boot is the exception, measured in `native_facade_e2e.rs`: copilot 1.0.83 turns bracketed paste
+//! on in its first write, then (with no terminal answering its colour queries) draws nothing for
+//! twenty seconds, and a paste typed in that window is **discarded** — journaled delivered, never
+//! submitted. "Drawn, then quiet" is the moment its composer exists; bracketed paste alone is not.
+//! The match in [`PasteParams::of`] names the signal so a new variant has to decide here.
 //!
 //! # What is journaled
 //!
@@ -82,6 +91,9 @@ pub fn frame(text: &str) -> String {
 pub struct PasteParams {
     pub submit: &'static [u8],
     pub submit_delay: Duration,
+    /// How long the terminal must be quiet, after drawing its first screen, before the first
+    /// paste — the row's [`IdleSignal`], used for boot only. See the module doc.
+    pub settle: Duration,
 }
 
 impl PasteParams {
@@ -97,14 +109,16 @@ impl PasteParams {
         else {
             return None;
         };
-        match idle {
-            // Not waited on: every measured TUI queues or steers input written while it is busy,
-            // so a paste need not wait for the turn to end. See the module doc.
-            IdleSignal::OutputQuiet { .. } => {}
-        }
+        // Waited on before the first paste only: every measured TUI queues or steers input
+        // written while it is busy, but one discards input typed while it boots. See the module
+        // doc.
+        let settle = match idle {
+            IdleSignal::OutputQuiet { ms } => Duration::from_millis(u64::from(ms)),
+        };
         Some(PasteParams {
             submit,
             submit_delay: Duration::from_millis(u64::from(submit_delay_ms)),
+            settle,
         })
     }
 }
@@ -116,9 +130,10 @@ pub struct PastePolicy {
     /// How long since the operator's last key before marion types. 1.5 s: past a typing pause,
     /// short of a noticeable delivery delay.
     pub operator_quiet: Duration,
-    /// How long a message waits for the node to turn bracketed paste on before it is dropped.
-    /// 30 s covers every measured TUI's boot; past it the node is not a terminal marion can paste
-    /// into safely, and saying so beats holding the message for the node's whole life.
+    /// How long a message waits for the node to be pasteable — bracketed paste on and, before
+    /// the first paste, booted — before it is dropped. 30 s covers every measured TUI's boot; past
+    /// it the node is not a terminal marion can paste into safely, and saying so beats holding the
+    /// message for the node's whole life.
     pub paste_mode_grace: Duration,
     /// How often a held message looks again. The holds end on state marion is not told about (a
     /// key, a mode), so they are re-read — only while a message waits.
@@ -139,6 +154,9 @@ pub enum Hold {
     OperatorTyping,
     ComposerNotEmpty,
     NoBracketedPaste,
+    /// Before the first paste: the TUI has not yet drawn a screen under bracketed paste and then
+    /// gone quiet for the row's settle time.
+    Booting,
 }
 
 /// One look at the terminal.
@@ -151,14 +169,16 @@ pub enum Gate {
     Refuse(String),
 }
 
-/// **The decision**, on values: `state` as of `now`. `paste_mode_off_since` is the grace's clock —
-/// set the first time bracketed paste was the only thing in the way, cleared when it comes on or
-/// a message is refused for it.
+/// **The decision**, on values: `state` as of `now`. `boot` is the row's settle time while the
+/// injector has not yet pasted into this terminal, `None` after. `unready_since` is the grace's
+/// clock — set the first time the terminal itself (its paste mode, its boot) was the only thing in
+/// the way, cleared when it is ready or a message is refused for it.
 pub fn gate(
     state: &InputState,
     now: Instant,
     policy: &PastePolicy,
-    paste_mode_off_since: &mut Option<Instant>,
+    boot: Option<Duration>,
+    unready_since: &mut Option<Instant>,
 ) -> Gate {
     if !state.composer_empty {
         return Gate::Wait(Hold::ComposerNotEmpty, now + policy.recheck);
@@ -169,20 +189,39 @@ pub fn gate(
             return Gate::Wait(Hold::OperatorTyping, quiet_at);
         }
     }
-    if state.bracketed_paste {
-        *paste_mode_off_since = None;
-        return Gate::Ready;
-    }
-    let since = *paste_mode_off_since.get_or_insert(now);
+    let (hold, look) = match (state.bracketed_paste, boot) {
+        (false, _) => (Hold::NoBracketedPaste, now + policy.recheck),
+        (true, None) => {
+            *unready_since = None;
+            return Gate::Ready;
+        }
+        (true, Some(settle)) => match state.last_output.map(|at| at + settle) {
+            Some(quiet_at) if state.screen_drawn && now >= quiet_at => {
+                *unready_since = None;
+                return Gate::Ready;
+            }
+            Some(quiet_at) if state.screen_drawn => (Hold::Booting, quiet_at),
+            _ => (Hold::Booting, now + policy.recheck),
+        },
+    };
+    let since = *unready_since.get_or_insert(now);
     if now.saturating_duration_since(since) >= policy.paste_mode_grace {
-        *paste_mode_off_since = None;
-        return Gate::Refuse(format!(
-            "the node's terminal has not enabled bracketed paste (DECSET 2004) for {} s, and \
-             marion never types a message unbracketed: a newline in it would submit part of it",
-            policy.paste_mode_grace.as_secs()
-        ));
+        *unready_since = None;
+        let grace = policy.paste_mode_grace.as_secs();
+        return Gate::Refuse(match hold {
+            Hold::Booting => format!(
+                "the node's terminal did not finish booting within {grace} s — it never drew a \
+                 screen under bracketed paste and then went quiet — and a paste typed into a TUI \
+                 that is still booting is discarded"
+            ),
+            _ => format!(
+                "the node's terminal has not enabled bracketed paste (DECSET 2004) for {grace} s, \
+                 and marion never types a message unbracketed: a newline in it would submit part \
+                 of it"
+            ),
+        });
     }
-    Gate::Wait(Hold::NoBracketedPaste, now + policy.recheck)
+    Gate::Wait(hold, look)
 }
 
 #[derive(Debug, Default)]
@@ -311,7 +350,9 @@ impl Worker {
     fn run(self) {
         // A message taken from the inbox that the operator beat to the terminal: it goes first.
         let mut held: Option<Message> = None;
-        let mut paste_mode_off_since = None;
+        let mut unready_since = None;
+        // Until the first paste lands, the terminal must also have booted.
+        let mut booted = false;
         let mut next_look: Option<Instant> = None;
         while self.await_work(next_look.take()) {
             let (Some(host), Some(inboxes)) = (self.host.upgrade(), self.inboxes.upgrade()) else {
@@ -320,11 +361,13 @@ impl Worker {
             if held.is_none() && inboxes.queued(&self.agent) == 0 {
                 continue;
             }
+            let boot = (!booted).then_some(self.params.settle);
             let decision = gate(
                 &host.input_state(),
                 Instant::now(),
                 &self.policy,
-                &mut paste_mode_off_since,
+                boot,
+                &mut unready_since,
             );
             self.observe(&decision);
             next_look = Some(match decision {
@@ -338,7 +381,8 @@ impl Worker {
                 }
                 Gate::Ready => match held.take().or_else(|| inboxes.take_next(&self.agent)) {
                     Some(m) => {
-                        held = self.paste(&host, &inboxes, m);
+                        held = self.paste(&host, &inboxes, m, boot);
+                        booted |= held.is_none();
                         if held.is_some() {
                             Instant::now() + self.policy.recheck
                         } else {
@@ -359,7 +403,13 @@ impl Worker {
     }
 
     /// Paste `m`, or hand it back when the operator got to the terminal first.
-    fn paste(&self, host: &PtyHost, inboxes: &Inboxes, m: Message) -> Option<Message> {
+    fn paste(
+        &self,
+        host: &PtyHost,
+        inboxes: &Inboxes,
+        m: Message,
+        boot: Option<Duration>,
+    ) -> Option<Message> {
         let body = frame(&render(&m));
         let label = format!("marion: turn delivery {}", m.id);
         let injection = Injection {
@@ -372,7 +422,7 @@ impl Worker {
         // landed since. The grace clock is not advanced here — a mode that went off in between is
         // the next look's to count.
         let admit = |state: &InputState| {
-            gate(state, Instant::now(), &self.policy, &mut None) == Gate::Ready
+            gate(state, Instant::now(), &self.policy, boot, &mut None) == Gate::Ready
         };
         match host.inject(&injection, &admit) {
             Ok(Injected::Written) => {

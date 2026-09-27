@@ -693,7 +693,7 @@ mod tests {
     }
 
     /// A raw pty whose host is `agent`'s terminal, with the node side already asking for
-    /// bracketed paste — what a TUI does at boot. Not registered: the caller does that.
+    /// bracketed paste and a prompt drawn — what a TUI does at boot. Not registered: the caller does that.
     fn pasting_terminal(
         fx: &Fx,
         agent: &str,
@@ -718,7 +718,7 @@ mod tests {
             )
             .unwrap(),
         );
-        slave.write_all(b"\x1b[?2004h").unwrap();
+        slave.write_all(b"\x1b[?2004h> ").unwrap();
         assert!(marion_testsupport::until(|| host.bracketed_paste()));
         (host, slave)
     }

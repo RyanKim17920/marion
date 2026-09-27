@@ -3633,10 +3633,13 @@ impl PtyHost {
     }
 
     fn input_state_locked(&self, typing: &input::Typing) -> input::InputState {
+        let modes = self.shared.modes.lock().unwrap_or_else(|e| e.into_inner());
         input::InputState {
-            bracketed_paste: self.bracketed_paste(),
+            bracketed_paste: modes.bracketed_paste(),
             last_operator_input: typing.last_operator_input(),
             composer_empty: typing.composer_empty(),
+            screen_drawn: modes.drawn(),
+            last_output: modes.last_output(),
         }
     }
 
@@ -4288,7 +4291,7 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
         .modes
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .feed(chunk);
+        .feed(chunk, Instant::now());
     // Published last: tests and diagnostics use this counter as the completion witness for the
     // whole recording step, not merely for the kernel read returning.
     shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);

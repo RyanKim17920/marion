@@ -1,10 +1,14 @@
 //! **What the node's terminal will do with bytes typed into it** — the facts a writer other than
 //! the operator (turn delivery's paste, `crate::paste`) has to know before it types.
 //!
-//! One of them is read off the node's own output: whether it asked for **bracketed paste**
-//! (`CSI ? 2004 h`). A paste into a terminal that did not ask for it arrives as typed keys, and a
+//! Two of them are read off the node's own output. Whether it asked for **bracketed paste**
+//! (`CSI ? 2004 h`): a paste into a terminal that did not ask for it arrives as typed keys, and a
 //! newline inside the message then submits half of it; S31 measured codex turning an unbracketed
-//! burst's CR into a newline, so marion never types a paste the node cannot tell from typing.
+//! burst's CR into a newline, so marion never types a paste the node cannot tell from typing. And
+//! whether it has **drawn its screen** since, and when it last wrote anything: copilot 1.0.83
+//! turns bracketed paste on in its first write and then spends seconds (twenty, with nobody
+//! answering its terminal queries) before it draws a thing, and a paste in that window is
+//! discarded without a trace — so a first paste waits for text on the screen and a quiet moment.
 //!
 //! The other is read off the operator's own writes ([`Typing`]): when a person last typed into
 //! this terminal, and whether what they typed has been submitted. A paste landing in the middle of
@@ -32,17 +36,23 @@ enum Scan {
     Private,
     /// Inside a CSI marion does not read; waiting for its final byte.
     Ignore,
+    /// Inside a control string (OSC, DCS, APC, PM, SOS): its payload is not text on the screen.
+    /// Ended by `BEL`, or by `ESC \` through [`Scan::Escape`].
+    Str,
 }
 
-/// **DECSET/DECRST 2004, followed across reads.** A small state machine over the output stream —
-/// only the sequences that change the mode are recognised, and a read boundary anywhere inside one
-/// is carried, because a `read()` is not a frame (S11).
+/// **DECSET/DECRST 2004, followed across reads, and whether text has been drawn since.** A small
+/// state machine over the output stream — only the sequences that change the mode are recognised,
+/// control strings are skipped whole, and a read boundary anywhere inside one is carried, because
+/// a `read()` is not a frame (S11).
 #[derive(Debug, Default)]
 pub(crate) struct ModeScan {
     state: Scan,
     params: Vec<u8>,
     overflowed: bool,
     bracketed_paste: bool,
+    drawn: bool,
+    last_output: Option<Instant>,
 }
 
 impl ModeScan {
@@ -51,7 +61,22 @@ impl ModeScan {
         self.bracketed_paste
     }
 
-    pub(crate) fn feed(&mut self, chunk: &[u8]) {
+    /// Whether the node has written visible text — a byte that is neither a control, a space nor
+    /// part of an escape sequence or control string — since it last turned bracketed paste on.
+    pub(crate) fn drawn(&self) -> bool {
+        self.drawn
+    }
+
+    /// When the node last wrote anything at all, `None` before its first byte.
+    pub(crate) fn last_output(&self) -> Option<Instant> {
+        self.last_output
+    }
+
+    /// One chunk of the node's output, read at `now`.
+    pub(crate) fn feed(&mut self, chunk: &[u8], now: Instant) {
+        if !chunk.is_empty() {
+            self.last_output = Some(now);
+        }
         for &b in chunk {
             self.step(b);
         }
@@ -69,12 +94,20 @@ impl ModeScan {
             return;
         }
         self.state = match self.state {
-            Scan::Ground => Scan::Ground,
+            Scan::Ground => {
+                // Text: printable ASCII past the space, or any byte of a UTF-8 sequence.
+                if b > 0x20 && b != 0x7f {
+                    self.drawn |= self.bracketed_paste;
+                }
+                Scan::Ground
+            }
             Scan::Escape => match b {
                 b'[' => Scan::CsiEntry,
+                b']' | b'P' | b'_' | b'^' | b'X' => Scan::Str,
                 // RIS: a full reset, which clears every DEC private mode.
                 b'c' => {
                     self.bracketed_paste = false;
+                    self.drawn = false;
                     Scan::Ground
                 }
                 _ => Scan::Ground,
@@ -103,7 +136,12 @@ impl ModeScan {
                         .split(|&c| c == b';')
                         .any(|p| p == BRACKETED_PASTE)
                     {
-                        self.bracketed_paste = b == b'h';
+                        let on = b == b'h';
+                        if on && !self.bracketed_paste {
+                            // What counts is a screen drawn under this mode, not before it.
+                            self.drawn = false;
+                        }
+                        self.bracketed_paste = on;
                     }
                     Scan::Ground
                 }
@@ -114,6 +152,10 @@ impl ModeScan {
             Scan::Ignore => match b {
                 0x40..=0x7e => Scan::Ground,
                 _ => Scan::Ignore,
+            },
+            Scan::Str => match b {
+                0x07 => Scan::Ground,
+                _ => Scan::Str,
             },
         };
     }
@@ -130,6 +172,10 @@ pub struct InputState {
     /// The operator's last key submitted (or nobody has typed): the composer is **presumed**
     /// empty. Presumed, because only the harness knows its composer; marion knows the keys.
     pub composer_empty: bool,
+    /// The node has drawn text since it turned bracketed paste on ([`ModeScan::drawn`]).
+    pub screen_drawn: bool,
+    /// When the node last wrote anything — `None` before its first byte.
+    pub last_output: Option<Instant>,
 }
 
 /// The operator's typing, as far as the host saw it. See [`InputState`].
@@ -239,6 +285,58 @@ fn csi_key(params: &[u8], fin: u8) -> Key {
 mod tests {
     use super::*;
 
+    fn scan_of(chunks: &[&str]) -> ModeScan {
+        let mut scan = ModeScan::default();
+        for c in chunks {
+            scan.feed(c.as_bytes(), Instant::now());
+        }
+        scan
+    }
+
+    /// **Only text drawn under bracketed paste counts as a drawn screen**: escape sequences,
+    /// control strings (a colour query's payload included), spaces and controls do not, and text
+    /// from before the mode came on is forgotten when it does.
+    #[test]
+    fn a_screen_is_drawn_by_text_written_after_bracketed_paste_came_on() {
+        let boot = [
+            "\u{1b}[?1049h\u{1b}[?2004h\u{1b}[?25l\u{1b}[?12$p",
+            "\u{1b}]10;?\u{1b}\\\u{1b}]11;?\u{7}\u{1b}P+q544e\u{1b}\\",
+            "  \r\n\u{1b}[2J\u{1b}[H\u{1b}[38;2;1;2;3m",
+        ];
+        assert!(!scan_of(&boot).drawn(), "nothing visible yet");
+        let mut drawn = boot.to_vec();
+        drawn.push("> ready");
+        assert!(scan_of(&drawn).drawn());
+        assert!(
+            scan_of(&["\u{1b}[?2004h\u{1b}]0;tit", "le\u{7}\u{2500}"]).drawn(),
+            "UTF-8 text"
+        );
+        assert!(
+            !scan_of(&[
+                "\u{1b}[?2004h\u{1b}]0;a title not on the screen",
+                " still\u{7}"
+            ])
+            .drawn(),
+            "a control string's payload is not text, across reads"
+        );
+        assert!(
+            !scan_of(&["boot banner", "\u{1b}[?2004h"]).drawn(),
+            "text from before the mode is not a screen drawn under it"
+        );
+        assert!(
+            !scan_of(&["\u{1b}[?2004h> ", "\u{1b}c"]).drawn(),
+            "RIS resets it"
+        );
+        let mut scan = scan_of(&["\u{1b}[?2004h> "]);
+        let before = scan.last_output().expect("output was seen");
+        scan.feed(b"", Instant::now());
+        assert_eq!(
+            scan.last_output(),
+            Some(before),
+            "an empty read is not output"
+        );
+    }
+
     fn after(writes: &[&[u8]]) -> (bool, bool) {
         let mut typing = Typing::default();
         for w in writes {
@@ -300,7 +398,7 @@ mod tests {
     fn scanned(chunks: &[&[u8]]) -> bool {
         let mut scan = ModeScan::default();
         for c in chunks {
-            scan.feed(c);
+            scan.feed(c, Instant::now());
         }
         scan.bracketed_paste()
     }

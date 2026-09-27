@@ -77,13 +77,18 @@ fn policy() -> PastePolicy {
     }
 }
 
+/// A terminal that booted long ago: drawn, and quiet since well before any look.
 fn state(bracketed: bool, typed: Option<Instant>, empty: bool) -> crate::pty::InputState {
     crate::pty::InputState {
         bracketed_paste: bracketed,
         last_operator_input: typed,
         composer_empty: empty,
+        screen_drawn: true,
+        last_output: Some(Instant::now() - Duration::from_secs(60)),
     }
 }
+
+const SETTLE: Duration = Duration::from_millis(1500);
 
 #[test]
 fn the_gate_opens_only_on_a_quiet_empty_bracketed_terminal() {
@@ -91,23 +96,23 @@ fn the_gate_opens_only_on_a_quiet_empty_bracketed_terminal() {
     let p = policy();
     let mut off = None;
     assert_eq!(
-        gate(&state(true, None, true), now, &p, &mut off),
+        gate(&state(true, None, true), now, &p, None, &mut off),
         Gate::Ready
     );
     let long_ago = now - Duration::from_secs(2);
     assert_eq!(
-        gate(&state(true, Some(long_ago), true), now, &p, &mut off),
+        gate(&state(true, Some(long_ago), true), now, &p, None, &mut off),
         Gate::Ready
     );
 
     let just_now = now - Duration::from_millis(400);
     assert_eq!(
-        gate(&state(true, Some(just_now), true), now, &p, &mut off),
+        gate(&state(true, Some(just_now), true), now, &p, None, &mut off),
         Gate::Wait(Hold::OperatorTyping, just_now + p.operator_quiet),
         "quiet is measured from the operator's last key"
     );
     assert_eq!(
-        gate(&state(true, Some(long_ago), false), now, &p, &mut off),
+        gate(&state(true, Some(long_ago), false), now, &p, None, &mut off),
         Gate::Wait(Hold::ComposerNotEmpty, now + p.recheck),
         "a half-typed line waits for the operator however long ago it was typed"
     );
@@ -122,17 +127,17 @@ fn bracketed_paste_off_holds_then_refuses_after_the_grace() {
     let mut off = None;
     let off_state = state(false, None, true);
     assert_eq!(
-        gate(&off_state, t0, &p, &mut off),
+        gate(&off_state, t0, &p, None, &mut off),
         Gate::Wait(Hold::NoBracketedPaste, t0 + p.recheck)
     );
     let later = t0 + Duration::from_secs(10);
     assert_eq!(
-        gate(&off_state, later, &p, &mut off),
+        gate(&off_state, later, &p, None, &mut off),
         Gate::Wait(Hold::NoBracketedPaste, later + p.recheck),
         "the grace runs from t0, not from each look"
     );
     assert!(matches!(
-        gate(&off_state, t0 + p.paste_mode_grace, &p, &mut off),
+        gate(&off_state, t0 + p.paste_mode_grace, &p, None, &mut off),
         Gate::Refuse(reason) if reason.contains("bracketed paste")
     ));
     assert_eq!(
@@ -141,12 +146,67 @@ fn bracketed_paste_off_holds_then_refuses_after_the_grace() {
     );
 
     let mut off = None;
-    gate(&off_state, t0, &p, &mut off);
+    gate(&off_state, t0, &p, None, &mut off);
     assert_eq!(
-        gate(&state(true, None, true), t0, &p, &mut off),
+        gate(&state(true, None, true), t0, &p, None, &mut off),
         Gate::Ready
     );
     assert_eq!(off, None, "on again resets the grace");
+}
+
+/// **Before the first paste the terminal must have booted**: drawn text under bracketed paste,
+/// then been quiet for the row's settle time. Undrawn holds on the recheck; drawn but recently
+/// busy holds until exactly the quiet instant; past boot (`None`) neither matters. Never booting
+/// is refused after the grace, by its own reason.
+#[test]
+fn the_first_paste_waits_for_the_terminal_to_boot() {
+    let now = Instant::now();
+    let p = policy();
+    let mut clock = None;
+    let undrawn = crate::pty::InputState {
+        screen_drawn: false,
+        last_output: Some(now),
+        ..state(true, None, true)
+    };
+    assert_eq!(
+        gate(&undrawn, now, &p, Some(SETTLE), &mut clock),
+        Gate::Wait(Hold::Booting, now + p.recheck)
+    );
+    let busy_at = now - Duration::from_millis(500);
+    let busy = crate::pty::InputState {
+        last_output: Some(busy_at),
+        ..state(true, None, true)
+    };
+    assert_eq!(
+        gate(&busy, now, &p, Some(SETTLE), &mut clock),
+        Gate::Wait(Hold::Booting, busy_at + SETTLE),
+        "quiet is measured from the node's last output"
+    );
+    assert_eq!(
+        gate(&busy, busy_at + SETTLE, &p, Some(SETTLE), &mut clock),
+        Gate::Ready
+    );
+    assert_eq!(clock, None, "ready resets the grace");
+    assert_eq!(
+        gate(&busy, now, &p, None, &mut clock),
+        Gate::Ready,
+        "past the first paste a busy terminal is typed into: S31 measured busy input is queued"
+    );
+
+    gate(&undrawn, now, &p, Some(SETTLE), &mut clock);
+    assert!(matches!(
+        gate(&undrawn, now + p.paste_mode_grace, &p, Some(SETTLE), &mut clock),
+        Gate::Refuse(reason) if reason.contains("booting")
+    ));
+    let off = crate::pty::InputState {
+        bracketed_paste: false,
+        ..undrawn
+    };
+    assert_eq!(
+        gate(&off, now, &p, Some(SETTLE), &mut None),
+        Gate::Wait(Hold::NoBracketedPaste, now + p.recheck),
+        "bracketed paste is asked about first: without it there is no boot to wait for"
+    );
 }
 
 #[test]
@@ -165,8 +225,13 @@ fn only_a_terminal_paste_row_gets_an_injector() {
     }
     let p = PasteParams::of(PASTE).unwrap();
     assert_eq!(
-        (p.submit, p.submit_delay),
-        (&b"\r"[..], Duration::from_millis(50))
+        (p.submit, p.submit_delay, p.settle),
+        (
+            &b"\r"[..],
+            Duration::from_millis(50),
+            Duration::from_millis(1500)
+        ),
+        "the row's idle signal is the boot settle"
     );
 }
 
@@ -219,7 +284,10 @@ impl Bed {
             agent(),
             &host,
             &inboxes,
-            PasteParams::of(PASTE).unwrap(),
+            PasteParams {
+                settle: BED_SETTLE,
+                ..PasteParams::of(PASTE).unwrap()
+            },
             policy,
             tx,
         )
@@ -341,6 +409,12 @@ pub(crate) fn read_slave_within(
     got
 }
 
+/// The bed's boot settle: short, so a test is not 1.5 s of waiting, and long enough to be seen.
+const BED_SETTLE: Duration = Duration::from_millis(150);
+
+/// What a TUI writes as it comes up: bracketed paste on, then a screen with text on it.
+const BOOTED: &[u8] = b"\x1b[?2004h\x1b[2J\x1b[H> ready";
+
 fn fast() -> PastePolicy {
     PastePolicy {
         operator_quiet: Duration::from_millis(200),
@@ -367,7 +441,7 @@ fn expected_paste(text: &str) -> Vec<u8> {
 #[test]
 fn a_queued_message_is_pasted_submitted_and_journaled_as_delivered() {
     let mut bed = Bed::new("paste-delivers", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let id = bed.steer("use the v2 API");
     let want = expected_paste("use the v2 API");
     assert_eq!(bed.read_slave(want.len()), want);
@@ -393,7 +467,7 @@ fn a_queued_message_is_pasted_submitted_and_journaled_as_delivered() {
 #[test]
 fn the_operators_half_typed_line_holds_the_paste() {
     let mut bed = Bed::new("paste-composer", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
     bed.host.write_input(&lease, b"hel").unwrap();
     assert_eq!(bed.read_slave(3), b"hel");
@@ -418,7 +492,7 @@ fn the_operators_half_typed_line_holds_the_paste() {
 #[test]
 fn the_paste_waits_for_the_operator_to_be_quiet() {
     let mut bed = Bed::new("paste-quiet", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
     bed.host.write_input(&lease, b"\r").unwrap();
     bed.read_slave(1);
@@ -474,7 +548,7 @@ fn a_message_waits_for_the_node_to_turn_bracketed_paste_on() {
     let mut bed = Bed::new("paste-late-2004", fast());
     let id = bed.steer("boot first");
     bed.await_decision(|d| matches!(d, Gate::Wait(Hold::NoBracketedPaste, _)));
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let want = expected_paste("boot first");
     assert_eq!(bed.read_slave(want.len()), want);
     assert!(matches!(
@@ -483,11 +557,52 @@ fn a_message_waits_for_the_node_to_turn_bracketed_paste_on() {
     ));
 }
 
+/// **A TUI that turned bracketed paste on but has drawn nothing is still booting**, and the first
+/// paste waits for text on its screen and then `settle` of quiet — copilot 1.0.83 discards a paste
+/// typed in that window. Past the first paste, a terminal that just wrote is typed into at once.
+#[test]
+fn the_first_paste_waits_for_the_tui_to_draw_its_screen_and_go_quiet() {
+    let mut bed = Bed::new("paste-boot", fast());
+    bed.node_writes(b"\x1b[?2004h\x1b]10;?\x07\x1b[?25l");
+    let first = bed.steer("after boot");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Booting, _)));
+    bed.node_writes(b"> ready");
+    let drawn_at = Instant::now();
+    let want = expected_paste("after boot");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(
+        drawn_at.elapsed() >= BED_SETTLE,
+        "the paste came {:?} after the screen was drawn",
+        drawn_at.elapsed()
+    );
+    assert!(matches!(
+        bed.resolution(&first),
+        RecordKind::MessageDelivered(_)
+    ));
+    // The first message's holds are behind us; only what the second provokes is read below.
+    while bed.decisions.try_recv().is_ok() {}
+
+    bed.node_writes(b"busy spinner");
+    let second = bed.steer("while busy");
+    let want = expected_paste("while busy");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(matches!(
+        bed.resolution(&second),
+        RecordKind::MessageDelivered(_)
+    ));
+    while let Ok(d) = bed.decisions.try_recv() {
+        assert!(
+            !matches!(d, Gate::Wait(Hold::Booting, _)),
+            "a booted terminal is never held for boot again: {d:?}"
+        );
+    }
+}
+
 /// **8 KiB — the steer cap — arrives byte-exact** through the whole path.
 #[test]
 fn a_message_at_the_steer_cap_arrives_byte_exact() {
     let mut bed = Bed::new("paste-8k", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let text: String = (0..marion_core::proto::params::MAX_STEER_BYTES)
         .map(|i| (b'a' + (i % 26) as u8) as char)
         .collect();
@@ -505,7 +620,7 @@ fn a_message_at_the_steer_cap_arrives_byte_exact() {
 #[test]
 fn several_messages_are_pasted_one_at_a_time_in_order() {
     let mut bed = Bed::new("paste-order", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let ids: Vec<_> = ["one", "two", "three"]
         .iter()
         .map(|t| bed.steer(t))
@@ -528,7 +643,7 @@ fn several_messages_are_pasted_one_at_a_time_in_order() {
 #[test]
 fn the_injector_ends_with_its_node_and_drops_what_it_held() {
     let mut bed = Bed::new("paste-close", fast());
-    bed.node_writes(b"\x1b[?2004h");
+    bed.node_writes(BOOTED);
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
     bed.host.write_input(&lease, b"typing").unwrap();
     let id = bed.steer("too late");
