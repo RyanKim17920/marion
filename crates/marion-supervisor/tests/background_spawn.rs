@@ -1212,6 +1212,121 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
     assert!(bridge.close().success());
 }
 
+/// Every node token marion minted under `state`, each read back from the one kind of file meant to
+/// carry it — a node's own MCP declaration, inside its agent's `config` directory — with the paths
+/// of those files, so a caller can check every *other* file for the value.
+fn minted_tokens(state: &Path) -> (Vec<String>, Vec<PathBuf>) {
+    let (mut tokens, mut declarations) = (Vec::new(), Vec::new());
+    walk(state, &mut |p| {
+        let in_config_dir = p
+            .ancestors()
+            .any(|a| a.file_name().is_some_and(|n| n == "config"));
+        let Ok(text) = std::fs::read_to_string(p) else {
+            return;
+        };
+        if !in_config_dir || !text.contains("MARION_NODE_TOKEN") {
+            return;
+        }
+        declarations.push(p.to_path_buf());
+        for (at, _) in text.match_indices("MARION_NODE_TOKEN") {
+            let rest = &text[at + "MARION_NODE_TOKEN".len()..];
+            let rest = rest.trim_start_matches(|c: char| c == '"' || c.is_whitespace());
+            let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else {
+                continue;
+            };
+            let Some(rest) = rest.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            if let Some(end) = rest.find('"') {
+                tokens.push(rest[..end].to_string());
+            }
+        }
+    });
+    tokens.sort();
+    tokens.dedup();
+    (tokens, declarations)
+}
+
+/// **No node token outside the declaration that carries it**: not in what the caller was told,
+/// and not in any other file marion wrote — journal, contract, event record, change record.
+///
+/// Asserted over *every* file rather than a list of the ones that exist today, so a record some
+/// later change adds is covered the day it is written. `told` is what reached the caller.
+fn assert_no_token_escaped(fx: &Fixture, told: &str) {
+    let (tokens, declarations) = minted_tokens(&fx.state);
+    let root_token = &fx.declaration["MARION_NODE_TOKEN"];
+    assert!(
+        tokens.contains(root_token),
+        "the root's own token is read back from its declaration, or this check reads nothing"
+    );
+    assert!(
+        tokens.iter().all(|t| t.len() == 64),
+        "every token read back is a whole minted token, not a fragment: {} read",
+        tokens.len()
+    );
+    for t in &tokens {
+        assert!(
+            !told.contains(t.as_str()),
+            "a node token reached the caller: {told}"
+        );
+    }
+    walk(&fx.state, &mut |p| {
+        if declarations.iter().any(|d| d == p) {
+            return;
+        }
+        let bytes = std::fs::read(p).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
+        for t in &tokens {
+            assert!(
+                !text.contains(t.as_str()),
+                "a node token escaped its declaration into {}",
+                p.display()
+            );
+        }
+    });
+}
+
+/// **A spawn that fails leaves no node token behind** — in the refusal the caller reads, in the
+/// abort record the journal keeps, or anywhere else under the state directory. The child's token
+/// was minted and written into its declaration before the launch failed, so the failure path is
+/// exactly where a debug-printed spawn context or launch would surface it.
+#[test]
+fn a_failed_spawn_carries_no_node_token_in_its_refusal_or_its_records() {
+    let fx = fixture("bg-fail-no-token");
+    fx.break_the_harness();
+    let mut bridge = fx.bridge();
+    let reply = bridge.tool("spawn", spawn_args(false));
+    assert!(is_error(&reply), "the broken harness is refused: {reply}");
+    assert!(
+        fx.journal_text().contains("SpawnAborted"),
+        "the failure reached the journal, so the journal is part of what is checked"
+    );
+    assert_no_token_escaped(&fx, &reply.to_string());
+    assert!(bridge.close().success());
+}
+
+/// **A child that ran and ended leaves no node token in its contract** — the record a parent reads
+/// back and the one most likely to quote a launch verbatim.
+#[test]
+fn a_finished_childs_contract_carries_no_node_token() {
+    let fx = fixture("bg-contract-no-token");
+    fx.open_gate();
+    let mut bridge = fx.bridge();
+    let reply = bridge.tool("spawn", spawn_args(false));
+    assert!(
+        text_of(&reply).contains("\"completion\""),
+        "a blocking spawn returns the contract: {reply}"
+    );
+    let (tokens, _) = minted_tokens(&fx.state);
+    assert!(
+        tokens.len() >= 2,
+        "the child's token is read back too, so its contract is checked against it: {} read",
+        tokens.len()
+    );
+    assert_no_token_escaped(&fx, &reply.to_string());
+    assert!(bridge.close().success());
+}
+
 /// The `task_id` a **contract** in a tool result carries — what a blocking spawn hands back.
 fn contract_task_id(reply: &Value) -> String {
     let text = text_of(reply);
