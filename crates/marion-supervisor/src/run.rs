@@ -908,6 +908,7 @@ fn launch_only_child(
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
+    secret: Option<&str>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -917,9 +918,14 @@ fn launch_only_child(
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
     // ([`record_capture_after_the_fact`] skips this path).
+    // An endpoint node's key is redacted from each line before it is kept, as the whole capture
+    // is afterwards: the live record would otherwise be the one place it survived.
     let on_line = |line: &str| {
         if let Some(es) = events {
-            es.record_line(line);
+            match secret {
+                Some(key) => es.record_line(&crate::endpoint::redact(line, key)),
+                None => es.record_line(line),
+            }
         }
         session.observe_line(line);
     };
@@ -1656,9 +1662,17 @@ pub fn run_spawn_watched(
         LaunchPath::Terminal => {
             return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
         }
-        LaunchPath::LaunchOnly => {
-            launch_only_child(&inv, bound, &announce_started, &session, events.as_ref())
-        }
+        LaunchPath::LaunchOnly => launch_only_child(
+            &inv,
+            bound,
+            &announce_started,
+            &session,
+            events.as_ref(),
+            endpoint
+                .as_ref()
+                .and_then(|e| e.key.as_ref())
+                .map(|k| k.expose()),
+        ),
         // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
         // children through the single ACP adapter*, and until this arm existed the only thing that
         // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
@@ -1758,7 +1772,6 @@ pub fn run_spawn_watched(
         parsed.failure = Some(why);
     }
     let mut outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
-    let mut run = run;
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
@@ -1838,6 +1851,10 @@ pub fn run_spawn_watched(
             &announce_generation,
             &session,
             events.as_ref(),
+            endpoint
+                .as_ref()
+                .and_then(|e| e.key.as_ref())
+                .map(|k| k.expose()),
         );
         if let Some(why) = unaccountable.take() {
             turns.dropped(
@@ -1849,7 +1866,7 @@ pub fn run_spawn_watched(
                 why: why.to_string(),
             });
         }
-        let next = match next {
+        let mut next = match next {
             Ok(next) => next,
             // A process that never started carried nothing; one that did was already delivered to,
             // and its failure is the node's outcome of the turn it did not finish.
@@ -1862,6 +1879,11 @@ pub fn run_spawn_watched(
             }
             Err(e) => return Err(e),
         };
+        // Redacted like the first generation's capture, and for the same reason.
+        if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
+            next.stdout = crate::endpoint::redact(&next.stdout, key.expose());
+            next.stderr = crate::endpoint::redact(&next.stderr, key.expose());
+        }
         record_capture_after_the_fact(path, events.as_mut(), &next.stdout);
         let later = ChildOutcome::from_stream(
             adapter.parse_stream(&next.stdout, next.exit),
