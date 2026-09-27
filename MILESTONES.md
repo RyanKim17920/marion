@@ -1766,6 +1766,17 @@ ever runs a real login.
   Chat, copilot on Chat, and copilot on Anthropic Messages — which posts to `<base>/v1/messages`
   with `x-api-key` (so an Anthropic base is the root, as the seed rows spell it). The claude cell
   is blocked on this machine by the version gate (2.1.283 installed, not admitted); it has not run.
+- **`doctor --providers` — built; not yet in the default summary.** `marion-supervisor doctor
+  --providers [--model <id>]` (`provider_check`) lists every credential worth a row (login index,
+  `[credentials]` orders, stored unlabelled ids): key stored or not (never the key), the credential
+  file's mode where the store is a file, and — with a key — `GET <base>/models` through `curl -sS`
+  with the key header on stdin (`-H @-`, so the key is on no argv and marion links no TLS),
+  reporting listed/refused/status/unreachable and whether the requested model is listed. Then the
+  harness × provider matrix from the resolver's own rule (`endpoint::shared_wire` plus whether the
+  recipe presents the provider's key header), with each unsupported pair's reason (both wire lists,
+  or the header). Canned tests: the probe (listed, a 401-refused key, a missing key), the matrix,
+  and the command line. **Not done:** the fold into the default `marion doctor` summary and `marion
+  doctor` forwarding, which live on the onboarding branch and are not in this base.
 - **Key header — built.** Which header a provider reads its key from is a provider column,
   `key_header` (`bearer`, the default, or `x-api-key`; settable per custom provider in
   `providers.toml`). The `anthropic` seed row states `x-api-key` — what Anthropic's SDKs send for an

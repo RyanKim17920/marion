@@ -14,7 +14,7 @@ use marion_supervisor::{detach, doctor, mcp, preflight};
 
 /// The doctor's flags, as a person types them through `marion doctor`.
 const DOCTOR_USAGE: &str = "usage: marion doctor [--capabilities|--adapter] [--harness <name>] \
-                            [--model <id>] [--acp-command <cmd>]";
+                            [--model <id>] [--acp-command <cmd>] | --providers [--model <id>]";
 
 fn usage() -> ! {
     eprintln!(
@@ -40,6 +40,19 @@ fn main() {
                 // is a file beside the socket, so it reaches whoever goes looking afterwards.
                 eprintln!("marion-supervisor: {e}");
                 std::process::exit(1);
+            }
+        }
+        Some("doctor") if marion_supervisor::provider_check::parse_args(&argv[1..]).is_some() => {
+            let parsed = marion_supervisor::provider_check::parse_args(&argv[1..])
+                .expect("checked by the guard");
+            match parsed
+                .and_then(|model| marion_supervisor::provider_check::report(model.as_deref()))
+            {
+                Ok(text) => print!("{text}"),
+                Err(e) => {
+                    eprintln!("marion doctor --providers: {e}");
+                    std::process::exit(2);
+                }
             }
         }
         Some("doctor") => match doctor::parse_args(&argv[1..]) {

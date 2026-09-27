@@ -71,7 +71,8 @@ pub enum EndpointError {
     Config(String),
 }
 
-fn wire_list(wires: &[Wire]) -> String {
+/// Wires comma-joined for display and refusals; `no endpoint wire` where there are none.
+pub fn wire_list(wires: &[Wire]) -> String {
     if wires.is_empty() {
         return "no endpoint wire".to_string();
     }
@@ -80,6 +81,18 @@ fn wire_list(wires: &[Wire]) -> String {
         .map(|w| w.as_str())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// **The wire a harness is pointed at on `provider`**: the first of the harness row's recipe wires,
+/// in its order, that the provider serves natively — with the provider's base for it. The one rule
+/// a launch resolves by and `marion doctor --providers` tabulates.
+pub fn shared_wire<'p>(
+    harness_wires: &[Wire],
+    provider: &'p marion_core::provider::ProviderDef,
+) -> Option<(Wire, &'p str)> {
+    harness_wires
+        .iter()
+        .find_map(|w| provider.base_for(*w).map(|b| (*w, b)))
 }
 
 /// The provider a launch names, and the model with any prefix removed — or `None` where it names
@@ -176,9 +189,8 @@ pub fn resolve_endpoint_with(
     let model = model
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| EndpointError::NoModel(id.clone()))?;
-    let (wire, base_url) = harness_wires
-        .iter()
-        .find_map(|w| provider.base_for(*w).map(|b| (*w, b.to_string())))
+    let (wire, base_url) = shared_wire(harness_wires, provider)
+        .map(|(w, b)| (w, b.to_string()))
         .ok_or_else(|| EndpointError::NoSharedWire {
             harness: agent_type.harness,
             provider: id.clone(),

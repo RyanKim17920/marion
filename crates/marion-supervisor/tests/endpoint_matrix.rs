@@ -716,3 +716,151 @@ fn rotation_tries_each_credential_once_and_then_fails() {
     assert!(ev.requests.iter().any(|r| presented(r, KEY_B)));
     assert_no_key_kept(&ev);
 }
+
+// ---- `marion doctor --providers`: each stored credential, probed; the harness x provider matrix --
+
+/// **Each stored credential is checked by id, and the key is never shown**: present or not, its
+/// provider reachable through `GET <base>/models` with the key in the header the provider reads,
+/// the requested model listed or not — and a key the provider refuses reported as refused.
+#[test]
+fn doctor_providers_checks_each_stored_credential_against_its_endpoint() {
+    use marion_supervisor::provider_check::{self, Reach};
+    let reqlog_dir = scratch("endpoint-reqlog-doctor");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            models: vec![MODEL.into(), "other-model".into()],
+            refusals: vec![marion_provider::KeyRefusal {
+                key: KEY_A.into(),
+                status: 401,
+            }],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let _cells = providers_at(&server.base_url());
+    let rows = provider_check::check_user(Some(MODEL)).expect("the user's config reads");
+    let row = |id: &str| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {rows:#?}"))
+    };
+    let ok = row("canned-test");
+    assert!(ok.key_present);
+    assert_eq!(
+        ok.reach,
+        Some(Reach::Listed {
+            models: 2,
+            model_listed: Some(true)
+        }),
+        "{ok:#?}"
+    );
+    assert_eq!(row("canned-rot:a").reach, Some(Reach::Refused(401)));
+    let nokey = row("canned-nokey");
+    assert!(!nokey.key_present);
+    assert_eq!(nokey.reach, None, "no key, no probe");
+    #[cfg(target_os = "linux")]
+    assert_eq!(ok.file_mode, Some(0o600));
+    // The x-api-key provider was asked in its own header.
+    let requests = server.requests().unwrap_or_default();
+    assert!(
+        requests.is_empty(),
+        "a GET is not logged as a model request"
+    );
+    let text = provider_check::render(
+        &rows,
+        &provider_check::matrix(&marion_supervisor::credentials::user_registry().unwrap()),
+    );
+    for key in [KEY, KEY_A, KEY_B] {
+        assert!(!text.contains(key), "the key is in doctor's output");
+    }
+    assert!(
+        text.contains("canned-test") && text.contains("listed"),
+        "{text}"
+    );
+}
+
+/// **The matrix is the resolver's answer, harness by provider**: native on the first shared wire,
+/// unsupported with both wire lists where none is shared, and unsupported naming the header where
+/// the recipe cannot present the provider's key.
+#[test]
+fn doctor_providers_matrix_is_computed_by_the_endpoint_resolver() {
+    use marion_core::harness::Harness;
+    use marion_supervisor::provider_check::{Cell, matrix};
+    let _cells = providers_at("http://127.0.0.1:9/v1");
+    let reg = marion_supervisor::credentials::user_registry().unwrap();
+    let m = matrix(&reg);
+    let cell = |h: Harness, p: &str| {
+        m.iter()
+            .find(|c| c.harness == h && c.provider == p)
+            .map(|c| c.cell.clone())
+            .unwrap_or_else(|| panic!("no cell {h} {p}"))
+    };
+    assert_eq!(
+        cell(Harness::Codex, "openai"),
+        Cell::Native("openai-responses".into())
+    );
+    assert_eq!(
+        cell(Harness::Copilot, "canned-anthropic"),
+        Cell::Native("anthropic".into())
+    );
+    match cell(Harness::Codex, "groq") {
+        Cell::Unsupported(why) => assert!(
+            why.contains("openai-responses") && why.contains("openai-chat"),
+            "{why}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    match cell(Harness::Codex, "canned-chat-xkey") {
+        Cell::Unsupported(why) => assert!(why.contains("openai-chat"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match cell(Harness::Goose, "canned-chat-xkey") {
+        Cell::Unsupported(why) => assert!(why.contains("x-api-key"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        cell(Harness::OpenCode, "canned-chat-xkey"),
+        Cell::Native("openai-chat".into())
+    );
+    match cell(Harness::Acp, "openai") {
+        Cell::Unsupported(why) => assert!(why.contains("no endpoint wire"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **`marion-supervisor doctor --providers` prints the report and never a key**, reading the same
+/// user configuration a launch reads.
+#[test]
+fn doctor_providers_on_the_command_line_prints_ids_and_the_matrix_and_no_key() {
+    let reqlog_dir = scratch("endpoint-reqlog-doctor-cli");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            models: vec![MODEL.into()],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let _cells = providers_at(&server.base_url());
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
+        .args(["doctor", "--providers", "--model", MODEL])
+        .output()
+        .expect("the supervisor runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("canned-test: key stored") && stdout.contains("requested model listed"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("codex=openai-responses"), "{stdout}");
+    for key in [KEY, KEY_A, KEY_B] {
+        assert!(!stdout.contains(key), "the key is in doctor's output");
+    }
+}
