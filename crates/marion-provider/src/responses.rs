@@ -18,6 +18,38 @@ fn sse(data: &Value) -> String {
     format!("event: {ty}\ndata: {data}\n\n")
 }
 
+/// What every canned response says it spent, in the Responses API's own shape: 100 prompt tokens of
+/// which 10 were cache reads, 20 completion tokens of which 5 were reasoning. Non-zero and distinct
+/// per counter, so a test reading a node's recorded usage can tell each counter arrived where it
+/// belongs and that a run of `n` responses recorded `n` times these — a zero would pass either way.
+pub const USAGE: CannedUsage = CannedUsage {
+    input: 100,
+    cached: 10,
+    output: 20,
+    reasoning: 5,
+};
+
+/// The counters one canned response reports. See [`USAGE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CannedUsage {
+    /// Prompt tokens, cache reads included, as the Responses API counts them.
+    pub input: u64,
+    pub cached: u64,
+    /// Completion tokens, reasoning included.
+    pub output: u64,
+    pub reasoning: u64,
+}
+
+fn usage() -> Value {
+    json!({
+        "input_tokens": USAGE.input,
+        "input_tokens_details": {"cached_tokens": USAGE.cached},
+        "output_tokens": USAGE.output,
+        "output_tokens_details": {"reasoning_tokens": USAGE.reasoning},
+        "total_tokens": USAGE.input + USAGE.output,
+    })
+}
+
 fn envelope(item: Value, id: &str) -> String {
     let mut out = String::new();
     out.push_str(&sse(
@@ -27,7 +59,7 @@ fn envelope(item: Value, id: &str) -> String {
         &json!({"type":"response.output_item.done","item":item}),
     ));
     out.push_str(&sse(&json!({"type":"response.completed",
-                              "response":{"id":id,"output":[item]}})));
+                              "response":{"id":id,"output":[item],"usage":usage()}})));
     out
 }
 
@@ -131,6 +163,25 @@ mod tests {
             "S6: an object input fails at runtime"
         );
         assert!(!s.contains("apply_patch({input"));
+    }
+
+    #[test]
+    fn every_response_reports_the_canned_usage_on_its_completion() {
+        let s = final_message("done");
+        let completed: Value = s
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+            .find(|v| v["type"] == "response.completed")
+            .expect("a completion frame");
+        let u = &completed["response"]["usage"];
+        assert_eq!(u["input_tokens"], USAGE.input);
+        assert_eq!(u["input_tokens_details"]["cached_tokens"], USAGE.cached);
+        assert_eq!(u["output_tokens"], USAGE.output);
+        assert_eq!(
+            u["output_tokens_details"]["reasoning_tokens"],
+            USAGE.reasoning
+        );
     }
 
     #[test]
