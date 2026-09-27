@@ -2017,13 +2017,19 @@ mod tests {
             &json!(1),
             "t-1",
             &node(NodeState::Exited(ExitStatus::Unreported)),
+            None,
         ));
         assert!(!done.contains("block until it finishes"), "{done}");
         assert!(
             done.contains("has finished") && done.contains("`wait`"),
             "{done}"
         );
-        let live = text(&status_result(&json!(1), "t-1", &node(NodeState::Running)));
+        let live = text(&status_result(
+            &json!(1),
+            "t-1",
+            &node(NodeState::Running),
+            None,
+        ));
         assert!(live.contains("block until it finishes"), "{live}");
     }
 
