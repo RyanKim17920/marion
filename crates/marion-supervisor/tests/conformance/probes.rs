@@ -380,7 +380,13 @@ fn p_tools(c: &mut Ctx<'_>) -> Outcome {
     let normal = first_request(c, "normal", marker, None, Gate::Marion);
     let (normal_tools, _) = match normal {
         Ok(v) => v,
-        Err(e) => return Outcome::judged(P, false, expected_tools(c), e),
+        Err(Refused::Compile(e)) => {
+            return Outcome::unsupported(
+                P,
+                format!("marion will not compile a canned launch: {e}"),
+            );
+        }
+        Err(Refused::Run(e)) => return Outcome::judged(P, false, expected_tools(c), e),
     };
     let s_dir = c.scratch.join("slowbridge");
     std::fs::create_dir_all(&s_dir).expect("slow bridge dir");
@@ -398,7 +404,7 @@ fn p_tools(c: &mut Ctx<'_>) -> Outcome {
     let delayed = first_request(c, "slow-bridge", marker, Some(slow), Gate::None);
     let (slow_tools, after) = match delayed {
         Ok(v) => v,
-        Err(e) => (false, format!("no request: {e}")),
+        Err(Refused::Compile(e) | Refused::Run(e)) => (false, format!("no request: {e}")),
     };
     let marion_gates = matches!(c.t.path, LaunchPath::Duplex);
     let waits = slow_tools;
@@ -429,15 +435,25 @@ fn expected_tools(c: &Ctx<'_>) -> String {
     )
 }
 
+enum Refused {
+    Compile(String),
+    Run(String),
+}
+
 /// Launch, and read the first request that belongs to the probe's turn: whether it listed marion's
 /// tools, and when it came relative to the spawn.
+///
+/// **The turn's request, not a side request carrying the prompt**: opencode's ACP agent titles the
+/// session by sending the prompt with no tools at all, and that request says nothing about which
+/// tools the model was offered. The first marker request offering any tool is the turn's; only if
+/// none offers one is the first marker request read.
 fn first_request(
     c: &Ctx<'_>,
     part: &str,
     marker: &str,
     bridge: Option<PathBuf>,
     gate: Gate,
-) -> Result<(bool, String), String> {
+) -> Result<(bool, String), Refused> {
     let s = c.session("P-tools", part);
     s.provider
         .hold
@@ -446,23 +462,33 @@ fn first_request(
         bridge,
         ..Knobs::default()
     };
-    let launch = c.compile(&s, &prompt(marker), &knobs)?;
+    let launch = c
+        .compile(&s, &prompt(marker), &knobs)
+        .map_err(Refused::Compile)?;
     let spawned_at = s.log.secs();
-    let node = Node::start(c.t.path, &launch, &prompt(marker), Arc::clone(&s.log), gate)?;
+    let node = Node::start(c.t.path, &launch, &prompt(marker), Arc::clone(&s.log), gate)
+        .map_err(Refused::Run)?;
     let got = s.provider.hold.wait(TURN, |seen, _| {
         seen.iter()
             .any(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
     });
     node.wait_ends(1, TURN);
     if !got {
-        return Err("the harness never asked the provider for the turn".into());
+        return Err(Refused::Run(
+            "the harness never asked the provider for the turn".into(),
+        ));
     }
-    let first = s
+    let asked: Vec<_> = s
         .provider
         .hold
         .seen()
         .into_iter()
-        .find(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
+        .filter(|r| r.turn.as_ref().is_some_and(|(m, _)| m == marker))
+        .collect();
+    let first = asked
+        .iter()
+        .find(|r| r.offers_tools)
+        .or(asked.first())
         .expect("waited for above");
     let after = format!("{:.1} s after the spawn", first.t - spawned_at);
     s.log.note(format!(
@@ -709,8 +735,9 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
     });
     let session_mode = matches!(approval, Approval::SessionMode { .. });
     let ungranted_ok = if session_mode {
-        // The strategy's claim is that the ask arrives and marion's allow answers it.
-        !asked.is_empty() && r.report == Some(CallOutcome::Answered)
+        // The strategy's claim is that marion answers whatever the agent asks with the agent's
+        // own allow option: `report` is answered, asked or not.
+        r.report == Some(CallOutcome::Answered)
     } else {
         r.report != Some(CallOutcome::Answered) || !asked.is_empty()
     };

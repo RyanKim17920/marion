@@ -61,6 +61,9 @@ pub struct Seen {
     pub turn: Option<(String, usize)>,
     /// Whether marion's `report`, in the harness's spelling, appears anywhere in the request.
     pub marion_tools: bool,
+    /// Whether the request offers the model any tool at all — a side request (a title, a router
+    /// probe) offers none.
+    pub offers_tools: bool,
     pub body: Value,
 }
 
@@ -197,11 +200,13 @@ impl Hold for ProbeHold {
             wire: wire.map(str::to_string),
             turn: step.clone(),
             marion_tools: text.contains(&self.needle),
+            offers_tools: body["tools"].as_array().is_some_and(|t| !t.is_empty()),
             body: body.clone(),
         };
         self.log.w(
             "prov",
             &json!({"req": idx, "wire": wire, "turn": step, "marion_tools": seen.marion_tools,
+                    "offers_tools": seen.offers_tools,
                     "user_texts": user_texts(body)}),
         );
         s.seen.push(seen);
