@@ -1690,8 +1690,8 @@ ever runs a real login.
   --base-url <u> --wire <w>[,<w>]`. Without a terminal and without `--stdin`/`--from-env` it
   refuses instead of waiting. `tests/login.rs` drives the real binary against a scratch
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
-  fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
-  on another branch.
+  fixture key appears in no output"). `marion --help` names `login` (label, `--stdin`,
+  `--from-env`, `--list`, `custom`) and `logout` with a one-paragraph account of endpoint mode.
 - **Several credentials per provider — stored and listed; rotation not built.** A credential is
   `<provider>[:<label>]` (`marion_core::provider::CredentialId`); `marion login openrouter --label
   work` (or `openrouter:work`) stores it beside the default, `logout` takes the same spelling,
