@@ -913,32 +913,28 @@ fn rotation(
     wt: &Path,
     base: Option<&Oid>,
     remaining: StdDuration,
-) -> Result<
-    Option<(
-        crate::endpoint::Endpoint,
-        marion_core::contract::FailoverCause,
-    )>,
-    SpawnError,
-> {
-    let Some(ep) = endpoint.filter(|e| !e.fallbacks.is_empty()) else {
-        return Ok(None);
-    };
+) -> Option<(
+    crate::endpoint::Endpoint,
+    marion_core::contract::FailoverCause,
+)> {
+    let ep = endpoint.filter(|e| !e.fallbacks.is_empty())?;
     if run.exit.timed_out || remaining.is_zero() {
-        return Ok(None);
+        return None;
     }
     let stream = adapter.parse_stream(&run.stdout, run.exit);
     let failed = run.exit.code != Some(0) || stream.failure.is_some();
     if !failed || stream.narrative.is_some() {
-        return Ok(None);
+        return None;
     }
     if base.is_some_and(|b| changed_paths(wt, b).map_or(true, |c| !c.is_empty())) {
-        return Ok(None);
+        return None;
     }
     let said = format!("{}\n{}", run.stderr, stream.failure.unwrap_or_default());
-    let Some(cause) = marion_harness::failover_cause(&said) else {
-        return Ok(None);
-    };
-    Ok(crate::endpoint::next_for_launch(ep)?.map(|next| (next, cause)))
+    let cause = marion_harness::failover_cause(&said)?;
+    // A store that cannot be read now is no reason to lose the failed run's own contract: the run
+    // stands as it ended, and the failure it recorded says why.
+    let next = crate::endpoint::next_for_launch(ep).ok().flatten()?;
+    Some((next, cause))
 }
 
 /// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
@@ -1820,7 +1816,7 @@ pub fn run_spawn_watched(
             &wt,
             base.as_ref(),
             bound.saturating_sub(launched_at.elapsed()),
-        )? {
+        ) {
             failovers.push(marion_core::contract::CredentialFailover {
                 from: endpoint
                     .as_ref()
