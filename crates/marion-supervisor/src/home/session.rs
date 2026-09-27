@@ -150,7 +150,11 @@ impl Session {
         let mut s = Session {
             home: Home::new(opts.tab),
             places: Places {
-                project: view::tilde(&shown.to_string_lossy()),
+                project: view::project_label(
+                    &shown.to_string_lossy(),
+                    std::env::var("HOME").ok().as_deref(),
+                    current_branch(&shown).as_deref(),
+                ),
                 state: view::tilde(&opts.state.to_string_lossy()),
             },
             repo: opts.repo.clone(),
@@ -514,6 +518,20 @@ impl Session {
             }
         }
     }
+}
+
+/// The branch checked out at `dir`, read once when the screen opens; `None` outside git.
+fn current_branch(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// The root a `marion run` line names: `marion: root <id> (…) started…`.

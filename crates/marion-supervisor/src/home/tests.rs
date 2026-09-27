@@ -368,3 +368,97 @@ fn every_effect_has_its_command_and_only_cancel_is_destructive() {
     assert_eq!(Effect::None.argv(), None);
     assert_eq!(Effect::Quit.argv(), None);
 }
+
+// ------------------------------------------------------------------------ the view's words
+
+#[test]
+fn the_project_reads_as_home_relative_or_its_name_and_branch() {
+    use view::project_label;
+    let home = Some("/Users/r");
+    assert_eq!(
+        project_label("/Users/r/code/acme", home, Some("main")),
+        "~/code/acme · main"
+    );
+    assert_eq!(
+        project_label("/Users/r/code/acme", home, None),
+        "~/code/acme"
+    );
+    // Outside $HOME an absolute path says nothing the name does not: the name.
+    assert_eq!(
+        project_label("/private/tmp/mn-501/run-7/repo", home, Some("t-1")),
+        "repo · t-1"
+    );
+    // A sibling of $HOME that merely shares its prefix is not under it.
+    assert_eq!(project_label("/Users/rx/acme", home, None), "acme");
+    assert_eq!(project_label("/Users/r", home, None), "~");
+    // A detached head names no branch worth showing.
+    assert_eq!(project_label("/Users/r/a", home, Some("HEAD")), "~/a");
+}
+
+#[test]
+fn clocks_are_shown_in_the_operators_local_time() {
+    use view::clock_in;
+    let at = "2026-09-27T21:02:27.123Z";
+    assert_eq!(clock_in(at, 0, true), "21:02:27");
+    assert_eq!(clock_in(at, 2 * 3600, true), "23:02:27");
+    assert_eq!(
+        clock_in(at, 5 * 3600 + 1800, false),
+        "02:32",
+        "across midnight"
+    );
+    assert_eq!(clock_in(at, -9 * 3600, false), "12:02");
+    assert_eq!(clock_in("not a time", 3600, true), "not a time");
+}
+
+fn detail_with_workspace(w: marion_core::contract::Workspace) -> NodeDetail {
+    NodeDetail {
+        workspace: Some(w),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_workspace_reads_as_its_branch_not_its_state_path() {
+    use marion_core::contract::Workspace;
+    let mut h = home();
+    h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    h.absorb_detail(
+        AgentId("root".into()),
+        detail_with_workspace(Workspace::Worktree {
+            path: "/private/tmp/state/ea39/agents/01a0/worktree".into(),
+            branch: "marion/t-3c33".into(),
+        }),
+    );
+    let f = view::frame(&h, &view::Places::default());
+    let ws = f.watch.expanded.unwrap().workspace.unwrap();
+    assert_eq!(ws, "worktree marion/t-3c33");
+
+    h.absorb_detail(
+        AgentId("root".into()),
+        detail_with_workspace(Workspace::SharedCwd {
+            path: "/private/tmp/run/repo".into(),
+        }),
+    );
+    let f = view::frame(&h, &view::Places::default());
+    let ws = f.watch.expanded.unwrap().workspace.unwrap();
+    assert_eq!(ws, "the checkout repo");
+}
+
+#[test]
+fn can_names_only_the_few_things_the_home_keys_do() {
+    let mut h = home();
+    h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    let f = view::frame(&h, &view::Places::default());
+    let caps = f.watch.expanded.unwrap().caps;
+    let names: Vec<&str> = caps.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        (1..=3).contains(&names.len()),
+        "a few words, not every capability field: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|n| ["steer", "resume", "interrupt"].contains(n)),
+        "{names:?}"
+    );
+}

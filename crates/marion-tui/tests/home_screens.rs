@@ -309,19 +309,11 @@ fn landed() -> Expanded {
             files: 3,
             merge: Some(s("git merge --no-ff marion/t-3c33")),
         }),
-        workspace: Some(s("~/.local/state/marion/9f3e/worktrees/t-3c33")),
-        caps: [
-            "steer",
-            "interrupt",
-            "fork",
-            "resume",
-            "view",
-            "permissions",
-        ]
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (s(c), i % 2 == 0))
-        .collect(),
+        workspace: Some(s("worktree marion/t-3c33")),
+        caps: [("steer", true), ("resume", true), ("interrupt", false)]
+            .iter()
+            .map(|(c, on)| (s(c), *on))
+            .collect(),
     }
 }
 
@@ -339,16 +331,16 @@ fn task_view(prompt: &str) -> TaskView {
 /// `n` lines of a child working, oldest first: calls in the default colour, words dim.
 fn stream(n: usize) -> Vec<StreamLine> {
     let all = [
-        (false, "read_file(src/limits/mod.rs)"),
-        (false, "read_file(Cargo.toml)"),
+        (false, "read_file src/limits/mod.rs"),
+        (false, "read_file Cargo.toml"),
         (true, "I'll add a token bucket keyed by API key."),
-        (false, "apply_patch(src/limits/bucket.rs +61)"),
-        (false, "apply_patch(src/routes/orders.rs +18 -9)"),
-        (false, "command_execution(cargo build -q)"),
-        (false, "command_execution(cargo test -q limits)"),
+        (false, "~ src/limits/bucket.rs"),
+        (false, "~ src/routes/orders.rs +1 more"),
+        (false, "$ cargo build -q"),
+        (false, "$ cargo test -q limits"),
         (true, "142 passed; committing."),
-        (false, "command_execution(git commit -am limiter)"),
-        (false, "report({\"narrative\":\"limiter in, tests green\"})"),
+        (false, "$ git commit -am limiter"),
+        (false, "report \"limiter in, tests green\""),
     ];
     (0..n)
         .map(|i| {

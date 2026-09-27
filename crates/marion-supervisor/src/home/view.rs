@@ -60,11 +60,28 @@ pub fn frame(home: &Home, places: &Places) -> Frame {
 
 /// `~/…` for a path under `$HOME`, which is how an operator reads their own paths.
 pub fn tilde(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_string(),
+    under_home(path, std::env::var("HOME").ok().as_deref()).unwrap_or_else(|| path.to_string())
+}
+
+/// `path` as `~/…` when it is `home` or under it, else `None`.
+fn under_home(path: &str, home: Option<&str>) -> Option<String> {
+    let home = home.filter(|h| !h.is_empty())?.trim_end_matches('/');
+    let rest = path.strip_prefix(home)?;
+    (rest.is_empty() || rest.starts_with('/')).then(|| format!("~{rest}"))
+}
+
+/// The project as the top bar names it: `~/code/acme · main` under `$HOME`, and just the
+/// directory's name elsewhere (`repo · main`) — a long absolute path says nothing the name does
+/// not. The branch is left off when there is none to name.
+pub fn project_label(path: &str, home: Option<&str>, branch: Option<&str>) -> String {
+    let place = under_home(path, home).unwrap_or_else(|| {
+        std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
+    });
+    match branch.filter(|b| !b.is_empty() && *b != "HEAD") {
+        Some(b) => format!("{place} · {b}"),
+        None => place,
     }
 }
 
@@ -240,11 +257,74 @@ fn doing(n: &NodeSummary, detail: Option<&NodeDetail>, stream: Option<&[ActionLi
     crate::tree::row(n).state
 }
 
-/// `hh:mm[:ss]` out of an RFC3339 timestamp, as recorded (UTC).
+/// `hh:mm[:ss]` out of a recorded RFC3339 timestamp, in the operator's local time.
 fn clock(at: &str, with_seconds: bool) -> String {
-    at.get(11..if with_seconds { 19 } else { 16 })
-        .unwrap_or(at)
-        .to_string()
+    let offset = epoch_secs(at).map_or(0, local_offset);
+    clock_in(at, offset, with_seconds)
+}
+
+/// `hh:mm[:ss]` of `at` shifted by `offset` seconds east of UTC; `at` itself when it is not a
+/// timestamp marion recorded.
+pub fn clock_in(at: &str, offset: i64, with_seconds: bool) -> String {
+    let Some(secs) = epoch_secs(at) else {
+        return at.to_string();
+    };
+    let day = (secs + offset).rem_euclid(86_400);
+    let (h, m, s) = (day / 3600, day % 3600 / 60, day % 60);
+    if with_seconds {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{h:02}:{m:02}")
+    }
+}
+
+/// Seconds since the epoch of a recorded RFC3339 timestamp.
+fn epoch_secs(at: &str) -> Option<i64> {
+    let t: marion_core::encoding::SystemTime =
+        serde_json::from_value(serde_json::Value::String(at.to_string())).ok()?;
+    let d = t.0.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(d.as_secs()).ok()
+}
+
+/// The local zone's offset east of UTC, in seconds, at `epoch`: `localtime_r`'s `tm_gmtoff`,
+/// which is the one place the operator's zone (and its daylight saving) is already decided.
+fn local_offset(epoch: i64) -> i64 {
+    // `struct tm` as macOS and glibc/musl both lay it out: nine ints, then `tm_gmtoff` and
+    // `tm_zone`.
+    #[repr(C)]
+    struct Tm {
+        ints: [std::ffi::c_int; 9],
+        gmtoff: std::ffi::c_long,
+        zone: *const std::ffi::c_char,
+    }
+    unsafe extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut tm = Tm {
+        ints: [0; 9],
+        gmtoff: 0,
+        zone: std::ptr::null(),
+    };
+    // SAFETY: both pointers are live for the call; `localtime_r` writes only into `tm`. `time_t`
+    // is a 64-bit signed integer on every target marion builds for.
+    let ok = unsafe { !localtime_r(&epoch, &mut tm).is_null() };
+    // `c_long` is `i64` on the 64-bit targets marion ships and narrower elsewhere.
+    #[allow(clippy::useless_conversion)]
+    let offset = if ok { i64::from(tm.gmtoff) } else { 0 };
+    offset
+}
+
+/// The capabilities Watch's keys stand on, in the order the keys are offered (`s`, `u`), each
+/// with whether marion measured it for this node: the full list is `marion doctor`'s to print.
+const HOME_CAPS: &[&str] = &["steer", "resume", "interrupt"];
+
+fn home_caps(n: &NodeSummary) -> Vec<(String, bool)> {
+    let actions = crate::tree::actions_for(n);
+    HOME_CAPS
+        .iter()
+        .filter_map(|want| actions.iter().find(|a| a.name == *want))
+        .map(|a| (a.name.clone(), a.available))
+        .collect()
 }
 
 fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
@@ -252,10 +332,7 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
     let needs = matches!(n.state, marion_core::node::NodeState::Blocked(_))
         .then(|| attention_of(n))
         .flatten();
-    let caps: Vec<(String, bool)> = crate::tree::actions_for(n)
-        .into_iter()
-        .map(|a| (a.name, a.available))
-        .collect();
+    let caps = home_caps(n);
     let Some(d) = (match &home.watch.detail {
         Some((id, d)) if *id == n.agent_id => Some(d),
         _ => None,
@@ -327,10 +404,17 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
             }
         }),
         caps,
+        // Its branch, not the long state path its worktree sits at: `o` opens a shell there.
         workspace: d.workspace.as_ref().map(|w| match w {
-            Workspace::Worktree { path, .. } | Workspace::SharedCwd { path } => {
-                tilde(&path.to_string_lossy())
-            }
+            Workspace::Worktree { branch, .. } => format!("worktree {branch}"),
+            Workspace::SharedCwd { path } => format!(
+                "the checkout {}",
+                project_label(
+                    &path.to_string_lossy(),
+                    std::env::var("HOME").ok().as_deref(),
+                    None
+                )
+            ),
         }),
     }
 }

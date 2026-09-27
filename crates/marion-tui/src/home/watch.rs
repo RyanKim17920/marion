@@ -501,7 +501,7 @@ fn expanded_rows<'a>(
         let mut l = Vec::new();
         for (i, (name, on)) in e.caps.iter().enumerate() {
             if i > 0 {
-                l.push(Span::raw("  "));
+                l.push(span(" · ", dim()));
             }
             let style = if *on {
                 Style::default()
@@ -514,7 +514,15 @@ fn expanded_rows<'a>(
     }
 
     if let Some(ws) = e.workspace.as_ref().filter(|_| !compact) {
-        push_block(&mut rows, "Workspace", vec![vec![span(ws.clone(), dim())]]);
+        push_block(
+            &mut rows,
+            "Workspace",
+            vec![vec![
+                span(ws.clone(), dim()),
+                span("   o", theme.key()),
+                span(" opens a shell", dim()),
+            ]],
+        );
     }
     rows
 }
