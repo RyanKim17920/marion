@@ -668,6 +668,10 @@ struct Shared {
     clients: HashSet<ConnId>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
+    /// The [`Registry::generation`] `collect` last ran against. See [`RegistryHandle::flush`].
+    collected_at: Option<u64>,
+    #[cfg(test)]
+    collects: usize,
 }
 
 /// **One node this supervisor owns**, which until §11 item 28 step 4 was a sentence with nothing
@@ -1633,9 +1637,45 @@ impl RegistryHandle {
         // waits on, and taking them in the other order here would rebuild that coupling.
         let panes = self.pane_ids();
         let mut g = lock(&self.shared);
-        let events = self.live.read(|r| collect(r, &mut g, &panes));
+        // **Nobody to tell, or nothing new to tell them: no walk.** `collect` visits every node the
+        // journal has ever recorded, and the accept loop flushes on every pass, so at 100k records
+        // an idle supervisor spent half a core re-deriving an empty diff. With no subscriber the
+        // diff has no audience, and `subscribe` runs `collect` itself before its snapshot, so the
+        // told-set is caught up the moment one arrives. With an unchanged generation the tree is
+        // the one already told — the pane set only shapes a *new* node's summary, and a new node
+        // is a new generation.
+        let events = self.live.read(|r| {
+            let generation = r.generation();
+            if g.subs.is_empty() || g.collected_at == Some(generation) {
+                return Vec::new();
+            }
+            g.collected_at = Some(generation);
+            collect(r, &mut g, &panes)
+        });
         deliver(&mut g, &events);
         events.len()
+    }
+
+    /// **When the accept loop must next tick this handle** if nothing wakes it — the serve loop's
+    /// [`Handle::next_deadline`].
+    ///
+    /// Journal changes, connections and node completions wake the loop through
+    /// [`LiveRegistry::changes`], so what is left is the work that is still *time*-driven: an
+    /// attached node's `events.jsonl` is read by polling its cursor (every
+    /// [`ATTACHED_TICK`] while any client follows one), and a Completed pane expires at its TTL or
+    /// is evicted at once when the cache is over budget. `None` means nothing is due.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        if !lock(&self.shared).attached.is_empty() {
+            return Some(std::time::Instant::now() + ATTACHED_TICK);
+        }
+        let panes = lock(&self.panes);
+        if panes.completed_count > 0
+            && (panes.completed_count > panes.completed_limit()
+                || panes.completed_bytes > Panes::MAX_COMPLETED_BYTES)
+        {
+            return Some(std::time::Instant::now());
+        }
+        panes.next_completed_expiry
     }
 
     /// The nodes this supervisor holds a pty for, as a snapshot.
@@ -1660,6 +1700,7 @@ impl RegistryHandle {
         // under one lock, so there is no instant at which a notification could slip between the
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
+            g.collected_at = Some(r.generation());
             let events = collect(r, &mut g, &panes);
             let nodes = project(r.tree(), &mut g, &panes);
             (events, nodes, r.read_point())
@@ -1815,6 +1856,8 @@ impl RegistryHandle {
             reader,
             out: out.clone(),
         });
+        // An attachment is read by polling, so the accept loop must start ticking now.
+        self.live.changes().notify();
         // Legacy keeps its historical NodeEvent-before-NodePty ordering. V1 already reserved a
         // paced cursor, but sends no pane frame until the response has advertised its exact token.
         let pane = if pane_stream_v1 {
@@ -2689,6 +2732,8 @@ impl RegistryHandle {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.outcome = Some(outcome);
         }
+        // §5.7's second guard just moved; the accept loop re-reads it now, not at its heartbeat.
+        self.live.changes().notify();
         // Sealed with the node, and every message still waiting is dropped by name: no later turn
         // of this process will take it.
         self.inboxes.close(
@@ -4426,6 +4471,10 @@ fn journal_failure_after_signal(error: crate::journal::JournalError) -> RpcError
     ))
 }
 
+/// How often an attached node's `events.jsonl` is polled while a client follows it — the accept
+/// loop's old fixed cadence, kept for exactly this, since nothing yet wakes on a node's own file.
+const ATTACHED_TICK: std::time::Duration = std::time::Duration::from_millis(5);
+
 impl Handle for RegistryHandle {
     fn connected(&self, conn: ConnId) {
         lock(&self.shared).clients.insert(conn);
@@ -4554,6 +4603,14 @@ impl Handle for RegistryHandle {
         self.pump_attached();
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        RegistryHandle::next_deadline(self)
+    }
+
+    fn changes(&self) -> Option<Arc<crate::wake::Signal>> {
+        Some(self.live.changes())
+    }
+
     fn exiting(&self) -> bool {
         self.exiting.load(Ordering::SeqCst)
     }
@@ -4658,6 +4715,10 @@ fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeS
 /// [`marion_core::registry::ReplayedNode::first_ts`] for why a follower's `now()` is the wrong
 /// answer on a field a client renders as when the thing occurred.
 fn collect(r: &Registry, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<Event> {
+    #[cfg(test)]
+    {
+        g.collects += 1;
+    }
     let mut events = Vec::new();
     for n in r.tree().nodes() {
         let now = Told {
@@ -7052,6 +7113,90 @@ mod tests {
         }
         // And exactly once: a second flush produces nothing, so nothing further arrives.
         assert_eq!(w.fx.handle.flush(), 0, "a told transition is not re-told");
+    }
+
+    /// **Nobody subscribed, nothing walked; nothing new, nothing re-walked.** `collect` visits
+    /// every node the journal ever recorded and the accept loop flushes on every pass, which at
+    /// 100k records was half a core on an idle supervisor with no client. The told-set is still
+    /// right for the first subscriber, because `subscribe` catches it up itself.
+    #[test]
+    fn a_flush_walks_the_tree_only_for_a_subscriber_and_only_when_it_changed() {
+        let fx = fx_with(
+            "handler-flush-guard",
+            vec![
+                intent("root", None, "claude", 0),
+                intent("b", None, "claude", 0),
+            ],
+        );
+        let h = &fx.handle;
+        for _ in 0..3 {
+            assert_eq!(h.flush(), 0);
+        }
+        assert_eq!(
+            lock(&h.shared).collects,
+            0,
+            "no subscriber, yet the tree was walked"
+        );
+
+        let (out, captured) = crate::serve::capture(ConnId(77));
+        let snapshot = h.subscribe(&out);
+        assert_eq!(
+            snapshot.nodes.len(),
+            2,
+            "the snapshot is complete without earlier walks"
+        );
+        let walked = lock(&h.shared).collects;
+        for _ in 0..3 {
+            assert_eq!(h.flush(), 0);
+        }
+        assert_eq!(
+            lock(&h.shared).collects,
+            walked,
+            "an unchanged journal was walked again"
+        );
+
+        append(&fx.path, &line(2, 3_000, intent("c", None, "claude", 0)));
+        h.live.refresh();
+        assert_eq!(h.flush(), 1, "the new node is told once");
+        assert!(captured.try_recv().is_ok(), "and reaches the subscriber");
+        assert_eq!(h.flush(), 0);
+    }
+
+    /// **An idle supervisor's accept loop does not run between changes.** Every pass asks the idle
+    /// predicate, which refreshes the registry, so the registry's poll count is the pass count
+    /// once the follower's own safety poll is out of the picture. The loop used to run every 5 ms.
+    #[test]
+    fn an_idle_supervisor_runs_no_accept_passes_between_changes() {
+        let dir = scratch("handler-idle-passes");
+        let path = dir.join("journal.jsonl");
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot_path(&path).unwrap(),
+            std::time::Duration::from_secs(3600),
+        ));
+        let handle = RegistryHandle::with_runtime(Arc::clone(&live), Arc::new(SystemQuitRuntime));
+        let sock = std::path::PathBuf::from(format!("/tmp/mh-idle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sock);
+        std::fs::create_dir_all(&sock).unwrap();
+        let paths = crate::socket::socket_paths(&sock, Path::new("/p"), 1);
+        let crate::socket::Acquired::Serving(serving) = crate::socket::acquire(&paths).unwrap()
+        else {
+            panic!("nothing was listening")
+        };
+        let server = crate::serve::Server::start_with_idle_grace(
+            serving,
+            handle as Arc<dyn crate::serve::Handle>,
+            std::time::Duration::from_secs(3600),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let before = live.read(|r| r.polls());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let passes = live.read(|r| r.polls()) - before;
+        server.stop();
+        let _ = std::fs::remove_dir_all(&sock);
+        assert!(
+            passes <= 1,
+            "{passes} accept passes in 500 ms with nothing due; one heartbeat at most"
+        );
     }
 
     // ---------------------------------------------------------------------------------------

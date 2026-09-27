@@ -124,12 +124,21 @@ pub const OUTBOUND_CAPACITY: usize = 1024;
 /// Maximum wall-clock time one serialized frame may occupy the connection writer.
 pub(crate) const OUTBOUND_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long the accept loop sleeps between polls when idle.
+/// The cadence of a handler that does not say when it next needs a tick ([`Handle::next_deadline`]'s
+/// default), and the back-off after an `accept` error that is neither "nothing pending" nor an
+/// interrupt (a descriptor limit leaves the listener readable, and retrying at once would spin).
 ///
-/// The listener is non-blocking so that [`Server::stop`] does not have to interrupt a blocking
-/// `accept`, which on unix means either a self-connection or a signal — both of which are more
-/// machinery than a sleep, and both of which can fail in ways a sleep cannot.
+/// The accept loop no longer sleeps: it blocks in `poll(2)` on both listeners and a wake pipe, so a
+/// connection is admitted the moment it arrives and an idle supervisor does not wake at all between
+/// its [`Handle::next_deadline`]s and [`HEARTBEAT`]s. The listeners stay non-blocking so a readable
+/// listener whose connection vanished before `accept` cannot wedge the loop.
 const ACCEPT_POLL: Duration = Duration::from_millis(5);
+
+/// The longest the accept loop sleeps with nothing due. **A safety bound, not a cadence**: every
+/// change the loop acts on wakes it — a connection arriving or leaving, a journal fold, a handler
+/// state change ([`Handle::changes`]), [`Server::stop`] — so this only caps the latency of a wake
+/// nobody sent. One second against §5.7's five-minute grace.
+const HEARTBEAT: Duration = Duration::from_secs(1);
 
 /// §5.7's proposed, explicitly unmeasured idle grace. Public because a supervisor launcher may
 /// configure it; `Server::start` uses it rather than making zero the accidental default.
@@ -348,14 +357,32 @@ pub trait Handle: Send + Sync + 'static {
     /// gives the rule this obeys — a pusher must be a *second* loop over the follower's result,
     /// never folded into the poll that keeps the tree current, because that one holds the registry
     /// lock and a client's socket must never get inside it. This is such a second loop. What it
-    /// adds is that the accept loop is already a clock: it is non-blocking, it wakes every
-    /// [`ACCEPT_POLL`], and it already asks the handle three questions per pass. A fourth thread
-    /// would buy a cadence this one already has and cost a fourth thing to stop correctly.
+    /// adds is that the accept loop is already a clock: it runs a pass whenever it is woken or its
+    /// [`Self::next_deadline`] arrives, and it already asks the handle three questions per pass. A
+    /// fourth thread would buy a cadence this one already has and cost a fourth thing to stop
+    /// correctly.
     ///
     /// The bound on what a handler may do here is the bound already stated for
     /// [`Outbound::send`]: it never blocks, so a client that has stopped reading is a departure and
     /// not a stalled accept loop. A handler that would block on something else must not do it here.
     fn tick(&self) {}
+
+    /// **When the accept loop must next call [`Self::tick`] even if nothing wakes it.** `None` is
+    /// "not until something changes" — a wake from [`Self::changes`], a connection, or the
+    /// [`HEARTBEAT`].
+    ///
+    /// Defaulted to the old fixed cadence, so a handler that knows nothing about wakes keeps being
+    /// ticked every [`ACCEPT_POLL`] exactly as before; only a handler that also supplies
+    /// [`Self::changes`] may answer later than that.
+    fn next_deadline(&self) -> Option<Instant> {
+        Some(Instant::now() + ACCEPT_POLL)
+    }
+
+    /// The signal this handler notifies when something [`Self::tick`] or the idle predicates read
+    /// has changed. The accept loop attaches its wake pipe to it.
+    fn changes(&self) -> Option<Arc<crate::wake::Signal>> {
+        None
+    }
 
     /// Whether an explicit, fully handled `session/quit` has journaled the supervisor's exit.
     /// False by default so a handler that knows nothing about lifecycle can never acquire an
@@ -812,6 +839,8 @@ pub struct Server {
     stop: Arc<AtomicBool>,
     accept: Option<std::thread::JoinHandle<()>>,
     conns: Conns,
+    /// The accept loop's wake. [`Server::stop`] rings it so the loop does not wait out its poll.
+    wake: Option<Arc<crate::wake::Pipe>>,
 }
 
 type Conns = Arc<Mutex<HashMap<ConnId, std::os::unix::net::UnixStream>>>;
@@ -888,19 +917,45 @@ impl Server {
         native: Arc<NativeBootstrapService>,
         idle_grace: Duration,
     ) -> Server {
+        Self::start_with_heartbeat(serving, handle, native, idle_grace, HEARTBEAT)
+    }
+
+    /// [`Self::start_with_native_handler`] with the safety bound as a parameter, so a test can make
+    /// it long enough that only a wake explains a prompt pass.
+    fn start_with_heartbeat(
+        serving: Serving,
+        handle: Arc<dyn Handle>,
+        native: Arc<NativeBootstrapService>,
+        idle_grace: Duration,
+        heartbeat: Duration,
+    ) -> Server {
         let stop = Arc::new(AtomicBool::new(false));
         let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
+        let wake = crate::wake::Pipe::new().ok().map(Arc::new);
         let accept = {
             let stop = Arc::clone(&stop);
             let conns = Arc::clone(&conns);
+            let wake = wake.clone();
             std::thread::spawn(move || {
-                accept_loop(serving, handle, native, stop, conns, idle_grace)
+                accept_loop(
+                    serving,
+                    handle,
+                    native,
+                    stop,
+                    conns,
+                    Pacing {
+                        idle_grace,
+                        heartbeat,
+                    },
+                    wake,
+                )
             })
         };
         Server {
             stop,
             accept: Some(accept),
             conns,
+            wake,
         }
     }
 
@@ -924,6 +979,9 @@ impl Server {
 
     fn halt(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(wake) = &self.wake {
+            wake.wake();
+        }
         // Shut every connection's read half down so its thread's blocking `read` returns rather than
         // waiting for a client that may never write again. §5.7 is about not exiting while work is
         // live, not about refusing to exit when asked.
@@ -944,29 +1002,56 @@ impl Drop for Server {
     }
 }
 
+/// The accept loop's two clocks: §5.7's idle grace, and the [`HEARTBEAT`] bounding a missed wake.
+struct Pacing {
+    idle_grace: Duration,
+    heartbeat: Duration,
+}
+
 fn accept_loop(
     serving: Serving,
     handle: Arc<dyn Handle>,
     native: Arc<NativeBootstrapService>,
     stop: Arc<AtomicBool>,
     conns: Conns,
-    idle_grace: Duration,
+    pacing: Pacing,
+    wake: Option<Arc<crate::wake::Pipe>>,
 ) {
+    let Pacing {
+        idle_grace,
+        heartbeat,
+    } = pacing;
     let next = AtomicU64::new(1);
     let mut idle_since: Option<Instant> = None;
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    if let (Some(wake), Some(changes)) = (&wake, handle.changes()) {
+        changes.attach(wake);
+    }
     while !stop.load(Ordering::SeqCst) && !handle.exiting() {
+        // **Drain, then look.** Anything that changed before a wake is seen by this pass; a wake
+        // that lands during it leaves the pipe readable, so the wait below returns at once.
+        if let Some(wake) = &wake {
+            wake.drain();
+        }
         handle.tick();
         if idle_grace_elapsed(&*handle, &conns, &mut idle_since, idle_grace)
             && handle.begin_idle_exit()
         {
             break;
         }
-        accept_client(&serving, &handle, &stop, &conns, &next, &mut threads);
+        accept_client(&serving, &handle, &stop, &conns, &next, &mut threads, &wake);
         if let Some(listener) = serving.native_bootstrap_listener() {
-            accept_native(listener, &native, &conns, &next, &mut threads);
+            accept_native(listener, &native, &conns, &next, &mut threads, &wake);
         }
         threads.retain(|t| !t.is_finished());
+        if stop.load(Ordering::SeqCst) || handle.exiting() {
+            break;
+        }
+        wait_for_work(
+            &serving,
+            wake.as_deref(),
+            pass_deadline(&*handle, idle_since, idle_grace, heartbeat),
+        );
     }
     // **One last tick after the flag, never before it** — `LiveRegistry::follow` and
     // `handler::Broadcast` are both written to this rule and for the same reason: what a node said
@@ -980,6 +1065,45 @@ fn accept_loop(
     for t in threads {
         let _ = t.join();
     }
+}
+
+/// When the next pass must run with nothing waking it: the handler's own deadline, the end of a
+/// running idle grace, or the [`HEARTBEAT`], whichever is first.
+fn pass_deadline(
+    handle: &dyn Handle,
+    idle_since: Option<Instant>,
+    idle_grace: Duration,
+    heartbeat: Duration,
+) -> Instant {
+    let now = Instant::now();
+    let mut deadline = now.checked_add(heartbeat).unwrap_or(now + HEARTBEAT);
+    if let Some(due) = handle.next_deadline() {
+        deadline = deadline.min(due);
+    }
+    if let Some(since) = idle_since {
+        deadline = deadline.min(since.checked_add(idle_grace).unwrap_or(deadline));
+    }
+    deadline
+}
+
+/// Block until a listener has a connection, the wake pipe rings, or `deadline` passes.
+///
+/// Without a wake pipe (no descriptor could be had) the loop falls back to the old fixed poll, so
+/// a stop or a state change is still noticed within [`ACCEPT_POLL`].
+fn wait_for_work(serving: &Serving, wake: Option<&crate::wake::Pipe>, deadline: Instant) {
+    use std::os::fd::AsFd;
+    let Some(wake) = wake else {
+        std::thread::sleep(ACCEPT_POLL.min(deadline.saturating_duration_since(Instant::now())));
+        return;
+    };
+    let mut fds = vec![serving.listener().as_fd(), wake.fd()];
+    if let Some(native) = serving.native_bootstrap_listener() {
+        fds.push(native.as_fd());
+    }
+    crate::wake::wait_readable(
+        &fds,
+        Some(deadline.saturating_duration_since(Instant::now())),
+    );
 }
 
 /// Whether the loop has sat with no clients and an idle-exit-eligible handle for the whole grace
@@ -1000,8 +1124,8 @@ fn idle_grace_elapsed(
     since.elapsed() >= idle_grace || handle.idle_exit_grace_waived()
 }
 
-/// One non-blocking pass over the client socket: admit a connection onto its own thread, or sleep
-/// one poll interval when there is nothing to accept.
+/// One non-blocking pass over the client socket: admit a connection onto its own thread. Nothing
+/// pending returns at once; the loop's `poll` is the wait.
 fn accept_client(
     serving: &Serving,
     handle: &Arc<dyn Handle>,
@@ -1009,6 +1133,7 @@ fn accept_client(
     conns: &Conns,
     next: &AtomicU64,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
+    wake: &Option<Arc<crate::wake::Pipe>>,
 ) {
     match serving.listener().accept() {
         Ok((stream, _)) => {
@@ -1021,16 +1146,25 @@ fn accept_client(
             let handle = Arc::clone(handle);
             let conns = Arc::clone(conns);
             let stopping = Arc::clone(stop);
+            let wake = wake.clone();
             threads.push(std::thread::spawn(move || {
                 serve_conn(id, stream, handle, &stopping);
-                lock(&conns).remove(&id);
+                depart_conn(&conns, id, wake.as_deref());
             }));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            std::thread::sleep(ACCEPT_POLL);
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
         Err(_) => std::thread::sleep(ACCEPT_POLL),
+    }
+}
+
+/// A connection's thread is done: forget its socket and wake the accept loop, since zero clients
+/// is half of §5.7's idle predicate and the loop would otherwise learn of it only at its next
+/// deadline.
+fn depart_conn(conns: &Conns, id: ConnId, wake: Option<&crate::wake::Pipe>) {
+    lock(conns).remove(&id);
+    if let Some(wake) = wake {
+        wake.wake();
     }
 }
 
@@ -1042,6 +1176,7 @@ fn accept_native(
     conns: &Conns,
     next: &AtomicU64,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
+    wake: &Option<Arc<crate::wake::Pipe>>,
 ) {
     match listener.accept() {
         Ok((mut stream, _)) => {
@@ -1052,9 +1187,10 @@ fn accept_native(
             lock(conns).insert(id, dup);
             let native = Arc::clone(native);
             let conns = Arc::clone(conns);
+            let wake = wake.clone();
             threads.push(std::thread::spawn(move || {
                 native.serve_connection(id, stream, active);
-                lock(&conns).remove(&id);
+                depart_conn(&conns, id, wake.as_deref());
             }));
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -1725,6 +1861,9 @@ mod tests {
         asked: AtomicU64,
         exiting: AtomicBool,
         ticks: AtomicU64,
+        /// `Some` makes this a handler that says when it has changed and has nothing time-driven
+        /// due — the shape `RegistryHandle` has — so the accept loop sleeps until woken.
+        quiet: Option<Arc<crate::wake::Signal>>,
     }
 
     impl Handle for Leaver {
@@ -1746,6 +1885,17 @@ mod tests {
             self.ticks.fetch_add(1, Ordering::SeqCst);
         }
 
+        fn next_deadline(&self) -> Option<Instant> {
+            match self.quiet {
+                Some(_) => None,
+                None => Some(Instant::now() + ACCEPT_POLL),
+            }
+        }
+
+        fn changes(&self) -> Option<Arc<crate::wake::Signal>> {
+            self.quiet.clone()
+        }
+
         fn idle_exit_eligible(&self) -> bool {
             self.eligible.load(Ordering::SeqCst)
         }
@@ -1759,6 +1909,112 @@ mod tests {
             self.exiting.store(true, Ordering::SeqCst);
             true
         }
+    }
+
+    /// A heartbeat so long that only a wake can explain a pass inside a test's bound.
+    const NO_HEARTBEAT: Duration = Duration::from_secs(3600);
+
+    /// A server over a [`Leaver`] with [`Leaver::quiet`] set and [`NO_HEARTBEAT`].
+    fn quiet_server(
+        tag: &str,
+        grace: Duration,
+    ) -> (Server, Arc<Leaver>, SocketPaths, std::path::PathBuf) {
+        let dir = std::path::PathBuf::from(format!("/tmp/ms-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let leaver = Arc::new(Leaver {
+            quiet: Some(crate::wake::Signal::new()),
+            ..Leaver::default()
+        });
+        let native = Arc::new(NativeBootstrapService::disabled(
+            serving.canonical_project().to_path_buf(),
+        ));
+        let server = Server::start_with_heartbeat(
+            serving,
+            Arc::clone(&leaver) as Arc<dyn Handle>,
+            native,
+            grace,
+            NO_HEARTBEAT,
+        );
+        (server, leaver, paths, dir)
+    }
+
+    /// **An idle loop does not run.** With nothing due and nothing changed, the accept loop sits
+    /// in `poll` — the old loop ran a pass every 5 ms whether or not anything had happened — and a
+    /// notify on the handler's signal is what runs the next pass.
+    #[test]
+    fn a_handler_with_nothing_due_is_ticked_only_when_something_changes() {
+        let (server, leaver, _paths, dir) = quiet_server("quiet-idle", NO_HEARTBEAT);
+        assert!(marion_testsupport::until(|| leaver
+            .ticks
+            .load(Ordering::SeqCst)
+            >= 1));
+        std::thread::sleep(Duration::from_millis(50));
+        let before = leaver.ticks.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            leaver.ticks.load(Ordering::SeqCst),
+            before,
+            "the loop ran passes with nothing due and nothing changed"
+        );
+        leaver.quiet.as_ref().unwrap().notify();
+        assert!(
+            marion_testsupport::until(|| leaver.ticks.load(Ordering::SeqCst) > before),
+            "a change did not wake the loop"
+        );
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A departure wakes the loop**: zero clients is half of §5.7's predicate, and a loop that
+    /// learned of it only at its heartbeat would start the grace late by up to that heartbeat.
+    #[test]
+    fn a_departing_client_wakes_the_idle_exit_without_waiting_for_a_heartbeat() {
+        let (server, leaver, paths, dir) = quiet_server("quiet-depart", Duration::ZERO);
+        let client = UnixStream::connect(paths.socket()).expect("dial the supervisor");
+        // The connection is registered on its accept pass; the eligibility flip itself sends no
+        // wake, so only the client clause is holding the exit once this is set.
+        assert!(marion_testsupport::until(|| leaver
+            .ticks
+            .load(Ordering::SeqCst)
+            >= 1));
+        std::thread::sleep(Duration::from_millis(50));
+        leaver.eligible.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            0,
+            "one client is not zero"
+        );
+        drop(client);
+        assert!(
+            marion_testsupport::until(|| leaver.asked.load(Ordering::SeqCst) == 1),
+            "the departure did not wake the loop"
+        );
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Stop wakes the loop**, rather than waiting for whatever deadline it is asleep on.
+    #[test]
+    fn stopping_a_quiet_server_does_not_wait_out_its_deadline() {
+        let (server, leaver, _paths, dir) = quiet_server("quiet-stop", NO_HEARTBEAT);
+        assert!(marion_testsupport::until(|| leaver
+            .ticks
+            .load(Ordering::SeqCst)
+            >= 1));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            server.stop();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("stop waited on the accept loop's deadline");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **NC — §5.7's exit is zero clients, then the whole grace, then exactly one record.**

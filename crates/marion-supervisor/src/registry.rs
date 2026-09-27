@@ -268,6 +268,12 @@ impl Registry {
         point(&self.tree)
     }
 
+    /// **A number that changes whenever the tree can have**: the bytes folded in. Cheaper than
+    /// [`Self::read_point`] (no copy) for a caller that only needs "anything since I last looked?"
+    pub fn generation(&self) -> u64 {
+        self.offset
+    }
+
     pub fn status(&self) -> &Status {
         &self.status
     }
