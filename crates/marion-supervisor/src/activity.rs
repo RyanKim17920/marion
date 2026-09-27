@@ -19,8 +19,10 @@ use std::path::Path;
 
 use marion_core::event::{EventLog, Payload};
 use marion_core::harness::Harness;
+use marion_core::proto::params::ActivityCursor;
+use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage};
 use marion_harness::adapter::harness_spec;
-use marion_harness::grammar::{RecentActivity, recent_activity};
+use marion_harness::grammar::{Activity, RecentActivity, activity_stream, recent_activity};
 use serde_json::Value;
 
 /// The most tool calls a peek shows.
@@ -60,19 +62,122 @@ pub fn render(a: &RecentActivity) -> String {
         out.push_str("\n- no tool calls yet");
     }
     for c in &a.calls {
-        let args = match &c.args {
-            Value::Null => String::new(),
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
         out.push('\n');
-        out.push_str(&capped(&format!("- {}({})", c.name, one_line(&args))));
+        out.push_str(&capped(&format!("- {}", call_line(c))));
     }
     if let Some(t) = &a.text {
         out.push('\n');
         out.push_str(&capped(&format!("- last said: {}", one_line(t))));
     }
     cap_bytes(out, PEEK_CAP)
+}
+
+/// The most bytes one [`page`] reads: a first poll of a long run gets the end of it, and each
+/// later poll only what was appended since.
+pub const PAGE_BYTES: u64 = TAIL_BYTES;
+
+/// A page of what the node whose stream is `events` has been doing, from `cursor`: every call and
+/// message in that stretch of the file, one bounded line each, and the byte the next page starts
+/// at. Only whole lines are consumed, so a record being written as this reads is left for the next
+/// poll rather than read torn. A cursor past the end of the file (a file that was replaced) reads
+/// from the start again.
+pub fn page(events: &Path, harness: Harness, cursor: ActivityCursor) -> ActivityPage {
+    let Some(rule) = harness_spec(harness)
+        .stream
+        .and_then(|g| g.activity.as_ref())
+    else {
+        return ActivityPage {
+            unread: Some(format!(
+                "marion reads no {harness:?} stream by a row, so it cannot say which tools this \
+                 node called."
+            )),
+            ..ActivityPage::default()
+        };
+    };
+    let Ok(mut file) = std::fs::File::open(events) else {
+        return ActivityPage::default();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let (mut start, aligned) = match cursor {
+        ActivityCursor::Tail => (len.saturating_sub(PAGE_BYTES), len <= PAGE_BYTES),
+        ActivityCursor::From(n) if n <= len => (n, true),
+        ActivityCursor::From(_) => (0, true),
+    };
+    let end = len.min(start.saturating_add(PAGE_BYTES));
+    let mut bytes = vec![0; (end - start) as usize];
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut bytes).is_err() {
+        return ActivityPage {
+            from: start,
+            next: start,
+            ..ActivityPage::default()
+        };
+    }
+    // A tail that starts mid-file starts mid-record: skip to the first whole line.
+    if !aligned {
+        match bytes.iter().position(|b| *b == b'\n') {
+            Some(nl) => {
+                bytes.drain(..=nl);
+                start += nl as u64 + 1;
+            }
+            None => {
+                return ActivityPage {
+                    from: start,
+                    next: start,
+                    ..ActivityPage::default()
+                };
+            }
+        }
+    }
+    // Whole lines only: the rest is a record still being written.
+    let whole = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    bytes.truncate(whole);
+    let mut events_read = Vec::new();
+    EventLog::default().extend(&bytes, &mut events_read);
+    let (frames, times): (Vec<Value>, Vec<String>) = events_read
+        .into_iter()
+        .filter_map(|e| match e.payload {
+            Payload::Vendor { json, .. } => Some((json, rfc3339(e.ts))),
+            _ => None,
+        })
+        .unzip();
+    let lines = activity_stream(rule, &frames)
+        .into_iter()
+        .map(|i| {
+            let (kind, text) = match i.item {
+                Activity::Call(c) => (ActionKind::Call, call_line(&c)),
+                Activity::Said(t) => (ActionKind::Said, capped(&one_line(&t))),
+            };
+            ActionLine {
+                at: times[i.frame].clone(),
+                kind,
+                text,
+            }
+        })
+        .collect();
+    ActivityPage {
+        from: start,
+        next: start + whole as u64,
+        lines,
+        unread: None,
+    }
+}
+
+/// One call as one bounded line: `name(args)`.
+fn call_line(c: &marion_harness::grammar::ToolCall) -> String {
+    let args = match &c.args {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    capped(&format!("{}({})", c.name, one_line(&args)))
+}
+
+/// A journal or event timestamp as the RFC3339 text it serializes to.
+pub(crate) fn rfc3339(ts: marion_core::encoding::SystemTime) -> String {
+    serde_json::to_value(ts)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Every harness frame in the last [`TAIL_BYTES`] of `path`, in order. A missing or unreadable
@@ -225,12 +330,76 @@ mod tests {
         );
     }
 
+    /// A watcher polls with `next` and reads each call once: a second page after more was recorded
+    /// holds only the new items, a record still being written is left for the next poll, and a
+    /// cursor past a replaced file starts over.
+    #[test]
+    fn pages_read_each_byte_once_and_never_a_torn_record() {
+        use crate::events::{EventSink, EventWriter};
+        use std::io::Write;
+        let dir = marion_testsupport::scratch("activity-pages");
+        let path = dir.join("events.jsonl");
+        let agent = marion_core::contract::AgentId("019f-pages".into());
+        let stream = include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl");
+        let lines: Vec<&str> = stream.lines().collect();
+        let sink = EventSink::new(
+            EventWriter::open_path(&path, &agent).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        sink.lifecycle(marion_core::event::Lifecycle::Opened);
+        let half = lines.len() / 2;
+        for line in &lines[..half] {
+            sink.record_line(line);
+        }
+        let first = page(&path, Harness::Codex, ActivityCursor::Tail);
+        assert_eq!(first.from, 0);
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(first.next, len, "a whole file is consumed whole");
+        for line in &lines[half..] {
+            sink.record_line(line);
+        }
+        let second = page(&path, Harness::Codex, ActivityCursor::From(first.next));
+        assert_eq!(second.from, first.next);
+        let everything = page(&path, Harness::Codex, ActivityCursor::From(0));
+        assert_eq!(
+            first.lines.len() + second.lines.len(),
+            everything.lines.len(),
+            "two pages are the whole, with nothing read twice: {first:?} {second:?}"
+        );
+        assert!(
+            everything
+                .lines
+                .iter()
+                .any(|l| l.kind == ActionKind::Call && l.text.starts_with("report(")),
+            "{everything:?}"
+        );
+
+        // Half a record on the end: not consumed, so the next poll reads it whole.
+        let end = std::fs::metadata(&path).unwrap().len();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"agent_id\":")
+            .unwrap();
+        let torn = page(&path, Harness::Codex, ActivityCursor::From(end));
+        assert_eq!((torn.next, torn.lines.len()), (end, 0), "{torn:?}");
+
+        let replaced = page(&path, Harness::Codex, ActivityCursor::From(u64::MAX));
+        assert_eq!(replaced.from, 0);
+    }
+
     #[test]
     fn a_node_with_no_row_is_unread_and_a_node_with_no_file_has_said_nothing() {
         let dir = marion_testsupport::scratch("activity-peek");
         let missing = dir.join("events.jsonl");
         let acp = peek(&missing, Harness::Acp);
         assert!(acp.contains("not shown"), "{acp}");
+        let acp_page = page(&missing, Harness::Acp, ActivityCursor::Tail);
+        assert!(acp_page.unread.is_some(), "{acp_page:?}");
+        let codex_page = page(&missing, Harness::Codex, ActivityCursor::Tail);
+        assert_eq!(codex_page, ActivityPage::default());
         let codex = peek(&missing, Harness::Codex);
         assert!(codex.contains("nothing recorded yet"), "{codex}");
     }

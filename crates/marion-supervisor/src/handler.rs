@@ -1663,7 +1663,11 @@ impl RegistryHandle {
         TreeSubscribeResult { nodes, read_point }
     }
 
-    fn node_get(&self, id: &AgentId) -> Result<NodeGetResult, RpcError> {
+    fn node_get(
+        &self,
+        id: &AgentId,
+        cursor: Option<marion_core::proto::params::ActivityCursor>,
+    ) -> Result<NodeGetResult, RpcError> {
         let pane = lock(&self.panes).has_live(id);
         self.live.read(|r| match r.tree().get(id) {
             None => Err(RpcError::not_found(
@@ -1685,7 +1689,7 @@ impl RegistryHandle {
             // The detail's file reads happen here, after the registry lock is released: a long
             // stream or a slow disk must never hold up the tree for everyone else.
             let detail = match (inputs, project) {
-                (Some(i), Some(p)) => crate::node_detail::read(&p, id, &i),
+                (Some(i), Some(p)) => crate::node_detail::read(&p, id, &i, cursor),
                 _ => Default::default(),
             };
             NodeGetResult { node, detail }
@@ -4407,7 +4411,9 @@ impl Handle for RegistryHandle {
 
     fn call(&self, _conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
         match call {
-            Call::NodeGet(p) => self.node_get(&p.agent_id).map(MethodResult::NodeGet),
+            Call::NodeGet(p) => self
+                .node_get(&p.agent_id, p.activity)
+                .map(MethodResult::NodeGet),
             Call::TreeSubscribe(_) => Ok(MethodResult::TreeSubscribe(self.subscribe(out))),
             Call::NodeAttach(p) => self
                 .node_attach(&p.agent_id, p.pane_stream.is_some(), out)
@@ -5254,9 +5260,7 @@ mod tests {
 
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             1,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
@@ -5279,9 +5283,7 @@ mod tests {
         // operator can tell "no such node" from "not yet".
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("nobody"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("nobody"))),
             2,
         );
         let Frame::Response(resp) = next_frame(&mut r) else {
@@ -5533,9 +5535,7 @@ mod tests {
         assert!(matches!(
             fx.handle.call(
                 ConnId(1),
-                &Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                    agent_id: id("root")
-                }),
+                &Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
                 &out,
             ),
             Ok(MethodResult::NodeGet(_))
@@ -7545,9 +7545,7 @@ mod tests {
         // It must be the next frame: the forged notification produces no notification of its own.
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             9,
         );
         assert!(matches!(next_frame(&mut r), Frame::Response(_)));
@@ -8400,11 +8398,11 @@ mod tests {
         let w = Wired::new("handler-pane-live-projection");
         let host = pane(&w, "root", "sleep 30");
         say(&events_of(&w.fx, "root"), "root", &["ready"]);
-        assert!(w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(w.fx.handle.pane_ids().contains(&id("root")));
 
         w.fx.handle.closing_pane(&id("root"), &host);
-        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(!w.fx.handle.pane_ids().contains(&id("root")));
         let (closing_out, _closing_rx) = crate::serve::capture(ConnId(1_111));
         let closing =
@@ -8471,7 +8469,7 @@ mod tests {
                 if matches!(&note.event, Event::NodePaneFrame(frame)
                     if matches!(frame.frame, marion_core::proto::PaneFrameKindV1::End {}))
         ));
-        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.node_get(&id("root"), None).unwrap().node.pane);
         assert!(!w.fx.handle.pane_ids().contains(&id("root")));
         let (completed_out, _completed_rx) = crate::serve::capture(ConnId(1_112));
         let completed =
@@ -9791,9 +9789,7 @@ mod tests {
         // The socket is still a live, framed connection: nothing about the delivery departed it.
         call(
             &mut client,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         loop {
@@ -9876,9 +9872,7 @@ mod tests {
         );
         call(
             &mut client,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         assert!(
@@ -9998,9 +9992,7 @@ mod tests {
         // the same connection instead of sleeping on a hope.
         call(
             &mut second,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             9,
         );
         assert!(matches!(next_frame(&mut sr), Frame::Response(_)));
@@ -10078,9 +10070,7 @@ mod tests {
         write_keys(&mut c, "root", "x");
         call(
             &mut c,
-            Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                agent_id: id("root"),
-            }),
+            Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
             2,
         );
         assert!(matches!(next_frame(&mut r), Frame::Response(_)));
@@ -11936,9 +11926,7 @@ mod tests {
                 .handle
                 .call(
                     ConnId(9),
-                    &Call::NodeGet(marion_core::proto::params::NodeGetParams {
-                        agent_id: id("root"),
-                    }),
+                    &Call::NodeGet(marion_core::proto::params::NodeGetParams::of(id("root"))),
                     &crate::serve::sink(ConnId(9)),
                 )
                 .expect("the orphan is on the tree");

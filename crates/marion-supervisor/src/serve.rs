@@ -2628,9 +2628,9 @@ mod tests {
     }
 
     fn node_get(agent: &str) -> Call {
-        Call::NodeGet(marion_core::proto::params::NodeGetParams {
-            agent_id: AgentId(agent.into()),
-        })
+        Call::NodeGet(marion_core::proto::params::NodeGetParams::of(AgentId(
+            agent.into(),
+        )))
     }
 
     /// **§2's inbound notifications reach the handler and produce no frame.**

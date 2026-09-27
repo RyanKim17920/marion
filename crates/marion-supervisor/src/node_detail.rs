@@ -11,10 +11,13 @@
 use marion_core::agent_type;
 use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
 use marion_core::harness::Harness;
+use marion_core::journal::{self, MessageSource, RecordKind};
 use marion_core::paths::ProjectDir;
-use marion_core::proto::result::{CompletionSummary, NodeDetail};
+use marion_core::proto::params::ActivityCursor;
+use marion_core::proto::result::{CompletionSummary, MessageLine, NodeDetail, TaskSent};
 use marion_core::registry::ReplayedNode;
 use marion_harness::adapter::adapter_for_type;
+use std::path::Path;
 
 /// What [`read`] needs from the replayed node, taken under the registry lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +48,14 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
     })
 }
 
-/// The detail for node `id`, read from its files under `project`.
-pub fn read(project: &ProjectDir, id: &AgentId, i: &Inputs) -> NodeDetail {
+/// The detail for node `id`, read from its files under `project`, with a page of its activity
+/// stream from `cursor` when one was asked for.
+pub fn read(
+    project: &ProjectDir,
+    id: &AgentId,
+    i: &Inputs,
+    cursor: Option<ActivityCursor>,
+) -> NodeDetail {
     let dir = project.agent(id);
     let events = dir.events();
     let contract = i.task_id.as_ref().and_then(|t| {
@@ -57,10 +66,9 @@ pub fn read(project: &ProjectDir, id: &AgentId, i: &Inputs) -> NodeDetail {
         .ok()
         .and_then(|a| a.usage(&crate::activity::all_frames(&events)));
     NodeDetail {
-        task: contract.as_ref().map(|c| c.instructions.value.clone()),
-        // A peek only while it runs: a finished node's answer is its completion, and a stale
-        // "last said" beside `Exited` would read as work still going on.
-        activity: (!i.exited).then(|| crate::activity::peek(&events, i.harness)),
+        task: contract.as_ref().map(task_sent),
+        messages: messages(&project.journal(), id),
+        stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
         usage,
         workspace: contract
             .as_ref()
@@ -79,6 +87,87 @@ pub fn read(project: &ProjectDir, id: &AgentId, i: &Inputs) -> NodeDetail {
     }
 }
 
+/// The contract's task as the node received it, with marion's appended report instruction split
+/// off the prompt so a reader can tell the operator's words from marion's.
+fn task_sent(c: &TaskContract) -> TaskSent {
+    let delivered = &c.instructions.value;
+    let suffix = format!("\n\n{}", crate::bridge::REPORT_INSTRUCTION);
+    let (prompt, appended) = match delivered.strip_suffix(&suffix) {
+        Some(head) => (
+            head.to_string(),
+            Some(crate::bridge::REPORT_INSTRUCTION.to_string()),
+        ),
+        None => (delivered.clone(), None),
+    };
+    TaskSent {
+        prompt,
+        appended,
+        acceptance: c
+            .acceptance_criteria
+            .iter()
+            .map(|a| a.value.clone())
+            .collect(),
+        verification: c
+            .verification
+            .iter()
+            .map(|v| {
+                std::iter::once(&v.program)
+                    .chain(&v.args)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect(),
+    }
+}
+
+/// The messages queued for `id`, oldest first, each with what came of it — read from the
+/// journal's delivery records, which carry a length and a digest and never the text.
+fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
+    let Ok(bytes) = std::fs::read(journal) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, MessageLine)> = Vec::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        let Some(record) = journal::decode(line) else {
+            continue;
+        };
+        let resolve = |out: &mut Vec<(String, MessageLine)>, mid: &str, outcome: String| {
+            if let Some((_, m)) = out.iter_mut().find(|(k, _)| k == mid) {
+                m.outcome = outcome;
+            }
+        };
+        match record.kind {
+            RecordKind::MessageQueued(q) if &q.agent_id == id => {
+                let from = match q.source {
+                    MessageSource::Operator => "operator".to_string(),
+                    MessageSource::Ancestor(a) => format!("ancestor {}", a.0),
+                    MessageSource::ChildEnded { child, status, .. } => {
+                        format!("child {} ended {status}", child.0)
+                    }
+                };
+                out.push((
+                    q.message_id,
+                    MessageLine {
+                        at: crate::activity::rfc3339(record.ts),
+                        from,
+                        len: q.len,
+                        outcome: "queued".into(),
+                    },
+                ));
+            }
+            RecordKind::MessageDelivered(d) if &d.agent_id == id => {
+                resolve(&mut out, &d.message_id, format!("delivered via {}", d.via));
+            }
+            RecordKind::MessageDropped(d) if &d.agent_id == id => {
+                resolve(&mut out, &d.message_id, format!("dropped: {}", d.reason));
+            }
+            _ => {}
+        }
+    }
+    out.into_iter().map(|(_, m)| m).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +175,7 @@ mod tests {
     use crate::spawn::ChildOutcome;
     use marion_core::contract::{Glob, Oid, RepoIdentity};
     use marion_core::encoding::SystemTime;
+    use marion_core::journal::{JournalRecord, MessageDelivered, MessageDropped, MessageQueued};
     use std::time::Duration;
 
     fn project(name: &str) -> (ProjectDir, AgentId) {
@@ -124,8 +214,11 @@ mod tests {
                 path: "/wt/t-1".into(),
                 branch: "marion/t-1".into(),
             },
-            "add a token-bucket limiter",
-            &[],
+            &format!(
+                "add a token-bucket limiter\n\n{}",
+                crate::bridge::REPORT_INSTRUCTION
+            ),
+            &["tests pass".to_string()],
             &[Glob("**".into())],
             &[Glob("**".into())],
             marion_core::encoding::Duration(Duration::from_secs(900)),
@@ -136,7 +229,12 @@ mod tests {
             },
             None,
             None,
-            vec![],
+            vec![marion_core::contract::Command {
+                program: "cargo".into(),
+                args: vec!["test".into(), "-q".into()],
+                cwd: "/wt/t-1".into(),
+                timeout: marion_core::encoding::Duration(Duration::from_secs(300)),
+            }],
             vec![],
         );
         if landed {
@@ -174,9 +272,16 @@ mod tests {
         let task = TaskId("t-1".into());
         record_codex_stream(&p, &id);
         write_contract(&p, &id, &task, true);
-        let d = read(&p, &id, &inputs(true, Some(&task)));
-        assert_eq!(d.task.as_deref(), Some("add a token-bucket limiter"));
-        assert!(d.activity.is_none(), "{d:?}");
+        let d = read(&p, &id, &inputs(true, Some(&task)), None);
+        let t = d.task.clone().expect("a child has a task");
+        assert_eq!(t.prompt, "add a token-bucket limiter");
+        assert_eq!(
+            t.appended.as_deref(),
+            Some(crate::bridge::REPORT_INSTRUCTION)
+        );
+        assert_eq!(t.acceptance, ["tests pass"]);
+        assert_eq!(t.verification, ["cargo test -q"]);
+        assert!(d.stream.is_none(), "no page was asked for: {:?}", d.stream);
         assert!(
             d.usage.is_some(),
             "the codex stream states its usage: {d:?}"
@@ -193,20 +298,16 @@ mod tests {
         assert_eq!(c.commit, Some(Oid("0123456789abcdef".into())));
     }
 
-    /// A running node with no contract (a root): the peek, the launch workspace, nothing invented.
+    /// A running node with no contract (a root): its stream page, the launch workspace, nothing
+    /// invented.
     #[test]
-    fn a_running_root_reports_its_activity_and_launch_workspace_only() {
+    fn a_running_root_reports_its_stream_and_launch_workspace_only() {
         let (p, id) = project("detail-running");
         record_codex_stream(&p, &id);
-        let d = read(&p, &id, &inputs(false, None));
+        let d = read(&p, &id, &inputs(false, None), Some(ActivityCursor::Tail));
         assert!(d.task.is_none() && d.completion.is_none(), "{d:?}");
-        assert!(
-            d.activity
-                .as_deref()
-                .unwrap_or("")
-                .starts_with("Recent activity"),
-            "{d:?}"
-        );
+        let page = d.stream.clone().expect("a page was asked for");
+        assert!(page.unread.is_none() && !page.lines.is_empty(), "{page:?}");
         assert_eq!(
             d.workspace,
             Some(Workspace::SharedCwd {
@@ -220,10 +321,88 @@ mod tests {
     fn a_node_with_no_files_yet_has_an_empty_detail_not_an_error() {
         let (p, id) = project("detail-empty");
         let task = TaskId("t-9".into());
-        let d = read(&p, &id, &inputs(true, Some(&task)));
+        let d = read(
+            &p,
+            &id,
+            &inputs(true, Some(&task)),
+            Some(ActivityCursor::Tail),
+        );
         assert!(
             d.task.is_none() && d.usage.is_none() && d.completion.is_none(),
             "{d:?}"
         );
+        assert_eq!(
+            d.stream,
+            Some(Default::default()),
+            "no file is an empty page"
+        );
+    }
+
+    /// Steers read from the journal: who, when, how long, what came of each — and only this node's.
+    #[test]
+    fn queued_messages_are_listed_with_their_outcomes_and_never_their_text() {
+        let (p, id) = project("detail-messages");
+        let other = AgentId("someone-else".into());
+        let kinds = vec![
+            RecordKind::MessageQueued(MessageQueued {
+                agent_id: id.clone(),
+                message_id: "m-1".into(),
+                source: MessageSource::Operator,
+                len: 41,
+                sha256: "00".into(),
+            }),
+            RecordKind::MessageQueued(MessageQueued {
+                agent_id: other.clone(),
+                message_id: "m-x".into(),
+                source: MessageSource::Operator,
+                len: 1,
+                sha256: "00".into(),
+            }),
+            RecordKind::MessageQueued(MessageQueued {
+                agent_id: id.clone(),
+                message_id: "m-2".into(),
+                source: MessageSource::Ancestor(AgentId("root".into())),
+                len: 12,
+                sha256: "00".into(),
+            }),
+            RecordKind::MessageDelivered(MessageDelivered {
+                agent_id: id.clone(),
+                message_id: "m-1".into(),
+                via: "turn".into(),
+            }),
+            RecordKind::MessageDropped(MessageDropped {
+                agent_id: id.clone(),
+                message_id: "m-2".into(),
+                reason: "node ended".into(),
+            }),
+        ];
+        let mut bytes = Vec::new();
+        for (seq, kind) in kinds.into_iter().enumerate() {
+            let record = JournalRecord {
+                writer: marion_core::journal::WriterId("w".into()),
+                seq: seq as u64,
+                ts: SystemTime::from_unix_millis(1_790_000_000_000 + seq as u64),
+                mono_ns: 0,
+                provenance: marion_core::ir::Provenance::marion(),
+                src_seq: None,
+                kind,
+            };
+            bytes.extend(journal::encode(&record).unwrap());
+        }
+        std::fs::create_dir_all(p.journal().parent().unwrap()).unwrap();
+        std::fs::write(p.journal(), bytes).unwrap();
+        let m = messages(&p.journal(), &id);
+        let got: Vec<(&str, u32, &str)> = m
+            .iter()
+            .map(|l| (l.from.as_str(), l.len, l.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("operator", 41, "delivered via turn"),
+                ("ancestor root", 12, "dropped: node ended")
+            ]
+        );
+        assert!(m[0].at.ends_with('Z'), "{}", m[0].at);
     }
 }

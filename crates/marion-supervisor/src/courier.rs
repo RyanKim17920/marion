@@ -267,9 +267,7 @@ pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult
 /// current the registry is.
 pub fn node_get(socket: &Path, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
     match Conn::dial(socket)?.ask(
-        Call::NodeGet(NodeGetParams {
-            agent_id: agent_id.clone(),
-        }),
+        Call::NodeGet(NodeGetParams::of(agent_id.clone())),
         READ_ANSWER_BOUND,
         &format!(
             "it did not answer `node/get` within {} s, so marion cannot say what state that node \

@@ -40,15 +40,21 @@ pub struct NodeGetResult {
 }
 
 /// `node/get`'s detail. Every field is optional because a node reports them at different times: a
-/// spawning node has no activity, a running one no completion, a root no contract and so no task.
+/// spawning node has no stream yet, a running one no completion, a root no contract and so no task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeDetail {
-    /// The instructions of its latest contract, as given. A root has no contract and so `None`.
+    /// What marion sent it: the contract's instructions, criteria and checks. A root has no
+    /// contract and so `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    /// The bounded activity peek (its last tool calls and words), while it has not exited.
+    pub task: Option<TaskSent>,
+    /// The messages queued for it (steers, a child's end), oldest first: who, when, how long, and
+    /// what came of each. **Never their text** — the journal keeps a length and a digest only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageLine>,
+    /// A page of what it is running, when the call asked for one with
+    /// [`crate::proto::params::NodeGetParams::activity`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activity: Option<String>,
+    pub stream: Option<ActivityPage>,
     /// The tokens its stream says it spent so far. `None` when the harness states none — which is
     /// not zero. Tokens only: marion never prices a run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +65,66 @@ pub struct NodeDetail {
     /// How its latest contract ended, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<CompletionSummary>,
+}
+
+/// The task as the node received it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSent {
+    /// The prompt as delivered, the agent type's prefix included, up to marion's own appended text.
+    pub prompt: String,
+    /// What marion appended after the prompt (its one instruction on how to report), split off so
+    /// a reader can show it as marion's rather than the operator's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appended: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance: Vec<String>,
+    /// The verification commands, one line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
+}
+
+/// One message queued for a node, from the journal's delivery records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageLine {
+    /// When it was queued (RFC3339).
+    pub at: String,
+    /// Who it was from: `operator`, `ancestor <id>`, `child <id> ended <status>`.
+    pub from: String,
+    /// Its length in bytes.
+    pub len: u32,
+    /// `queued`, `delivered via <verb>`, or `dropped: <reason>`.
+    pub outcome: String,
+}
+
+/// A page of a node's activity stream: the items read from byte `from` of its `events.jsonl` up to
+/// byte `next`, which is where the next page starts. A client polls with `next` and so reads each
+/// byte once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityPage {
+    pub from: u64,
+    pub next: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<ActionLine>,
+    /// Set when marion reads no activity from this node's stream (its row has no activity rule),
+    /// which is not the same as the node having done nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<String>,
+}
+
+/// One thing a node did: a tool call or a message, one line, bounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionLine {
+    /// When marion recorded it (RFC3339).
+    pub at: String,
+    pub kind: ActionKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    Call,
+    Said,
 }
 
 impl NodeDetail {
@@ -312,8 +378,28 @@ mod tests {
         let full = NodeGetResult {
             node: old.node.clone(),
             detail: NodeDetail {
-                task: Some("add a limiter".into()),
-                activity: Some("Recent activity (oldest first):".into()),
+                task: Some(TaskSent {
+                    prompt: "add a limiter".into(),
+                    appended: Some("report when done".into()),
+                    acceptance: vec!["tests pass".into()],
+                    verification: vec!["cargo test".into()],
+                }),
+                messages: vec![MessageLine {
+                    at: "2026-09-27T14:30:00.000Z".into(),
+                    from: "operator".into(),
+                    len: 42,
+                    outcome: "delivered via turn".into(),
+                }],
+                stream: Some(ActivityPage {
+                    from: 0,
+                    next: 812,
+                    lines: vec![ActionLine {
+                        at: "2026-09-27T14:30:01.000Z".into(),
+                        kind: ActionKind::Call,
+                        text: "command_execution(cargo test)".into(),
+                    }],
+                    unread: None,
+                }),
                 usage: Some(TokenUsage {
                     input: 10,
                     output: 2,

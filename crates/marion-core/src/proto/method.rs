@@ -221,6 +221,11 @@ impl Call {
 }
 
 /// A typed response body. Never appears on the wire in this shape — see the module doc.
+///
+/// `node/get`'s answer is the large variant since it carries the node's detail. Left unboxed: one
+/// of these exists per call in flight and is never stored in bulk, so the size costs nothing a
+/// `Box` would buy back.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MethodResult {
     TreeSubscribe(TreeSubscribeResult),
@@ -334,9 +339,7 @@ mod tests {
                 }),
             ),
             (
-                Call::NodeGet(NodeGetParams {
-                    agent_id: agent("a"),
-                }),
+                Call::NodeGet(NodeGetParams::of(agent("a"))),
                 MethodResult::NodeGet(NodeGetResult {
                     node: node(),
                     detail: Default::default(),
