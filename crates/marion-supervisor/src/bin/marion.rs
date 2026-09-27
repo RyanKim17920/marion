@@ -13,7 +13,7 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::{AgentTypes, builtin_names};
@@ -327,7 +327,7 @@ fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let terminal = std::sync::Arc::new(Terminal::new(io::stderr()));
     // The same journal tail `run` starts before its spawn, for the same reason: measured before
     // the relaunch, so the second life's children are the only news it can report.
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stop = std::sync::Arc::new(marion_supervisor::wake::Flag::new());
     let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
     let resumed = match resume_node(&mut session, &args) {
         Ok(r) => r,
@@ -1990,15 +1990,36 @@ fn follow_journal(
     }
 }
 
-/// How often the journal is polled while a run is in flight.
+/// The journal tail's **safety** poll while a run is in flight.
 ///
-/// **100 ms, chosen against the writer's own cadence.** Everything but §4.3's barrier records rides
-/// a ~50 ms group-commit timer (`journal::Journal::tick`), so a record becomes visible to any
-/// reader at a ~50 ms granularity and polling faster than that buys latency that does not exist.
-/// Twice the commit interval keeps the worst-case lag around a tenth of a second — under what a
-/// person reads as delay — for ten `open`+`metadata` pairs a second on a local file, and a poll
-/// with no news reads zero bytes. This is a viewer: it is not worth a byte of the run's own budget.
-const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
+/// Not the latency: the tail waits on the journal's change notification and on the run's stop
+/// flag ([`nap_until_the_journal_changes`]), so a record is read as soon as it is written and a
+/// finished run stops at once. This bounds only what a watch could miss. It used to be the
+/// latency, at 100 ms — ten `open`+`metadata` pairs and ten wakeups a second for the whole run.
+const JOURNAL_POLL: StdDuration = StdDuration::from_secs(1);
+
+/// [`follow_journal`]'s pause: until the journal is written, the run stops, or `safety` passes
+/// ([`JOURNAL_POLL`] in production).
+///
+/// **Wait, then re-arm**, and the poll comes after: a write that lands between the poll and this
+/// wait left an event pending since the last re-arm, so the wait returns at once, and a write that
+/// lands after the re-arm is read by the poll that follows. Nothing falls between.
+fn nap_until_the_journal_changes(
+    file: &std::cell::RefCell<marion_supervisor::wake::Watch>,
+    stop: &marion_supervisor::wake::Flag,
+    safety: StdDuration,
+) {
+    let mut file = file.borrow_mut();
+    {
+        let fds: Vec<_> = file.fd().into_iter().chain(stop.fd()).collect();
+        if fds.is_empty() {
+            std::thread::sleep(safety);
+        } else {
+            marion_supervisor::wake::wait_readable(&fds, Some(safety));
+        }
+    }
+    file.rearm();
+}
 
 /// `marion run`'s half of §7.3's voluntary quit: **a run that ends says so.**
 ///
@@ -2754,7 +2775,7 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     // supervisor runs them — and the journal is what both a watching client and a restarting
     // supervisor read. Steps 5 and 6 changed only *who writes* the records this tails; the reader is
     // unmoved, which is `events.rs`'s argument for a file cursor holding whoever the writer is.
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stop = std::sync::Arc::new(marion_supervisor::wake::Flag::new());
     let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
 
     let spawned = match spawn_root(&mut supervisor, &args, &repo) {
@@ -2951,7 +2972,7 @@ fn connect_supervisor(
 fn tail_children(
     journal: PathBuf,
     terminal: &std::sync::Arc<Terminal<io::Stderr>>,
-    stop: &std::sync::Arc<AtomicBool>,
+    stop: &std::sync::Arc<marion_supervisor::wake::Flag>,
 ) -> (
     std::thread::JoinHandle<()>,
     std::sync::mpsc::Sender<marion_core::contract::AgentId>,
@@ -2973,10 +2994,11 @@ fn tail_children(
             Err(_) => return,
         };
         let mut watch = JournalWatch::from_end(&journal, end, root_id);
+        let file = std::cell::RefCell::new(marion_supervisor::wake::Watch::new(&journal));
         follow_journal(
             &mut watch,
             &|| stop.load(Ordering::Relaxed),
-            &|| std::thread::sleep(JOURNAL_POLL),
+            &|| nap_until_the_journal_changes(&file, &stop, JOURNAL_POLL),
             &mut |event| {
                 terminal.show(&|w| {
                     let _ = render_child(event, w);
@@ -4233,6 +4255,40 @@ mod tests {
     ///
     /// Deterministic rather than timed: the records land *during* the nap, from the test's own
     /// `nap`, after the stop flag is already set.
+    /// **The tail sleeps until the journal is written or the run stops**, not on a timer: with an
+    /// hour's safety poll, an append from another process and a raised stop flag each end the nap.
+    #[test]
+    fn the_journal_tail_naps_until_a_write_or_a_stop() {
+        let dir = marion_testsupport::scratch("marion-bin-nap");
+        let path = dir.join("journal.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        let file = std::sync::Arc::new(std::sync::Mutex::new(Some(std::cell::RefCell::new(
+            marion_supervisor::wake::Watch::new(&path),
+        ))));
+        let stop = std::sync::Arc::new(marion_supervisor::wake::Flag::new());
+        let nap = |file: std::sync::Arc<std::sync::Mutex<Option<std::cell::RefCell<_>>>>,
+                   stop: std::sync::Arc<marion_supervisor::wake::Flag>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let cell = file.lock().unwrap().take().unwrap();
+                nap_until_the_journal_changes(&cell, &stop, StdDuration::from_secs(3600));
+                *file.lock().unwrap() = Some(cell);
+                let _ = tx.send(());
+            });
+            rx
+        };
+        let woke = nap(std::sync::Arc::clone(&file), std::sync::Arc::clone(&stop));
+        std::thread::sleep(StdDuration::from_millis(50));
+        marion_testsupport::append(&path, b"{}\n");
+        woke.recv_timeout(StdDuration::from_secs(10))
+            .expect("an append did not end the nap");
+        let woke = nap(std::sync::Arc::clone(&file), std::sync::Arc::clone(&stop));
+        std::thread::sleep(StdDuration::from_millis(50));
+        stop.store(true, Ordering::Relaxed);
+        woke.recv_timeout(StdDuration::from_secs(10))
+            .expect("the stop did not end the nap");
+    }
+
     #[test]
     fn a_child_that_exits_in_the_last_moments_of_a_run_is_still_announced() {
         use marion_core::contract::{AgentId, ProcessExit};

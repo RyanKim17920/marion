@@ -152,6 +152,47 @@ impl Signal {
     }
 }
 
+/// A stop flag whose raising also wakes whoever is waiting on it: [`Self::store`] of `true` rings a
+/// [`Pipe`] a `poll` loop can include through [`Self::fd`]. `load`/`store` mirror `AtomicBool`'s so
+/// it drops in where one was.
+#[derive(Debug)]
+pub struct Flag {
+    set: AtomicBool,
+    wake: Option<Pipe>,
+}
+
+impl Default for Flag {
+    fn default() -> Self {
+        Flag::new()
+    }
+}
+
+impl Flag {
+    pub fn new() -> Flag {
+        Flag {
+            set: AtomicBool::new(false),
+            wake: Pipe::new().ok(),
+        }
+    }
+
+    pub fn load(&self, order: Ordering) -> bool {
+        self.set.load(order)
+    }
+
+    pub fn store(&self, value: bool, order: Ordering) {
+        self.set.store(value, order);
+        if value && let Some(wake) = &self.wake {
+            wake.wake();
+        }
+    }
+
+    /// Readable once the flag has been raised. `None` if no descriptor could be had, in which case
+    /// a waiter's timeout is the whole of its latency.
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.wake.as_ref().map(|w| w.fd())
+    }
+}
+
 /// Block until one of `fds` is readable or `timeout` passes (`None` waits indefinitely), and say
 /// which were. An `EINTR` is an early return with nothing ready — every caller re-examines its
 /// state after a wait anyway.
@@ -494,6 +535,15 @@ mod tests {
         assert!(start.elapsed() < BOUND);
         assert!(wait_readable(&[pipe.fd()], Some(BOUND))[0]);
         t.join().unwrap();
+    }
+
+    #[test]
+    fn raising_a_flag_wakes_a_poll_on_it() {
+        let flag = Flag::new();
+        assert!(!wait_readable(&[flag.fd().unwrap()], Some(Duration::ZERO))[0]);
+        flag.store(true, Ordering::SeqCst);
+        assert!(flag.load(Ordering::SeqCst));
+        assert!(wait_readable(&[flag.fd().unwrap()], Some(BOUND))[0]);
     }
 
     #[test]
