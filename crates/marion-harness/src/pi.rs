@@ -35,8 +35,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -84,7 +85,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[Env {
         key: AGENT_DIR_ENV,
         val: Val::Under(AGENT_DIR),
-        when: When::Canned,
+        when: When::Overlay,
     }],
     stream: Some(&STREAM),
     // `read`, and both built-ins that change a file: `write` creates, `edit` replaces text in an
@@ -125,6 +126,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Nothing reaches the model: marion's extension reads only responses and drops every
     // notification the bridge sends.
     push: Push::None,
+    // pi has no approval surface: `--tools` is both what the model is offered and all it may run.
+    approval: Approval::None {
+        note: "S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's \
+               verb reaches the bridge with no prompt",
+    },
+    // Not measured: S34 ran pi only against marion's canned models.json provider, and an endpoint
+    // recipe (a models.json naming the operator's provider and key) was never tried.
+    wires: &[],
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
@@ -195,6 +204,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/id",
+        // Not measured: S34 resumed a known id only, so what an unknown one starts is unknown.
+        resumes_in_place: false,
     }),
     // One unit per assistant message, and `input` is already net of cache reads (item 7).
     usage: Some(UsageRule {

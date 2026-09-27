@@ -81,6 +81,7 @@ const CANNED_PLUMBING_MODELS: &[&str] = &[
     GOOSE_DEFAULT_MODEL,
     CLINE_DEFAULT_MODEL,
     QWEN_DEFAULT_MODEL,
+    PI_DEFAULT_MODEL,
 ];
 
 /// The `agy` built-ins' default model: a real slug, because agy has **no canned route** — it runs

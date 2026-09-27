@@ -1855,6 +1855,13 @@ impl HarnessAdapter for PiAdapter {
                     });
                 }
             }
+            Auth::Endpoint => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::Pi,
+                    what: "pi has no measured endpoint recipe: launch it canned or on your own \
+                           login",
+                });
+            }
             Auth::Inherited => {
                 if spec.model.as_deref() == Some(agent_type::PI_DEFAULT_MODEL) {
                     return Err(HarnessError::MissingInput {
@@ -3949,7 +3956,7 @@ mod tests {
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]
                 }
-                Harness::Acp | Harness::Antigravity => &[],
+                Harness::Acp | Harness::Antigravity | Harness::Pi => &[],
             };
             assert_eq!(wires, want, "{h}");
         }
@@ -9259,6 +9266,7 @@ mod tests {
                 ("cline", "cli-flag"),
                 ("qwen", "cli-flag"),
                 ("agy", "operator-allowlist"),
+                ("pi", "none"),
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"
