@@ -244,17 +244,34 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
     }
 }
 
-/// The row's time: how long a live node has been running. Blank where no start was recorded.
+/// The row's time: how long a live node has been running, or how long ago an ended one ended.
+/// Blank where no start (or end) was recorded.
 fn row_time(n: &NodeSummary, now: std::time::SystemTime) -> String {
     let Some(started) = n.started_at else {
         return String::new();
     };
     if n.state.is_exited() {
-        return String::new();
+        // How long ago it ended, where the end was recorded.
+        return n
+            .ended_at
+            .and_then(|e| now.duration_since(e.0).ok())
+            .map(|d| ago(d.as_secs()))
+            .unwrap_or_default();
     }
     now.duration_since(started.0)
         .map(|d| marion_tui::home::text::elapsed(d.as_secs()))
         .unwrap_or_default()
+}
+
+/// How long ago, in its largest unit only (`12m ago`, `1h ago`): an ended node's time needs no
+/// seconds, and it fits the row's time column.
+fn ago(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86_399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
 }
 
 /// What the row says after the harness: the agent type with the harness's own name taken off —

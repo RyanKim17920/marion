@@ -509,6 +509,14 @@ fn every_row_shows_its_elapsed_time_and_tokens() {
         ("", None),
         "unknown is blank, never 0"
     );
+
+    let mut ended = node("c", None, NodeState::Exited(ExitStatus::Ok));
+    ended.started_at = Some(SystemTime(t0));
+    ended.ended_at = Some(SystemTime(t0 + std::time::Duration::from_secs(60)));
+    h.set_nodes(vec![ended]);
+    let later = t0 + std::time::Duration::from_secs(60 + 3840);
+    let f = view::frame_at(&h, &view::Places::default(), later);
+    assert_eq!(f.watch.rows[0].elapsed, "1h ago", "fits the 7-column time");
 }
 
 #[test]
