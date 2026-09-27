@@ -93,7 +93,7 @@ cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launch
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
 (`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
-own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269 and 2.1.280; codex 0.146.0/0.146.1/0.147.0/0.155.1;
+own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269, 2.1.280 and 2.1.283; codex 0.146.0/0.146.1/0.147.0/0.155.1;
 gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
 qwen 0.23.0.
 
@@ -664,6 +664,21 @@ in the matrix, so read a red there under load as the machine first.
 **goose 1.51.0, admitted 2026-09-22 via `scripts/admit-harness.sh`,** in the same run with the
 same suite counts. Homebrew replaced 1.50.0 in place. No test-side change was needed. Its only
 red cell, goose root with an opencode child, is the load finding under opencode 1.18.32 above.
+
+**claude 2.1.283, admitted 2026-09-27 via `scripts/admit-harness.sh`.** The installer moved
+`current` to 2.1.283 (2.1.281 and 2.1.282 between) and pruned 2.1.280, so the gate refused it.
+Green with only the entry widened: `marion-testsupport` (35), `acp_child` (5), `child_events` (1),
+`child_stream` (1), `client_run` (8), `cross_product` (57), `depth_gate` (4), `harness_matrix` (8),
+`journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `native_facade_e2e` (2),
+`native_facade_spawn` (1), `no_git` (5), `node_attach` (2), `pane_attach` (2),
+`permission_round_trip` (9), `restart_resume` (0), `timeout_kill` (1), `turn_delivery` (2),
+`user_agent_types` (3), `verification` (4), `worktree_reap` (11). `permission_round_trip`'s three
+`report` probes had gone red *before* this release and were suspected of being claude drift; they
+were marion's own: the run was on 2.1.280 (its `system/init` says so) and c9a2406 had stopped
+listing `report` to a declared root, so claude answered `No such tool available` and never asked.
+The probes now drop `MARION_DEPTH` from the root's declaration (test-side; production unchanged)
+and ask on 2.1.283 as the recording does. `turn_delivery` runs through the gate from this
+admission on. The probes under `spikes/` were not re-run.
 
 **goose 1.52.0, admitted 2026-09-27 via `scripts/admit-harness.sh`.** Homebrew replaced 1.51.0 in
 place. Green with only the entry widened: `marion-testsupport` (35), `cross_product` (57),

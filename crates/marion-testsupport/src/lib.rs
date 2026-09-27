@@ -625,9 +625,16 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // unchanged in 2.1.276, 2.1.278 and 2.1.280.
         //
         // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
+        // 2.1.283: observed green on Darwin 25.5.0, 2026-09-27, via scripts/admit-harness.sh
+        // (claude 2.1.283 in one run): marion-testsupport (35), acp_child (5), child_events (1),
+        // child_stream (1), client_run (8), cross_product (57), depth_gate (4), harness_matrix
+        // (8), journal_wiring (18), m1_hop (1), m4_fan_in (1), native_facade_e2e (2),
+        // native_facade_spawn (1), no_git (5), node_attach (2), pane_attach (2),
+        // permission_round_trip (9), restart_resume (0), timeout_kill (1), turn_delivery (2),
+        // user_agent_types (3), verification (4), worktree_reap (11).
         accepted: &[
             "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
-            "2.1.268", "2.1.269", "2.1.280",
+            "2.1.268", "2.1.269", "2.1.280", "2.1.283",
         ],
     },
     PinnedHarness {
