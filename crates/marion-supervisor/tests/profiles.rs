@@ -691,3 +691,162 @@ fn a_root_runs_on_the_named_profile_and_a_node_may_not_choose_one() {
         .expect_err("a node does not choose an account");
     assert!(refused.contains("must not state `profile`"), "{refused}");
 }
+
+/// `marion` itself, with the environment cleared down to `vars` — no real home, no real login.
+fn marion(vars: &[(&str, &Path)], args: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+    cmd.args(args).env_clear();
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("marion runs")
+}
+
+/// **`profile add` never runs a login, and `profile list` asks the harness's own probe.** The fake
+/// `claude` records every invocation: `add` makes none at all, `list` makes only `auth status
+/// --json` with the profile's variable set, and no argv anywhere carries `login`. The listed
+/// reading is the one a child's stream left, with its age.
+#[test]
+fn profile_add_runs_no_login_and_profile_list_reads_the_probe_and_the_stored_reading() {
+    let s = scratch("profiles-cli");
+    let dir = s.to_path_buf();
+    let (bin, home, config, data, state) = (
+        dir.join("bin"),
+        dir.join("home"),
+        dir.join("config"),
+        dir.join("data"),
+        dir.join("state"),
+    );
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+    let log = dir.join("invocations.log");
+    fake_claude(&bin, &log);
+    let path = PathBuf::from(format!("{}:/usr/bin:/bin", bin.display()));
+    let vars = [
+        ("PATH", path.as_path()),
+        ("HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+        ("XDG_DATA_HOME", data.as_path()),
+        ("MARION_STATE_DIR", state.as_path()),
+    ];
+
+    let added = marion(&vars, &["profile", "add", "claude", "work"]);
+    let stdout = String::from_utf8_lossy(&added.stdout);
+    assert!(
+        added.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let work = data.join("marion/profiles/claude-code/work");
+    assert!(
+        stdout.contains(&format!(
+            "CLAUDE_CONFIG_DIR='{}' claude auth login",
+            work.display()
+        )),
+        "the login is printed for the operator: {stdout}"
+    );
+    assert!(
+        std::fs::read_to_string(&log).unwrap_or_default().is_empty(),
+        "`profile add` ran the harness"
+    );
+    assert!(
+        work.join("settings.json")
+            .symlink_metadata()
+            .unwrap()
+            .is_symlink()
+    );
+
+    let listed = |want: &str| {
+        let out = marion(&vars, &["profile", "list"]);
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains(want), "{want:?} not in:\n{text}");
+        text
+    };
+    listed("work (claude) — logged out, never used");
+
+    std::fs::write(work.join(".fake-login"), "").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    std::fs::create_dir_all(state.join("profiles/claude-code")).unwrap();
+    std::fs::write(
+        state.join("profiles/claude-code/work.json"),
+        format!(
+            r#"{{"last_used_ms":{},"limit":{{"observed_ms":{},"status":"rejected","window":"five_hour","resets_at":0}}}}"#,
+            now - 7_200_000,
+            now - 120_000
+        ),
+    )
+    .unwrap();
+    let text = listed("work (claude) — logged in, used 2h ago");
+    assert!(
+        text.contains(
+            "last limit reading: rejected (five_hour), resets 1970-01-01T00:00:00.000Z — seen 2m ago"
+        ),
+        "{text}"
+    );
+
+    let invocations = std::fs::read_to_string(&log).unwrap();
+    for line in invocations.lines() {
+        assert!(
+            line.ends_with("|auth status --json"),
+            "only the status probe runs: {line}"
+        );
+        assert!(
+            line.starts_with(&format!("claude|{}|unset|", work.display())),
+            "{line}"
+        );
+        let argv = line.rsplit('|').next().unwrap();
+        assert!(
+            !argv.split(' ').any(|a| a == "login" || a == "/login"),
+            "{line}"
+        );
+    }
+    assert_eq!(invocations.lines().count(), 2, "one probe per list");
+}
+
+/// The same on codex, whose probe is `login status` read for `Not logged in`.
+#[test]
+fn a_codex_profile_is_listed_from_its_login_status_and_add_runs_nothing() {
+    let s = scratch("profiles-cli-codex");
+    let dir = s.to_path_buf();
+    let (bin, home, config, data) = (
+        dir.join("bin"),
+        dir.join("home"),
+        dir.join("config"),
+        dir.join("data"),
+    );
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let log = dir.join("invocations.log");
+    fake_codex(&bin, &log, &dir.join("gate"), &dir.join("root-argv"));
+    let path = PathBuf::from(format!("{}:/usr/bin:/bin", bin.display()));
+    let vars = [
+        ("PATH", path.as_path()),
+        ("HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+        ("XDG_DATA_HOME", data.as_path()),
+    ];
+    let added = marion(&vars, &["profile", "add", "codex", "cx"]);
+    let stdout = String::from_utf8_lossy(&added.stdout);
+    let home_dir = data.join("marion/profiles/codex/cx");
+    assert!(
+        stdout.contains(&format!("CODEX_HOME='{}' codex login", home_dir.display())),
+        "{stdout}"
+    );
+    assert!(std::fs::read_to_string(&log).unwrap_or_default().is_empty());
+    let list = || String::from_utf8_lossy(&marion(&vars, &["profile", "list"]).stdout).into_owned();
+    assert!(list().contains("cx (codex) — logged out"), "{}", list());
+    std::fs::write(home_dir.join(".fake-login"), "").unwrap();
+    assert!(list().contains("cx (codex) — logged in"), "{}", list());
+    for line in std::fs::read_to_string(&log).unwrap().lines() {
+        assert_eq!(
+            line,
+            format!("codex|{}|login status", home_dir.display()),
+            "only the status probe runs"
+        );
+    }
+}
