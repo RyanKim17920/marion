@@ -55,9 +55,12 @@ use marion_core::registry::Replay;
 use crate::run::SpawnObserver;
 use crate::spawn::ChildOutcome;
 
-/// How often the hold re-reads the registry. The registry is a follower of the journal and the
-/// grandchild's `Exited` lands as a file append, so this is a latency floor on release, not a
-/// correctness parameter.
+/// How often the hold pauses to be woken. Each pause is the node's turn boundary — a message for
+/// its next turn ends the hold (step 2) — and ends in a re-read of the subtree **only if the
+/// registry changed** since the last one (see [`hold_until`]): a grandchild's `Exited` lands as a
+/// journal append, which the registry's change signal reports, so an unchanged generation is an
+/// unchanged subtree. Where no follower is reading the journal the subtree is re-read every pause,
+/// as it always was. A latency floor on release, not a correctness parameter.
 const HOLD_POLL: Duration = Duration::from_millis(100);
 
 /// §7.6's gating set, stated totally: a descendant is **live** iff it is not `Exited(_)`, its
@@ -150,7 +153,7 @@ pub enum Held {
 /// **final** reading is what an expiry reports, so the contract names what was live at the
 /// moment the flag was set (§7.6: "records the set at whichever moment set the flag").
 pub fn hold(live: impl FnMut() -> Vec<AgentId>, deadline: Instant, poll: Duration) -> Held {
-    let slept = hold_until::<std::convert::Infallible>(live, deadline, poll, &mut |d| {
+    let slept = hold_until::<std::convert::Infallible>(live, deadline, poll, None, &mut |d| {
         std::thread::sleep(d);
         None
     });
@@ -162,14 +165,25 @@ pub fn hold(live: impl FnMut() -> Vec<AgentId>, deadline: Instant, poll: Duratio
 
 /// [`hold`], with each pause spent in `wait` rather than asleep: `wait(d)` blocks up to `d` and
 /// returns what woke it, which ends the hold as `Err`. `Ok` is the hold's own ending.
+///
+/// With `changes`, the subtree is re-read only when the registry's generation has moved since the
+/// last read. The generation is taken **before** the read, so a change that lands during it is a
+/// newer generation than the one recorded and is read on the next pass.
 fn hold_until<T>(
     mut live: impl FnMut() -> Vec<AgentId>,
     deadline: Instant,
     poll: Duration,
+    changes: Option<&crate::wake::Signal>,
     wait: &mut dyn FnMut(Duration) -> Option<T>,
 ) -> Result<Held, T> {
+    let mut read_at: Option<u64> = None;
+    let mut now = Vec::new();
     loop {
-        let now = live();
+        let generation = changes.map(|c| c.generation());
+        if generation.is_none() || generation != read_at {
+            now = live();
+            read_at = generation;
+        }
         if now.is_empty() {
             return Ok(Held::Released);
         }
@@ -321,10 +335,12 @@ pub fn gate_or_woken<T>(
                 live.len(),
                 names(&live)
             );
+            let changes = crate::registry::changes_for(&project.journal());
             let held = hold_until(
                 || observer.live_descendants(agent_id).unwrap_or_default(),
                 Instant::now() + remaining,
                 HOLD_POLL,
+                changes.as_deref(),
                 wait,
             );
             let held = match held {
@@ -710,6 +726,83 @@ mod tests {
             panic!("nothing woke it, so the bound expired: {settled:?}")
         };
         assert!(g.held_to_timeout);
+    }
+
+    /// An owner with one live descendant until told otherwise, counting how often it is asked.
+    #[derive(Default)]
+    struct Counted {
+        asked: std::sync::atomic::AtomicUsize,
+        released: std::sync::atomic::AtomicBool,
+    }
+    impl SpawnObserver for Counted {
+        fn identified(&self, _: &AgentId) -> Option<String> {
+            None
+        }
+        fn started(&self, _: &AgentId, _: i32) {}
+        fn live_descendants(&self, _: &AgentId) -> Option<Vec<AgentId>> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.asked.fetch_add(1, SeqCst);
+            Some(if self.released.load(SeqCst) {
+                vec![]
+            } else {
+                vec![id("g")]
+            })
+        }
+    }
+
+    /// **A hold re-reads the subtree when the registry changes, not on a timer.** Each read
+    /// refreshes the registry and walks the node's subtree under its lock; a descendant's `Exited`
+    /// arrives as a journal append, which is exactly what the registry's change signal reports.
+    #[test]
+    fn a_hold_rewalks_the_subtree_only_when_the_registry_changes() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = marion_testsupport::scratch("descendant-gate-quiet");
+        let project = ProjectDir::new(&dir.join("state"), std::path::Path::new("/nowhere"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let _registry = crate::registry::LiveRegistry::follow(
+            crate::registry::Registry::boot_path(&project.journal()).unwrap(),
+            Duration::from_secs(3600),
+        );
+        let observer = std::sync::Arc::new(Counted::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let observer = std::sync::Arc::clone(&observer);
+            let project = project.clone();
+            std::thread::spawn(move || {
+                let stopped = ChildOutcome {
+                    exit_code: Some(0),
+                    ..ChildOutcome::default()
+                };
+                let _ = tx.send(gate(
+                    &*observer,
+                    &id("n"),
+                    &project,
+                    &stopped,
+                    std::time::SystemTime::now(),
+                    Duration::from_secs(60),
+                ));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(600));
+        let asked = observer.asked.load(SeqCst);
+        assert!(
+            asked <= 3,
+            "{asked} subtree walks in 600 ms of a hold nothing changed (the hold's own record is one \
+             change)"
+        );
+        observer.released.store(true, SeqCst);
+        crate::journal::append_at(
+            &project.journal(),
+            RecordKind::StateChanged(StateChanged {
+                agent_id: id("g"),
+                state: NodeState::Running,
+            }),
+        )
+        .unwrap();
+        let gated = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the change did not end the hold");
+        assert!(!gated.held_to_timeout, "released, not expired: {gated:?}");
     }
 
     /// An owner that cannot see the tree leaves the gate's two flags unset and holds nothing — and

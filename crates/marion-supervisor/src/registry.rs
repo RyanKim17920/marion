@@ -442,6 +442,7 @@ impl LiveRegistry {
         let inner = Arc::new(Mutex::new(registry));
         let stop = Arc::new(AtomicBool::new(false));
         let changes = crate::wake::Signal::new();
+        register_changes(&path, &changes);
         let wake = crate::wake::Pipe::new().ok().map(Arc::new);
         if let Some(wake) = &wake {
             crate::journal::listen(&path, wake);
@@ -543,6 +544,28 @@ impl Drop for LiveRegistry {
     fn drop(&mut self) {
         self.halt();
     }
+}
+
+/// Every live follower's change signal in this process, by journal path — for a waiter that holds
+/// the project but not the registry (`descendant_gate`'s hold). Weak: a stopped follower is not
+/// kept alive by being findable.
+static CHANGES: Mutex<Vec<(PathBuf, std::sync::Weak<crate::wake::Signal>)>> =
+    Mutex::new(Vec::new());
+
+fn register_changes(path: &Path, changes: &Arc<crate::wake::Signal>) {
+    let mut all = CHANGES.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(_, c)| c.strong_count() > 0);
+    all.push((path.to_path_buf(), Arc::downgrade(changes)));
+}
+
+/// [`LiveRegistry::changes`] for whichever follower in this process is reading `journal`, if one
+/// is. `None` means nothing will report a change and the caller keeps its own cadence.
+pub(crate) fn changes_for(journal: &Path) -> Option<Arc<crate::wake::Signal>> {
+    let all = CHANGES.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter()
+        .rev()
+        .filter(|(p, _)| p == journal)
+        .find_map(|(_, c)| c.upgrade())
 }
 
 /// One poll, and a [`LiveRegistry::changes`] notification if it changed anything a reader can see.
