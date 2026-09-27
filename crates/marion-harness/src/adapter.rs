@@ -2550,6 +2550,8 @@ mod tests {
                     "/state/x/config/mcp.json",
                     "--setting-sources",
                     "",
+                    "--settings",
+                    r#"{"disableAllHooks":true}"#,
                     "--model",
                     "haiku",
                 ],
@@ -3352,6 +3354,8 @@ mod tests {
                     "/state/x/config/mcp.json",
                     "--setting-sources",
                     "",
+                    "--settings",
+                    r#"{"disableAllHooks":true}"#,
                     "--model",
                     "haiku",
                 ]
@@ -3902,6 +3906,73 @@ mod tests {
                 .expect("canned keeps the operator's settings out");
             assert_eq!(inv.args[i + 1], "");
         }
+    }
+
+    /// **A claude node marion launches runs none of the operator's hooks, while still reading the
+    /// settings its login may live in.** Loading the operator's settings (the test above) also
+    /// loads their hooks and their plugins' hooks, and a `Stop` hook that blocks — a review gate —
+    /// would hold or loop a headless node no one is watching. `--settings '{"disableAllHooks":
+    /// true}'` merges one key over their layers: measured on 2.1.283 with a config dir whose
+    /// `settings.json` carried an `env` credential (and, separately, an `apiKeyHelper`) plus user
+    /// `SessionStart`/`UserPromptSubmit`/`Stop` hooks and an installed plugin's `SessionStart`/`Stop`
+    /// hooks, no hook fired and the request still reached the endpoint with the settings' key.
+    /// Control-protocol hook callbacks registered in `initialize` still fire under it.
+    ///
+    /// Every shape marion launches carries it, headless and pane, live and canned (where
+    /// `--setting-sources ""` already keeps the hooks out, so it is redundant, not different).
+    /// The native facade does not: there the operator drives their own claude, hooks and all.
+    #[test]
+    fn a_claude_node_marion_launches_runs_no_operator_hooks_but_the_native_facade_does() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..claude_spec()
+        };
+        for (shape, inv) in [
+            ("live headless", ClaudeCodeAdapter.compile(&live, &ctx())),
+            ("live pane", ClaudeCodeAdapter.compile_pane(&live, &ctx())),
+            (
+                "canned headless",
+                ClaudeCodeAdapter.compile(&claude_spec(), &ctx()),
+            ),
+            (
+                "canned pane",
+                ClaudeCodeAdapter.compile_pane(&claude_spec(), &ctx()),
+            ),
+        ] {
+            let args = inv.unwrap().args;
+            let i = args
+                .iter()
+                .position(|a| a == "--settings")
+                .unwrap_or_else(|| panic!("{shape}: no hooks-off overlay: {args:?}"));
+            let overlay: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+            assert_eq!(
+                overlay,
+                serde_json::json!({"disableAllHooks": true}),
+                "{shape}: the overlay turns hooks off and adds nothing else"
+            );
+        }
+
+        let native = native_adapter(Harness::ClaudeCode).unwrap();
+        let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
+        let injection = native
+            .prepare_native(&NativeNodeContext {
+                bridge: &bridge_env(&live, &ctx()),
+                document_dir: &PathBuf::from("/state/agents/019f-root"),
+                allowed_marion_tools: &["spawn", "wait", "status"],
+                environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+            })
+            .unwrap();
+        assert!(
+            !injection.argv_prefix.iter().any(|a| a == "--settings"),
+            "the operator's own claude keeps their hooks: {:?}",
+            injection.argv_prefix
+        );
     }
 
     /// **Canned mode is byte-identical to what it produced before the auth axis existed**, on all
@@ -7546,6 +7617,13 @@ mod tests {
         "--data-dir",
     ];
 
+    /// The one value a live launch may pass a [`CONFIG_EXCLUDING_FLAGS`] switch, allowed
+    /// deliberately: claude's `--settings` *merges* over the operator's layers, and this overlay
+    /// adds only `disableAllHooks`. Turning hooks off hides no credential — measured on 2.1.283,
+    /// a settings `env` key and an `apiKeyHelper` both still reached the endpoint under it.
+    /// Spelled out rather than borrowed from the row, so widening the row's overlay fails here.
+    const HOOKS_ONLY_OVERLAY: (&str, &str) = ("--settings", r#"{"disableAllHooks":true}"#);
+
     /// Keys that select an auth route, a provider or a credential, in any declaration document or
     /// inline override marion writes.
     const AUTH_SELECTING_KEYS: &[&str] = &[
@@ -7573,8 +7651,13 @@ mod tests {
             );
         }
         for flag in CONFIG_EXCLUDING_FLAGS {
+            let excluding = |(i, a): (usize, &String)| {
+                a == flag
+                    && (*flag, args.get(i + 1).map(String::as_str))
+                        != (HOOKS_ONLY_OVERLAY.0, Some(HOOKS_ONLY_OVERLAY.1))
+            };
             assert!(
-                !args.iter().any(|a| a == flag),
+                !args.iter().enumerate().any(excluding),
                 "{who}: a live launch carries {flag}, which hides the operator's own \
                  configuration: {args:?}"
             );

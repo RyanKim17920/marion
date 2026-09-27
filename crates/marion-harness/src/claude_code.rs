@@ -27,6 +27,11 @@ use crate::surfaces::TypedKind;
 /// [`SPEC`]'s live declaration and `ClaudeCodeAdapter::config_files`.
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
 
+/// The `--settings` overlay every node marion launches carries: the operator's hooks off, their
+/// settings otherwise as they wrote them. Not on the native facade, where the operator drives
+/// their own claude.
+pub const HOOKS_OFF_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
 /// [`mcp_config_json`] as the bytes `--mcp-config` reads: the live declaration's body.
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
     serde_json::to_string_pretty(&mcp_config_json(b)).expect("a Value always serialises")
@@ -70,6 +75,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // `--setting-sources=user`. A live node runs on the operator's settings as they wrote them.
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
+        // None of the operator's hooks, user or plugin, run in a node marion launches: a blocking
+        // `Stop` hook (a review gate) would hold or loop a node no one is watching. `--settings`
+        // merges this one key over their layers, so the credential keys the line above keeps
+        // (`apiKeyHelper`, the `env` block) still apply — measured on 2.1.283 (MILESTONES,
+        // verified harness facts). Both modes: redundant under canned, where the exclusion above
+        // already keeps hooks out. Hook callbacks marion registers in `initialize` still fire.
+        Arg::Lit("--settings"),
+        Arg::Lit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
     ],
@@ -83,6 +96,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Flag("--mcp-config", Field::McpConfig),
         Arg::CannedLit("--setting-sources"),
         Arg::CannedLit(""),
+        Arg::Lit("--settings"),
+        Arg::Lit(HOOKS_OFF_SETTINGS),
         Arg::Flag("--model", Field::Model),
         Arg::Resume,
         Arg::PosIfNonEmpty(Field::Prompt),
@@ -440,6 +455,8 @@ mod tests {
         );
     }
 
+    /// The hooks-off overlay is the one token with a `"` in it, and its quotes are JSON syntax
+    /// that claude parses, not shell quoting around a value.
     #[test]
     fn nothing_is_shell_quoted_because_nothing_reaches_a_shell() {
         let inv = compile(&root());
@@ -447,6 +464,7 @@ mod tests {
         assert!(
             inv.args
                 .iter()
+                .filter(|a| *a != HOOKS_OFF_SETTINGS)
                 .all(|a| !a.contains('\'') && !a.contains('"'))
         );
     }

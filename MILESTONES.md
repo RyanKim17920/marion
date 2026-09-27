@@ -938,6 +938,35 @@ no user hooks**. That is the pair that matters for isolation and cost, and MCP t
 were unaffected — but the design doc previously implied a clean sweep. **The counts are this
 machine's configuration and are illustrative**; the durable finding is qualitative.
 
+**`--settings '{"disableAllHooks":true}'` turns off every operator hook and keeps their settings
+credential; nothing turns off their plugins as generically.** *(Claude Code 2.1.283, macOS darwin
+25.5.0, measured 2026-09-27 against a throwaway `CLAUDE_CONFIG_DIR` and a local fake Messages
+endpoint, no real account.)* The config dir's `settings.json` carried the credential (an `env` block
+with `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`; separately, an `apiKeyHelper`), user
+`SessionStart`/`UserPromptSubmit`/`Stop` hooks that touch marker files, and one installed plugin
+with its own `SessionStart`/`Stop` hooks and a skill. Results, headless `-p` with
+`--strict-mcp-config`:
+
+| extra flags | hooks fired | plugin loaded | request reached the fake with the settings' key |
+|---|---|---|---|
+| none | all five | yes | yes |
+| `--settings '{"disableAllHooks":true}'` | **none** | yes (skill listed) | **yes** (env key; `apiKeyHelper` too, as `Bearer`) |
+| `--safe-mode` | none | listed, skill gone | yes, but **`--mcp-config` servers dropped** (`mcp_servers: []`, no `mcp__` tool in the request) and CLAUDE.md unread |
+| `--settings` with `enabledPlugins: {}` | none | yes | yes: `{}` merges, it does not clear |
+| `--settings` with `enabledPlugins: {"<name>": false}` | none | no | yes, but needs each plugin's name |
+| `--setting-sources ""` | none | no | **no**: `Not logged in` |
+
+`--settings` merges over the operator's layers even when their own `settings.json` says
+`"disableAllHooks": false`. Hook callbacks registered in the stream-json `initialize` request still
+fire under the overlay (`UserPromptSubmit` and `Stop` callbacks both arrived), so a future
+control-protocol `Stop` re-prompt (§7.6) is unaffected. An interactive run (pty, trust accepted)
+behaves the same: without the overlay the user and plugin `SessionStart` hooks fire, with it none
+do. `--safe-mode` is unusable for marion because it drops marion's own MCP declaration; no
+`--no-plugins` flag or `CLAUDE_CODE_*` switch exists in `--help`. So every claude node marion
+launches (headless and pane, both auth modes) carries the overlay, and the native facade, where the
+operator drives their own claude, does not. The operator's plugin skills, agents and commands still
+load in a live node; `--strict-mcp-config` keeps plugin MCP servers out.
+
 **`codex exec` resends the conversation: the Responses `input` grows with prior turns** — measured
 `ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
 from `tests/fixtures/s6/`, whose request log is reduced and strips `input`.
