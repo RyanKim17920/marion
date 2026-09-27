@@ -797,6 +797,7 @@ pub fn apply_native(
     let carrier = carrier(harness)?;
     env.retain(|(k, _)| k != carrier.env && !carrier.clear.iter().any(|c| k == c));
     env.push((carrier.env.into(), profile.dir.clone().into()));
+    record_used(&paths, &profile, crate::clock::unix_millis());
     Ok(Some(profile))
 }
 
