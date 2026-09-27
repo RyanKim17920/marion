@@ -37,3 +37,6 @@ crates/marion-supervisor/src/provider_check.rs:CredentialRow  `id` is a credenti
 crates/marion-harness/src/spec.rs:KeyRecipe  `note` is the row's measurement prose; the recipe names header spellings, never a key
 crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("Authorization: Bearer" / "x-api-key") into a refusal; no key is in scope
 crates/marion-supervisor/src/bin/marion.rs:tests::the_usage_text_names_login_and_logout  asserts the help text names `marion login --list`; runs nothing
+
+# --- verified safe: profiles (2026-09-27) ---
+crates/marion-harness/src/profile.rs:tests::CARRIER  a fixture carrier's `login_hint`, the words `marion profile add` prints for the operator; nothing runs it
