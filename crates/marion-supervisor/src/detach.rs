@@ -719,8 +719,24 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
         return;
     };
     std::thread::spawn(move || {
+        // The lock and its directory, watched: removing `<state>/<hash>` unlinks the lock, which
+        // is a vnode event the kernel reports at once. Anything the watches cannot see — a socket
+        // unlinked on its own, a platform with no watch — is the safety poll's.
+        let mut watches: Vec<crate::wake::Watch> = sentry
+            .watched_paths()
+            .iter()
+            .map(|p| crate::wake::Watch::new(p))
+            .collect();
         loop {
-            std::thread::sleep(ENTITLEMENT_POLL);
+            let fds: Vec<_> = watches.iter().filter_map(|w| w.fd()).collect();
+            if fds.is_empty() {
+                std::thread::sleep(ENTITLEMENT_POLL);
+            } else {
+                crate::wake::wait_readable(&fds, Some(ENTITLEMENT_POLL));
+            }
+            for watch in &mut watches {
+                watch.rearm();
+            }
             if sentry.still_entitled() {
                 continue;
             }
@@ -730,13 +746,14 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
     });
 }
 
-/// How often the supervisor re-checks that it is still the supervisor.
+/// The supervisor's **safety** re-check that it is still the supervisor.
 ///
-/// Two `stat`s a second, which is not a measurement of anything and does not need to be: the event
-/// it watches for is an operator removing a directory, and the cost of noticing a second later is a
-/// second of a split brain that has already happened. Polling is the only shape available —
-/// `<state>/<hash>` going away is not an event any descriptor here delivers.
-const ENTITLEMENT_POLL: Duration = Duration::from_millis(500);
+/// Not the latency: the lock file and its directory are watched, so removing `<state>/<hash>` is
+/// noticed when it happens. This bounds what a watch cannot see — the socket unlinked on its own
+/// (a socket cannot be opened to be watched), a platform without a watch — and the cost of
+/// noticing that a few seconds late is a few seconds of a split brain that has already happened.
+/// It used to be the latency, at two `stat` rounds a second.
+const ENTITLEMENT_POLL: Duration = Duration::from_secs(5);
 
 /// The detached supervisor's **safety** poll of its journal.
 ///

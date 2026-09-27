@@ -385,7 +385,10 @@ mod imp {
                 inotify::add_watch(
                     &self.fd,
                     target,
+                    // `ATTRIB` for an unlink: a file someone still holds open (a lock) loses a link
+                    // without being deleted, so `DELETE_SELF` would not fire.
                     inotify::WatchFlags::MODIFY
+                        | inotify::WatchFlags::ATTRIB
                         | inotify::WatchFlags::DELETE_SELF
                         | inotify::WatchFlags::MOVE_SELF,
                 )

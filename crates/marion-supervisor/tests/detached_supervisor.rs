@@ -400,11 +400,18 @@ fn a_supervisor_whose_state_directory_is_removed_stands_down_rather_than_serving
     assert_eq!(bed.supervisors(), vec![id.pid]);
 
     // Exactly what defeats the lock: the pathnames survive the removal, the inodes do not.
+    let removed = std::time::Instant::now();
     std::fs::remove_dir_all(bed.paths.dir()).expect("remove the project's directory");
     assert!(
         until(|| !alive(id.pid)),
         "an evicted supervisor holds a lock nobody can contend and a socket nobody can dial; it \
          must not go on holding them for the rest of the machine's uptime"
+    );
+    // Noticed by the watch on the lock and its directory, not by the 5 s safety poll behind it.
+    assert!(
+        removed.elapsed() < std::time::Duration::from_secs(4),
+        "the removal was noticed only by the safety poll ({:?})",
+        removed.elapsed()
     );
     drop(ensured);
 

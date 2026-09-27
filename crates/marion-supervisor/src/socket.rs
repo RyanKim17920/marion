@@ -702,6 +702,17 @@ impl Sentry {
             && FileId::at(&self.native_bootstrap_socket) == self.native_bootstrap_bound;
     }
 
+    /// The names whose removal or replacement ends the entitlement and that a file watch can see:
+    /// the lock and the directory holding it. (A socket cannot be opened to be watched; its
+    /// replacement is still caught by [`Self::still_entitled`] on the watcher's safety poll.)
+    pub fn watched_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.lock_path.clone()];
+        if let Some(dir) = self.lock_path.parent() {
+            paths.push(dir.to_path_buf());
+        }
+        paths
+    }
+
     /// What to say to an operator who finds the supervisor gone.
     pub fn why(&self) -> String {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
