@@ -85,3 +85,36 @@ where they disagree, that split decides. `docs/README.md` indexes the rest. `spi
 throwaway probe scripts that produced the measurements, and `tests/fixtures/` holds their
 recorded output — `tests/fixtures/REVIEW.md` is the redaction ledger for that corpus, and any
 new fixture goes through it before it is committed.
+
+## Releasing
+
+Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`, 0.33.0).
+`dist-workspace.toml` is the configuration; `.github/workflows/release.yml` is generated from it
+by `dist generate` and is never edited by hand. One archive per target (macOS and glibc Linux,
+arm64 and x86_64) carries both `marion` and `marion-supervisor`, alongside a shell installer and
+a Homebrew formula named `marion`.
+
+To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The workflow
+builds every target, creates the GitHub Release, and pushes the formula to the tap. Pull
+requests run `dist plan` only.
+
+Before changing the configuration, check it locally:
+
+```sh
+dist plan                                             # what a release would contain
+dist build --artifacts=local --target aarch64-apple-darwin   # one archive, for the host
+dist generate --check                                 # release.yml matches the config
+```
+
+**One-time setup the owner does outside this repository** (nothing here can do it):
+
+1. Create the public repository `RyanKim17920/homebrew-tap`, with a default branch. It may be
+   empty; the first release adds `Formula/marion.rb`.
+2. Create a fine-grained personal access token with **Contents: read and write** on that tap
+   repository only, and add it to this repository as the Actions secret `HOMEBREW_TAP_TOKEN`
+   (Settings → Secrets and variables → Actions). The publish job fails without it.
+
+The workflow asks for `contents: write` itself, so no repository-wide Actions setting changes.
+
+After that, `brew install RyanKim17920/tap/marion` and the `curl … | sh` line on the release
+page both work.

@@ -78,3 +78,11 @@ marion-testsupport = { path = "../marion-testsupport" }
 # screen's driver — it lives in this crate because this is where the greying is decided, and a
 # snapshot taken in `marion-tui` would be a snapshot of availability bits a test invented.
 insta = "1"
+
+# The one package cargo-dist ships (dist-workspace.toml). Every crate here is `publish = false`,
+# which dist reads as "not for release" unless told otherwise; this one carries both user-facing
+# binaries, `marion` and `marion-supervisor`, into a single archive, and the Homebrew formula is
+# named for the command people type rather than for the crate.
+[package.metadata.dist]
+dist = true
+formula = "marion"
