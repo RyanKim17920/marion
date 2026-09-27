@@ -464,7 +464,7 @@ impl Session {
             .iter()
             .filter(|h| **h != H::Acp)
             .map(|h| Harness {
-                name: h.to_string(),
+                name: h.cli_name().to_string(),
                 version: None,
                 ready: Ready::Checking,
                 note: "checking…".into(),
@@ -533,11 +533,12 @@ fn copy(text: &str) {
     let _ = out.flush();
 }
 
-/// The name a harness is shown and matched under: its own name, or `acp <agent>` for an ACP row.
+/// The name a harness is shown and matched under — the one doctor's rows carry (`doctor::label`):
+/// its command name, or `acp <agent>` for an ACP row.
 fn harness_name(h: marion_core::harness::Harness, acp_agent: Option<&str>) -> String {
     match (h, acp_agent) {
         (marion_core::harness::Harness::Acp, Some(a)) => format!("acp {a}"),
-        _ => h.to_string(),
+        _ => h.cli_name().to_string(),
     }
 }
 

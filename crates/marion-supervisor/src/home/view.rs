@@ -186,7 +186,7 @@ fn watch(home: &Home) -> WatchView {
         rows.push(NodeRow {
             id: n.agent_id.0.clone(),
             prefix: prefix.to_string(),
-            harness: n.harness.to_string(),
+            harness: n.harness.cli_name().to_string(),
             kind: n.name.clone().unwrap_or_else(|| kind_of(n)),
             short: short_id(&n.agent_id.0).to_string(),
             tone: tnode.tone,
@@ -211,7 +211,7 @@ fn watch(home: &Home) -> WatchView {
 /// nothing for a plain type (`codex` on codex), `orchestrator` for `claude-orchestrator`, the whole
 /// type for a custom one.
 fn kind_of(n: &NodeSummary) -> String {
-    let harness = n.harness.to_string();
+    let harness = n.harness.cli_name().to_string();
     let t = n.agent_type.as_str();
     let head = t.split('-').next().unwrap_or(t);
     if !harness.starts_with(head) {

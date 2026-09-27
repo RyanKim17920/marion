@@ -106,7 +106,7 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ✓ .marion/agents.toml: 2 types, valid
 
   LOGINS
-  sign in with each harness's own CLI; marion login will do it from here
+  API keys: marion login <provider>; subscription logins stay with each harness's own CLI
 
 
 
@@ -135,9 +135,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
    63  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  878  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  886  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
-   24  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminimarionlogin❯"
+   34  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminimarionlogin<"
    10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
    17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"
