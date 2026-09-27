@@ -54,7 +54,7 @@ use crate::grammar::{
 };
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
-    MidTurn, Push, Spelling, Surfaces, TurnDelivery, UpdatePolicy,
+    MidTurn, Push, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -90,6 +90,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // No launch-time channel: the declaration is sent after launch, so there is nothing a native
     // facade could inject, and no native adapter for this row.
     live_declaration: None,
+    // Marion's own pipe: the `session/new` request carries the token beside the node's identity.
+    token: TokenCarriers::DECLARATION,
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_TOOL_AVAILABILITY_SURFACE,

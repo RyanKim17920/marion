@@ -20,8 +20,8 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -121,6 +121,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: SETTINGS_FILE,
         body: live_settings_document,
     }),
+    token: TokenCarriers::DECLARATION,
     // On this harness the mode **is** the constraint: under `default` the mutating tools are
     // withheld from `functionDeclarations` entirely. Recorded in both states.
     constraint: Constraint::Mode {

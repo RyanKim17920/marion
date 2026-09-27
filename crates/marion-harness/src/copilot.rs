@@ -43,7 +43,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -167,6 +167,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "@",
         body: mcp_config_document,
     }),
+    token: TokenCarriers::DECLARATION,
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
     // `--available-tools` list, which only decides what the model sees. The prefix is load-bearing:
     // copilot's grant kind for the file tools is spelled `write`, the same six letters as marion's

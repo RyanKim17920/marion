@@ -37,8 +37,8 @@ use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When,
+    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -113,6 +113,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "",
         body: extension_source,
     }),
+    token: TokenCarriers::DECLARATION,
     // The `--tools` list itself, prefixed with its axis.
     constraint: Constraint::Allowed { prefix: "tools:" },
     resume: Some(Resume::Flag("--session")),

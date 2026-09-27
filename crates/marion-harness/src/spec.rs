@@ -37,7 +37,7 @@ use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
 use crate::jsonl_channel::JsonlChannel;
-use crate::mcp_bridge::BridgeEnv;
+use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_ENV};
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// The name marion gives its own MCP server in every declaration, and therefore half of every
@@ -89,6 +89,11 @@ pub struct HarnessSpec {
     /// hand-written adapters; the spec sweep checks it agrees with `mcp.live` and with what the
     /// managed live launch writes.
     pub live_declaration: Option<LiveDeclaration>,
+    /// How the node's capability token reaches the bridge, under each auth mode — inside the
+    /// declaration, or withheld from it and carried on the harness's own environment. A
+    /// declaration that rides argv must withhold it, because `ps` shows argv to every user on the
+    /// machine; the sweep `every_argv_declaration_withholds_the_node_token` holds every row to it.
+    pub token: TokenCarriers,
     /// §6.7's `TaskContract.allowed_tools`: what the audit record says this launch was constrained
     /// by, in this harness's own vocabulary.
     pub constraint: Constraint,
@@ -1227,6 +1232,88 @@ impl LiveDeclaration {
 pub struct McpRoutes {
     pub canned: McpRoute,
     pub live: McpRoute,
+}
+
+/// [`HarnessSpec::token`]: the node token's carrier under each auth mode, beside
+/// [`McpRoutes`] because the carrier a route can take depends on the route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenCarriers {
+    pub canned: TokenCarrier,
+    pub live: TokenCarrier,
+}
+
+impl TokenCarriers {
+    /// Both modes carry the token inside the declaration.
+    pub const DECLARATION: TokenCarriers = TokenCarriers {
+        canned: TokenCarrier::Declaration,
+        live: TokenCarrier::Declaration,
+    };
+
+    /// The carrier for a launch under `auth` — endpoint rides the canned route, as
+    /// `HarnessAdapter::mcp_route` has it.
+    pub fn for_auth(self, auth: Auth) -> TokenCarrier {
+        match auth {
+            Auth::Canned | Auth::Endpoint => self.canned,
+            Auth::Inherited => self.live,
+        }
+    }
+}
+
+/// How a node's capability token (`MARION_NODE_TOKEN`) travels from marion to the bridge the
+/// harness starts — measured per row, never assumed.
+///
+/// The declaration names the node; the token proves it. Where the declaration is a private
+/// document, an environment variable or marion's own ACP pipe, the token can sit inside it. Where
+/// the declaration rides **argv** it cannot: argv is readable through `ps` by every user on the
+/// machine. Then the token is withheld from the declaration and set on the harness's own
+/// environment, and the row states how the harness passes it on to the MCP server it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenCarrier {
+    /// Inside the declaration, beside the node's identity.
+    Declaration,
+    /// Withheld from the declaration and set on the harness's environment, which its MCP
+    /// launcher hands a stdio server whole. `note` names the measurement.
+    InheritedEnv { note: &'static str },
+    /// Withheld from the declaration and set on the harness's environment; the launcher hands a
+    /// server only an allowlist of the parent's variables, so the declaration names the token's
+    /// variable in the harness's own pass-through list ([`Self::forwarded`]). `note` names the
+    /// measurement.
+    ForwardedEnv { note: &'static str },
+}
+
+impl TokenCarrier {
+    /// Whether the declaration leaves the token out.
+    pub fn withholds(self) -> bool {
+        !matches!(self, TokenCarrier::Declaration)
+    }
+
+    /// The bridge as this carrier's declaration states it: `b` itself, or `b` without its token.
+    pub fn declared(self, b: &BridgeEnv) -> BridgeEnv {
+        let mut declared = b.clone();
+        if self.withholds() {
+            declared.node_token = None;
+        }
+        declared
+    }
+
+    /// What the harness's own environment carries for its bridge: the token, where this carrier
+    /// withholds it from the declaration and one was minted. Present or absent, never empty.
+    pub fn process_env(self, b: &BridgeEnv) -> Vec<(String, String)> {
+        match (self.withholds(), &b.node_token) {
+            (true, Some(t)) => vec![(NODE_TOKEN_ENV.to_string(), t.expose().to_string())],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The variables a declaration must name for its harness to pass them on — the token's, under
+    /// [`Self::ForwardedEnv`]; none otherwise. Named whether or not a token was minted: passing
+    /// on an unset variable passes nothing (measured on codex 0.145.0 through 0.155.1).
+    pub fn forwarded(self) -> &'static [&'static str] {
+        match self {
+            TokenCarrier::ForwardedEnv { .. } => &[NODE_TOKEN_ENV],
+            TokenCarrier::Declaration | TokenCarrier::InheritedEnv { .. } => &[],
+        }
+    }
 }
 
 /// The channel a launch's MCP declaration travels on — stated by the row, never inferred.

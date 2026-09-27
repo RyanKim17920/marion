@@ -23,7 +23,7 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -170,6 +170,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "",
         body: mcp_config_document,
     }),
+    token: TokenCarriers::DECLARATION,
     // The one harness with a real per-tool allowlist: the record is the literal contents of
     // `--allowedTools`, which is the flag the CLI checks a call against.
     constraint: Constraint::Allowed { prefix: "" },

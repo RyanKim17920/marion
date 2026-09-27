@@ -38,7 +38,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
     LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    ToolSpelling, TurnDelivery, UpdatePolicy,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -108,6 +108,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_CONFIG_FILE,
         body: mcp_config_document,
     }),
+    token: TokenCarriers::DECLARATION,
     constraint: Constraint::Mode {
         prefix: "mode:",
         default: DEFAULT_MODE,

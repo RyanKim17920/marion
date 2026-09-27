@@ -52,8 +52,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -145,6 +145,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_SETTINGS_FILE,
         body: mcp_settings_document,
     }),
+    token: TokenCarriers::DECLARATION,
     // marion compiles no constraint at all, and says so (opencode's record, for the same reason).
     constraint: Constraint::Fixed {
         prefix: "harness-default:",

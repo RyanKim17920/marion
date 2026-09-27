@@ -27,8 +27,8 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -208,6 +208,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: CONFIG_CONTENT_ENV,
         body: live_config_document,
     }),
+    token: TokenCarriers::DECLARATION,
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_COMPILED_TOOL_CONSTRAINT,

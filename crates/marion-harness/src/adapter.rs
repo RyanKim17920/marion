@@ -363,7 +363,9 @@ pub trait HarnessAdapter {
                        over the protocol; this harness has no ACP session to set it in",
             });
         }
-        render_row(self.spec(), spec::Shape::Headless, &f)
+        let mut inv = render_row(self.spec(), spec::Shape::Headless, &f)?;
+        inv.env.extend(bridge_process_env(self, spec, ctx));
+        Ok(inv)
     }
 
     /// §3.1's two axes in this harness's spelling, or the first refusal.
@@ -444,7 +446,18 @@ pub trait HarnessAdapter {
             return Err(HarnessError::NoPaneSurface(self.harness()));
         }
         let f = self.fields(spec, ctx, spec::Shape::Pane)?;
-        render_row(self.spec(), spec::Shape::Pane, &f)
+        let mut inv = render_row(self.spec(), spec::Shape::Pane, &f)?;
+        inv.env.extend(bridge_process_env(self, spec, ctx));
+        Ok(inv)
+    }
+
+    /// How this launch's node token reaches its bridge: the row's carrier for the launch's auth
+    /// mode ([`spec::HarnessSpec::token`]). Every declaration an adapter writes is of
+    /// [`declared_bridge`], which this carrier has already stripped where it must, and `compile`
+    /// sets what it withheld on the process environment — so no adapter handles the token itself.
+    /// An adapter bound to a refinement row with a carrier of its own answers for it here.
+    fn token_carrier(&self, spec: &LaunchSpec) -> spec::TokenCarrier {
+        self.spec().token.for_auth(spec.auth)
     }
 
     /// The configuration files this harness needs, as `(absolute path, contents)`. The caller
@@ -862,6 +875,33 @@ fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
     }
 }
 
+/// **The bridge as this launch's declaration states it**: [`bridge_env`], with the node token
+/// withheld where the launch's [`HarnessAdapter::token_carrier`] carries it on the environment
+/// instead. The one bridge an adapter's `fields` and `config_files` hooks write from.
+fn declared_bridge<A: HarnessAdapter + ?Sized>(
+    adapter: &A,
+    spec: &LaunchSpec,
+    ctx: &SpawnCtx,
+) -> BridgeEnv {
+    adapter.token_carrier(spec).declared(&bridge_env(spec, ctx))
+}
+
+/// What the harness process's environment carries for its bridge: the node token, where the
+/// launch's carrier withholds it from the declaration — and nothing where no declaration was asked
+/// for, since then no bridge starts to read it.
+fn bridge_process_env<A: HarnessAdapter + ?Sized>(
+    adapter: &A,
+    spec: &LaunchSpec,
+    ctx: &SpawnCtx,
+) -> Vec<(String, String)> {
+    match spec.mcp {
+        McpDeclaration::Marion => adapter
+            .token_carrier(spec)
+            .process_env(&bridge_env(spec, ctx)),
+        McpDeclaration::None => Vec::new(),
+    }
+}
+
 /// [`spec::render`] with its refusals named for this harness: a row with no pane shape, a launch
 /// that named no program where the row expected one (an ACP adapter bound to no agent), and a
 /// resume this harness has no measured flag for.
@@ -952,7 +992,7 @@ impl ClaudeCodeAdapter {
     /// — so there is always a frame to withhold and always something for the marker to gate (§6.1
     /// step 8). A node launched without one takes its first turn with `tools: []` and nothing
     /// anywhere reports an error, which is why the absence is a refusal rather than a fallback.
-    fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<BridgeEnv, HarnessError> {
+    fn mcp_env(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<BridgeEnv, HarnessError> {
         if ctx.ready_file.is_none() {
             return Err(HarnessError::MissingInput {
                 harness: Harness::ClaudeCode,
@@ -961,7 +1001,7 @@ impl ClaudeCodeAdapter {
                        tools: [] and nothing anywhere reports an error",
             });
         }
-        Ok(bridge_env(spec, ctx))
+        Ok(declared_bridge(self, spec, ctx))
     }
 }
 
@@ -1033,7 +1073,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         }
         Ok(vec![(
             Self::mcp_config_path(spec),
-            claude_code::mcp_config_document(&Self::mcp_env(spec, ctx)?),
+            claude_code::mcp_config_document(&self.mcp_env(spec, ctx)?),
         )])
     }
 }
@@ -1087,7 +1127,9 @@ impl HarnessAdapter for CodexAdapter {
             (Auth::Inherited, McpDeclaration::None) => vec![codex::live_sandbox_override()],
             (Auth::Inherited, McpDeclaration::Marion) => {
                 std::iter::once(codex::live_sandbox_override())
-                    .chain(codex::live_config_overrides(&bridge_env(spec, ctx)))
+                    .chain(codex::live_config_overrides(&declared_bridge(
+                        self, spec, ctx,
+                    )))
                     .collect()
             }
         };
@@ -1119,7 +1161,7 @@ impl HarnessAdapter for CodexAdapter {
         // The bridge's identity reaches a codex node's `[mcp_servers.marion]` `env` — a codex
         // **root** without it answered `spawn` with `marion: MARION_REPO is not set`. Written on
         // every canned node, declaration or not: the document is the whole of the node's config.
-        let bridge = bridge_env(spec, ctx);
+        let bridge = declared_bridge(self, spec, ctx);
         Ok(vec![(
             Self::config_path(spec),
             codex::config_toml(&bridge, base_url),
@@ -1207,7 +1249,7 @@ impl HarnessAdapter for GeminiAdapter {
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
         // Unlike Claude Code, the file is written even with no MCP server: it also carries the
         // auth selection, without which the run dies with `Invalid auth method selected.`
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
         // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
         // `GEMINI_API_KEY` and so selects `gemini-api-key`; under `Inherited` it supplies no
         // credential at all, and this document is the *system settings* layer, which outranks the
@@ -1305,7 +1347,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         f.inline_config = match spec.auth {
             Auth::Canned | Auth::Endpoint => None,
             Auth::Inherited => (spec.mcp == McpDeclaration::Marion)
-                .then(|| opencode::live_config_document(&bridge_env(spec, ctx))),
+                .then(|| opencode::live_config_document(&declared_bridge(self, spec, ctx))),
         };
         Ok(f)
     }
@@ -1337,7 +1379,7 @@ impl HarnessAdapter for OpenCodeAdapter {
             what: "the provider block needs a baseURL; without one the child resolves no provider \
                    at all, and a provider that answers nothing is an unbounded hang (S13)",
         })?;
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
         let json = opencode::config_json(
             &opencode::ConfigSpec {
                 // Canned always resolves one: `model_ref` answers `None` only under `Inherited`,
@@ -1496,7 +1538,7 @@ impl HarnessAdapter for CopilotAdapter {
         }
         Ok(vec![(
             copilot::mcp_config_path(&spec.config_dir),
-            copilot::mcp_config_document(&bridge_env(spec, ctx)),
+            copilot::mcp_config_document(&declared_bridge(self, spec, ctx)),
         )])
     }
 }
@@ -1570,7 +1612,7 @@ impl HarnessAdapter for GooseAdapter {
         }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         if spec.mcp == McpDeclaration::Marion {
-            let bridge = bridge_env(spec, ctx);
+            let bridge = declared_bridge(self, spec, ctx);
             // goose splits the token on whitespace; a path it would split is refused by name
             // rather than declared as two arguments.
             if let Some(token) = goose::unspellable(&bridge) {
@@ -1582,7 +1624,6 @@ impl HarnessAdapter for GooseAdapter {
                 });
             }
             f.mcp_config = Some(goose::extension_declaration(&bridge));
-            f.extra_env = goose::inherited_env(&bridge);
         }
         Ok(f)
     }
@@ -1684,7 +1725,7 @@ impl HarnessAdapter for ClineAdapter {
         if spec.mcp == McpDeclaration::Marion {
             files.push((
                 cline::mcp_settings_path(&spec.config_dir),
-                cline::mcp_settings_document(&bridge_env(spec, ctx)),
+                cline::mcp_settings_document(&declared_bridge(self, spec, ctx)),
             ));
         }
         if spec.auth.overlays() {
@@ -1779,7 +1820,7 @@ impl HarnessAdapter for QwenAdapter {
         // codex's arrangement, for codex's reason: a live node's settings document is the
         // operator's own, and `--mcp-config` was measured carrying the same block inline.
         f.mcp_config = (spec.auth == Auth::Inherited && spec.mcp == McpDeclaration::Marion)
-            .then(|| qwen::mcp_config_document(&bridge_env(spec, ctx)));
+            .then(|| qwen::mcp_config_document(&declared_bridge(self, spec, ctx)));
         Ok(f)
     }
 
@@ -1794,7 +1835,7 @@ impl HarnessAdapter for QwenAdapter {
         if spec.auth == Auth::Inherited {
             return Ok(Vec::new());
         }
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
         Ok(vec![(
             qwen::settings_path(&spec.config_dir),
             serde_json::to_string_pretty(&qwen::settings_json(bridge.as_ref()))
@@ -1869,7 +1910,7 @@ impl HarnessAdapter for AntigravityAdapter {
         }
         Ok(vec![(
             antigravity::root_dir(&spec.config_dir).join(antigravity::MCP_CONFIG_FILE),
-            antigravity::mcp_config_document(&bridge_env(spec, ctx)),
+            antigravity::mcp_config_document(&declared_bridge(self, spec, ctx)),
         )])
     }
 }
@@ -1958,7 +1999,7 @@ impl HarnessAdapter for PiAdapter {
         if spec.mcp == McpDeclaration::Marion {
             files.push((
                 pi::extension_path(&spec.config_dir),
-                pi::extension_source(&bridge_env(spec, ctx)),
+                pi::extension_source(&declared_bridge(self, spec, ctx)),
             ));
         }
         if spec.auth == Auth::Canned {
@@ -2158,7 +2199,7 @@ impl HarnessAdapter for AcpAdapter {
         {
             f.agent_args.push(flag.to_string());
             f.agent_args
-                .push(copilot::mcp_config_json(&bridge_env(spec, ctx)).to_string());
+                .push(copilot::mcp_config_json(&declared_bridge(self, spec, ctx)).to_string());
         }
         // A resume rides `session/load` ([`Self::session_declaration`]), never argv: the row has no
         // `Arg::Resume` and the renderer would otherwise refuse the launch as one it cannot name a
@@ -2315,7 +2356,7 @@ impl HarnessAdapter for AcpAdapter {
                 name: acp::MCP_SERVER_NAME.into(),
                 command: ctx.bridge.clone(),
                 args: ctx.bridge_args.clone(),
-                env: bridge_env(spec, ctx).pairs(),
+                env: declared_bridge(self, spec, ctx).pairs(),
             }],
         };
         match &spec.resume {

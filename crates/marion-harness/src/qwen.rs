@@ -48,8 +48,8 @@ use serde_json::{Value, json};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -161,6 +161,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: MCP_CONFIG_KEY,
         body: mcp_config_document,
     }),
+    token: TokenCarriers::DECLARATION,
     // The `--core-tools` list itself, prefixed with its axis: the literal contents of what the
     // model was offered.
     constraint: Constraint::Allowed {

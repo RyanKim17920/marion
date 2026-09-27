@@ -43,15 +43,21 @@ use crate::grammar::{
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    McpRoute, McpRoutes, Push, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
 const HOME_DIR: &str = "home";
+
+/// goose's node-token carrier, in both modes: the process environment, which the extension child
+/// inherits ([`extension_declaration`] says why the declaration cannot carry it).
+const GOOSE_TOKEN_CARRIER: TokenCarrier = TokenCarrier::InheritedEnv {
+    note: "s26 on 1.49.0: the `--with-extension` child inherits the process environment \
+           (`goose-env-inherit.mcp.jsonl`)",
+};
 
 /// goose's row. Measured against 1.49.0 on 2026-09-05 (`tests/fixtures/s26/`), every probe against
 /// a canned local OpenAI Chat Completions endpoint at $0.00.
@@ -140,6 +146,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: EXTENSION_KEY,
         body: extension_declaration,
     }),
+    // goose persists every `ENV=v` pair of the `--with-extension` token in its session store, so
+    // the token rides the process environment in both modes; the extension child inherits it.
+    token: TokenCarriers {
+        canned: GOOSE_TOKEN_CARRIER,
+        live: GOOSE_TOKEN_CARRIER,
+    },
     // On goose the built-in extension **is** the constraint: recorded in both states, because a
     // node that ran with no builtin ran under a real one.
     constraint: Constraint::Mode {
@@ -400,16 +412,17 @@ pub fn home(config_dir: &std::path::Path) -> std::path::PathBuf {
 ///
 /// **The node token is not here.** goose stores every `ENV=v` pair of this string in its session
 /// store verbatim (`goose-session-list.json`), and a capability token written to a sqlite file
-/// under the node's own home is a token a later reader of that file holds. It travels on the
-/// process environment instead ([`inherited_env`]), which the extension child inherits
-/// (`goose-env-inherit.mcp.jsonl`). Every other pair is the node's identity and is stated here, so
-/// the declaration names the node the way every other harness's document does.
+/// under the node's own home is a token a later reader of that file holds. The row's carrier
+/// ([`GOOSE_TOKEN_CARRIER`]) withholds it from `b`, the declared bridge, and sets it on the process
+/// environment, which the extension child inherits (`goose-env-inherit.mcp.jsonl`). Every other
+/// pair is the node's identity and is stated here, so the declaration names the node the way every
+/// other harness's document does.
 ///
 /// Values with whitespace cannot be spelled in this grammar; the adapter refuses such a launch by
 /// name before rendering ([`unspellable`]), so this function never has to.
 pub fn extension_declaration(b: &BridgeEnv) -> String {
     let mut parts = vec![EXTENSION_KEY.to_string()];
-    for (k, v) in declared_pairs(b) {
+    for (k, v) in b.pairs() {
         parts.push(format!("{k}={v}"));
     }
     parts.push(b.bridge.to_string_lossy().into_owned());
@@ -417,23 +430,6 @@ pub fn extension_declaration(b: &BridgeEnv) -> String {
     // The name prefix joins the first pair (or the command) directly: `marion:K=V …`.
     let (head, tail) = parts.split_at(1);
     format!("{}{}", head[0], tail.join(" "))
-}
-
-/// [`BridgeEnv::pairs`] without the node token — what the declaration string carries.
-pub fn declared_pairs(b: &BridgeEnv) -> Vec<(String, String)> {
-    b.pairs()
-        .into_iter()
-        .filter(|(k, _)| k != NODE_TOKEN_ENV)
-        .collect()
-}
-
-/// What rides the process environment rather than the declaration: the node token, where one was
-/// minted. Present or absent, never empty — the bridge's own rule for it.
-pub fn inherited_env(b: &BridgeEnv) -> Vec<(String, String)> {
-    b.node_token
-        .iter()
-        .map(|t| (NODE_TOKEN_ENV.to_string(), t.expose().to_string()))
-        .collect()
 }
 
 /// The first token of the declaration that whitespace would split in two — the bridge program,
@@ -447,7 +443,7 @@ pub fn unspellable(b: &BridgeEnv) -> Option<String> {
     if let Some(a) = b.args.iter().find(|a| has_space(a)) {
         return Some(a.clone());
     }
-    declared_pairs(b)
+    b.pairs()
         .into_iter()
         .find(|(k, v)| has_space(k) || has_space(v))
         .map(|(k, v)| format!("{k}={v}"))
@@ -485,6 +481,7 @@ mod tests {
 
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::mcp_bridge::NODE_TOKEN_ENV;
     use crate::spec::{Axes, Fields, Shape, render};
     use crate::stream::{CallOutcome, MarionCall, StreamOutcome};
 
@@ -518,8 +515,8 @@ mod tests {
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("sk-fake".into()),
             axes: Axes::default(),
-            mcp_config: Some(extension_declaration(&b)),
-            extra_env: inherited_env(&b),
+            mcp_config: Some(extension_declaration(&GOOSE_TOKEN_CARRIER.declared(&b))),
+            extra_env: GOOSE_TOKEN_CARRIER.process_env(&b),
             ..Fields::default()
         }
     }
@@ -620,7 +617,7 @@ mod tests {
         // And where none was minted, nothing is set — never an empty string.
         let mut b = bridge();
         b.node_token = None;
-        assert!(inherited_env(&b).is_empty());
+        assert!(GOOSE_TOKEN_CARRIER.process_env(&b).is_empty());
         assert!(!extension_declaration(&b).contains(NODE_TOKEN_ENV));
     }
 

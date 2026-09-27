@@ -23,7 +23,7 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -158,6 +158,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: MCP_SERVER_KEY,
         pairs: live_config_overrides,
     }),
+    token: TokenCarriers::DECLARATION,
     // §3.1's worked example, verbatim: it replaces a hardcoded `["apply_patch", "shell"]` that
     // named tools codex never checked a call against. Constant, because marion compiles that one
     // sandbox mode on every node ([`config_toml`] canned, [`live_sandbox_override`] live).
