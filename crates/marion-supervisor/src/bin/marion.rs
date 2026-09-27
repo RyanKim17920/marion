@@ -144,6 +144,10 @@ struct Args {
     /// `--pane`: run the root in a terminal marion owns, attachable with `marion attach`. See
     /// `root::RootSpec::pane`.
     pane: bool,
+    /// `--detach`: start the root and return, leaving it to the supervisor — the same thing a paned
+    /// root always does. What the home screen's Start runs, and what a script that only wants the
+    /// node started asks for; `marion ls` and `marion attach` are the view.
+    detach: bool,
     /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
     /// is what a person at a terminal means, and the canned server is a test fixture.
     canned: bool,
@@ -669,6 +673,49 @@ fn steer_main(argv: &[String]) -> ExitCode {
     }
 }
 
+/// **The whole of `marion cancel`**: resolve the target (a whole id, or the short id a tree row
+/// shows) against one snapshot, send `node/kill` as the operator, and print what happened.
+///
+/// Exit 0 with the node's new state; exit 1 with the supervisor's own sentence when it refused —
+/// a node already ended, one still spawning with nothing to signal. Like `steer` it starts no
+/// supervisor, for `steer`'s reason. It does not ask for confirmation: a command typed at a shell
+/// is the confirmation, and the home screen asks before it runs this.
+fn cancel_main(argv: &[String]) -> ExitCode {
+    let Some(args) = parse_attach(argv) else {
+        usage()
+    };
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    let killed = marion_supervisor::tree::snapshot(&repo, &state)
+        .and_then(|nodes| marion_supervisor::tree::resolve_target(&args.agent_id, &nodes))
+        .and_then(|agent_id| {
+            let sock =
+                socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
+            marion_supervisor::courier::kill(sock.socket(), &agent_id)
+                .map(|r| (agent_id, r))
+                .map_err(|e| e.to_string())
+        });
+    match killed {
+        Ok((id, r)) => {
+            let state = match r.state {
+                marion_core::node::NodeState::Exited(s) => format!("{s:?}"),
+                other => format!("{other:?}"),
+            };
+            println!(
+                "marion: {} ended: {}",
+                marion_supervisor::tree::short_id(&id.0),
+                state.to_lowercase()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The two flags `attach` and `tree` share, resolved once.
 ///
 /// Extracted when the second verb needed it rather than in anticipation: the pair is a *repo* and
@@ -749,6 +796,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
         timeout_secs: None,
         no_change_record: false,
         pane: false,
+        detach: false,
         canned: false,
     };
     let mut rest = argv[2..].iter();
@@ -784,6 +832,7 @@ fn set_valueless_flag(args: &mut Args, flag: &str) -> bool {
         // conditional on is a decision, and it should read as one at the call site.
         "--no-change-record" => args.no_change_record = true,
         "--pane" => args.pane = true,
+        "--detach" => args.detach = true,
         // Accepted and inert. It used to select real auth, which is now the default; every
         // script and note already carrying it keeps working, and refusing it would break
         // them to say nothing the run does not already do.
@@ -2418,6 +2467,9 @@ fn legacy_main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("steer") {
         return steer_main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("cancel") {
+        return cancel_main(&argv);
+    }
     if argv.first().map(String::as_str) == Some("doctor") {
         return doctor_main(&argv[1..]);
     }
@@ -2516,6 +2568,7 @@ fn pick_args() -> Result<Args, ExitCode> {
             timeout_secs: None,
             no_change_record: false,
             pane: false,
+            detach: false,
             canned: false,
         }),
         // EOF: the operator changed their mind, which is not an error.
@@ -2767,6 +2820,14 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
         eprintln!("{}", pane_started_line(&root_id, &args.agent_type));
         return Ok(ExitCode::SUCCESS);
     }
+    // `--detach`: the same return for a headless root. The supervisor owns the node either way;
+    // this client only chose not to watch it.
+    if args.detach {
+        stop.store(true, Ordering::Relaxed);
+        let _ = poller.join();
+        println!("{}", detached_started_line(&root_id, &args.agent_type));
+        return Ok(ExitCode::SUCCESS);
+    }
     eprintln!(
         "marion: root {} ({}) in {}",
         root_id.0,
@@ -2814,6 +2875,19 @@ fn pane_started_line(root_id: &marion_core::contract::AgentId, agent_type: &str)
         "marion: root {} ({}, pane) started; `marion attach {}` to open, `^] d` to detach, \
          `marion tree` for the forest",
         root_id.0, agent_type, root_id.0
+    )
+}
+
+/// One line for a root started with `--detach`, on stdout so a script can read the id: what
+/// started and the commands that watch, steer and end it.
+fn detached_started_line(root_id: &marion_core::contract::AgentId, agent_type: &str) -> String {
+    format!(
+        "marion: root {} ({}) started, detached; `marion ls` to watch, `marion steer {} <text>` \
+         to steer, `marion cancel {}` to end it",
+        root_id.0,
+        agent_type,
+        marion_supervisor::tree::short_id(&root_id.0),
+        marion_supervisor::tree::short_id(&root_id.0)
     )
 }
 
@@ -4440,6 +4514,14 @@ mod tests {
             lines[0].starts_with("root") && lines[0].contains("last words"),
             "{lines:#?}"
         );
+    }
+
+    #[test]
+    fn detach_is_a_valueless_run_flag() {
+        let a = parse_args(&argv(&["run", "codex", "--prompt", "p", "--detach"])).unwrap();
+        assert!(a.detach);
+        let b = parse_args(&argv(&["run", "codex", "--prompt", "p"])).unwrap();
+        assert!(!b.detach);
     }
 
     #[test]
