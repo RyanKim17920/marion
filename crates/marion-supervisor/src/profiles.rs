@@ -761,9 +761,110 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<FailureCause> {
     marion_harness::failure_cause(stderr, stdout)
 }
 
+/// The variable an operator sets to choose a native session's profile: `MARION_PROFILE=personal
+/// marion claude`. Read from the operator's own environment, and never passed on to the harness —
+/// every `MARION_` name is marion's.
+pub const NATIVE_PROFILE_ENV: &str = "MARION_PROFILE";
+
+/// **The profile a native `marion <harness>` session runs on, applied to its environment** — the
+/// authoritative, already-assembled one the harness is started with. Chosen by the operator's
+/// `MARION_PROFILE`, else the lane's agent type, else `profiles.toml`'s `[default]`, read from the
+/// operator's own environment (`client_env`), so the session selects the profile the operator's
+/// shell would. Without one, `env` is untouched.
+pub fn apply_native(
+    harness: Harness,
+    agent_type: &[String],
+    client_env: &[(std::ffi::OsString, std::ffi::OsString)],
+    env: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<Option<Profile>, ProfileError> {
+    let var = |k: &str| {
+        client_env
+            .iter()
+            .find(|(n, _)| n == k)
+            .and_then(|(_, v)| v.to_str().map(str::to_string))
+    };
+    let Some(paths) = ProfilePaths::from_vars(var) else {
+        return Ok(None);
+    };
+    let file = ProfilesFile::load(&paths.config)?;
+    let requested = var(NATIVE_PROFILE_ENV).filter(|v| !v.is_empty());
+    let Some(profile) = resolve(&file, harness, requested.as_deref(), agent_type)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let carrier = carrier(harness)?;
+    env.retain(|(k, _)| k != carrier.env && !carrier.clear.iter().any(|c| k == c));
+    env.push((carrier.env.into(), profile.dir.clone().into()));
+    Ok(Some(profile))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_native_session_takes_the_operators_profile_and_is_otherwise_untouched() {
+        use std::ffi::OsString;
+        let dir = marion_testsupport::scratch("profiles-native");
+        let file = file_with(&dir);
+        let config = dir.join("config");
+        std::fs::create_dir_all(config.join("marion")).unwrap();
+        file.save(&config.join("marion/profiles.toml")).unwrap();
+        let pair = |k: &str, v: &str| (OsString::from(k), OsString::from(v));
+        let client = |extra: Option<(OsString, OsString)>| {
+            let mut e = vec![
+                pair("HOME", &dir.to_string_lossy()),
+                pair("XDG_CONFIG_HOME", &config.to_string_lossy()),
+            ];
+            e.extend(extra);
+            e
+        };
+        let base = vec![
+            pair("PATH", "/bin"),
+            pair("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/elsewhere"),
+            pair("CLAUDE_CONFIG_DIR", "/operators/own"),
+        ];
+
+        let mut env = base.clone();
+        let chosen = apply_native(
+            Harness::ClaudeCode,
+            &[],
+            &client(Some(pair("MARION_PROFILE", "personal"))),
+            &mut env,
+        )
+        .unwrap();
+        assert_eq!(chosen.map(|p| p.name).as_deref(), Some("personal"));
+        let personal = file.find("personal").unwrap().dir.clone();
+        assert_eq!(
+            env,
+            vec![pair("PATH", "/bin"), pair("CLAUDE_CONFIG_DIR", &personal)]
+        );
+
+        let mut env = base.clone();
+        apply_native(Harness::ClaudeCode, &[], &client(None), &mut env).unwrap();
+        assert!(env.contains(&pair("CLAUDE_CONFIG_DIR", &file.find("work").unwrap().dir)));
+
+        let mut env = base.clone();
+        let none = apply_native(Harness::Codex, &[], &client(None), &mut env).unwrap();
+        assert!(none.is_none());
+        assert_eq!(
+            env, base,
+            "no profile: the session's environment is untouched"
+        );
+
+        let mut env = base.clone();
+        assert!(matches!(
+            apply_native(
+                Harness::ClaudeCode,
+                &[],
+                &client(Some(pair("MARION_PROFILE", "nope"))),
+                &mut env
+            ),
+            Err(ProfileError::Unknown { .. })
+        ));
+    }
 
     fn entry(name: &str, harness: &str, dir: &str) -> ProfileEntry {
         ProfileEntry {
