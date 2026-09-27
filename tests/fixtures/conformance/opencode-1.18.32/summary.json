@@ -13,8 +13,8 @@
         "status": "PASS"
       },
       "P-errors": {
-        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-        "observed": "401: ended after 2.3 s, 1 request(s), exit 1; auth line None; stream failure Some(\"Incorrect API key provided: dummy.\") | 429: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None",
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 8.9 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 4 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
         "status": "FAIL"
       },
       "P-interrupt": {

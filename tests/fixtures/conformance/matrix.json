@@ -302,8 +302,8 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 2.2 s, 2 request(s), still running; auth line None; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 46.2 s, 8 request(s), still running; auth line None; stream failure None | 500: still running after 49.1 s, 8 request(s), still running; auth line None; stream failure None",
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 8.4 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 55.4 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 47.3 s, 8 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
@@ -367,8 +367,8 @@
         },
         "P-errors": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-interrupt": {
@@ -415,8 +415,8 @@
         },
         "P-version": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         }
       },
@@ -436,9 +436,9 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: still running after 46.2 s, 7 request(s), still running; auth line None; stream failure None | 429: still running after 46.9 s, 7 request(s), still running; auth line None; stream failure None | 500: still running after 45.3 s, 7 request(s), still running; auth line None; stream failure None",
-          "status": "FAIL"
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: still running after 46.2 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.7 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 46.0 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
+          "status": "PASS"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
@@ -471,8 +471,8 @@
           "status": "PASS"
         },
         "P-tui": {
-          "expected": "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-          "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; bracketed paste + CR submitted: NO; output quiet 1500 ms after the turn: false; `/mcp` screen names marion: false",
+          "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+          "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; boot dialog \"❯ No, exit Yes, I trust this folder\" (answered with \"\\u{1b}[B\\r\") and dismissed, then \"WARNING: Loading development channels\" (S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a claude.ai login shows this for the pane's `--dangerously-load-development-channels`, selection on `1. I am using this for local development`; an acknowledgement the operator gives, never marion. It appears wherever the operator's claude.ai login is present, a canned token beside it included (S37 P-tui); without that login channels are refused and it does not); bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
           "status": "FAIL"
         },
         "P-version": {
@@ -497,9 +497,9 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 6.6 s, 6 request(s), exit 1; auth line None; stream failure None | 429: ended after 0.2 s, 1 request(s), exit 1; auth line None; stream failure None | 500: ended after 25.7 s, 30 request(s), exit 1; auth line None; stream failure None",
-          "status": "FAIL"
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 6.6 s, 6 request(s), exit 1; cause Auth { line: \"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses)\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses\"); refused credential read off a frame: \"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses)\" | 429: ended after 0.4 s, 1 request(s), exit 1; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 25.6 s, 30 request(s), exit 1; cause Outage { line: \"Reconnecting... 1/5 (We’re currently experiencing high demand, which may cause temporary errors.)\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+          "status": "PASS"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
@@ -533,9 +533,9 @@
           "status": "FAIL"
         },
         "P-tui": {
-          "expected": "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-          "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
-          "status": "FAIL"
+          "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+          "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; boot dialog \"› 1. Yes, continue 2. No, quit\" (answered with \"\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+          "status": "PASS"
         },
         "P-version": {
           "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
@@ -559,9 +559,9 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 2.6 s, 3 request(s), exit 1; auth line None; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:54881/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\") | 429: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None | 500: ended after 35.5 s, 6 request(s), exit 1; auth line None; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 34.75 seconds) Last error: 500 internal server error\")",
-          "status": "FAIL"
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 2.9 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:55056/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 31.8 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 30.58 seconds) Last error: 500 internal server error\")",
+          "status": "PASS"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
@@ -622,8 +622,8 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 2.9 s, 1 request(s), exit 145; auth line Some(\"Error when talking to Gemini API Full report available at: <TMP>/gemini-client-error-Turn.run-sendMessageStream-2026-09-27T21-00-57-324Z.json _ApiError: {\\\"error\\\":{\\\"code\\\":401,\\\"message\\\":\\\"API key not valid. Please pass a valid API key.\\\",\\\"status\\\":\\\"UNAUTHENTICATED\\\"}}\"); stream failure Some(\"gemini result status: error\") | 429: still running after 45.0 s, 4 request(s), still running; auth line None; stream failure None | 500: still running after 45.0 s, 4 request(s), still running; auth line None; stream failure None",
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 2.7 s, 1 request(s), exit 145; cause Auth { line: \"Error when talking to Gemini API Full report available at: <TMP>/gemini-client-error-Turn.run-sendMessageStream-2026-09-27T23-16-21-099Z.json _ApiError: {\\\"error\\\":{\\\"code\\\":401,\\\"message\\\":\\\"API key not valid. Please pass a valid API key.\\\",\\\"status\\\":\\\"UNAUTHENTICATED\\\"}}\" }; stream failure Some(\"gemini result status: error\"); refused credential read off a frame: \"[API Error: {\\\"error\\\":{\\\"code\\\":401,\\\"message\\\":\\\"API key not valid. Please pass a valid API key.\\\",\\\"status\\\":\\\"UNAUTHENTICATED\\\"}}]\" | 429: still running after 45.0 s, 4 request(s), still running; cause RateLimit { line: \"Attempt 1 failed with status 429. Retrying with backoff... _ApiError: {\\\"error\\\":{\\\"code\\\":429,\\\"message\\\":\\\"rate limit exceeded\\\",\\\"status\\\":\\\"RESOURCE_EXHAUSTED\\\"}}\" }; stream failure None | 500: still running after 45.0 s, 4 request(s), still running; cause Outage { line: \"Attempt 1 failed with status 500. Retrying with backoff... _ApiError: {\\\"error\\\":{\\\"code\\\":500,\\\"message\\\":\\\"internal server error\\\",\\\"status\\\":\\\"INTERNAL\\\"}}\" }; stream failure None",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -686,8 +686,8 @@
           "status": "FAIL"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 0.1 s, 2 request(s), exit 1; auth line Some(\"Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55303/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\"); stream failure None | 429: ended after 6.7 s, 7 request(s), exit 0; auth line None; stream failure None | 500: ended after 6.3 s, 7 request(s), exit 0; auth line None; stream failure None",
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 0.2 s, 2 request(s), exit 1; cause Auth { line: \"Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\" }; stream failure Some(\"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\"); refused credential read off a frame: \"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\" | 429: ended after 7.9 s, 7 request(s), exit 0; cause RateLimit { line: \"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\") | 500: ended after 6.8 s, 7 request(s), exit 0; cause Outage { line: \"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -750,8 +750,8 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 2.3 s, 1 request(s), exit 1; auth line None; stream failure Some(\"Incorrect API key provided: dummy.\") | 429: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None",
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 8.9 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 4 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
@@ -813,8 +813,8 @@
           "status": "PASS"
         },
         "P-errors": {
-          "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-          "observed": "401: ended after 1.6 s, 1 request(s), exit 0; auth line None; stream failure None | 429: still running after 45.0 s, 20 request(s), still running; auth line None; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; auth line None; stream failure None",
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 1.2 s, 1 request(s), exit 0; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"[API Error: 401 Incorrect API key provided: dummy.]\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {

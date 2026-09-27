@@ -1,1 +1,1 @@
-{"dir":"note","msg":"version Some(\"1.52.0\"); row states no switch (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only); admitted in PINNED_HARNESSES","t":0.084}
+{"dir":"note","msg":"version Some(\"1.52.0\"); row states no switch (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only); admitted in PINNED_HARNESSES","t":0.037}

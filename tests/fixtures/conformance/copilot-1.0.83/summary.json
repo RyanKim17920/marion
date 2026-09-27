@@ -13,9 +13,9 @@
         "status": "PASS"
       },
       "P-errors": {
-        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-        "observed": "401: ended after 2.6 s, 3 request(s), exit 1; auth line None; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:54881/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\") | 429: still running after 45.0 s, 5 request(s), still running; auth line None; stream failure None | 500: ended after 35.5 s, 6 request(s), exit 1; auth line None; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 34.75 seconds) Last error: 500 internal server error\")",
-        "status": "FAIL"
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 2.9 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:55056/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 31.8 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 30.58 seconds) Last error: 500 internal server error\")",
+        "status": "PASS"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",

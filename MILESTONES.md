@@ -1660,6 +1660,29 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
   submits and output goes quiet within `OutputQuiet{1500}`. Both enable DECSET 2004 at boot, and
   codex's `/mcp` lists `marion: connected (6 tools)`.
 
+**S37 follow-up: boot dialogs, stream-read provider errors, goose's mode (2026-09-27, $0.00).**
+- Every row now states `boot_dialogs` (`tests/fixtures/s37-boot-dialogs/`, first screens in a fresh
+  directory under each row's no-self-update switch): claude 2.1.283 folder trust (default `No,
+  exit`; `ESC[B`+CR trusts, a bare CR quits, measured), then on a claude.ai login its pane's
+  development-channels warning (held); codex 0.155.1 directory trust (CR); copilot 1.0.83 folder
+  trust (CR, session only); gemini 0.53.0 folder trust (held: its answer persists); opencode and pi
+  none. The paste injector never pastes while one is on screen: it answers with the row's keys
+  only where the launcher licensed the host (the child runs in a worktree marion created — no
+  root does today), else holds and drops by name past the grace. P-tui answers the row's dialog:
+  codex now PASSes; claude's pane stops at the held channels warning.
+- Each `StreamGrammar` states `errors` (which frame carries a provider error, its status and
+  code); the one classifier reads those reports instead of guessing error frames by shape (which
+  read claude's retried 429 as a usage window on an API key). qwen's `success` result carrying
+  `[API Error: …]` and goose's `Ran into this error:` text are failure claims. A frame carrying
+  the provider's own 401/403 ends the run at once on every child and root path; 429/5xx are left
+  to the harness's backoff, and a run killed on its bound keeps the cause its retries stated.
+  P-errors, now judged 401→Auth, 429→RateLimit, 500→Outage: claude, codex, copilot, gemini and
+  goose PASS; opencode (`run` and ACP) and qwen still FAIL because they retry a 429/500 in silence
+  past 45 s — nothing marion reads says why.
+- goose keeps `GOOSE_MODE=auto` (`tests/fixtures/s37-goose-mode/`): unset, a write-granted child
+  writes on a fresh config, but `GOOSE_MODE: approve` in an operator's config.yaml (read by a live
+  node) aborts at exit 1 and the env overrides it.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---

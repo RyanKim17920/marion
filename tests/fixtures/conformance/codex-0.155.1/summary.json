@@ -13,9 +13,9 @@
         "status": "PASS"
       },
       "P-errors": {
-        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-        "observed": "401: ended after 6.6 s, 6 request(s), exit 1; auth line None; stream failure None | 429: ended after 0.2 s, 1 request(s), exit 1; auth line None; stream failure None | 500: ended after 25.7 s, 30 request(s), exit 1; auth line None; stream failure None",
-        "status": "FAIL"
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 6.6 s, 6 request(s), exit 1; cause Auth { line: \"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses)\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses\"); refused credential read off a frame: \"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:52711/v1/responses)\" | 429: ended after 0.4 s, 1 request(s), exit 1; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 25.6 s, 30 request(s), exit 1; cause Outage { line: \"Reconnecting... 1/5 (We’re currently experiencing high demand, which may cause temporary errors.)\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+        "status": "PASS"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
@@ -49,9 +49,9 @@
         "status": "FAIL"
       },
       "P-tui": {
-        "expected": "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-        "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
-        "status": "FAIL"
+        "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+        "observed": "DECSET 2004 at boot: true; first screen [\"> You are in <SCRATCH>/p-tui/repo\", \"  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\", \"  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\", \"› 1. Yes, continue\", \"  2. No, quit\", \"  Press enter to continue\"]; boot dialog \"› 1. Yes, continue 2. No, quit\" (answered with \"\\r\") and dismissed; bracketed paste + CR submitted: on the first paste; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
+        "status": "PASS"
       },
       "P-version": {
         "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",

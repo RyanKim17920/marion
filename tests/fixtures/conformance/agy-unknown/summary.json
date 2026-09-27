@@ -16,8 +16,8 @@
       },
       "P-errors": {
         "expected": "",
-        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
         "status": "UNSUPPORTED"
       },
       "P-interrupt": {
@@ -64,8 +64,8 @@
       },
       "P-version": {
         "expected": "",
-        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
         "status": "UNSUPPORTED"
       }
     },

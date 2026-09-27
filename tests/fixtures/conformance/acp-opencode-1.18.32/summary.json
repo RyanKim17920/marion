@@ -13,8 +13,8 @@
         "status": "PASS"
       },
       "P-errors": {
-        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-        "observed": "401: ended after 2.2 s, 2 request(s), still running; auth line None; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 46.2 s, 8 request(s), still running; auth line None; stream failure None | 500: still running after 49.1 s, 8 request(s), still running; auth line None; stream failure None",
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 8.4 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 55.4 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 47.3 s, 8 request(s), still running; cause none said; stream failure None",
         "status": "FAIL"
       },
       "P-interrupt": {

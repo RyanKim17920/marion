@@ -13,9 +13,9 @@
         "status": "PASS"
       },
       "P-errors": {
-        "expected": "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over stderr); 429/5xx recorded (no row carries limit or outage markers)",
-        "observed": "401: still running after 46.2 s, 7 request(s), still running; auth line None; stream failure None | 429: still running after 46.9 s, 7 request(s), still running; auth line None; stream failure None | 500: still running after 45.3 s, 7 request(s), still running; auth line None; stream failure None",
-        "status": "FAIL"
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: still running after 46.2 s, 7 request(s), still running; cause Auth { line: \"HTTP 401 authentication_failed\" }; stream failure None; refused credential read off a frame: \"HTTP 401 authentication_failed\" | 429: still running after 45.7 s, 7 request(s), still running; cause RateLimit { line: \"HTTP 429 rate_limit\" }; stream failure None | 500: still running after 46.0 s, 7 request(s), still running; cause Outage { line: \"HTTP 500 server_error\" }; stream failure None",
+        "status": "PASS"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
@@ -48,8 +48,8 @@
         "status": "PASS"
       },
       "P-tui": {
-        "expected": "bracketed paste mode at boot, a bracketed paste + CR submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
-        "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; bracketed paste + CR submitted: NO; output quiet 1500 ms after the turn: false; `/mcp` screen names marion: false",
+        "expected": "bracketed paste mode at boot, any first-screen dialog is one the row names and its keys dismiss, a bracketed paste + CR then submits, and the terminal goes quiet (IdleSignal::OutputQuiet) once the turn is done",
+        "observed": "DECSET 2004 at boot: true; first screen [\" project, or work from your team). If not, take a moment to review what's in this folder first.\", \" Claude Code'll be able to read, edit, and execute files here.\", \" Security guide\", \" ❯ No, exit\", \"   Yes, I trust this folder\", \" Enter to confirm · Esc to cancel\"]; boot dialog \"❯ No, exit Yes, I trust this folder\" (answered with \"\\u{1b}[B\\r\") and dismissed, then \"WARNING: Loading development channels\" (S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a claude.ai login shows this for the pane's `--dangerously-load-development-channels`, selection on `1. I am using this for local development`; an acknowledgement the operator gives, never marion. It appears wherever the operator's claude.ai login is present, a canned token beside it included (S37 P-tui); without that login channels are refused and it does not); bracketed paste + CR submitted: only on a second paste — the first-paint screen (above) swallowed the first; output quiet 1500 ms after the turn: true; `/mcp` screen names marion: true",
         "status": "FAIL"
       },
       "P-version": {
