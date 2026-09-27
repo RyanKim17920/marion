@@ -478,6 +478,14 @@ pub struct AgentSpawnParams {
     /// be distinguishable, because `false` is what marion does and must never be refused.
     #[serde(default)]
     pub allow_concurrent_writes: Option<bool>,
+    /// **The profile a root runs on** — one of the operator's own logins, by its name in
+    /// `profiles.toml` — overriding the agent type's `profile` and the file's `[default]`.
+    /// Root-only, on [`Self::repo`]'s pairing rule: refused with `caller: Some(_)`, because an
+    /// account is the operator's choice and never a node's (a node's children run on their agent
+    /// type's profile). Skipped on the wire when absent, so the legacy frame is byte for byte what
+    /// it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -577,6 +585,7 @@ mod tests {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         });
         rt!(AgentSpawnParams {
             notify_parent: false,
@@ -597,6 +606,7 @@ mod tests {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -707,6 +717,7 @@ mod tests {
                 pane: None,
                 isolation: None,
                 allow_concurrent_writes: None,
+                profile: None,
             })
             .unwrap(),
             r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#
@@ -731,6 +742,7 @@ mod tests {
                 pane: None,
                 isolation: None,
                 allow_concurrent_writes: None,
+                profile: None,
             })
             .unwrap(),
             r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#

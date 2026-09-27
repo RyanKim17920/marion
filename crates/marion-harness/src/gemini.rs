@@ -17,6 +17,7 @@ use crate::grammar::{
     TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling,
@@ -184,6 +185,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Gemini `generateContent` alone, through `GOOGLE_GEMINI_BASE_URL`.",
     }],
+    // gemini roots `.gemini/` under `GEMINI_CLI_HOME` (the canned row's isolation variable) and
+    // writes its OAuth login to `.gemini/oauth_creds.json` there; sign-in is its first screen.
+    profile: Some(ProfileCarrier {
+        env: CLI_HOME_ENV,
+        clear: &[],
+        status: ProfileStatus::FileExists(".gemini/oauth_creds.json"),
+        login_hint: "",
+        home_default: "",
+        shared: &[],
+        note: "gemini 0.53.0: GEMINI_CLI_HOME roots .gemini/, oauth_creds.json holds the login",
+    }),
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
@@ -289,6 +301,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // `tool_use` frames name every tool; the assistant's words arrive as `message` frames marked
     // `"delta":true` (`s12/README.md`), so consecutive ones are one message.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

@@ -96,6 +96,7 @@ fn request(repo: &std::path::Path) -> SpawnRequest {
         allow_concurrent_writes: false,
         resume: None,
         verification: vec![],
+        profile: None,
     }
 }
 

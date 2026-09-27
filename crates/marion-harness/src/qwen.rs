@@ -207,6 +207,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions, through `OPENAI_BASE_URL`.",
     }],
+    // No carrier: qwen's credential location per directory is unmeasured.
+    profile: None,
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

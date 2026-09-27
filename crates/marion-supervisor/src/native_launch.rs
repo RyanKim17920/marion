@@ -248,7 +248,7 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
                     .map_err(native_command_error)?,
             })
             .map_err(native_command_error)?;
-        let prepared = assemble_native(
+        let mut prepared = assemble_native(
             NativeProcessBase {
                 program,
                 user_argv: context.opaque_tail().to_vec(),
@@ -257,6 +257,15 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
                 geometry,
             },
             injection,
+        )
+        .map_err(native_command_error)?;
+        // Which of the operator's own logins the session runs on (`MARION_PROFILE`, the lane's
+        // agent type, or `profiles.toml`'s default), refused by name when it cannot be used.
+        crate::profiles::apply_native(
+            agent_type.harness,
+            &agent_type.profiles,
+            environment,
+            &mut prepared.invocation.env,
         )
         .map_err(native_command_error)?;
         materialize_documents(agent_dir.path(), &prepared.documents)

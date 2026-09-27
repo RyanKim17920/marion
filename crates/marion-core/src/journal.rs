@@ -189,6 +189,11 @@ pub enum RecordKind {
     MessageDelivered(MessageDelivered),
     /// A queued message will never reach the node, and why.
     MessageDropped(MessageDropped),
+    /// A node's run failed on an expired or refused login and was relaunched, fresh, on the next
+    /// profile its agent type listed. An audit record: the relaunch's own `Spawned` and
+    /// `SessionObserved` say what the node is now. **Never written for a usage limit.** Not a
+    /// barrier — losing one costs the audit line, not a process.
+    ProfileFailover(ProfileFailover),
 }
 
 impl RecordKind {
@@ -240,6 +245,7 @@ impl RecordKind {
             RecordKind::MessageQueued(r) => Some(&r.agent_id),
             RecordKind::MessageDelivered(r) => Some(&r.agent_id),
             RecordKind::MessageDropped(r) => Some(&r.agent_id),
+            RecordKind::ProfileFailover(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_) => None,
         }
     }
@@ -444,6 +450,28 @@ pub struct SessionObserved {
     /// rather than relaunching in whatever directory is at hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<crate::contract::Workspace>,
+    /// **The profile this session ran under** — the name in the operator's `profiles.toml` whose
+    /// directory the harness was pointed at. A resume reads it so the conversation continues on
+    /// the account that owns it, never on whatever profile resolves today. `None` is the
+    /// harness's own default login (or a record written before profiles existed).
+    ///
+    /// **Additive**: `#[serde(default)]` and `skip_serializing_if`, so a node without a profile
+    /// writes exactly what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+/// See [`RecordKind::ProfileFailover`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileFailover {
+    pub agent_id: AgentId,
+    pub harness: Harness,
+    /// The profile whose run failed.
+    pub from: String,
+    /// The next profile the agent type listed, which the node was relaunched on.
+    pub to: String,
+    /// Why — only ever `auth`: an expired or refused login is the one cause that fails over.
+    pub cause: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,6 +724,7 @@ mod tests {
                 session_id: "thr_01".into(),
                 pane: false,
                 workspace: None,
+                profile: None,
             }),
             RecordKind::SupervisorExited(SupervisorExited {}),
         ];

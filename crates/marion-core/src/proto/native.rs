@@ -923,6 +923,7 @@ mod tests {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         };
 
         assert_eq!(

@@ -485,6 +485,7 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
         // beside `caller: None` (§6.6, §9).
         isolation: None,
         allow_concurrent_writes: None,
+        profile: None,
     }
 }
 

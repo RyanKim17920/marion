@@ -140,6 +140,7 @@ fn spawn_in(
         isolation,
         allow_concurrent_writes: false,
         resume: None,
+        profile: None,
     };
     // A root caller: depth 0, the same thing `marion run` hands the bridge.
     let caller = Caller::root(
@@ -222,6 +223,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::MessageQueued(_) => "MessageQueued",
             RecordKind::MessageDelivered(_) => "MessageDelivered",
             RecordKind::MessageDropped(_) => "MessageDropped",
+            RecordKind::ProfileFailover(_) => "ProfileFailover",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()

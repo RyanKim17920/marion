@@ -1486,6 +1486,8 @@ fn root_spec_from_spawn(
         // `root::prepare` journals it onto the node's `SpawnIntent`, and `launch_root` enforces
         // the same value: one clock, enforced and reported.
         bound_secs: crate::root::blocked_bound_secs(p.timeout_secs, agent_type.timeout.0.as_secs()),
+        // The operator's choice of login for this root, where the client stated one.
+        profile: p.profile.clone(),
     }
 }
 
@@ -3044,6 +3046,7 @@ impl RegistryHandle {
         Self::check_root_allow_concurrent_writes(p)?;
         Self::check_child_no_change_record(p)?;
         Self::check_child_pane(p)?;
+        crate::profiles::check_child_profile(p)?;
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
@@ -3126,6 +3129,7 @@ impl RegistryHandle {
             // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
             // reconstructs this same request from the journal rather than from a caller.
             resume: None,
+            profile: None,
         };
 
         // Kept out of the thread's move, because the answer names it: the composing client reads
@@ -3716,6 +3720,8 @@ impl RegistryHandle {
                 node.intent.as_ref().and_then(|i| i.timeout_secs),
                 agent_type.timeout.0.as_secs(),
             ),
+            // The account the session was recorded under, never a re-resolved one.
+            profile: node.profile.clone(),
         };
         self.launch_root(me, spec, repo)
     }
@@ -3913,6 +3919,8 @@ impl RegistryHandle {
                 session,
                 workspace,
             }),
+            // The account the session was recorded under, never a re-resolved one.
+            profile: node.profile.clone(),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
         self.launch_child(me, env.clone(), req, task_id, caller, repo, decision, None)
@@ -10537,6 +10545,7 @@ mod tests {
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(secs),
                 model: None,
+                profile: None,
             }
         }
 
@@ -11864,6 +11873,7 @@ mod tests {
                     // A root derives its cwd from the project this supervisor serves, so its
                     // launch names no workspace. The child fixture below is the one that does.
                     workspace: None,
+                    profile: None,
                 }),
             ]
         }
@@ -11901,6 +11911,7 @@ mod tests {
                     session_id: format!("sess-{agent}"),
                     pane: false,
                     workspace: ws,
+                    profile: None,
                 })
             };
             vec![

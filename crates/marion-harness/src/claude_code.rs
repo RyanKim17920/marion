@@ -11,13 +11,14 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, Cond, Failure, Name, OnRefusedReport, Pairing, RateLimitRule, SessionId,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
     READY_FILE_ENV,
 };
+use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces,
@@ -285,6 +286,29 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         note: "Anthropic Messages alone: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` is the one provider channel the row renders.",
     }],
+    // Measured on 2.1.283 (2026-09-27): a fresh `CLAUDE_CONFIG_DIR` answers `auth status --json`
+    // with `"loggedIn": false` while the default directory answers `true`, so the login is per
+    // directory. The binary reads `CLAUDE_SECURESTORAGE_CONFIG_DIR` first when it is defined,
+    // which is why a profiled launch removes it.
+    profile: Some(ProfileCarrier {
+        env: "CLAUDE_CONFIG_DIR",
+        clear: &["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
+        status: ProfileStatus::JsonBool {
+            argv: &["auth", "status", "--json"],
+            key: "loggedIn",
+        },
+        login_hint: "auth login",
+        home_default: ".claude",
+        shared: &[
+            "settings.json",
+            "CLAUDE.md",
+            "skills",
+            "agents",
+            "commands",
+            "keybindings.json",
+        ],
+        note: "claude 2.1.283 `auth status --json` on a fresh CLAUDE_CONFIG_DIR: loggedIn false",
+    }),
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };
@@ -377,6 +401,19 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // `assistant` frames' content blocks (`s9/can-use-tool-*.stdout.jsonl`): a `tool_use` block is
     // a call to any tool, a `text` block the model's words. qwen shares this row.
+    // Measured on 2.1.268 (`tests/fixtures/s1/stdout.jsonl`: `{"type":"rate_limit_event",
+    // "rate_limit_info":{"status":"allowed",…}}`); `resetsAt` and `rateLimitType` are the fields
+    // 2.1.283's bundle writes beside `status` when it knows them.
+    rate_limit: Some(RateLimitRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "rate_limit_event")],
+            each: None,
+            unit: &[],
+        },
+        status: "/rate_limit_info/status",
+        resets_at: Some("/rate_limit_info/resetsAt"),
+        window: Some("/rate_limit_info/rateLimitType"),
+    }),
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

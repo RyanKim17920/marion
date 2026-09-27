@@ -265,6 +265,11 @@ pub struct AgentType {
     /// ["openrouter:work", "openrouter"]`), each a `marion_core::provider::CredentialId` of
     /// [`Self::provider`]. Empty — every built-in — defers to the user's own order.
     pub credentials: Vec<String>,
+    /// The profiles a node of this type runs on (`.marion/agents.toml`'s `profile`, one name or a
+    /// list): the first is the account the node uses, and the rest are the failover order for an
+    /// **expired or refused login only** — never for a usage limit. Empty, the default, is the
+    /// harness's own default login, or `profiles.toml`'s `[default]` for the harness.
+    pub profiles: Vec<String>,
 }
 
 impl AgentType {
@@ -333,6 +338,7 @@ impl AgentType {
             approval_mode: None,
             provider: None,
             credentials: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 }
@@ -837,6 +843,11 @@ pub enum AgentTypesError {
          its provider)"
     )]
     InvalidCredential { name: String, credential: String },
+    #[error(
+        "agent type {name:?} names profile {profile:?}, which is not a name: profile names match \
+         ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$"
+    )]
+    InvalidProfileName { name: String, profile: String },
 }
 
 /// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: Claude Code as
@@ -867,6 +878,15 @@ struct FileRow {
     approval_mode: Option<String>,
     provider: Option<String>,
     credentials: Option<Vec<String>>,
+    profile: Option<ProfileKey>,
+}
+
+/// `profile = "work"` or `profile = ["work", "personal"]`.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ProfileKey {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -991,6 +1011,17 @@ impl FileRow {
                 credential: bad.clone(),
             });
         }
+        let profiles = match self.profile {
+            None => Vec::new(),
+            Some(ProfileKey::One(p)) => vec![p],
+            Some(ProfileKey::Many(ps)) => ps,
+        };
+        if let Some(bad) = profiles.iter().find(|p| !is_valid_name(p)) {
+            return Err(AgentTypesError::InvalidProfileName {
+                name: self.name,
+                profile: bad.clone(),
+            });
+        }
         Ok(AgentType {
             credentials,
             model: self.model,
@@ -999,6 +1030,7 @@ impl FileRow {
             prompt_prefix: self.prompt_prefix,
             approval_mode: self.approval_mode,
             provider: self.provider,
+            profiles,
             ..AgentType::defaults(&self.name, &self.description, harness)
         })
     }
@@ -1811,6 +1843,32 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
                 .map(|t| t.name.as_str())
                 .collect::<Vec<_>>(),
             ["reviewer", "triager"]
+        );
+    }
+
+    /// **`profile` names the account a node runs on**: one name, or a list that is the failover
+    /// order for an expired or refused login only. Each name is checked like a type name, since it
+    /// becomes a directory.
+    #[test]
+    fn profile_is_one_name_or_an_ordered_list_of_names() {
+        let row = |profile: &str| {
+            format!(
+                "[[agent]]\nname = \"w\"\nharness = \"claude-code\"\ndescription = \"d\"\n{profile}"
+            )
+        };
+        let one = AgentTypes::parse(&row("profile = \"work\"\n")).unwrap();
+        assert_eq!(one.resolve("w").unwrap().profiles, ["work"]);
+        let many = AgentTypes::parse(&row("profile = [\"work\", \"personal\"]\n")).unwrap();
+        assert_eq!(many.resolve("w").unwrap().profiles, ["work", "personal"]);
+        let none = AgentTypes::parse(&row("")).unwrap();
+        assert!(none.resolve("w").unwrap().profiles.is_empty());
+        assert!(builtin("claude").unwrap().profiles.is_empty());
+        assert_eq!(
+            AgentTypes::parse(&row("profile = \"../up\"\n")),
+            Err(AgentTypesError::InvalidProfileName {
+                name: "w".into(),
+                profile: "../up".into()
+            })
         );
     }
 }

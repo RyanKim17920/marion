@@ -86,6 +86,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "agy's first screen was not measured for dialogs, and its native lane ships disabled",
     },
     wires: &[],
+    // No carrier: agy keeps its login in the keychain, outside any directory it reads.
+    profile: None,
     stream: Some(&STREAM),
     // `read` → `view_file`, `write` → `write_to_file`: the names 1.2.8's `init.tools` lists and
     // the model was watched calling (s32).
@@ -242,6 +244,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             joins: true,
         }],
     }),
+    // Not measured: no usage-window reading was recorded for this harness.
+    rate_limit: None,
 };
 
 /// The root's declaration document: marion's server under `mcpServers`, the bridge's contract

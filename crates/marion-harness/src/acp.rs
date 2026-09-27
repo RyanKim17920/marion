@@ -137,6 +137,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "ACP has no interactive shape",
     },
     wires: &[],
+    // No carrier: the protocol row serves many agents, each with its own credential store.
+    profile: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \

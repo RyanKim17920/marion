@@ -191,6 +191,10 @@ pub struct SpawnRequest {
     /// session, a session without the tree it was created in — and each of those relaunches
     /// *something*, quietly, in the wrong place or under the wrong name.
     pub resume: Option<ChildResume>,
+    /// **The profile this launch runs on**, overriding the agent type's `profile` and
+    /// `profiles.toml`'s `[default]` — a spawn's own choice, or, on a resume, the profile the
+    /// node's session was recorded under. `None` resolves as `profiles::resolve` says.
+    pub profile: Option<String>,
 }
 
 /// What a child's second life is reconstructed from — all of it read off the journal, none of it
@@ -898,26 +902,60 @@ struct ChildRun {
     denied_permissions: Vec<String>,
 }
 
-/// **Whether a finished endpoint launch rotates to its next credential**, and why — `None` for any
-/// run that must stand as it is.
-///
-/// Rotates only where every one of these holds: the node runs on an endpoint with a credential
-/// left to try that has a stored key; the process ended on its own, with wall clock left to spend;
-/// it failed (a nonzero exit or a stream that says so) with no report and nothing changed in its
-/// worktree — the evidence available that no turn of it succeeded; and what it said names a
-/// failure another key could fare differently on ([`marion_harness::failover_cause`]).
-fn rotation(
+/// What a failed attempt relaunches on, where it relaunches at all.
+enum Next {
+    /// The endpoint's next stated API key.
+    Credential(crate::endpoint::Endpoint),
+    /// The next profile the agent type listed, by index into the node's profiles.
+    Profile(usize),
+}
+
+/// **The node's billing**: an endpoint node spends an API key, and every other node the operator's
+/// own login — a subscription, whether or not it runs on a profile.
+fn billing(endpoint: Option<&crate::endpoint::Endpoint>) -> marion_harness::Billing {
+    match endpoint {
+        Some(_) => marion_harness::Billing::ApiKey,
+        None => marion_harness::Billing::Subscription,
+    }
+}
+
+/// **What a finished attempt said about why it failed** — the one classifier
+/// ([`marion_harness::failure_cause`]) over its stderr, its stream's own failure claim and its
+/// error-shaped frames, read with the node's billing.
+fn attempt_cause(
+    run: &ChildRun,
+    stream_failure: Option<&str>,
     endpoint: Option<&crate::endpoint::Endpoint>,
+) -> Option<marion_core::contract::FailureCause> {
+    let said = format!("{}\n{}", run.stderr, stream_failure.unwrap_or_default());
+    marion_harness::failure_cause(&said, &run.stdout, billing(endpoint))
+}
+
+/// **The one relaunch policy**: whether a finished attempt relaunches, on what, and why — `None`
+/// for any run that must stand as it is.
+///
+/// A relaunch needs every one of these: the process ended on its own, with wall clock left to
+/// spend; it failed (a nonzero exit or a stream that says so) with no report and nothing changed
+/// in its worktree — the evidence available that no turn of it succeeded; and the cause, from the
+/// one classifier, is one the next attempt may fare differently on. Then:
+///
+/// * an **endpoint** node rotates to its next stated API key on a rate limit, a refused key or an
+///   outage — each credential tried once;
+/// * a node on the operator's **own login** fails over to the next profile its type listed on an
+///   auth failure only;
+/// * a **usage limit** relaunches nothing, on either: it is reported and never worked around.
+#[allow(clippy::too_many_arguments)]
+fn next_attempt(
+    endpoint: Option<&crate::endpoint::Endpoint>,
+    profiles: &crate::profiles::Launch,
+    at: usize,
     run: &ChildRun,
     adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
     wt: &Path,
     base: Option<&Oid>,
     remaining: StdDuration,
-) -> Option<(
-    crate::endpoint::Endpoint,
-    marion_core::contract::FailoverCause,
-)> {
-    let ep = endpoint.filter(|e| !e.fallbacks.is_empty())?;
+) -> Option<(Next, marion_core::contract::FailureCause)> {
+    use marion_core::contract::FailureCause;
     if run.exit.timed_out || remaining.is_zero() {
         return None;
     }
@@ -929,12 +967,32 @@ fn rotation(
     if base.is_some_and(|b| changed_paths(wt, b).map_or(true, |c| !c.is_empty())) {
         return None;
     }
-    let said = format!("{}\n{}", run.stderr, stream.failure.unwrap_or_default());
-    let cause = marion_harness::failover_cause(&said)?;
-    // A store that cannot be read now is no reason to lose the failed run's own contract: the run
-    // stands as it ended, and the failure it recorded says why.
-    let next = crate::endpoint::next_for_launch(ep).ok().flatten()?;
+    let cause = attempt_cause(run, stream.failure.as_deref(), endpoint)?;
+    let next = match (endpoint, &cause) {
+        (
+            Some(ep),
+            FailureCause::RateLimit { .. }
+            | FailureCause::Auth { .. }
+            | FailureCause::Outage { .. },
+        ) if !ep.fallbacks.is_empty() => {
+            // A store that cannot be read now is no reason to lose the failed run's own contract:
+            // the run stands as it ended, and the failure it recorded says why.
+            Next::Credential(crate::endpoint::next_for_launch(ep).ok().flatten()?)
+        }
+        (None, FailureCause::Auth { .. }) => Next::Profile(profiles.next_after(at)?),
+        _ => return None,
+    };
     Some((next, cause))
+}
+
+/// **The readiness marker a relaunch must not inherit.** The failed attempt's bridge touched it; left
+/// in place, it would let the prompt reach the next attempt before that attempt's own bridge has
+/// the tool list. Found on the profile failover (`ccf06a3`); the credential rotation relaunches the
+/// same way and needs the same.
+fn clear_ready_marker(marker: Option<&Path>) {
+    if let Some(m) = marker {
+        let _ = std::fs::remove_file(m);
+    }
 }
 
 /// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
@@ -948,10 +1006,7 @@ fn launch_only_child(
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
 ) -> Result<ChildRun, SpawnError> {
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd);
+    let mut cmd = inv.command();
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
@@ -1044,10 +1099,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         session,
         turns,
     } = child;
-    let mut cmd = SysCommand::new(&inv.program);
-    cmd.args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd);
+    let mut cmd = inv.command();
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
     // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
     // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
@@ -1393,6 +1445,17 @@ pub fn run_spawn_watched(
     // The verification lines ride on the intent below, so a set too large to journal is refused
     // here, with the other refusals and before the node has an identity at all.
     check_verification_size(&req.verification)?;
+    // **Which of the operator's own logins this node runs on**, refused here — before the node
+    // exists — when a named profile is unknown, belongs to another harness, or has lost its
+    // directory. Empty under canned auth and wherever nothing names a profile.
+    let profiles = crate::profiles::Launch::resolve(
+        env.auth,
+        &env.state,
+        agent_type.harness,
+        req.profile.as_deref(),
+        req.resume.is_some(),
+        &agent_type.profiles,
+    )?;
     // Endpoint mode, where the child's type or model names a provider: refused by name here, with
     // the other refusals and before the node has an identity. The wires are the row's; an adapter
     // that cannot be built at all is refused below, in its own words, as it always was.
@@ -1576,7 +1639,8 @@ pub fn run_spawn_watched(
         adapter.harness(),
         false,
     )
-    .in_workspace(Some(workspace.clone()));
+    .in_workspace(Some(workspace.clone()))
+    .with_profiles(&profiles);
     // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
     // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
     let turns = observer.turn_source(&agent_id).map(|source| {
@@ -1670,6 +1734,11 @@ pub fn run_spawn_watched(
             mid_turn: f.mid_turn,
         })
     };
+    // **One attempt loop, two failovers, one policy** (`next_attempt` below the launch): an
+    // endpoint node rotates to its next API key, and a node on the operator's own login fails over
+    // to the next profile its type listed — each only for a finished process that reported
+    // nothing, and every attempt on what is left of the node's one wall clock.
+    //
     // **API-key rotation, before the first successful turn.** An endpoint node whose provider
     // refused its key (401/403), rate-limited it (429) or failed or could not be reached (5xx, a
     // connection error) — with no report and nothing changed in its worktree, so no turn of it had
@@ -1680,6 +1749,8 @@ pub fn run_spawn_watched(
     let mut failovers: Vec<marion_core::contract::CredentialFailover> = Vec::new();
     let mut probed_version: Option<String> = None;
     let launched_at = Instant::now();
+    // The profile this attempt runs on: an index into `profiles`, 0 for the first.
+    let mut at = 0;
     let (launch, inv, mut run, version) = loop {
         let attempt_bound = bound.saturating_sub(launched_at.elapsed());
         // The live stream is scrubbed of every key this node has been launched on, as it arrives.
@@ -1690,10 +1761,12 @@ pub fn run_spawn_watched(
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep);
         }
+        launch.extra.profile_dir = profiles.dir(at);
         // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the
         // one sentence on this path a reader of the journal needs verbatim, so it is filed for the
         // abort record on the way out rather than replaced by the guard's generic reason.
         let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
+        profiles.used(at);
         // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
         // asked for after the child had been run and reaped, which was the only place it *could* be
         // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
@@ -1801,26 +1874,36 @@ pub fn run_spawn_watched(
             run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
             run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
         }
-        if let Some((next, cause)) = rotation(
+        match next_attempt(
             endpoint.as_ref(),
+            &profiles,
+            at,
             &run,
             adapter.as_ref(),
             &wt,
             base.as_ref(),
             bound.saturating_sub(launched_at.elapsed()),
         ) {
-            failovers.push(marion_core::contract::CredentialFailover {
-                from: endpoint
-                    .as_ref()
-                    .map(|e| e.credential.to_string())
-                    .unwrap_or_default(),
-                to: next.credential.to_string(),
-                cause,
-            });
-            endpoint = Some(next);
-            continue;
+            Some((Next::Credential(next), cause)) => {
+                failovers.push(marion_core::contract::CredentialFailover {
+                    from: endpoint
+                        .as_ref()
+                        .map(|e| e.credential.to_string())
+                        .unwrap_or_default(),
+                    to: next.credential.to_string(),
+                    cause,
+                });
+                endpoint = Some(next);
+            }
+            // Journaled before the relaunch, as the profile it names.
+            Some((Next::Profile(next), cause)) => {
+                profiles.record_failover(at, next, &cause, &env.project_dir, &agent_id);
+                at = next;
+                session.restart(at);
+            }
+            None => break (launch, inv, run, version),
         }
-        break (launch, inv, run, version);
+        clear_ready_marker(ready_file.as_deref());
     };
     let announce_started =
         |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());
@@ -2041,6 +2124,20 @@ pub fn run_spawn_watched(
         evidence,
     );
     note_capture_truncated(&mut contract, run.capture_truncated);
+    // The run's cause, and on a usage limit the notice the parent reads — nothing more.
+    if contract
+        .completion
+        .as_ref()
+        .is_some_and(|c| c.status != marion_core::contract::ExitStatus::Ok)
+    {
+        let stream = adapter.parse_stream(&run.stdout, run.exit);
+        profiles.settle(
+            at,
+            adapter.harness(),
+            &mut contract,
+            attempt_cause(&run, stream.failure.as_deref(), endpoint.as_ref()),
+        );
+    }
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
     // harness it names must be the one that actually produced the work, never the one that was
     // asked for. The two agree today precisely because the dispatch above reads the same field —
@@ -2636,6 +2733,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
         assert!(
             matches!(
@@ -2922,6 +3020,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             model: None,
             session_mode: None,
+            env_remove: vec![],
         };
         let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
         let run = launch_only_child(
@@ -3365,6 +3464,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
 
         let result = run_spawn(
@@ -3497,6 +3597,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
         let observer = Recorder {
             project: env.project_dir.clone(),
@@ -3810,6 +3911,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         }
     }
 

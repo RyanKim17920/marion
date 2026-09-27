@@ -103,6 +103,7 @@ fn completion() -> Completion {
         commit: None,
         review: None,
         findings: None,
+        failure_cause: None,
     }
 }
 

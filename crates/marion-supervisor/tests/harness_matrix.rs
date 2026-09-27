@@ -192,6 +192,7 @@ fn drive(cell: &Cell) -> Evidence {
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
+        profile: None,
     };
     // A root caller: depth 0, so §6.1 step 2's gates see a top-level `spawn` — the same thing
     // `marion run` hands the bridge. `claude` is marion's root type and its `max_depth` is the

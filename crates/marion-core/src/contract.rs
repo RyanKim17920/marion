@@ -194,6 +194,35 @@ pub struct ProcessExit {
     pub description: String,
 }
 
+/// **Why a node's run failed, where the harness said so in words marion recognises** — the
+/// classification `marion_harness::auth::failure_cause` reads off stderr and the stream's error
+/// frames. Externally tagged, per §6.7's one convention.
+///
+/// Four causes because each has exactly one sanctioned reaction, and a reaction chosen for the
+/// wrong one is the harm: a **usage limit** is reported and never worked around (no relaunch, no
+/// failover, no suggestion to switch accounts); a **rate limit** exists only on an API key, whose
+/// endpoint may rotate to its next stated key; an **auth** failure may rotate an endpoint's key or
+/// fail over to the next profile the agent type listed; an **outage** may rotate an endpoint's key
+/// and is never a reason to change profile. `line` is the harness's own sentence, capped. The one
+/// classifier is `marion_harness::failure_cause`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureCause {
+    /// The account's own usage window is spent. `resets_at` is unix seconds, where the stream
+    /// stated one (claude's `rate_limit_event.resetsAt`, codex's `resets_at`).
+    UsageLimit {
+        line: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+    },
+    /// An API provider refused the request for its key's rate (a 429 on an endpoint node). Never
+    /// on a subscription, where the same status is the account's [`Self::UsageLimit`].
+    RateLimit { line: String },
+    /// The login is missing, expired or refused, or a key was refused a resource (403).
+    Auth { line: String },
+    /// The vendor is overloaded or erroring (`overloaded_error`, a 529, a 5xx).
+    Outage { line: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskTimestamps {
     pub spawned: SystemTime,
@@ -261,18 +290,9 @@ pub struct ChildRef {
 pub struct CredentialFailover {
     pub from: String,
     pub to: String,
-    pub cause: FailoverCause,
-}
-
-/// Why an endpoint's first request failed in a way the next credential may not: the key was
-/// refused (401/403), rate-limited (429), or the provider was failing or unreachable (5xx, a
-/// connection error).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FailoverCause {
-    Auth,
-    RateLimit,
-    Outage,
+    /// Why the credential was left: a [`FailureCause::RateLimit`], [`FailureCause::Auth`] or
+    /// [`FailureCause::Outage`], with the harness's own sentence (already redacted of every key).
+    pub cause: FailureCause,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the
@@ -347,6 +367,12 @@ pub struct Completion {
     /// capped per string where it was read and elided by cap rules 5(f) and 6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub findings: Option<Findings>,
+    /// **Why the run failed, where the harness said so** — a usage limit, an expired or refused
+    /// login, or a vendor outage ([`FailureCause`]). `None` where nothing classified: a clean run,
+    /// or a failure in words marion does not recognise. An absent key on the wire, so a contract
+    /// without one is byte-identical to one an earlier build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_cause: Option<FailureCause>,
 }
 
 impl Completion {

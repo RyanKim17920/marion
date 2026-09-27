@@ -101,6 +101,10 @@ pub mod preflight;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;
+/// `marion profile add|list|use|remove`.
+pub mod profile_cli;
+/// Profiles: which of the operator's own logins a node runs on, read from `profiles.toml`.
+pub mod profiles;
 pub mod provider_check;
 /// §5.3's display plane: the pty master, its recording, and the thread that reads it. The master
 /// lives here and not in a client, because a client that held it would SIGHUP the agent by dying.

@@ -2011,6 +2011,7 @@ mod tests {
                 format!("echo 'Loaded cached credentials.' >&2; echo '{line}' >&2; exit 55"),
             ],
             env: vec![],
+            env_remove: vec![],
             cwd: std::env::temp_dir(),
             model: None,
             session_mode: None,
@@ -2461,6 +2462,7 @@ mod tests {
             // under the default disposition, which is a test of nothing.
             args: vec!["-c".into(), "trap '' INT; echo ready; sleep 60".into()],
             env: vec![],
+            env_remove: vec![],
             cwd: std::env::temp_dir(),
             model: None,
             session_mode: None,

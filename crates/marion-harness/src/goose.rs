@@ -186,6 +186,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         keys: &[crate::spec::BEARER_BY_OVERLAY],
         note: "Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`.",
     }],
+    // No carrier: goose's credential location per directory is unmeasured.
+    profile: None,
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \
@@ -247,6 +249,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // An assistant `message`'s content blocks (`s26/goose-report.stdout.jsonl`): `toolRequest` is a
     // call to any extension's tool, `text` the model's words.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

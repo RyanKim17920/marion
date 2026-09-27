@@ -140,6 +140,9 @@ pub struct HarnessSpec {
     /// Endpoint resolution takes the first one the provider serves natively, and the renderer
     /// applies that recipe; empty refuses every endpoint launch of this harness by name.
     pub wires: &'static [WireRecipe],
+    /// How this harness is pointed at a profile directory the operator logged into — or `None`,
+    /// with the reason in `profile::tests`' sweep. Applied by [`render`] under live auth only.
+    pub profile: Option<crate::profile::ProfileCarrier>,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
@@ -584,6 +587,8 @@ pub enum Field {
     AgentArgs,
     /// The session to resume, where a launch asks for one. Rendered by [`Arg::Resume`] alone.
     Resume,
+    /// The profile directory this launch selected, exactly as stored ([`Fields::profile_dir`]).
+    ProfileDir,
 }
 
 /// One argv element, or the rule for several.
@@ -727,6 +732,9 @@ pub struct Fields {
     /// The session this launch resumes, if any — `LaunchSpec::resume`, copied by the neutral
     /// seeding so the feature is a field and not five branches.
     pub resume: Option<String>,
+    /// The profile directory this launch selected, if any — carried onto the row's
+    /// [`HarnessSpec::profile`] variable by [`render`].
+    pub profile_dir: Option<PathBuf>,
     /// Environment the hook derived that no row names — appended after the row's own. ACP's
     /// per-agent canned recipe is the one user.
     pub extra_env: Vec<(String, String)>,
@@ -751,6 +759,7 @@ impl Fields {
             Field::OutputSchema => self.output_schema.as_ref().and_then(path),
             Field::OutputLastMessage => self.output_last_message.as_ref().and_then(path),
             Field::Resume => self.resume.clone(),
+            Field::ProfileDir => self.profile_dir.as_ref().and_then(path),
             Field::Tools | Field::Allowed | Field::Pairs | Field::AgentArgs => {
                 let items = self.items(field);
                 (!items.is_empty()).then(|| items.join(","))
@@ -982,10 +991,12 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     }
     env.extend(spec.updates.env());
     env.extend(f.extra_env.iter().cloned());
+    let env_remove = crate::profile::apply(spec.profile.as_ref(), f, &mut env);
     Ok(Invocation {
         program,
         args,
         env,
+        env_remove,
         cwd: f.cwd.clone(),
         // What the row carried, including its absence: the model that reached argv is the one the
         // hook placed in `Fields::model`, and nothing else is recorded.

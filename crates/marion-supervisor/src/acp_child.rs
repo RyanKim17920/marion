@@ -50,7 +50,7 @@
 
 use std::io::{BufRead, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -778,15 +778,10 @@ struct Driver<'a> {
 
 impl<'a> Driver<'a> {
     fn spawn(inv: &Invocation, on_line: Option<&'a dyn Fn(&str)>) -> Result<Self, AcpChildError> {
-        let mut cmd = Command::new(&inv.program);
-        cmd.args(&inv.args)
-            .current_dir(&inv.cwd)
-            .stdin(Stdio::piped())
+        let mut cmd = inv.command();
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (k, v) in &inv.env {
-            cmd.env(k, v);
-        }
         // Its own group. The agent starts marion's MCP bridge from the `session/new` declaration
         // (S21 watched it happen), that bridge inherits both of the agent's pipes, and a `read` on
         // a pipe returns EOF only when *every* write end is closed. So killing the agent alone
@@ -1184,6 +1179,7 @@ mod tests {
             program: "sh".into(),
             args: vec!["-c".into(), format!("( sleep 20; kill -9 $$ ) &\n{script}")],
             env: vec![],
+            env_remove: vec![],
             cwd: cwd.to_path_buf(),
             model: None,
             session_mode: None,
@@ -1596,6 +1592,7 @@ sleep 15"#,
             program: "/nonexistent/acp-agent".into(),
             args: vec![],
             env: vec![],
+            env_remove: vec![],
             cwd: dir.to_path_buf(),
             model: None,
             session_mode: None,
@@ -1663,6 +1660,7 @@ sleep 15"#,
                 .into(),
             ],
             env: vec![],
+            env_remove: vec![],
             cwd: cwd.to_path_buf(),
             model: model.map(str::to_string),
             session_mode: None,

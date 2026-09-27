@@ -1035,6 +1035,7 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
         resume: None,
         // Nothing is launched here — this probes only where a run's records land.
         bound_secs: marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
+        profile: None,
     };
     let from_wt = marion_supervisor::root::prepare(&spec(&wt)).expect("a root prepares");
     let from_main = marion_supervisor::root::prepare(&spec(&main)).expect("a root prepares");

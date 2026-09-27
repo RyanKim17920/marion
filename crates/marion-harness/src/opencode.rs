@@ -23,6 +23,7 @@ use crate::grammar::{
     TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
@@ -262,6 +263,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ],
         note: "Chat Completions: the generated provider block is `@ai-sdk/openai-compatible`. opencode bundles an Anthropic SDK too, but the row renders only this one.",
     }],
+    // opencode keeps its provider logins in `$XDG_DATA_HOME/opencode/auth.json`; a profile is a
+    // data home of its own. Existence is the whole probe — the file is never opened.
+    profile: Some(ProfileCarrier {
+        env: "XDG_DATA_HOME",
+        clear: &[],
+        status: ProfileStatus::FileExists("opencode/auth.json"),
+        login_hint: "auth login",
+        home_default: ".local/share",
+        shared: &[],
+        note: "opencode 1.17.3: logins in $XDG_DATA_HOME/opencode/auth.json",
+    }),
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
@@ -340,6 +352,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // A `tool_use` frame per finished call, any tool, and a `text` frame per finished text part
     // (`s13/README.md`). No call id is read: opencode emits each call once, terminal only.
+    // No frame measured carrying the account's usage window.
+    rate_limit: None,
     activity: Some(ActivityRule {
         calls: &[ToolUnit {
             at: Where {

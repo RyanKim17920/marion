@@ -1,3 +1,6 @@
+use marion_core::contract::FailureCause;
+use serde_json::Value;
+
 /// Where the node's provider credential comes from, and therefore which endpoint it talks to.
 ///
 /// An enum rather than a bool because an adapter reads *intent*, not a flag: the two modes differ in
@@ -107,27 +110,32 @@ pub fn auth_failure_line(stderr: &str) -> Option<String> {
 
 fn is_auth_failure_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    AUTH_FAILURE_MARKERS.iter().any(|m| lower.contains(m)) || has_status_401(&lower)
+    AUTH_FAILURE_MARKERS.iter().any(|m| lower.contains(m)) || has_status(&lower, "401")
 }
 
-/// `401` as a token of its own — not the tail of a port, a pid or an id such as `14010`.
-fn has_status_401(lower: &str) -> bool {
-    lower.match_indices("401").any(|(i, _)| {
-        let before = lower[..i].chars().next_back();
-        let after = lower[i + 3..].chars().next();
-        !before.is_some_and(|c| c.is_ascii_alphanumeric())
-            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
-    })
-}
+/// Phrases that mean **the account's usage window is spent**, lowercased. Measured strings:
+/// claude 2.1.283 renders `You've hit your ${h} limit` with `h` = `session` (five-hour window) or
+/// `weekly` (seven-day), and tags the assistant frame `"error":"rate_limit"`; codex 0.155.1 says
+/// `You've hit your usage limit.` and tags the error `usage_limit_exceeded` /
+/// `usage_limit_reached` (all read from the installed binaries' strings).
+///
+/// **A usage limit is never a reason to switch accounts.** This list exists so the limit is
+/// *reported*: [`failure_cause`] ranks it above auth, so a limit line can never be mistaken for the
+/// expired login that alone licenses a profile failover.
+const USAGE_LIMIT_MARKERS: &[&str] = &[
+    "hit your session limit",
+    "hit your weekly limit",
+    "hit your usage limit",
+    "usage_limit_exceeded",
+    "usage_limit_reached",
+    "\"error\":\"rate_limit\"",
+];
 
-/// Phrases that mean the provider **rate-limited** the request, lowercased; a bare `429` is
-/// matched as a token of its own. Row-independent: these are the HTTP and SDK spellings every
-/// OpenAI- and Anthropic-compatible client shares.
-const RATE_LIMIT_MARKERS: &[&str] = &["rate limit", "rate_limit", "ratelimit", "too many requests"];
-
-/// Phrases that mean the provider was **failing or unreachable**, lowercased; a bare 5xx status is
-/// matched as a token ([`SERVER_FAILURE_STATUSES`]).
-const UNREACHABLE_MARKERS: &[&str] = &[
+/// Phrases that mean **the vendor is failing or unreachable, not the account**, lowercased:
+/// Anthropic's `overloaded_error` and codex's `server_overloaded` (both carry `overloaded`), the
+/// HTTP reason phrases, and the connection errors of every OpenAI- and Anthropic-compatible client.
+/// A bare 5xx is matched as a token of its own ([`OUTAGE_STATUSES`]).
+const OUTAGE_MARKERS: &[&str] = &[
     "overloaded",
     "service unavailable",
     "internal server error",
@@ -144,47 +152,258 @@ const UNREACHABLE_MARKERS: &[&str] = &[
     "enotfound",
 ];
 
-const SERVER_FAILURE_STATUSES: &[&str] = &["500", "502", "503", "504", "529"];
+/// Phrases that mean an API provider **rate-limited** the request, lowercased; a bare `429` is
+/// matched as a token of its own. Read only for an [`Billing::ApiKey`] run: on a subscription the
+/// same words are prose about the account's window, and the window has its own sentences
+/// ([`USAGE_LIMIT_MARKERS`]).
+const RATE_LIMIT_MARKERS: &[&str] = &["rate limit", "rate_limit", "ratelimit", "too many requests"];
 
-/// **Why an endpoint's request failed, where another API key could fare differently** — or `None`
-/// for any other failure. Read over what the harness said (its stderr and its stream's own failure
-/// line), with precedence rate limit > auth > outage over the whole text. A 403 counts as auth
-/// here, beside [`auth_failure_line`]'s vocabulary: a key refused a resource is a key to rotate.
-pub fn failover_cause(text: &str) -> Option<marion_core::contract::FailoverCause> {
-    use marion_core::contract::FailoverCause;
-    let lines: Vec<String> = text
-        .lines()
-        .map(|l| l.trim().to_ascii_lowercase())
-        .collect();
-    let any = |f: &dyn Fn(&str) -> bool| lines.iter().any(|l| f(l));
-    if any(&|l| RATE_LIMIT_MARKERS.iter().any(|m| l.contains(m)) || status_token(l, "429")) {
-        return Some(FailoverCause::RateLimit);
-    }
-    if any(&|l| {
-        is_auth_failure_line(l)
-            || status_token(l, "403")
-            || l.contains("forbidden")
-            || l.contains("permission_error")
-    }) {
-        return Some(FailoverCause::Auth);
-    }
-    if any(&|l| {
-        UNREACHABLE_MARKERS.iter().any(|m| l.contains(m))
-            || SERVER_FAILURE_STATUSES.iter().any(|s| status_token(l, s))
-    }) {
-        return Some(FailoverCause::Outage);
-    }
-    None
+/// **Whose account a run spends**, which is what a 429 means. On an API key it is a provider's
+/// per-key rate limit, which another key may not share; on a subscription (the operator's own
+/// login, a profile) it is the account's usage window, which no relaunch works around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Billing {
+    ApiKey,
+    Subscription,
 }
 
-/// `status` as a token of its own — not the tail of a port, a pid or an id (`14290`).
-fn status_token(lower: &str, status: &str) -> bool {
+/// The HTTP statuses read as an outage when they stand alone on an error line.
+const OUTAGE_STATUSES: &[&str] = &["500", "502", "503", "504", "529"];
+
+/// **Why the run failed**, read from `stderr` and from the error-shaped frames of `stdout`, or
+/// `None` where no line says — the one classifier behind both relaunch policies (an endpoint's
+/// credential rotation and a profile failover) and every contract's `failure_cause`. Precedence
+/// **usage limit or rate limit > auth > outage**, over the whole input: a run that printed a limit
+/// line and an auth-looking one is a limit. `billing` decides what a limit is (see [`Billing`]):
+/// the account's window on a subscription, and on an API key the provider's rate limit unless the
+/// line names a usage window outright.
+///
+/// Only error-shaped stdout frames are read ([`error_shaped`]) — never an assistant's prose, a tool
+/// result or a narrative, where a child writing *about* a 429 would otherwise read as having hit
+/// one. `stderr` is read whole, as [`auth_failure_line`] reads it.
+pub fn failure_cause(stderr: &str, stdout: &str, billing: Billing) -> Option<FailureCause> {
+    let mut lines: Vec<Candidate> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| Candidate {
+            raw: l.to_string(),
+            frame: None,
+        })
+        .collect();
+    lines.extend(stdout.lines().filter_map(|l| {
+        let frame: Value = serde_json::from_str(l.trim()).ok()?;
+        error_shaped(&frame).then(|| Candidate {
+            raw: l.trim().to_string(),
+            frame: Some(frame),
+        })
+    }));
+    // A sentence beats a bare structural signal: the rejected `rate_limit_event` usually rides
+    // beside the frame that says it in words, and the words are what a notice quotes.
+    if billing == Billing::ApiKey
+        && lines.iter().all(|c| !c.names_a_window())
+        && let Some(c) = lines.iter().find(|c| c.is_rate_limit())
+    {
+        return Some(FailureCause::RateLimit {
+            line: c.words(RATE_LIMIT_MARKERS),
+        });
+    }
+    let limit = lines
+        .iter()
+        .find(|c| c.is_limit_text())
+        .or_else(|| lines.iter().find(|c| c.is_limit()));
+    if let Some(c) = limit {
+        // The reset rides the rate-limit event beside the sentence on claude, so any frame of the
+        // run that states one is read, not only the line that matched.
+        let resets = c.frame.as_ref().and_then(resets_at).or_else(|| {
+            lines
+                .iter()
+                .filter_map(|c| c.frame.as_ref())
+                .find_map(resets_at)
+        });
+        return Some(FailureCause::UsageLimit {
+            line: c.words(USAGE_LIMIT_MARKERS),
+            resets_at: resets,
+        });
+    }
+    if let Some(c) = lines.iter().find(|c| c.is_auth()) {
+        return Some(FailureCause::Auth {
+            line: c.words(AUTH_FAILURE_MARKERS),
+        });
+    }
+    lines
+        .iter()
+        .find(|c| c.is_outage())
+        .map(|c| FailureCause::Outage {
+            line: c.words(OUTAGE_MARKERS),
+        })
+}
+
+/// One line [`failure_cause`] reads, with its frame where it was JSON.
+struct Candidate {
+    raw: String,
+    frame: Option<Value>,
+}
+
+impl Candidate {
+    fn is_limit_text(&self) -> bool {
+        let lower = self.raw.to_ascii_lowercase();
+        USAGE_LIMIT_MARKERS.iter().any(|m| lower.contains(m)) || has_status(&lower, "429")
+    }
+
+    fn is_limit(&self) -> bool {
+        self.is_limit_text() || self.frame.as_ref().is_some_and(rejected_rate_limit)
+    }
+
+    /// A usage window named in words: the account's own limit, on any billing.
+    fn names_a_window(&self) -> bool {
+        let lower = self.raw.to_ascii_lowercase();
+        USAGE_LIMIT_MARKERS.iter().any(|m| lower.contains(m))
+    }
+
+    /// An API provider's rate limit: its words, a standalone 429, or a refused rate-limit event.
+    fn is_rate_limit(&self) -> bool {
+        let lower = self.raw.to_ascii_lowercase();
+        RATE_LIMIT_MARKERS.iter().any(|m| lower.contains(m))
+            || has_status(&lower, "429")
+            || self.frame.as_ref().is_some_and(rejected_rate_limit)
+    }
+
+    /// A login missing, expired or refused — or a key refused a resource (a standalone 403,
+    /// `forbidden`, Anthropic's `permission_error`), which on either billing is the credential's.
+    fn is_auth(&self) -> bool {
+        let lower = self.raw.to_ascii_lowercase();
+        is_auth_failure_line(&self.raw)
+            || has_status(&lower, "403")
+            || lower.contains("forbidden")
+            || lower.contains("permission_error")
+    }
+
+    fn is_outage(&self) -> bool {
+        let lower = self.raw.to_ascii_lowercase();
+        OUTAGE_MARKERS.iter().any(|m| lower.contains(m))
+            || OUTAGE_STATUSES.iter().any(|s| has_status(&lower, s))
+    }
+
+    /// The sentence a person reads: for a frame, its first string that carries one of `markers`
+    /// (else its own message), for a plain line the line — trimmed and capped either way.
+    fn words(&self, markers: &[&str]) -> String {
+        let text = self
+            .frame
+            .as_ref()
+            .and_then(|f| {
+                message(f)
+                    .filter(|m| carries(m, markers))
+                    .or_else(|| marked_string(f, markers))
+                    .or_else(|| message(f))
+            })
+            .unwrap_or_else(|| self.raw.clone());
+        text.trim().chars().take(512).collect()
+    }
+}
+
+fn carries(s: &str, markers: &[&str]) -> bool {
+    let lower = s.to_ascii_lowercase();
+    markers.iter().any(|m| lower.contains(m))
+}
+
+/// A stdout frame that is a harness's **error report** rather than conversation: a `type` that
+/// names an error or a failure, a `result` flagged `is_error`, a top-level `error` member, or a
+/// `rate_limit_event`. Nothing an assistant or a tool wrote qualifies.
+fn error_shaped(frame: &Value) -> bool {
+    let kind = frame.get("type").and_then(Value::as_str).unwrap_or("");
+    kind.contains("error")
+        || kind.contains("failed")
+        || kind == "rate_limit_event"
+        || frame.get("is_error").and_then(Value::as_bool) == Some(true)
+        || frame.get("error").is_some_and(|e| !e.is_null())
+}
+
+/// Claude's `rate_limit_event` whose window refused the request (`status: "rejected"`); the
+/// `allowed` and `allowed_warning` events are readings, not failures.
+fn rejected_rate_limit(frame: &Value) -> bool {
+    frame.get("type").and_then(Value::as_str) == Some("rate_limit_event")
+        && frame
+            .pointer("/rate_limit_info/status")
+            .and_then(Value::as_str)
+            == Some("rejected")
+}
+
+/// The reset instant a frame states, in unix seconds: the first `resetsAt` (claude) or
+/// `resets_at` (codex) number anywhere in it.
+fn resets_at(frame: &Value) -> Option<u64> {
+    match frame {
+        Value::Object(map) => ["resetsAt", "resets_at"]
+            .iter()
+            .find_map(|k| map.get(*k).and_then(Value::as_u64))
+            .or_else(|| map.values().find_map(resets_at)),
+        Value::Array(items) => items.iter().find_map(resets_at),
+        _ => None,
+    }
+}
+
+/// The first string in `v` that carries one of `markers`, depth first.
+fn marked_string(v: &Value, markers: &[&str]) -> Option<String> {
+    match v {
+        Value::String(s) => carries(s, markers).then(|| s.clone()),
+        Value::Object(map) => map.values().find_map(|v| marked_string(v, markers)),
+        Value::Array(items) => items.iter().find_map(|v| marked_string(v, markers)),
+        _ => None,
+    }
+}
+
+/// A frame's own message, where it names one at a conventional place.
+fn message(frame: &Value) -> Option<String> {
+    ["/message", "/result", "/error/message", "/error"]
+        .iter()
+        .find_map(|p| frame.pointer(p).and_then(Value::as_str))
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// `status` as a token of its own — not the tail of a port, a pid or an id (`14290`, `pid 54290`).
+fn has_status(lower: &str, status: &str) -> bool {
     lower.match_indices(status).any(|(i, _)| {
         let before = lower[..i].chars().next_back();
         let after = lower[i + status.len()..].chars().next();
         !before.is_some_and(|c| c.is_ascii_alphanumeric())
             && !after.is_some_and(|c| c.is_ascii_alphanumeric())
     })
+}
+
+/// **The words a limit notice quotes for when the window reopens**: the harness's own `resets …`
+/// clause where its line carries one (claude's `· resets 7:50pm`), else the stated instant, else
+/// nothing.
+pub fn resets_phrase(line: &str, resets_at: Option<u64>) -> Option<String> {
+    if let Some(i) = line.to_ascii_lowercase().find("resets ") {
+        return Some(
+            line[i..]
+                .trim()
+                .trim_end_matches(['.', ')', '('])
+                .trim()
+                .to_string(),
+        );
+    }
+    resets_at.map(|secs| {
+        let when = marion_core::encoding::SystemTime::from_unix_millis(secs.saturating_mul(1000));
+        let stamp = serde_json::to_value(when)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| secs.to_string());
+        format!("resets {stamp}")
+    })
+}
+
+/// Which window a limit line names — `session`, `weekly` — or the generic `usage`.
+pub fn limit_window(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("weekly") || lower.contains("seven_day") {
+        "weekly"
+    } else if lower.contains("session") || lower.contains("five_hour") {
+        "session"
+    } else {
+        "usage"
+    }
 }
 
 #[cfg(test)]
@@ -247,7 +466,19 @@ mod tests {
     /// vendors' 5xx and overload words, and a connection that never reached the provider.
     #[test]
     fn each_rotatable_endpoint_failure_is_classified() {
-        use marion_core::contract::FailoverCause::{Auth, Outage, RateLimit};
+        #[derive(Debug, PartialEq)]
+        enum Kind {
+            RateLimit,
+            Auth,
+            Outage,
+        }
+        use Kind::{Auth, Outage, RateLimit};
+        let kind = |text: &str| match failure_cause(text, "", Billing::ApiKey) {
+            Some(FailureCause::RateLimit { .. }) => Some(RateLimit),
+            Some(FailureCause::Auth { .. }) => Some(Auth),
+            Some(FailureCause::Outage { .. }) => Some(Outage),
+            _ => None,
+        };
         for (text, want) in [
             (
                 "exceeded retry limit, last status: 429 Too Many Requests",
@@ -269,13 +500,22 @@ mod tests {
             ),
             ("fetch failed: ECONNREFUSED 127.0.0.1:9", Outage),
         ] {
-            assert_eq!(failover_cause(text), Some(want), "{text}");
+            assert_eq!(kind(text), Some(want), "{text}");
         }
         // A limit line beside an auth-looking one is a limit.
         assert_eq!(
-            failover_cause("401 retry\nlast status: 429 Too Many Requests"),
+            kind("401 retry\nlast status: 429 Too Many Requests"),
             Some(RateLimit)
         );
+        // The same 429 on a subscription is the account's window, which no relaunch works around.
+        assert!(matches!(
+            failure_cause(
+                "last status: 429 Too Many Requests",
+                "",
+                Billing::Subscription
+            ),
+            Some(FailureCause::UsageLimit { .. })
+        ));
     }
 
     #[test]
@@ -288,7 +528,7 @@ mod tests {
             "the child could not find src/main.rs",
             "context length exceeded (400 Bad Request)",
         ] {
-            assert_eq!(failover_cause(text), None, "{text}");
+            assert_eq!(failure_cause(text, "", Billing::ApiKey), None, "{text}");
         }
     }
 
@@ -296,5 +536,170 @@ mod tests {
     fn a_very_long_auth_line_is_capped() {
         let long = format!("Error authenticating: {}", "x".repeat(2000));
         assert_eq!(auth_failure_line(&long).unwrap().chars().count(), 512);
+    }
+
+    // ---- failure causes: usage limit > auth > outage ----
+
+    fn limit(line: &str, resets_at: Option<u64>) -> Option<FailureCause> {
+        Some(FailureCause::UsageLimit {
+            line: line.into(),
+            resets_at,
+        })
+    }
+
+    /// The strings the installed binaries carry: claude 2.1.283's `You've hit your ${h} limit`
+    /// for its five-hour and seven-day windows, codex 0.155.1's `You've hit your usage limit.`
+    #[test]
+    fn each_measured_usage_limit_sentence_is_a_usage_limit() {
+        for line in [
+            "You've hit your session limit · resets 7:50pm",
+            "You've hit your weekly limit · resets Oct 3, 9am",
+            "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+            "error: 429 Too Many Requests",
+        ] {
+            assert_eq!(
+                failure_cause(line, "", Billing::Subscription),
+                limit(line, None),
+                "{line}"
+            );
+        }
+    }
+
+    /// Claude's stream: a `rate_limit_event` that refused the window carries the reset instant, and
+    /// the assistant frame it rode with is tagged `"error":"rate_limit"`.
+    #[test]
+    fn a_rejected_rate_limit_event_is_a_usage_limit_with_its_reset() {
+        let stdout = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+            "\n",
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790538000,"rateLimitType":"five_hour"}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 7:50pm"}"#,
+        );
+        assert_eq!(
+            failure_cause("", stdout, Billing::Subscription),
+            limit(
+                "You've hit your session limit · resets 7:50pm",
+                Some(1_790_538_000)
+            )
+        );
+        let tagged = r#"{"type":"assistant","error":"rate_limit","message":{"content":[]}}"#;
+        assert!(matches!(
+            failure_cause("", tagged, Billing::Subscription),
+            Some(FailureCause::UsageLimit { .. })
+        ));
+    }
+
+    /// Codex's JSONL error: the tag `usage_limit_exceeded` and its `resets_at`.
+    #[test]
+    fn a_codex_usage_limit_error_frame_carries_its_reset() {
+        let stdout = r#"{"type":"error","message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded","resets_at":1790541600}"#;
+        assert_eq!(
+            failure_cause("", stdout, Billing::Subscription),
+            limit("You've hit your usage limit.", Some(1_790_541_600))
+        );
+    }
+
+    /// Allowed readings are not failures, and prose about limits — in stderr or in a model's
+    /// words — is not a limit.
+    #[test]
+    fn readings_prose_and_ports_are_not_usage_limits() {
+        let allowed = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","isUsingOverage":false}}"#;
+        assert_eq!(failure_cause("", allowed, Billing::Subscription), None);
+        let narrative = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your session limit is what users see on a 429"}]}}"#;
+        assert_eq!(
+            failure_cause("", narrative, Billing::Subscription),
+            None,
+            "an assistant's prose"
+        );
+        for stderr in [
+            "retrying after a rate limit",
+            "listening on 127.0.0.1:14290",
+            "pid 54290 exited",
+            "rate_limit_event received",
+        ] {
+            assert_eq!(
+                failure_cause(stderr, "", Billing::Subscription),
+                None,
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_auth_failure_is_classified_from_stderr_or_an_error_frame() {
+        assert_eq!(
+            failure_cause("Not logged in", "", Billing::Subscription),
+            Some(FailureCause::Auth {
+                line: "Not logged in".into()
+            })
+        );
+        let frame = r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Please run /login"}"#;
+        assert_eq!(
+            failure_cause("", frame, Billing::Subscription),
+            Some(FailureCause::Auth {
+                line: "Invalid API key · Please run /login".into()
+            })
+        );
+    }
+
+    #[test]
+    fn an_outage_is_the_vendors_overload_or_a_standalone_5xx() {
+        for (stderr, stdout) in [
+            (
+                "",
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+            ),
+            ("", r#"{"type":"error","message":"server_overloaded"}"#),
+            ("API Error: 529 Overloaded", ""),
+            ("unexpected status 503 Service Unavailable", ""),
+        ] {
+            assert!(
+                matches!(
+                    failure_cause(stderr, stdout, Billing::Subscription),
+                    Some(FailureCause::Outage { .. })
+                ),
+                "{stderr}{stdout}"
+            );
+        }
+        assert_eq!(
+            failure_cause("listening on :5030", "", Billing::Subscription),
+            None
+        );
+    }
+
+    /// A limit outranks an auth line in the same run, and an auth line outranks an outage: the
+    /// ranking is what keeps a limit from ever reaching the failover an auth failure may take.
+    #[test]
+    fn the_precedence_is_limit_then_auth_then_outage() {
+        let both = "Not logged in\nYou've hit your session limit · resets 7:50pm\n503";
+        assert!(matches!(
+            failure_cause(both, "", Billing::Subscription),
+            Some(FailureCause::UsageLimit { .. })
+        ));
+        assert!(matches!(
+            failure_cause(
+                "503 Service Unavailable\nInvalid API key",
+                "",
+                Billing::Subscription
+            ),
+            Some(FailureCause::Auth { .. })
+        ));
+    }
+
+    #[test]
+    fn the_reset_phrase_is_the_harnesss_own_clause_else_the_stated_instant() {
+        assert_eq!(
+            resets_phrase("You've hit your session limit · resets 7:50pm", None).as_deref(),
+            Some("resets 7:50pm")
+        );
+        assert_eq!(
+            resets_phrase("usage_limit_exceeded", Some(0)).as_deref(),
+            Some("resets 1970-01-01T00:00:00.000Z")
+        );
+        assert_eq!(resets_phrase("hit your usage limit", None), None);
+        assert_eq!(limit_window("You've hit your weekly limit"), "weekly");
+        assert_eq!(limit_window("You've hit your session limit"), "session");
+        assert_eq!(limit_window("usage_limit_exceeded"), "usage");
     }
 }

@@ -140,6 +140,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                is the operator's configuration, not the harness",
     },
     wires: &[],
+    // pi 0.80.2 `dist/config.js`: `getAuthPath()` is `<agent dir>/auth.json` and the agent dir is
+    // `PI_CODING_AGENT_DIR` — the variable the canned row already relocates (item 3). A profile is
+    // an agent dir of its own; existence is the whole probe, and the file is never opened. The
+    // login is pi's own `/login`, inside its TUI.
+    profile: Some(crate::profile::ProfileCarrier {
+        env: AGENT_DIR_ENV,
+        clear: &[],
+        status: crate::profile::Status::FileExists("auth.json"),
+        login_hint: "",
+        home_default: ".pi/agent",
+        shared: &["settings.json"],
+        note: "pi 0.80.2 dist/config.js: getAuthPath() = <PI_CODING_AGENT_DIR>/auth.json",
+    }),
     client_name: None,
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
@@ -254,6 +267,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             joins: false,
         }],
     }),
+    // Not measured: no usage-window reading was recorded for this harness.
+    rate_limit: None,
 };
 
 /// Relocates `auth.json`, `models.json`, `settings.json`, `sessions/` and extension discovery.

@@ -40,6 +40,7 @@ fn usage_text() -> String {
          {native}\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
+         \x20                 [--profile <name>]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
          \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
          \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
@@ -52,6 +53,8 @@ fn usage_text() -> String {
          \x20      marion login --list\n\
          \x20      marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--auth none]\n\
          \x20      marion logout <provider>[:<label>]\n\
+         \x20      marion profile add <harness> <name> [--dir <path>] | list | use <harness> <name>\n\
+         \x20                     | remove <name> [--purge]\n\
          \x20      marion doctor [--capabilities|--adapter] [--harness <name>] | --providers\n\
          \x20      marion --version\n\
          \n\
@@ -157,6 +160,8 @@ struct Args {
     /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
     /// is what a person at a terminal means, and the canned server is a test fixture.
     canned: bool,
+    /// `--profile <name>`: which of the operator's own logins the root runs on (`profiles.toml`).
+    profile: Option<String>,
 }
 
 /// `marion attach <agent-id> [--repo <path>] [--state-dir <path>]`.
@@ -760,6 +765,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
         no_change_record: false,
         pane: false,
         canned: false,
+        profile: None,
     };
     let mut rest = argv[2..].iter();
     while let Some(flag) = rest.next() {
@@ -813,6 +819,7 @@ fn set_valued_flag(args: &mut Args, flag: &str, value: String) -> Option<()> {
         "--base-url" => args.base_url = Some(value),
         "--model" => args.model = Some(value),
         "--timeout" => args.timeout_secs = Some(value.parse().ok()?),
+        "--profile" => args.profile = Some(value),
         _ => return None,
     }
     Some(())
@@ -2434,6 +2441,9 @@ fn legacy_main() -> ExitCode {
     if matches!(argv.first().map(String::as_str), Some("login" | "logout")) {
         return marion_supervisor::login::main(&argv);
     }
+    if argv.first().map(String::as_str) == Some("profile") {
+        return marion_supervisor::profile_cli::main(&argv[1..]);
+    }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
     // the protocol stream and leave the client parsing prose.
@@ -2530,6 +2540,7 @@ fn pick_args() -> Result<Args, ExitCode> {
             no_change_record: false,
             pane: false,
             canned: false,
+            profile: None,
         }),
         // EOF: the operator changed their mind, which is not an error.
         Ok(None) => Err(ExitCode::SUCCESS),
@@ -3017,6 +3028,9 @@ fn spawn_root(
             // `--isolation` flag to forward and states neither field.
             isolation: None,
             allow_concurrent_writes: None,
+            // The operator's choice of login, where they stated one; the supervisor resolves the
+            // agent type's and the default otherwise.
+            profile: args.profile.clone(),
         },
     ))?;
     // Nothing can be notified before the first attach, so the sink here is unreachable — and it
@@ -4479,6 +4493,22 @@ mod tests {
         assert_eq!(a.agent_type, "claude");
         assert_eq!(a.prompt, "delegate it");
         assert!(a.timeout_secs.is_none());
+        assert!(a.profile.is_none(), "no profile unless one is named");
+    }
+
+    #[test]
+    fn run_takes_the_profile_the_operator_names() {
+        let a = parse_args(&argv(&[
+            "run",
+            "claude",
+            "--prompt",
+            "x",
+            "--profile",
+            "work",
+        ]))
+        .unwrap();
+        assert_eq!(a.profile.as_deref(), Some("work"));
+        assert!(parse_args(&argv(&["run", "claude", "--prompt", "x", "--profile"])).is_none());
     }
 
     #[test]
@@ -5259,6 +5289,7 @@ mod tests {
                 session_id: "thread-1".into(),
                 pane,
                 workspace: None,
+                profile: None,
             })
         };
 
