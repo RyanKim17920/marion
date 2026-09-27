@@ -50,11 +50,15 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
 
 /// The detail for node `id`, read from its files under `project`, with a page of its activity
 /// stream from `cursor` when one was asked for.
+///
+/// Usage and per-turn spend come from `tallies`, which reads only what the stream appended since
+/// the last question: a watcher asking once a second costs the new bytes, not the whole file.
 pub fn read(
     project: &ProjectDir,
     id: &AgentId,
     i: &Inputs,
     cursor: Option<ActivityCursor>,
+    tallies: &crate::usage_tally::Tallies,
 ) -> NodeDetail {
     let dir = project.agent(id);
     let events = dir.events();
@@ -62,14 +66,16 @@ pub fn read(
         let bytes = std::fs::read(dir.contract(t)).ok()?;
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
-    let usage = adapter_for_type(i.harness, i.acp_agent.as_deref())
+    let spent = adapter_for_type(i.harness, i.acp_agent.as_deref())
         .ok()
-        .and_then(|a| a.usage(&crate::activity::all_frames(&events)));
+        .and_then(|a| a.usage_rule())
+        .map(|rule| tallies.read(id, &events, rule))
+        .unwrap_or_default();
     NodeDetail {
         task: contract.as_ref().map(task_sent),
         messages: messages(&project.journal(), id),
         stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
-        usage,
+        usage: spent.usage,
         workspace: contract
             .as_ref()
             .map(|c| c.workspace.clone())
@@ -85,7 +91,7 @@ pub fn read(
                 exit: c.exit.description,
                 diff: None,
             }),
-        turns: Vec::new(),
+        turns: spent.turns,
     }
 }
 
@@ -280,7 +286,13 @@ mod tests {
         let task = TaskId("t-1".into());
         record_codex_stream(&p, &id);
         write_contract(&p, &id, &task, true);
-        let d = read(&p, &id, &inputs(true, Some(&task)), None);
+        let d = read(
+            &p,
+            &id,
+            &inputs(true, Some(&task)),
+            None,
+            &Default::default(),
+        );
         let t = d.task.clone().expect("a child has a task");
         assert_eq!(t.prompt, "add a token-bucket limiter");
         assert_eq!(
@@ -293,6 +305,12 @@ mod tests {
         assert!(
             d.usage.is_some(),
             "the codex stream states its usage: {d:?}"
+        );
+        assert!(!d.turns.is_empty(), "codex sums per-turn units: {d:?}");
+        assert_eq!(
+            d.turns.iter().sum::<u64>(),
+            d.usage.unwrap().total(),
+            "the turns add up to the run"
         );
         assert_eq!(
             d.workspace,
@@ -312,7 +330,13 @@ mod tests {
     fn a_running_root_reports_its_stream_and_launch_workspace_only() {
         let (p, id) = project("detail-running");
         record_codex_stream(&p, &id);
-        let d = read(&p, &id, &inputs(false, None), Some(ActivityCursor::Tail));
+        let d = read(
+            &p,
+            &id,
+            &inputs(false, None),
+            Some(ActivityCursor::Tail),
+            &Default::default(),
+        );
         assert!(d.task.is_none() && d.completion.is_none(), "{d:?}");
         let page = d.stream.clone().expect("a page was asked for");
         assert!(page.unread.is_none() && !page.lines.is_empty(), "{page:?}");
@@ -334,6 +358,7 @@ mod tests {
             &id,
             &inputs(true, Some(&task)),
             Some(ActivityCursor::Tail),
+            &Default::default(),
         );
         assert!(
             d.task.is_none() && d.usage.is_none() && d.completion.is_none(),
