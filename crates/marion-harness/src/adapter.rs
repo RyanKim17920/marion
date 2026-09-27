@@ -5809,8 +5809,9 @@ mod tests {
     /// end.
     ///
     /// So each built-in is bound the way a launch binds it, and the ACP ones are additionally
-    /// required to have a *measured* spelling: `agent::tools` is `None` on `gemini --acp`, and a
-    /// built-in pointed there would be s14 with marion holding the wrong end.
+    /// required to name an agent that opened a session (S33), bound to its measured spelling where
+    /// one was watched and to the generic reading otherwise. `gemini --acp` refused `session/new`,
+    /// so a built-in pointed there would be a type that cannot run.
     #[test]
     fn every_builtin_agent_type_binds_an_adapter_a_launch_could_use() {
         let mut acp = 0;
@@ -5830,15 +5831,18 @@ mod tests {
                                            registry — the type and the registry have drifted"
                 )
             });
+            // Every ACP built-in's agent opened a session when probed (S33); a guessed spelling is
+            // never compiled for it.
             assert!(
-                agent.tools.is_some(),
-                "`{name}` names `{id}`, which marion has never watched call a tool: a node of this \
-                 type would be handed a guessed spelling, which s14 measured as silently ignored"
+                matches!(agent.reach, acp::Reach::Opened { .. }),
+                "`{name}` names `{id}`, which never opened a session: a type for it could not run"
             );
-            // And the adapter it bound compiles *that* agent's spelling, not a neighbour's.
+            // The adapter it bound spells *that* agent's measured name, not a neighbour's — or,
+            // where no call was watched, reads it generically and spells the baseline, which on
+            // ACP reaches no model (the prompt rides `session/prompt`; `Reading::Generic`).
             assert_eq!(
                 a.marion_tool_name("report"),
-                agent.tools.unwrap().spell("report"),
+                agent.tools.unwrap_or(acp::GENERIC_SPELLING).spell("report"),
                 "`{name}`"
             );
         }
