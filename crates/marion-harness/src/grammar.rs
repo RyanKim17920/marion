@@ -559,12 +559,57 @@ pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
 /// Within one frame the rule's text units are read before its call units: a frame that carries
 /// both (Claude Code's `assistant` content) says the words that led to the call.
 pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) -> RecentActivity {
-    let mut calls: Vec<ToolCall> = Vec::new();
+    let items = activity_stream(rule, frames);
+    let said = items.iter().rev().find_map(|i| match &i.item {
+        Activity::Said(t) => Some(t.clone()),
+        Activity::Call(_) => None,
+    });
+    let mut calls: Vec<ToolCall> = items
+        .into_iter()
+        .filter_map(|i| match i.item {
+            Activity::Call(c) => Some(c),
+            Activity::Said(_) => None,
+        })
+        .collect();
+    let keep = calls.len().saturating_sub(max_calls);
+    RecentActivity {
+        calls: calls.split_off(keep),
+        text: said.and_then(|t| {
+            t.lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        }),
+    }
+}
+
+/// One thing a stream shows a node doing, in the order it happened.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Activity {
+    /// A tool call, counted once however many frames repeat it (a start and its completion).
+    Call(ToolCall),
+    /// Text it wrote: consecutive joining units (deltas) are one item.
+    Said(String),
+}
+
+/// An [`Activity`] and the index of the frame it was read from, so a caller can time it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivityItem {
+    pub frame: usize,
+    pub item: Activity,
+}
+
+/// **Everything** a stream shows a node doing under `rule`, oldest first — the whole sequence that
+/// [`recent_activity`] keeps only the end of. A call whose id was already seen in `frames` is not
+/// repeated; a text unit that joins (a delta) extends the text item before it, unless a call came
+/// between them.
+pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityItem> {
+    let mut items: Vec<ActivityItem> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut said: Option<String> = None;
     // Whether the last thing read was a joining text unit, so the next one continues it.
     let mut joining = false;
-    for frame in frames {
+    for (index, frame) in frames.iter().enumerate() {
         let one = std::slice::from_ref(frame);
         for t in rule.text {
             for unit in units(one, &t.at) {
@@ -574,9 +619,18 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 if s.trim().is_empty() {
                     continue;
                 }
-                match (&mut said, t.joins && joining) {
-                    (Some(held), true) => held.push_str(s),
-                    _ => said = Some(s.to_string()),
+                match (items.last_mut(), t.joins && joining) {
+                    (
+                        Some(ActivityItem {
+                            item: Activity::Said(held),
+                            ..
+                        }),
+                        true,
+                    ) => held.push_str(s),
+                    _ => items.push(ActivityItem {
+                        frame: index,
+                        item: Activity::Said(s.to_string()),
+                    }),
                 }
                 joining = t.joins;
             }
@@ -595,25 +649,18 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
                 {
                     continue;
                 }
-                calls.push(ToolCall {
-                    name: name.to_string(),
-                    args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                items.push(ActivityItem {
+                    frame: index,
+                    item: Activity::Call(ToolCall {
+                        name: name.to_string(),
+                        args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                    }),
                 });
                 joining = false;
             }
         }
     }
-    let keep = calls.len().saturating_sub(max_calls);
-    RecentActivity {
-        calls: calls.split_off(keep),
-        text: said.and_then(|t| {
-            t.lines()
-                .rev()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_string)
-        }),
-    }
+    items
 }
 
 /// Every call to one of marion's verbs the stream shows, with what came of each — in
@@ -887,6 +934,41 @@ mod tests {
         // A blank message is not words, and does not erase the last ones.
         let a = recent_activity(&ACTIVITY, &[say("kept"), say("   ")], 5);
         assert_eq!(a.text.as_deref(), Some("kept"));
+    }
+
+    /// The whole stream, in order, each item with the frame it came from: every call once, and
+    /// deltas joined into one message until a call comes between them.
+    #[test]
+    fn the_activity_stream_is_every_call_and_message_in_order() {
+        let say = |t: &str| serde_json::json!({"type": "say", "text": t});
+        let delta = |t: &str| serde_json::json!({"type": "delta", "text": t});
+        let frames = [
+            say("planning"),
+            call("1", "read"),
+            call("1", "read"),
+            delta("edit"),
+            delta("ing"),
+            call("2", "write"),
+            say("   "),
+            delta("done"),
+        ];
+        let got: Vec<(usize, String)> = activity_stream(&ACTIVITY, &frames)
+            .into_iter()
+            .map(|i| match i.item {
+                Activity::Call(c) => (i.frame, format!("call {}", c.name)),
+                Activity::Said(t) => (i.frame, format!("said {t}")),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, "said planning".to_string()),
+                (1, "call read".to_string()),
+                (3, "said editing".to_string()),
+                (5, "call write".to_string()),
+                (7, "said done".to_string()),
+            ]
+        );
     }
 
     #[test]
