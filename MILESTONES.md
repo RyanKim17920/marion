@@ -301,6 +301,16 @@ resume's `-c` redeclaration is pinned in `marion-harness` (`69e0bd8`). Not yet: 
 the parent's own `wait` already collected it (collection lives in the parent's bridge, which the
 supervisor does not hear from), so such a parent takes one more continuation per end —
 `m4_fan_in`'s codex root, which waits on both of its children, now runs three generations.
+The same two held-child cells run for **pi** from one row table (2026-09-27): a steer into a held pi
+child relaunches it as generation two with `--session <id>` beside the rendered steer, its Chat
+Completions request replays turn one, `continuation:gen2`, and the contract carries its report
+`reported_early`; a grandchild's end reaching a held pi parent is its generation two, which reports.
+pi's session store lives under the relocated `PI_CODING_AGENT_DIR`, which every generation of one
+node shares, so the resume finds it. The grandchild is backgrounded over the socket with the pi
+child's own credentials rather than by its model: a child's permission axis is only `report`, and
+pi's `--tools` governs extension tools, so a pi (or Claude Code) child cannot call `spawn` at all,
+while codex, which reads no permission list, is served. Every generation's stream now reaches the
+node's `events.jsonl` as it lands.
 
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
@@ -1477,9 +1487,9 @@ over claude, codex, opencode and itself, all green at `RUST_TEST_THREADS=4`), an
   A bare `prompt` mid-turn is refused. marion has no generic typed driver for such a channel, so
   the row stays `LaunchOnly`/`Continuation`.
 
-Not measured, and so not claimed: a `steer` into a running pi node and a pushed child end reaching a
-pi parent through marion, both of which need the Continuation delivery lane that is not on this
-branch; pi's project-trust prompt for a worktree carrying `.pi/` files; the `journal_wiring`,
+Not measured, and so not claimed: a `steer` into a *running* pi node (a steer during a §7.6 hold
+and a pushed child end reaching a held pi parent are driven end to end in `tests/continuation.rs`);
+a pi child spawning its own grandchild, which its `--tools` allowlist withholds; pi's project-trust prompt for a worktree carrying `.pi/` files; the `journal_wiring`,
 `depth_gate` and `launch_only_root` matrices.
 
 **Live-matrix row corrections (2026-09-22, real logins).** Each measured on the operator's existing

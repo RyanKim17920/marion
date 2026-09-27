@@ -22,6 +22,11 @@
 //! 5. **A `LaunchOnly` root is continued the same way**: a `marion run codex` root that
 //!    backgrounds a codex child is relaunched with the child's end as its second generation.
 //!
+//! Cells 1 and 2 run once per [`Row`], the child's harness as data, so the lane is shown to be the
+//! row's and not codex's: a pi child is relaunched as `pi … --session <id> … <message>` and its Chat
+//! Completions request replays turn one. The one difference in the bed is who backgrounds the
+//! grandchild ([`Grandchild`]), since pi offers a child's model no `spawn`.
+//!
 //! The bed is `descendant_gate.rs`'s: a detached supervisor, a `codex` shim ahead of the real
 //! binary on its `PATH`, the root and grandchild blocked on gate files, and every wait a fact in
 //! the journal.
@@ -30,7 +35,7 @@
 //! cargo test -p marion-supervisor --test continuation
 //! ```
 //!
-//! It needs a real `codex` on `PATH`. Every model call is the canned server's: no paid tokens.
+//! It needs a real `codex` and a real `pi` on `PATH`. Every model call is the canned server's: no paid tokens.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -86,19 +91,93 @@ const SHIM_TIMEOUT_SECS: u64 = 600;
 const IDLE_GRACE: Duration = Duration::from_secs(600);
 const BOUND: Duration = Duration::from_secs(180);
 
+/// **The child under test's harness, as data.** The cells are one scenario each, run once per
+/// row: what varies between harnesses is only what a row already states — the program, the agent
+/// type, the name marion's verbs carry on its wire, and how its resume spelling names the session
+/// on argv. The root and the grandchild are always gated `codex` shims, since neither ever reaches
+/// a model.
+struct Row {
+    /// The program on `PATH`, and the name the child's shim takes.
+    program: &'static str,
+    /// The child's agent type.
+    agent_type: &'static str,
+    /// The model-facing name of marion's verb on this row's wire, as the script must author it.
+    verb: fn(&str) -> String,
+    /// What the row's resume spelling puts on argv for session `id`.
+    resume: fn(&str) -> String,
+    /// What the shim answers `--version` with; `None` asks the real binary.
+    version: Option<&'static str>,
+    /// Who backgrounds the grandchild that holds the child under §7.6.
+    grandchild: Grandchild,
+}
+
+/// **Who backgrounds the grandchild.** Either way the child's first turn ends unreported over a
+/// live, owed grandchild, which is the hold both cells start from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Grandchild {
+    /// The child's model calls `spawn` with `background: true`. A child is granted only `report`
+    /// (`run_spawn`'s `allowed_tools`), and codex reads no permission list, so its `spawn` is
+    /// served.
+    SpawnedByTheChild,
+    /// pi's `--tools` is an allowlist over extension tools too (s34-pi item 3), so a child's model
+    /// is offered only `report` and its `spawn` is `Tool mcp__marion__spawn not found`. The bed
+    /// holds the child's first launch, backgrounds the grandchild over the socket with the child's
+    /// own credentials, which is the call the bridge would have made, and then lets it run. Turn
+    /// one calls `read` so a later generation has a turn to replay.
+    SpawnedForTheChild,
+}
+
+/// codex speaks the Responses wire, whose dispatch form is the bare verb (`responses.rs`), and
+/// resumes with `exec resume <thread>`.
+const CODEX: Row = Row {
+    program: "codex",
+    agent_type: "codex-impl",
+    verb: bare_verb,
+    resume: codex_resume,
+    version: Some("codex-cli 0.146.0-marion-continuation-shim"),
+    grandchild: Grandchild::SpawnedByTheChild,
+};
+
+/// pi speaks Chat Completions under the name marion's `-e` extension registers,
+/// `mcp__marion__<verb>`, and resumes with `--session <id>` (s34-pi item 8).
+const PI: Row = Row {
+    program: "pi",
+    agent_type: "pi",
+    verb: mcp_verb,
+    resume: pi_resume,
+    version: None,
+    grandchild: Grandchild::SpawnedForTheChild,
+};
+
+fn bare_verb(verb: &str) -> String {
+    verb.to_string()
+}
+
+fn mcp_verb(verb: &str) -> String {
+    format!("mcp__marion__{verb}")
+}
+
+fn codex_resume(id: &str) -> String {
+    format!("resume {id}")
+}
+
+fn pi_resume(id: &str) -> String {
+    format!("--session {id}")
+}
+
 /// The child's first turn backgrounds a grandchild and stops without reporting; a turn that
 /// carries the steer reports, and so does one that carries the grandchild's end. First match wins,
 /// and a later generation's request carries every earlier marker (its history replays the earlier
 /// turns), so the scripts are listed latest first. A script whose one call is already in the
 /// history answers with its final text: a third generation after the steer's does not report.
-fn script() -> Script {
+fn script(row: &Row) -> Script {
     Script {
         nodes: vec![
             NodeScript {
                 marker: STEER_MARKER.into(),
                 call_prefix: STEER_CALL_PREFIX.into(),
                 turns: vec![ScriptedCall::new(
-                    "report",
+                    (row.verb)("report"),
                     json!({"narrative": STEERED_NARRATIVE}),
                 )],
                 final_text: "Reported after the steer.".into(),
@@ -107,7 +186,7 @@ fn script() -> Script {
                 marker: PUSH_MARKER.into(),
                 call_prefix: PUSH_CALL_PREFIX.into(),
                 turns: vec![ScriptedCall::new(
-                    "report",
+                    (row.verb)("report"),
                     json!({"narrative": PUSHED_NARRATIVE}),
                 )],
                 final_text: "Reported after my grandchild's end.".into(),
@@ -115,17 +194,22 @@ fn script() -> Script {
             NodeScript {
                 marker: DELEGATOR_MARKER.into(),
                 call_prefix: CHILD_CALL_PREFIX.into(),
-                turns: vec![ScriptedCall::new(
-                    "spawn",
-                    json!({
-                        "agent_type": "codex-impl",
-                        "prompt": GRANDCHILD_PROMPT,
-                        "acceptance_criteria": ["the grandchild was released"],
-                        "writable_scope": ["src/**"],
-                        "timeout_secs": SHIM_TIMEOUT_SECS,
-                        "background": true,
-                    }),
-                )],
+                turns: vec![match row.grandchild {
+                    Grandchild::SpawnedByTheChild => ScriptedCall::new(
+                        (row.verb)("spawn"),
+                        json!({
+                            "agent_type": CODEX.agent_type,
+                            "prompt": GRANDCHILD_PROMPT,
+                            "acceptance_criteria": ["the grandchild was released"],
+                            "writable_scope": ["src/**"],
+                            "timeout_secs": SHIM_TIMEOUT_SECS,
+                            "background": true,
+                        }),
+                    ),
+                    Grandchild::SpawnedForTheChild => {
+                        ScriptedCall::new("read", json!({"path": "README.md"}))
+                    }
+                }],
                 final_text: "Backgrounded a grandchild; ending my turn.".into(),
             },
         ],
@@ -133,23 +217,31 @@ fn script() -> Script {
     }
 }
 
-/// A `codex` that runs the real binary for the child under test — its first launch and every
+/// A `program` that runs the real binary for the child under test — its first launch and every
 /// continuation of it — logging each such argv (record-separated, since a rendered message spans
 /// lines), sleeps on the wedge marker, and blocks every other
-/// invocation on its gate file.
-fn shim(dir: &Path, bed: &Gates, real: &Path) -> PathBuf {
-    let bin = dir.join("codex");
+/// invocation on its gate file. `version` is its `--version` line, or the real binary's.
+fn shim(dir: &Path, bed: &Gates, program: &str, version: Option<&str>) -> PathBuf {
+    let bin = dir.join(program);
+    let real = which(program);
+    let version = match version {
+        Some(line) => format!("echo {}; exit 0", common::shell_quote(Path::new(line))),
+        None => format!("exec {} --version", common::shell_quote(&real)),
+    };
     let script = format!(
         r#"#!/bin/sh
 case "$1" in
-  --version) echo "codex-cli 0.146.0-marion-continuation-shim"; exit 0 ;;
+  --version) {version} ;;
 esac
 case "$*" in
   *{wedge}*) printf '%s\036' "$*" >> {argv_log}; exec sleep {shim_timeout} ;;
   *{sessionless}*) printf '%s\036' "$*" >> {argv_log}
     while [ ! -e {sessionless_gate} ]; do sleep 0.05; done
     echo "no frame names a thread here"; exit 0 ;;
-  *{delegator}*|*{steer}*|*{push}*) printf '%s\036' "$*" >> {argv_log}; exec {real} "$@" ;;
+  *{delegator}*) printf '%s\036' "$*" >> {argv_log}
+    while [ ! -e {child_gate} ]; do sleep 0.05; done
+    exec {real} "$@" ;;
+  *{steer}*|*{push}*) printf '%s\036' "$*" >> {argv_log}; exec {real} "$@" ;;
   *{root}*) gate={root_gate} ;;
   *) gate={grandchild_gate} ;;
 esac
@@ -169,9 +261,10 @@ exit 0
         sessionless_gate = common::shell_quote(&bed.sessionless),
         root = ROOT_MARKER,
         shim_timeout = SHIM_TIMEOUT_SECS,
-        real = common::shell_quote(real),
+        real = common::shell_quote(&real),
         argv_log = common::shell_quote(&bed.argv_log),
         root_gate = common::shell_quote(&bed.root),
+        child_gate = common::shell_quote(&bed.child),
         grandchild_gate = common::shell_quote(&bed.grandchild),
     );
     std::fs::write(&bin, script).expect("the shim is written");
@@ -229,9 +322,14 @@ fn spawn_over_socket(
     }
 }
 
-fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnParams {
+fn params(
+    agent_type: &str,
+    prompt: String,
+    repo: Option<&Path>,
+    timeout_secs: u64,
+) -> AgentSpawnParams {
     AgentSpawnParams {
-        agent_type: "codex-impl".into(),
+        agent_type: agent_type.into(),
         prompt,
         native_launch: None,
         caller: None,
@@ -330,6 +428,8 @@ fn contract_of(state: &Path, id: &AgentId) -> Value {
 
 struct Gates {
     root: PathBuf,
+    /// The child's first launch waits on it, so a grandchild can be spawned for it first.
+    child: PathBuf,
     grandchild: PathBuf,
     sessionless: PathBuf,
     argv_log: PathBuf,
@@ -349,39 +449,50 @@ struct Bed {
 }
 
 impl Bed {
-    fn start(tag: &str, child_timeout_secs: u64) -> Bed {
+    fn start(row: &Row, tag: &str, child_timeout_secs: u64) -> Bed {
         Bed::start_with(
+            row,
             tag,
             child_timeout_secs,
             format!("{DELEGATOR_MARKER}: background a grandchild, then stop."),
         )
     }
 
-    fn start_with(tag: &str, child_timeout_secs: u64, child_prompt: String) -> Bed {
-        assert!(
-            on_path("codex"),
-            "this test drives a REAL codex child; put `codex` ({}) on PATH",
-            pinned_version("codex")
-        );
+    fn start_with(row: &Row, tag: &str, child_timeout_secs: u64, child_prompt: String) -> Bed {
+        for program in [row.program, CODEX.program] {
+            assert!(
+                on_path(program),
+                "this test drives a REAL {program}; put `{program}` ({}) on PATH",
+                pinned_version(program)
+            );
+        }
         let dir = scratch(&format!("continuation-{tag}"));
         let repo = fixture_repo(&dir);
         let state = dir.join("state");
         let shim_dir = dir.join("bin");
         let gates = Gates {
             root: dir.join("root-gate"),
+            child: dir.join("child-gate"),
             grandchild: dir.join("grandchild-gate"),
             sessionless: dir.join("sessionless-gate"),
             argv_log: dir.join("child-argv.log"),
         };
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&shim_dir).unwrap();
-        shim(&shim_dir, &gates, &which("codex"));
+        if row.grandchild == Grandchild::SpawnedByTheChild {
+            std::fs::write(&gates.child, b"go").unwrap();
+        }
+        // The child's shim, and the gated root's and grandchild's (the same one on the codex row).
+        shim(&shim_dir, &gates, row.program, row.version);
+        if row.program != CODEX.program {
+            shim(&shim_dir, &gates, CODEX.program, CODEX.version);
+        }
 
         let reqlog = dir.join("provider-requests.jsonl");
         let server = CannedServer::start(Config {
             addr: ([127, 0, 0, 1], 0).into(),
             reqlog: reqlog.clone(),
-            script: script(),
+            script: script(row),
         })
         .expect("the canned provider binds");
 
@@ -399,6 +510,7 @@ impl Bed {
             &state,
             None,
             params(
+                CODEX.agent_type,
                 format!("{ROOT_MARKER}: hold the tree open"),
                 Some(&repo),
                 SHIM_TIMEOUT_SECS,
@@ -408,10 +520,31 @@ impl Bed {
             &sup,
             &state,
             Some(&root),
-            params(child_prompt, None, child_timeout_secs),
+            params(row.agent_type, child_prompt, None, child_timeout_secs),
         );
+        let journal = project.journal();
+        if row.grandchild == Grandchild::SpawnedForTheChild {
+            wait_for(&journal, "the child's Running", |j| {
+                state_of(j, &child.agent_id) == Some(NodeState::Running)
+            });
+            spawn_over_socket(
+                &sup,
+                &state,
+                Some(&child),
+                AgentSpawnParams {
+                    notify_parent: true,
+                    ..params(
+                        CODEX.agent_type,
+                        GRANDCHILD_PROMPT.into(),
+                        None,
+                        SHIM_TIMEOUT_SECS,
+                    )
+                },
+            );
+            std::fs::write(&gates.child, b"go").unwrap();
+        }
         Bed {
-            journal: project.journal(),
+            journal,
             events: project.agent(&child.agent_id).events(),
             dir,
             state,
@@ -445,6 +578,7 @@ impl Bed {
 impl Drop for Bed {
     fn drop(&mut self) {
         let _ = std::fs::write(&self.gates.grandchild, b"go");
+        let _ = std::fs::write(&self.gates.child, b"go");
         let _ = std::fs::write(&self.gates.sessionless, b"go");
         let _ = std::fs::write(&self.gates.root, b"go");
         let needle = self.dir.to_string_lossy().into_owned();
@@ -487,7 +621,7 @@ fn thread_of(journal: &Path, id: &AgentId) -> String {
     tree(journal)
         .get(id)
         .and_then(|n| n.harness_session.clone())
-        .expect("codex named its thread on the first generation")
+        .expect("the child's stream named its session on the first generation")
 }
 
 /// Every provider request whose body carries `needle`.
@@ -504,7 +638,23 @@ fn requests_carrying(reqlog: &Path, needle: &str) -> Vec<Value> {
 /// with the grandchild still live, so §7.6 accepts it at once as reported early.
 #[test]
 fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_generation() {
-    let bed = Bed::start("held-steer", CHILD_TIMEOUT_SECS);
+    steer_during_a_hold_is_the_second_generation(&CODEX);
+}
+
+/// **The same steer, into a held pi child**: the lane is the row's, so pi is relaunched under the
+/// session its `session` frame named, as `--session <id>` beside the rendered steer, and its Chat
+/// Completions request replays the first turn.
+#[test]
+fn a_steer_during_a_descendant_hold_resumes_the_pi_child_as_its_second_generation() {
+    steer_during_a_hold_is_the_second_generation(&PI);
+}
+
+fn steer_during_a_hold_is_the_second_generation(row: &Row) {
+    let bed = Bed::start(
+        row,
+        &format!("held-steer-{}", row.program),
+        CHILD_TIMEOUT_SECS,
+    );
     let child = bed.child.agent_id.clone();
     bed.wait_for_hold();
 
@@ -532,8 +682,8 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
     );
     let rendered = format!("marion: message from the operator: {text}");
     assert!(
-        argvs[1].contains(&format!("resume {thread}")) && argvs[1].contains(&rendered),
-        "generation two resumes thread {thread} with the rendered steer: {}",
+        argvs[1].contains(&(row.resume)(&thread)) && argvs[1].contains(&rendered),
+        "generation two resumes session {thread} with the rendered steer: {}",
         argvs[1]
     );
 
@@ -584,7 +734,22 @@ fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_genera
 /// the hold as the parent's second generation, which reads it and reports.
 #[test]
 fn a_childs_end_during_a_descendant_hold_resumes_the_codex_parent() {
-    let bed = Bed::start("held-push", CHILD_TIMEOUT_SECS);
+    childs_end_during_a_hold_resumes_the_parent(&CODEX);
+}
+
+/// **The same end, reaching a held pi parent**: pi is continued with the rendered end as its next
+/// generation, under the session it named, and reports.
+#[test]
+fn a_childs_end_during_a_descendant_hold_resumes_the_pi_parent() {
+    childs_end_during_a_hold_resumes_the_parent(&PI);
+}
+
+fn childs_end_during_a_hold_resumes_the_parent(row: &Row) {
+    let bed = Bed::start(
+        row,
+        &format!("held-push-{}", row.program),
+        CHILD_TIMEOUT_SECS,
+    );
     let parent = bed.child.agent_id.clone();
     bed.wait_for_hold();
 
@@ -605,8 +770,8 @@ fn a_childs_end_during_a_descendant_hold_resumes_the_codex_parent() {
     let argvs = bed.child_argvs();
     assert_eq!(argvs.len(), 2, "{argvs:#?}");
     assert!(
-        argvs[1].contains(&format!("resume {thread}")) && argvs[1].contains(PUSH_MARKER),
-        "generation two resumes thread {thread} with the rendered end: {}",
+        argvs[1].contains(&(row.resume)(&thread)) && argvs[1].contains(PUSH_MARKER),
+        "generation two resumes session {thread} with the rendered end: {}",
         argvs[1]
     );
     assert!(
@@ -641,6 +806,7 @@ fn a_childs_end_during_a_descendant_hold_resumes_the_codex_parent() {
 #[test]
 fn a_message_for_a_node_whose_stream_named_no_session_is_dropped_with_the_reason() {
     let bed = Bed::start_with(
+        &CODEX,
         "sessionless",
         CHILD_TIMEOUT_SECS,
         format!("{SESSIONLESS_MARKER}: run without naming a thread"),
@@ -670,7 +836,7 @@ fn a_message_for_a_node_whose_stream_named_no_session_is_dropped_with_the_reason
 /// first generation's bound runs out, not a fresh bound after its own launch.
 #[test]
 fn a_continuation_runs_on_what_is_left_of_the_nodes_own_wall_clock() {
-    let bed = Bed::start("shared-clock", SHORT_CHILD_TIMEOUT_SECS);
+    let bed = Bed::start(&CODEX, "shared-clock", SHORT_CHILD_TIMEOUT_SECS);
     let child = bed.child.agent_id.clone();
     bed.wait_for_hold();
 
