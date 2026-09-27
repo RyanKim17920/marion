@@ -247,6 +247,11 @@ pub struct AgentType {
     /// offer it. `None` — every built-in, and the default — leaves the agent in its own default
     /// mode. Only an ACP type may state one: the other harnesses have no session to set it in.
     pub approval_mode: Option<String>,
+    /// The provider a node of this type talks to in endpoint mode (`.marion/agents.toml`'s
+    /// `provider`), by `marion_core::provider` registry id. `None` — every built-in — is no
+    /// provider: the node runs canned or on the operator's own login. A `<provider>:<model>`
+    /// prefix on `model` names one too; this field is the explicit spelling.
+    pub provider: Option<String>,
 }
 
 impl AgentType {
@@ -313,6 +318,7 @@ impl AgentType {
             max_concurrent_children: DEFAULT_MAX_CONCURRENT_CHILDREN,
             prompt_prefix: None,
             approval_mode: None,
+            provider: None,
         }
     }
 }
@@ -690,6 +696,11 @@ pub enum AgentTypesError {
         harness: String,
         mode: String,
     },
+    #[error(
+        "agent type {name:?} names provider {provider:?}, which is not a provider id (lowercase \
+         letters, digits and `-`); `marion login --list` shows the providers marion knows"
+    )]
+    InvalidProvider { name: String, provider: String },
 }
 
 /// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: Claude Code as
@@ -718,6 +729,7 @@ struct FileRow {
     tools: Option<Vec<String>>,
     prompt_prefix: Option<String>,
     approval_mode: Option<String>,
+    provider: Option<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -824,12 +836,21 @@ impl FileRow {
                 mode: mode.clone(),
             });
         }
+        if let Some(provider) = &self.provider
+            && !crate::provider::valid_id(provider)
+        {
+            return Err(AgentTypesError::InvalidProvider {
+                name: self.name,
+                provider: provider.clone(),
+            });
+        }
         Ok(AgentType {
             model: self.model,
             acp_agent,
             tools,
             prompt_prefix: self.prompt_prefix,
             approval_mode: self.approval_mode,
+            provider: self.provider,
             ..AgentType::defaults(&self.name, &self.description, harness)
         })
     }
@@ -1402,6 +1423,31 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
         assert_eq!(types.resolve("codex-impl"), builtin("codex-impl"));
         assert_eq!(types.resolve("acp:goose acp"), builtin("acp:goose acp"));
         assert_eq!(types.resolve("nope"), None);
+    }
+
+    /// **`provider` names the endpoint a row's nodes talk to**, by registry id — carried verbatim,
+    /// and refused at load where it cannot be an id at all. Whether the id is one the user has
+    /// is the supervisor's check, which alone can read the user's `providers.toml`.
+    #[test]
+    fn a_rows_provider_is_carried_and_a_malformed_one_is_refused() {
+        let t = AgentTypes::parse(
+            "[[agent]]\nname = \"cheap\"\nharness = \"opencode\"\ndescription = \"d\"\n\
+             provider = \"openrouter\"\nmodel = \"qwen/qwen3-coder\"\n",
+        )
+        .unwrap()
+        .resolve("cheap")
+        .unwrap();
+        assert_eq!(t.provider.as_deref(), Some("openrouter"));
+        assert_eq!(builtin("codex-impl").unwrap().provider, None);
+        let err = AgentTypes::parse(
+            "[[agent]]\nname = \"x\"\nharness = \"codex\"\ndescription = \"d\"\n\
+             provider = \"Open Router\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AgentTypesError::InvalidProvider { .. }),
+            "{err}"
+        );
     }
 
     /// **`approval_mode` is an ACP row's session mode**, carried verbatim, and refused by name on

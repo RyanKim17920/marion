@@ -1233,10 +1233,39 @@ pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
             });
         }
     };
-    AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
-        path,
+    let types = AgentTypes::parse(&text).map_err(|e| SpawnError::AgentTypesFile {
+        path: path.clone(),
         error: e.to_string(),
-    })
+    })?;
+    check_providers(&types, crate::credentials::user_registry)
+        .map_err(|error| SpawnError::AgentTypesFile { path, error })?;
+    Ok(types)
+}
+
+/// Every row's `provider` is one the user's registry knows. `registry` is called only when some
+/// row names a provider, so a tree that uses none never depends on the user's `providers.toml`.
+fn check_providers(
+    types: &AgentTypes,
+    registry: impl FnOnce() -> Result<marion_core::provider::Registry, String>,
+) -> Result<(), String> {
+    let named: Vec<(&str, &str)> = types
+        .user()
+        .iter()
+        .filter_map(|t| t.provider.as_deref().map(|p| (t.name.as_str(), p)))
+        .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    let registry = registry()?;
+    for (name, provider) in named {
+        if registry.get(provider).is_none() {
+            return Err(format!(
+                "agent type {name:?} names provider `{provider}`, which is neither built in nor \
+                 in your providers.toml; `marion login --list` shows the ones marion knows"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The prompt a node of `ty` is given for `prompt`: the type's `prompt_prefix` in front of it,
@@ -3770,6 +3799,40 @@ mod tests {
             matches!(agent_types(&repo), Err(SpawnError::AgentTypesFile { .. })),
             "only NotFound means the built-ins"
         );
+    }
+
+    /// **A row's `provider` must be one the user has** — a built-in, or one in their own
+    /// `providers.toml` — checked at load, so a tree naming a provider nobody defined refuses every
+    /// spawn by name instead of failing only the node that reaches for it. The registry is read
+    /// only when some row names a provider.
+    #[test]
+    fn a_rows_provider_must_be_in_the_users_registry() {
+        let parse = |p: &str| {
+            marion_core::agent_type::AgentTypes::parse(&format!(
+                "[[agent]]\nname = \"x\"\nharness = \"codex\"\ndescription = \"d\"\n{p}"
+            ))
+            .unwrap()
+        };
+        let seed = || Ok(marion_core::provider::Registry::seed());
+        assert!(check_providers(&parse("provider = \"openrouter\"\n"), seed).is_ok());
+        let err = check_providers(&parse("provider = \"nope\"\n"), seed).unwrap_err();
+        assert!(
+            err.contains("`nope`") && err.contains("marion login"),
+            "{err}"
+        );
+        let custom = || {
+            marion_core::provider::Registry::with_custom(
+                "[providers.mine]\nbase_url = \"https://x/v1\"\nwires = [\"openai-chat\"]\n",
+            )
+            .map_err(|e| e.to_string())
+        };
+        assert!(check_providers(&parse("provider = \"mine\"\n"), custom).is_ok());
+        // No row names a provider: the registry is never consulted, so a broken file cannot
+        // refuse a tree that does not use it.
+        let unread = || -> Result<marion_core::provider::Registry, String> {
+            panic!("the registry was read for a tree that names no provider")
+        };
+        assert!(check_providers(&parse(""), unread).is_ok());
     }
 
     /// A type the tree's file does not define is refused before any side effect, exactly as an

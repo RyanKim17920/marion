@@ -1595,6 +1595,15 @@ ever runs a real login.
   `XDG_CONFIG_HOME` (eight cells, including "a repo's `.marion/providers.toml` is ignored" and "the
   fixture key appears in no output"). Not in `marion --help` yet; the usage text is being reworked
   on another branch.
+- **Endpoint auth mode — plumbed, not yet reachable.** `Auth::Endpoint` is a per-node mode that
+  overlays exactly what canned does (the rows' gate is now `When::Overlay`, and a sweep holds
+  endpoint's env keys, documents and MCP route equal to canned's on every harness); a node's bridge
+  is told the supervisor's own mode, never the provider. Codex's provider key is one row variable,
+  `MARION_PROVIDER_KEY`, compiled from the launch's credential — it replaced four post-compile
+  `MARION_DUMMY_KEY` pushes with the same values (child placeholder, root per-run token).
+- **`provider` on agent types — built.** `.marion/agents.toml` rows may name `provider = "<id>"`;
+  a malformed id is a parse error, and an id neither built in nor in the user's `providers.toml`
+  refuses every spawn against that tree by name.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
