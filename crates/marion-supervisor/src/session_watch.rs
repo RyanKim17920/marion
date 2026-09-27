@@ -15,7 +15,7 @@
 //! session could not be journaled is a node that cannot be resumed later, and that is a loss to
 //! report — not a reason to kill a run that is otherwise fine.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use marion_core::contract::{AgentId, Workspace};
 use marion_core::harness::Harness;
@@ -47,6 +47,11 @@ pub(crate) struct SessionWatch<'a> {
     grammar: Option<&'static StreamGrammar>,
     /// The session journaled for this node, once a frame has named one.
     session: RefCell<Option<String>>,
+    /// The node's profiles and which attempt is running: the profile's name rides the session
+    /// record, and each frame's usage-window reading is kept for `marion profile list`. `None`
+    /// on every launch that runs on no profile.
+    profiles: Option<&'a crate::profiles::Launch>,
+    attempt: Cell<usize>,
 }
 
 impl<'a> SessionWatch<'a> {
@@ -64,7 +69,23 @@ impl<'a> SessionWatch<'a> {
             workspace: None,
             grammar: harness_spec(harness).stream,
             session: RefCell::new(None),
+            profiles: None,
+            attempt: Cell::new(0),
         }
+    }
+
+    /// **Name the profiles this node runs on.** The profile of the running attempt is written onto
+    /// the session record, so a resume continues on the account that owns the conversation.
+    pub(crate) fn with_profiles(mut self, profiles: &'a crate::profiles::Launch) -> Self {
+        self.profiles = (!profiles.chain.is_empty()).then_some(profiles);
+        self
+    }
+
+    /// A fresh process of the same node — a profile failover's relaunch — is about to run on
+    /// attempt `at`: its session is a new one, so the next sighting is journaled again.
+    pub(crate) fn restart(&self, at: usize) {
+        self.attempt.set(at);
+        *self.session.borrow_mut() = None;
     }
 
     /// **Name the tree this node runs in.** A separate step rather than a fifth constructor
@@ -79,7 +100,7 @@ impl<'a> SessionWatch<'a> {
 
     /// One stdout line as it landed. A line that is not JSON is not a frame and carries nothing.
     pub(crate) fn observe_line(&self, line: &str) {
-        if self.session.borrow().is_some() {
+        if self.session.borrow().is_some() && self.profiles.is_none() {
             return;
         }
         if let Ok(frame) = serde_json::from_str::<Value>(line) {
@@ -97,6 +118,9 @@ impl<'a> SessionWatch<'a> {
     /// One parsed frame. Journals the session the first time a frame names one; every later frame
     /// is ignored without being read.
     pub(crate) fn observe_frame(&self, frame: &Value) {
+        if let Some(profiles) = self.profiles {
+            profiles.observe(self.attempt.get(), frame);
+        }
         if self.session.borrow().is_some() {
             return;
         }
@@ -111,7 +135,10 @@ impl<'a> SessionWatch<'a> {
                     session_id: id,
                     pane: self.pane,
                     workspace: self.workspace.clone(),
-                    profile: None,
+                    profile: self
+                        .profiles
+                        .and_then(|p| p.profile(self.attempt.get()))
+                        .map(|p| p.name.clone()),
                 }),
             );
         }

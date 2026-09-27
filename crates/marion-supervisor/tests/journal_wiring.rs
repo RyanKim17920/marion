@@ -973,6 +973,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         },
         &TaskId("denial-1".into()),
         &Caller::root(

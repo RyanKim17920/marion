@@ -17,6 +17,9 @@ use marion_harness::{ChildExit, StreamOutcome};
 pub enum SpawnError {
     #[error("git {0} failed: {1}")]
     Git(&'static str, String),
+    /// A profile the launch named cannot be used — refused before the node exists.
+    #[error(transparent)]
+    Profile(#[from] crate::profiles::ProfileError),
     /// marion's own state directory is **inside** the repository a root's change record would
     /// measure ([`TreeSnapshot::open`]).
     ///
@@ -1292,6 +1295,9 @@ pub fn build_contract(
         // Set by `run_spawn` once the work is committed onto the child's branch, which happens
         // after the contract's measurements and before the worktree is reaped.
         branch: None,
+        // Set by `run_spawn` from the whole run's output (`profiles::classify`), which this
+        // outcome no longer carries.
+        failure_cause: None,
         commit: None,
         // Set by the review gate once a reviewer has judged the committed work.
         review: None,

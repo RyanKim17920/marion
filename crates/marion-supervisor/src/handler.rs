@@ -3126,6 +3126,7 @@ impl RegistryHandle {
             // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
             // reconstructs this same request from the journal rather than from a caller.
             resume: None,
+            profile: None,
         };
 
         // Kept out of the thread's move, because the answer names it: the composing client reads
@@ -3913,6 +3914,8 @@ impl RegistryHandle {
                 session,
                 workspace,
             }),
+            // The account the session was recorded under, never a re-resolved one.
+            profile: node.profile.clone(),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
         self.launch_child(me, env.clone(), req, task_id, caller, repo, decision, None)

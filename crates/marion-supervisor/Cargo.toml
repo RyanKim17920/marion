@@ -55,6 +55,9 @@ ratatui = { version = "0.30", default-features = false }
 rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
 # `MessageQueued.sha256`: the journal audits a queued message by its digest, never its text.
 sha2 = "0.11"
+# `profiles::ProfilesFile` reads `$XDG_CONFIG_HOME/marion/profiles.toml`, with the parser
+# `.marion/agents.toml` is read with.
+toml.workspace = true
 
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the
 # canned provider into the user-facing `marion` binary would put a fake-model server inside the

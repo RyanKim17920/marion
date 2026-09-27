@@ -371,6 +371,12 @@ pub struct Completion {
     /// capped per string where it was read and elided by cap rules 5(f) and 6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub findings: Option<Findings>,
+    /// **Why the run failed, where the harness said so** — a usage limit, an expired or refused
+    /// login, or a vendor outage ([`FailureCause`]). `None` where nothing classified: a clean run,
+    /// or a failure in words marion does not recognise. An absent key on the wire, so a contract
+    /// without one is byte-identical to one an earlier build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_cause: Option<FailureCause>,
 }
 
 impl Completion {

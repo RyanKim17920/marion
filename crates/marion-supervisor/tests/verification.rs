@@ -97,6 +97,7 @@ fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
         resume: None,
+        profile: None,
     }
 }
 

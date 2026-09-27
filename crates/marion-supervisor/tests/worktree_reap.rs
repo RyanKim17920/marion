@@ -140,6 +140,7 @@ fn spawn_in(
         isolation,
         allow_concurrent_writes: false,
         resume: None,
+        profile: None,
     };
     // A root caller: depth 0, the same thing `marion run` hands the bridge.
     let caller = Caller::root(

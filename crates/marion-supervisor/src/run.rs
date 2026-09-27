@@ -191,6 +191,10 @@ pub struct SpawnRequest {
     /// session, a session without the tree it was created in — and each of those relaunches
     /// *something*, quietly, in the wrong place or under the wrong name.
     pub resume: Option<ChildResume>,
+    /// **The profile this launch runs on**, overriding the agent type's `profile` and
+    /// `profiles.toml`'s `[default]` — a spawn's own choice, or, on a resume, the profile the
+    /// node's session was recorded under. `None` resolves as `profiles::resolve` says.
+    pub profile: Option<String>,
 }
 
 /// What a child's second life is reconstructed from — all of it read off the journal, none of it
@@ -937,6 +941,16 @@ fn rotation(
     Some((next, cause))
 }
 
+/// **The readiness marker a relaunch must not inherit.** The failed attempt's bridge touched it; left
+/// in place, it would let the prompt reach the next attempt before that attempt's own bridge has
+/// the tool list. Found on the profile failover (`ccf06a3`); the credential rotation relaunches the
+/// same way and needs the same.
+fn clear_ready_marker(marker: Option<&Path>) {
+    if let Some(m) = marker {
+        let _ = std::fs::remove_file(m);
+    }
+}
+
 /// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
 /// withhold and nothing to steer. codex, gemini and opencode all declare
 /// `launch_only_with_protocol_events()` and all take this path; §6.1 step 8 asserts their MCP
@@ -1387,6 +1401,17 @@ pub fn run_spawn_watched(
     // The verification lines ride on the intent below, so a set too large to journal is refused
     // here, with the other refusals and before the node has an identity at all.
     check_verification_size(&req.verification)?;
+    // **Which of the operator's own logins this node runs on**, refused here — before the node
+    // exists — when a named profile is unknown, belongs to another harness, or has lost its
+    // directory. Empty under canned auth and wherever nothing names a profile.
+    let profiles = crate::profiles::Launch::for_child(
+        env.auth,
+        &env.state,
+        agent_type.harness,
+        req.profile.as_deref(),
+        req.resume.is_some(),
+        &agent_type.profiles,
+    )?;
     // Endpoint mode, where the child's type or model names a provider: refused by name here, with
     // the other refusals and before the node has an identity. The wires are the row's; an adapter
     // that cannot be built at all is refused below, in its own words, as it always was.
@@ -1570,7 +1595,8 @@ pub fn run_spawn_watched(
         adapter.harness(),
         false,
     )
-    .in_workspace(Some(workspace.clone()));
+    .in_workspace(Some(workspace.clone()))
+    .with_profiles(&profiles);
     // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
     // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
     let turns = observer.turn_source(&agent_id).map(|source| {
@@ -1664,6 +1690,11 @@ pub fn run_spawn_watched(
             mid_turn: f.mid_turn,
         })
     };
+    // **One attempt loop, two failovers, one policy** (`next_attempt` below the launch): an
+    // endpoint node rotates to its next API key, and a node on the operator's own login fails over
+    // to the next profile its type listed — each only for a finished process that reported
+    // nothing, and every attempt on what is left of the node's one wall clock.
+    //
     // **API-key rotation, before the first successful turn.** An endpoint node whose provider
     // refused its key (401/403), rate-limited it (429) or failed or could not be reached (5xx, a
     // connection error) — with no report and nothing changed in its worktree, so no turn of it had
@@ -1674,6 +1705,8 @@ pub fn run_spawn_watched(
     let mut failovers: Vec<marion_core::contract::CredentialFailover> = Vec::new();
     let mut probed_version: Option<String> = None;
     let launched_at = Instant::now();
+    // The profile this attempt runs on: an index into `profiles`, 0 for the first.
+    let mut at = 0;
     let (launch, inv, mut run, version) = loop {
         let attempt_bound = bound.saturating_sub(launched_at.elapsed());
         // The live stream is scrubbed of every key this node has been launched on, as it arrives.
@@ -1684,10 +1717,12 @@ pub fn run_spawn_watched(
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep);
         }
+        launch.extra.profile_dir = profiles.dir(at);
         // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the
         // one sentence on this path a reader of the journal needs verbatim, so it is filed for the
         // abort record on the way out rather than replaced by the guard's generic reason.
         let inv = resolution.filed(declare_and_compile(adapter.as_ref(), &launch, &ctx))?;
+        profiles.used(at);
         // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
         // asked for after the child had been run and reaped, which was the only place it *could* be
         // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
@@ -1812,6 +1847,26 @@ pub fn run_spawn_watched(
                 cause,
             });
             endpoint = Some(next);
+            clear_ready_marker(ready_file.as_deref());
+            continue;
+        }
+        // **A profile failover**: a run on the operator's own login whose login was refused, that
+        // reported nothing, relaunches on the next profile its agent type listed — journaled
+        // first. A usage limit or an outage never gets here (`profiles::Launch::failover`), and an
+        // endpoint node's credential is the endpoint's, never a profile's.
+        let reported = adapter
+            .parse_stream(&run.stdout, run.exit)
+            .narrative
+            .is_some();
+        if endpoint.is_none()
+            && !reported
+            && !run.exit.timed_out
+            && let Some(next) =
+                profiles.failover(at, &run.stdout, &run.stderr, &env.project_dir, &agent_id)
+        {
+            at = next;
+            session.restart(at);
+            clear_ready_marker(ready_file.as_deref());
             continue;
         }
         break (launch, inv, run, version);
@@ -2035,6 +2090,20 @@ pub fn run_spawn_watched(
         evidence,
     );
     note_capture_truncated(&mut contract, run.capture_truncated);
+    // The run's cause, and on a usage limit the notice the parent reads — nothing more.
+    if contract
+        .completion
+        .as_ref()
+        .is_some_and(|c| c.status != marion_core::contract::ExitStatus::Ok)
+    {
+        profiles.settle(
+            at,
+            adapter.harness(),
+            &mut contract,
+            &run.stdout,
+            &run.stderr,
+        );
+    }
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
     // harness it names must be the one that actually produced the work, never the one that was
     // asked for. The two agree today precisely because the dispatch above reads the same field —
@@ -2627,6 +2696,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
         assert!(
             matches!(
@@ -3357,6 +3427,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
 
         let result = run_spawn(
@@ -3489,6 +3560,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         };
         let observer = Recorder {
             project: env.project_dir.clone(),
@@ -3802,6 +3874,7 @@ mod tests {
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
             resume: None,
+            profile: None,
         }
     }
 
