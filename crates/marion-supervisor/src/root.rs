@@ -3120,7 +3120,7 @@ mod tests {
         );
         assert_eq!(
             allowed,
-            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,Read,Write",
+            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,Read,Write",
             "permission must carry the same grant beside marion's own verbs, or the tool exists \
              and every call to it is refused (§11 items 22 and 24)"
         );
