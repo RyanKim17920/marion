@@ -223,6 +223,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // S37 first screens (2.1.283, `tests/fixtures/s37-boot-dialogs/claude-code-2.1.283.raw`): a
     // fresh directory opens on folder trust, selection on `No, exit`. A bare CR quits the session
     // (measured: the process exited); down-arrow + CR in one write trusts and opens the composer.
+    // The pane then shows the development-channels warning on a claude.ai login, which is held.
     boot_dialogs: BootDialogs {
         dialogs: &[
             BootDialog {
@@ -236,9 +237,21 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
+            BootDialog {
+                needle: "WARNING: Loading development channels",
+                answer: DialogAnswer::Hold,
+                note: "S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a \
+                       claude.ai login shows this for the pane's `--dangerously-load-development-\
+                       channels`, selection on `1. I am using this for local development`; an \
+                       acknowledgement the operator gives, never marion. It appears wherever \
+                       the operator's claude.ai login is present, a canned token beside it \
+                       included (S37 P-tui); without that login channels are refused and it \
+                       does not",
+            },
         ],
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
-               onboarding done: folder trust is the only dialog before the composer",
+               onboarding done: folder trust, then (pane shape, claude.ai login) the development \
+               channels warning",
     },
     wires: &[WireRecipe {
         wire: Wire::AnthropicMessages,
