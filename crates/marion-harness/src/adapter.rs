@@ -2845,8 +2845,9 @@ mod tests {
             let len: usize = files.iter().map(|(_, c)| c.len()).sum();
             let want = match name {
                 "claude" => 491,
-                // 1275 pre-axis, + 31 for `omit_tools_from = ["deferred"]\n` (2026-09-27).
-                "codex" => 1306,
+                // 1275 pre-axis, + 31 for `omit_tools_from = ["deferred"]\n` (2026-09-27), + 3 since
+                // the provider's `env_key` became `MARION_PROVIDER_KEY`.
+                "codex" => 1309,
                 "gemini" => 718,
                 "opencode" => 962,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
@@ -4705,14 +4706,39 @@ mod tests {
         );
     }
 
+    /// **The key codex's generated provider names is the row's, from the launch's own credential**
+    /// — one variable, compiled into the invocation, rather than a push each launch path had to
+    /// remember after `compile`. The config's `env_key` and the row's variable are the same name.
+    #[test]
+    fn a_canned_codex_node_carries_its_credential_in_the_variable_its_config_names() {
+        let spec = LaunchSpec {
+            api_key: Some("per-run-token".into()),
+            ..codex_spec()
+        };
+        let inv = CodexAdapter.compile(&spec, &ctx()).unwrap();
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "MARION_PROVIDER_KEY" && v == "per-run-token"),
+            "{:?}",
+            inv.env
+        );
+        let files = CodexAdapter.config_files(&spec, &ctx()).unwrap();
+        assert!(
+            files[0].1.contains("env_key = \"MARION_PROVIDER_KEY\""),
+            "{}",
+            files[0].1
+        );
+    }
+
     /// **Live mode is removal here too, and this is the list of what is removed** — asserted by
     /// name, because the failure defended against is one of the two creeping back. `CODEX_HOME`
     /// pointed anywhere but the operator's home hides the very `auth.json` the node exists to use,
-    /// and `MARION_DUMMY_KEY` is a minted placeholder standing beside a real credential.
+    /// and `MARION_PROVIDER_KEY` is a minted placeholder standing beside a real credential.
     #[test]
     fn a_live_codex_node_carries_neither_codex_home_nor_the_minted_key() {
         let inv = CodexAdapter.compile(&codex_live_spec(), &ctx()).unwrap();
-        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+        for k in ["CODEX_HOME", "MARION_PROVIDER_KEY"] {
             assert!(
                 !inv.env.iter().any(|(n, _)| n == k),
                 "{k} must be absent, not blank: {:?}",

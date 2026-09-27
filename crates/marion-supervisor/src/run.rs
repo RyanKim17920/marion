@@ -340,8 +340,8 @@ unsafe extern "C" {
 /// Not a secret and not checked by anything: the endpoint is marion's canned provider or its proxy,
 /// which authenticates nothing. It exists because a harness can refuse to *start* over an absent
 /// credential — see the `api_key` field in [`run_spawn`]'s `LaunchSpec` — and because codex's
-/// generated config has always named a variable that had to hold something (`env_key =
-/// "MARION_DUMMY_KEY"`).
+/// generated config names a variable that has to hold something (`env_key =
+/// "MARION_PROVIDER_KEY"`, compiled from this field by codex's row).
 pub const PLACEHOLDER_API_KEY: &str = "dummy";
 
 /// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
@@ -904,7 +904,6 @@ struct ChildRun {
 /// readiness *post hoc* from their own streams instead.
 fn launch_only_child(
     inv: &Invocation,
-    auth: Auth,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
@@ -914,9 +913,6 @@ fn launch_only_child(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if auth == Auth::Canned {
-        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
-    }
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again
@@ -995,11 +991,7 @@ struct ChildDuplex<'a> {
     turns: Option<crate::inbox::TurnFeed>,
 }
 
-fn duplex_child(
-    inv: &Invocation,
-    auth: Auth,
-    child: ChildDuplex<'_>,
-) -> Result<ChildRun, SpawnError> {
+fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
     let ChildDuplex {
         agent_id,
         ready_file,
@@ -1015,9 +1007,6 @@ fn duplex_child(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if auth == Auth::Canned {
-        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
-    }
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
     // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
     // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
@@ -1621,7 +1610,6 @@ pub fn run_spawn_watched(
         }
         LaunchPath::LaunchOnly => launch_only_child(
             &inv,
-            env.auth,
             bound,
             &announce_started,
             &session,
@@ -1661,7 +1649,6 @@ pub fn run_spawn_watched(
         .map_err(SpawnError::from),
         LaunchPath::Duplex => duplex_child(
             &inv,
-            env.auth,
             ChildDuplex {
                 agent_id: &agent_id,
                 ready_file: ready_file
@@ -1797,7 +1784,6 @@ pub fn run_spawn_watched(
         let left = deadline.saturating_duration_since(Instant::now());
         let next = launch_only_child(
             &next_inv,
-            env.auth,
             left,
             &announce_generation,
             &session,
@@ -2164,7 +2150,7 @@ fn child_launch_spec(
         // specify the GEMINI_API_KEY environment variable"* when the variable it named is absent.
         // A hard `None` here made that harness unlaunchable through `spawn` no matter what the
         // adapter compiled. codex has always been seeded the same way — its generated config names
-        // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
+        // `env_key = "MARION_PROVIDER_KEY"` and its row compiles it from this field — so this generalises an
         // existing decision rather than making a new one.
         //
         // Under `Auth::Inherited` there is nothing to placehold: the endpoint is the vendor's, the

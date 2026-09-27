@@ -357,9 +357,6 @@ pub struct RootNode {
     pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
-    /// Carried onto the node because the credential decision is not finished at `compile`: the
-    /// `LaunchOnly` run below pushes `MARION_DUMMY_KEY`, and under [`Auth::Inherited`] it must not.
-    pub auth: Auth,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -869,7 +866,6 @@ pub fn prepare_watched(
         surfaces,
         path,
         prompt: spec.prompt.clone(),
-        auth: spec.auth,
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
@@ -2046,16 +2042,6 @@ fn launch_only_generation(
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
         .current_dir(&inv.cwd);
-    if node.auth == Auth::Canned {
-        // Codex's generated `config.toml` names this as its provider `env_key`, and a provider
-        // whose key is unset refuses to start. The per-run token rather than a constant, for
-        // the same reason `ANTHROPIC_AUTH_TOKEN` carries it on the duplex path: it attributes a
-        // request log to one run. It is not a credential — the endpoint is the canned server.
-        //
-        // Under `Inherited` there is no canned endpoint to name a key for, and pushing one would
-        // put a placeholder credential beside the operator's real login.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
     // The one live seam this path has, and the session watch is its one reader: the first frame
     // names the session, and a root lost mid-run never reaches the capture below.
     let on_line = |line: &str| session.observe_line(line);
@@ -2362,13 +2348,6 @@ fn launch_terminal(
         // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
         // about the pty this launcher just opened, which no adapter can know.
         .env("TERM", PANE_TERM);
-    if node.auth == Auth::Canned {
-        // The same push `launch_only` makes and for the same reason: codex's generated
-        // `config.toml` names this as its provider `env_key`, and a provider whose key is unset
-        // refuses to start. Claude Code's pane compiles its own credential in `compile_pane`, so
-        // this is here for the second harness to declare a pane rather than for the first.
-        cmd.env("MARION_DUMMY_KEY", &node.token);
-    }
 
     // The pid is announced by `spawn_pty` itself, through `on_started`, between `spawn()` and the
     // first byte — that is the only instant at which a durable record can name this process while
@@ -4294,7 +4273,7 @@ mod tests {
             "marion wrote into {} on a route whose only readable config.toml is ~/.codex/config.toml",
             node.agent_dir.config_dir().display()
         );
-        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+        for k in ["CODEX_HOME", "MARION_PROVIDER_KEY"] {
             assert!(
                 !node.invocation.env.iter().any(|(n, _)| n == k),
                 "{k} must be absent, not blank: {:?}",
