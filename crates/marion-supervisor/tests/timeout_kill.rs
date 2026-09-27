@@ -124,6 +124,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         "codex-impl",
         None,
         "Start the long-running command and keep it running.",
+        Expiry::TwoStepSweep,
         |runaway, pidfile| Script {
             child_exec_js: Some(case_b_js(runaway, pidfile)),
             ..Script::default()
@@ -151,24 +152,63 @@ fn a_timed_out_opencode_child_leaves_no_surviving_tool_call_descendant() {
         "opencode",
         Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
-        |runaway, pidfile| Script {
-            nodes: vec![NodeScript {
-                marker: OPENCODE_MARKER.into(),
-                call_prefix: "octimeout".into(),
-                turns: vec![ScriptedCall::new(
-                    "bash",
-                    serde_json::json!({
-                        "command": format!("/bin/sh {} {}", runaway.display(), pidfile.display()),
-                        "description": "Start the long-running command",
-                        "timeout": RUNAWAY_SECS * 1000,
-                    }),
-                )],
-                final_text: "The command finished.".into(),
-            }],
-            ..Script::default()
-        },
+        Expiry::TwoStepSweep,
+        opencode_bash_script,
     );
 }
+
+/// **And over ACP**: an `opencode acp` child's expiry is the ACP driver's `session/cancel`, SIGINT
+/// and group kill rather than the launch-only path's, and the same `bash` tree must not outlive it.
+#[test]
+fn a_timed_out_acp_opencode_child_leaves_no_surviving_tool_call_descendant() {
+    assert!(
+        on_path("opencode"),
+        "this cell drives a REAL opencode acp child; put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    a_timed_out_child_leaves_no_surviving_tool_call_descendant(
+        "s7-timeout-acp-opencode",
+        "acp-opencode",
+        None,
+        &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
+        Expiry::AcpDriver,
+        opencode_bash_script,
+    );
+}
+
+/// opencode's own `bash` running case B's script: the call never returns on its own.
+fn opencode_bash_script(runaway: &Path, pidfile: &Path) -> Script {
+    Script {
+        nodes: vec![NodeScript {
+            marker: OPENCODE_MARKER.into(),
+            call_prefix: "octimeout".into(),
+            turns: vec![ScriptedCall::new(
+                "bash",
+                serde_json::json!({
+                    "command": format!("/bin/sh {} {}", runaway.display(), pidfile.display()),
+                    "description": "Start the long-running command",
+                    "timeout": RUNAWAY_SECS * 1000,
+                }),
+            )],
+            final_text: "The command finished.".into(),
+        }],
+        ..Script::default()
+    }
+}
+
+/// How marion ends an expired child, which decides what the cell can read back of the kill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expiry {
+    /// The launch-only path's two-step group kill, whose step-1 enumeration `last_kill_sweep`
+    /// returns — so the cell asserts the tool call's pids were in it.
+    TwoStepSweep,
+    /// The ACP driver's own shutdown — `session/cancel`, SIGINT, then the group kill — which
+    /// records no enumeration; the cell asserts on the tool call's recorded pids alone.
+    AcpDriver,
+}
+
+/// One cell at a time: see the lock's use in the helper.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// One child of `agent_type`, given `script` for its provider and a short bound, whose tool call is
 /// still running when the bound expires: every process marion's step 1 enumerated, and every pid
@@ -178,8 +218,12 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     agent_type: &str,
     model: Option<String>,
     prompt: &str,
+    expiry: Expiry,
     script: impl FnOnce(&Path, &Path) -> Script,
 ) {
+    // `last_kill_sweep` is one process-wide record, and every cell here expires at about the same
+    // moment: run concurrently, one cell would read another's sweep.
+    let _one_at_a_time = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root_dir = scratch(tag);
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
@@ -227,12 +271,15 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     let elapsed = started.elapsed();
 
     // What marion enumerated in step 1 of its own two-step kill, plus what the tool call recorded.
-    let enumerated = last_kill_sweep();
+    let enumerated = match expiry {
+        Expiry::TwoStepSweep => last_kill_sweep(),
+        Expiry::AcpDriver => Vec::new(),
+    };
     let recorded = pids_in(&pidfile);
 
     // Give killed processes a moment to leave the table, then clean up UNCONDITIONALLY — before a
     // single assertion — so a failing run can never be the leak it is testing for.
-    let mut survivors: Vec<i32> = enumerated.clone();
+    let mut survivors: Vec<i32> = enumerated.iter().chain(recorded.iter()).copied().collect();
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         survivors.retain(|p| alive(*p));
@@ -257,15 +304,17 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     );
 
     // ---- criterion 6, first half: a non-empty enumerated set. ----------------------------------
-    assert!(
-        !enumerated.is_empty(),
-        "marion enumerated no descendants at expiry; an empty set makes the ESRCH check vacuous"
-    );
-    assert!(
-        recorded.iter().all(|p| enumerated.contains(p)),
-        "marion's step-1 enumeration missed the tool call's own processes: enumerated \
-         {enumerated:?}, tool call recorded {recorded:?}"
-    );
+    if expiry == Expiry::TwoStepSweep {
+        assert!(
+            !enumerated.is_empty(),
+            "marion enumerated no descendants at expiry; an empty set makes the ESRCH check vacuous"
+        );
+        assert!(
+            recorded.iter().all(|p| enumerated.contains(p)),
+            "marion's step-1 enumeration missed the tool call's own processes: enumerated \
+             {enumerated:?}, tool call recorded {recorded:?}"
+        );
+    }
 
     // ---- criterion 6, second half: ESRCH for every pid in that set. ----------------------------
     assert!(
