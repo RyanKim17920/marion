@@ -575,6 +575,7 @@ dependencies = [
 name = "marion-tui"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "marion-term",
  "ratatui",
  "serde_json",

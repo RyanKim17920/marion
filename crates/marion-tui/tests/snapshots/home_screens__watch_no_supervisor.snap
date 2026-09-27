@@ -1,0 +1,35 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&sc, 80, 24)"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+                   No supervisor is running for this project.
+
+ Start a task on the Start tab, or run marion run <type> --prompt … in a shell.
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion run <type> --prompt <text>                                        │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
+--- styles ---
+   42  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNosupervisorisrunn"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "j/kentersxc?"
+  372  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+    1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
+   30  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchmarionrun<type>--pr"

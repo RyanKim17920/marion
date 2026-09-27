@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s   waiting on 2 children
+  ├─ ● codex impl a1f0           ⠸   2m17s   editing src/limits/bucket.rs
+  ├─ ◐ codex impl 91cd               3m02s   asks to write .github/workflows/…
+  ├─ ✗ codex impl 7b2e               4m50s   exit 101: 3 tests failed
+❯ └─ ✓ codex impl 3c33               6m41s   landed marion/t-3c33
+       └ WHAT IT'S DOING  Add token-bucket limiter to /v1/orders
+                          last cargo test · 142 passed
+         TOKENS           184k in · 12.9k out · 151k cached
+                          ▃▂▄▅▇█▆▄▃▄▅▄▃▂▁▁  peak 26k / 30s
+                          ━━━━━━━━━━━━━━━━  41% of context
+         RESULT           marion/t-3c33  +84 −12 · 3 files
+                          git merge --no-ff marion/t-3c33   c copies
+         WORKSPACE        ~/.local/state/marion/9f3e/worktrees/t-3c33
+  ✓ claude review 88f2              1h ago   landed marion/t-88f2
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-3c33                                same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge      ? shortcuts
+--- styles ---
+  131  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
+   51  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESWHATIT'SDOINGTOKENS"
+  627  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯c❯"
+    5  Style::new().green().bg(Color::Reset)  "●●+84"
+   24  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed−12"
+   33  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
+  ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
+❯ └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
+       └ WHAT IT'S DOING  Add token-bucket limiter to /v1/orders
+                          last cargo test · 142 passed
+         TOKENS           184k in · 12.9k out · 151k cached
+                          ▃▂▄▅▇█▆▄▃▄▅▄▃▂▁▁  peak 26k / 30s
+                          ━━━━━━━━━━━━━━━━  41% of context
+         RESULT           marion/t-3c33  +84 −12 · 3 files
+                          git merge --no-ff marion/t-3c33   c copies
+         WORKSPACE        ~/.local/state/marion/9f3e/worktrees/t-3c33
+  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  ACTIVITY
+
+  14:31  ✓ 3c33  landed marion/t-3c33 · 3 files +84 −12
+  14:30  ✗ 7b2e  exit 101 · 3 tests failed in limits::bucket
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-3c33                                                    same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
+--- styles ---
+  140  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
+   60  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESWHATIT'SDOINGTOKENS"
+  896  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯c❯"
+    5  Style::new().green().bg(Color::Reset)  "●●+84"
+   25  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed−12"
+   38  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
+  ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
+❯ └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
+       └ WHAT IT'S DOING  Add token-bucket limiter to /v1/orders
+                          last cargo test · 142 passed
+         TOKENS           184k in · 12.9k out · 151k cached
+                          ▃▂▄▅▇█▆▄▃▄▅▄▃▂▁▁  peak 26k / 30s
+                          ━━━━━━━━━━━━━━━━  41% of context
+         RESULT           marion/t-3c33  +84 −12 · 3 files
+                          git merge --no-ff marion/t-3c33   c copies
+         WORKSPACE        ~/.local/state/marion/9f3e/worktrees/t-3c33
+  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ACTIVITY
+
+  14:31  ✓ 3c33  landed marion/t-3c33 · 3 files +84 −12
+  14:30  ✗ 7b2e  exit 101 · 3 tests failed in limits::bucket
+  14:29  ◐ 91cd  asks to write .github/workflows/ci.yml
+  14:29  ● a1f0  spawned by 5e1a · codex impl
+  14:24  ● 5e1a  started · claude opus
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ marion attach 01a093dc-3c33                                                                                                                same as enter │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention                                                                   ? shortcuts
+--- styles ---
+  152  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
+   60  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESWHATIT'SDOINGTOKENS"
+ 1227  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"
+    8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯c❯"
+    7  Style::new().green().bg(Color::Reset)  "●●+84●●"
+   25  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed−12"
+   39  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"

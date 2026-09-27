@@ -1,0 +1,143 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
+---
+--- 80x24 ---
+ ◆ marion  ~/code/acme-api                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+  ● claude    2.1.268   ready
+  ● codex     0.61.0    ready
+  ◐ gemini    0.9.1     sign-in needed
+  ● opencode  1.2.3     ready
+❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+    └ FIX  brew upgrade copilot-cli, then r to re-check
+  ○ agy       —         not installed
+
+  TYPE      copilot edits in a worktree
+  MODEL     default
+  OPTIONS   timeout 20m · change record on
+
+
+  $ marion run copilot --prompt "<text>"
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ ▏describe the task, enter runs it                                        │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens   ? shortcuts
+--- styles ---
+   49  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
+   41  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+  470  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
+    3  Style::new().green().bg(Color::Reset)  "●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
+
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+  ● claude    2.1.268   ready
+  ● codex     0.61.0    ready
+  ◐ gemini    0.9.1     sign-in needed
+  ● opencode  1.2.3     ready
+❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+    └ FIX  brew upgrade copilot-cli, then r to re-check
+  ○ agy       —         not installed
+
+  TYPE      copilot edits in a worktree
+  MODEL     default
+  OPTIONS   timeout 20m · change record on
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  RECENT   marion resume <id> picks one up
+
+  14:24 ● claude opus      Add rate limiting to /v1/orders                                 running
+  13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                   landed
+  11:47 ✓ codex default    Port the CSV exporter to streaming writes                        landed
+
+  $ marion run copilot --prompt "<text>"
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ ▏describe the task, enter runs it                                                            │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                       ? shortcuts
+--- styles ---
+   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+  788  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"
+
+--- 160x50 ---
+ ◆ marion  ~/code/acme-api                                                                                                        Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  HARNESS   3 of 6 ready
+
+  ● claude    2.1.268   ready
+  ● codex     0.61.0    ready
+  ◐ gemini    0.9.1     sign-in needed
+  ● opencode  1.2.3     ready
+❯ ✗ copilot   0.0.339   too old, needs ≥ 0.0.350
+    └ FIX  brew upgrade copilot-cli, then r to re-check
+  ○ agy       —         not installed
+
+  TYPE      copilot edits in a worktree
+  MODEL     default
+  OPTIONS   timeout 20m · change record on
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  RECENT   marion resume <id> picks one up
+
+  14:24 ● claude opus      Add rate limiting to /v1/orders                                                                                             running
+  13:02 ✓ claude sonnet    Review the pagination PR for off-by-one errors                                                                               landed
+  11:47 ✓ codex default    Port the CSV exporter to streaming writes                                                                                    landed
+  10:15 ✗ gemini default   Summarise open TODOs in src/billing                                                                                          failed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  $ marion run copilot --prompt "<text>"
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ❯ ▏describe the task, enter runs it                                                                                                                        │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  enter run · ↑↓ harness · ←→ model · ^o read-only · tab screens                                                                                   ? shortcuts
+--- styles ---
+   98  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
+   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+ 1064  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
+    3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
+   43  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   28  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350✗fa"
+   16  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded"

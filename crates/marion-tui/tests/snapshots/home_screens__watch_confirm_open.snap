@@ -1,0 +1,45 @@
+---
+source: crates/marion-tui/tests/home_screens.rs
+expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
+---
+--- 100x30 ---
+ ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  NODES   6 · 2 running · 2 need you
+
+  ● claude orchestrator 5e1a     ⠋  12m04s    312k   waiting on 2 children
+❯ ├─ ● codex impl a1f0           ⠸   2m17s     88k   editing src/limits/bucket.rs
+  │    └ WHAT IT'S DOING  Implement the bucket
+  ├─ ◐ codex impl 91cd               3m02s     41k   asks to write .github/workflows/ci.yml
+  ├─ ✗ codex impl 7b2e               4m50s    120k   exit 101: 3 tests failed
+  └─ ✓ codex impl 3c33               6m41s    197k   landed marion/t-3c33
+  ✓ claude review 88f2              1h ago     54k   landed marion/t-88f2
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  ACTIVITY
+
+  14:31  ✓ 3c33  landed marion/t-3c33 · 3 files +84 −12
+  14:30  ✗ 7b2e  exit 101 · 3 tests failed in limits::bucket
+  14:29  ◐ 91cd  asks to write .github/workflows/ci.yml
+  14:29  ● a1f0  spawned by 5e1a · codex impl
+  14:24  ● 5e1a  started · claude opus
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ Cancel codex impl a1f0?   $ marion cancel 01a093dc-a1f0                     y yes · any key no │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+  j/k move · enter attach · s steer · x cancel · c copy merge · ! next attention       ? shortcuts
+--- styles ---
+   76  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexCancelcodexim"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NODESWHATIT'SDOINGACTIVI"
+  681  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+  212  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s╭─────────"
+    7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯y"
+    4  Style::new().green().bg(Color::Reset)  "●●●●"
+   22  Style::new().red().bg(Color::Reset)  "✗exit101:3testsfailed✗"
+   39  Style::new().yellow().bg(Color::Reset)  "◐2◐askstowrite.github/wo"
