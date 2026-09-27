@@ -727,6 +727,28 @@ pub struct NodeHandle {
     /// What the node's own thread produced. `None` means **still running**, and that is the reading
     /// §5.7's exit predicate takes as a second guard beside the journal's.
     outcome: Option<NodeOutcome>,
+    /// Who records how this node's process ended — see [`Ending`].
+    ending: Ending,
+}
+
+/// **Who writes a node's terminal record**, decided once, under [`RegistryHandle::nodes`]'s lock.
+///
+/// Two writers can reach a node's end: its own thread, which observed the process exit and would
+/// journal `Exited` with the status it derived, and an operator's kill (`node/kill`, KillTree),
+/// which journals `KillConfirmed` — §6.7's `Exited(Cancelled)`. Both folding in means the later
+/// one wins in replay, so a thread that wrote `Exited(Failed)` a moment after the confirmation
+/// would rewrite a deliberate cancellation as a failure. The thread already has this answer for its
+/// own timeout kill (`timed_out`); this is the same attribution for a kill marion made from outside
+/// the thread, and whichever side gets here first settles it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Ending {
+    /// Neither has happened yet.
+    #[default]
+    Running,
+    /// A kill claimed the node first: its thread records the cancellation and no `Exited`.
+    KillRequested,
+    /// The thread saw its process end first and records the exit it observed.
+    ProcessEnded,
 }
 
 /// What a node's thread produced, in the vocabulary of the kind of node it was.
@@ -1081,6 +1103,11 @@ impl crate::run::SpawnObserver for NodeOwner {
                 .live
                 .read(|r| crate::descendant_gate::live_descendants(r.tree(), agent_id)),
         )
+    }
+
+    /// [`RegistryHandle::process_ended`]: this supervisor is the one a `node/kill` reaches.
+    fn process_ended(&self, agent_id: &AgentId) -> bool {
+        self.handle.process_ended(agent_id)
     }
 }
 
@@ -2628,10 +2655,46 @@ impl RegistryHandle {
                 started_at: None,
                 join: None,
                 outcome: None,
+                ending: Ending::Running,
             },
         );
         self.inboxes.open(agent_id);
         token
+    }
+
+    /// **A kill's half of [`Ending`]**: claim the node's end before signalling it. `false` means
+    /// the node's own thread already saw its process end and is recording that exit, so there is
+    /// nothing left to signal. A node this supervisor does not own has no thread to race and is
+    /// always claimable — its end is the kill's to record.
+    fn claim_kill(&self, agent_id: &AgentId) -> bool {
+        let mut nodes = lock(&self.nodes);
+        let Some(node) = nodes.get_mut(agent_id) else {
+            return true;
+        };
+        if node.ending == Ending::ProcessEnded || !node.running() {
+            return false;
+        }
+        node.ending = Ending::KillRequested;
+        true
+    }
+
+    /// **A node thread's half of [`Ending`]**, asked the instant its process has ended and before
+    /// anything terminal is written: `true` means marion killed it on request, so the thread
+    /// records the cancellation and leaves the terminal record to the kill's `KillConfirmed`.
+    /// `false` settles the other way — the exit is the thread's to record, and a kill arriving now
+    /// is refused rather than signalling a reaped pid.
+    pub(crate) fn process_ended(&self, agent_id: &AgentId) -> bool {
+        let mut nodes = lock(&self.nodes);
+        let Some(node) = nodes.get_mut(agent_id) else {
+            return false;
+        };
+        match node.ending {
+            Ending::KillRequested => true,
+            Ending::Running | Ending::ProcessEnded => {
+                node.ending = Ending::ProcessEnded;
+                false
+            }
+        }
     }
 
     /// **A native root this supervisor claimed has reached its end**, and its table entry says so.
@@ -3389,6 +3452,9 @@ impl RegistryHandle {
                 // `SpawnObserver` are visibly the same trait here as on the child path.
                 use crate::run::SpawnObserver as _;
                 let started = |pid: i32| observer.started(&node.agent_id, pid);
+                // The same attribution the child path asks through the trait: did a `node/kill`
+                // (or KillTree) end this root, so its terminal record is the kill's?
+                let ended_by_kill = || observer.process_ended(&node.agent_id);
                 crate::root::launch_owned(
                     &node,
                     bound,
@@ -3402,6 +3468,7 @@ impl RegistryHandle {
                     // because it is the same ownership — this supervisor answers `node/attach`,
                     // so it is the only process for which a registered pane means anything.
                     Some(&observer),
+                    Some(&ended_by_kill),
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -4185,6 +4252,11 @@ impl RegistryHandle {
 
         let mut killed = Vec::with_capacity(targets.len());
         for node in targets {
+            // A node whose own thread already saw its process end is still ended here, exactly as
+            // before `node/kill` existed: the operator confirmed this exact set, and KillTree has
+            // no refusal for a node that happens to be finishing. The claim only tells an owned
+            // node's thread that marion ended it, when marion got there first.
+            self.claim_kill(&node.agent_id);
             self.kill_node(node, KillBy::QuitKillTree)?;
             killed.push(KilledNode {
                 agent_id: node.agent_id.clone(),
@@ -4202,7 +4274,7 @@ impl RegistryHandle {
 
     /// **§6.7's kill of one node**: the intent made durable, the per-node process tree signalled
     /// and observed dead, the confirmation made durable — and nothing else. Shared by
-    /// `session/quit`'s KillTree, which runs it per confirmed node, and, next, by `node/kill`; each caller
+    /// `session/quit`'s KillTree, which runs it per confirmed node, and by `node/kill`; each caller
     /// owns its own preflight, and neither the supervisor's exit nor any other node is this
     /// function's business.
     ///
@@ -4247,6 +4319,88 @@ impl RegistryHandle {
             },
         }))
         .map_err(|e| journal_failure_after_signal_in(by.verb(), e))
+    }
+
+    /// **§2's `node/kill` — end one node**, which §6.7 classifies `Exited(Cancelled)`.
+    ///
+    /// The per-node half of §7.3.2's disposition (a), through the same [`Self::kill_node`], and
+    /// deliberately *only* that half: no confirmed-set comparison (the caller named one node), and
+    /// no change to the supervisor's disposition — §5.7 goes on deciding that from whatever else is
+    /// still running.
+    ///
+    /// The refusals come before any side effect, in the order that decides them:
+    ///
+    /// 1. the caller is this supervisor's own user — the check every operator call makes
+    ///    ([`root_spawn_authorized`]); a node cannot kill through this verb;
+    /// 2. the node is on the journal (`NotFound` otherwise), named by its whole id as `node/steer`
+    ///    names it;
+    /// 3. it has not already ended (`Refused`, naming its state) — its old pid is never signalled;
+    /// 4. a node to be signalled has a recorded pid (`Conflict`: still spawning, retry);
+    /// 5. **for a node this supervisor owns, its own thread has not already seen its process end**
+    ///    (`Conflict`). This is the thread race, settled under one lock by [`Self::claim_kill`]
+    ///    and [`Self::process_ended`]: whichever reaches the node's end first decides who writes
+    ///    its terminal record. A kill that wins tells the thread, which then records its outcome
+    ///    as the cancellation and writes no `Exited` over the `KillConfirmed`; a thread that wins
+    ///    is already recording an exit it observed, and a kill would aim at a reaped pid.
+    ///
+    /// Held under the same lock as `session/quit`, so a KillTree and a `node/kill` cannot both
+    /// journal an intent for one node.
+    fn node_kill(
+        &self,
+        p: &marion_core::proto::params::NodeKillParams,
+        peer: Peer,
+    ) -> Result<marion_core::proto::result::NodeKillResult, RpcError> {
+        root_spawn_authorized(peer)?;
+        let _decision = lock(&self.quit);
+        self.live.refresh();
+        let node = self
+            .live
+            .read(|r| r.tree().get(&p.agent_id).cloned())
+            .ok_or_else(|| {
+                RpcError::not_found(
+                    &p.agent_id.0,
+                    format!(
+                        "this project's journal records no node `{}`, so there is nothing to end. \
+                         Nothing was signalled.",
+                        p.agent_id.0
+                    ),
+                    "§2, §6.7",
+                )
+            })?;
+        if node.state.is_exited() {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` has already ended ({:?}); there is no process to end, and a terminal \
+                     node's recorded PID is never signalled. Nothing was signalled.",
+                    p.agent_id.0, node.state
+                ),
+                "§6.7",
+            ));
+        }
+        if node.reap_state != ReapState::ReapedIdle && node.pid.is_none() {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node has no recorded PID yet, so marion cannot prove a signal reaches it. \
+                 Nothing was signalled; retry after its spawn resolves.",
+                "§6.7",
+            ));
+        }
+        // A `ReapedIdle` node is retired, not signalled, so there is no process end to race for:
+        // §7.2's reap already ended it, and its thread's own reading of that is long settled.
+        if node.reap_state != ReapState::ReapedIdle && !self.claim_kill(&p.agent_id) {
+            return Err(RpcError::conflict(
+                &p.agent_id.0,
+                "the node's process has already ended on its own and its thread is recording how; \
+                 its terminal state lands on the journal in a moment. Nothing was signalled.",
+                "§6.7",
+            ));
+        }
+        self.kill_node(&node, KillBy::NodeKill)?;
+        self.live.refresh();
+        Ok(marion_core::proto::result::NodeKillResult {
+            state: self.spawned_state(&p.agent_id),
+        })
     }
 
     fn reap_idle_detach_busy(&self) -> Result<SessionQuitResult, RpcError> {
@@ -4423,18 +4577,22 @@ fn journal_failure_after_signal_in(verb: &str, error: crate::journal::JournalErr
 enum KillBy {
     /// §7.3.2's disposition (a), one confirmed node at a time.
     QuitKillTree,
+    /// §2's `node/kill`, for the one node it names.
+    NodeKill,
 }
 
 impl KillBy {
     fn verb(self) -> &'static str {
         match self {
             KillBy::QuitKillTree => "session/quit",
+            KillBy::NodeKill => "node/kill",
         }
     }
 
     fn signalled(self) -> &'static str {
         match self {
             KillBy::QuitKillTree => "marion sent SIGKILL for confirmed session/quit KillTree",
+            KillBy::NodeKill => "marion sent SIGKILL for the operator's node/kill",
         }
     }
 
@@ -4443,6 +4601,9 @@ impl KillBy {
             KillBy::QuitKillTree => {
                 "confirmed session/quit retired an already ReapedIdle node; no process existed to \
                  signal"
+            }
+            KillBy::NodeKill => {
+                "node/kill retired an already ReapedIdle node; no process existed to signal"
             }
         }
     }
@@ -4475,6 +4636,7 @@ impl Handle for RegistryHandle {
                 .node_resume(p, out.peer())
                 .map(MethodResult::NodeResume),
             Call::NodeSteer(p) => self.node_steer(p, out.peer()).map(MethodResult::NodeSteer),
+            Call::NodeKill(p) => self.node_kill(p, out.peer()).map(MethodResult::NodeKill),
             Call::NodePrompt(_) => Err(RpcError::unimplemented(
                 "node/prompt",
                 "`node/prompt` is not built. A message for a node's next turn is `node/steer`, which \
@@ -4491,8 +4653,8 @@ impl Handle for RegistryHandle {
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
                      `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit`, \
-                     `node/resume` and `node/steer`; the remaining methods land with the \
-                     milestone that needs them.",
+                     `node/resume`, `node/steer` and `node/kill`; the remaining methods land with \
+                     the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -6572,6 +6734,254 @@ mod tests {
                 .signal,
             Some(9)
         );
+    }
+
+    /// `node/kill` over the handler, the way a connection sends it.
+    fn node_kill(
+        fx: &Fx,
+        agent: &str,
+    ) -> Result<marion_core::proto::result::NodeKillResult, RpcError> {
+        let out = crate::serve::sink(ConnId(9));
+        match fx.handle.call(
+            ConnId(9),
+            &Call::NodeKill(marion_core::proto::params::NodeKillParams {
+                agent_id: id(agent),
+            }),
+            &out,
+        )? {
+            MethodResult::NodeKill(r) => Ok(r),
+            other => panic!("wrong result: {}", other.method().as_str()),
+        }
+    }
+
+    /// A live root with a recorded pid, as `journal::confirm_spawned` leaves one.
+    fn running_root(agent: &str, pid: i32) -> Vec<RecordKind> {
+        vec![
+            intent(agent, None, "claude", 0),
+            spawned(agent, pid),
+            state(agent, NodeState::Running),
+        ]
+    }
+
+    /// **NC — an id the journal never named is `NotFound`, and nothing is written or signalled.**
+    #[test]
+    fn node_kill_refuses_an_unknown_node_before_any_side_effect() {
+        let (fx, runtime) = recording_fx_with("handler-kill-unknown", running_root("root", 101));
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "nobody").expect_err("no such node");
+        assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
+        assert!(e.message.contains("nobody"), "{e}");
+        assert!(runtime.killed().is_empty());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — a finished node is refused with its terminal state, and its old pid is never
+    /// signalled.** That number may belong to an unrelated process by now, and a second terminal
+    /// record would rewrite how the node ended.
+    #[test]
+    fn node_kill_refuses_an_exited_node_naming_its_state_and_signals_nothing() {
+        let mut records = running_root("done", 101);
+        records.push(RecordKind::Exited(Exited {
+            agent_id: id("done"),
+            status: ExitStatus::Failed,
+            exit: ProcessExit {
+                code: Some(1),
+                signal: None,
+                description: "it failed on its own".into(),
+            },
+        }));
+        let (fx, runtime) = recording_fx_with("handler-kill-exited", records);
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "done").expect_err("an exited node has nothing to end");
+        assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+        assert!(
+            e.message.contains("Failed"),
+            "the refusal names the state: {e}"
+        );
+        assert!(runtime.killed().is_empty(), "nothing was signalled");
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — a node still spawning has no pid to aim at**, so the refusal is a `Conflict` (retry
+    /// once the spawn resolves), exactly as `session/quit`'s KillTree preflight answers it.
+    #[test]
+    fn node_kill_refuses_a_node_with_no_recorded_pid_and_signals_nothing() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-kill-no-pid",
+            vec![intent("root", None, "claude", 0)],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "root").expect_err("no pid, no provable signal");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(e.message.contains("no recorded PID"), "{e}");
+        assert!(runtime.killed().is_empty());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// A `ReapedIdle` node is retired, not signalled: its process is already gone (§7.2), and the
+    /// confirmation must not claim a signal marion never sent. The same rule KillTree applies.
+    #[test]
+    fn node_kill_retires_a_reaped_idle_node_without_signalling_it() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-kill-reaped",
+            vec![
+                intent("reaped", None, "claude", 0),
+                spawned("reaped", 501),
+                state("reaped", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("reaped"),
+                    reason: "an earlier session/quit reaped it".into(),
+                }),
+                RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: id("reaped"),
+                }),
+            ],
+        );
+
+        // Owned, with its thread long past its process's end — which is what a reap leaves. That
+        // race is settled and irrelevant here: nothing is signalled, so nothing is refused for it.
+        fx.handle.claim(&id("reaped"), None, fx.path.clone());
+        assert!(!fx.handle.process_ended(&id("reaped")));
+
+        let r = node_kill(&fx, "reaped").expect("a reaped node can still be ended");
+        assert_eq!(r.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert!(runtime.killed().is_empty(), "no process was left to signal");
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        let node = replay.get(&id("reaped")).unwrap();
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(node.exit.as_ref().unwrap().signal, None);
+    }
+
+    /// **The happy path, with §6.7's order observed at the instant of the signal**: the intent is
+    /// durable when the process is signalled, the confirmation lands after, and the answer is the
+    /// state the journal now folds to — `Exited(Cancelled)` with marion named as the sender.
+    #[test]
+    fn node_kill_journals_its_intent_before_the_signal_and_its_confirmation_after() {
+        let runtime = Arc::new(OrderingRuntime::default());
+        let fx = fx_with_runtime(
+            "handler-kill-order",
+            running_root("root", 301),
+            runtime.clone(),
+        );
+        *lock(&runtime.path) = Some(fx.path.clone());
+        let before = journal_tags(&fx.path).len();
+
+        let r = node_kill(&fx, "root").expect("a running node with a pid is ended");
+        assert_eq!(r.state, NodeState::Exited(ExitStatus::Cancelled));
+
+        let snapshots = lock(&runtime.at_signal).clone();
+        assert_eq!(snapshots.len(), 1, "one signal for one node");
+        assert_eq!(snapshots[0].last().map(String::as_str), Some("KillIntent"));
+        assert_eq!(
+            &journal_tags(&fx.path)[before..],
+            ["KillIntent", "KillConfirmed"],
+            "exactly one intent/confirm pair and nothing else"
+        );
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        let node = replay.get(&id("root")).unwrap();
+        assert_eq!(node.state, NodeState::Exited(ExitStatus::Cancelled));
+        let exit = node.exit.as_ref().unwrap();
+        assert_eq!(exit.signal, Some(9));
+        assert!(
+            exit.description.contains("node/kill"),
+            "{}",
+            exit.description
+        );
+    }
+
+    /// **Ending one node is not quitting.** The other node keeps running, nothing records the
+    /// supervisor's exit, and §5.7 still holds the supervisor resident on the survivor — the
+    /// negative control against a helper extracted from KillTree that carried its "then exit" along.
+    #[test]
+    fn node_kill_ends_only_its_node_and_leaves_the_supervisor_resident() {
+        let mut records = running_root("victim", 101);
+        records.extend(running_root("survivor", 202));
+        let (fx, runtime) = recording_fx_with("handler-kill-one-of-two", records);
+
+        node_kill(&fx, "victim").expect("the victim is ended");
+        assert_eq!(runtime.killed(), [101], "only the named node's pid");
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        assert_eq!(
+            replay.get(&id("survivor")).unwrap().state,
+            NodeState::Running
+        );
+        assert_eq!(
+            fx.handle.residency(),
+            Some(ResidentReason::NonTerminalNode),
+            "the survivor keeps the supervisor resident"
+        );
+        assert!(!fx.handle.begin_idle_exit());
+        assert!(!fx.handle.exiting());
+        assert!(
+            !journal_tags(&fx.path).contains(&"SupervisorExited".to_string()),
+            "a per-node kill never records the supervisor's exit"
+        );
+    }
+
+    /// **NC — a death marion cannot observe is not confirmed.** The intent stays outstanding for
+    /// §7.2's recovery and the caller is told the kill did not complete.
+    #[test]
+    fn node_kill_whose_death_cannot_be_observed_leaves_its_intent_unconfirmed() {
+        let fx = fx_with_runtime(
+            "handler-kill-unobservable",
+            running_root("root", 401),
+            Arc::new(UnobservableRuntime),
+        );
+        let e = node_kill(&fx, "root").expect_err("the death was not observed");
+        assert_eq!(e.kind(), Some(FailureKind::Internal), "{e}");
+        assert_eq!(journal_tags(&fx.path).last().unwrap(), "KillIntent");
+    }
+
+    /// **The thread race, from the kill's side.** A node this supervisor owns whose own thread has
+    /// already seen its process end is finishing on its own: its thread is about to write the
+    /// terminal record it observed. Signalling now would aim at a reaped pid and put a second
+    /// terminal record beside the thread's, so the kill is refused before any side effect.
+    #[test]
+    fn node_kill_refuses_an_owned_node_whose_process_already_ended_on_its_own() {
+        let (fx, runtime) =
+            recording_fx_with("handler-kill-ended-first", running_root("root", 101));
+        fx.handle.claim(&id("root"), None, fx.path.clone());
+        fx.handle.mark_started(&id("root"), 101);
+        assert!(
+            !fx.handle.process_ended(&id("root")),
+            "nobody asked marion to end it, so its thread records its own exit"
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let e = node_kill(&fx, "root").expect_err("its thread is already recording its end");
+        assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e}");
+        assert!(runtime.killed().is_empty(), "nothing was signalled");
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **The thread race, from the thread's side.** Once `node/kill` has claimed an owned node, the
+    /// node's thread is told at its process's end that marion ended it — so it writes no `Exited`
+    /// of its own over the `KillConfirmed` (which would refold the node to `Failed`) and records its
+    /// outcome as the cancellation it was.
+    #[test]
+    fn an_owned_node_that_marion_killed_is_told_so_when_its_thread_sees_the_process_end() {
+        let (fx, runtime) =
+            recording_fx_with("handler-kill-thread-told", running_root("root", 101));
+        fx.handle.claim(&id("root"), None, fx.path.clone());
+        fx.handle.mark_started(&id("root"), 101);
+
+        node_kill(&fx, "root").expect("an owned running node is ended");
+        assert_eq!(runtime.killed(), [101]);
+        assert!(
+            fx.handle.process_ended(&id("root")),
+            "the thread learns its process ended because marion ended it"
+        );
+    }
+
+    /// A node this supervisor does not own (an orphan, or a node another process recorded) is
+    /// still ended through its recorded pid; there is simply no thread here to tell.
+    #[test]
+    fn process_ended_for_a_node_nobody_owns_is_never_attributed_to_a_kill() {
+        let (fx, _) = recording_fx_with("handler-kill-unowned", running_root("root", 101));
+        assert!(!fx.handle.process_ended(&id("root")));
     }
 
     /// **One supervisor is one writer, across every RPC it serves — `seq` and `mono_ns` say so or

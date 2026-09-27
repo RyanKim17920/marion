@@ -1092,7 +1092,7 @@ pub fn launch_watched(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
-    launch_owned(node, bound, mcp_ready_timeout, watcher, None, None)
+    launch_owned(node, bound, mcp_ready_timeout, watcher, None, None, None)
 }
 
 /// **Where a root's pane goes**, for an owner that can serve it.
@@ -1139,6 +1139,10 @@ pub trait PaneOwner: Send + Sync {
 /// nowhere to put a pty, and on [`RootPath::Terminal`] it means the node runs and records exactly
 /// as it would have, with nobody able to attach: the recording at `AgentDir::pty_cast()` is written
 /// either way, because what marion observed is not a function of who was watching.
+///
+/// `ended_by_kill` is the owner's [`crate::run::SpawnObserver::process_ended`] for this root, asked
+/// once when the process has ended and before anything terminal is written. `None` is a caller that
+/// holds the root for its whole turn and so can never have been asked to kill it from outside.
 pub fn launch_owned(
     node: &RootNode,
     bound: StdDuration,
@@ -1146,8 +1150,17 @@ pub fn launch_owned(
     watcher: Option<duplex::StreamSink<'_>>,
     on_started: Option<&dyn Fn(i32)>,
     pane: Option<&dyn PaneOwner>,
+    ended_by_kill: Option<&dyn Fn() -> bool>,
 ) -> Result<RootOutcome, RootError> {
-    launch_inner(node, bound, mcp_ready_timeout, watcher, on_started, pane)
+    launch_inner(
+        node,
+        bound,
+        mcp_ready_timeout,
+        watcher,
+        on_started,
+        pane,
+        ended_by_kill,
+    )
 }
 
 fn launch_inner(
@@ -1157,6 +1170,7 @@ fn launch_inner(
     watcher: Option<duplex::StreamSink<'_>>,
     on_started: Option<&dyn Fn(i32)>,
     pane: Option<&dyn PaneOwner>,
+    ended_by_kill: Option<&dyn Fn() -> bool>,
 ) -> Result<RootOutcome, RootError> {
     // **§6.1 step 7's confirmation, at the instant the process exists** — §11 item 28 step 1's rule,
     // applied to the node it had left out. Written here rather than after the run returns, and
@@ -1270,10 +1284,23 @@ fn launch_inner(
         }),
         None => result,
     };
-    journal_the_roots_outcome(node, &result, spawned.get(), &harness_version);
+    // **The process has ended; nothing terminal is written yet** — the one instant the owner's
+    // attribution can be asked and settled (`SpawnObserver::process_ended`).
+    let ended_by_kill = ended_by_kill.is_some_and(|asked| asked());
+    journal_the_roots_outcome(
+        node,
+        &result,
+        spawned.get(),
+        &harness_version,
+        ended_by_kill,
+    );
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
     if let Some(es) = &events {
-        es.lifecycle(roots_terminal_lifecycle(&result, spawned.get()));
+        es.lifecycle(roots_terminal_lifecycle(
+            &result,
+            spawned.get(),
+            ended_by_kill,
+        ));
     }
     result
 }
@@ -1441,24 +1468,53 @@ fn refused_after_running(e: &RootError, spawned: bool) -> bool {
         )
 }
 
+/// **§6.7's reading of a root marion ended on an operator's kill**: `Cancelled`, whatever the run
+/// would otherwise have been read as — the precedence a timeout has in [`roots_exit`], because both
+/// are marion's own attributed act. The description keeps what marion observed of the process and
+/// names marion as the sender first.
+///
+/// Only the stream's bookend is written from this: the journal's terminal record for such a root
+/// is the killer's `KillConfirmed`, which folds to the same `Exited(Cancelled)`.
+fn cancelled_exit(exit: ProcessExit) -> (ExitStatus, ProcessExit) {
+    (
+        ExitStatus::Cancelled,
+        ProcessExit {
+            description: format!(
+                "marion ended this root on the operator's kill (node/kill or session/quit \
+                 KillTree); {}",
+                exit.description
+            ),
+            ..exit
+        },
+    )
+}
+
 /// The closing bookend for `events.jsonl`, mirroring [`journal_the_roots_outcome`]'s three arms so
 /// the two records of one run never disagree about which of them happened.
 fn roots_terminal_lifecycle(
     result: &Result<RootOutcome, RootError>,
     spawned: bool,
+    ended_by_kill: bool,
 ) -> marion_core::event::Lifecycle {
     use marion_core::event::Lifecycle;
+    let exited = |status: ExitStatus, exit: ProcessExit| {
+        let (status, exit) = if ended_by_kill {
+            cancelled_exit(exit)
+        } else {
+            (status, exit)
+        };
+        Lifecycle::Exited { status, exit }
+    };
     match result {
         Ok(o) => {
             let (status, exit) = roots_exit(o);
-            Lifecycle::Exited { status, exit }
+            exited(status, exit)
         }
         // The run happened and marion refused the *result*, so this is an exit — the same reading
         // the journal takes of it.
-        Err(e) if refused_after_running(e, spawned) => Lifecycle::Exited {
-            status: ExitStatus::Failed,
-            exit: refused_run_exit(e),
-        },
+        Err(e) if refused_after_running(e, spawned) => {
+            exited(ExitStatus::Failed, refused_run_exit(e))
+        }
         Err(e) => Lifecycle::Aborted {
             reason: e.to_string(),
         },
@@ -1469,11 +1525,15 @@ fn roots_terminal_lifecycle(
 /// [`spawned_record`]: after §11 item 28 step 6 that is the ordinary path and this function writes
 /// no `Spawned` at all, which is the whole point — the record now names the instant the process
 /// existed rather than the instant it stopped existing.
+///
+/// `ended_by_kill` writes no `Exited` on either exit arm: the root's terminal record is the kill's
+/// `KillConfirmed` (see [`cancelled_exit`]), and a second one would fold in over it.
 fn journal_the_roots_outcome(
     node: &RootNode,
     result: &Result<RootOutcome, RootError>,
     spawned: bool,
     harness_version: &str,
+    ended_by_kill: bool,
 ) {
     // A confirmation for a process whose existence this function is only *inferring*, and only when
     // nothing observed it directly. Unreachable through either driver today — both call the hook
@@ -1507,14 +1567,16 @@ fn journal_the_roots_outcome(
         // exit, not an abandonment. See [`refused_after_running`].
         Err(e) if refused_after_running(e, spawned) => {
             confirm(node);
-            crate::journal::record(
-                &node.project,
-                RecordKind::Exited(Exited {
-                    agent_id: node.agent_id.clone(),
-                    status: ExitStatus::Failed,
-                    exit: refused_run_exit(e),
-                }),
-            );
+            if !ended_by_kill {
+                crate::journal::record(
+                    &node.project,
+                    RecordKind::Exited(Exited {
+                        agent_id: node.agent_id.clone(),
+                        status: ExitStatus::Failed,
+                        exit: refused_run_exit(e),
+                    }),
+                );
+            }
             return;
         }
         Err(e) => {
@@ -1536,15 +1598,17 @@ fn journal_the_roots_outcome(
     // **cannot `report`** at all — spending that status on a root would make every root look like
     // a child that stayed silent. A timeout outranks everything for the same reason it does in
     // `build_contract`: it is marion's own attributed kill.
-    let (status, exit) = roots_exit(outcome);
-    crate::journal::record(
-        &node.project,
-        RecordKind::Exited(Exited {
-            agent_id: node.agent_id.clone(),
-            status,
-            exit,
-        }),
-    );
+    if !ended_by_kill {
+        let (status, exit) = roots_exit(outcome);
+        crate::journal::record(
+            &node.project,
+            RecordKind::Exited(Exited {
+                agent_id: node.agent_id.clone(),
+                status,
+                exit,
+            }),
+        );
+    }
     // Every permission marion refused, in the journal rather than in a contract — §9 says so in as
     // many words, *because* the node it happens to may be a root and a root has no contract. The
     // emitter is shared with the **child** path (`run::run_spawn`), which used to discard its
@@ -3401,7 +3465,7 @@ mod tests {
         };
         let dir = temp("refused-after-spawned");
         let ran = prepare(&root_spec(&dir, "claude")).unwrap();
-        journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0");
+        journal_the_roots_outcome(&ran, &Err(refusal()), true, "1.0.0", false);
         let tree = marion_core::registry::replay(&std::fs::read(ran.project.journal()).unwrap());
         let n = tree.get(&ran.agent_id).unwrap();
         assert_eq!(
@@ -3410,7 +3474,7 @@ mod tests {
         );
         assert_eq!(n.spawn_aborted, None, "{n:?}");
         assert!(matches!(
-            roots_terminal_lifecycle(&Err(refusal()), true),
+            roots_terminal_lifecycle(&Err(refusal()), true, false),
             marion_core::event::Lifecycle::Exited {
                 status: ExitStatus::Failed,
                 ..
@@ -3420,7 +3484,7 @@ mod tests {
         let never_dir = temp("refused-before-spawned");
         let never = prepare(&root_spec(&never_dir, "claude")).unwrap();
         let unstarted = RootError::UnaccountableNode { why: "full".into() };
-        journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0");
+        journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0", false);
         let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
         assert!(tree.get(&never.agent_id).unwrap().spawn_aborted.is_some());
     }
