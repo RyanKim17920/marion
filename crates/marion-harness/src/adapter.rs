@@ -1907,7 +1907,7 @@ impl HarnessAdapter for PiAdapter {
                 return Err(missing);
             };
             // pi lists a model only when its provider has a key; the canned endpoint ignores it.
-            let key = spec.api_key.as_deref().unwrap_or("marion-canned");
+            let key = spec.api_key.as_ref().map_or("marion-canned", |k| k.expose());
             files.push((
                 pi::models_path(&spec.config_dir),
                 serde_json::to_string_pretty(&pi::models_json(url, key, model))
