@@ -360,7 +360,7 @@ impl Bed {
                 native_launch: None,
                 caller: Some(marion_core::proto::SpawnCaller {
                     agent_id: parent.clone(),
-                    node_token: token,
+                    node_token: token.into(),
                 }),
                 repo: None,
                 acceptance_criteria: vec!["the limiter files are listed".into()],
@@ -372,6 +372,7 @@ impl Bed {
                 pane: None,
                 isolation: None,
                 allow_concurrent_writes: None,
+                profile: None,
             },
         ));
         let (_, outcome) = c.read_to_response(id);

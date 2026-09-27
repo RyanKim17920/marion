@@ -173,6 +173,7 @@ impl Bed {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         })
     }
 
@@ -187,7 +188,7 @@ impl Bed {
             native_launch: None,
             caller: Some(SpawnCaller {
                 agent_id: parent.clone(),
-                node_token: token,
+                node_token: token.into(),
             }),
             repo: None,
             acceptance_criteria: vec![],
@@ -201,6 +202,7 @@ impl Bed {
             pane: None,
             isolation: None,
             allow_concurrent_writes: None,
+            profile: None,
         })
     }
 
