@@ -30,6 +30,9 @@
 # It does not commit. Read the diff, paste the paragraph, then commit — with the probes under
 # `spikes/` re-run beside it where the entry's evidence calls for them.
 set -u
+# The evidence is only evidence under the strict gate: MARION_GATE=warn would let an unadmitted
+# version run green, which is exactly what this script exists to rule out.
+unset MARION_GATE
 
 usage() {
     echo "usage: $0 <harness> <version> [<harness> <version> ...]" >&2

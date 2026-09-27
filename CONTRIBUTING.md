@@ -43,6 +43,11 @@ writes the dated observation comment and prints the MILESTONES paragraph and com
 any red it restores the table exactly and exits non-zero. It does not commit; read the diff
 first.
 
+To run the suites against an unadmitted release anyway — to see whether it works before
+admitting it — set `MARION_GATE=warn`. The gate then prints a banner naming the release instead
+of failing, and does not fetch pinned npm releases. A green run under it is not admission
+evidence; `admit-harness.sh` always runs strict.
+
 ## The commit gate
 
 L4.5 — the snapshot layer — gates *commits*, not pushes. Install it once per clone:
