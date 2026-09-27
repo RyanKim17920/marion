@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use marion_core::contract::FailureCause;
 use marion_harness::grammar;
 use marion_harness::spec::{
     Approval, DialogAnswer, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
@@ -1239,13 +1240,17 @@ fn unsafe_kill(pid: i32, sig: i32) {
 
 // --- P-errors -----------------------------------------------------------------------------------
 
-/// The provider answers every turn request with 401, 429 or 500; the auth failure must classify as
-/// one (marion's `auth_failure_line`, or the row's stream failure naming it). Rows carry no
-/// rate-limit or outage markers, so those runs are recorded, not judged.
+/// The provider answers every turn request with 401, 429 or 500. What the harness said by the
+/// bound — its stderr and the provider errors its row's grammar reads off its stream — must
+/// classify, through the one classifier marion's contracts use (`HarnessAdapter::failure_cause`,
+/// on an API key as the canned provider is), as `Auth`, `RateLimit` and `Outage` respectively. A
+/// harness still retrying in silence at the bound fails the cell: nothing marion reads says why.
+/// The 401 run also records whether the row reads a refused credential off a frame, which is what
+/// ends such a run early in marion.
 fn p_errors(c: &mut Ctx<'_>) -> Outcome {
     const P: &str = "P-errors";
     let mut lines = Vec::new();
-    let mut auth_ok = false;
+    let mut all_ok = true;
     for status in [401u16, 429, 500] {
         let s = c.session(P, &status.to_string());
         let marker = format!("CONFERR{status}");
@@ -1284,26 +1289,41 @@ fn p_errors(c: &mut Ctx<'_>) -> Outcome {
             .iter()
             .filter(|r| r.turn.as_ref().is_some_and(|(m, _)| *m == marker))
             .count();
-        let auth_line = marion_harness::auth_failure_line(&stderr);
+        let cause =
+            c.t.adapter
+                .failure_cause(&stderr, &stdout, marion_harness::Billing::ApiKey);
         let failure = c.t.adapter.stream_failure(&stdout);
+        let refusal = marion_harness::json_frames(&stdout)
+            .iter()
+            .find_map(|f| c.t.adapter.auth_refusal(f));
         let acp_error = node
             .prompt_answers()
             .first()
             .map(|(_, f)| f.get("error").unwrap_or(&f["result"]).to_string());
         let exit = node.proc.with(|io| io.exit);
-        // marion classifies an auth failure from stderr alone (`spawn.rs`, `root.rs`); a harness
-        // that reports it only on stdout reaches the operator as an unclassified failure.
-        if status == 401 {
-            auth_ok = auth_line.is_some();
-        }
+        let classified = matches!(
+            (status, &cause),
+            (401, Some(FailureCause::Auth { .. }))
+                | (429, Some(FailureCause::RateLimit { .. }))
+                | (500, Some(FailureCause::Outage { .. }))
+        );
+        all_ok &= classified;
         lines.push(format!(
-            "{status}: {} after {:.1} s, {asked} request(s), {}; auth line {:?}; stream failure \
-             {:?}{}",
+            "{status}: {} after {:.1} s, {asked} request(s), {}; cause {}; stream failure \
+             {:?}{}{}",
             if ended { "ended" } else { "still running" },
             at.elapsed().as_secs_f64(),
             exit_word(exit),
-            auth_line,
+            match &cause {
+                Some(c) => format!("{c:?}"),
+                None => "none said".into(),
+            },
             failure,
+            match (status, &refusal) {
+                (401, Some(r)) => format!("; refused credential read off a frame: {r:?}"),
+                (401, None) => "; no frame reads as a refused credential".into(),
+                _ => String::new(),
+            },
             acp_error
                 .map(|e| format!("; prompt answer {e}"))
                 .unwrap_or_default(),
@@ -1311,9 +1331,9 @@ fn p_errors(c: &mut Ctx<'_>) -> Outcome {
     }
     Outcome::judged(
         P,
-        auth_ok,
-        "a 401 is classified as an auth failure by marion's own reader (`auth_failure_line` over \
-         stderr); 429/5xx recorded (no row carries limit or outage markers)",
+        all_ok,
+        "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's \
+         stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
         lines.join(" | "),
     )
 }
