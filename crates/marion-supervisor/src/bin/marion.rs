@@ -56,6 +56,7 @@ fn usage_text() -> String {
          \x20      marion logout <provider>[:<label>]\n\
          \x20      marion profile add <harness> <name> [--dir <path>] | list | use <harness> <name>\n\
          \x20                     | remove <name> [--purge]\n\
+         \x20      marion trust allow [<file>] | deny [<file>] | list\n\
          \x20      marion doctor [--capabilities|--adapter] [--harness <name>] | --providers\n\
          \x20      marion --version\n\
          \n\
@@ -2561,6 +2562,9 @@ fn legacy_main() -> ExitCode {
     }
     if argv.first().map(String::as_str) == Some("profile") {
         return marion_supervisor::profile_cli::main(&argv[1..]);
+    }
+    if argv.first().map(String::as_str) == Some("trust") {
+        return marion_supervisor::trust::cli_main(&argv[1..]);
     }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto

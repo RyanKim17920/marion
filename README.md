@@ -156,6 +156,9 @@ and never hides your credentials from the harness.
   supervisor's socket checks each caller's uid.
 - **A repository cannot redirect your keys.** Providers come only from your user-level config;
   a repository's `.marion/` is never read for them.
+- **A repository cannot run its own command without your consent.** A `.marion/agents.toml`
+  row with `harness = "acp:<command>"` runs only after `marion trust allow` has recorded the
+  file's exact bytes, and any edit revokes that. There is never a prompt.
 - **Near-zero idle cost.** marion waits on events, not timers. An idle supervisor with no
   running nodes measured 4 context switches per second, down from 264. The release binaries
   are 2.7 MB (`marion`) and 4.6 MB (`marion-supervisor`) on arm64 macOS.

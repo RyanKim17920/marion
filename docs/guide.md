@@ -134,6 +134,15 @@ Delegation stops at depth 3 (the root is depth 0): `max_depth` is a field of eve
 3 by default, and `.marion/agents.toml` does not set it yet. A node cannot exit while one of its
 descendants is still running.
 
+A row can name its own command with `harness = "acp:<command>"`, and marion runs it only after
+you allow the file. `marion trust allow [<file>]` shows each such type's program and argv, then
+records the file's canonical path and sha256 in `$XDG_DATA_HOME/marion/trusted.toml` (0600).
+Until then, and again after any edit to the file, a spawn of that type is refused with the exact
+`marion trust allow` command; there is never a prompt, since an MCP spawn cannot consent.
+`marion trust deny [<file>]` forgets a file and `marion trust list` shows each one as trusted,
+edited or missing. Types on built-in harness rows, or on an ACP refinement row by its id
+(`acp:copilot`), need no trust.
+
 ## Logins, API keys and endpoints
 
 By default every node runs on the login you already set up for its harness: its OAuth session,
