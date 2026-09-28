@@ -1811,7 +1811,12 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
   `CLAUDE_SECURESTORAGE_CONFIG_DIR` it answers `auth status` `loggedIn: true` on the operator's
   claude.ai login (the binary names the default keychain entry when that variable is empty); seeded
   with `hasCompletedOnboarding` it opens on folder trust, and trusting writes the seeded file with
-  `~/.claude.json` untouched. That pair is the row's `Relocation`, which tests apply.
+  `~/.claude.json` untouched. That pair is the row's `Relocation`, which tests apply. Under a
+  canned token the pane's development-channels warning turns on the file's cached feature flags
+  (`cachedGrowthBookFeatures`), not the login or the cached `oauthAccount`: the relocation copies
+  those two flag keys from the operator's file (read only), and P-tui on the moved config
+  reproduces its recorded result, trust answered then the held warning, with the operator's
+  `projects` map unchanged.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

@@ -374,16 +374,57 @@ pub enum Remembers {
 /// names the directory the harness reads and writes its config in, `store` the one its login is
 /// looked up under. Setting `config` alone would log the harness out (claude keys its keychain
 /// entry on a hash of `CLAUDE_CONFIG_DIR`); `store` points the lookup back at the operator's own
-/// entry, which is only read — nothing is copied, and no login is started.
+/// entry, which is only read. No credential is copied, and no login is started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Relocation {
     pub config: &'static str,
     pub store: &'static str,
-    /// Files written into a new config dir, `(name, contents)`, so the TUI opens as it does for the
-    /// operator (past first-run onboarding) rather than on a screen they never see. Never a
-    /// credential or an account.
+    /// Where the harness keeps the [`Self::seed`] files with `config` unset, relative to `$HOME`:
+    /// `""` is `$HOME` itself (claude's `~/.claude.json`, beside rather than inside `~/.claude`).
+    pub home: &'static str,
+    /// JSON documents written into a new config dir, `(name, object)`, so the TUI opens as it does
+    /// for the operator (past first-run onboarding) rather than on a screen they never see.
     pub seed: &'static [(&'static str, &'static str)],
+    /// Top-level keys copied into each seed from the operator's own copy of that file, where they
+    /// have one: non-secret state the TUI's behaviour turns on. A value holding a field named like
+    /// a credential is refused rather than copied.
+    pub carry: &'static [&'static str],
     pub note: &'static str,
+}
+
+/// **Whether a name is a credential's**, the check a relocation applies to everything it writes or
+/// copies: `token` itself, or a name holding one of the credential compounds, case, `_` and `-`
+/// aside. Compounds rather than the bare word, because a feature flag's `budgetTokens` or
+/// `token_refresh_buffer_ms` is a number, not a token.
+pub fn names_a_credential(name: &str) -> bool {
+    const COMPOUNDS: &[&str] = &[
+        "accesstoken",
+        "refreshtoken",
+        "idtoken",
+        "authtoken",
+        "bearer",
+        "apikey",
+        "secret",
+        "password",
+        "credential",
+        "privatekey",
+    ];
+    let n: String = name
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    n == "token" || COMPOUNDS.iter().any(|w| n.contains(w))
+}
+
+pub(crate) fn holds_a_credential(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(m) => m
+            .iter()
+            .any(|(k, v)| names_a_credential(k) || holds_a_credential(v)),
+        serde_json::Value::Array(a) => a.iter().any(holds_a_credential),
+        _ => false,
+    }
 }
 
 impl Relocation {
@@ -396,28 +437,55 @@ impl Relocation {
             .unwrap_or_default()
     }
 
-    /// **Move the config into `dir`**: create it, write any [`Self::seed`] file not already there
-    /// (0600, like the config the harness writes), and return the variables a launch carries so
-    /// the harness reads and writes there while still finding the operator's login.
+    /// Where the operator's own copies of the seed files are: their `config`, else `$HOME/<home>`.
+    fn operator_dir(&self, operator: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+        operator(self.config)
+            .map(PathBuf::from)
+            .or_else(|| operator("HOME").map(|h| Path::new(&h).join(self.home)))
+    }
+
+    /// **Move the config into `dir`**: create it, write each [`Self::seed`] not already there
+    /// (0600, like the config the harness writes) with the operator's [`Self::carry`] keys, and
+    /// return the variables a launch carries so the harness reads and writes there while still
+    /// finding the operator's login. The operator's files are only read.
     pub fn apply(
         &self,
         dir: &Path,
         operator: impl Fn(&str) -> Option<String>,
     ) -> std::io::Result<Vec<(String, String)>> {
-        use std::io::Write;
+        use std::io::{Error, ErrorKind, Write};
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::create_dir_all(dir)?;
+        let theirs = self.operator_dir(&operator);
         for (name, body) in self.seed {
-            let opened = std::fs::OpenOptions::new()
+            let path = dir.join(name);
+            if path.exists() {
+                continue;
+            }
+            let mut doc: serde_json::Map<String, serde_json::Value> = serde_json::from_str(body)
+                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("seed {name}: {e}")))?;
+            let own: Option<serde_json::Value> = theirs
+                .as_ref()
+                .and_then(|d| std::fs::read(d.join(name)).ok())
+                .and_then(|b| serde_json::from_slice(&b).ok());
+            for key in self.carry {
+                let Some(v) = own.as_ref().and_then(|o| o.get(key)) else {
+                    continue;
+                };
+                if holds_a_credential(v) {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("refusing to carry {key} from {name}: it names a credential"),
+                    ));
+                }
+                doc.insert((*key).to_string(), v.clone());
+            }
+            let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
-                .open(dir.join(name));
-            match opened {
-                Ok(mut f) => f.write_all(body.as_bytes())?,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
-            }
+                .open(&path)?;
+            f.write_all(serde_json::Value::Object(doc).to_string().as_bytes())?;
         }
         Ok(vec![
             (self.config.to_string(), dir.display().to_string()),

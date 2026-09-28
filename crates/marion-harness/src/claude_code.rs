@@ -249,8 +249,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                        channels`, selection on `1. I am using this for local development`; an \
                        acknowledgement the operator gives, never marion. It appears wherever \
                        the operator's claude.ai login is present, a canned token beside it \
-                       included (S37 P-tui); without that login channels are refused and it \
-                       does not",
+                       included (S37 P-tui; under a token it is the config's cached feature \
+                       flags that decide, see `remembers`); without that login channels are \
+                       refused and it does not",
             },
         ],
         // 2.1.283, measured 2026-09-27: folder trust is written to `<config>/.claude.json`'s
@@ -261,13 +262,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // names the default keychain entry when that variable is defined and empty. A fresh dir
         // opens on the theme picker; seeded with `hasCompletedOnboarding` it opens on folder
         // trust, and trusting writes the seeded file while `~/.claude.json`'s projects stay
-        // byte-identical.
+        // byte-identical. Under a canned token the development-channels warning shows only where
+        // the file caches the feature flags (`cachedGrowthBookFeatures`): seeded alone, or with the
+        // cached `oauthAccount` alone, the pane opens with no warning; with the flags, with or
+        // without the account, the warning shows as it does on the operator's own file.
         remembers: Remembers::OperatorConfig(Relocation {
             config: "CLAUDE_CONFIG_DIR",
             store: "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+            home: "",
             seed: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
+            carry: &["cachedGrowthBookFeatures", "cachedGrowthBookFeaturesAt"],
             note: "2.1.283 (2026-09-27): trust lands in `<CLAUDE_CONFIG_DIR>/.claude.json`; an \
-                   empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the operator's claude.ai login",
+                   empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the operator's claude.ai login; \
+                   the cached feature flags decide the channels warning under a token",
         }),
         note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
                onboarding done: folder trust, then (pane shape, claude.ai login) the development \

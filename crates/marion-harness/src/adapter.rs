@@ -10114,12 +10114,19 @@ mod tests {
                         r.config
                     );
                     for (name, body) in r.seed {
-                        let lower = format!("{name}{body}").to_ascii_lowercase();
+                        let doc: serde_json::Value = serde_json::from_str(body)
+                            .unwrap_or_else(|e| panic!("{h}: seed {name} is not JSON: {e}"));
                         assert!(
-                            !["token", "key", "secret", "credential", "oauth"]
-                                .iter()
-                                .any(|w| lower.contains(w)),
-                            "{h}: seed {name} looks like a credential"
+                            doc.is_object()
+                                && !crate::spec::names_a_credential(name)
+                                && !crate::spec::holds_a_credential(&doc),
+                            "{h}: seed {name} is not a credential-free JSON object"
+                        );
+                    }
+                    for key in r.carry {
+                        assert!(
+                            !crate::spec::names_a_credential(key),
+                            "{h}: carries {key}, which names a credential"
                         );
                     }
                 }
@@ -10129,49 +10136,102 @@ mod tests {
 
     /// **A relocation keeps the operator's login**: `store` takes the operator's own value, then
     /// their `config`'s (a login made under a custom config dir is keyed on it), then empty — the
-    /// default entry. Seeds are written 0600 and an existing file is left as it is.
+    /// default entry. Seeds are written 0600 with the operator's `carry` keys from their own copy
+    /// (in their `config`, else `$HOME/<home>`), an existing file is left as it is, a carried value
+    /// naming a credential is refused, and the operator's file is never written.
     #[test]
     fn a_relocation_points_its_store_at_the_operators_login_and_seeds_once() {
         use std::os::unix::fs::PermissionsExt;
         let r = crate::spec::Relocation {
             config: "CFG",
             store: "STORE",
-            seed: &[("seed.json", "{}")],
+            home: "",
+            seed: &[("seed.json", r#"{"onboarded":true}"#)],
+            carry: &["account"],
             note: "test",
         };
-        let op = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| {
-                pairs
-                    .iter()
-                    .find(|(n, _)| *n == k)
-                    .map(|(_, v)| v.to_string())
-            }
+        let op = |pairs: Vec<(&'static str, String)>| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
         };
-        assert_eq!(r.operator_store(op(&[])), "");
-        assert_eq!(r.operator_store(op(&[("CFG", "/work")])), "/work");
+        let s = |v: &str| v.to_string();
+        assert_eq!(r.operator_store(op(vec![])), "");
+        assert_eq!(r.operator_store(op(vec![("CFG", s("/work"))])), "/work");
         assert_eq!(
-            r.operator_store(op(&[("CFG", "/work"), ("STORE", "/store")])),
+            r.operator_store(op(vec![("CFG", s("/work")), ("STORE", s("/store"))])),
             "/store"
         );
-        assert_eq!(r.operator_store(op(&[("STORE", "")])), "");
+        assert_eq!(r.operator_store(op(vec![("STORE", s(""))])), "");
+        for name in [
+            "token",
+            "accessToken",
+            "refresh_token",
+            "apiKey",
+            "client-secret",
+        ] {
+            assert!(crate::spec::names_a_credential(name), "{name}");
+        }
+        for name in [
+            "budgetTokens",
+            "token_refresh_buffer_ms",
+            "maxTokens",
+            "oauthAccount",
+        ] {
+            assert!(!crate::spec::names_a_credential(name), "{name}");
+        }
 
         let dir = std::env::temp_dir().join(format!("marion-relocation-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let env = r.apply(&dir.join("cfg"), op(&[])).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let theirs = home.join("seed.json");
+        let original = r#"{"account":{"email":"a@b"},"projects":{"/x":{}}}"#;
+        std::fs::write(&theirs, original).unwrap();
+        let home_env = || op(vec![("HOME", home.display().to_string())]);
+
+        let cfg = dir.join("cfg");
+        let env = r.apply(&cfg, home_env()).unwrap();
         assert_eq!(
             env,
             [
-                ("CFG".to_string(), dir.join("cfg").display().to_string()),
+                ("CFG".to_string(), cfg.display().to_string()),
                 ("STORE".to_string(), String::new()),
             ]
         );
-        let seed = dir.join("cfg/seed.json");
-        assert_eq!(std::fs::read_to_string(&seed).unwrap(), "{}");
+        let seed = cfg.join("seed.json");
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
+        assert_eq!(
+            doc,
+            serde_json::json!({"onboarded": true, "account": {"email": "a@b"}}),
+            "the carried key only, never the operator's projects"
+        );
         let mode = std::fs::metadata(&seed).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         std::fs::write(&seed, "kept").unwrap();
-        r.apply(&dir.join("cfg"), op(&[])).unwrap();
+        r.apply(&cfg, home_env()).unwrap();
         assert_eq!(std::fs::read_to_string(&seed).unwrap(), "kept");
+
+        // Their `config` is where their copy lives when they set one; nothing there is fine.
+        let elsewhere = dir.join("cfg2");
+        r.apply(
+            &elsewhere,
+            op(vec![("CFG", dir.join("none").display().to_string())]),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("seed.json")).unwrap(),
+            r#"{"onboarded":true}"#
+        );
+
+        std::fs::write(&theirs, r#"{"account":{"accessToken":"x"}}"#).unwrap();
+        let refused = r.apply(&dir.join("cfg3"), home_env()).unwrap_err();
+        assert!(
+            refused.to_string().contains("names a credential"),
+            "{refused}"
+        );
+        assert!(!dir.join("cfg3/seed.json").exists());
+        std::fs::write(&theirs, original).unwrap();
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
