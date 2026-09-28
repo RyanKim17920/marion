@@ -15,8 +15,8 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, SessionId,
-    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, Reasoning,
+    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -341,9 +341,12 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         path: "/thread_id",
         resumes_in_place: false,
     }),
-    // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), each that turn's spend, so the
-    // run is their sum. `input_tokens` **counts** `cached_input_tokens` (14997 of which 11008
-    // cached in `stream-none.jsonl`), and the reader takes the cache back out.
+    // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), carrying the **thread's** running
+    // total rather than the turn's: a resumed `exec resume` turn reported both generations' spend
+    // (0.155.1, `continuation.rs`: two canned responses per generation, and the second
+    // generation's turn counted four). `input_tokens` **counts** `cached_input_tokens` (14997 of
+    // which 11008 cached in `stream-none.jsonl`), and the reader takes the cache back out.
+    // `reasoning_output_tokens` is part of `output_tokens`, as OpenAI counts completion tokens.
     usage: Some(UsageRule {
         at: Where {
             frame: &[Cond::Eq("/type", "turn.completed")],
@@ -354,8 +357,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/usage/output_tokens",
         cache_read: Some("/usage/cached_input_tokens"),
         cache_write: Some("/usage/cache_write_input_tokens"),
+        reasoning: Some(Reasoning::Within("/usage/reasoning_output_tokens")),
         input_includes_cache: true,
-        fold: UsageFold::Sum,
+        fold: UsageFold::Session,
     }),
     // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
     // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`

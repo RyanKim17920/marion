@@ -66,8 +66,8 @@ use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
 use marion_core::ir::Provenance;
 use marion_core::journal::{
-    EncodeError, JournalRecord, PermissionDenied, RecordKind, Spawned, StateChanged, WriterId,
-    encode,
+    EncodeError, JournalRecord, PermissionDenied, RecordKind, Spawned, StateChanged, UsageRecorded,
+    WriterId, encode,
 };
 use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
@@ -375,6 +375,22 @@ pub fn record(project: &ProjectDir, kind: RecordKind) {
     }
     drop(open);
     wake_listeners(&path);
+}
+
+/// **What one run of a node spent**, as [`RecordKind::UsageRecorded`] — written only when its
+/// stream stated a figure, since no record is how the journal says "no claim", and zero would be
+/// one. [`record`]'s policy: losing it costs a figure, never the run.
+pub fn record_usage(project: &ProjectDir, agent_id: &AgentId, spent: crate::spending::Spent) {
+    if let Some(usage) = spent.usage {
+        record(
+            project,
+            RecordKind::UsageRecorded(UsageRecorded {
+                agent_id: agent_id.clone(),
+                usage,
+                turns: spent.turns,
+            }),
+        );
+    }
 }
 
 /// **§6.1 step 7's confirmation for a managed node, and the `Running` beside it** — one rule for

@@ -19,6 +19,7 @@
 //! `report` (S13, verified live). That is the MCP layer, a different protocol on a different
 //! transport; nothing in this module should ever be handed the unprefixed name.
 
+use crate::USAGE;
 use serde_json::{Value, json};
 
 /// `id` shared by every chunk of one canned completion, as a real stream does.
@@ -39,9 +40,26 @@ fn delta(delta: Value) -> String {
     chunk(json!({"index": 0, "delta": delta, "finish_reason": null}))
 }
 
-/// The last chunk plus the `[DONE]` sentinel that ends an OpenAI stream.
+/// The last chunk, the usage chunk and the `[DONE]` sentinel that end an OpenAI stream. The usage
+/// rides its own chunk with no choices, as OpenAI sends it under `stream_options.include_usage`,
+/// carrying [`crate::USAGE`] in Chat Completions' shape.
 fn stop(finish_reason: &str) -> String {
     let mut out = chunk(json!({"index": 0, "delta": {}, "finish_reason": finish_reason}));
+    let usage = json!({
+        "id": COMPLETION_ID,
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "canned",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": USAGE.input,
+            "prompt_tokens_details": {"cached_tokens": USAGE.cached},
+            "completion_tokens": USAGE.output,
+            "completion_tokens_details": {"reasoning_tokens": USAGE.reasoning},
+            "total_tokens": USAGE.input + USAGE.output,
+        },
+    });
+    out.push_str(&format!("data: {usage}\n\n"));
     out.push_str("data: [DONE]\n\n");
     out
 }
@@ -87,6 +105,33 @@ fn halves(s: &str) -> [&str; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every completion ends with a choiceless usage chunk carrying the canned spend, before
+    /// `[DONE]`.
+    #[test]
+    fn every_completion_reports_the_canned_usage_in_its_last_chunk() {
+        for stream in [
+            text_turn("hi"),
+            tool_call_turn("marion_report", "c1", &json!({})),
+        ] {
+            let chunks: Vec<Value> = stream
+                .lines()
+                .filter_map(|l| l.strip_prefix("data: "))
+                .filter(|d| *d != "[DONE]")
+                .map(|d| serde_json::from_str(d).unwrap())
+                .collect();
+            let last = chunks.last().unwrap();
+            assert_eq!(last["choices"], json!([]));
+            let u = &last["usage"];
+            assert_eq!(u["prompt_tokens"], USAGE.input);
+            assert_eq!(u["prompt_tokens_details"]["cached_tokens"], USAGE.cached);
+            assert_eq!(u["completion_tokens"], USAGE.output);
+            assert_eq!(
+                u["completion_tokens_details"]["reasoning_tokens"],
+                USAGE.reasoning
+            );
+        }
+    }
 
     /// Reassemble a stream the way a real client does, so the tests assert the *result* of the
     /// protocol rather than the bytes of one chosen chunking.

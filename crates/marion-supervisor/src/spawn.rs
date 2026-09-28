@@ -1303,6 +1303,8 @@ pub fn build_contract(
         review: None,
         // Set only on a reviewer node's own completion, from its parsed reply.
         findings: None,
+        // Set by `run_spawn` from the node's metered stream, which this function never sees.
+        usage: None,
     };
     TaskContract {
         task_id,

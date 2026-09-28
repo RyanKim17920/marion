@@ -220,6 +220,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",
+            RecordKind::UsageRecorded(_) => "UsageRecorded",
             RecordKind::MessageQueued(_) => "MessageQueued",
             RecordKind::MessageDelivered(_) => "MessageDelivered",
             RecordKind::MessageDropped(_) => "MessageDropped",

@@ -132,11 +132,11 @@ pub(crate) mod session_watch;
 pub mod socket;
 pub mod spawn;
 pub(crate) mod spawn_receive_gate;
+/// What each running node has spent so far, as its event sink meters it frame by frame.
+pub mod spending;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;
-/// Each node's token spend, folded from only what its stream appended since the last reading.
-pub mod usage_tally;
 /// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
 /// on instead of sleeping.
 pub mod wake;

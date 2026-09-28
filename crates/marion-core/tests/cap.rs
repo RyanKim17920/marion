@@ -104,6 +104,7 @@ fn completion() -> Completion {
         review: None,
         findings: None,
         failure_cause: None,
+        usage: None,
     }
 }
 

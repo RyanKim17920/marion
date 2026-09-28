@@ -532,6 +532,7 @@ fn the_expanded_node_draws_per_turn_tokens_and_the_diff_it_landed() {
                 output: 5,
                 cache_read: 0,
                 cache_write: 0,
+                reasoning: None,
             }),
             turns: vec![3, 12],
             completion: Some(CompletionSummary {

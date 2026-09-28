@@ -1221,6 +1221,7 @@ pub const USAGE: UsageRule = UsageRule {
     output: "/result/usage/outputTokens",
     cache_read: Some("/result/usage/cachedReadTokens"),
     cache_write: Some("/result/usage/cachedWriteTokens"),
+    reasoning: None,
     input_includes_cache: false,
     fold: UsageFold::Sum,
 };

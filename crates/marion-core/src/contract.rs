@@ -373,6 +373,13 @@ pub struct Completion {
     /// without one is byte-identical to one an earlier build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_cause: Option<FailureCause>,
+    /// **The tokens this task's run spent**, as the child's harness reported them in its stream:
+    /// every process the run took (each continuation generation) added. Harness-sourced and
+    /// unverified, like `narrative`. `None` when the stream stated none — no claim, which is not
+    /// zero — and then absent on the wire, so such a completion is byte-identical to one an earlier
+    /// build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 
 impl Completion {
@@ -412,6 +419,11 @@ pub struct TokenUsage {
     pub cache_read: u64,
     #[serde(default)]
     pub cache_write: u64,
+    /// Of `output`, the tokens the model spent reasoning — **a part of `output`, never beside it**,
+    /// so [`Self::total`] does not count them again. `None` where the harness does not split them
+    /// out, which is not a claim of zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
 }
 
 impl TokenUsage {
@@ -421,6 +433,22 @@ impl TokenUsage {
             .saturating_add(self.output)
             .saturating_add(self.cache_read)
             .saturating_add(self.cache_write)
+    }
+
+    /// What was spent after `earlier`, where both are running totals of one session: counter by
+    /// counter, **saturating at zero**, because a total that went backwards is a harness's bad
+    /// arithmetic and not a negative spend. A reasoning split stays unreported where this total
+    /// reported none.
+    pub fn since(self, earlier: TokenUsage) -> TokenUsage {
+        TokenUsage {
+            input: self.input.saturating_sub(earlier.input),
+            output: self.output.saturating_sub(earlier.output),
+            cache_read: self.cache_read.saturating_sub(earlier.cache_read),
+            cache_write: self.cache_write.saturating_sub(earlier.cache_write),
+            reasoning: self
+                .reasoning
+                .map(|r| r.saturating_sub(earlier.reasoning.unwrap_or(0))),
+        }
     }
 }
 
@@ -435,7 +463,21 @@ impl std::ops::Add for TokenUsage {
             output: self.output.saturating_add(other.output),
             cache_read: self.cache_read.saturating_add(other.cache_read),
             cache_write: self.cache_write.saturating_add(other.cache_write),
+            // A split either side reported is a split; only two silences stay silent.
+            reasoning: match (self.reasoning, other.reasoning) {
+                (None, None) => None,
+                (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+            },
         }
+    }
+}
+
+/// Two usage claims added, where either may be absent: an absent claim adds nothing, and only two
+/// absences stay absent — no claim is not a claim of zero.
+pub fn add_usage_claims(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
     }
 }
 
@@ -484,6 +526,7 @@ mod tests {
         output: 5,
         cache_read: 11008,
         cache_write: 0,
+        reasoning: None,
     };
 
     #[test]
@@ -499,6 +542,7 @@ mod tests {
             output: 2,
             cache_read: 3,
             cache_write: 4,
+            reasoning: None,
         };
         assert_eq!(
             A + b,
@@ -507,6 +551,7 @@ mod tests {
                 output: 7,
                 cache_read: 11011,
                 cache_write: 4,
+                reasoning: None,
             }
         );
         // A harness's counter is foreign data: a hostile or buggy stream must not panic a debug
@@ -534,5 +579,69 @@ mod tests {
         );
         let back: TokenUsage = serde_json::from_str(&serde_json::to_string(&A).unwrap()).unwrap();
         assert_eq!(back, A);
+    }
+
+    /// **A running total minus an earlier one is the spend between them**, and undoes an add;
+    /// a total that went backwards is a harness's bad arithmetic, never a negative spend.
+    #[test]
+    fn the_spend_since_an_earlier_total_undoes_an_add_and_saturates_at_zero() {
+        let b = TokenUsage {
+            input: 1,
+            output: 2,
+            cache_read: 3,
+            cache_write: 4,
+            reasoning: Some(1),
+        };
+        assert_eq!(
+            (A + b).since(A),
+            TokenUsage {
+                reasoning: Some(1),
+                ..b
+            }
+        );
+        assert_eq!(
+            (A + b).since(b),
+            TokenUsage {
+                reasoning: Some(0),
+                ..A
+            }
+        );
+        assert_eq!(b.since(A).input, 0, "backwards is zero, not a wrap");
+        assert_eq!(
+            A.since(b).reasoning,
+            None,
+            "no split reported stays unreported"
+        );
+    }
+
+    #[test]
+    fn an_absent_usage_claim_adds_nothing_and_two_absences_stay_absent() {
+        assert_eq!(add_usage_claims(None, None), None);
+        assert_eq!(add_usage_claims(Some(A), None), Some(A));
+        assert_eq!(add_usage_claims(None, Some(A)), Some(A));
+        assert_eq!(add_usage_claims(Some(A), Some(A)), Some(A + A));
+    }
+
+    /// **Reasoning is a part of output, so it moves no total, and its absence is not zero.** Two
+    /// runs that did not split reasoning out sum to no split; one that did makes the sum a split,
+    /// the other side contributing nothing it did not claim.
+    #[test]
+    fn reasoning_is_inside_output_and_an_unreported_split_stays_unreported() {
+        let split = TokenUsage {
+            output: 50,
+            reasoning: Some(7),
+            ..TokenUsage::default()
+        };
+        assert_eq!(split.total(), 50, "reasoning is already in output");
+        assert_eq!((A + A).reasoning, None);
+        assert_eq!((A + split).reasoning, Some(7));
+        assert_eq!((split + split).reasoning, Some(14));
+        assert!(
+            !serde_json::to_string(&A).unwrap().contains("reasoning"),
+            "no split writes no key, so a record reads as it did before the field existed"
+        );
+        let back: TokenUsage =
+            serde_json::from_str(&serde_json::to_string(&split).unwrap()).unwrap();
+        assert_eq!(back, split);
     }
 }

@@ -8,6 +8,7 @@
 //! canned scripts do not have to synthesise JavaScript** — a plain `function_call` item carrying
 //! `namespace: "mcp__marion"` is executed end to end, which is what `report_call` emits.
 
+use crate::USAGE;
 use serde_json::{Value, json};
 
 fn sse(data: &Value) -> String {
@@ -16,6 +17,17 @@ fn sse(data: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("message");
     format!("event: {ty}\ndata: {data}\n\n")
+}
+
+/// [`crate::USAGE`] in the Responses API's own shape.
+fn usage() -> Value {
+    json!({
+        "input_tokens": USAGE.input,
+        "input_tokens_details": {"cached_tokens": USAGE.cached},
+        "output_tokens": USAGE.output,
+        "output_tokens_details": {"reasoning_tokens": USAGE.reasoning},
+        "total_tokens": USAGE.input + USAGE.output,
+    })
 }
 
 fn envelope(item: Value, id: &str) -> String {
@@ -27,7 +39,7 @@ fn envelope(item: Value, id: &str) -> String {
         &json!({"type":"response.output_item.done","item":item}),
     ));
     out.push_str(&sse(&json!({"type":"response.completed",
-                              "response":{"id":id,"output":[item]}})));
+                              "response":{"id":id,"output":[item],"usage":usage()}})));
     out
 }
 
@@ -131,6 +143,25 @@ mod tests {
             "S6: an object input fails at runtime"
         );
         assert!(!s.contains("apply_patch({input"));
+    }
+
+    #[test]
+    fn every_response_reports_the_canned_usage_on_its_completion() {
+        let s = final_message("done");
+        let completed: Value = s
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+            .find(|v| v["type"] == "response.completed")
+            .expect("a completion frame");
+        let u = &completed["response"]["usage"];
+        assert_eq!(u["input_tokens"], USAGE.input);
+        assert_eq!(u["input_tokens_details"]["cached_tokens"], USAGE.cached);
+        assert_eq!(u["output_tokens"], USAGE.output);
+        assert_eq!(
+            u["output_tokens_details"]["reasoning_tokens"],
+            USAGE.reasoning
+        );
     }
 
     #[test]

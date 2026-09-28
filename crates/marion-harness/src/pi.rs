@@ -268,6 +268,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         output: "/message/usage/output",
         cache_read: Some("/message/usage/cacheRead"),
         cache_write: Some("/message/usage/cacheWrite"),
+        reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Sum,
     }),
@@ -629,6 +630,7 @@ mod tests {
                 output: 14,
                 cache_read: 0,
                 cache_write: 0,
+                reasoning: None,
             })
         );
     }

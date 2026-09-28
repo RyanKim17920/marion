@@ -8,7 +8,7 @@
 //! Every read is a view: a missing or unreadable file leaves its field `None` rather than failing
 //! the `node/get` it rides on, because the row itself is still true.
 
-use marion_core::agent_type;
+use crate::spending::Spent;
 use marion_core::contract::Oid;
 use marion_core::contract::{AgentId, TaskContract, TaskId, Workspace};
 use marion_core::harness::Harness;
@@ -17,19 +17,19 @@ use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
 use marion_core::proto::result::{CompletionSummary, DiffStat, MessageLine, NodeDetail, TaskSent};
 use marion_core::registry::ReplayedNode;
-use marion_harness::adapter::adapter_for_type;
 use std::path::Path;
 
 /// What [`read`] needs from the replayed node, taken under the registry lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inputs {
     pub harness: Harness,
-    pub acp_agent: Option<String>,
     pub exited: bool,
     /// Its latest contract: the last one persisted, else the one its spawn intent names.
     pub task_id: Option<TaskId>,
     /// Where it was launched, for a node with no contract to say (a root).
     pub launch_workspace: Option<Workspace>,
+    /// What its ended runs spent, as the journal recorded them (`ReplayedNode::usage`, `turns`).
+    pub recorded: Spent,
 }
 
 /// [`Inputs`] from a replayed node, or `None` for one whose spawn intent was never read — there is
@@ -38,7 +38,6 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
     let intent = node.intent.as_ref()?;
     Some(Inputs {
         harness: intent.harness,
-        acp_agent: agent_type::builtin(&intent.agent_type).and_then(|t| t.acp_agent),
         exited: node.state.is_exited(),
         task_id: node
             .contracts
@@ -46,20 +45,21 @@ pub fn inputs(node: &ReplayedNode) -> Option<Inputs> {
             .map(|c| c.task_id.clone())
             .or_else(|| intent.task_id.clone()),
         launch_workspace: node.launch_workspace.clone(),
+        recorded: Spent::recorded(node),
     })
 }
 
 /// The detail for node `id`, read from its files under `project`, with a page of its activity
 /// stream from `cursor` when one was asked for.
 ///
-/// Usage and per-turn spend come from `tallies`, which reads only what the stream appended since
-/// the last question: a watcher asking once a second costs the new bytes, not the whole file.
+/// Usage and per-turn spend are [`crate::spending::shown`]: the journal's record, with `live` — the
+/// run in progress its sink published — on top while the node runs. Neither reads its stream.
 pub fn read(
     project: &ProjectDir,
     id: &AgentId,
     i: &Inputs,
     cursor: Option<ActivityCursor>,
-    tallies: &crate::usage_tally::Tallies,
+    live: Option<&Spent>,
 ) -> NodeDetail {
     let dir = project.agent(id);
     let events = dir.events();
@@ -67,11 +67,7 @@ pub fn read(
         let bytes = std::fs::read(dir.contract(t)).ok()?;
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
-    let spent = adapter_for_type(i.harness, i.acp_agent.as_deref())
-        .ok()
-        .and_then(|a| a.usage_rule())
-        .map(|rule| tallies.read(id, &events, rule))
-        .unwrap_or_default();
+    let spent = crate::spending::shown(i.exited, &i.recorded, live);
     NodeDetail {
         // A child's task is its contract's; a root has none (§9), so its kept prompt.
         task: contract.as_ref().map(task_sent).or_else(|| root_task(&dir)),
@@ -381,16 +377,48 @@ mod tests {
     fn inputs(exited: bool, task: Option<&TaskId>) -> Inputs {
         Inputs {
             harness: Harness::Codex,
-            acp_agent: None,
             exited,
             task_id: task.cloned(),
             launch_workspace: Some(Workspace::SharedCwd {
                 path: "/checkout".into(),
             }),
+            recorded: Spent::default(),
         }
     }
 
-    /// A landed child: its task, its stream's usage, its worktree, and a completion naming the
+    /// **Usage is the journal's record, with the run in progress on top only while the node runs**
+    /// — and never a read of its stream: none exists here. An ended node shows its record alone,
+    /// whatever a stale live entry says; a node with neither claims nothing.
+    #[test]
+    fn usage_is_the_record_with_the_live_run_on_top_while_the_node_runs() {
+        let (p, id) = project("detail-recorded");
+        let tokens = |input| marion_core::contract::TokenUsage {
+            input,
+            ..Default::default()
+        };
+        let recorded = Spent {
+            usage: Some(tokens(90)),
+            turns: vec![90],
+        };
+        let live = Spent {
+            usage: Some(tokens(5)),
+            turns: vec![5],
+        };
+        let with = |exited| Inputs {
+            recorded: recorded.clone(),
+            ..inputs(exited, None)
+        };
+        let ended = read(&p, &id, &with(true), None, Some(&live));
+        assert_eq!((ended.usage, ended.turns), (Some(tokens(90)), vec![90]));
+        let running = read(&p, &id, &with(false), None, Some(&live));
+        assert_eq!(
+            (running.usage, running.turns),
+            (Some(tokens(95)), vec![90, 5])
+        );
+        assert_eq!(read(&p, &id, &inputs(true, None), None, None).usage, None);
+    }
+
+    /// A landed child: its task, its recorded usage, its worktree, and a completion naming the
     /// branch and commit — and no activity peek, because it has finished.
     #[test]
     fn a_finished_child_reports_its_task_usage_workspace_and_completion() {
@@ -398,12 +426,23 @@ mod tests {
         let task = TaskId("t-1".into());
         record_codex_stream(&p, &id);
         write_contract(&p, &id, &task, true);
+        let recorded = Spent {
+            usage: Some(marion_core::contract::TokenUsage {
+                input: 30,
+                output: 7,
+                ..Default::default()
+            }),
+            turns: vec![12, 25],
+        };
         let d = read(
             &p,
             &id,
-            &inputs(true, Some(&task)),
+            &Inputs {
+                recorded: recorded.clone(),
+                ..inputs(true, Some(&task))
+            },
             None,
-            &Default::default(),
+            None,
         );
         let t = d.task.clone().expect("a child has a task");
         assert_eq!(t.prompt, "add a token-bucket limiter");
@@ -414,16 +453,7 @@ mod tests {
         assert_eq!(t.acceptance, ["tests pass"]);
         assert_eq!(t.verification, ["cargo test -q"]);
         assert!(d.stream.is_none(), "no page was asked for: {:?}", d.stream);
-        assert!(
-            d.usage.is_some(),
-            "the codex stream states its usage: {d:?}"
-        );
-        assert!(!d.turns.is_empty(), "codex sums per-turn units: {d:?}");
-        assert_eq!(
-            d.turns.iter().sum::<u64>(),
-            d.usage.unwrap().total(),
-            "the turns add up to the run"
-        );
+        assert_eq!((d.usage, d.turns.clone()), (recorded.usage, recorded.turns));
         assert_eq!(
             d.workspace,
             Some(Workspace::Worktree {
@@ -454,7 +484,7 @@ mod tests {
             0o600,
             "the prompt is the operator's words: owner-only"
         );
-        let d = read(&p, &id, &inputs(false, None), None, &Default::default());
+        let d = read(&p, &id, &inputs(false, None), None, None);
         let t = d.task.expect("a root with a kept prompt has a task");
         assert_eq!(t.prompt, "list the limiter files");
         assert!(t.acceptance.is_empty() && t.verification.is_empty());
@@ -539,7 +569,7 @@ mod tests {
             &id,
             &inputs(false, None),
             Some(ActivityCursor::Tail),
-            &Default::default(),
+            None,
         );
         assert!(d.task.is_none() && d.completion.is_none(), "{d:?}");
         let page = d.stream.clone().expect("a page was asked for");
@@ -562,7 +592,7 @@ mod tests {
             &id,
             &inputs(true, Some(&task)),
             Some(ActivityCursor::Tail),
-            &Default::default(),
+            None,
         );
         assert!(
             d.task.is_none() && d.usage.is_none() && d.completion.is_none(),
