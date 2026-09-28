@@ -390,6 +390,7 @@ impl NativeNodeJournal {
                 // marion is not timing.
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             }))
     }
 

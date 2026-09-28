@@ -917,6 +917,7 @@ pub fn prepare_watched(
             // tree reports the clock the operator asked for instead of the agent type's default.
             timeout_secs: Some(spec.bound_secs),
             verification: vec![],
+            race: None,
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {

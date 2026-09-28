@@ -155,6 +155,17 @@ impl ProjectDir {
         self.0.join("agents")
     }
 
+    pub fn races_dir(&self) -> PathBuf {
+        self.0.join("races")
+    }
+
+    /// `races/<race_id>.json` — a decided race's scoreboard, authoritative the way a contract file
+    /// is: `RaceDecided` says the race was decided, this file says how. The id is a UUIDv7, so it is
+    /// safe as a path component.
+    pub fn race(&self, id: &crate::race::RaceId) -> PathBuf {
+        self.races_dir().join(format!("{}.json", id.0))
+    }
+
     /// `<agent-dir>`. `AgentId` is used **verbatim** as the path component (§6.7), which is safe
     /// precisely because it is a lowercase hyphenated UUIDv7 — see `crate::ids`.
     pub fn agent(&self, id: &AgentId) -> AgentDir {

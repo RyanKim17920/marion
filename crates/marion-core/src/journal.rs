@@ -202,6 +202,12 @@ pub enum RecordKind {
     /// `SessionObserved` say what the node is now. **Never written for a usage limit.** Not a
     /// barrier — losing one costs the audit line, not a process.
     ProfileFailover(ProfileFailover),
+    /// A race began: written just before its first seat's `SpawnIntent`, whose fsync makes it
+    /// durable. Names the policy and the seats, never the prompt. About no one node.
+    RaceOpened(RaceOpened),
+    /// A race was decided; `races/<race_id>.json` is authoritative for its scoreboard. About no one
+    /// node. Not a barrier: a lost record is re-derived, since a restart re-drives an open race.
+    RaceDecided(RaceDecided),
 }
 
 impl RecordKind {
@@ -255,7 +261,9 @@ impl RecordKind {
             RecordKind::MessageDelivered(r) => Some(&r.agent_id),
             RecordKind::MessageDropped(r) => Some(&r.agent_id),
             RecordKind::ProfileFailover(r) => Some(&r.agent_id),
-            RecordKind::SupervisorExited(_) => None,
+            RecordKind::SupervisorExited(_)
+            | RecordKind::RaceOpened(_)
+            | RecordKind::RaceDecided(_) => None,
         }
     }
 }
@@ -305,6 +313,14 @@ pub struct SpawnIntent {
     /// rather than inventing a number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// **The race this node is a seat of**, when it was spawned as one of a `candidates` spawn's
+    /// seats. Recorded because a resumed seat must keep its seat, and because the tree draws a
+    /// seat under its race rather than as a plain child.
+    ///
+    /// **Additive**, per this enum's rule: absent on the wire when `None`, so every intent that is
+    /// not a seat is byte-identical to what the previous build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub race: Option<crate::race::RaceSeat>,
     /// **The spawn's `verification` lines, in the order the caller gave them** — the commands the
     /// supervisor runs after the child exits and records as the contract's evidence. Empty for a
     /// root, which has no contract, and for a spawn that asked for none.
@@ -332,6 +348,31 @@ pub struct SpawnIntent {
     /// not a review is byte-identical to what the previous build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_of: Option<AgentId>,
+}
+
+/// See [`RecordKind::RaceOpened`]. Seat strings are capped at [`crate::race::CANDIDATE_CAP`] and
+/// there are at most [`crate::race::MAX_SEATS`], so the record stays far under
+/// [`MAX_RECORD_BYTES`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceOpened {
+    pub race_id: crate::race::RaceId,
+    /// The node that asked for the race, `None` for one asked for from outside the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<AgentId>,
+    pub policy: crate::race::RacePolicy,
+    /// In seat order: seat 1 first.
+    pub seats: Vec<crate::race::Candidate>,
+}
+
+/// See [`RecordKind::RaceDecided`]: who won, what decided it, and every seat's verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceDecided {
+    pub race_id: crate::race::RaceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner: Option<AgentId>,
+    pub decided_by: crate::race::DecidedBy,
+    /// `(seat, verdict)`, seat order.
+    pub verdicts: Vec<(u8, crate::race::SeatVerdict)>,
 }
 
 /// §6.1 step 7's confirmation: the process exists.
@@ -657,6 +698,7 @@ mod tests {
             task_id: Some(TaskId("t-1".into())),
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 
@@ -822,6 +864,7 @@ mod tests {
                 task_id: None,
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             })
             .is_barrier()
         );
@@ -968,6 +1011,7 @@ mod tests {
             task_id: None,
             timeout_secs: None,
             verification: vec![],
+            race: None,
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(without)).unwrap(),
@@ -986,6 +1030,7 @@ mod tests {
             task_id: None,
             timeout_secs: Some(300),
             verification: vec![],
+            race: None,
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
         assert!(
@@ -1027,6 +1072,7 @@ mod tests {
             task_id: None,
             timeout_secs: None,
             verification,
+            race: None,
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(intent(vec![]))).unwrap(),
@@ -1064,6 +1110,7 @@ mod tests {
     fn a_spawn_intent_names_the_node_it_reviews_and_omits_it_otherwise() {
         let intent = |review_of: Option<AgentId>| SpawnIntent {
             review_of,
+            race: None,
             agent_id: AgentId("a-2".into()),
             parent_id: Some(AgentId("a-1".into())),
             agent_type: "claude".into(),
@@ -1249,5 +1296,67 @@ mod tests {
     #[test]
     fn decode_rejects_rather_than_guesses() {
         crate::encoding::assert_decode_rejects_rather_than_guesses(decode, b"{\"writer\":\"w\"");
+    }
+
+    /// **`race` is additive too**: a seat's intent names its race and seat and round-trips, and
+    /// the race records round-trip, name no node, and stay far under the record cap at their
+    /// largest.
+    #[test]
+    fn race_records_round_trip_and_stay_small() {
+        use crate::race::{
+            CANDIDATE_CAP, Candidate, DecidedBy, MAX_SEATS, RaceId, RacePolicy, RaceRole, RaceSeat,
+            SeatVerdict,
+        };
+        let race_id = RaceId("019f0000-0000-7000-8000-00000000000a".into());
+        let seat = SpawnIntent {
+            agent_id: AgentId("a-2".into()),
+            parent_id: Some(AgentId("a-1".into())),
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 2,
+            task_id: None,
+            timeout_secs: None,
+            verification: vec![],
+            review_of: None,
+            race: Some(RaceSeat {
+                race_id: race_id.clone(),
+                role: RaceRole::Candidate(3),
+            }),
+        };
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(seat.clone())).unwrap();
+        assert!(line.contains(r#""race":{"race_id":"019f0000-0000-7000-8000-00000000000a","role":{"Candidate":3}}"#), "{line}");
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(seat)
+        );
+
+        let widest = "m".repeat(CANDIDATE_CAP);
+        let opened = RecordKind::RaceOpened(RaceOpened {
+            race_id: race_id.clone(),
+            parent_id: Some(AgentId("019f0000-0000-7000-8000-00000000000b".into())),
+            policy: RacePolicy::default(),
+            seats: vec![
+                Candidate {
+                    agent_type: widest.clone(),
+                    model: Some(widest)
+                };
+                MAX_SEATS
+            ],
+        });
+        let decided = RecordKind::RaceDecided(RaceDecided {
+            race_id,
+            winner: None,
+            decided_by: DecidedBy::NoPass,
+            verdicts: (1..=MAX_SEATS as u8)
+                .map(|n| (n, SeatVerdict::Failed))
+                .collect(),
+        });
+        for kind in [opened, decided] {
+            assert_eq!(kind.agent_id(), None);
+            assert!(!kind.is_barrier());
+            let line = serde_json::to_string(&kind).unwrap();
+            assert!(line.len() < MAX_RECORD_BYTES / 4, "{}", line.len());
+            assert_eq!(serde_json::from_str::<RecordKind>(&line).unwrap(), kind);
+        }
     }
 }

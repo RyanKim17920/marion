@@ -38,6 +38,30 @@ pub fn new_race_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> RaceId {
     RaceId(uuid_v7(unix_millis, rand))
 }
 
+/// Which race a node belongs to and why it is there, recorded on its spawn intent so a resumed
+/// seat keeps its seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceSeat {
+    pub race_id: RaceId,
+    pub role: RaceRole,
+}
+
+/// A node's part in a race. Externally tagged (`{"Candidate":2}`), so a later role is additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaceRole {
+    /// Runs the task; 1-based seat number.
+    Candidate(u8),
+}
+
+impl RaceSeat {
+    /// The candidate seat, where this node runs the task.
+    pub fn seat(&self) -> Option<u8> {
+        match self.role {
+            RaceRole::Candidate(n) => Some(n),
+        }
+    }
+}
+
 /// One seat as asked for: an agent type and, optionally, the model it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {

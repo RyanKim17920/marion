@@ -111,6 +111,10 @@ pub struct NodeSummary {
     /// runs on its harness's own configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<NodeEndpoint>,
+    /// The race this node is a seat of, and its verdict once the race is decided. Absent for a
+    /// node in no race, so every other summary is byte-identical to what an older build sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub race: Option<RaceBadge>,
 }
 
 /// An endpoint node's provider, model and route, for a client to show beside the node.
@@ -134,6 +138,16 @@ impl NodeEndpoint {
             None => self.provider.clone(),
         }
     }
+}
+
+/// A seat's badge: which race, which seat, and how it came out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceBadge {
+    pub race_id: crate::race::RaceId,
+    pub seat: u8,
+    /// `None` while the race is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<crate::race::SeatVerdict>,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -751,6 +765,7 @@ mod tests {
             tokens: None,
             attention: None,
             endpoint: None,
+            race: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

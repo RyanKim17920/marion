@@ -246,6 +246,7 @@ mod tests {
                     tokens: None,
                     attention: None,
                     endpoint: None,
+                    race: None,
                 }),
                 ts: ts(),
             },

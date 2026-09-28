@@ -2430,6 +2430,7 @@ mod tests {
                 tokens: None,
                 attention: None,
                 endpoint: None,
+                race: None,
             }
         }
         let fleet = vec![
@@ -2494,6 +2495,7 @@ mod tests {
             tokens: None,
             attention: None,
             endpoint: None,
+            race: None,
         };
         // a -> b -> a, with the caller pointing into it.
         let nodes = vec![cyclic("a", "b"), cyclic("b", "a"), cyclic("a", "me")];

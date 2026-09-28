@@ -419,6 +419,7 @@ mod tests {
             task_id: Some(TaskId(format!("task-{agent}"))),
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 

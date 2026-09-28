@@ -67,6 +67,7 @@ pub fn a_finished_node(
         task_id: None,
         timeout_secs: None,
         verification: vec![],
+        race: None,
     }));
     next(RecordKind::Spawned(Spawned {
         agent_id: id.clone(),

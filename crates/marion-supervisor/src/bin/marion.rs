@@ -4215,6 +4215,7 @@ mod tests {
                             task_id: None,
                             timeout_secs: None,
                             verification: vec![],
+                            race: None,
                         }),
                     ),
                     // Written after the run is over, in the window between the stop and the last
@@ -5135,6 +5136,7 @@ mod tests {
                 task_id: None,
                 timeout_secs,
                 verification: vec![],
+                race: None,
             })
         };
         let session = |pane: bool| {
@@ -5198,6 +5200,7 @@ mod tests {
             tokens: None,
             attention: None,
             endpoint: None,
+            race: None,
             review_of: None,
             review: None,
         };

@@ -759,6 +759,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             task_id: None,
             timeout_secs: None,
             verification: vec![],
+            race: None,
         }),
     );
     seed(

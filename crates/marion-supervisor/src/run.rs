@@ -1795,6 +1795,7 @@ pub fn run_spawn_watched(
             depth: caller.depth + 1,
             // A child runs under a contract; §9's `None` is for a root.
             task_id: Some(task_id.clone()),
+            race: None,
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {

@@ -479,6 +479,7 @@ mod tests {
                 task_id: None,
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             }));
             self.handle.live.refresh();
         }

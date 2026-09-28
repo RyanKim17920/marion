@@ -279,6 +279,21 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
                 }),
                 route: node.route.clone(),
             }),
+        race: race_badge(intent, node),
+    })
+}
+
+/// The seat badge a node's summary carries: its race and seat off the intent, its verdict off the
+/// `RaceDecided` replay folded onto it.
+fn race_badge(
+    intent: &SpawnIntent,
+    node: &ReplayedNode,
+) -> Option<marion_core::proto::model::RaceBadge> {
+    let race = intent.race.as_ref()?;
+    Some(marion_core::proto::model::RaceBadge {
+        race_id: race.race_id.clone(),
+        seat: race.seat()?,
+        verdict: node.race_verdict,
     })
 }
 
@@ -332,6 +347,8 @@ struct Extra {
     attention: Option<u64>,
     // A reviewer's tally lands after its exit, so it must be a change a subscriber is told of.
     review: Option<marion_core::review::ReviewTally>,
+    /// A seat's verdict moves when its race is decided, with no change to the node's state.
+    race_verdict: Option<marion_core::race::SeatVerdict>,
 }
 
 impl Extra {
@@ -349,6 +366,7 @@ impl Extra {
                 h.finish()
             }),
             review: tally(n),
+            race_verdict: n.race_verdict,
         }
     }
 }
@@ -5732,6 +5750,7 @@ mod tests {
             task_id: None,
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 
@@ -5745,6 +5764,62 @@ mod tests {
 
     fn node_of(records: &[Vec<u8>], agent: &str) -> ReplayedNode {
         replay_of(records).get(&id(agent)).unwrap().clone()
+    }
+
+    /// **A seat's summary carries its badge, and the verdict arrives with the decision** — with
+    /// no change to the node's own state, so the badge is one of the facts `Extra` watches.
+    #[test]
+    fn a_seat_summary_carries_its_race_badge_and_its_verdict_once_decided() {
+        use marion_core::journal::RaceDecided;
+        use marion_core::race::{DecidedBy, RaceId, RaceRole, RaceSeat, SeatVerdict};
+        let race_id = RaceId("r-1".into());
+        let mut seat = intent("s", Some("p"), "claude", 1);
+        if let RecordKind::SpawnIntent(i) = &mut seat {
+            i.race = Some(RaceSeat {
+                race_id: race_id.clone(),
+                role: RaceRole::Candidate(2),
+            });
+        }
+        let open = vec![line(0, 1, seat)];
+        let badge = summarize(&node_of(&open, "s"), false)
+            .unwrap()
+            .race
+            .unwrap();
+        assert_eq!(
+            (badge.race_id.clone(), badge.seat, badge.verdict),
+            (race_id.clone(), 2, None)
+        );
+
+        let mut decided = open.clone();
+        decided.push(line(
+            1,
+            2,
+            RecordKind::RaceDecided(RaceDecided {
+                race_id,
+                winner: Some(id("s")),
+                decided_by: DecidedBy::Verification,
+                verdicts: vec![(2, SeatVerdict::Won)],
+            }),
+        ));
+        let node = node_of(&decided, "s");
+        assert_eq!(
+            summarize(&node, false).unwrap().race.unwrap().verdict,
+            Some(SeatVerdict::Won)
+        );
+        let spending = crate::spending::Spending::default();
+        assert_ne!(
+            Extra::of(&node, &spending),
+            Extra::of(&node_of(&open, "s"), &spending)
+        );
+        assert!(
+            summarize(
+                &node_of(&[line(0, 1, intent("x", None, "claude", 0))], "x"),
+                false
+            )
+            .unwrap()
+            .race
+            .is_none()
+        );
     }
 
     /// **An ended node's row total is the journal's alone** — what a restarted supervisor shows
@@ -6035,6 +6110,7 @@ mod tests {
                 task_id: None,
                 timeout_secs: bound,
                 verification: vec![],
+                race: None,
             })
         };
         let bounded = node_of(&[line(0, 1, intent_with(Some(120)))], "r");
@@ -6074,6 +6150,7 @@ mod tests {
             task_id: None,
             timeout_secs: Some(60),
             verification: vec![],
+            race: None,
         };
         std::fs::write(&file, row("codex")).unwrap();
         assert_eq!(
@@ -13553,6 +13630,7 @@ mod tests {
                     task_id: Some(marion_core::contract::TaskId(CHILD_TASK.into())),
                     timeout_secs: None,
                     verification: vec![],
+                    race: None,
                 }),
                 spawned("child"),
                 session("child", workspace),

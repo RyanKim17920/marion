@@ -37,10 +37,11 @@ use crate::contract::{AgentId, ExitStatus, ProcessExit, ResultStatus, TaskId};
 use crate::harness::Harness;
 use crate::ir::SrcSeq;
 use crate::journal::{
-    ContractPersisted, Exited, JournalRecord, KillConfirmed, PermissionDenied, RecordKind,
-    SessionObserved, SpawnIntent, Spawned, StateChanged, WriterId, decode,
+    ContractPersisted, Exited, JournalRecord, KillConfirmed, PermissionDenied, RaceDecided,
+    RaceOpened, RecordKind, SessionObserved, SpawnIntent, Spawned, StateChanged, WriterId, decode,
 };
 use crate::node::{NodeState, ReapState};
+use crate::race::{RaceId, SeatVerdict};
 use crate::root_change::{RootChanged, RootGrant, RootObservation};
 
 /// A contract, as the journal knows it: that it exists, whose it is, and how it ended.
@@ -130,6 +131,10 @@ pub struct ReplayedNode {
     /// §9's grant, as the journal knew it **before the process started**. See
     /// [`Self::granted_without_a_record`] for the reading it makes possible.
     pub root_grant: Option<RootGrant>,
+    /// **How this node came out of the race it was a seat of**, once a `RaceDecided` named it.
+    /// `None` for a node in no race and for a seat whose race is still open; which race and seat
+    /// is the intent's [`SpawnIntent::race`].
+    pub race_verdict: Option<SeatVerdict>,
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
@@ -196,6 +201,7 @@ impl ReplayedNode {
             denied_permissions: Vec::new(),
             root_change: None,
             root_grant: None,
+            race_verdict: None,
             records: 0,
             first_ts: None,
             state_ts: None,
@@ -365,8 +371,10 @@ impl ReplayedNode {
             | RecordKind::MessageDropped(_) => {}
             // An audit of why the node was relaunched; the relaunch's own records move the node.
             RecordKind::ProfileFailover(_) => {}
-            RecordKind::SupervisorExited(_) => {
-                unreachable!("the process-wide record returned before selecting a node")
+            RecordKind::SupervisorExited(_)
+            | RecordKind::RaceOpened(_)
+            | RecordKind::RaceDecided(_) => {
+                unreachable!("a record about no one node returned before selecting a node")
             }
         }
     }
@@ -553,6 +561,21 @@ pub struct Replay {
     /// Messages queued and not yet delivered or dropped, in queue order. See
     /// [`Replay::unresolved_messages`].
     unresolved: Vec<(AgentId, String)>,
+    /// Races in first-mention order. See [`Replay::races`].
+    races: Vec<ReplayedRace>,
+}
+
+/// A race, as the journal knows it: that it opened, which nodes took its seats, and how it was
+/// decided. `races/<race_id>.json` is authoritative for the scoreboard; this is what the tree and a
+/// restart need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayedRace {
+    pub race_id: RaceId,
+    /// `None` only where the journal's head no longer holds the opening record.
+    pub opened: Option<RaceOpened>,
+    /// `(seat, node)` in intent order.
+    pub seats: Vec<(u8, AgentId)>,
+    pub decided: Option<RaceDecided>,
 }
 
 impl Replay {
@@ -575,6 +598,60 @@ impl Replay {
 
     pub fn get(&self, id: &AgentId) -> Option<&ReplayedNode> {
         self.index.get(&id.0).map(|i| &self.nodes[*i])
+    }
+
+    /// Every race the journal mentions, in first-mention order.
+    pub fn races(&self) -> &[ReplayedRace] {
+        &self.races
+    }
+
+    pub fn race(&self, id: &RaceId) -> Option<&ReplayedRace> {
+        self.races.iter().find(|r| &r.race_id == id)
+    }
+
+    fn race_mut(&mut self, id: &RaceId) -> &mut ReplayedRace {
+        let i = match self.races.iter().position(|r| &r.race_id == id) {
+            Some(i) => i,
+            None => {
+                self.races.push(ReplayedRace {
+                    race_id: id.clone(),
+                    opened: None,
+                    seats: Vec::new(),
+                    decided: None,
+                });
+                self.races.len() - 1
+            }
+        };
+        &mut self.races[i]
+    }
+
+    /// A race record: the race's own entry, and on a decision each seat node's verdict, so the
+    /// tree's projection of a node reads its badge off the node alone.
+    fn apply_race(&mut self, kind: &RecordKind) {
+        match kind {
+            RecordKind::RaceOpened(o) => self.race_mut(&o.race_id).opened = Some(o.clone()),
+            RecordKind::RaceDecided(d) => {
+                let race = self.race_mut(&d.race_id);
+                race.decided = Some(d.clone());
+                let seats = race.seats.clone();
+                for (seat, verdict) in &d.verdicts {
+                    for (_, id) in seats.iter().filter(|(s, _)| s == seat) {
+                        if let Some(i) = self.index.get(&id.0) {
+                            self.nodes[*i].race_verdict = Some(*verdict);
+                        }
+                    }
+                }
+            }
+            RecordKind::SpawnIntent(i) => {
+                if let Some(seat) = i.race.as_ref().and_then(|r| r.seat().map(|n| (r, n))) {
+                    let race = self.race_mut(&seat.0.race_id);
+                    if !race.seats.iter().any(|(_, a)| a == &i.agent_id) {
+                        race.seats.push((seat.1, i.agent_id.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Nodes with no parent edge — the roots of the forest. A forest, not a tree: one project's
@@ -655,8 +732,14 @@ impl Replay {
             }
             _ => {}
         }
+        self.apply_race(&r.kind);
         let Some(agent_id) = r.agent_id().cloned() else {
-            debug_assert!(matches!(r.kind, RecordKind::SupervisorExited(_)));
+            debug_assert!(matches!(
+                r.kind,
+                RecordKind::SupervisorExited(_)
+                    | RecordKind::RaceOpened(_)
+                    | RecordKind::RaceDecided(_)
+            ));
             return;
         };
         let ts = r.ts;
@@ -840,6 +923,7 @@ mod tests {
                 task_id: None,
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("root"),
@@ -861,6 +945,7 @@ mod tests {
                 task_id: Some(TaskId("t-1".into())),
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("child"),
@@ -1412,6 +1497,7 @@ mod tests {
                     task_id: None,
                     timeout_secs: None,
                     verification: vec![],
+                    race: None,
                 }),
             ),
             record(
@@ -1507,6 +1593,7 @@ mod tests {
                     task_id: None,
                     timeout_secs: None,
                     verification: vec![],
+                    race: None,
                 }),
             ),
             at(
@@ -1715,6 +1802,7 @@ mod tests {
                 task_id: None,
                 timeout_secs: None,
                 verification: vec![],
+                race: None,
             }),
         )];
         if let Some(observation) = change {
@@ -2010,6 +2098,7 @@ mod tests {
             task_id: Some(TaskId("t-1".into())),
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 
@@ -2300,5 +2389,85 @@ mod tests {
             r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s-1"}}"#,
             "no profile is byte-identical to what earlier builds wrote"
         );
+    }
+
+    /// **A race folds beside the tree**: its opening, each seat's node off its intent, and on the
+    /// decision every seat node's verdict — which is what a node's badge reads. An open race stays
+    /// undecided, which is what a restart re-drives.
+    #[test]
+    fn a_race_folds_its_seats_and_its_verdicts() {
+        use crate::journal::{RaceDecided, RaceOpened};
+        use crate::race::{
+            Candidate, DecidedBy, RaceId, RacePolicy, RaceRole, RaceSeat, SeatVerdict,
+        };
+        let race = RaceId("r-1".into());
+        let seat = |agent: &str, n: u8| {
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id(agent),
+                parent_id: Some(id("root")),
+                agent_type: "claude".into(),
+                harness: Harness::ClaudeCode,
+                depth: 1,
+                task_id: Some(TaskId(format!("t-{agent}"))),
+                timeout_secs: None,
+                verification: vec!["true".into()],
+                review_of: None,
+                race: Some(RaceSeat {
+                    race_id: race.clone(),
+                    role: RaceRole::Candidate(n),
+                }),
+            })
+        };
+        let opened = RecordKind::RaceOpened(RaceOpened {
+            race_id: race.clone(),
+            parent_id: Some(id("root")),
+            policy: RacePolicy::default(),
+            seats: vec![
+                Candidate {
+                    agent_type: "claude".into(),
+                    model: None,
+                },
+                Candidate {
+                    agent_type: "claude".into(),
+                    model: Some("m".into()),
+                },
+            ],
+        });
+        let open = vec![
+            record(0, opened),
+            record(1, seat("a", 1)),
+            record(2, seat("b", 2)),
+        ];
+        let r = replay(&bytes(&open));
+        let fold = r.race(&race).expect("the race is on record");
+        assert_eq!(fold.seats, vec![(1, id("a")), (2, id("b"))]);
+        assert!(fold.opened.is_some() && fold.decided.is_none());
+        assert_eq!(r.get(&id("a")).unwrap().race_verdict, None);
+
+        let mut decided = open;
+        decided.push(record(
+            3,
+            RecordKind::RaceDecided(RaceDecided {
+                race_id: race.clone(),
+                winner: Some(id("b")),
+                decided_by: DecidedBy::Verification,
+                verdicts: vec![(1, SeatVerdict::Failed), (2, SeatVerdict::Won)],
+            }),
+        ));
+        let r = replay(&bytes(&decided));
+        assert_eq!(
+            r.get(&id("a")).unwrap().race_verdict,
+            Some(SeatVerdict::Failed)
+        );
+        assert_eq!(
+            r.get(&id("b")).unwrap().race_verdict,
+            Some(SeatVerdict::Won)
+        );
+        assert_eq!(
+            r.race(&race).unwrap().decided.as_ref().unwrap().winner,
+            Some(id("b"))
+        );
+        // A race record names no node, so it adds none to the tree.
+        assert_eq!(r.nodes().len(), 2);
     }
 }

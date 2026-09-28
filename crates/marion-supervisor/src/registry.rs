@@ -640,6 +640,7 @@ mod tests {
             task_id: None,
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 

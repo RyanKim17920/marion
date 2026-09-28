@@ -1656,6 +1656,7 @@ pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedPro
             timeout_secs: Some(300),
             verification: vec![],
             review_of: None,
+            race: None,
         })
     };
     let spawned = |id: &AgentId| {

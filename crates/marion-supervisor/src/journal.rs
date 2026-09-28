@@ -497,6 +497,7 @@ mod tests {
             task_id: parent.map(|_| TaskId("t-1".into())),
             timeout_secs: None,
             verification: vec![],
+            race: None,
         })
     }
 
