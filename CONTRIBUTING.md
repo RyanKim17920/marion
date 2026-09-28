@@ -125,8 +125,19 @@ unchanged. A milestone doc that trails the code by even one commit has already l
 
 ## Where things are
 
+| crate | what it is |
+|---|---|
+| `marion-core` | The IR: launch specs, registry model, journal, task contract, and the client↔supervisor wire vocabulary. No processes, no filesystem. |
+| `marion-harness` | One `HarnessSpec` row per harness (argv, env, tool spelling, resume shape, token carrier, update policy), each row naming the spike that measured it. |
+| `marion-provider` | The canned model provider (`marion-canned`). Replays scripted responses across four wire formats, dispatching on request shape. |
+| `marion-supervisor` | The supervisor and both binaries: PTY host, registry, socket, spawn path, ACP driver, doctor, native relay, home screen. |
+| `marion-term` | A VT screen model for the display plane: a streaming grid with a ratatui adapter. |
+| `marion-testsupport` | Shared test helpers, the pinned-version table, the harness shim, and the three-axis checks. |
+| `marion-tui` | The attach pane, the tree view and the home screen's widgets. |
+
 `MILESTONES.md` owns *what* and *why*; `docs/specs/2026-07-31-marion-design.md` owns *how*;
-where they disagree, that split decides. `docs/README.md` indexes the rest. `spikes/` holds the
+where they disagree, that split decides. `docs/guide.md` is the user-facing reference behind the
+README, and `docs/README.md` indexes the rest. `spikes/` holds the
 throwaway probe scripts that produced the measurements, and `tests/fixtures/` holds their
 recorded output — `tests/fixtures/REVIEW.md` is the redaction ledger for that corpus, and any
 new fixture goes through it before it is committed.
@@ -140,7 +151,9 @@ static musl Linux, each arm64 and x86_64) carries both `marion` and `marion-supe
 Homebrew formula named `marion`, and the npm package `@ryankim17920/marion` (plain `marion` is
 taken on npm), whose install step downloads the archive for the platform it runs on.
 
-To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The workflow
+To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The existing
+`v0.1.0` release was made by hand and holds no archives, so the first cargo-dist release must use
+a later version (or that release and tag must be deleted first). The workflow
 builds every target, creates the GitHub Release, pushes the formula to the tap and publishes the
 npm package. Pull
 requests run `dist plan` only.
