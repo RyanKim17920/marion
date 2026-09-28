@@ -1,0 +1,70 @@
+# Pushes the release's Homebrew formula to RyanKim17920/homebrew-tap. release.yml calls this
+# (dist-workspace.toml names it in `publish-jobs`) after the GitHub Release exists.
+#
+# The body is dist 0.33's own `publish-homebrew-formula` job with one change: without the
+# HOMEBREW_TAP_TOKEN secret it prints a notice and succeeds instead of failing, so a release made
+# before the owner sets up the tap still publishes its archives, installer and checksums. Adding
+# the secret turns publishing on with no change here. See CONTRIBUTING.md, "Releasing".
+
+name: Publish Homebrew formula
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: "ubuntu-22.04"
+    env:
+      PLAN: ${{ inputs.plan }}
+      GITHUB_USER: "axo bot"
+      GITHUB_EMAIL: "admin+bot@axo.dev"
+    steps:
+      # `secrets` cannot appear in a job-level `if`, so the check is a step the others key on.
+      - id: token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Homebrew formula not published::The HOMEBREW_TAP_TOKEN secret is not set, so the formula was not pushed to RyanKim17920/homebrew-tap. The rest of the release is unaffected. See CONTRIBUTING.md, Releasing."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.token.outputs.present == 'true'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+          repository: "RyanKim17920/homebrew-tap"
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Fetch homebrew formulae
+        if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: Formula/
+          merge-multiple: true
+      # A release names its formula file in the plan; publish under that filename.
+      - name: Commit formula files
+        if: steps.token.outputs.present == 'true'
+        run: |
+          git config --global user.name "${GITHUB_USER}"
+          git config --global user.email "${GITHUB_EMAIL}"
+
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
+            filename=$(echo "$release" | jq '.artifacts[] | select(endswith(".rb"))' --raw-output)
+            name=$(echo "$filename" | sed "s/\.rb$//")
+            version=$(echo "$release" | jq .app_version --raw-output)
+
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            brew update
+            # We avoid reformatting user-provided data such as the app description and homepage.
+            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
+
+            git add "Formula/${filename}"
+            git commit -m "${name} ${version}"
+          done
+          git push
