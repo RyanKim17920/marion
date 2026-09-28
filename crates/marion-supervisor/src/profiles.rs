@@ -509,36 +509,11 @@ pub fn login_state(profile: &Profile) -> LoginState {
     }
 }
 
-/// A probe's share of the row's update switch: the variables it sets, and the arguments ahead of
-/// its own.
-type ProbeSwitch = (Vec<(String, String)>, Vec<String>);
-
-/// **The row's no-self-update switch, as a bare probe of the installed binary carries it**: the
-/// variable, or the pair on the row's own override flag ahead of the probe's argv. A probe is a
-/// launch of the operator's real binary, and a launch without the switch can update their install.
-/// `Err` — and no probe — where the switch cannot ride a bare command (a settings document, or a
-/// pair the row has no flag for).
-fn update_switch(harness: Harness) -> Result<ProbeSwitch, String> {
-    use marion_harness::spec::{Arg, Field, UpdatePolicy};
+/// The row's no-self-update switch, as this harness's bare status probe carries it
+/// ([`marion_harness::spec::UpdatePolicy::probe`]). `Err` — and no probe — where it cannot.
+fn update_switch(harness: Harness) -> Result<marion_harness::spec::ProbeSwitch, String> {
     let spec = harness_spec(harness);
-    match spec.updates {
-        UpdatePolicy::Env { key, value, .. } => Ok((vec![(key.into(), value.into())], Vec::new())),
-        UpdatePolicy::Pair { key, value, .. } => spec
-            .argv
-            .iter()
-            .find_map(|arg| match *arg {
-                Arg::Each(flag, Field::Pairs) => Some(vec![flag.into(), format!("{key}={value}")]),
-                Arg::EachEq(flag, Field::Pairs) => Some(vec![format!("{flag}={key}={value}")]),
-                _ => None,
-            })
-            .map(|args| (Vec::new(), args))
-            .ok_or_else(|| format!("{key}={value} has no override flag to ride; not probed")),
-        UpdatePolicy::Document { .. } => Err(
-            "the row's update switch is a settings document a bare probe cannot carry; not probed"
-                .into(),
-        ),
-        UpdatePolicy::None { .. } => Ok((Vec::new(), Vec::new())),
-    }
+    spec.updates.probe(spec.argv)
 }
 
 /// The probe's JSON object on stdout — pretty-printed on claude, so read whole.
