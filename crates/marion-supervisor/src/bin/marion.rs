@@ -573,6 +573,12 @@ fn detail_text(
         if let Some(n) = &c.narrative {
             kv("said", n.lines().next().unwrap_or(""));
         }
+        if let Some(d) = &c.diff {
+            kv(
+                "diff",
+                &format!("+{} −{} · {} files", d.added, d.removed, d.files),
+            );
+        }
         if let Some(b) = &c.branch {
             kv("merge", &marion_core::contract::merge_command(b));
         }
@@ -5167,5 +5173,61 @@ mod tests {
             resumed_shape(&path, &id).pane,
             "the last session record decides the shape, as replay folds it"
         );
+    }
+
+    /// **`ls <id>` says what a landed branch changed**, beside the command that merges it: the
+    /// detail's diff stat as one `diff` line, and no such line for a node that landed nothing — an
+    /// absent stat is git not being able to say, not a change of zero.
+    #[test]
+    fn the_detail_shows_a_landed_diff_stat_only_when_there_is_one() {
+        use marion_core::proto::result::{CompletionSummary, DiffStat, NodeDetail};
+        let node = marion_core::proto::NodeSummary {
+            agent_id: marion_core::contract::AgentId("019f-a".into()),
+            parent_id: None,
+            name: None,
+            agent_type: "worker".into(),
+            harness: marion_core::harness::Harness::ALL[0],
+            harness_version: None,
+            depth: 0,
+            state: marion_core::node::NodeState::Exited(marion_core::contract::ExitStatus::Ok),
+            reap_state: marion_core::node::ReapState::Live,
+            timeout: marion_core::encoding::Duration::from_secs(60),
+            pane: false,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
+            attention: None,
+            endpoint: None,
+            review_of: None,
+            review: None,
+        };
+        let completion = |diff| CompletionSummary {
+            status: marion_core::contract::ExitStatus::Ok,
+            narrative: None,
+            branch: Some("marion/t-1".into()),
+            commit: None,
+            changed_paths: 1,
+            diff,
+            exit: String::new(),
+        };
+        let with = NodeDetail {
+            completion: Some(completion(Some(DiffStat {
+                added: 6,
+                removed: 3,
+                files: 1,
+            }))),
+            ..Default::default()
+        };
+        let text = detail_text(&node, &with);
+        assert!(text.contains("  diff       +6 −3 · 1 files\n"), "{text}");
+        assert!(
+            text.contains("  merge      git merge --no-ff marion/t-1\n"),
+            "{text}"
+        );
+        let without = NodeDetail {
+            completion: Some(completion(None)),
+            ..Default::default()
+        };
+        assert!(!detail_text(&node, &without).contains("diff"));
     }
 }
