@@ -6,7 +6,6 @@
 # a bounded one-shot wait with a clear deadline may stay, and says so.
 
 # --- tracked: efficiency waves ------------------------------------------------------------------
-crates/marion-supervisor/src/serve.rs:ACCEPT_POLL  poll(2) timeout floor only: the accept loop blocks in poll(2) on the listeners and wakes on a connection or a handle deadline; 5 ms bounds a readable-but-vanished listener (perf-wave1 2da8ea8)
 crates/marion-supervisor/src/serve.rs:run_conn_writer  blocks in recv(); the try_recv loop only drains what is queued after the connection departed, then ends (perf-wave1 74d9b38)
 crates/marion-supervisor/src/detach.rs:DIAL_POLL  tracked: efficiency waves (5 ms dial retry period)
 crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  tracked: efficiency waves (dial-retry sleep loop until a deadline)

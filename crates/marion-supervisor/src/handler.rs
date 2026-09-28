@@ -816,9 +816,19 @@ struct Shared {
     /// The [`Registry::generation`] and [`crate::usage_tally::Tallies::version`] `collect` last ran
     /// against. See [`RegistryHandle::flush`].
     collected_at: Option<(u64, u64)>,
+    /// When `collect` last ran: a figure that moved with no journal record is told at most every
+    /// [`TOKEN_PUSH_DELAY`] after it. See [`RegistryHandle::flush`].
+    collected_when: Option<std::time::Instant>,
     #[cfg(test)]
     collects: usize,
 }
+
+/// How soon after the last telling a token figure that moved **without a journal record** is told
+/// to subscribers. A coalescing deadline, not a tick: the accept loop is woken by the first change
+/// ([`crate::spending::Spending::notifying`]) and comes back at most this long after the last walk,
+/// so a node streaming usage frames costs one tree walk a second rather than one per frame. A
+/// journal change is told at once, as ever.
+const TOKEN_PUSH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// **One node this supervisor owns**, which until §11 item 28 step 4 was a sentence with nothing
 /// behind it: `detach.rs`'s stage 3 held no `Command`, no `Child`, no pid and no pipe, and every
@@ -1816,6 +1826,7 @@ impl RegistryHandle {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })));
+        let spending = Arc::new(crate::spending::Spending::notifying(live.changes()));
         Arc::new_cyclic(|me| RegistryHandle {
             me: me.clone(),
             live,
@@ -1836,7 +1847,7 @@ impl RegistryHandle {
             pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
             sent: Mutex::new(HashMap::new()),
-            spending: Arc::default(),
+            spending,
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
             stopped_reported: AtomicBool::new(false),
@@ -1931,12 +1942,30 @@ impl RegistryHandle {
         // the one already told — the pane set only shapes a *new* node's summary, and a new node
         // is a new generation. A running node's token figure moves without a journal record, so
         // the live spending map's own change counter is the other half of "unchanged".
+        //
+        // A figure that moved with no journal record is told at most every [`TOKEN_PUSH_DELAY`]:
+        // within it the walk is deferred, and [`Self::next_deadline`] brings the loop back when it
+        // ends. The spending map is marked announced before its version is read, so a change
+        // landing during the walk wakes the loop again.
         let events = self.live.read(|r| {
-            let seen = (r.generation(), self.spending.version());
-            if g.subs.is_empty() || g.collected_at == Some(seen) {
+            if g.subs.is_empty() {
                 return Vec::new();
             }
-            g.collected_at = Some(seen);
+            let generation = r.generation();
+            if g.collected_at == Some((generation, self.spending.version())) {
+                return Vec::new();
+            }
+            let figures_only = g.collected_at.is_some_and(|(seen, _)| seen == generation);
+            if figures_only
+                && g
+                    .collected_when
+                    .is_some_and(|at| at.elapsed() < TOKEN_PUSH_DELAY)
+            {
+                return Vec::new();
+            }
+            self.spending.announced();
+            g.collected_at = Some((generation, self.spending.version()));
+            g.collected_when = Some(std::time::Instant::now());
             let events = collect(r, &mut g, &panes, &self.spending);
             // Told first, then forgotten: an ended node's row is the journal's from here on.
             self.spending.forget_ended(r.tree());
@@ -1949,19 +1978,27 @@ impl RegistryHandle {
     /// **When the accept loop must next tick this handle** if nothing wakes it — the serve loop's
     /// [`Handle::next_deadline`].
     ///
-    /// Journal changes, connections, node completions and a followed node's `events.jsonl`
-    /// ([`AttachWatch`]) wake the loop through [`LiveRegistry::changes`], so what is left is the
-    /// work that is still *time*-driven: a Completed pane expires at its TTL or is evicted at once
-    /// when the cache is over budget. `None` means nothing is due. An attachment whose watch thread
-    /// could not be started is re-read at [`crate::wake::DEGRADED_RECHECK`].
+    /// Journal changes, connections, node completions, a followed node's `events.jsonl`
+    /// ([`AttachWatch`]) and a moved token figure ([`crate::spending::Spending::notifying`]) wake
+    /// the loop through [`LiveRegistry::changes`], so what is left is the work that is still
+    /// *time*-driven: a figure deferred by [`TOKEN_PUSH_DELAY`] is due when it ends, and a
+    /// Completed pane expires at its TTL or is evicted at once when the cache is over budget.
+    /// `None` means nothing is due. An attachment whose watch thread could not be started is
+    /// re-read at [`crate::wake::DEGRADED_RECHECK`].
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        if lock(&self.shared)
-            .attached
-            .iter()
-            .any(|a| a.watch.is_none())
-        {
-            return Some(std::time::Instant::now() + crate::wake::DEGRADED_RECHECK);
-        }
+        let figure_due = {
+            let g = lock(&self.shared);
+            if g.attached.iter().any(|a| a.watch.is_none()) {
+                return Some(std::time::Instant::now() + crate::wake::DEGRADED_RECHECK);
+            }
+            let untold = g
+                .collected_at
+                .is_some_and(|(_, told)| told != self.spending.version());
+            (!g.subs.is_empty() && untold).then(|| {
+                g.collected_when
+                    .map_or_else(std::time::Instant::now, |at| at + TOKEN_PUSH_DELAY)
+            })
+        };
         let panes = lock(&self.panes);
         if panes.completed_count > 0
             && (panes.completed_count > panes.completed_limit()
@@ -1969,7 +2006,10 @@ impl RegistryHandle {
         {
             return Some(std::time::Instant::now());
         }
-        panes.next_completed_expiry
+        match (figure_due, panes.next_completed_expiry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// The nodes this supervisor holds a pty for, as a snapshot.
@@ -1994,7 +2034,9 @@ impl RegistryHandle {
         // under one lock, so there is no instant at which a notification could slip between the
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
+            self.spending.announced();
             g.collected_at = Some((r.generation(), self.spending.version()));
+            g.collected_when = Some(std::time::Instant::now());
             let events = collect(r, &mut g, &panes, &self.spending);
             let nodes = project(r.tree(), &mut g, &panes, &self.spending);
             (events, nodes, r.read_point())
@@ -3092,7 +3134,7 @@ impl RegistryHandle {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.outcome = Some(outcome);
         }
-        // §5.7's second guard just moved; the accept loop re-reads it now, not at its heartbeat.
+        // §5.7's second guard just moved; nothing else would wake the accept loop to re-read it.
         self.live.changes().notify();
         // Sealed with the node, and every message still waiting is dropped by name: no later turn
         // of this process will take it.
@@ -5379,7 +5421,7 @@ impl Handle for RegistryHandle {
         self.deliver_input_with_out(conn, input, Some(out));
     }
 
-    /// §2's notifications, driven by the accept loop's heartbeat — see [`Handle::tick`] for why
+    /// §2's notifications, driven by the accept loop's passes — see [`Handle::tick`] for why
     /// that loop and not a fourth thread.
     ///
     /// Both halves, in this order. `flush` pushes what the *journal* said (a node appeared, a node
@@ -8457,9 +8499,9 @@ mod tests {
         let passes = live.read(|r| r.polls()) - before;
         server.stop();
         let _ = std::fs::remove_dir_all(&sock);
-        assert!(
-            passes <= 1,
-            "{passes} accept passes in 500 ms with nothing due; one heartbeat at most"
+        assert_eq!(
+            passes, 0,
+            "{passes} accept passes in 500 ms with nothing due and nothing changed"
         );
     }
 

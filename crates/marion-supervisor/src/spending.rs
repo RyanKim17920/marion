@@ -61,16 +61,43 @@ pub struct Spending {
     /// to tell?" asks this beside the registry's generation, since a figure moves without a
     /// journal record (`RegistryHandle::flush`).
     version: std::sync::atomic::AtomicU64,
+    /// Notified by the first figure change since the last [`Self::announced`], so the loop that
+    /// tells subscribers wakes for it — once per telling, not once per frame. `None`: nobody to
+    /// wake (a figure read only on request).
+    wake: Option<std::sync::Arc<crate::wake::Signal>>,
+    unannounced: std::sync::atomic::AtomicBool,
 }
 
 impl Spending {
+    /// A map whose changes notify `wake`: the supervisor's, whose accept loop pushes figures to
+    /// `tree/subscribe`rs and otherwise sleeps.
+    pub fn notifying(wake: std::sync::Arc<crate::wake::Signal>) -> Spending {
+        Spending {
+            wake: Some(wake),
+            ..Spending::default()
+        }
+    }
+
     /// The run in progress of `id` now stands at `spent`. Called by the node's sink, on its reader
     /// thread, each time a frame moves the figure: a short lock, no I/O.
     pub fn publish(&self, id: &AgentId, spent: Spent) {
+        use std::sync::atomic::Ordering::SeqCst;
         if self.lock().insert(id.clone(), spent.clone()).as_ref() != Some(&spent) {
-            self.version
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.version.fetch_add(1, SeqCst);
+            if !self.unannounced.swap(true, SeqCst)
+                && let Some(wake) = &self.wake
+            {
+                wake.notify();
+            }
         }
+    }
+
+    /// The teller is about to read [`Self::version`] and tell what it finds: the next change after
+    /// this notifies again. Call **before** reading the version, so a change in between is not
+    /// lost.
+    pub fn announced(&self) {
+        self.unannounced
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// How many times a figure has changed — a change counter, not a count of anything shown.
