@@ -496,6 +496,7 @@ mod tests {
                     agent_id: agent("a"),
                     state: NodeState::Spawning,
                     task_id: Some(crate::contract::TaskId("task-9f2c".into())),
+                    note: None,
                 }),
             ),
             (

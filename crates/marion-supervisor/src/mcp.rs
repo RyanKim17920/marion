@@ -356,7 +356,11 @@ fn tool_spawn(
     // by a second call site.
     if args["background"].as_bool() == Some(true) {
         let started = bg.hand_out(handle, contract, spawned.agent_id, agent_type, bound);
-        return Ok(bridge::background_result(id, &started));
+        return Ok(bridge::background_result(
+            id,
+            &started,
+            spawned.note.as_deref(),
+        ));
     }
     // Recorded for the blocking half too, so a later `wait` or `status` on the `task_id` this
     // reply carries resolves rather than answering "no record" (`Background::delivered_inline`).
@@ -1788,8 +1792,13 @@ mod tests {
             identity_from(Some("019f".into()), None).unwrap_err(),
             text(bridge::wait_unknown(&id, "t-1")),
             text(bridge::status_unknown(&id, "t-1")),
-            text(bridge::background_result(&id, &started(true))),
-            text(bridge::background_result(&id, &started(false))),
+            text(bridge::background_result(&id, &started(true), None)),
+            text(bridge::background_result(&id, &started(false), None)),
+            text(bridge::background_result(
+                &id,
+                &started(true),
+                Some(crate::review::UNGUARDED),
+            )),
             bridge::root_text(
                 "codex",
                 &AgentId("019f".into()),
@@ -2090,6 +2099,25 @@ mod tests {
 
     /// **A parent's review of its child is the same spawn**, carrying the child's id to the
     /// supervisor, which decides everything else; a spawn that names none reviews nothing.
+    #[test]
+    fn a_background_reviewer_that_cannot_be_made_read_only_says_so_after_its_handle() {
+        let started = background::Started {
+            task_id: TaskId("t-1".into()),
+            agent_type: "cline".into(),
+            has_contract: true,
+        };
+        let v = bridge::background_result(
+            &serde_json::json!(1),
+            &started,
+            Some(crate::review::UNGUARDED),
+        );
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.ends_with(&format!(" Note: {}.", crate::review::UNGUARDED)),
+            "{text}"
+        );
+    }
+
     #[test]
     fn review_of_is_forwarded_to_the_spawn_params() {
         let args = serde_json::json!({"prompt": "", "review_of": "019f-child"});

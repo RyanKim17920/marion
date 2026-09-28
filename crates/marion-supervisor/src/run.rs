@@ -2546,6 +2546,13 @@ fn record_review(
         .allowed_tools
         .push(format!("read-only:{}", read_only.kind()));
     let completion = contract.completion.as_mut()?;
+    if !read_only.blocks_writes() {
+        completion.exit.description = format!(
+            "{}; {}",
+            completion.exit.description,
+            crate::review::UNGUARDED
+        );
+    }
     let narrative = completion.narrative.as_ref().map(|n| n.value.as_str());
     match crate::review::verdict(narrative, target)? {
         Ok(v) => {
@@ -3154,6 +3161,98 @@ mod tests {
     use marion_harness::adapter_for;
     use marion_testsupport::{Scratch, scratch};
     use std::sync::Mutex;
+
+    /// **A reviewer's contract names its row's read-only switch and reads its findings**; on a row
+    /// that cannot refuse a write (scope-only, or an unverified tools axis) it also says so in
+    /// plain words, derived from the row's strategy rather than the harness's name.
+    #[test]
+    fn a_reviewer_contract_says_when_its_harness_cannot_be_made_read_only() {
+        use marion_harness::spec::ReadOnly;
+        let contract = || {
+            crate::spawn::build_contract(
+                TaskId("t".into()),
+                AgentId("child".into()),
+                RepoIdentity {
+                    git_common_dir: None,
+                    head_branch: None,
+                },
+                None,
+                Workspace::SharedCwd { path: "/r".into() },
+                "review",
+                &[],
+                &[Glob("**".into())],
+                &[],
+                Duration::from_secs(60),
+                SystemTime(std::time::SystemTime::now()),
+                &ChildOutcome {
+                    narrative: Some(
+                        r#"{"verdict":"allow","findings":[{"severity":"low","file":"a.rs","claim":"x"}]}"#
+                            .into(),
+                    ),
+                    exit_code: Some(0),
+                    ..ChildOutcome::default()
+                },
+                Some(vec![]),
+                None,
+                vec![],
+                vec![],
+            )
+        };
+        let target = crate::review::Target {
+            agent_id: AgentId("child".into()),
+            commit: None,
+            changed_paths: vec!["a.rs".into()],
+        };
+        for (ro, warned) in [
+            (
+                ReadOnly::ToolsAxis {
+                    verified: true,
+                    note: "m",
+                },
+                false,
+            ),
+            (
+                ReadOnly::Pair {
+                    key: "k",
+                    value: "v",
+                    note: "m",
+                },
+                false,
+            ),
+            (
+                ReadOnly::EnvVar {
+                    key: "k",
+                    value: "v",
+                    note: "m",
+                },
+                false,
+            ),
+            (
+                ReadOnly::ToolsAxis {
+                    verified: false,
+                    note: "m",
+                },
+                true,
+            ),
+            (ReadOnly::ScopeOnly { note: "m" }, true),
+        ] {
+            let mut c = contract();
+            let tally = record_review(&mut c, &target, ro).expect("a readable report is tallied");
+            assert_eq!(tally.findings, 1, "{ro:?}");
+            assert!(
+                c.allowed_tools
+                    .contains(&format!("read-only:{}", ro.kind()))
+            );
+            let comp = c.completion.unwrap();
+            assert_eq!(comp.findings.map(|f| f.findings.len()), Some(1));
+            assert_eq!(
+                comp.exit.description.contains(crate::review::UNGUARDED),
+                warned,
+                "{ro:?}: {}",
+                comp.exit.description
+            );
+        }
+    }
 
     /// **The cap is on the lines as the journal encodes them, at its exact boundary.** `["…"]`
     /// costs four bytes of framing around one line, so a line of `cap - 4` bytes is exactly the

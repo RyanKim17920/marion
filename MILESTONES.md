@@ -866,7 +866,10 @@ any change is a recorded scope violation, `report` as its only marion verb, noth
 report is parsed and decided by `marion_core::review` into `Completion::findings`, the journal's
 `ContractPersisted.review` carries marion's tally (count, blocking, decision — never reviewer
 text), and the tree and Home Watch label the reviewer `review: N findings, M blocking`. With no
-type named, the reviewer is the first of codex, claude, gemini from another model family.
+type named, the reviewer is the first of codex, claude, gemini whose row refuses a write
+(`ReadOnly::blocks_writes`) from another model family; a reviewer named explicitly on a row that
+cannot (cline, acp, and agy's unverified tools axis) runs, and its spawn answer and contract say
+"this harness cannot be made read-only; any write is recorded as a scope violation, not blocked".
 Refused in plain words: unknown node, running node, root, unchanged node, forged token.
 `tests/review.rs` drives canned claude reviewing a canned codex child's branch, with a scripted
 `Write` refused and on the recorded stream. **Phase 2 hooks, not built:** a child gate would run

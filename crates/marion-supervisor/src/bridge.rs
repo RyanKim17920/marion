@@ -1041,7 +1041,11 @@ pub fn root_text(
 /// thing it receipts, for a document that is never going to exist — and a caller that believed it
 /// would read a successful root's `wait` as a marion failure. Everything else is deliberately
 /// identical, because backgrounding is the same verb later for both kinds.
-pub fn background_result(id: &Value, started: &crate::background::Started) -> Value {
+pub fn background_result(
+    id: &Value,
+    started: &crate::background::Started,
+    note: Option<&str>,
+) -> Value {
     let node = if started.has_contract {
         "child"
     } else {
@@ -1060,9 +1064,12 @@ pub fn background_result(id: &Value, started: &crate::background::Started) -> Va
              a result, and it carries no answer yet. Keep working; when you need what the {node} \
              produced, call `wait` with task_id {task_id:?} and {returns}, blocking only if the \
              {node} has not finished yet. You do not need to poll and there is nothing to check in \
-             the meantime.",
+             the meantime.{note}",
             agent_type = started.agent_type,
             task_id = started.task_id.0,
+            // What marion must tell the caller about the node it started (a reviewer that
+            // cannot be made read-only), after the handle.
+            note = note.map(|n| format!(" Note: {n}.")).unwrap_or_default(),
         ),
         false,
     )

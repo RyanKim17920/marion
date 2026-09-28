@@ -3484,6 +3484,7 @@ impl RegistryHandle {
             // §9's contract, named before it exists: this call answers at `Spawned`, and the id is
             // what lets the caller find the file when the run ends.
             task_id: Some(answered_task_id),
+            note: None,
         })
     }
 
@@ -3609,6 +3610,12 @@ impl RegistryHandle {
             "" => crate::review::default_reviewer(intent.harness, model.as_deref()).to_string(),
             named => named.to_string(),
         };
+        // A reviewer on a row that cannot refuse a write is allowed when asked for by name, and
+        // said so in the answer; its contract says it again (`run::record_review`).
+        let note = tree_types(&repo)?
+            .resolve(&reviewer)
+            .and_then(|t| crate::review::unguarded(t.harness))
+            .map(str::to_string);
         let req = crate::run::SpawnRequest {
             agent_type: reviewer,
             prompt: crate::review::prompt(&review, &contract),
@@ -3631,6 +3638,7 @@ impl RegistryHandle {
             .filter(|_| p.notify_parent)
             .map(|c| c.agent_id.clone());
         self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
+            .map(|r| marion_core::proto::result::AgentSpawnResult { note, ..r })
     }
 
     /// **The child launcher, driven from a fully-built [`crate::run::SpawnRequest`]** — the mirror
@@ -3827,6 +3835,7 @@ impl RegistryHandle {
             // §9: a root has no `TaskContract`, so there is no file to name. See
             // [`NodeHandle::task_id`], which is `None` here for the same reason.
             task_id: None,
+            note: None,
         })
     }
 

@@ -35,26 +35,43 @@ pub struct Target {
 }
 
 /// The built-in agent types a review falls back to when none is named, in order of preference.
-/// Data, so a new vendor's CLI is a new entry and nothing else.
+/// Data, so a new vendor's CLI is a new entry and nothing else. Only those whose row refuses a
+/// write ([`marion_harness::spec::ReadOnly::blocks_writes`]) are ever picked from it.
 const REVIEWERS: &[&str] = &["codex", "claude", "gemini"];
 
-/// **Who reviews when nobody said**: the first of [`REVIEWERS`] from a different model family than
-/// the reviewed node's ([`review::model_family`]) — a second opinion from the same model is the
-/// weakest one — else the first of them, where the node's family is unknown or every candidate
-/// shares it. Unknown is never taken for different.
+/// What a reviewer on a row that cannot refuse a write is told, and its contract records.
+pub const UNGUARDED: &str = "this harness cannot be made read-only; any write is recorded as a scope violation, not blocked";
+
+/// [`UNGUARDED`] for a harness whose row's read-only strategy records a write rather than
+/// refusing it — read off the row, never off the harness's name.
+pub fn unguarded(harness: Harness) -> Option<&'static str> {
+    (!marion_harness::adapter::harness_spec(harness)
+        .read_only
+        .blocks_writes())
+    .then_some(UNGUARDED)
+}
+
+/// **Who reviews when nobody said**: of the [`REVIEWERS`] whose row refuses a write, the first
+/// from a different model family than the reviewed node's ([`review::model_family`]) — a second
+/// opinion from the same model is the weakest one — else the first of them, where the node's
+/// family is unknown or every candidate shares it. Unknown is never taken for different.
 pub fn default_reviewer(harness: Harness, model: Option<&str>) -> &'static str {
     let theirs = review::model_family(harness, model);
-    REVIEWERS
-        .iter()
-        .copied()
-        .find(|name| {
-            theirs.is_some()
-                && marion_core::agent_type::builtin(name).is_some_and(|t| {
-                    let ours = review::model_family(t.harness, t.model.as_deref());
-                    ours.is_some() && ours != theirs
-                })
+    let guarded = || {
+        REVIEWERS.iter().copied().filter_map(|name| {
+            marion_core::agent_type::builtin(name)
+                .filter(|t| unguarded(t.harness).is_none())
+                .map(|t| (name, t))
         })
-        .unwrap_or(REVIEWERS[0])
+    };
+    guarded()
+        .find(|(_, t)| {
+            let ours = review::model_family(t.harness, t.model.as_deref());
+            theirs.is_some() && ours.is_some() && ours != theirs
+        })
+        .or_else(|| guarded().next())
+        .map(|(name, _)| name)
+        .expect("at least one default reviewer refuses writes; the sweep pins it")
 }
 
 /// Why a review was refused, in words an operator or a parent model can act on.
@@ -230,11 +247,15 @@ pub fn summary_lines(reviewer: &AgentId, contract: &TaskContract) -> Vec<String>
             "review {short}: the reviewer's contract has no completion"
         )];
     };
+    let warning = unguarded(contract.child.harness).map(|w| format!("review {short}: {w}"));
     let Some(f) = c.findings.as_ref() else {
-        return vec![format!(
-            "review {short}: no findings could be read ({})",
-            c.exit.description
-        )];
+        return warning
+            .into_iter()
+            .chain([format!(
+                "review {short}: no findings could be read ({})",
+                c.exit.description
+            )])
+            .collect();
     };
     let total = f.findings.len() + f.findings_omitted;
     let mut lines = vec![format!(
@@ -265,6 +286,7 @@ pub fn summary_lines(reviewer: &AgentId, contract: &TaskContract) -> Vec<String>
     if f.findings_omitted > 0 {
         lines.push(format!("  … {} more in the contract", f.findings_omitted));
     }
+    lines.extend(warning);
     lines
 }
 
@@ -278,6 +300,32 @@ mod tests {
             agent_id: AgentId("019f-child".into()),
             commit: Some(Oid("abc123".into())),
             changed_paths: vec![PathBuf::from("src/a.rs")],
+        }
+    }
+
+    /// **A default reviewer can always refuse a write**, whatever the reviewed node ran — decided
+    /// by the rows' read-only strategies, so a row that turns scope-only drops out on its own.
+    #[test]
+    fn a_default_reviewer_is_never_one_that_cannot_refuse_a_write() {
+        for h in Harness::ALL {
+            for model in [
+                None,
+                Some("openai/gpt-5"),
+                Some("anthropic/claude-sonnet-4-5"),
+            ] {
+                let name = default_reviewer(h, model);
+                let t = marion_core::agent_type::builtin(name).expect("a built-in reviewer");
+                assert_eq!(unguarded(t.harness), None, "{h} {model:?} picked {name}");
+            }
+        }
+        for h in Harness::ALL {
+            assert_eq!(
+                unguarded(h).is_some(),
+                !marion_harness::adapter::harness_spec(h)
+                    .read_only
+                    .blocks_writes(),
+                "{h}: the warning follows the row"
+            );
         }
     }
 

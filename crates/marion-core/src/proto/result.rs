@@ -342,6 +342,11 @@ pub struct AgentSpawnResult {
     /// root no `TaskContract`, so `None` here is a fact about the node and not an omission.
     #[serde(default)]
     pub task_id: Option<TaskId>,
+    /// **Something the caller must know about the node it just started**, in marion's words — a
+    /// reviewer on a harness that cannot be made read-only (`review::UNGUARDED`). Skipped on the
+    /// wire when absent, so every other answer is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,11 +499,13 @@ mod tests {
             agent_id: AgentId("a".into()),
             state: NodeState::Spawning,
             task_id: None,
+            note: None,
         });
         rt!(AgentSpawnResult {
             agent_id: AgentId("a".into()),
             state: NodeState::Spawning,
             task_id: Some(TaskId("task-1".into())),
+            note: None,
         });
         rt!(DoctorRunResult { reports: vec![] });
         rt!(SessionQuitResult {
