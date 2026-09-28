@@ -20,8 +20,8 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -155,6 +155,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: "trust",
         note: "S12 on 0.53.0: `trust: true` puts marion's tool in the request body; without it \
                the tool is omitted, no prompt, exit 0",
+    },
+    // s38 (0.53.0): without `auto_edit` there is no `write_file` and, headless, no shell.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 0.53.0: the default approval mode registers neither `write_file` nor \
+               `run_shell_command` headless; a scripted call is `tool_not_registered`, no file \
+               (the `generalist` subagent's tools exclude `write_file` too)",
     },
     client_name: None,
     delivery: Deliveries {

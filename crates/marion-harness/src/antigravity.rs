@@ -37,8 +37,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
-    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
+    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -129,6 +129,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "s32 on 1.2.8: headless auto-denies `mcp(marion/report)`; --mode accept-edits, \
                --sandbox, ANTIGRAVITY_PERM_GRANTS and a PreToolUse hook answering allow do not \
                approve it; the operator's permissions.allow rule does",
+    },
+    // No `write` declared compiles no `--mode accept-edits`, and the default mode auto-denies a
+    // prompting tool headless (s32). Not re-measured for s38: agy has no canned route.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s32 on 1.2.8 (the operator's login): the default `request-review` mode auto-denies \
+               a headless write (`denied_actions`); s38 could not re-measure it without a canned \
+               route",
     },
     client_name: Some("antigravity-client"),
     delivery: Deliveries {

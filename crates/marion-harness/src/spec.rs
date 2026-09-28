@@ -124,6 +124,10 @@ pub struct HarnessSpec {
     /// row's own argv, env and documents where marion compiles it; reported by `marion doctor`
     /// where the operator must ([`Approval::OperatorAllowlist`]).
     pub approval: Approval,
+    /// How a node of this harness is made **read-only** — a reviewer's launch. One of a few
+    /// measured shapes ([`ReadOnly`]); rendered by [`render`] only when the launch asks for it, and
+    /// held by the sweep `every_row_states_how_a_read_only_node_is_kept_from_writing`.
+    pub read_only: ReadOnly,
     /// The `clientInfo.name` this harness sends in MCP `initialize`, where it is measured — so a
     /// bridge the harness started itself (`marion mcp` in an operator's own MCP configuration,
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
@@ -708,6 +712,61 @@ impl Approval {
 /// and the arguments ahead of its own.
 pub type ProbeSwitch = (Vec<(String, String)>, Vec<String>);
 
+/// **How a node of this harness is made read-only** — a reviewer's launch, which may read the
+/// change it judges and must not alter it — as one of a small closed set of measured shapes.
+///
+/// Every read-only launch also drops `write` from its declared tools and runs in its own worktree
+/// under an **empty** writable scope, so a change that gets through anyway is recorded as a scope
+/// violation on the contract whatever the row says ([`Self::ScopeOnly`] is that and nothing more).
+/// The variants are what each harness adds on top, measured on the installed binaries against
+/// marion's canned provider with the write scripted anyway (`tests/fixtures/s38-read-only/`), so a
+/// row is held to its harness *refusing* the call, not merely to the model not being offered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnly {
+    /// The availability axis is the whole switch: a launch declared without `write` offers no tool
+    /// that changes a file, and a scripted call to one is refused by the harness itself — claude's
+    /// `--tools`, gemini's default approval mode, qwen's `--core-tools`, pi's `--tools`.
+    ToolsAxis { note: &'static str },
+    /// A pair on the row's own override channel ([`Field::Pairs`]), rendered after the launch's
+    /// own pairs so it wins over them — codex's `sandbox_mode="read-only"`.
+    Pair {
+        key: &'static str,
+        value: &'static str,
+        note: &'static str,
+    },
+    /// A launch-wide environment variable — opencode's `OPENCODE_PERMISSION`.
+    EnvVar {
+        key: &'static str,
+        value: &'static str,
+        note: &'static str,
+    },
+    /// No switch was measured: the worktree and its empty writable scope are the whole of it, so a
+    /// write is recorded after the fact rather than refused.
+    ScopeOnly { note: &'static str },
+}
+
+impl ReadOnly {
+    /// The measurement behind the row's switch.
+    pub const fn note(self) -> &'static str {
+        match self {
+            ReadOnly::ToolsAxis { note }
+            | ReadOnly::Pair { note, .. }
+            | ReadOnly::EnvVar { note, .. }
+            | ReadOnly::ScopeOnly { note } => note,
+        }
+    }
+
+    /// The shape's stable name, for the contract's record and the sweep that pins each row's.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            ReadOnly::ToolsAxis { .. } => "tools-axis",
+            ReadOnly::Pair { .. } => "pair",
+            ReadOnly::EnvVar { .. } => "env-var",
+            ReadOnly::ScopeOnly { .. } => "scope-only",
+        }
+    }
+}
+
 /// The measured switch that keeps a harness from updating itself, or the honest absence of one.
 ///
 /// Every variant carries a `note` naming where in the installed binary (help text, its strings, a
@@ -1006,6 +1065,8 @@ pub struct Fields {
     /// Environment the hook derived that no row names — appended after the row's own. ACP's
     /// per-agent canned recipe is the one user.
     pub extra_env: Vec<(String, String)>,
+    /// A read-only launch: the row's [`HarnessSpec::read_only`] switch is rendered.
+    pub read_only: bool,
 }
 
 /// **The strings a declaration or a credential can travel in print their shape, never their
@@ -1039,6 +1100,7 @@ impl std::fmt::Debug for Fields {
             resume,
             profile_dir,
             extra_env,
+            read_only,
         } = self;
         struct Names<'a>(&'a [(String, String)]);
         impl std::fmt::Debug for Names<'_> {
@@ -1072,6 +1134,7 @@ impl std::fmt::Debug for Fields {
             .field("resume", resume)
             .field("profile_dir", profile_dir)
             .field("extra_env", &Names(extra_env))
+            .field("read_only", read_only)
             .finish()
     }
 }
@@ -1183,11 +1246,17 @@ pub enum Refusal {
 /// The items a list [`Field`] contributes to a shape's argv.
 ///
 /// The row's update policy rides its override channel ahead of the launch's own pairs
-/// ([`UpdatePolicy::Pair`]); every other field reads from `f` alone.
+/// ([`UpdatePolicy::Pair`]), and a read-only launch's switch after them, so it wins
+/// ([`ReadOnly::Pair`]); every other field reads from `f` alone.
 fn items(spec: &HarnessSpec, f: &Fields, field: Field) -> Vec<String> {
     let mut items = f.items(field);
     if let (Field::Pairs, Some((k, v))) = (field, spec.updates.pair()) {
         items.insert(0, format!("{k}={v}"));
+    }
+    if let (Field::Pairs, true, ReadOnly::Pair { key, value, .. }) =
+        (field, f.read_only, spec.read_only)
+    {
+        items.push(format!("{key}={value}"));
     }
     items
 }
@@ -1326,6 +1395,9 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         }
     }
     env.extend(spec.updates.env());
+    if let (true, ReadOnly::EnvVar { key, value, .. }) = (f.read_only, spec.read_only) {
+        env.push((key.to_string(), value.to_string()));
+    }
     env.extend(f.extra_env.iter().cloned());
     let env_remove = crate::profile::apply(spec.profile.as_ref(), f, &mut env);
     Ok(Invocation {

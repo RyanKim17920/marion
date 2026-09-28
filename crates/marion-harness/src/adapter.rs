@@ -153,6 +153,10 @@ pub struct Extras {
     pub tree_base_url: Option<String>,
     /// The header an [`Auth::Endpoint`] node's provider reads its key from; `None` is Bearer.
     pub key_header: Option<marion_core::provider::KeyHeader>,
+    /// **A read-only launch** — a reviewer's. Read by every row through its
+    /// [`spec::ReadOnly`] switch; the supervisor also drops `write` from [`LaunchSpec::tools`]
+    /// and gives the node an empty writable scope, so no row is the only guard.
+    pub read_only: bool,
     /// The profile directory the launch selected, exactly as `profiles.toml` stores it. Read by
     /// every row through its [`crate::profile::ProfileCarrier`], under live auth only.
     pub profile_dir: Option<PathBuf>,
@@ -850,6 +854,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         output_last_message: spec.extra.output_last_message.clone(),
         resume: spec.resume.clone(),
         profile_dir: spec.extra.profile_dir.clone(),
+        read_only: spec.extra.read_only,
         ..spec::Fields::default()
     }
 }
@@ -10661,6 +10666,133 @@ mod tests {
                 ("acp", "session-mode"),
             ],
             "each row's measured grant, named one at a time so a new row cannot copy a neighbour"
+        );
+    }
+
+    /// **Every row states how a read-only node is kept from writing** — a reviewer's launch — and
+    /// the launch carries it. The supervisor drops `write` from a read-only node's tools on every
+    /// row, so a `tools-axis` row must compile `write` into something (else dropping it changes
+    /// nothing); a `pair` or `env-var` row must put its switch on the read-only launch and never on
+    /// a writable one, the pair last so it wins; a `scope-only` row adds nothing and says why.
+    #[test]
+    fn every_row_states_how_a_read_only_node_is_kept_from_writing() {
+        use crate::spec::ReadOnly;
+
+        let document_dir = PathBuf::from("/state/agents/019f-reviewer");
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let ro = row.read_only;
+            assert!(
+                !ro.note().trim().is_empty(),
+                "{h}: a read-only switch without the measurement behind it"
+            );
+            let a = launch_adapter(h).unwrap();
+            let writes = row
+                .tool_names
+                .iter()
+                .any(|(verb, _)| *verb == agent_type::TOOL_WRITE);
+            for auth in [Auth::Canned, Auth::Inherited] {
+                // agy has no canned route (`agy_refuses_a_canned_launch_by_name`).
+                if h == Harness::Antigravity && auth == Auth::Canned {
+                    continue;
+                }
+                let base = LaunchSpec {
+                    auth,
+                    config_dir: document_dir.clone(),
+                    ..spec_for(h)
+                };
+                let writable = LaunchSpec {
+                    tools: writes
+                        .then(|| agent_type::TOOL_WRITE.to_string())
+                        .into_iter()
+                        .collect(),
+                    ..base.clone()
+                };
+                let unswitched = LaunchSpec {
+                    tools: vec![],
+                    ..base.clone()
+                };
+                let read_only = LaunchSpec {
+                    extra: Extras {
+                        read_only: true,
+                        ..unswitched.extra.clone()
+                    },
+                    ..unswitched.clone()
+                };
+                let compile = |l: &LaunchSpec| {
+                    a.compile(l, &ctx())
+                        .unwrap_or_else(|e| panic!("{h} ({auth:?}): {e}"))
+                };
+                let (w, u, r) = (
+                    compile(&writable),
+                    compile(&unswitched),
+                    compile(&read_only),
+                );
+                match ro {
+                    ReadOnly::ToolsAxis { .. } => {
+                        assert!(writes, "{h}: a tools-axis row must map `write`");
+                        assert!(
+                            (w.args.clone(), w.env.clone()) != (r.args.clone(), r.env.clone()),
+                            "{h} ({auth:?}): dropping `write` must change the launch"
+                        );
+                        assert_eq!(
+                            (u.args, u.env),
+                            (r.args, r.env),
+                            "{h} ({auth:?}): the axis is the whole switch"
+                        );
+                    }
+                    ReadOnly::Pair { key, value, .. } => {
+                        let pair = format!("{key}={value}");
+                        let last = r
+                            .args
+                            .iter()
+                            .rposition(|x| x.starts_with(&format!("{key}=")))
+                            .unwrap_or_else(|| panic!("{h} ({auth:?}): no `{key}`: {:?}", r.args));
+                        assert_eq!(r.args[last], pair, "{h} ({auth:?}): the switch must win");
+                        assert!(
+                            !w.args.contains(&pair) && !u.args.contains(&pair),
+                            "{h} ({auth:?}): a writable launch must not carry the switch"
+                        );
+                    }
+                    ReadOnly::EnvVar { key, value, .. } => {
+                        assert!(
+                            r.env.iter().any(|(k, v)| k == key && v == value),
+                            "{h} ({auth:?}): no `{key}={value}`: {:?}",
+                            r.env
+                        );
+                        assert!(
+                            !w.env.iter().any(|(k, _)| k == key),
+                            "{h} ({auth:?}): a writable launch must not carry `{key}`"
+                        );
+                    }
+                    ReadOnly::ScopeOnly { .. } => assert_eq!(
+                        (u.args, u.env),
+                        (r.args, r.env),
+                        "{h} ({auth:?}): a scope-only row renders nothing of its own"
+                    ),
+                }
+            }
+        }
+        let kinds: Vec<(&str, &str)> = Harness::ALL
+            .iter()
+            .map(|h| (h.as_str(), harness_spec(*h).read_only.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("claude-code", "tools-axis"),
+                ("codex", "pair"),
+                ("gemini", "tools-axis"),
+                ("opencode", "env-var"),
+                ("copilot", "tools-axis"),
+                ("goose", "tools-axis"),
+                ("cline", "scope-only"),
+                ("qwen", "tools-axis"),
+                ("agy", "tools-axis"),
+                ("pi", "tools-axis"),
+                ("acp", "scope-only"),
+            ],
+            "each row's measured switch, named one at a time so a new row cannot copy a neighbour"
         );
     }
 

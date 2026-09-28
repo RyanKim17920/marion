@@ -28,7 +28,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling, Surfaces,
+    LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
@@ -238,6 +238,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "s36 on 1.18.32: config `permission: {\"slow_report\": \"ask\"}` auto-rejects the \
                call headless at exit 0; an inline `permission: {\"slow_*\": \"allow\"}` merged \
                over it lets it run",
+    },
+    // s38 (1.18.32): `edit` covers the `write` tool and `bash` must be denied too — `edit` alone let
+    // `printf > file` land, and `write` is not a permission key at all.
+    read_only: ReadOnly::EnvVar {
+        key: PERMISSION_ENV,
+        value: READ_ONLY_PERMISSION,
+        note: "s38 on 1.18.32: `OPENCODE_PERMISSION={\"edit\":\"deny\",\"bash\":\"deny\"}` takes \
+               `write`, `edit` and `bash` out of `tools[]` (a subagent's too); a scripted write \
+               becomes `invalid`, no file. `{\"write\":\"deny\"}` and `{\"edit\":\"deny\"}` alone \
+               both let a file land",
     },
     client_name: None,
     delivery: Deliveries {
@@ -618,6 +628,12 @@ fn mcp_block(b: &BridgeEnv) -> Value {
 /// `mcp` block on every route that declares it, so a headless node's calls are not auto-rejected
 /// by an operator's `"ask"`.
 pub const APPROVAL_KEY: &str = "permission";
+
+/// The variable opencode merges a `permission` object from, and the object a **read-only** node
+/// carries in it ([`SPEC`]'s `read_only`). Both keys, because s38 measured `edit` alone leaving
+/// `bash` able to write, and `write` is no permission key: the `write` tool falls under `edit`.
+pub const PERMISSION_ENV: &str = "OPENCODE_PERMISSION";
+pub const READ_ONLY_PERMISSION: &str = r#"{"edit":"deny","bash":"deny"}"#;
 
 fn approval_block() -> Value {
     let mut grant = serde_json::Map::new();

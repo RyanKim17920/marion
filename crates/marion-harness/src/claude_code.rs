@@ -22,9 +22,9 @@ pub use crate::mcp_bridge::{
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Relocation, Remembers,
-    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Relocation,
+    Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
+    Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -203,6 +203,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--allowedTools",
         note: "S9 on 2.1.220: an allowlisted marion verb runs, an unlisted tool asks over \
                can_use_tool; s14 for --allowedTools as the permission axis",
+    },
+    // s38 (2.1.283): `--tools Read` without `Write`, the write scripted anyway, is refused by the
+    // harness: `No such tool available: Write`, and no file lands.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 2.1.283: under `--tools Read` a scripted `Write` is refused (`No such tool \
+               available: Write. Write is disabled for this session`), exit 0, no file",
     },
     client_name: Some("claude-code"),
     delivery: Deliveries {

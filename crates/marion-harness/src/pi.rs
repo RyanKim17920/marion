@@ -37,8 +37,8 @@ use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Remembers, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Remembers, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -134,6 +134,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     approval: Approval::None {
         note: "S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's \
                verb reaches the bridge with no prompt",
+    },
+    // s38 (0.80.2): each built-in is offered only when named.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 0.80.2: `--tools read` refuses a scripted `write` (`Tool write not found`), \
+               no file",
     },
     // Not measured: S34 ran pi only against marion's canned models.json provider, and an endpoint
     // recipe (a models.json naming the operator's provider and key) was never tried.

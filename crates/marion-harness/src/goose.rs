@@ -45,8 +45,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces, TokenCarrier, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -178,6 +178,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                fresh config runs marion's tool and a granted write unasked, so the grant is not \
                load-bearing on a canned node; `GOOSE_MODE: approve` in the operator's config.yaml \
                aborts a headless run at exit 1 and the env overrides it, so it is on a live one",
+    },
+    // s38 (1.52.0): no `write` declared compiles no `--with-builtin developer`, and the developer
+    // extension carries every tool that writes. `GOOSE_MODE=chat` would withhold marion's
+    // `report` too, so it is not the switch.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 1.52.0: without `--with-builtin developer` a scripted `write` is refused \
+               (`Tool 'write' was not advertised for this model turn`), no file",
     },
     client_name: None,
     delivery: Deliveries {

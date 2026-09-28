@@ -48,8 +48,8 @@ use serde_json::{Value, json};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -195,6 +195,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--yolo",
         scope: "every tool --core-tools offers, which is marion's verbs and the declared builtins",
         note: "s25 on 0.23.0: without --yolo the report call is declined at exit 0",
+    },
+    // s38 (0.23.0): `--core-tools` is an allowlist the harness enforces, `--yolo` notwithstanding.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 0.23.0: `--core-tools` without `write_file` refuses a scripted `write_file` \
+               and `run_shell_command` (`not listed in the active core tools allowlist`), under \
+               `--yolo`; no file",
     },
     client_name: None,
     delivery: Deliveries {

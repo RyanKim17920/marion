@@ -54,7 +54,8 @@ use crate::grammar::{
 };
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
-    MidTurn, Push, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
+    MidTurn, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery,
+    UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -117,6 +118,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "S21: marion's client answers session/request_permission with the agent's own \
                allow option; 2026-09-22: an agent type's approval_mode is set on the session's \
                `mode` select (claude-agent-acp, codex-acp, copilot, opencode)",
+    },
+    // No protocol-wide switch: rejecting `session/request_permission` is not read-only on an agent
+    // that never asks (s38: opencode acp's default allows, and the file landed). A mode such as
+    // opencode's `plan` does hold, but it is one agent's string, so it belongs to an agent type's
+    // `approval_mode`, never to this row.
+    read_only: ReadOnly::ScopeOnly {
+        note: "s38 on opencode acp 1.18.32: a `reject_once` answer holds only where the agent \
+               asks; with its default `allow` no request came and the write landed. \
+               `session/set_config_option mode=plan` refused it, agent-specifically",
     },
     client_name: None,
     delivery: Deliveries {

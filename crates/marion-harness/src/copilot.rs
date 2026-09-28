@@ -42,8 +42,9 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
+    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -195,6 +196,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--allow-tool",
         note: "s24 on 1.0.83: `--allow-tool=marion(report)` grants the call and \
                `--allow-tool=marion-report` grants nothing",
+    },
+    // s38 (1.0.83): `--available-tools` is a filter the harness enforces.
+    read_only: ReadOnly::ToolsAxis {
+        note: "s38 on 1.0.83: `--available-tools` without `create`/`edit`/`apply_patch` refuses a \
+               scripted `create` (`Tool 'create' does not exist.`), no file",
     },
     client_name: None,
     delivery: Deliveries {

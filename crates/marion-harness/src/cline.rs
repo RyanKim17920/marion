@@ -52,8 +52,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Remembers, Spelling, Surfaces, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -176,6 +176,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--auto-approve",
         scope: "every tool cline offers, all 26 builtins included",
         note: "S27 on 3.0.61: `--auto-approve false` declines the report call at exit 0",
+    },
+    // No switch: the 26 built-ins are offered whatever the launch says (s27 item 12), and
+    // `--auto-approve false` declines marion's `report` along with every write.
+    read_only: ReadOnly::ScopeOnly {
+        note: "s38: unmeasured, cline is not installed; s27 item 12 found no way to narrow its \
+               tools, and declining approval declines marion's `report` too",
     },
     client_name: None,
     delivery: Deliveries {

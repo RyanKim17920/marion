@@ -22,9 +22,9 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Remembers, Resume, Spelling,
-    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
+    Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -202,6 +202,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         key: "default_tools_approval_mode",
         note: "S6 on 0.146.0: without `default_tools_approval_mode = \"approve\"` every marion \
                tool call is cancelled and the run ends Unreported",
+    },
+    // s38 (0.155.1): `sandbox_mode = "read-only"` refuses `apply_patch` and the shell's writes alike,
+    // where `write` → `workspace-write` (the whole availability axis) would be satisfied anyway.
+    // On `-c`, after the launch's own pairs, so it wins over [`live_sandbox_override`] and over
+    // the generated config's `workspace-write`.
+    read_only: ReadOnly::Pair {
+        key: SANDBOX_KEY,
+        value: READ_ONLY_SANDBOX,
+        note: "s38 on 0.155.1: `sandbox_mode = \"read-only\"` rejects a scripted `apply_patch` \
+               (`patch rejected: writing is blocked by read-only sandbox`) and seatbelt refuses \
+               `exec_command`'s `printf > file` (`operation not permitted`); no file either way",
     },
     client_name: None,
     delivery: Deliveries {
@@ -461,6 +472,10 @@ pub const SANDBOX_MODE: &str = "workspace-write";
 /// The config key [`SANDBOX_MODE`] is set under, in the generated `config.toml` and on a live
 /// node's `-c` channel alike.
 pub const SANDBOX_KEY: &str = "sandbox_mode";
+
+/// The sandbox a **read-only** node runs in ([`SPEC`]'s `read_only`), TOML-quoted as it rides
+/// `-c`: the one codex mode that refuses `apply_patch` and the shell's writes alike (s38).
+pub const READ_ONLY_SANDBOX: &str = "\"read-only\"";
 
 /// [`SANDBOX_MODE`] as the `-c` pair a **live** node carries — the constraint the contract records,
 /// compiled onto the one launch that reads no marion-written config.
