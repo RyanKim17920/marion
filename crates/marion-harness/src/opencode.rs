@@ -32,9 +32,9 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly, Remembers,
-    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly, Readiness,
+    Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
+    Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -315,6 +315,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // given only the canned plumbing default ([`OpenCodeAdapter::model_ref`]) — one parse three
     // consumers share, so it stays the hook's.
     model: ModelForm::Hook,
+    readiness: Readiness::Ungated,
 };
 
 /// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).

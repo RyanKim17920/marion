@@ -28,8 +28,8 @@ use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
     DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push,
-    ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -303,6 +303,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // none, so every canned contract records `None` and the canned argv is byte-identical to what
     // it was before `-m` was known to exist here.
     model: ModelForm::OmitUnderCanned,
+    readiness: Readiness::Ungated,
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).

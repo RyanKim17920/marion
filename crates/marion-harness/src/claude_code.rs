@@ -10,9 +10,7 @@ use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
 use serde_json::Value;
 
-use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-};
+use crate::adapter::{HarnessAdapter, Row};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, InFlight, ModelName, Name, OnRefusedReport,
     Pairing, RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule,
@@ -23,15 +21,13 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
-use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
     Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, MidTurn, ModelForm,
-    Push, ReadOnly, Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Push, ReadOnly, Readiness, Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
-use std::path::PathBuf;
 
 /// The `--mcp-config` document's name under the node's own directory — one spelling for
 /// [`SPEC`]'s live declaration and `ClaudeCodeAdapter::config_files`.
@@ -179,6 +175,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_CONFIG_FILE,
         prefix: "",
         body: Body::McpServers(MCP_SERVERS),
+        always: true,
     }),
     token: TokenCarriers::DECLARATION,
     // The one harness with a real per-tool allowlist: the record is the literal contents of
@@ -363,6 +360,23 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     requires: &[],
     axes: AxesRule::Split,
     model: ModelForm::AsGiven,
+    // **One headless shape, and a non-empty prompt is a refusal on it.** A child launched with a
+    // positional `-p <prompt>` was measured on 2.1.220 reporting `"tools":[],"mcp_servers":
+    // [{"name":"marion","status":"pending"}]` in its own `system/init`, taking turn one without
+    // marion's tools, and exiting **0 having called nothing**; no flag makes the CLI wait and
+    // `MCP_TIMEOUT` does not change it. §6.1 step 8's remedy — a typed stdin, the prompt written as a
+    // frame once the bridge's marker exists — is the only one. The pane shape is not refused: a TUI
+    // takes no turn until the operator presses return, so the text is seeded and there is no race.
+    readiness: Readiness::Marker {
+        prompt: "this harness's prompt is written after launch as a user frame, never compiled \
+                 into argv: 2.1.220 does not hold turn one for an --mcp-config server, so an argv \
+                 prompt takes that turn with tools: [] and the run exits 0 having called nothing. \
+                 Leave LaunchSpec.prompt empty and write the frame after §6.1 step 8's readiness \
+                 gate",
+        marker: "a headless node's prompt is written after launch, so the bridge readiness marker \
+                 is required: without it the first turn goes out with tools: [] and nothing \
+                 anywhere reports an error",
+    },
 };
 
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
@@ -642,111 +656,20 @@ pub const MCP_SERVERS: McpServers = McpServers {
 };
 
 /// Claude Code 2.1.220, headless (§5.2, §9). marion's root.
+///
+/// **Live is pure removal, and this harness is the case where that is literally true.**
+/// `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry is
+/// keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the MCP
+/// declaration fileless inside marion's own agent dir, and `--setting-sources ""` already
+/// excludes the user's settings, plugins and hooks. So the only thing standing between a
+/// logged-in `claude` and marion is the three env vars marion overlays, and dropping them is
+/// the whole of live mode — which the neutral fields does for every harness at once.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
-
-impl ClaudeCodeAdapter {
-    /// The document `--mcp-config` names. Derived, not passed in, so `compile` and `config_files`
-    /// cannot disagree about where it is.
-    fn mcp_config_path(spec: &LaunchSpec) -> PathBuf {
-        spec.config_dir.join(MCP_CONFIG_FILE)
-    }
-
-    /// Whether this launch writes its prompt after the process is up.
-    ///
-    /// The neutral vocabulary already carries the distinction and says so:
-    /// [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch rather
-    /// than compiled into argv"*. So this reads the spec rather than adding a mode flag beside it —
-    /// two ways to say the same thing could disagree.
-    fn prompt_is_written_after_launch(spec: &LaunchSpec) -> bool {
-        spec.prompt.is_empty()
-    }
-
-    /// The bridge declaration, **with the readiness marker required.** A Claude Code node's prompt
-    /// is always written after launch — 2.1.220 does not hold turn one for an `--mcp-config` server
-    /// — so there is always a frame to withhold and always something for the marker to gate (§6.1
-    /// step 8). A node launched without one takes its first turn with `tools: []` and nothing
-    /// anywhere reports an error, which is why the absence is a refusal rather than a fallback.
-    fn mcp_env(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<BridgeEnv, HarnessError> {
-        if ctx.ready_file.is_none() {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::ClaudeCode,
-                what: "a headless node's prompt is written after launch, so the bridge \
-                       readiness marker is required: without it the first turn goes out with \
-                       tools: [] and nothing anywhere reports an error",
-            });
-        }
-        Ok(declared_bridge(self, spec, ctx))
-    }
-}
 
 impl HarnessAdapter for ClaudeCodeAdapter {
     fn harness(&self) -> Harness {
         Harness::ClaudeCode
-    }
-
-    /// **One shape, and a non-empty prompt is a refusal on it.**
-    ///
-    /// This adapter used to compile two headless shapes: `--input-format stream-json` for a root
-    /// whose prompt is a frame, and a positional `-p <prompt>` for a child. The second does not
-    /// work and cannot be made to — measured on 2.1.220, a child launched that way reports
-    /// `"tools":[],"mcp_servers":[{"name":"marion","status":"pending"}]` in its own `system/init`,
-    /// takes turn one without marion's tools, is answered with the session-title stub, and exits
-    /// **0 having called nothing**. There is no flag that makes the CLI wait; `MCP_TIMEOUT` does
-    /// not change it. §6.1 step 8's remedy is the only one, and it *requires* a typed stdin, which
-    /// is exactly what this adapter's [`Self::surfaces`] declares.
-    ///
-    /// So a prompt on the headless shape is a **typed refusal naming the cause**, never a launch
-    /// that quietly loses its tools. The signal is the neutral vocabulary's own —
-    /// [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch"* —
-    /// rather than a second mode flag beside it. The pane shape is not refused: a TUI takes no turn
-    /// until the operator presses return, so the text is seeded and there is no race to lose
-    /// ([`SPEC`]'s `pane` row).
-    ///
-    /// **Live is pure removal, and this harness is the case where that is literally true.**
-    /// `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry is
-    /// keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the MCP
-    /// declaration fileless inside marion's own agent dir, and `--setting-sources ""` already
-    /// excludes the user's settings, plugins and hooks. So the only thing standing between a
-    /// logged-in `claude` and marion is the three env vars marion overlays, and dropping them is
-    /// the whole of live mode — which [`neutral_fields`] does for every harness at once.
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-        shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        if shape == spec::Shape::Headless && !Self::prompt_is_written_after_launch(spec) {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::ClaudeCode,
-                what: "this harness's prompt is written after launch as a user frame, never \
-                       compiled into argv: 2.1.220 does not hold turn one for an --mcp-config \
-                       server, so an argv prompt takes that turn with tools: [] and the run exits \
-                       0 having called nothing. Leave LaunchSpec.prompt empty and write the frame \
-                       after §6.1 step 8's readiness gate",
-            });
-        }
-        // §3.1's two axes come from the trait's default `axes`: availability is the mapped list,
-        // permission is *"the same list, plus marion's own `mcp__marion__*`"*. This harness is the
-        // one where both axes are marion's to set and where opening only the first is a measured
-        // dead end (§11 item 24).
-        let mut f = self.launch_fields(spec, ctx)?;
-        f.mcp_config = Some(Self::mcp_config_path(spec).to_string_lossy().into_owned());
-        Ok(f)
-    }
-
-    fn config_files(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        if spec.mcp == McpDeclaration::None {
-            return Ok(Vec::new());
-        }
-        Ok(vec![(
-            Self::mcp_config_path(spec),
-            mcp_config_document(&self.mcp_env(spec, ctx)?),
-        )])
     }
 }
 

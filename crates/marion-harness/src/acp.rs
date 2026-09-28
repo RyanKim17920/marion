@@ -60,8 +60,8 @@ use crate::grammar::{
 use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute,
-    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
-    TurnDelivery, UpdatePolicy,
+    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Spelling, Surfaces,
+    TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -171,6 +171,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // The model rides the session, set by the driver over the protocol, and under the opencode
     // canned recipe it is that config's own ([`AcpAdapter`]'s hook).
     model: ModelForm::Hook,
+    readiness: Readiness::Ungated,
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**

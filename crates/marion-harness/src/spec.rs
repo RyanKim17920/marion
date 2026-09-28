@@ -164,6 +164,22 @@ pub struct HarnessSpec {
     pub axes: AxesRule,
     /// How the launch's model reaches the row's [`Field::Model`].
     pub model: ModelForm,
+    /// Whether the first turn waits on the bridge's readiness marker (§6.1 step 8).
+    pub readiness: Readiness,
+}
+
+/// **Whether a node's first turn is withheld until its bridge has answered `tools/list`.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    /// The prompt rides argv, or the protocol itself gates the turn; no marker is required.
+    Ungated,
+    /// The prompt is a frame written after the bridge touches its marker. A headless launch with
+    /// an argv prompt is refused with `prompt`, and a declaration with no marker to touch with
+    /// `marker` — both are a first turn taken with no tools, which nothing else reports.
+    Marker {
+        prompt: &'static str,
+        marker: &'static str,
+    },
 }
 
 /// **How a row spells the launch's model**, before its hook sees it.
@@ -1730,6 +1746,8 @@ pub enum LiveDeclaration {
         file: &'static str,
         prefix: &'static str,
         body: Body,
+        /// Argv names the document even on a launch that declares no bridge (claude's).
+        always: bool,
     },
     /// A document written to `file` under the node's own directory whose path rides the
     /// environment variable `key` — gemini's `GEMINI_CLI_SYSTEM_SETTINGS_PATH`.
@@ -1769,6 +1787,40 @@ pub enum LiveDeclaration {
 }
 
 impl LiveDeclaration {
+    /// The document this channel writes — its path under the node's config dir and its body —
+    /// or `None` for a channel that writes nothing.
+    pub fn document(self) -> Option<(PathBuf, Body)> {
+        match self {
+            LiveDeclaration::ArgvDocument { file, body, .. }
+            | LiveDeclaration::EnvDocument { file, body, .. } => Some((PathBuf::from(file), body)),
+            LiveDeclaration::ArgvRoot {
+                root, file, body, ..
+            } => Some((PathBuf::from(root).join(file), body)),
+            LiveDeclaration::EnvInline { .. }
+            | LiveDeclaration::ArgvPairs { .. }
+            | LiveDeclaration::ArgvInline { .. } => None,
+        }
+    }
+
+    /// How argv names the declaration ([`Field::McpConfig`]) for a node whose config dir is
+    /// `config_dir`, where the channel names it on argv at all: the document's path behind its
+    /// prefix, or the root directory. `declared` is whether the launch asked for a bridge.
+    pub fn argv_name(self, config_dir: &std::path::Path, declared: bool) -> Option<String> {
+        match self {
+            LiveDeclaration::ArgvDocument {
+                file,
+                prefix,
+                always,
+                ..
+            } => (declared || always)
+                .then(|| format!("{prefix}{}", config_dir.join(file).to_string_lossy())),
+            LiveDeclaration::ArgvRoot { root, .. } => {
+                declared.then(|| config_dir.join(root).to_string_lossy().into_owned())
+            }
+            _ => None,
+        }
+    }
+
     /// The [`McpRoute`] this channel is an instance of — what `mcp.live` must say of a row that
     /// carries it.
     pub fn route(self) -> McpRoute {

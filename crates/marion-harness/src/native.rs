@@ -266,6 +266,7 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 file,
                 prefix,
                 body,
+                ..
             } => {
                 let path = context.document_dir.join(file);
                 let mut named = OsString::from(prefix);

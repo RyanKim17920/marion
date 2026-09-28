@@ -356,7 +356,7 @@ pub trait HarnessAdapter {
     /// the whole of `compile` for every migrated harness: the row is the launch, the hook is the
     /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        requirements(self.spec(), spec)?;
+        preconditions(self.spec(), spec, spec::Shape::Headless)?;
         let f = self.fields(spec, ctx, spec::Shape::Headless)?;
         // An approval mode is a session mode, and only a hook that has a session to set it in
         // carries it onward; anything else would launch a node ignoring the operator's choice.
@@ -461,6 +461,10 @@ pub trait HarnessAdapter {
     ) -> Result<spec::Fields, HarnessError> {
         let mut f = neutral_fields(spec, self.axes(spec)?);
         f.model = self.spec().model.apply(spec.auth, f.model);
+        f.mcp_config = self
+            .spec()
+            .live_declaration
+            .and_then(|d| d.argv_name(&spec.config_dir, spec.mcp == McpDeclaration::Marion));
         f.title = Some(grammar::session_title(&ctx.agent_id));
         Ok(f)
     }
@@ -505,7 +509,7 @@ pub trait HarnessAdapter {
         if self.pane_surfaces().is_none() {
             return Err(HarnessError::NoPaneSurface(self.harness()));
         }
-        requirements(self.spec(), spec)?;
+        preconditions(self.spec(), spec, spec::Shape::Pane)?;
         let f = self.fields(spec, ctx, spec::Shape::Pane)?;
         let mut inv = render_row(self.spec(), spec::Shape::Pane, &f)?;
         inv.env.extend(bridge_process_env(self, spec, ctx));
@@ -524,11 +528,36 @@ pub trait HarnessAdapter {
     /// The configuration files this harness needs, as `(absolute path, contents)`. The caller
     /// writes them; the adapter decides what and where, because "what and where" is the part that
     /// differs per harness. Paths are always under `spec.config_dir`.
+    ///
+    /// The default is the row's declaration document ([`spec::LiveDeclaration::document`]) where a
+    /// bridge is declared and the row's channel writes one — the same document in every auth mode.
+    /// A row whose documents differ by mode, or that writes others beside it, says so here.
     fn config_files(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let Some((path, body)) = self
+            .spec()
+            .live_declaration
+            .and_then(spec::LiveDeclaration::document)
+            .filter(|_| spec.mcp == McpDeclaration::Marion)
+        else {
+            return Ok(Vec::new());
+        };
+        if let (spec::Readiness::Marker { marker, .. }, None) =
+            (self.spec().readiness, &ctx.ready_file)
+        {
+            return Err(HarnessError::MissingInput {
+                harness: self.harness(),
+                what: marker,
+            });
+        }
+        Ok(vec![(
+            spec.config_dir.join(path),
+            body.render(&declared_bridge(self, spec, ctx)),
+        )])
+    }
 
     /// The wires this harness can be pointed at in endpoint mode, in preference order — the
     /// wires of the row's [`spec::HarnessSpec::wires`] recipes.
@@ -930,6 +959,27 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         profile_dir: spec.extra.profile_dir.clone(),
         read_only: spec.extra.read_only,
         ..spec::Fields::default()
+    }
+}
+
+/// Everything refused before a row's hook runs: its [`spec::Requirement`]s, then — on the headless
+/// shape of a row whose first turn waits on the readiness marker — an argv prompt.
+pub(crate) fn preconditions(
+    row: &spec::HarnessSpec,
+    spec: &LaunchSpec,
+    shape: spec::Shape,
+) -> Result<(), HarnessError> {
+    requirements(row, spec)?;
+    match (row.readiness, shape) {
+        (spec::Readiness::Marker { prompt, .. }, spec::Shape::Headless)
+            if !spec.prompt.is_empty() =>
+        {
+            Err(HarnessError::MissingInput {
+                harness: row.harness,
+                what: prompt,
+            })
+        }
+        _ => Ok(()),
     }
 }
 
@@ -7187,7 +7237,7 @@ mod tests {
                         Shape::Headless => a.compile(launch, &ctx()),
                         Shape::Pane => a.compile_pane(launch, &ctx()),
                     };
-                    let got = requirements(row, launch)
+                    let got = preconditions(row, launch, shape)
                         .and_then(|()| a.fields(launch, &ctx(), shape))
                         .and_then(|f| {
                             render(row, shape, &f).map_err(|_| HarnessError::NoPaneSurface(h))

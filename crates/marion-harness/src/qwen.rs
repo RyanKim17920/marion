@@ -54,8 +54,8 @@ use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
     LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly,
-    Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -284,6 +284,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         ),
     },
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,

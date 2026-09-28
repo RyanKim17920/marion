@@ -49,9 +49,9 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
-    Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Readiness,
+    Remembers, Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -258,6 +258,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         by_name: &[],
     },
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).

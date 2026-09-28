@@ -29,9 +29,7 @@
 use marion_core::agent_type;
 use marion_core::harness::Harness;
 
-use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-};
+use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -41,10 +39,9 @@ use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Field,
     HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, McpServers, ModelForm, Modes,
-    Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy,
+    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
-use std::path::PathBuf;
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
 pub const ROOT_DIR: &str = "agy-root";
@@ -179,6 +176,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         by_name: &[],
     },
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).
@@ -362,25 +360,8 @@ impl HarnessAdapter for AntigravityAdapter {
                 working_directory_preamble(&spec.cwd, &root),
                 f.prompt
             );
-            f.mcp_config = Some(root.to_string_lossy().into_owned());
         }
         Ok(f)
-    }
-
-    /// The root's one document, where a declaration was asked for — the row's live declaration,
-    /// byte for byte.
-    fn config_files(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        if spec.mcp == McpDeclaration::None {
-            return Ok(Vec::new());
-        }
-        Ok(vec![(
-            root_dir(&spec.config_dir).join(MCP_CONFIG_FILE),
-            mcp_config_document(&declared_bridge(self, spec, ctx)),
-        )])
     }
 }
 

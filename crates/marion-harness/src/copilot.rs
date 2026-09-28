@@ -35,9 +35,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::Value;
 
-use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-};
+use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, Row};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, Verdict, Where,
@@ -47,8 +45,8 @@ use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
     DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
-    ModelForm, Modes, Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -176,6 +174,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         file: MCP_CONFIG_FILE,
         prefix: "@",
         body: Body::McpServers(MCP_SERVERS),
+        always: false,
     }),
     token: TokenCarriers::DECLARATION,
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
@@ -326,6 +325,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // no rule above states that, so [`CopilotAdapter::axes`] does.
     axes: AxesRule::Hook,
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).
@@ -667,36 +667,6 @@ impl HarnessAdapter for CopilotAdapter {
             allowed,
             mode: None,
         })
-    }
-
-    /// Where argv names the declaration document; the refusals are the row's ([`SPEC`]'s
-    /// `requires`).
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        let mut f = self.launch_fields(spec, ctx)?;
-        // `--additional-mcp-config @<file>`: the `@` is how the flag reads a file, and the path is
-        // the one `config_files` writes.
-        f.mcp_config = (spec.mcp == McpDeclaration::Marion)
-            .then(|| format!("@{}", mcp_config_path(&spec.config_dir).to_string_lossy()));
-        Ok(f)
-    }
-
-    fn config_files(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        if spec.mcp != McpDeclaration::Marion {
-            return Ok(Vec::new());
-        }
-        Ok(vec![(
-            mcp_config_path(&spec.config_dir),
-            mcp_config_document(&declared_bridge(self, spec, ctx)),
-        )])
     }
 }
 

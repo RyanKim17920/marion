@@ -39,12 +39,11 @@ use crate::grammar::{
 };
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec;
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need, Push,
-    ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When,
+    ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -122,6 +121,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "",
         // pi has no MCP client: the declaration is marion's own extension source, not a document.
         body: Body::Code(extension_source),
+        always: false,
     }),
     token: TokenCarriers::DECLARATION,
     // The `--tools` list itself, prefixed with its axis.
@@ -227,6 +227,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
     axes: AxesRule::OneList { refuse_empty: None },
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).
@@ -536,22 +537,6 @@ pub struct PiAdapter;
 impl HarnessAdapter for PiAdapter {
     fn harness(&self) -> Harness {
         Harness::Pi
-    }
-
-    /// The extension path; the refusals are the row's ([`SPEC`]'s `requires`).
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        let mut f = self.launch_fields(spec, ctx)?;
-        f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
-            extension_path(&spec.config_dir)
-                .to_string_lossy()
-                .into_owned()
-        });
-        Ok(f)
     }
 
     /// The extension first, where a declaration was asked for — it is what

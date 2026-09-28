@@ -25,7 +25,7 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
     Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push,
-    ReadOnly, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
     TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
@@ -261,6 +261,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         by_name: ALLOWED_BY_NAME,
     },
     model: ModelForm::AsGiven,
+    readiness: Readiness::Ungated,
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).
