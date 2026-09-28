@@ -59,8 +59,11 @@
 //! the real composer sets — and a screen drawn since, so a boot dialog marion answered is still
 //! followed by a redraw. The boot dialog wait comes first: no mark opens the gate while a dialog
 //! is on the screen. A codex whose title is configured off (`tui.terminal_title = []`) never shows
-//! the mark, and its messages are refused after the grace with that reason — never typed into a
-//! composer that may drop them.
+//! the mark; a mark the operator can switch off ([`BootSignal::operator_can_switch_off`]) that has
+//! not come by the grace is not taken as a TUI still booting — a provisional composer lasts
+//! seconds — so the message is pasted on the drawn screen at the grace ([`Gate::Graced`]) and
+//! journaled delivered with a note saying so. A preference never costs a message; a dialog still
+//! holds it.
 //!
 //! # What is journaled
 //!
@@ -222,6 +225,9 @@ pub enum Hold {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {
     Ready,
+    /// Paste now, without the row's boot mark: it is one the operator can switch off and the
+    /// grace ran out on a drawn screen. The text is the journal note for the delivery.
+    Graced(String),
     /// Not a paste yet: answer this boot dialog with its row's keys first.
     Answer(&'static BootDialog),
     /// Not now; look again at the instant.
@@ -285,6 +291,14 @@ pub fn gate(
     if now.saturating_duration_since(since) >= policy.paste_mode_grace {
         *unready_since = None;
         let grace = policy.paste_mode_grace.as_secs();
+        let mark = boot.map_or(BootSignal::FirstDraw, |b| b.mark);
+        if hold == Hold::Booting && mark.operator_can_switch_off() && state.screen_drawn {
+            return Gate::Graced(format!(
+                "the node never {} within {grace} s — a mark its own configuration can switch \
+                 off — so the message was pasted on its drawn screen at the grace",
+                mark.describe()
+            ));
+        }
         return Gate::Refuse(match (hold, dialog) {
             (Hold::BootDialog, Some(d)) => format!(
                 "the node's terminal showed a dialog before its composer (`{}`: {}) for {grace} s \
@@ -293,10 +307,7 @@ pub fn gate(
                 d.needle, d.note
             ),
             (Hold::Booting, _) => {
-                let mark = match boot.map(|b| b.mark) {
-                    Some(BootSignal::WindowTitle) => "set its window title",
-                    Some(BootSignal::FirstDraw) | None => "drew a screen",
-                };
+                let mark = mark.describe();
                 format!(
                     "the node's terminal did not finish booting within {grace} s — it never \
                      {mark} under bracketed paste and then went quiet — and a paste typed into a \
@@ -468,8 +479,8 @@ impl Worker {
                 &mut unready_since,
             );
             self.observe(&decision);
-            next_look = Some(match decision {
-                Gate::Wait(_, at) => at,
+            next_look = Some(match &decision {
+                Gate::Wait(_, at) => *at,
                 Gate::Answer(dialog) => {
                     answered |= self.answer(&host, &inboxes, &mut held, dialog, boot);
                     // The TUI redraws after the keys; the next look waits for that as a boot.
@@ -477,26 +488,37 @@ impl Worker {
                 }
                 Gate::Refuse(reason) => {
                     if let Some(m) = held.take().or_else(|| inboxes.take_next(&self.agent)) {
-                        inboxes.dropped(&self.agent, &m.id, &reason);
+                        inboxes.dropped(&self.agent, &m.id, reason);
                     }
                     // The next message, if any, is looked at now.
                     Instant::now()
                 }
-                Gate::Ready => match held.take().or_else(|| inboxes.take_next(&self.agent)) {
-                    Some(m) => {
-                        held = self.paste(&host, &inboxes, m, boot);
-                        if !booted && held.is_none() {
-                            booted = true;
-                            host.boot_over();
+                Gate::Ready | Gate::Graced(_) => {
+                    let note = match &decision {
+                        Gate::Graced(note) => Some(note.as_str()),
+                        _ => None,
+                    };
+                    match held.take().or_else(|| inboxes.take_next(&self.agent)) {
+                        Some(m) => {
+                            held = self.paste(&host, &inboxes, m, boot, note);
+                            if !booted && held.is_none() {
+                                booted = true;
+                                host.boot_over();
+                            }
+                            if held.is_some() {
+                                // The operator beat a graced paste to the terminal: the grace
+                                // has still run out, and the next look keeps it so.
+                                if note.is_some() {
+                                    unready_since = Some(self.graced_at(Instant::now()));
+                                }
+                                Instant::now() + self.policy.recheck
+                            } else {
+                                Instant::now()
+                            }
                         }
-                        if held.is_some() {
-                            Instant::now() + self.policy.recheck
-                        } else {
-                            Instant::now()
-                        }
+                        None => Instant::now(),
                     }
-                    None => Instant::now(),
-                },
+                }
             });
         }
         if let (Some(m), Some(inboxes)) = (held, self.inboxes.upgrade()) {
@@ -551,13 +573,20 @@ impl Worker {
         }
     }
 
-    /// Paste `m`, or hand it back when the operator got to the terminal first.
+    /// A grace clock that has run out as of `now`.
+    fn graced_at(&self, now: Instant) -> Instant {
+        now.checked_sub(self.policy.paste_mode_grace).unwrap_or(now)
+    }
+
+    /// Paste `m`, or hand it back when the operator got to the terminal first. `note`, set for a
+    /// [`Gate::Graced`] paste, rides the delivery record.
     fn paste(
         &self,
         host: &PtyHost,
         inboxes: &Inboxes,
         m: Message,
         boot: Option<Boot>,
+        note: Option<&str>,
     ) -> Option<Message> {
         let body = frame(&render(&m));
         let label = format!("marion: turn delivery {}", m.id);
@@ -570,12 +599,18 @@ impl Worker {
         // Asked again under the write lock: the look above was without it, and a key may have
         // landed since. The grace clock is not advanced here — a mode that went off in between is
         // the next look's to count.
+        // A graced paste is asked with the grace already run out.
         let admit = |state: &InputState| {
-            gate(state, Instant::now(), &self.policy, boot, &mut None) == Gate::Ready
+            let now = Instant::now();
+            let mut clock = note.map(|_| self.graced_at(now));
+            matches!(
+                gate(state, now, &self.policy, boot, &mut clock),
+                Gate::Ready | Gate::Graced(_)
+            )
         };
         match host.inject(&injection, &admit) {
             Ok(Injected::Written) => {
-                inboxes.delivered(&self.agent, &m.id, VIA);
+                inboxes.delivered_noting(&self.agent, &m.id, VIA, note);
                 None
             }
             Ok(Injected::Declined) => Some(m),

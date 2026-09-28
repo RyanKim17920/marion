@@ -305,7 +305,8 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
 /// that has been quiet for any length of time is still a provisional composer until the title
 /// comes; from the title, the same settle applies; a first-draw row does not care about titles.
 /// A dialog still comes first: a titled screen showing one is held for the dialog. A title that
-/// never comes is refused after the grace, naming the title.
+/// never comes — the operator can switch it off — is not a TUI still booting: at the grace a
+/// drawn screen is pasted into, with a note; an undrawn one is still refused.
 #[test]
 fn a_window_title_row_boots_on_its_title_and_not_on_its_first_draw() {
     let now = Instant::now();
@@ -361,10 +362,55 @@ fn a_window_title_row_boots_on_its_title_and_not_on_its_first_draw() {
     );
 
     gate(&provisional, now, &p, WINDOW_TITLE, &mut clock);
+    assert_eq!(
+        gate(
+            &provisional,
+            now + p.paste_mode_grace / 2,
+            &p,
+            WINDOW_TITLE,
+            &mut clock
+        ),
+        Gate::Wait(Hold::Booting, now + p.paste_mode_grace / 2 + p.recheck),
+        "held until the grace"
+    );
     assert!(matches!(
         gate(&provisional, now + p.paste_mode_grace, &p, WINDOW_TITLE, &mut clock),
-        Gate::Refuse(reason) if reason.contains("booting") && reason.contains("window title")
+        Gate::Graced(note) if note.contains("window title") && note.contains("grace")
     ));
+    assert_eq!(clock, None, "a graced paste resets the grace");
+
+    gate(&dialog, now, &p, WINDOW_TITLE, &mut clock);
+    assert!(
+        matches!(
+            gate(&dialog, now + p.paste_mode_grace, &p, WINDOW_TITLE, &mut clock),
+            Gate::Refuse(reason) if reason.contains("dialog")
+        ),
+        "a dialog nobody dismissed is still refused by name, never graced"
+    );
+    let undrawn = crate::pty::InputState {
+        screen_drawn: false,
+        ..provisional
+    };
+    gate(&undrawn, now, &p, WINDOW_TITLE, &mut clock);
+    assert!(
+        matches!(
+            gate(&undrawn, now + p.paste_mode_grace, &p, WINDOW_TITLE, &mut clock),
+            Gate::Refuse(reason) if reason.contains("booting") && reason.contains("window title")
+        ),
+        "nothing drawn is nothing to paste into"
+    );
+    let undrawn_first_draw = crate::pty::InputState {
+        titled: true,
+        ..undrawn
+    };
+    gate(&undrawn_first_draw, now, &p, BOOT, &mut clock);
+    assert!(
+        matches!(
+            gate(&undrawn_first_draw, now + p.paste_mode_grace, &p, BOOT, &mut clock),
+            Gate::Refuse(reason) if reason.contains("drew a screen")
+        ),
+        "a mark nothing can switch off, missing at the grace, is a TUI that never booted"
+    );
 }
 
 #[test]
@@ -839,6 +885,37 @@ fn a_window_title_row_holds_the_first_paste_through_a_quiet_provisional_screen()
         bed.resolution(&id),
         RecordKind::MessageDelivered(_)
     ));
+}
+
+/// **A window title that never comes costs no message**: at the grace the message is pasted into
+/// the drawn screen and journaled delivered by paste, with a note naming the missing title — a
+/// codex whose title is configured off still takes its steers.
+#[test]
+fn a_window_title_that_never_comes_is_pasted_at_the_grace_and_noted() {
+    let policy = PastePolicy {
+        paste_mode_grace: Duration::from_millis(600),
+        ..fast()
+    };
+    let mut bed = Bed::with_row("paste-untitled", policy, TITLED_PASTE, &[], false);
+    bed.node_writes(BOOTED);
+    let id = bed.steer("no title here");
+    let asked_at = Instant::now();
+    let want = expected_paste("no title here");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(
+        asked_at.elapsed() >= policy.paste_mode_grace,
+        "pasted {:?} after it was queued, before the grace",
+        asked_at.elapsed()
+    );
+    let RecordKind::MessageDelivered(delivered) = bed.resolution(&id) else {
+        panic!("not delivered: {:?}", bed.records.lock().unwrap())
+    };
+    assert_eq!(delivered.via, VIA);
+    let note = delivered.note.expect("a graced delivery says why");
+    assert!(
+        note.contains("window title") && note.contains("grace"),
+        "{note}"
+    );
 }
 
 /// **8 KiB — the steer cap — arrives byte-exact** through the whole path.

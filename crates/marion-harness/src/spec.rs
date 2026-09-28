@@ -389,8 +389,30 @@ pub enum BootSignal {
     /// The first window title (OSC 0 or 2) set under bracketed paste. For a TUI that draws a
     /// **provisional composer** while its startup continues — one that takes a paste and drops
     /// Enter — and sets its title only once the real one is up, so no quiet stretch inside the
-    /// provisional phase can pass for boot.
+    /// provisional phase can pass for boot. The operator's own config can switch titles off
+    /// (codex: `tui.terminal_title = []`), so its absence is not proof the TUI is still booting.
     WindowTitle,
+}
+
+impl BootSignal {
+    /// **Whether the operator's own configuration can switch this mark off.** Such a mark that
+    /// has not come by the paste grace says nothing about boot — a provisional composer lasts
+    /// seconds — so a message is delivered on a drawn screen then, rather than lost to a
+    /// preference. A mark nothing can switch off, missing that long, means the TUI never booted.
+    pub const fn operator_can_switch_off(self) -> bool {
+        match self {
+            BootSignal::FirstDraw => false,
+            BootSignal::WindowTitle => true,
+        }
+    }
+
+    /// The mark in words, for a journal note or a refusal: "it never {this}".
+    pub const fn describe(self) -> &'static str {
+        match self {
+            BootSignal::FirstDraw => "drew a screen",
+            BootSignal::WindowTitle => "set its window title",
+        }
+    }
 }
 
 /// **The one resolver**: the row's strategy for a node of this shape. No harness is named here —
