@@ -37,8 +37,14 @@ mod common;
 
 use common::run::finish;
 
-/// Generous; it exists so a hang fails instead of wedging the suite.
-const RUN_BOUND: Duration = Duration::from_secs(90);
+/// How long any one wait here may take — two pi nodes' whole runs, root and child, from their
+/// rows ([`common::boot::run`]). It exists so a hang fails instead of wedging the suite.
+fn run_bound() -> Duration {
+    2 * common::boot::run(PI)
+}
+
+/// The one agent type every node here is.
+const PI: &str = "pi-orchestrator";
 
 /// A hold on the OpenAI-wire requests `pred` picks, released by the test. The request is logged
 /// before it is held, so "held" is a fact in the provider's log.
@@ -196,7 +202,7 @@ impl Bed {
 
     /// [`wait_until`], with the run's evidence on failure.
     fn wait(&self, what: &str, mut cond: impl FnMut() -> bool) {
-        let until = Instant::now() + RUN_BOUND;
+        let until = Instant::now() + run_bound();
         while !cond() {
             assert!(
                 Instant::now() < until,
@@ -301,7 +307,7 @@ fn a_steer_into_a_running_pi_child_is_read_in_the_next_request_of_the_same_turn(
         !bed.delivered(&child).is_empty()
     });
     hold.release();
-    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
+    finish(run, run_bound(), &bed.dir.join("run.stderr"));
 
     let child_requests: Vec<Value> = bed
         .requests()
@@ -343,8 +349,12 @@ const ABORT_ROOT: &str = "MARION-PI-ABORT-ROOT-6f02";
 const ABORT_CHILD: &str = "MARION-PI-ABORT-CHILD-b3e9";
 
 /// **A pi child past its wall clock is aborted, not killed.** Its first request is held beyond its
-/// 5 s bound; marion writes pi's `abort`, pi ends the turn `aborted` and exits when stdin closes, and
+/// bound; marion writes pi's `abort`, pi ends the turn `aborted` and exits when stdin closes, and
 /// the contract is `TimedOut`.
+///
+/// The bound is pi's boot budget and not a short constant: the wall clock runs from the spawn, so
+/// the request is held only once pi has booted — and a 5 s bound expired mid-boot under load, which
+/// is marion refusing a child that never connected, not aborting one mid-request.
 #[test]
 fn a_pi_child_past_its_wall_clock_is_aborted_and_times_out_without_a_kill() {
     let hold = Held::on(|b| carries(b, ABORT_CHILD) && !carries(b, ABORT_ROOT));
@@ -354,7 +364,7 @@ fn a_pi_child_past_its_wall_clock_is_aborted_and_times_out_without_a_kill() {
             delegating_root(
                 ABORT_ROOT,
                 format!("{ABORT_CHILD}: think for a long time."),
-                5,
+                common::boot::budget(PI).as_secs(),
             ),
             NodeScript {
                 marker: ABORT_CHILD.into(),
@@ -380,7 +390,7 @@ fn a_pi_child_past_its_wall_clock_is_aborted_and_times_out_without_a_kill() {
     });
     let events = bed.events_of(&child);
     hold.release();
-    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
+    finish(run, run_bound(), &bed.dir.join("run.stderr"));
 
     assert!(
         events.contains(r#""stopReason":"aborted""#),
@@ -459,7 +469,7 @@ fn a_background_childs_end_reaches_its_held_pi_parent_once_as_its_next_turn() {
         bed.events_of(&root).contains(r#""type":"agent_end""#)
     });
     hold.release();
-    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
+    finish(run, run_bound(), &bed.dir.join("run.stderr"));
 
     let last_root = bed
         .requests()
