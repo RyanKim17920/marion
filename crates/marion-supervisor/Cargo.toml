@@ -1,6 +1,7 @@
 [package]
 name = "marion-supervisor"
 version.workspace = true
+authors.workspace = true
 description = "Run any agent harness as a subagent of any other, under one supervisor and one UI"
 homepage = "https://github.com/RyanKim17920/marion"
 readme = "../../README.md"
