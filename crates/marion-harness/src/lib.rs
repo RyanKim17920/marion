@@ -56,7 +56,7 @@ pub use native::{
 // `MCP_ALIAS` and both spell marion's tool names differently — a flattened emitter would make the
 // harness a caller is configuring invisible at the use site, which is the exact confusion §3.1's
 // per-harness-spelling rule exists to prevent.
-pub use invocation::Invocation;
+pub use invocation::{Invocation, TMPDIR_ENV};
 pub use stream::{CallOutcome, ChildExit, FrameSplitter, MarionCall, StreamOutcome, json_frames};
 pub use surfaces::{
     ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, PtyWitness, TypedKind,

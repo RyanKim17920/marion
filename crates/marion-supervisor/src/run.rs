@@ -1045,13 +1045,14 @@ fn clear_ready_marker(marker: Option<&Path>) {
 /// giving up (S37). Rate limits and outages are left to the harness's backoff.
 fn launch_only_child(
     inv: &Invocation,
+    tmpdir: &Path,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
     adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
 ) -> Result<ChildRun, SpawnError> {
-    let mut cmd = inv.command();
+    let mut cmd = inv.command(tmpdir);
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
     // said before the kill. The capture this returns is still whole, and is not recorded again:
@@ -1134,6 +1135,8 @@ fn launch_only_child(
 /// them positionally was already at the edge of readable and went over it when recording landed.
 struct ChildDuplex<'a> {
     agent_id: &'a AgentId,
+    /// The node's own `TMPDIR` ([`crate::node_tmp`]).
+    tmpdir: &'a Path,
     ready_file: &'a Path,
     prompt: &'a str,
     bound: StdDuration,
@@ -1157,6 +1160,7 @@ struct ChildDuplex<'a> {
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
     let ChildDuplex {
         agent_id,
+        tmpdir,
         ready_file,
         prompt,
         bound,
@@ -1168,7 +1172,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         stop_on,
         dialect,
     } = child;
-    let mut cmd = inv.command();
+    let mut cmd = inv.command(tmpdir);
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
     // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
     // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
@@ -1862,6 +1866,9 @@ pub fn run_spawn_watched(
     let mut endpoint = endpoint;
     let mut failovers: Vec<marion_core::contract::CredentialFailover> = Vec::new();
     let mut probed_version: Option<String> = None;
+    // The node's own `TMPDIR`, for every attempt below and removed when this function returns —
+    // after the last attempt's process has been reaped. See [`crate::node_tmp`].
+    let node_tmp = crate::node_tmp::NodeTmp::create(&agent_dir)?;
     let launched_at = Instant::now();
     // The profile this attempt runs on: an index into `profiles`, 0 for the first.
     let mut at = 0;
@@ -1928,6 +1935,7 @@ pub fn run_spawn_watched(
             LaunchPath::Terminal => unreachable!("a terminal child is refused above"),
             LaunchPath::LaunchOnly => launch_only_child(
                 &inv,
+                node_tmp.path(),
                 attempt_bound,
                 &announce_started,
                 &session,
@@ -1950,6 +1958,7 @@ pub fn run_spawn_watched(
             // the id a resume's `session/load` hands back.
             LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
                 inv: &inv,
+                tmpdir: node_tmp.path(),
                 session_declaration: adapter.session_declaration(&launch, &ctx)?,
                 prompt: &req.prompt,
                 bound: attempt_bound,
@@ -1982,6 +1991,7 @@ pub fn run_spawn_watched(
                 &inv,
                 ChildDuplex {
                     agent_id: &agent_id,
+                    tmpdir: node_tmp.path(),
                     ready_file: ready_file
                         .as_deref()
                         .expect("the duplex path always mints a marker"),
@@ -2179,6 +2189,7 @@ pub fn run_spawn_watched(
             let left = deadline.saturating_duration_since(Instant::now());
             let next = launch_only_child(
                 &next_inv,
+                node_tmp.path(),
                 left,
                 &announce_generation,
                 &session,
@@ -3280,6 +3291,7 @@ mod tests {
         let at = Instant::now();
         let run = launch_only_child(
             &inv,
+            &dir,
             StdDuration::from_secs(30),
             &|_| {},
             &watch,
@@ -3334,6 +3346,7 @@ mod tests {
         let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
         let run = launch_only_child(
             &inv,
+            &dir,
             StdDuration::from_secs(2),
             &|_| {},
             &watch,
@@ -3452,6 +3465,7 @@ mod tests {
         let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
         let run = launch_only_child(
             &inv,
+            &dir,
             StdDuration::from_secs(20),
             &|_| {},
             &watch,

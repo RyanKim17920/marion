@@ -50,6 +50,7 @@
 
 use std::io::{BufRead, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -152,6 +153,8 @@ pub struct AcpRun {
 pub struct AcpChildSpec<'a> {
     /// Program, args, env and cwd, already compiled by `AcpAdapter::compile`.
     pub inv: &'a Invocation,
+    /// The node's own `TMPDIR`, which the caller owns and removes once this returns.
+    pub tmpdir: &'a Path,
     /// The `session/new` **request** the adapter built (`HarnessAdapter::session_declaration`),
     /// whole — envelope, id and all — or `None` for a session with no MCP servers declared.
     ///
@@ -355,7 +358,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         .checked_add(spec.bound)
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
 
-    let mut agent = Driver::spawn(spec.inv, spec.on_line)?;
+    let mut agent = Driver::spawn(spec.inv, spec.tmpdir, spec.on_line)?;
     (spec.on_started)(agent.pid);
 
     let handshake = handshake_with(&mut agent, deadline)?;
@@ -792,8 +795,12 @@ struct Driver<'a> {
 }
 
 impl<'a> Driver<'a> {
-    fn spawn(inv: &Invocation, on_line: Option<&'a dyn Fn(&str)>) -> Result<Self, AcpChildError> {
-        let mut cmd = inv.command();
+    fn spawn(
+        inv: &Invocation,
+        tmpdir: &Path,
+        on_line: Option<&'a dyn Fn(&str)>,
+    ) -> Result<Self, AcpChildError> {
+        let mut cmd = inv.command(tmpdir);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1238,6 +1245,8 @@ mod tests {
     ) -> AcpChildSpec<'a> {
         AcpChildSpec {
             inv,
+            // The fake agent writes no temp file, so its own scratch cwd serves as its `TMPDIR`.
+            tmpdir: &inv.cwd,
             session_declaration: None,
             prompt: "call marion's report tool",
             bound,
@@ -1640,6 +1649,7 @@ sleep 15"#,
         let refuse = |d: Value| {
             run_acp_child(AcpChildSpec {
                 inv: &inv,
+                tmpdir: &dir,
                 session_declaration: Some(d),
                 prompt: "hi",
                 bound: Duration::from_secs(5),

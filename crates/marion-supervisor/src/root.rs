@@ -54,7 +54,7 @@
 //! A root on either path has **no `TaskContract` and cannot `report`** (§9). Its result is its
 //! stream and its exit.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
@@ -1381,47 +1381,56 @@ fn launch_inner(
         node.path == RootPath::Terminal,
     )
     .with_profiles(&node.profiles);
-    let result = match node.path {
-        // The same three readers as the duplex tee, fed from the ACP driver's live line seam.
-        RootPath::Acp => {
-            let tee = |ev: duplex::StreamEvent<'_>| {
-                tee_root_frame(events.as_ref(), &session, watcher, ev)
-            };
-            launch_acp(node, bound, &tee, &started)
-        }
-        // The root's frames go to **two** places now, and they are different kinds of destination:
-        // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
-        // and renders nothing. Teeing rather than choosing, because a run watched by a person must
-        // still be re-attachable afterwards — and a run nobody watched must be re-attachable too.
-        RootPath::Duplex => {
-            let tee = |ev: duplex::StreamEvent<'_>| {
-                tee_root_frame(events.as_ref(), &session, watcher, ev)
-            };
-            launch_duplex(
+    // The root's own `TMPDIR`, held across every generation below and removed once the last
+    // process is reaped (see [`crate::node_tmp`]). A failure to make it is a failure to launch,
+    // carried into `result` rather than returned, so the outcome is journaled like any other.
+    let node_tmp = crate::node_tmp::NodeTmp::create(&node.agent_dir);
+    let result = match node_tmp.as_ref().map(crate::node_tmp::NodeTmp::path) {
+        Err(e) => Err(RootError::Io(std::io::Error::new(e.kind(), e.to_string()))),
+        Ok(tmpdir) => match node.path {
+            // The same three readers as the duplex tee, fed from the ACP driver's live line seam.
+            RootPath::Acp => {
+                let tee = |ev: duplex::StreamEvent<'_>| {
+                    tee_root_frame(events.as_ref(), &session, watcher, ev)
+                };
+                launch_acp(node, tmpdir, bound, &tee, &started)
+            }
+            // The root's frames go to **two** places now, and they are different kinds of destination:
+            // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
+            // and renders nothing. Teeing rather than choosing, because a run watched by a person must
+            // still be re-attachable afterwards — and a run nobody watched must be re-attachable too.
+            RootPath::Duplex => {
+                let tee = |ev: duplex::StreamEvent<'_>| {
+                    tee_root_frame(events.as_ref(), &session, watcher, ev)
+                };
+                launch_duplex(
+                    node,
+                    tmpdir,
+                    bound,
+                    mcp_ready_timeout,
+                    Some(&tee as duplex::StreamSink<'_>),
+                    &started,
+                )
+            }
+            // No live seam at all on this path — `run_bounded` drains the pipe whole — so the stream is
+            // recovered from the capture inside `launch_only`, where the raw stdout still exists.
+            // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
+            // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
+            // prevent.
+            RootPath::LaunchOnly => launch_only(
                 node,
+                tmpdir,
                 bound,
-                mcp_ready_timeout,
-                Some(&tee as duplex::StreamSink<'_>),
+                events.as_mut(),
                 &started,
-            )
-        }
-        // No live seam at all on this path — `run_bounded` drains the pipe whole — so the stream is
-        // recovered from the capture inside `launch_only`, where the raw stdout still exists.
-        // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
-        // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
-        // prevent.
-        RootPath::LaunchOnly => launch_only(
-            node,
-            bound,
-            events.as_mut(),
-            &started,
-            &unaccountable,
-            &session,
-        ),
-        // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
-        // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
-        // the byte-level record is `AgentDir::pty_cast()`.
-        RootPath::Terminal => launch_terminal(node, bound, &started, pane),
+                &unaccountable,
+                &session,
+            ),
+            // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
+            // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
+            // the byte-level record is `AgentDir::pty_cast()`.
+            RootPath::Terminal => launch_terminal(node, tmpdir, bound, &started, pane),
+        },
     };
     // **Substituted for whatever the kill made the driver return.** The kill above produces a
     // signalled exit on one path and a torn stream on the other, and reporting either as itself
@@ -2051,6 +2060,7 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
 /// give a headless node a pty on stdin, and on this surface there is nothing to write to it.
 fn launch_only(
     node: &RootNode,
+    tmpdir: &Path,
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
     on_started: &dyn Fn(i32),
@@ -2069,6 +2079,7 @@ fn launch_only(
     let mut outcome = launch_only_generation(
         node,
         &node.invocation,
+        tmpdir,
         bound,
         events.as_deref_mut(),
         on_started,
@@ -2143,6 +2154,7 @@ fn launch_only(
         let next = launch_only_generation(
             node,
             &inv,
+            tmpdir,
             left,
             events.as_deref_mut(),
             &started,
@@ -2217,16 +2229,20 @@ fn fold_generations(earlier: RootOutcome, later: RootOutcome) -> RootOutcome {
 
 /// One process of a `LaunchOnly` root: `inv` run under `bound`, its stream watched for the session
 /// and recorded whole, read into an outcome.
+// Eight: the node's temp dir joined the seven. It stays a parameter rather than being re-derived
+// from `node`, so every root launcher takes it from the one guard `launch_inner` holds.
+#[allow(clippy::too_many_arguments)]
 fn launch_only_generation(
     node: &RootNode,
     inv: &Invocation,
+    tmpdir: &Path,
     bound: StdDuration,
     events: Option<&mut crate::events::EventSink>,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     adapter: &dyn HarnessAdapter,
 ) -> Result<RootOutcome, RootError> {
-    let mut cmd = inv.command();
+    let mut cmd = inv.command(tmpdir);
     let secret = node
         .endpoint
         .as_ref()
@@ -2305,6 +2321,7 @@ fn launch_only_generation(
 /// marker. The outcome is read exactly as a child's ACP stream is read (`run_spawn`'s arm).
 fn launch_acp(
     node: &RootNode,
+    tmpdir: &Path,
     bound: StdDuration,
     tee: duplex::StreamSink<'_>,
     on_started: &dyn Fn(i32),
@@ -2321,6 +2338,7 @@ fn launch_acp(
     };
     let run = crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
         inv: &node.invocation,
+        tmpdir,
         session_declaration: node.session_declaration.clone(),
         prompt: &node.prompt,
         bound,
@@ -2527,6 +2545,7 @@ fn tell_pane_owner_failed(
 /// shape as a parsed frame.
 fn launch_terminal(
     node: &RootNode,
+    tmpdir: &Path,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     pane: Option<&dyn PaneOwner>,
@@ -2560,7 +2579,7 @@ fn launch_terminal(
     )?);
 
     let inv = &node.invocation;
-    let mut cmd = inv.command();
+    let mut cmd = inv.command(tmpdir);
     cmd
         // The harness lays out for the terminal it thinks it is on, and the one it is on is
         // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
@@ -2819,6 +2838,7 @@ fn describe_call(call: &MarionCall) -> String {
 /// `bound` is spent only on a `Blocked` episode.
 fn launch_duplex(
     node: &RootNode,
+    tmpdir: &Path,
     blocked_bound: StdDuration,
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
@@ -2833,7 +2853,7 @@ fn launch_duplex(
         .map_err(|_| RootError::UnsupportedRootSurface(node.harness))?;
     let stop_on = |frame: &serde_json::Value| adapter.auth_refusal(frame);
     let out = duplex::run_duplex(
-        &mut inv.command(),
+        &mut inv.command(tmpdir),
         &DuplexSpec {
             ready_file: &ready_file,
             prompt: &node.prompt,

@@ -105,6 +105,8 @@ struct Evidence {
     requests: Vec<Value>,
     /// Survivors of the run, if any.
     leaked: Vec<String>,
+    /// Every node `TMPDIR` still on disk after the run — each should have gone at reap.
+    tmp_dirs: Vec<PathBuf>,
 }
 
 impl Evidence {
@@ -215,6 +217,7 @@ fn drive(cell: &Cell) -> Evidence {
     // behind, which is the very failure the next block exists to prevent.
     let walked = persisted_contracts(&state)
         .map_err(|e| format!("{} cannot be walked for contracts: {e}", state.display()));
+    let tmp_dirs = node_tmp_dirs(&ProjectDir::new(&state, &repo));
 
     // Cleanup first, and unconditionally: a failing cell must never become the leak it is testing
     // for. `timeout_kill` takes the same line for the same reason. The scratch dir is not swept
@@ -239,7 +242,19 @@ fn drive(cell: &Cell) -> Evidence {
         persisted,
         requests,
         leaked: leaked.into_iter().map(|(_, line)| line).collect(),
+        tmp_dirs,
     }
+}
+
+/// Every `<agent-dir>/tmp` under the project — the node `TMPDIR`s the supervisor owns.
+fn node_tmp_dirs(project: &ProjectDir) -> Vec<PathBuf> {
+    let Ok(agents) = std::fs::read_dir(project.agents_dir()) else {
+        return Vec::new();
+    };
+    agents
+        .map(|entry| entry.expect("an agents/ entry reads").path().join("tmp"))
+        .filter(|tmp| tmp.exists())
+        .collect()
 }
 
 /// The five assertions every cell makes, in the order that makes a failure most diagnosable: what
@@ -347,6 +362,13 @@ fn assert_cell(cell: &Cell, ev: &Evidence) {
         ev.leaked.is_empty(),
         "{harness}: processes from this run are still alive — the S7 class of failure:\n{}",
         ev.leaked.join("\n")
+    );
+    // Nor did the node's own `TMPDIR`: it goes when the process is reaped, with whatever a
+    // Bun-built harness unpacked into it.
+    assert!(
+        ev.tmp_dirs.is_empty(),
+        "{harness}: a node's temp dir outlived its process: {:?}",
+        ev.tmp_dirs
     );
 }
 

@@ -21,6 +21,7 @@
 //!     pty.cast
 //!     hook-token                     # declared; no build writes it (§5.4's Stop-hook token)
 //!     config/
+//!     tmp/                           # the node's TMPDIR, only while one of its processes lives
 //!     worktree
 //! ```
 //!
@@ -198,6 +199,16 @@ impl AgentDir {
         self.0.join("config")
     }
 
+    /// The node's own `TMPDIR`, which exists only while a process of the node is alive.
+    ///
+    /// Bun-built harnesses unpack their native libraries into `$TMPDIR` on every launch and never
+    /// delete them (opencode 1.18: ~4.8 MB of `libfff_c` per run, ~3.8 MB more of `libopentui` in a
+    /// pane), so a node pointed at the operator's temp dir leaks there once per process. Pointed
+    /// here, whatever a harness leaves goes when the supervisor removes this directory at reap.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.0.join("tmp")
+    }
+
     /// Symlink to the worktree, when `isolation: worktree`.
     pub fn worktree(&self) -> PathBuf {
         self.0.join("worktree")
@@ -294,6 +305,7 @@ mod tests {
         assert_eq!(a.pty_cast(), base.join("pty.cast"));
         assert_eq!(a.hook_token(), base.join("hook-token"));
         assert_eq!(a.config_dir(), base.join("config"));
+        assert_eq!(a.tmp_dir(), base.join("tmp"));
         assert_eq!(a.worktree(), base.join("worktree"));
         assert_eq!(
             a.contract(&TaskId("0197f3aa-1c2d-7e01-8000-0102030405f1".into())),

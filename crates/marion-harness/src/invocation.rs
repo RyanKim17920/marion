@@ -5,7 +5,11 @@
 //! with each other. Design §5.2 puts `Invocation` on the `HarnessAdapter` contract itself, so it
 //! belongs to neither.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The variable every launch's private temp dir rides on — what Bun, Node and Python all read for
+/// "where do scratch files go".
+pub const TMPDIR_ENV: &str = "TMPDIR";
 
 /// An argv + env pair, ready to spawn. Nothing here reaches a shell.
 ///
@@ -37,8 +41,15 @@ pub struct Invocation {
 
 impl Invocation {
     /// A process builder for this invocation: program, argv, the environment layered on marion's
-    /// own, the removals, the cwd. The one place a spawn site gets the removals from.
-    pub fn command(&self) -> std::process::Command {
+    /// own, the removals, the cwd, and `tmpdir` as [`TMPDIR_ENV`]. The one place a spawn site gets
+    /// the removals from.
+    ///
+    /// **`tmpdir` is a parameter so that no launch can forget it.** Every harness process marion
+    /// starts gets a temp dir the supervisor owns and deletes at reap, because a Bun-built harness
+    /// unpacks its native libraries into `$TMPDIR` on every launch and never removes them — ~4.8 MB
+    /// per opencode run, measured, which came to 7 GB in one day of test runs. It is set last,
+    /// after the row's variables and a profile's removals, so neither can move it.
+    pub fn command(&self, tmpdir: &Path) -> std::process::Command {
         let mut cmd = std::process::Command::new(&self.program);
         cmd.args(&self.args)
             .envs(self.env.iter().cloned())
@@ -46,6 +57,7 @@ impl Invocation {
         for key in &self.env_remove {
             cmd.env_remove(key);
         }
+        cmd.env(TMPDIR_ENV, tmpdir);
         cmd
     }
 }
@@ -92,6 +104,30 @@ impl std::fmt::Debug for Invocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spawn_sites_temp_dir_wins_over_the_env_and_the_removals() {
+        let inv = Invocation {
+            program: "opencode".into(),
+            args: vec![],
+            env: vec![(TMPDIR_ENV.into(), "/var/folders/operator/T/".into())],
+            cwd: "/repo".into(),
+            model: None,
+            session_mode: None,
+            env_remove: vec![TMPDIR_ENV.into()],
+        };
+        let cmd = inv.command(Path::new("/state/agents/a-1/tmp"));
+        let set: Vec<_> = cmd
+            .get_envs()
+            .filter(|(k, _)| *k == TMPDIR_ENV)
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            set,
+            vec![Some(std::ffi::OsStr::new("/state/agents/a-1/tmp"))],
+            "set last, so neither a variable nor a profile's removal can move it"
+        );
+    }
 
     #[test]
     fn debug_names_every_variable_and_prints_no_value() {

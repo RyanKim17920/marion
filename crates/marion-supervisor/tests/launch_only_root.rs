@@ -674,6 +674,44 @@ fn an_opencode_root_succeeds_once_one_marion_call_appears_in_its_stream() {
     a_root_that_called_marion_succeeds(&OPENCODE, "reached-opencode");
 }
 
+/// **A root runs in its own temp dir, and the dir goes with its process.** The stub stands in for
+/// a Bun-built harness: it unpacks a library into `$TMPDIR` and exits. The dir it was given is the
+/// node's `<agent-dir>/tmp`, and once the root is reaped neither the dir nor the library is left.
+#[test]
+fn a_root_runs_in_its_own_temp_dir_and_leaves_nothing_in_it() {
+    let dir = scratch("lo-tmpdir");
+    let frame = reached_the_bridge(&OPENCODE);
+    let bin = stub_harness(
+        &dir,
+        &OPENCODE,
+        "",
+        &format!(
+            ": > \"$TMPDIR/.b9dd73e7ffbef3a2-00000000.dylib\" || exit 7\n\
+             cat <<'EOF'\n{frame}\nEOF\nexit 0"
+        ),
+    );
+
+    let run = marion_run(&dir, &OPENCODE, &bin, "Delegate the task to a child.", "30");
+
+    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
+    let tmpdir = PathBuf::from(recorded_env(&dir, "TMPDIR").expect("the root was given a TMPDIR"));
+    let agents = dir.join("state").canonicalize().unwrap();
+    assert!(
+        tmpdir.starts_with(&agents)
+            && tmpdir.ends_with("tmp")
+            && tmpdir
+                .parent()
+                .and_then(|a| a.parent())
+                .is_some_and(|a| a.ends_with("agents")),
+        "the root's TMPDIR is its own `<agent-dir>/tmp`, not {}",
+        tmpdir.display()
+    );
+    assert!(
+        !tmpdir.exists(),
+        "the root's temp dir, and what it unpacked there, go when its process is reaped"
+    );
+}
+
 // --- property 2b: a call that was refused is not a call that was answered -----------------------
 //
 // The gap between properties 1 and 2. A root can reach marion's bridge and still have delegated

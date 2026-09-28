@@ -9783,6 +9783,40 @@ mod tests {
         }
     }
 
+    /// **Every launch shape of every row runs in the temp dir its spawn site names, and no row
+    /// competes for the variable.** The dir is the supervisor's (a node's `<agent-dir>/tmp`,
+    /// removed at reap), so a row that set or cleared `TMPDIR` itself would either send a Bun
+    /// harness's unpacked libraries back to the operator's temp dir or leave the harness without
+    /// one. No row is exempt: all seven harnesses the leak was measured against ran a canned turn
+    /// under a 176-byte private `TMPDIR`.
+    #[test]
+    fn every_row_launches_in_the_temp_dir_its_spawn_site_names() {
+        use crate::invocation::TMPDIR_ENV;
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let tmp = PathBuf::from("/state/agents/019f-root/tmp");
+        for h in Harness::ALL {
+            for (shape, inv, _) in rendered_launches(h, &document_dir) {
+                assert!(
+                    !inv.env.iter().any(|(k, _)| k == TMPDIR_ENV)
+                        && !inv.env_remove.iter().any(|k| k == TMPDIR_ENV),
+                    "{h} {shape}: the row names {TMPDIR_ENV} itself"
+                );
+                let cmd = inv.command(&tmp);
+                let set: Vec<_> = cmd
+                    .get_envs()
+                    .filter(|(k, _)| *k == TMPDIR_ENV)
+                    .map(|(_, v)| v)
+                    .collect();
+                assert_eq!(
+                    set,
+                    vec![Some(tmp.as_os_str())],
+                    "{h} {shape}: the launch must carry exactly the spawn site's temp dir"
+                );
+            }
+        }
+    }
+
     /// **Every row states how a backgrounded child's end is pushed to its parent, and the argv
     /// that enables it reaches only the shapes where it was measured to work.** The one measured
     /// strategy is Claude Code's `notifications/claude/channel` (2.1.268), and it has three

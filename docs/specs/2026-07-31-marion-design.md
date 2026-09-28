@@ -566,6 +566,10 @@ the spec forbids custom root fields.
     config/                           # isolated harness config dir, if any (§6.4). For a Codex
                                       #   child on real auth this holds a seeded 0600 auth.json —
                                       #   never archived or uploaded, shredded on teardown (§6.4)
+    tmp/                              # 0700, the node's TMPDIR: made before its first process,
+                                      #   removed once its last one is reaped. Bun-built harnesses
+                                      #   unpack native libraries into $TMPDIR on every launch and
+                                      #   never delete them (opencode: ~4.8 MB per run)
     worktree                          # symlink, when isolation: worktree
 ```
 
