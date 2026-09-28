@@ -365,6 +365,7 @@ mod tests {
         /// `SpawnIntent` + `Spawned` for one node: the shape every node below starts from.
         fn started(&mut self, agent: &str, pid: Option<i32>) -> &mut Self {
             self.push(RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: id(agent),
                 parent_id: None,
                 agent_type: "claude".into(),
@@ -437,6 +438,7 @@ mod tests {
         }));
         // b600d82's plain case: the intent was abandoned before a process existed.
         log.push(RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: id("nevergot"),
             parent_id: None,
             agent_type: "claude".into(),

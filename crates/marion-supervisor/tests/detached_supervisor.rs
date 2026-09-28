@@ -759,6 +759,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
         path,
         0,
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: id.clone(),
             parent_id: None,
             agent_type: "codex-impl".into(),

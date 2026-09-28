@@ -48,6 +48,7 @@ pub fn a_finished_node(
         *seq += 1;
     };
     next(RecordKind::SpawnIntent(SpawnIntent {
+        review_of: None,
         agent_id: id.clone(),
         parent_id: parent.map(|p| AgentId(p.into())),
         agent_type: "codex-impl".into(),

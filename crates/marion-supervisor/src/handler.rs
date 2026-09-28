@@ -5391,6 +5391,7 @@ mod tests {
     /// actually launched.
     fn intent(agent: &str, parent: Option<&str>, ty: &str, depth: u32) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: id(agent),
             parent_id: parent.map(id),
             agent_type: ty.into(),
@@ -5655,6 +5656,7 @@ mod tests {
     fn an_unknown_type_projects_from_its_recorded_bound_and_not_otherwise() {
         let intent_with = |bound: Option<u64>| {
             RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: id("r"),
                 parent_id: None,
                 agent_type: "reviewer".into(),
@@ -5693,6 +5695,7 @@ mod tests {
             )
         };
         let intent = SpawnIntent {
+            review_of: None,
             agent_id: id("r"),
             parent_id: None,
             agent_type: "reviewer".into(),
@@ -5718,6 +5721,7 @@ mod tests {
         assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
         // A built-in is resolved regardless of the file, and the file's own refusal is its own.
         let builtin = SpawnIntent {
+            review_of: None,
             agent_type: "claude".into(),
             harness: Harness::ClaudeCode,
             ..intent.clone()
@@ -12964,6 +12968,7 @@ mod tests {
                 spawned("root"),
                 session("root", None),
                 RecordKind::SpawnIntent(SpawnIntent {
+                    review_of: None,
                     agent_id: id("child"),
                     parent_id: Some(id("root")),
                     agent_type: "claude".into(),

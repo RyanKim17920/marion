@@ -826,6 +826,7 @@ mod tests {
         };
         vec![
             next(RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: id("root"),
                 parent_id: None,
                 agent_type: "claude".into(),
@@ -846,6 +847,7 @@ mod tests {
                 credential: None,
             })),
             next(RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: id("child"),
                 parent_id: Some(id("root")),
                 agent_type: "codex-impl".into(),
@@ -1394,6 +1396,7 @@ mod tests {
             record(
                 0,
                 RecordKind::SpawnIntent(SpawnIntent {
+                    review_of: None,
                     agent_id: id("a"),
                     parent_id: None,
                     agent_type: "claude".into(),
@@ -1488,6 +1491,7 @@ mod tests {
                 1_000,
                 0,
                 RecordKind::SpawnIntent(SpawnIntent {
+                    review_of: None,
                     agent_id: id("a"),
                     parent_id: None,
                     agent_type: "codex-impl".into(),
@@ -1684,6 +1688,7 @@ mod tests {
         let mut j = vec![record(
             0,
             RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: id("root"),
                 parent_id: None,
                 agent_type: "claude".into(),
@@ -1978,6 +1983,7 @@ mod tests {
     /// The `SpawnIntent` a session observation lands on: the journal side's own fixture.
     fn intent() -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: id("a-1"),
             parent_id: Some(id("root")),
             agent_type: "codex-impl".into(),

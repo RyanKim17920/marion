@@ -1608,6 +1608,7 @@ pub fn run_spawn_watched(
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: agent_id.clone(),
             // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the
             // clock the node is running under rather than its agent type's default.

@@ -299,6 +299,7 @@ mod tests {
 
     fn intent(agent_id: AgentId, parent: Option<AgentId>, agent_type: &str) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id,
             parent_id: parent,
             agent_type: agent_type.into(),

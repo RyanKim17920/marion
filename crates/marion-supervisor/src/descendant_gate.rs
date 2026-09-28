@@ -403,6 +403,7 @@ mod tests {
 
     fn intent(agent: &str, parent: Option<&str>, depth: u32) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: id(agent),
             parent_id: parent.map(id),
             agent_type: "codex-impl".into(),

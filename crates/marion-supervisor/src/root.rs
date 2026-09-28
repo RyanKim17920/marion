@@ -879,6 +879,7 @@ pub fn prepare_watched(
     crate::journal::append(
         &project,
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: agent_id.clone(),
             parent_id: None,
             // The **canonical** name, not `spec.agent_type`: `marion run codex` and `marion run

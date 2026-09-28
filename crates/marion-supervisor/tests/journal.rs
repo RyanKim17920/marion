@@ -22,6 +22,7 @@ const MULTIBYTE: &str = "killed on marion’s bound — 时限到了 ✂";
 fn a_tree() -> Vec<RecordKind> {
     let mut kinds = vec![
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: AgentId("root".into()),
             parent_id: None,
             agent_type: "claude".into(),
@@ -45,6 +46,7 @@ fn a_tree() -> Vec<RecordKind> {
     for i in 0..3 {
         let child = AgentId(format!("child-{i}"));
         kinds.push(RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: child.clone(),
             parent_id: Some(AgentId("root".into())),
             agent_type: "codex-impl".into(),

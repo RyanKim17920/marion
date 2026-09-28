@@ -320,6 +320,18 @@ pub struct SpawnIntent {
     /// identity with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification: Vec<String>,
+    /// **The node this one reviews**, when it was spawned as a reviewer (`marion review`, or a
+    /// `spawn` naming `review_of`). A reviewer is placed under the node it reviews, so this
+    /// equals [`Self::parent_id`] and says *why* the node is there: a reader draws it as that
+    /// node's review, not as a child it delegated to.
+    ///
+    /// **Recorded because a resumed reviewer must stay read-only.** The read-only launch and the
+    /// review prompt are both decided from it, and a restart has only the journal.
+    ///
+    /// **Additive**, per this enum's rule: absent on the wire when `None`, so every intent that is
+    /// not a review is byte-identical to what the previous build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_of: Option<AgentId>,
 }
 
 /// §6.1 step 7's confirmation: the process exists.
@@ -628,6 +640,7 @@ mod tests {
 
     fn intent() -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: Some(AgentId("root".into())),
             agent_type: "codex-impl".into(),
@@ -791,6 +804,7 @@ mod tests {
         let a = AgentId("a".into());
         assert!(
             RecordKind::SpawnIntent(SpawnIntent {
+                review_of: None,
                 agent_id: a.clone(),
                 parent_id: None,
                 agent_type: "claude".into(),
@@ -935,6 +949,7 @@ mod tests {
     #[test]
     fn a_spawn_intent_carries_its_bound_and_omits_it_when_there_is_none() {
         let without = SpawnIntent {
+            review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: None,
             agent_type: "claude".into(),
@@ -952,6 +967,7 @@ mod tests {
         );
 
         let with = SpawnIntent {
+            review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: None,
             agent_type: "claude".into(),
@@ -992,6 +1008,7 @@ mod tests {
     #[test]
     fn a_spawn_intent_carries_its_verification_and_omits_it_when_there_is_none() {
         let intent = |verification: Vec<String>| SpawnIntent {
+            review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: Some(AgentId("r-1".into())),
             agent_type: "codex".into(),
@@ -1029,6 +1046,34 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **`review_of` is additive the same way**: a reviewer's intent names the node it reviews
+    /// and round-trips, and every other intent writes the line earlier builds wrote.
+    #[test]
+    fn a_spawn_intent_names_the_node_it_reviews_and_omits_it_otherwise() {
+        let intent = |review_of: Option<AgentId>| SpawnIntent {
+            review_of,
+            agent_id: AgentId("a-2".into()),
+            parent_id: Some(AgentId("a-1".into())),
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 2,
+            task_id: None,
+            timeout_secs: None,
+            verification: vec![],
+        };
+        assert_eq!(
+            serde_json::to_string(&RecordKind::SpawnIntent(intent(None))).unwrap(),
+            r#"{"SpawnIntent":{"agent_id":"a-2","parent_id":"a-1","agent_type":"claude","harness":"claude-code","depth":2}}"#,
+        );
+        let with = intent(Some(AgentId("a-1".into())));
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
+        assert!(line.contains(r#""review_of":"a-1""#), "{line}");
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(with)
+        );
     }
 
     /// **NC — the supervisor exit is not assigned to a convenient node.** A fabricated id would
