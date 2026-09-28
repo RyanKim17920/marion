@@ -29,14 +29,16 @@ const KEY_B: &str = "sk-rotate-key-b-0002";
 
 struct Fixture {
     config: PathBuf,
+    /// Held by a `static`, so never dropped: the dir outlives this process and the next test run's
+    /// first `scratch` reclaims it, which is what `marion_testsupport` does with an orphan.
+    _root: marion_testsupport::Scratch,
 }
 
 /// The one fixture config dir for this binary, with the environment pointed at it.
 fn fixture() -> &'static Fixture {
     static FIXTURE: OnceLock<Fixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("marion-endpoint-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = scratch("endpoint-config");
         let config = root.join("marion");
         std::fs::create_dir_all(&config).unwrap();
         write_owner_only(
@@ -50,10 +52,13 @@ fn fixture() -> &'static Fixture {
         // SAFETY: set once, inside `get_or_init`, before any test in this binary has read the
         // environment or started a process — every test's first act is to call this.
         unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &root);
+            std::env::set_var("XDG_CONFIG_HOME", &*root);
             std::env::set_var("MARION_CREDENTIAL_STORE", "file");
         }
-        Fixture { config }
+        Fixture {
+            config,
+            _root: root,
+        }
     })
 }
 

@@ -26,11 +26,8 @@ impl Run {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("marion-login-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn scratch(name: &str) -> marion_testsupport::Scratch {
+    marion_testsupport::scratch(&format!("login-{name}"))
 }
 
 fn marion(home: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> Run {

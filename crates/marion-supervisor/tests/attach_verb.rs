@@ -15,11 +15,8 @@ use std::process::Command;
 /// A directory with no supervisor, and not the workspace's own: `marion attach` with no `--repo`
 /// resolves the current directory, and the current directory of a test is the crate root — where a
 /// supervisor from some other test may genuinely be serving.
-fn empty_project() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("marion-attach-verb-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch project");
-    dir.canonicalize().expect("canonical")
+fn empty_project() -> marion_testsupport::Scratch {
+    marion_testsupport::scratch("attach-verb")
 }
 
 #[test]
@@ -56,8 +53,6 @@ fn attach_is_dispatched_by_the_binary_and_not_answered_with_usage() {
         !out.status.success(),
         "an attach that could not happen exits non-zero"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **`marion resume` is dispatched, and — unlike `attach` — it starts a supervisor when none
@@ -70,10 +65,7 @@ fn attach_is_dispatched_by_the_binary_and_not_answered_with_usage() {
 /// usage) and that a supervisor was reached (not declined the way attach declines).
 #[test]
 fn resume_is_dispatched_and_starts_a_supervisor_when_none_serves() {
-    let dir = std::env::temp_dir().join(format!("marion-resume-verb-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch project");
-    let dir = dir.canonicalize().expect("canonical");
+    let dir = marion_testsupport::scratch("resume-verb");
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "resume",

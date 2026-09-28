@@ -2478,8 +2478,7 @@ mod tests {
     /// the cause nor the fix. The agent here is a two-line script doing exactly that.
     #[test]
     fn an_acp_agent_that_exits_before_answering_is_reported_at_once_with_its_stderr() {
-        let dir = std::env::temp_dir().join(format!("marion-doctor-exit-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = marion_testsupport::scratch("doctor-exit");
         let script = dir.join("exits-at-startup");
         std::fs::write(
             &script,
@@ -2501,7 +2500,6 @@ mod tests {
             "waited {:?} on an agent that had already exited",
             started.elapsed()
         );
-        let _ = std::fs::remove_dir_all(&dir);
         let notes = &rows[0].report.notes;
         assert!(
             notes.iter().any(|n| n.starts_with("initialize: FAILED")

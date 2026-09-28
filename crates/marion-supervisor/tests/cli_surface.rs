@@ -7,10 +7,10 @@
 use std::process::{Command, Output};
 
 fn run(program: &str, args: &[&str]) -> Output {
-    let state = std::env::temp_dir().join(format!("marion-cli-surface-{}", std::process::id()));
+    let state = marion_testsupport::scratch("cli-surface");
     Command::new(program)
         .args(args)
-        .env("MARION_STATE_DIR", &state)
+        .env("MARION_STATE_DIR", &*state)
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap_or_else(|e| panic!("could not run {program}: {e}"))
