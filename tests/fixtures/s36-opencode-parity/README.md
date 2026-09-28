@@ -27,9 +27,10 @@ output, and the four counters sum to opencode's own `total`
 
 `opencode acp` reports the same split on the `session/prompt` response
 (`inputTokens` 700, `outputTokens` 43, `thoughtTokens` 7, `cachedReadTokens` 300,
-`totalTokens` 1050), while `codex-acp` (s22) counts its thoughts **inside** `outputTokens`. The
-ACP usage rule is one protocol-wide rule, so the opencode ACP agent still under-reports its
-reasoning; see MILESTONES.
+`totalTokens` 1050), while `codex-acp` (s22) counts its thoughts **inside** `outputTokens`. Each
+ACP row now states its split (`acp::Agent::reasoning`, beside for opencode, within for codex-acp),
+so both read `output` as every generated token
+(`token_usage::an_acp_agents_thought_tokens_are_counted_once_as_output_and_stated_as_reasoning`).
 
 Redaction: the session id is the stable fake `ses_s36fake0000000000000000001` (same length as the
 real one). Part and message ids are per-run and kept.

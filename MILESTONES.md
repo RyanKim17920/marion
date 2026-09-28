@@ -680,8 +680,9 @@ cached) and 50 completion (7 reasoning) became `input` 700, `cache.read` 300, `o
 `UsageRule::reasoning` (every other row states none) and the counters sum to opencode's own `total`
 (`token_usage::opencodes_measured_step_finish_counts_reasoning_as_output_and_sums_to_its_own_total`,
 RED with `output: 43`); `opencode acp` reports the same split as `thoughtTokens`, while codex-acp
-counts thoughts inside `outputTokens`, so the one protocol-wide ACP rule still under-reports opencode
-acp's reasoning. **MCP readiness:** `opencode run` waits for its MCP servers before its first
+counts thoughts inside `outputTokens`, so the one protocol-wide ACP rule under-reported opencode
+acp's reasoning — until each ACP row stated its split as `acp::Agent::reasoning` over the same
+`Reasoning::{Beside, Within}` (opencode beside, codex-acp within, every unmeasured agent none). **MCP readiness:** `opencode run` waits for its MCP servers before its first
 request (unlike codex's app-server), but only ~30 s, then sends without their tools and says
 nothing; and it abandons any `tools/call` at 60 s (`MCP error -32001: Request timed out`), which is
 every foreground `spawn` or `wait` longer than a minute. The row's MCP block now carries

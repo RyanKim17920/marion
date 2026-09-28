@@ -2462,10 +2462,15 @@ impl HarnessAdapter for AcpAdapter {
             .unwrap_or_default()
     }
 
-    /// The protocol's own `session/prompt` response shape ([`acp::USAGE`]), whatever the agent and
-    /// whether or not one is bound: spend is a protocol fact, not an agent refinement.
+    /// The protocol's own `session/prompt` response shape ([`acp::USAGE`]), bound or not: spend is
+    /// a protocol fact. How a bound agent's counters split its reasoning is the one refinement
+    /// ([`acp::Binding::usage`]).
     fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
-        Some(&acp::USAGE)
+        Some(
+            self.binding
+                .as_ref()
+                .map_or(&acp::USAGE, acp::Binding::usage),
+        )
     }
 
     /// The protocol's own `session/new` answer ([`acp::SESSION`]), whatever the agent: where a

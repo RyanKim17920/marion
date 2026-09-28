@@ -50,7 +50,7 @@ use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
 use crate::grammar::{
-    ActivityRule, Cond, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
+    ActivityRule, Cond, Reasoning, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
@@ -560,6 +560,10 @@ pub struct Agent {
     /// What this agent was measured to do with a `session/prompt` sent while one is in flight,
     /// overriding the row's [`MidTurn::Queue`]; `None` where it was not measured.
     pub mid_turn: Option<MidTurn>,
+    /// How this agent's `session/prompt` usage counts the model's reasoning — `thoughtTokens`
+    /// **beside** `outputTokens` or **within** it — refining [`USAGE`], which says nothing about
+    /// reasoning. `None` where no split was measured. One of [`USAGES`]' rules, by the sweep test.
+    pub reasoning: Option<Reasoning>,
     /// The `agentInfo.name` this agent answered `initialize` with — its identity **on the wire**,
     /// which is how a binary behind any command line is recognised as this row
     /// ([`identity_note`]). Held to the row's S33 capture by the sweep test.
@@ -660,6 +664,9 @@ pub const OPENCODE: Agent = Agent {
     // S31 `p0a/acp-opencode-fold` (opencode 1.18.32): the second prompt is folded into the running
     // loop and both responses arrive when it drains.
     mid_turn: Some(MidTurn::Fold),
+    // s36 (1.18.32): the prompt response's `thoughtTokens` 7 sits beside `outputTokens` 43 of the
+    // provider's 50 completion tokens, and `totalTokens` 1050 counts both.
+    reasoning: Some(Reasoning::Beside(THOUGHT_TOKENS)),
     agent_info: "OpenCode",
     install: "brew install opencode",
     reach: Reach::Opened {
@@ -686,6 +693,7 @@ pub const GEMINI: Agent = Agent {
     declaration: Declaration::Session,
     // No turn has ever run, so nothing mid-turn was measured.
     mid_turn: None,
+    reasoning: None,
     agent_info: "gemini-cli",
     install: "npm i -g @google/gemini-cli",
     reach: Reach::Refused,
@@ -708,6 +716,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     // S31 `p0a/acp-claude-acp-fold`, measured on 0.81.0 rather than this row's pinned 0.66.0: the
     // second prompt is folded or queued into the running loop, both responses at the drain.
     mid_turn: Some(MidTurn::Fold),
+    reasoning: None,
     agent_info: "@agentclientprotocol/claude-agent-acp",
     install: "npm i -g @agentclientprotocol/claude-agent-acp",
     reach: Reach::Opened {
@@ -739,6 +748,10 @@ pub const CODEX_ACP: Agent = Agent {
     // S31 `p0a/acp-codex-acp` (1.13.0): the second prompt is steered into the turn and the first
     // is never answered, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    // s22 (1.1.14): `outputTokens` is codex's own `output_tokens`, which already holds its
+    // `reasoningOutputTokens` (the response's `_meta.quota` carries both, and `thoughtTokens` is
+    // the latter).
+    reasoning: Some(Reasoning::Within(THOUGHT_TOKENS)),
     agent_info: "@agentclientprotocol/codex-acp",
     install: "npm i -g @agentclientprotocol/codex-acp",
     reach: Reach::Opened {
@@ -778,6 +791,7 @@ pub const COPILOT: Agent = Agent {
     // S31 `p0a/acp-copilot` (1.0.87): the second prompt supersedes the first, which returns an
     // empty `end_turn` with stale usage, so a message waits for the turn boundary.
     mid_turn: Some(MidTurn::Queue),
+    reasoning: None,
     agent_info: "Copilot",
     install: "npm i -g @github/copilot",
     reach: Reach::Opened {
@@ -802,6 +816,7 @@ pub const KILO: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "Kilo",
     install: "npm i -g @kilocode/cli",
     reach: Reach::Opened {
@@ -822,6 +837,7 @@ pub const QWEN: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "qwen-code",
     install: "npm i -g @qwen-code/qwen-code",
     reach: Reach::Opened {
@@ -843,6 +859,7 @@ pub const GOOSE: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "goose",
     install: "brew install block-goose-cli",
     reach: Reach::Opened {
@@ -866,6 +883,7 @@ pub const FAST_AGENT: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "fast-agent-acp",
     install: "uv tool install fast-agent-acp",
     reach: Reach::Opened {
@@ -887,6 +905,7 @@ pub const VIBE: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "@mistralai/mistral-vibe",
     install: "uv tool install mistral-vibe",
     reach: Reach::Opened {
@@ -906,6 +925,7 @@ pub const VTCODE: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "vtcode",
     install: "brew install vtcode",
     reach: Reach::Opened {
@@ -927,6 +947,7 @@ pub const AUGGIE: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "auggie",
     install: "npm i -g @augmentcode/auggie",
     reach: Reach::Refused,
@@ -942,6 +963,7 @@ pub const QODER: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "qoder-cli",
     install: "npm i -g @qoder-ai/qodercli",
     reach: Reach::Refused,
@@ -957,6 +979,7 @@ pub const CLINE: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "cline",
     install: "npm i -g cline",
     reach: Reach::Refused,
@@ -973,6 +996,7 @@ pub const PI_ACP: Agent = Agent {
     canned: None,
     declaration: Declaration::Session,
     mid_turn: None,
+    reasoning: None,
     agent_info: "pi-acp",
     install: "npm i -g pi-acp",
     reach: Reach::Refused,
@@ -1079,6 +1103,18 @@ impl Binding {
     /// `None` is "the row's generic answer applies", never "unsafe".
     pub fn mid_turn(&self) -> Option<MidTurn> {
         self.refinement.and_then(|a| a.mid_turn)
+    }
+
+    /// The usage rule this agent is read under: [`USAGE`], refined by the row's measured
+    /// [`Agent::reasoning`] split. A split no rule in [`USAGES`] states — which the sweep test
+    /// forbids — is read under the protocol's own rule rather than guessed at.
+    pub fn usage(&self) -> &'static UsageRule {
+        let reasoning = self.refinement.and_then(|a| a.reasoning);
+        USAGES
+            .iter()
+            .copied()
+            .find(|rule| rule.reasoning == reasoning)
+            .unwrap_or(&USAGE)
     }
 
     /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.
@@ -1241,6 +1277,24 @@ pub const USAGE: UsageRule = UsageRule {
     input_includes_cache: false,
     fold: UsageFold::Sum,
 };
+
+/// Where the protocol's usage object counts reasoning tokens, on the agents that report them.
+pub const THOUGHT_TOKENS: &str = "/result/usage/thoughtTokens";
+
+/// [`USAGE`] for an agent whose `thoughtTokens` sit **beside** `outputTokens` ([`OPENCODE`]).
+pub const USAGE_THOUGHTS_BESIDE: UsageRule = UsageRule {
+    reasoning: Some(Reasoning::Beside(THOUGHT_TOKENS)),
+    ..USAGE
+};
+
+/// [`USAGE`] for an agent whose `outputTokens` already holds its `thoughtTokens` ([`CODEX_ACP`]).
+pub const USAGE_THOUGHTS_WITHIN: UsageRule = UsageRule {
+    reasoning: Some(Reasoning::Within(THOUGHT_TOKENS)),
+    ..USAGE
+};
+
+/// Every usage rule an ACP agent is read under: the protocol's own, and its two refinements.
+pub static USAGES: [&UsageRule; 3] = [&USAGE, &USAGE_THOUGHTS_BESIDE, &USAGE_THOUGHTS_WITHIN];
 
 /// Where an ACP session is named: the `session/new` **response**'s `result.sessionId` — the id
 /// `session/load` takes back (S21 captured it on `opencode acp`, `ses_…`). A `session/load`

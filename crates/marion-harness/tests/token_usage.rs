@@ -206,13 +206,14 @@ fn every_acp_agent_reads_its_usage_from_the_protocols_prompt_response() {
     // ACP's `session/prompt` response carries `result.usage` in the protocol's own shape, the same
     // for every agent; each transcript's `totalTokens` is the four counters' sum, so `inputTokens`
     // excludes the cache. The `usage_update` notifications around it are context occupancy, not
-    // spend, and must not be read.
+    // spend, and must not be read. opencode and codex-acp state how their `thoughtTokens` relate to
+    // `outputTokens`, so their readings carry a reasoning count — zero in these captures.
     let cases: &[(&str, Option<&str>, &str, TokenUsage)] = &[
         (
             "opencode acp s21",
             Some("opencode"),
             fixture!("s21/opencode-acp-session.jsonl"),
-            tokens(113, 4, 14464, 0),
+            reasoning(tokens(113, 4, 14464, 0), 0),
         ),
         (
             "claude-agent-acp s22",
@@ -224,13 +225,13 @@ fn every_acp_agent_reads_its_usage_from_the_protocols_prompt_response() {
             "codex-acp s22",
             Some("codex-acp"),
             fixture!("s22/codex-acp-session.jsonl"),
-            tokens(905, 4, 28416, 0),
+            reasoning(tokens(905, 4, 28416, 0), 0),
         ),
         (
             "opencode acp canned s23",
             Some("opencode"),
             fixture!("s23/opencode-acp-canned-session.jsonl"),
-            TokenUsage::default(),
+            reasoning(TokenUsage::default(), 0),
         ),
         // An agent marion has no refinement row for is read by the protocol alone.
         (
@@ -255,6 +256,63 @@ fn every_acp_agent_reads_its_usage_from_the_protocols_prompt_response() {
     );
 }
 
+/// The frames an ACP agent sent, out of a probe's `{"dir", "m"}` transcript.
+fn acp_inbound(transcript: &str) -> String {
+    transcript
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["dir"] == "in")
+        .map(|v| v["m"].to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// s36: `opencode acp` answered a prompt the provider stub billed as 1000 prompt tokens (300
+/// cached) and 50 completion tokens (7 reasoning) with `inputTokens` 700, `outputTokens` 43,
+/// `thoughtTokens` 7, `cachedReadTokens` 300 and `totalTokens` 1050 — the thoughts **beside** the
+/// output — while codex-acp's `outputTokens` already holds them (s22's `_meta.quota` states codex's
+/// own `outputTokens` and `reasoningOutputTokens` beside the protocol's). Each is read so that
+/// `output` counts every generated token and `reasoning` how many of them were thoughts.
+#[test]
+fn an_acp_agents_thought_tokens_are_counted_once_as_output_and_stated_as_reasoning() {
+    let s36 = acp_inbound(fixture!(
+        "s36-opencode-parity/mcp-acp-ready-8s/acp-client.jsonl"
+    ));
+    let opencode = usage_of(Harness::Acp, Some("opencode"), &s36).expect("a usage unit");
+    assert_eq!(opencode, reasoning(tokens(700, 50, 300, 0), 7));
+    assert_eq!(
+        opencode.input + opencode.output + opencode.cache_read + opencode.cache_write,
+        1050,
+        "the counters sum to the agent's own totalTokens"
+    );
+    // The same frame under the within rule: the thoughts are already part of the output.
+    assert_eq!(
+        usage_of(Harness::Acp, Some("codex-acp"), &s36),
+        Some(reasoning(tokens(700, 43, 300, 0), 7))
+    );
+    // A thought count larger than the output it is part of is capped at the output.
+    let overcount = r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":3,"thoughtTokens":9}}}"#;
+    assert_eq!(
+        usage_of(Harness::Acp, Some("codex-acp"), overcount),
+        Some(reasoning(tokens(1, 3, 0, 0), 3))
+    );
+    // An agent with no measured split says nothing about reasoning, and reads output as sent.
+    assert_eq!(
+        usage_of(Harness::Acp, Some("some-agent --acp"), &s36),
+        Some(tokens(700, 43, 300, 0))
+    );
+}
+
+/// Every ACP row's reasoning split is one a usage rule states, so no measured split is silently
+/// read under the protocol's rule instead.
+#[test]
+fn every_acp_rows_reasoning_split_is_one_a_usage_rule_states() {
+    for agent in marion_harness::acp::AGENTS {
+        let rule = marion_harness::acp::Binding::refined(agent).usage();
+        assert_eq!(rule.reasoning, agent.reasoning, "{}", agent.id);
+    }
+}
+
 #[test]
 fn an_acp_session_sums_its_turns_and_ignores_context_occupancy() {
     let turns = [
@@ -265,7 +323,7 @@ fn an_acp_session_sums_its_turns_and_ignores_context_occupancy() {
     .join("\n");
     assert_eq!(
         usage_of(Harness::Acp, Some("opencode"), &turns),
-        Some(tokens(30, 3, 100, 5))
+        Some(reasoning(tokens(30, 3, 100, 5), 0))
     );
     // A session that only ever reported occupancy, and a prompt response with no usage at all,
     // made no claim about spend.
