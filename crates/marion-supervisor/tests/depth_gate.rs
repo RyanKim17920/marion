@@ -91,7 +91,6 @@ use marion_core::agent_type::DEFAULT_MAX_DEPTH;
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::AgentSpawnParams;
-use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_harness::adapter_for;
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
@@ -102,6 +101,8 @@ use marion_testsupport::{
 use serde_json::{Value, json};
 
 mod common;
+
+use common::socket_spawn::try_spawn_over_socket;
 
 /// The child's own bound. Short: a wedged cell must fail fast rather than wedge CI.
 const CHILD_TIMEOUT_SECS: u64 = 60;
@@ -411,51 +412,6 @@ exit 0
     bin
 }
 
-/// A node the supervisor owns, and the capability its own bridge would present.
-struct Owned {
-    agent_id: marion_core::contract::AgentId,
-    task_id: Option<marion_core::contract::TaskId>,
-    token: String,
-}
-
-/// One `agent/spawn`, answered — as a root when `caller` is `None`, as that node's child otherwise.
-///
-/// The test is standing exactly where a bridge stands: it holds the caller's `agent_id` and the
-/// token marion wrote into that node's declaration, and it states nothing else. It cannot state a
-/// depth, an agent type or a child count, because [`marion_core::proto::SpawnCaller`] has nowhere to put
-/// them — which is the property this whole file now rests on.
-fn spawn_over_socket(
-    sup: &common::Supervisor,
-    state: &Path,
-    caller: Option<&Owned>,
-    p: AgentSpawnParams,
-) -> Result<Owned, String> {
-    let p = AgentSpawnParams {
-        review_of: None,
-        native_launch: None,
-        caller: caller.map(|c| SpawnCaller {
-            agent_id: c.agent_id.clone(),
-            node_token: c.token.clone().into(),
-        }),
-        ..p
-    };
-    let answered = sup.call(Call::AgentSpawn(p))?;
-    let MethodResult::AgentSpawn(r) = Method::AgentSpawn
-        .decode_result(&answered)
-        .map_err(|e| e.to_string())?
-    else {
-        panic!("agent/spawn answers with an agent/spawn result");
-    };
-    let token = common::declaration_of(state, &r.agent_id)
-        .remove("MARION_NODE_TOKEN")
-        .expect("declaration_of asserts the token is there");
-    Ok(Owned {
-        agent_id: r.agent_id,
-        task_id: r.task_id,
-        token,
-    })
-}
-
 /// The spawn a chain node is asked for: a shim of the chain's own type, holding its depth open.
 fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
     AgentSpawnParams {
@@ -546,15 +502,15 @@ fn drive(node: &Node) -> Evidence {
         common::Supervisor::start(&state, &key, &path_env, &server.base_url(), IDLE_GRACE);
 
     // ---- the chain: a real root and real children, each asking as the last one ------------------
-    let mut caller = spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
+    let mut caller = try_spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
         .expect("the chain's root is created over the socket");
     for depth in 1..DEFAULT_MAX_DEPTH {
-        caller = spawn_over_socket(&sup, &state, Some(&caller), chain_params(None, depth))
+        caller = try_spawn_over_socket(&sup, &state, Some(&caller), chain_params(None, depth))
             .unwrap_or_else(|e| panic!("the chain node at depth {depth} must be served: {e}"));
     }
 
     // ---- the node under test: the deepest legal node, asked for by the node above it ------------
-    let spawn_result = spawn_over_socket(
+    let spawn_result = try_spawn_over_socket(
         &sup,
         &state,
         Some(&caller),
@@ -940,9 +896,9 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
 
     // A root at depth 0 (a shim holding its depth open) and the claude child at depth 1, two below
     // the built-in bound of 3.
-    let root = spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
+    let root = try_spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
         .expect("the chain's root is created over the socket");
-    let child = spawn_over_socket(
+    let child = try_spawn_over_socket(
         &sup,
         &state,
         Some(&root),

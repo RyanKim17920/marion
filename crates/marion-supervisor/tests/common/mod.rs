@@ -19,6 +19,7 @@ pub mod journal;
 pub mod mcp_result;
 pub mod run;
 pub mod script;
+pub mod socket_spawn;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};

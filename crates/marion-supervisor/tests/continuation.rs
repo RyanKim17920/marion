@@ -47,20 +47,20 @@ use marion_core::contract::{AgentId, TokenUsage};
 use marion_core::node::{BlockReason, NodeState};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::{AgentSpawnParams, NodeSteerParams};
-use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
-use marion_core::registry::Replay;
+use marion_core::proto::{Call, Method, MethodResult};
 use marion_provider::USAGE;
 use marion_provider::reqlog::RequestLog;
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
-use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
-    fixture_repo, kill_hard, on_path, persisted_contracts, pinned_version, scratch, survivors,
-    which,
+    fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors, which,
 };
 use serde_json::{Value, json};
 
 mod common;
+
+use common::journal::{is_exited, journal_lines, state_of, tree, wait_for};
+use common::socket_spawn::{Owned, contract_of, params, spawn_over_socket};
 
 /// In the child's first prompt only: the shim routes on it to the real binary, and the provider
 /// dispatches the child's first turn on it.
@@ -237,69 +237,6 @@ exit 0
     bin
 }
 
-struct Owned {
-    agent_id: AgentId,
-    token: String,
-}
-
-fn spawn_over_socket(
-    sup: &common::Supervisor,
-    state: &Path,
-    caller: Option<&Owned>,
-    p: AgentSpawnParams,
-) -> Owned {
-    let p = AgentSpawnParams {
-        caller: caller.map(|c| SpawnCaller {
-            agent_id: c.agent_id.clone(),
-            node_token: c.token.clone().into(),
-        }),
-        ..p
-    };
-    let answered = sup
-        .call(Call::AgentSpawn(p))
-        .unwrap_or_else(|e| panic!("agent/spawn must be served: {e}"));
-    let MethodResult::AgentSpawn(r) = Method::AgentSpawn
-        .decode_result(&answered)
-        .expect("a well-formed agent/spawn result")
-    else {
-        panic!("agent/spawn answers with an agent/spawn result");
-    };
-    let token = common::declaration_of(state, &r.agent_id)
-        .remove("MARION_NODE_TOKEN")
-        .expect("declaration_of asserts the token is there");
-    Owned {
-        agent_id: r.agent_id,
-        token,
-    }
-}
-
-fn params(
-    agent_type: &str,
-    prompt: String,
-    repo: Option<&Path>,
-    timeout_secs: u64,
-) -> AgentSpawnParams {
-    AgentSpawnParams {
-        review_of: None,
-        agent_type: agent_type.into(),
-        prompt,
-        native_launch: None,
-        caller: None,
-        repo: repo.map(Path::to_path_buf),
-        acceptance_criteria: vec![],
-        verification: vec![],
-        writable_scope: vec![],
-        timeout_secs: Some(timeout_secs),
-        model: None,
-        no_change_record: repo.map(|_| true),
-        pane: None,
-        isolation: None,
-        allow_concurrent_writes: None,
-        notify_parent: false,
-        profile: None,
-    }
-}
-
 /// An operator's steer, answered: the message id its journal records carry.
 fn steer(sup: &common::Supervisor, agent_id: &AgentId, text: String) -> String {
     let answered = sup
@@ -321,37 +258,6 @@ fn steer(sup: &common::Supervisor, agent_id: &AgentId, text: String) -> String {
 
 // ---- reading the journal back -------------------------------------------------------------------
 
-fn tree(journal: &Path) -> Replay {
-    read_path(journal).expect("the journal reads back")
-}
-
-fn state_of(journal: &Path, id: &AgentId) -> Option<NodeState> {
-    tree(journal).get(id).map(|n| n.state)
-}
-
-fn is_exited(journal: &Path, id: &AgentId) -> bool {
-    state_of(journal, id).is_some_and(|s| s.is_exited())
-}
-
-fn wait_for(journal: &Path, what: &str, mut fact: impl FnMut(&Path) -> bool) {
-    let deadline = Instant::now() + BOUND;
-    while !fact(journal) {
-        assert!(
-            Instant::now() < deadline,
-            "{what} never became true within {BOUND:?}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn journal_lines(journal: &Path) -> Vec<Value> {
-    std::fs::read_to_string(journal)
-        .expect("the journal reads back")
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("a journal line is JSON"))
-        .collect()
-}
-
 /// Every record of `kind` about `agent_id`, in journal order.
 fn records_of(journal: &Path, kind: &str, agent_id: &AgentId) -> Vec<Value> {
     journal_lines(journal)
@@ -362,19 +268,6 @@ fn records_of(journal: &Path, kind: &str, agent_id: &AgentId) -> Vec<Value> {
                 == Some(agent_id.0.as_str())
         })
         .collect()
-}
-
-fn contract_of(state: &Path, id: &AgentId) -> Value {
-    let all = persisted_contracts(state).expect("the state tree walks");
-    let mine: Vec<&marion_testsupport::PersistedContract> = all
-        .iter()
-        .filter(|c| c.path.to_string_lossy().contains(&id.0))
-        .collect();
-    assert_eq!(mine.len(), 1, "one contract for the child under test");
-    mine[0]
-        .parsed
-        .clone()
-        .unwrap_or_else(|e| panic!("the child's contract does not read back: {e}"))
 }
 
 // ---- the bed --------------------------------------------------------------------------------------

@@ -47,19 +47,18 @@ use std::time::{Duration, Instant};
 use marion_core::contract::AgentId;
 use marion_core::node::{BlockReason, NodeState};
 use marion_core::paths::ProjectDir;
-use marion_core::proto::params::AgentSpawnParams;
-use marion_core::proto::{Call, Method, MethodResult, SpawnCaller};
-use marion_core::registry::Replay;
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
-    fixture_repo, kill_hard, on_path, persisted_contracts, pinned_version, scratch, survivors,
-    which,
+    fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors, which,
 };
 use serde_json::{Value, json};
 
 mod common;
+
+use common::journal::{is_exited, journal_lines, state_of, tree, wait_for};
+use common::socket_spawn::{Owned, contract_of, params, spawn_over_socket};
 
 /// Present in the **child under test's** prompt and nowhere else: the shim routes on it to the real
 /// binary, and the provider dispatches on it to the child's script.
@@ -91,10 +90,6 @@ const SHIM_TIMEOUT_SECS: u64 = 600;
 /// §5.7's idle grace for the fixture's supervisor. Never waited out — a live root keeps it resident
 /// and the fixture ends it explicitly.
 const IDLE_GRACE: Duration = Duration::from_secs(600);
-
-/// A bound that exists only to fail. Nothing here waits on work the test has not already caused,
-/// except run 3, whose wait is the child's own [`SHORT_CHILD_TIMEOUT_SECS`].
-const BOUND: Duration = Duration::from_secs(180);
 
 const CHILD_CALL_PREFIX: &str = "call_descendant_gate_child";
 
@@ -163,92 +158,7 @@ exit 0
     bin
 }
 
-/// A node the supervisor owns, and the capability its own bridge would present.
-struct Owned {
-    agent_id: AgentId,
-    token: String,
-}
-
-fn spawn_over_socket(
-    sup: &common::Supervisor,
-    state: &Path,
-    caller: Option<&Owned>,
-    p: AgentSpawnParams,
-) -> Owned {
-    let p = AgentSpawnParams {
-        review_of: None,
-        native_launch: None,
-        caller: caller.map(|c| SpawnCaller {
-            agent_id: c.agent_id.clone(),
-            node_token: c.token.clone().into(),
-        }),
-        ..p
-    };
-    let answered = sup
-        .call(Call::AgentSpawn(p))
-        .unwrap_or_else(|e| panic!("agent/spawn must be served: {e}"));
-    let MethodResult::AgentSpawn(r) = Method::AgentSpawn
-        .decode_result(&answered)
-        .expect("a well-formed agent/spawn result")
-    else {
-        panic!("agent/spawn answers with an agent/spawn result");
-    };
-    let token = common::declaration_of(state, &r.agent_id)
-        .remove("MARION_NODE_TOKEN")
-        .expect("declaration_of asserts the token is there");
-    Owned {
-        agent_id: r.agent_id,
-        token,
-    }
-}
-
-fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnParams {
-    AgentSpawnParams {
-        review_of: None,
-        notify_parent: false,
-        agent_type: "codex-impl".into(),
-        prompt,
-        native_launch: None,
-        caller: None,
-        repo: repo.map(Path::to_path_buf),
-        acceptance_criteria: vec![],
-        verification: vec![],
-        writable_scope: vec![],
-        timeout_secs: Some(timeout_secs),
-        model: None,
-        no_change_record: repo.map(|_| true),
-        pane: None,
-        isolation: None,
-        allow_concurrent_writes: None,
-        profile: None,
-    }
-}
-
 // ---- reading the journal back -------------------------------------------------------------------
-
-fn tree(journal: &Path) -> Replay {
-    read_path(journal).expect("the journal reads back")
-}
-
-fn state_of(journal: &Path, id: &AgentId) -> Option<NodeState> {
-    tree(journal).get(id).map(|n| n.state)
-}
-
-fn is_exited(journal: &Path, id: &AgentId) -> bool {
-    state_of(journal, id).is_some_and(|s| s.is_exited())
-}
-
-/// Poll a journal fact under [`BOUND`]. The fact, never the time, is what is asserted.
-fn wait_for(journal: &Path, what: &str, mut fact: impl FnMut(&Path) -> bool) {
-    let deadline = Instant::now() + BOUND;
-    while !fact(journal) {
-        assert!(
-            Instant::now() < deadline,
-            "{what} never became true within {BOUND:?}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
 
 /// Wait for §7.6 step 3's hold — the node journaled `Blocked(Descendants)` — and fail **by name**
 /// if its `Exited` lands first while the grandchild is still live, which is the defect this file
@@ -280,15 +190,6 @@ fn only_child_of(journal: &Path, parent: &AgentId) -> AgentId {
     kids[0].agent_id.clone()
 }
 
-/// Every journal line, in the file's byte order — the journal's total order.
-fn journal_lines(journal: &Path) -> Vec<Value> {
-    std::fs::read_to_string(journal)
-        .expect("the journal reads back")
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("a journal line is JSON"))
-        .collect()
-}
-
 fn only_index(records: &[Value], kind: &str, agent_id: &AgentId) -> usize {
     let hits: Vec<usize> = records
         .iter()
@@ -307,25 +208,6 @@ fn only_index(records: &[Value], kind: &str, agent_id: &AgentId) -> usize {
         agent_id.0
     );
     hits[0]
-}
-
-/// The contract marion persisted for `id`, parsed.
-fn contract_of(state: &Path, id: &AgentId) -> Value {
-    let all = persisted_contracts(state).expect("the state tree walks");
-    let mine: Vec<&marion_testsupport::PersistedContract> = all
-        .iter()
-        .filter(|c| c.path.to_string_lossy().contains(&id.0))
-        .collect();
-    assert_eq!(
-        mine.len(),
-        1,
-        "one contract for the child under test; found {:?}",
-        mine.iter().map(|c| &c.path).collect::<Vec<_>>()
-    );
-    mine[0]
-        .parsed
-        .clone()
-        .unwrap_or_else(|e| panic!("the child's contract does not read back: {e}"))
 }
 
 // ---- the bed --------------------------------------------------------------------------------------
@@ -380,6 +262,7 @@ impl Bed {
             &state,
             None,
             params(
+                "codex-impl",
                 format!("{ROOT_MARKER}: hold the tree open"),
                 Some(&repo),
                 SHIM_TIMEOUT_SECS,
@@ -390,6 +273,7 @@ impl Bed {
             &state,
             Some(&root),
             params(
+                "codex-impl",
                 format!("{DELEGATOR_MARKER}: background a grandchild, then stop."),
                 None,
                 child_timeout_secs,

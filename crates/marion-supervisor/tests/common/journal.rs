@@ -1,14 +1,22 @@
-//! **Seeding a journal a real supervisor then boots over.**
+//! **Seeding a journal a real supervisor then boots over, and reading one back.**
 //!
-//! Every record goes through `marion_core`'s own encoder, so a change to the record format breaks
-//! the tests that seed rather than letting them write a journal no supervisor reads.
+//! Every seeded record goes through `marion_core`'s own encoder, so a change to the record format
+//! breaks the tests that seed rather than letting them write a journal no supervisor reads. The
+//! readers replay through marion's own `read_path`, so a test sees the tree the supervisor sees.
 
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
 use marion_core::journal::{Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, WriterId};
+use marion_core::node::NodeState;
+use marion_core::registry::Replay;
+use marion_supervisor::journal::read_path;
+use serde_json::Value;
+
+use super::client::BOUND;
 
 /// Append one record at `seq` to the journal at `path`, creating it and its directory.
 pub fn seed(path: &Path, seq: u64, kind: RecordKind) {
@@ -98,5 +106,40 @@ pub fn delivered_to(path: &Path, agent: &AgentId) -> Vec<(String, String)> {
             RecordKind::MessageDelivered(d) if &d.agent_id == agent => Some((d.message_id, d.via)),
             _ => None,
         })
+        .collect()
+}
+
+/// The journal at `path`, replayed into the node tree.
+pub fn tree(journal: &Path) -> Replay {
+    read_path(journal).expect("the journal reads back")
+}
+
+/// `id`'s current state, or `None` before its first record.
+pub fn state_of(journal: &Path, id: &AgentId) -> Option<NodeState> {
+    tree(journal).get(id).map(|n| n.state)
+}
+
+pub fn is_exited(journal: &Path, id: &AgentId) -> bool {
+    state_of(journal, id).is_some_and(|s| s.is_exited())
+}
+
+/// Poll a journal fact under [`BOUND`]. The fact, never the time, is what is asserted.
+pub fn wait_for(journal: &Path, what: &str, mut fact: impl FnMut(&Path) -> bool) {
+    let deadline = Instant::now() + BOUND;
+    while !fact(journal) {
+        assert!(
+            Instant::now() < deadline,
+            "{what} never became true within {BOUND:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Every journal line as raw JSON, in the file's byte order — the journal's total order.
+pub fn journal_lines(journal: &Path) -> Vec<Value> {
+    std::fs::read_to_string(journal)
+        .expect("the journal reads back")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a journal line is JSON"))
         .collect()
 }
