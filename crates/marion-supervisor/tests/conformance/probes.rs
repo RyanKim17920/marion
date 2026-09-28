@@ -53,6 +53,15 @@ pub struct Ctx<'a> {
     pub scratch: PathBuf,
     /// Facts one probe hands a later one, so the battery does not run the same turn twice.
     pub report_answered: Option<bool>,
+    /// A canned stand-in run in place of the row's program, for the battery's own tests.
+    pub stand_in: Option<StandIn>,
+}
+
+/// A program launched in place of the row's, with everything the row compiled plus `env` and
+/// `MARION_STAND_IN_PROVIDER` (the probe's provider URL, spelled the same for every row).
+pub struct StandIn {
+    pub program: PathBuf,
+    pub env: Vec<(String, String)>,
 }
 
 /// One probe's world, provider and transcript.
@@ -99,7 +108,16 @@ impl Ctx<'_> {
     }
 
     fn compile(&self, s: &Session, prompt: &str, knobs: &Knobs) -> Result<Launch, String> {
-        target::compile(self.t, &s.world, &s.provider.base_url(), prompt, knobs)
+        let mut launch = target::compile(self.t, &s.world, &s.provider.base_url(), prompt, knobs)?;
+        if let Some(si) = &self.stand_in {
+            launch.inv.program = si.program.display().to_string();
+            launch.inv.env.extend(si.env.iter().cloned());
+            launch
+                .inv
+                .env
+                .push(("MARION_STAND_IN_PROVIDER".into(), s.provider.base_url()));
+        }
+        Ok(launch)
     }
 }
 
@@ -1343,7 +1361,7 @@ fn p_errors(c: &mut Ctx<'_>) -> Outcome {
 /// The row's pane shape in a pty: DECSET 2004 at boot, the first screen (dialogs included, since no
 /// row names a first-paint needle), a bracketed paste that submits, and output going quiet once
 /// the turn is done — the terminal delivery a native lane rests on.
-fn p_tui(c: &mut Ctx<'_>) -> Outcome {
+pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
     const P: &str = "P-tui";
     let Some(surfaces) = c.t.adapter.pane_surfaces() else {
         return Outcome::unsupported(P, "the row has no pane shape (`pane: None`)");

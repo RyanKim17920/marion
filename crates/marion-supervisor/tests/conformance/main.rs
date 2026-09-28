@@ -26,6 +26,7 @@
 //! not now fails the test (admission's diff); every other change is printed.
 
 mod driver;
+mod hygiene;
 mod probes;
 mod provider;
 mod report;
@@ -91,6 +92,7 @@ fn battery() {
             out: staging.clone(),
             scratch: scratch.join(selector.replace(':', "-")),
             report_answered: None,
+            stand_in: None,
         };
         let (version, mut outcomes) = probes::run_all(&mut ctx);
         let scrub = report::Scrub::new(&scratch);
