@@ -316,17 +316,19 @@ fn tool_spawn(
     // **First, and before the environment is even consulted**, because the answer does not
     // depend on it. Routed through `spawn_result` so a refusal reads like every other one
     // a `spawn` can return.
-    if let Some(e) = unimplemented_parameter(args) {
-        return Err(bridge::spawn_result(
+    // **Required, never defaulted**, as the schema says: a default would name one harness's type
+    // for every caller that forgot to choose, and run it under a name nobody asked for.
+    let Some(agent_type) = args["agent_type"].as_str().map(str::to_string) else {
+        return Err(bridge::tool_result(
             id,
-            args["agent_type"].as_str().unwrap_or("codex-impl"),
-            Err(e),
+            "spawn: `agent_type` is required — name the agent type to run (the `agent_type` \
+             parameter's description lists this tree's types)",
+            true,
         ));
+    };
+    if let Some(e) = unimplemented_parameter(args) {
+        return Err(bridge::spawn_result(id, &agent_type, Err(e)));
     }
-    let agent_type = args["agent_type"]
-        .as_str()
-        .unwrap_or("codex-impl")
-        .to_string();
     let top_level;
     let args = match who {
         Principal::TopLevel(t) => {
@@ -1636,6 +1638,25 @@ mod tests {
             unknown.contains("task-never-started") && unknown.contains("`list`"),
             "{unknown}"
         );
+    }
+
+    /// A `spawn` naming no agent type is refused by name, never run as some default type. Mutation:
+    /// restore an `unwrap_or("<type>")`; the call then reaches the environment and fails otherwise.
+    #[test]
+    fn spawn_without_an_agent_type_is_refused_by_name_rather_than_defaulted() {
+        let bg = crate::background::Background::new();
+        let answer = handle_tool_call(
+            &Principal::Node,
+            &bg,
+            &serde_json::json!(1),
+            "spawn",
+            &serde_json::json!({"prompt": "p", "acceptance_criteria": ["c"]}),
+        );
+        assert_eq!(answer["result"]["isError"], serde_json::json!(true));
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains("`agent_type` is required"), "{text}");
     }
 
     #[test]
