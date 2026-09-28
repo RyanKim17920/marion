@@ -1948,8 +1948,26 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
   a `reason` naming the harness, the repository (a worktree's main checkout) and the row's one
   `BootDialog::action` ("trust <repo> in claude once …; worktrees inherit it"); the node is on
   the attention queue — Home's Nodes header and row, the tree strip, `marion list --attention` —
-  with those words. Dismissed, it returns to `Running`. Past the paste grace (30 s) the launcher
-  ends the node `Failed` with the same action as its exit description.
+  with those words. Dismissed, it returns to `Running`. The hold waits for the operator as long as
+  the node may run (`PastePolicy::dialog_bound`, the node's own bound; every other boot wait keeps
+  the 30 s paste grace); when that bound runs out with the dialog still up, the launcher ends the
+  node `Failed` with the same action as its exit description, not a bare timeout.
+- **A live codex node no longer trusts the operator's repository for them** (codex 0.155.1,
+  2026-09-28, scratch `CODEX_HOME`). `codex exec` asked for `workspace-write` (marion's
+  `live_sandbox_override`, `-c` or `-s` alike) in a project with no `trust_level` writes
+  `[projects."<main checkout>"] trust_level = "trusted"` into the `config.toml` it read, one entry
+  per repository even from a worktree; `read-only` writes nothing; `--approve-for-me` and
+  `danger-full-access` write too. The dotted `-c projects."<p>".trust_level=…` does not count as
+  set, but an inline `-c projects={"<p>"={trust_level="untrusted"}}` does: the run still resolves
+  `workspace-write` and nothing is written. A live node now carries that pair
+  (`codex::live_trust_override`) unless the operator's own `config.toml` states a trust for the
+  checkout, which marion reads and never writes.
+- **Codex canned still reads the operator's `~/.agents/skills`** (0.155.1, 2026-09-28, request
+  body captured on a loopback server): `CODEX_HOME` moves `$CODEX_HOME/skills`, but the
+  `~/.agents/skills` root is `$HOME`-based and listed as skill root `r0`. The
+  `skip_host_skill_discovery` feature (via `-c features.…` or `--enable`) is under development and
+  does not remove it from `exec` on 0.155.1. Not fixed: moving `$HOME` would also move git's global
+  identity for an endpoint child that commits; open item.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

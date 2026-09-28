@@ -194,6 +194,10 @@ pub struct PastePolicy {
     /// it the node is not a terminal marion can paste into safely, and saying so beats holding the
     /// message for the node's whole life.
     pub paste_mode_grace: Duration,
+    /// How long a message waits on a boot dialog marion may not answer before it is dropped. Not
+    /// the paste grace: the hold is on the operator's attention queue (the launcher journals it),
+    /// so it lasts as long as the node may — its own wall-clock bound ([`Self::for_node`]).
+    pub dialog_bound: Duration,
     /// How often a held message looks again. The holds end on state marion is not told about (a
     /// key, a mode), so they are re-read — only while a message waits.
     pub recheck: Duration,
@@ -203,8 +207,18 @@ impl PastePolicy {
     pub const PRODUCTION: PastePolicy = PastePolicy {
         operator_quiet: Duration::from_millis(1500),
         paste_mode_grace: Duration::from_secs(30),
+        dialog_bound: Duration::from_secs(30),
         recheck: Duration::from_millis(100),
     };
+
+    /// [`Self::PRODUCTION`] for a node whose wall-clock bound is `bound`: a boot dialog it is held
+    /// on waits for the operator that long.
+    pub const fn for_node(bound: Duration) -> PastePolicy {
+        PastePolicy {
+            dialog_bound: bound,
+            ..Self::PRODUCTION
+        }
+    }
 }
 
 /// Why a paste is held.
@@ -288,9 +302,13 @@ pub fn gate(
         }
     };
     let since = *unready_since.get_or_insert(now);
-    if now.saturating_duration_since(since) >= policy.paste_mode_grace {
+    let bound = match hold {
+        Hold::BootDialog => policy.dialog_bound,
+        _ => policy.paste_mode_grace,
+    };
+    if now.saturating_duration_since(since) >= bound {
         *unready_since = None;
-        let grace = policy.paste_mode_grace.as_secs();
+        let grace = bound.as_secs();
         let mark = boot.map_or(BootSignal::FirstDraw, |b| b.mark);
         if hold == Hold::Booting && mark.operator_can_switch_off() && state.screen_drawn {
             return Gate::Graced(format!(
@@ -369,8 +387,9 @@ impl PasteInjector {
         host: &Arc<PtyHost>,
         inboxes: &Arc<Inboxes>,
         params: PasteParams,
+        policy: PastePolicy,
     ) -> Option<Arc<PasteInjector>> {
-        Self::spawn(agent, host, inboxes, params, PastePolicy::PRODUCTION, None)
+        Self::spawn(agent, host, inboxes, params, policy, None)
     }
 
     #[cfg(test)]

@@ -131,15 +131,27 @@ impl RegistryHandle {
     /// claim) gets none: the injector releases its thread when `attach_port` refuses.
     pub(super) fn attach_paste_delivery(&self, agent: &AgentId, host: &Arc<crate::pty::PtyHost>) {
         self.live.refresh();
-        let Some(harness) = self
-            .live
-            .read(|r| r.tree().get(agent).and_then(|n| n.harness()))
-        else {
+        let Some((harness, bound)) = self.live.read(|r| {
+            let n = r.tree().get(agent)?;
+            Some((n.harness()?, node_bound(n)))
+        }) else {
             return;
         };
         let row = marion_harness::adapter::harness_spec(harness);
         if let Some(params) = crate::paste::PasteParams::for_row(row) {
-            let _ = crate::paste::PasteInjector::start(agent.clone(), host, &self.inboxes, params);
+            // A boot dialog marion may not answer waits for the operator as long as the node may
+            // run; every other boot wait keeps the paste grace.
+            let policy = match bound {
+                Some(bound) => crate::paste::PastePolicy::for_node(bound),
+                None => crate::paste::PastePolicy::PRODUCTION,
+            };
+            let _ = crate::paste::PasteInjector::start(
+                agent.clone(),
+                host,
+                &self.inboxes,
+                params,
+                policy,
+            );
         }
     }
 
@@ -275,6 +287,17 @@ fn refusal(r: Refusal) -> RpcError {
         Refusal::Unsupported { .. } => RpcError::unsupported("agent_id", r.sentence(), "§6.3"),
         Refusal::NotReady => RpcError::refused("agent_id", r.sentence(), "§6.3"),
         Refusal::Journal(_) => RpcError::internal(r.sentence()),
+    }
+}
+
+/// The node's wall-clock bound: the one its launch recorded, else its built-in type's default —
+/// the reading the tree's summary makes (`handler::summarize`). `None` for a node the journal
+/// gives neither.
+fn node_bound(n: &marion_core::registry::ReplayedNode) -> Option<std::time::Duration> {
+    let intent = n.intent.as_ref()?;
+    match intent.timeout_secs {
+        Some(secs) => Some(std::time::Duration::from_secs(secs)),
+        None => marion_core::agent_type::builtin(&intent.agent_type).map(|t| t.timeout.0),
     }
 }
 

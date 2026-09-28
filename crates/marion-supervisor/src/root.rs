@@ -2852,7 +2852,7 @@ fn launch_terminal(
             ),
             crate::pty::DialogHold::Clear => (marion_core::node::NodeState::Running, None),
             crate::pty::DialogHold::Expired(d) => {
-                ended = Some(dialog_expired(program, d, &repository));
+                ended = Some(dialog_expired(program, d, &repository, bound.as_secs()));
                 return true;
             }
         };
@@ -2867,6 +2867,12 @@ fn launch_terminal(
         false
     };
     let waited = wait_for_the_pane_to_end(&host, Some(bound), &mut end);
+    // The bound ran out with the dialog still up: that, not the clock, is why the node ends.
+    if matches!(waited, Ok(true))
+        && let crate::pty::DialogHold::Held(d) = host.dialog_hold()
+    {
+        ended = Some(dialog_expired(program, d, &repository, bound.as_secs()));
+    }
 
     // Stop admitting live attaches and control before teardown, but retain the same host while the
     // reader drains its final bytes and terminal End. The polling loop deliberately left even a
@@ -2916,14 +2922,18 @@ fn dialog_held(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) 
     )
 }
 
-/// Why marion ended a pane whose boot dialog stayed up past the paste grace.
-fn dialog_expired(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) -> String {
+/// Why marion ended a pane whose boot dialog stayed up for the node's whole bound (`secs`).
+fn dialog_expired(
+    program: &str,
+    d: &marion_harness::spec::BootDialog,
+    repo: &str,
+    secs: u64,
+) -> String {
     format!(
-        "{program}'s boot dialog (`{}`) stayed up for {} s and marion does not answer it, so its          first message could not be delivered and marion ended the node: {}",
+        "{program}'s boot dialog (`{}`) stayed up for the node's whole bound ({secs} s) and marion \
+         does not answer it, so its first message could not be delivered and marion ended the \
+         node: {}",
         d.needle,
-        crate::paste::PastePolicy::PRODUCTION
-            .paste_mode_grace
-            .as_secs(),
         d.action_for(repo)
     )
 }
@@ -5056,8 +5066,9 @@ mod tests {
         );
         assert!(held.contains("trust /work/repo in claude once"), "{held}");
         assert!(held.contains("worktrees inherit it"), "{held}");
-        let why = dialog_expired("claude", &dialog, "/work/repo");
+        let why = dialog_expired("claude", &dialog, "/work/repo", 900);
         assert!(why.contains("marion ended the node"), "{why}");
+        assert!(why.contains("whole bound (900 s)"), "{why}");
         assert!(why.contains("trust /work/repo in claude once"), "{why}");
         let (status, exit) = roots_exit(&RootOutcome {
             ended: Some(why.clone()),

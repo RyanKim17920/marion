@@ -76,6 +76,7 @@ fn policy() -> PastePolicy {
     PastePolicy {
         operator_quiet: Duration::from_millis(1500),
         paste_mode_grace: Duration::from_secs(30),
+        dialog_bound: Duration::from_secs(600),
         recheck: Duration::from_millis(100),
     }
 }
@@ -143,8 +144,20 @@ fn a_boot_dialog_holds_the_first_paste_then_is_refused_by_name() {
         gate(&showing(&TRUST_HELD), now, &p, BOOT, &mut clock),
         Gate::Wait(Hold::BootDialog, now + p.recheck)
     );
+    // The paste grace is not the dialog's: the hold is on the operator's queue, so it waits for
+    // them up to the node's own bound.
     assert!(matches!(
-        gate(&showing(&TRUST_HELD), now + p.paste_mode_grace, &p, BOOT, &mut clock),
+        gate(
+            &showing(&TRUST_HELD),
+            now + p.paste_mode_grace,
+            &p,
+            BOOT,
+            &mut clock
+        ),
+        Gate::Wait(Hold::BootDialog, _)
+    ));
+    assert!(matches!(
+        gate(&showing(&TRUST_HELD), now + p.dialog_bound, &p, BOOT, &mut clock),
         Gate::Refuse(reason) if reason.contains(TRUST_HELD.needle) && reason.contains("dialog")
     ));
     let typing = crate::pty::InputState {
@@ -384,7 +397,7 @@ fn a_window_title_row_boots_on_its_title_and_not_on_its_first_draw() {
     gate(&dialog, now, &p, WINDOW_TITLE, &mut clock);
     assert!(
         matches!(
-            gate(&dialog, now + p.paste_mode_grace, &p, WINDOW_TITLE, &mut clock),
+            gate(&dialog, now + p.dialog_bound, &p, WINDOW_TITLE, &mut clock),
             Gate::Refuse(reason) if reason.contains("dialog")
         ),
         "a dialog nobody dismissed is still refused by name, never graced"
@@ -673,6 +686,7 @@ fn fast() -> PastePolicy {
     PastePolicy {
         operator_quiet: Duration::from_millis(200),
         paste_mode_grace: Duration::from_secs(30),
+        dialog_bound: Duration::from_secs(30),
         recheck: Duration::from_millis(10),
     }
 }
@@ -1119,6 +1133,7 @@ fn a_dialog_marion_never_answers_drops_the_message_by_name() {
         "paste-dialog-dropped",
         PastePolicy {
             paste_mode_grace: Duration::ZERO,
+            dialog_bound: Duration::ZERO,
             ..fast()
         },
         HELD_ONLY,
@@ -1142,5 +1157,20 @@ fn a_dialog_marion_never_answers_drops_the_message_by_name() {
         bed.read_slave(1),
         b"x",
         "nothing of the message reached the node"
+    );
+}
+
+/// **A node's dialog hold lasts its own bound; every other boot wait keeps the paste grace.**
+#[test]
+fn a_nodes_policy_bounds_only_the_dialog_hold_by_the_node() {
+    let bound = Duration::from_secs(900);
+    let p = PastePolicy::for_node(bound);
+    assert_eq!(p.dialog_bound, bound);
+    assert_eq!(
+        PastePolicy {
+            dialog_bound: PastePolicy::PRODUCTION.dialog_bound,
+            ..p
+        },
+        PastePolicy::PRODUCTION
     );
 }
