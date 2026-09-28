@@ -45,6 +45,7 @@ fn fixture() -> &'static Fixture {
             &format!(
                 "{{\"providers\": {{\"canned-test\": \"{KEY}\", \"canned-anthropic\": \"{KEY}\", \
                  \"canned-anthropic-bearer\": \"{KEY}\", \"canned-chat-xkey\": \"{KEY}\", \
+                 \"canned-chat\": \"{KEY}\", \
                  \"canned-rot:a\": \"{KEY_A}\", \"canned-rot:b\": \"{KEY_B}\"}}}}\n"
             ),
         );
@@ -240,6 +241,8 @@ struct Cell {
     /// The model the contract records: the harness's own spelling of [`MODEL`].
     compiled_model: &'static str,
     wire: &'static str,
+    /// `native`, or `translated` where marion's gateway bridges the harness to the provider.
+    route: &'static str,
 }
 
 struct Evidence {
@@ -248,15 +251,41 @@ struct Evidence {
     requests: Vec<Value>,
     journal: String,
     leaked: Vec<String>,
+    /// Every file under the tree's state directory — journal, contracts, event logs, config
+    /// documents — as `(path, bytes)`, for a search for a key.
+    kept: Vec<(PathBuf, Vec<u8>)>,
 }
 
 fn drive(cell: &Cell) -> Evidence {
+    drive_held(cell, None)
+}
+
+/// Every regular file under `dir`, recursively.
+fn every_file(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => every_file(&path, out),
+            Ok(t) if t.is_file() => {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    out.push((path, bytes));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn drive_held(cell: &Cell, hold: Option<std::sync::Arc<dyn marion_provider::Hold>>) -> Evidence {
     let reqlog_dir = scratch(&format!("endpoint-reqlog-{}", cell.agent_type));
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: reqlog_dir.join("provider-requests.jsonl"),
-        script: cell.script.clone(),
-    })
+    let server = CannedServer::start_held(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: reqlog_dir.join("provider-requests.jsonl"),
+            script: cell.script.clone(),
+        },
+        hold,
+    )
     .expect("the canned provider binds");
     let base_url = server.base_url();
     let _cells = providers_at(&base_url);
@@ -281,12 +310,15 @@ fn drive(cell: &Cell) -> Evidence {
     }
     let walked = walked.expect("the state dir walks");
     let persisted = judge(&walked).into_iter().map(|(_, v)| v.clone()).collect();
+    let mut kept = Vec::new();
+    every_file(&t.state, &mut kept);
     Evidence {
         contract,
         persisted,
         requests,
         journal,
         leaked: leaked.into_iter().map(|(_, l)| l).collect(),
+        kept,
     }
 }
 
@@ -393,7 +425,7 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
         Some(cell.provider),
         "{who}"
     );
-    assert_eq!(contract.child.route.as_deref(), Some("native"), "{who}");
+    assert_eq!(contract.child.route.as_deref(), Some(cell.route), "{who}");
     // The credential by id — the provider's unlabelled one here — and never the key.
     assert_eq!(
         contract.child.credential.as_deref(),
@@ -435,6 +467,7 @@ fn a_claude_code_child_runs_on_the_users_provider_over_the_anthropic_wire() {
         },
         compiled_model: MODEL,
         wire: "anthropic",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -456,6 +489,7 @@ fn a_codex_child_runs_on_the_users_provider_over_the_responses_wire() {
         },
         compiled_model: MODEL,
         wire: "responses",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -478,6 +512,7 @@ fn an_opencode_child_runs_on_the_users_provider_over_the_chat_wire() {
         },
         compiled_model: "marion/endpoint-model-7",
         wire: "openai",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -500,6 +535,7 @@ fn a_copilot_child_runs_on_the_users_provider_over_the_chat_wire() {
         },
         compiled_model: MODEL,
         wire: "openai",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -528,6 +564,7 @@ fn a_copilot_child_takes_its_anthropic_recipe_when_the_provider_serves_only_that
         },
         compiled_model: MODEL,
         wire: "anthropic",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -554,6 +591,7 @@ fn a_copilot_child_presents_a_bearer_key_to_an_anthropic_provider_that_reads_one
         },
         compiled_model: MODEL,
         wire: "anthropic",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
@@ -578,8 +616,146 @@ fn an_opencode_child_presents_an_x_api_key_to_a_chat_provider_that_reads_one() {
         },
         compiled_model: "marion/endpoint-model-7",
         wire: "openai",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
+}
+
+// ---- the gateway: a harness pointed at a provider that serves another wire ---------------------
+
+/// A hold that, on the first scripted turn, snapshots the argv of every process descended from this
+/// test — while the gateway's curl for that turn is still waiting on the provider, and the harness
+/// on the gateway.
+#[derive(Debug, Default)]
+struct ArgvWitness {
+    seen: Mutex<Option<String>>,
+}
+
+impl marion_provider::Hold for ArgvWitness {
+    fn wait_for(&self, wire: Option<&str>, body: &Value) {
+        let turn = body["tools"].as_array().is_some_and(|t| !t.is_empty());
+        let mut seen = self.seen.lock().unwrap();
+        if wire == Some("openai") && turn && seen.is_none() {
+            *seen = Some(descendant_argv());
+        }
+    }
+}
+
+/// `pid ppid args` of every process, kept for the descendants of this test process.
+fn descendant_argv() -> String {
+    let out = std::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,ppid=,args="])
+        .output()
+        .expect("ps runs");
+    let rows: Vec<(u32, u32, String)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let pid = it.next()?.parse().ok()?;
+            let ppid = it.next()?.parse().ok()?;
+            Some((pid, ppid, it.collect::<Vec<_>>().join(" ")))
+        })
+        .collect();
+    let mut ours = vec![std::process::id()];
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (pid, ppid, _) in &rows {
+            if ours.contains(ppid) && !ours.contains(pid) {
+                ours.push(*pid);
+                grew = true;
+            }
+        }
+    }
+    rows.iter()
+        .filter(|(pid, _, _)| ours.contains(pid) && *pid != std::process::id())
+        .map(|(_, _, args)| args.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **Claude Code on a provider that serves only Chat Completions, through marion's gateway**: a
+/// real `claude` child speaks Anthropic Messages to a gateway marion started for it, which sends a
+/// streamed Chat Completions turn to the provider with the stored key, and the provider's streamed
+/// `tool_calls` come back as the `tool_use` that reports through marion's bridge.
+///
+/// Beside the cell's own checks: the key is on no process's argv while a turn is in flight (nor is
+/// the gateway's bearer), it is in no file the tree keeps — journal, contract, event log, config
+/// documents — and the gateway is gone once the node has exited.
+#[test]
+fn a_claude_code_child_runs_on_a_chat_only_provider_through_marions_gateway() {
+    assert!(
+        on_path("claude"),
+        "put `claude` ({}) on PATH",
+        pinned_version("claude")
+    );
+    let cell = Cell {
+        presents: Presents::Bearer,
+        provider: "canned-chat",
+        agent_type: "claude",
+        script: Script {
+            openai_report_tool: "mcp__marion__report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "openai",
+        route: "translated",
+    };
+    let witness = std::sync::Arc::new(ArgvWitness::default());
+    let started = marion_supervisor::gateway::started();
+    let ev = drive_held(&cell, Some(witness.clone()));
+    assert_endpoint_cell(&cell, &ev);
+    assert!(
+        marion_supervisor::gateway::started() > started,
+        "the node ran through a gateway"
+    );
+    assert_eq!(
+        marion_supervisor::gateway::live(),
+        0,
+        "the gateway is gone once the node has exited"
+    );
+    // A real turn went through: the provider saw the tool's call answered in the transcript.
+    assert!(
+        ev.requests.iter().any(|r| r["body"]["messages"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"))),
+        "no request carried the tool's result\n{}",
+        summary(&ev)
+    );
+    let argv = witness
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a scripted turn reached the provider");
+    assert!(
+        argv.contains("curl") && argv.contains("@/dev/fd/3"),
+        "the snapshot was taken while the gateway's curl was in flight:\n{argv}"
+    );
+    assert!(argv.contains("claude"), "{argv}");
+    assert!(!argv.contains(KEY), "the key is on an argv:\n{argv}");
+    assert!(
+        !argv.contains("marion-gw-"),
+        "the gateway's bearer is on an argv:\n{argv}"
+    );
+    let kept: Vec<&PathBuf> = ev
+        .kept
+        .iter()
+        .filter(|(_, bytes)| bytes.windows(KEY.len()).any(|w| w == KEY.as_bytes()))
+        .map(|(p, _)| p)
+        .collect();
+    assert!(kept.is_empty(), "the key is kept in {kept:?}");
+    assert!(
+        ev.kept
+            .iter()
+            .any(|(p, _)| p.file_name().is_some_and(|n| n == "events.jsonl")),
+        "the node's event log was among the files searched"
+    );
+    assert!(
+        ev.journal.contains("\"route\":\"translated\""),
+        "the journal's Spawned names the route"
+    );
 }
 
 // ---- credential rotation: API keys only, before the first successful turn ----------------------
@@ -639,6 +815,7 @@ fn drive_rotation(tag: &str, refused: &[&str], status: u16) -> (Evidence, Result
             requests,
             journal,
             leaked: leaked.into_iter().map(|(_, l)| l).collect(),
+            kept: Vec::new(),
         },
         as_json,
     )
@@ -819,7 +996,8 @@ fn doctor_providers_checks_each_stored_credential_against_its_endpoint() {
 }
 
 /// **The matrix is the resolver's answer, harness by provider**: native on the first shared wire,
-/// unsupported with both wire lists where none is shared, and unsupported naming the header where
+/// translated where none is shared but the gateway bridges the pair, unsupported with both wire
+/// lists where neither holds, and unsupported naming the header where
 /// the recipe cannot present the provider's key.
 #[test]
 fn doctor_providers_matrix_is_computed_by_the_endpoint_resolver() {
@@ -841,6 +1019,11 @@ fn doctor_providers_matrix_is_computed_by_the_endpoint_resolver() {
     assert_eq!(
         cell(Harness::Copilot, "canned-anthropic"),
         Cell::Native("anthropic".into())
+    );
+    // No shared wire, but one marion's gateway translates: Claude Code on a Chat-only provider.
+    assert_eq!(
+        cell(Harness::ClaudeCode, "canned-chat"),
+        Cell::Translated("anthropic>openai-chat".into())
     );
     match cell(Harness::Codex, "groq") {
         Cell::Unsupported(why) => assert!(
@@ -918,6 +1101,7 @@ fn chat_cell(agent_type: &'static str, report_tool: &str) -> Cell {
         },
         compiled_model: MODEL,
         wire: "openai",
+        route: "native",
     }
 }
 
@@ -939,6 +1123,7 @@ fn a_gemini_child_runs_on_the_users_provider_over_the_gemini_wire() {
         },
         compiled_model: MODEL,
         wire: "gemini",
+        route: "native",
     };
     assert_endpoint_cell(&cell, &drive(&cell));
 }
