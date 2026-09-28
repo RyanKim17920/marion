@@ -5647,63 +5647,6 @@ fn deliver(g: &mut Shared, events: &[Event]) {
     });
 }
 
-/// A [`RegistryHandle`] flushed by a thread of its own.
-///
-/// The registry has its own follower (`LiveRegistry`) and this is a second loop over the result of
-/// the first, which is deliberate: the follower's job is to be *current*, this one's is to be
-/// *heard*, and a follower that also pushed would have a client's socket inside the lock that keeps
-/// the tree current.
-pub struct Broadcast {
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Broadcast {
-    /// Flush every `interval`.
-    ///
-    /// **The loop reads the stop flag before its flush and returns after it** — `LiveRegistry`'s
-    /// rule, for the same reason: the transitions written just before a shutdown are exactly the
-    /// ones a watching client cares about, and a loop that returned on the flag before flushing
-    /// would drop them.
-    pub fn start(handle: Arc<RegistryHandle>, interval: std::time::Duration) -> Broadcast {
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let thread = {
-            let stop = Arc::clone(&stop);
-            std::thread::spawn(move || {
-                loop {
-                    let done = stop.load(std::sync::atomic::Ordering::SeqCst);
-                    handle.flush();
-                    if done {
-                        return;
-                    }
-                    std::thread::sleep(interval);
-                }
-            })
-        };
-        Broadcast {
-            stop,
-            thread: Some(thread),
-        }
-    }
-
-    pub fn stop(mut self) {
-        self.halt();
-    }
-
-    fn halt(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-impl Drop for Broadcast {
-    fn drop(&mut self) {
-        self.halt();
-    }
-}
-
 /// A poisoned lock is taken, not unwrapped — `registry.rs`'s rule and §5.7's requirement.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -6410,10 +6353,6 @@ mod tests {
         let w = Wired::new("handler-sub");
         let mut c = w.dial();
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
-        let _b = Broadcast::start(
-            Arc::clone(&w.fx.handle),
-            std::time::Duration::from_millis(2),
-        );
 
         call(
             &mut c,

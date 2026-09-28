@@ -342,13 +342,13 @@ pub trait Handle: Send + Sync + 'static {
     /// own connection's thread and can only answer *that* client; everything a supervisor says
     /// unprompted — §7.3.3's live leg, `tree/node-added`, `node/state` — is caused by a **file**
     /// changing, and no thread in this module is watching one. Before this existed, the only flush
-    /// loop in the crate (`handler::Broadcast`) was started by tests and by nothing in production,
-    /// so a detached supervisor answered requests and never spoke first.
+    /// loop in the crate was a thread started by tests and by nothing in production, so a detached
+    /// supervisor answered requests and never spoke first.
     ///
-    /// **The accept loop rather than a new thread**, and that is a real choice. `Broadcast`'s doc
-    /// gives the rule this obeys — a pusher must be a *second* loop over the follower's result,
-    /// never folded into the poll that keeps the tree current, because that one holds the registry
-    /// lock and a client's socket must never get inside it. This is such a second loop. What it
+    /// **The accept loop rather than a new thread**, and that is a real choice. A pusher must be a
+    /// *second* loop over the follower's result, never folded into the poll that keeps the tree
+    /// current, because that one holds the registry lock and a client's socket must never get
+    /// inside it. This is such a second loop. What it
     /// adds is that the accept loop is already a clock: it runs a pass whenever it is woken or its
     /// [`Self::next_deadline`] arrives, and it already asks the handle three questions per pass. A
     /// fourth thread would buy a cadence this one already has and cost a fourth thing to stop
@@ -1028,8 +1028,8 @@ fn accept_loop(
             pass_deadline(&*handle, idle_since, idle_grace),
         );
     }
-    // **One last tick after the flag, never before it** — `LiveRegistry::follow` and
-    // `handler::Broadcast` are both written to this rule and for the same reason: what a node said
+    // **One last tick after the flag, never before it** — `LiveRegistry::follow` is written to
+    // this rule too, and for the same reason: what a node said
     // in the moments before a shutdown is exactly what a watching client wanted, and a loop that
     // left on the flag without pushing would drop it and end the stream on a lie. The connections
     // are still open here; the shutdown below is what closes them.
