@@ -49,6 +49,8 @@ pub mod duplex;
 pub mod endpoint;
 /// `events.jsonl`, writer and reader side: one node's stream on disk, and §7.3.3's one cursor.
 pub mod events;
+/// `marion export`: a shareable, secret-scrubbed report of a delegation tree, read offline.
+pub mod export;
 /// First-token native-facade routing, kept ahead of the legacy UTF-8 command parser.
 pub mod facade_cli;
 /// The translating gateway endpoint mode routes through where a harness and its provider share no
