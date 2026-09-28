@@ -173,6 +173,37 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
     }
 }
 
+/// Kill everything below `root` and leave `root` itself running — for a server that ends its own
+/// session cleanly once asked (codex's app-server exits 0 on stdin EOF, S36 P9) but leaves a
+/// turn's processes running after an interrupt (P7).
+///
+/// The same two steps as [`kill_process_tree`], enumeration first: every group reached by ancestry
+/// is signalled except `root`'s own, and the processes that share `root`'s group are signalled one
+/// by one, `root` excepted.
+pub(crate) fn kill_descendants(root: i32) {
+    let rows = ps_rows();
+    let pids = descendant_pids(&rows, root);
+    if let Ok(mut last) = LAST_SWEEP.lock() {
+        last.clone_from(&pids);
+    }
+    let root_pgid = rows.iter().find(|r| r.pid == root).map(|r| r.pgid);
+    let groups: Vec<i32> = pgids_of(&rows, &pids)
+        .into_iter()
+        .filter(|g| Some(*g) != root_pgid)
+        .collect();
+    for pgid in signal_targets(&groups, unsafe { getpgrp() }) {
+        let _ = unsafe { kill(-pgid, SIGKILL) };
+    }
+    for r in rows
+        .iter()
+        .filter(|r| r.pid != root && Some(r.pgid) == root_pgid)
+    {
+        if pids.contains(&r.pid) {
+            let _ = unsafe { kill(r.pid, SIGKILL) };
+        }
+    }
+}
+
 /// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
 ///
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is
@@ -218,6 +249,49 @@ fn observe_dead(pid: i32, deadline: Instant) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Everything below the root dies, and the root is not signalled**: a shell running a
+    /// background sleeper in its own group (`setsid`-like) and a foreground one in the shell's
+    /// group loses both, and itself exits on its own when its foreground job does.
+    #[test]
+    fn kill_descendants_spares_the_root_and_takes_every_group_below_it() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        let mut root = Command::new("sh")
+            .args(["-c", "set -m; sleep 61 & set +m; sleep 62"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn sh");
+        let pid = root.id() as i32;
+        let below = || -> Vec<i32> {
+            let rows = ps_rows();
+            descendant_pids(&rows, pid)
+                .into_iter()
+                .filter(|p| *p != pid)
+                .collect()
+        };
+        let until = Instant::now() + Duration::from_secs(5);
+        while below().len() < 2 {
+            assert!(
+                Instant::now() < until,
+                "the shell never started both sleepers"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let victims = below();
+        kill_descendants(pid);
+        for v in &victims {
+            assert!(
+                observe_dead(*v, Instant::now() + Duration::from_secs(5)),
+                "{v} survived"
+            );
+        }
+        let status = root.wait().unwrap();
+        assert_eq!(
+            status.signal(),
+            None,
+            "the root was not signalled: {status:?}"
+        );
+    }
 
     /// The tree S7 measured, verbatim from `tests/fixtures/s7/README.md`: codex in marion's group,
     /// the code-mode host in its own, and the tool-call child a session leader with its own group.

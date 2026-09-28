@@ -469,7 +469,11 @@ impl Session<'_> {
                 }
             }
         }
-        // P7: the interrupted turn's command keeps running, so marion ends it and its tree.
+        // P7: the interrupted turn's commands keep running — a command that yielded is still
+        // running after its item completed — so marion kills every process below the server while
+        // the tree is intact, and leaves the server to end its session on stdin EOF (P9). The
+        // commands the turn named are killed too, in case one left the tree.
+        crate::kill::kill_descendants(node.pid);
         for pid in std::mem::take(&mut node.peer.running) {
             kill_process_tree(pid);
         }
