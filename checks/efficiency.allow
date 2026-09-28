@@ -42,7 +42,6 @@ crates/marion-supervisor/src/socket.rs:acquire_within  untracked: sleep loop acq
 # --- bounded one-shot waits with a clear deadline -----------------------------------------------
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
-crates/marion-supervisor/src/handler.rs:ATTACHED_TICK  tracked: efficiency waves — 5 ms re-read of a followed node's events.jsonl, only while a client is attached to it (the accept loop itself now blocks in poll(2)); remove when a per-node file watch wakes it
 crates/marion-supervisor/src/wake.rs:poll_until  bounded one-shot wait: the one sleep-until-deadline loop, for a child's exit or a file nothing can wake on; every caller passes its own budget (ready file, INTERRUPT_GRACE, SUPERVISOR_EXIT_WAIT)
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
 

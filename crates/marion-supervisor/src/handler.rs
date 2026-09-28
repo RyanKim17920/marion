@@ -362,11 +362,72 @@ impl Extra {
 ///
 /// `conn` is kept alongside `out` so [`Handle::gone`] can drop this without asking the transport
 /// anything — the same bookkeeping `subs` gets, for the same reason.
+///
+/// `watch` is what makes the cursor advance: it wakes the accept loop when the file changes, and
+/// the loop's tick reads it. `None` only if its thread could not be started, and then
+/// [`RegistryHandle::next_deadline`] re-reads at [`crate::wake::DEGRADED_RECHECK`].
 struct Attachment {
     conn: ConnId,
     agent_id: AgentId,
     reader: crate::events::EventReader,
     out: Outbound,
+    watch: Option<AttachWatch>,
+}
+
+/// **A followed node's `events.jsonl`, made into a wake for the accept loop.**
+///
+/// A thread blocked on a [`crate::wake::Watch`] of the file (kqueue `EVFILT_VNODE` / inotify, so
+/// it sees every writer, in this process or not) that notifies the handler's
+/// [`LiveRegistry::changes`] — the signal the accept loop's wake pipe is attached to — whenever the
+/// file is written. An idle attached node therefore costs nothing; a node that is speaking costs a
+/// wake per write burst rather than one every few milliseconds whether or not it spoke.
+///
+/// **Register, then look.** The thread notifies once as soon as the watch is armed, so a record
+/// appended between the attach's replay and the arming is read by the pass that wakes; after that,
+/// each wake re-arms before it notifies, so a write landing during the pass fires the watch again.
+///
+/// Dropped with its [`Attachment`]: raising the stop flag wakes the thread, and the drop joins it.
+struct AttachWatch {
+    stop: Arc<crate::wake::Flag>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AttachWatch {
+    fn start(path: &std::path::Path, changes: Arc<crate::wake::Signal>) -> Option<AttachWatch> {
+        let stop = Arc::new(crate::wake::Flag::new());
+        let path = path.to_path_buf();
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("marion-attach-watch".into())
+            .spawn(move || {
+                let mut watch = crate::wake::Watch::new(&path);
+                changes.notify();
+                while !flag.load(Ordering::SeqCst) {
+                    let ready = crate::wake::wait_until(&[watch.fd(), flag.fd()], None);
+                    if flag.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if ready[0] || watch.fd().is_none() {
+                        watch.rearm();
+                        changes.notify();
+                    }
+                }
+            })
+            .ok()?;
+        Some(AttachWatch {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for AttachWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// **Every node this supervisor holds a pty for, and who is typing into each.**
@@ -1888,14 +1949,14 @@ impl RegistryHandle {
     /// **When the accept loop must next tick this handle** if nothing wakes it — the serve loop's
     /// [`Handle::next_deadline`].
     ///
-    /// Journal changes, connections and node completions wake the loop through
-    /// [`LiveRegistry::changes`], so what is left is the work that is still *time*-driven: an
-    /// attached node's `events.jsonl` is read by polling its cursor (every
-    /// [`ATTACHED_TICK`] while any client follows one), and a Completed pane expires at its TTL or
-    /// is evicted at once when the cache is over budget. `None` means nothing is due.
+    /// Journal changes, connections, node completions and a followed node's `events.jsonl`
+    /// ([`AttachWatch`]) wake the loop through [`LiveRegistry::changes`], so what is left is the
+    /// work that is still *time*-driven: a Completed pane expires at its TTL or is evicted at once
+    /// when the cache is over budget. `None` means nothing is due. An attachment whose watch thread
+    /// could not be started is re-read at [`crate::wake::DEGRADED_RECHECK`].
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        if !lock(&self.shared).attached.is_empty() {
-            return Some(std::time::Instant::now() + ATTACHED_TICK);
+        if lock(&self.shared).attached.iter().any(|a| a.watch.is_none()) {
+            return Some(std::time::Instant::now() + crate::wake::DEGRADED_RECHECK);
         }
         let panes = lock(&self.panes);
         if panes.completed_count > 0
@@ -2099,13 +2160,15 @@ impl RegistryHandle {
         if pane_stream_v1 {
             self.commit_pane_v1_reservation(id, out, &mut reserved_pane, reserved_host.as_ref())?;
         }
+        let watch = AttachWatch::start(reader.path(), self.live.changes());
         lock(&self.shared).attached.push(Attachment {
             conn: out.conn(),
             agent_id: id.clone(),
             reader,
             out: out.clone(),
+            watch,
         });
-        // An attachment is read by polling, so the accept loop must start ticking now.
+        // The loop's next pass reads the new cursor, and learns whether it has a deadline now.
         self.live.changes().notify();
         // Legacy keeps its historical NodeEvent-before-NodePty ordering. V1 already reserved a
         // paced cursor, but sends no pane frame until the response has advertised its exact token.
@@ -5154,10 +5217,6 @@ fn journal_failure_after_signal_in(verb: &str, error: crate::journal::JournalErr
          remains for restart recovery and the supervisor will not exit: {error}"
     ))
 }
-
-/// How often an attached node's `events.jsonl` is polled while a client follows it — the accept
-/// loop's old fixed cadence, kept for exactly this, since nothing yet wakes on a node's own file.
-const ATTACHED_TICK: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// Which operator act a [`RegistryHandle::kill_node`] carries out — what its journal records say
 /// marion did, and which verb its failures name. §6.7 wants the description to record marion as
@@ -11523,6 +11582,40 @@ mod tests {
                 (5, "after-3".into())
             ],
             "the subscribe leg continues the replay's own ordinals: no gap, no repeat, no join"
+        );
+    }
+
+    /// **An attachment is woken by its file, not read on a timer.** While a client follows a node
+    /// the handler asks for no deadline at all, and a second writer's append to the node's
+    /// `events.jsonl` is what wakes the accept loop — through the same `changes` signal its wake
+    /// pipe is attached to.
+    #[test]
+    fn an_attached_node_asks_for_no_tick_and_its_file_wakes_the_loop() {
+        let w = Wired::new("handler-attach-watch");
+        let stream = events_of(&w.fx, "root");
+        say(&stream, "root", &["before"]);
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (_replay, outcome) = attach(&mut c, &mut r, "root", 1);
+        attached_ok(outcome);
+        assert_eq!(
+            w.fx.handle.next_deadline(),
+            None,
+            "a followed node is not a reason to tick"
+        );
+        // Past the watch thread's own arming notify, so only the append can move the generation.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let changes = w.fx.handle.live.changes();
+        let seen = changes.generation();
+        let waiter = std::thread::spawn(move || {
+            changes.wait_past(seen, std::time::Duration::from_secs(5))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        say(&stream, "root", &["after"]);
+        assert_ne!(
+            waiter.join().unwrap(),
+            seen,
+            "the append woke the loop's signal before the bound"
         );
     }
 
