@@ -2149,12 +2149,13 @@ mod tests {
 
     /// **The summary is one line whatever the harness printed.** A cline child's multi-line stderr
     /// warning rode the exit description into the first line and split it, so a reader of the
-    /// text after the first blank line found stderr rather than the contract.
+    /// text after the first blank line found stderr rather than the contract. (Only a failed
+    /// child's description carries stderr.)
     #[test]
     fn a_multi_line_stderr_in_the_description_stays_on_the_summary_line() {
         let c = ran(crate::spawn::ChildOutcome {
             narrative: Some("did the work".into()),
-            exit_code: Some(0),
+            exit_code: Some(1),
             stderr: "Warning: one\n\n    at frame (x.js:1)\n".into(),
             ..Default::default()
         });

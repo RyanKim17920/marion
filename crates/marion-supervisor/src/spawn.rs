@@ -1329,8 +1329,10 @@ pub fn build_contract(
         Some(f) => format!("{description}; the child's stream reported: {f}"),
         None => description,
     };
+    // **Only a child that did not finish `Ok` shows its stderr here**: this is the first line its
+    // parent reads, and a clean run's stderr is the harness's chatter, never the result.
     let stderr = outcome.stderr.trim();
-    let description = if stderr.is_empty() {
+    let description = if stderr.is_empty() || status == ExitStatus::Ok {
         description
     } else {
         let preview: String = stderr.chars().take(512).collect();
@@ -2008,6 +2010,55 @@ mod tests {
         let d = c.completion.unwrap().exit.description;
         assert!(d.starts_with(line), "the cause leads: {d}");
         assert!(d.contains("child exited with code 55"), "{d}");
+    }
+
+    /// **A child that finished `Ok` carries no stderr in its description**: the line is what its
+    /// parent reads first, and a live run's read "child exited with code 0; stderr: Reading
+    /// additional input from stdin..." over a clean result. A failed child keeps its stderr there,
+    /// since that is where its cause usually is.
+    #[test]
+    fn only_a_failed_child_carries_its_stderr_in_the_description() {
+        let clean = verified_contract(
+            ChildOutcome {
+                narrative: Some("did it".into()),
+                exit_code: Some(0),
+                stderr: "some harness chatter\n".into(),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        let d = clean.completion.unwrap().exit.description;
+        assert_eq!(d, "child exited with code 0");
+        let failed = verified_contract(
+            ChildOutcome {
+                narrative: Some("did it".into()),
+                exit_code: Some(2),
+                stderr: "panic: out of cheese\n".into(),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        let d = failed.completion.unwrap().exit.description;
+        assert_eq!(d, "child exited with code 2; stderr: panic: out of cheese");
+        let unreported = verified_contract(
+            ChildOutcome {
+                exit_code: Some(0),
+                stderr: "why it stopped\n".into(),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        assert!(
+            unreported
+                .completion
+                .unwrap()
+                .exit
+                .description
+                .ends_with("; stderr: why it stopped")
+        );
     }
 
     /// `git` for a unit test's scratch repository, panicking with git's own words on failure.
