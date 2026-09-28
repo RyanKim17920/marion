@@ -1030,6 +1030,7 @@ mod tests {
                     agent_id: id("a"),
                     message_id: "m-1".into(),
                     via: "typed-turn".into(),
+                    note: None,
                 },
             ))
             .push(queued("a", "m-2"))
@@ -1069,6 +1070,7 @@ mod tests {
                 agent_id: id("a"),
                 message_id: "m-1".into(),
                 via: "steer".into(),
+                note: None,
             }))
             .push(queued("a", "m-3"));
         let bytes: Vec<u8> = log.0.iter().flat_map(|r| encode(r).unwrap()).collect();

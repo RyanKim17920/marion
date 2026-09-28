@@ -636,6 +636,7 @@ mod tests {
                 agent_id: id.clone(),
                 message_id: "m-1".into(),
                 via: "turn".into(),
+                note: None,
             }),
             RecordKind::MessageDropped(MessageDropped {
                 agent_id: id.clone(),

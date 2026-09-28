@@ -914,6 +914,7 @@ mod tests {
                     agent_id: id("child"),
                     message_id: "m-1".into(),
                     via: "steer".into(),
+                    note: None,
                 }),
                 queued("root", "m-2", MessageSource::Operator),
             ],

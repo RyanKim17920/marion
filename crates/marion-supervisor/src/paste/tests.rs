@@ -657,6 +657,7 @@ fn a_queued_message_is_pasted_submitted_and_journaled_as_delivered() {
             agent_id: agent(),
             message_id: id.clone(),
             via: "pty:paste".into(),
+            note: None,
         })
     );
     let records = bed.cast_records();

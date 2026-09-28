@@ -530,10 +530,16 @@ impl Inboxes {
     /// A taken message reached the node, by `via` (the lane's verb). The record is an audit, so a
     /// failure to write it is reported and does not undo a delivery that happened.
     pub fn delivered(&self, agent: &AgentId, id: &str, via: &str) {
+        self.delivered_noting(agent, id, via, None);
+    }
+
+    /// [`Self::delivered`], saying why the delivery departed from the lane's usual rule.
+    pub fn delivered_noting(&self, agent: &AgentId, id: &str, via: &str, note: Option<&str>) {
         self.audit(RecordKind::MessageDelivered(MessageDelivered {
             agent_id: agent.clone(),
             message_id: id.to_string(),
             via: via.to_string(),
+            note: note.map(str::to_string),
         }));
     }
 
@@ -779,6 +785,7 @@ pub(crate) mod tests {
                     agent_id: a.clone(),
                     message_id: m1,
                     via: "typed-turn".into(),
+                    note: None,
                 }),
                 RecordKind::MessageDropped(MessageDropped {
                     agent_id: a.clone(),

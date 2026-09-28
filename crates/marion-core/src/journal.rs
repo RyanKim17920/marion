@@ -556,6 +556,10 @@ pub struct MessageDelivered {
     pub message_id: String,
     /// The verb that carried it — the harness-facing operation, spelled by the writer.
     pub via: String,
+    /// Why this delivery departed from its lane's usual rule, when it did — marion's own words,
+    /// never the message. Absent on every ordinary delivery, and on records written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// See [`RecordKind::MessageDropped`].
@@ -1076,6 +1080,7 @@ mod tests {
                 agent_id: AgentId("a-1".into()),
                 message_id: "m-1".into(),
                 via: "steer".into(),
+                note: None,
             }),
             RecordKind::MessageDropped(MessageDropped {
                 agent_id: AgentId("a-1".into()),
@@ -1111,7 +1116,20 @@ mod tests {
             serde_json::to_value(&delivered).unwrap(),
             serde_json::json!({"MessageDelivered": {
                 "agent_id": "a-1", "message_id": "m-1", "via": "steer",
-            }})
+            }}),
+            "no note, no key: an ordinary delivery's bytes are unchanged"
+        );
+        let noted = RecordKind::MessageDelivered(MessageDelivered {
+            agent_id: AgentId("a-1".into()),
+            message_id: "m-1".into(),
+            via: "pty:paste".into(),
+            note: Some("delivered at the grace".into()),
+        });
+        let wire = serde_json::to_string(&noted).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&wire).unwrap(),
+            noted,
+            "a note round-trips: {wire}"
         );
         assert_eq!(
             serde_json::to_value(&dropped).unwrap(),
