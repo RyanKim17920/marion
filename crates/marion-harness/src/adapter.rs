@@ -10172,6 +10172,53 @@ mod tests {
         }
     }
 
+    /// **marion answers a boot dialog only where the answer stays out of the operator's config**,
+    /// for every row under every auth: where [`Remembers::marion_may_answer`] says yes on a row
+    /// that answers, the pane compiled under that auth carries the row's home at marion's config
+    /// dir (or the answer lasts the session); `OperatorConfig` is never answered, and a
+    /// `CannedHome` is not answered under live auth, where the home is the operator's.
+    ///
+    /// Mutation: return `true` for `CannedHome` regardless of auth, or for `OperatorConfig`. Each
+    /// fails.
+    #[test]
+    fn marion_answers_a_boot_dialog_only_where_the_answer_stays_out_of_operator_config() {
+        use crate::spec::{DialogAnswer, Remembers};
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let remembers = row.boot_dialogs.remembers;
+            let answers = row
+                .boot_dialogs
+                .dialogs
+                .iter()
+                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)));
+            for auth in [Auth::Canned, Auth::Endpoint, Auth::Inherited] {
+                let may = remembers.marion_may_answer(auth);
+                match remembers {
+                    Remembers::Nothing => assert!(may, "{h} {auth:?}"),
+                    Remembers::OperatorConfig(_) => assert!(!may, "{h} {auth:?}"),
+                    Remembers::CannedHome => assert_eq!(may, auth.overlays(), "{h} {auth:?}"),
+                }
+                if !(may && answers && remembers == Remembers::CannedHome) {
+                    continue;
+                }
+                let adapter = launch_adapter(h).unwrap();
+                let spec = LaunchSpec {
+                    auth,
+                    wire: adapter.endpoint_wires().first().copied(),
+                    ..spec_for(h)
+                };
+                let carrier = row.profile.expect("a relocated home is a profile variable");
+                let inv = adapter.compile_pane(&spec, &ctx()).unwrap();
+                assert!(
+                    inv.env.iter().any(|(k, v)| k == carrier.env
+                        && std::path::Path::new(v).starts_with(&spec.config_dir)),
+                    "{h} {auth:?}: marion would answer into the operator's {}",
+                    carrier.env
+                );
+            }
+        }
+    }
+
     /// **A relocation keeps the operator's login**: `store` takes the operator's own value, then
     /// their `config`'s (a login made under a custom config dir is keyed on it), then empty — the
     /// default entry. Seeds are written 0600 with the operator's `carry` keys from their own copy

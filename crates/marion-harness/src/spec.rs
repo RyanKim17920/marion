@@ -362,8 +362,9 @@ pub struct BootDialogs {
 pub enum Remembers {
     /// Nowhere past the session, or marion answers none of the row's dialogs.
     Nothing,
-    /// Under the harness home a canned launch already relocates onto marion's config dir (codex's
-    /// `CODEX_HOME`): the answer lands in marion's scratch and goes with it.
+    /// Under the harness home an overlaying launch (canned or endpoint) relocates onto marion's
+    /// config dir (codex's `CODEX_HOME`): the answer lands in marion's scratch and goes with it.
+    /// Under live auth that home is the operator's own.
     CannedHome,
     /// In the operator's own config, which a canned launch leaves in place because the login sits
     /// beside it. A test moves the config with [`Relocation`] before it lets anything answer.
@@ -382,6 +383,21 @@ impl Remembers {
         match self {
             Remembers::OperatorConfig(r) => r.apply(dir, operator),
             Remembers::Nothing | Remembers::CannedHome => Ok(Vec::new()),
+        }
+    }
+
+    /// **Whether marion may answer the row's boot dialog with its keys, under `auth`**: only where
+    /// the answer cannot land in the operator's own config — nowhere past the session, or a home
+    /// the overlay moved onto marion's directory (canned and endpoint alike). Under live auth that
+    /// home is the operator's; `OperatorConfig` is theirs under every auth. Measured 2026-09-27 on
+    /// claude 2.1.283 and codex 0.155.1: in a git worktree both key folder trust on the **main
+    /// repository**, so an answer marion gave there would trust the operator's repository for
+    /// good. Where they already trust it no dialog shows at all; where they do not, it is theirs.
+    pub fn marion_may_answer(&self, auth: Auth) -> bool {
+        match self {
+            Remembers::Nothing => true,
+            Remembers::CannedHome => auth.overlays(),
+            Remembers::OperatorConfig(_) => false,
         }
     }
 }

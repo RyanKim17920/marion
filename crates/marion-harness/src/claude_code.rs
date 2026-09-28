@@ -228,6 +228,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // fresh directory opens on folder trust, selection on `No, exit`. A bare CR quits the session
     // (measured: the process exited); down-arrow + CR in one write trusts and opens the composer.
     // The pane then shows the development-channels warning on a claude.ai login, which is held.
+    // In a git worktree the trust is looked up and written under the **main repository** (2.1.283,
+    // 2026-09-27: answering in `repo-wt` wrote `projects["<repo>"]` and no worktree key; with the
+    // repo trusted the worktree showed no dialog and gained no key), so a worktree leaves nothing
+    // behind, and marion never answers it: the answer would trust the operator's repository.
     boot_dialogs: BootDialogs {
         dialogs: &[
             BootDialog {

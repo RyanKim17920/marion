@@ -369,6 +369,10 @@ pub struct RootNode {
     pub invocation: Invocation,
     /// Which harness this root is, for the error messages that must name a cause.
     pub harness: Harness,
+    /// The auth the launch compiled under — read off the launch, since an endpoint root's type or
+    /// model named a provider. It decides whether marion may answer the pane's boot dialog
+    /// (`Remembers::marion_may_answer`).
+    pub auth: Auth,
     /// The shapes this run selected (§3.4) — `HarnessAdapter::surfaces` for an ordinary run,
     /// `pane_surfaces` for one that asked for a pane.
     ///
@@ -940,6 +944,7 @@ pub fn prepare_watched(
         token,
         invocation,
         harness,
+        auth: launch.auth,
         surfaces,
         path,
         prompt: spec.prompt.clone(),
@@ -2557,9 +2562,14 @@ fn launch_terminal(
         Some(on_started),
     )?);
     // A boot dialog (folder trust) is marion's to answer only in a worktree marion created for
-    // this node; in the operator's own directory it is the operator's. Before `opened`, so the
-    // paste driver that publication starts reads it.
-    if inv.cwd.starts_with(node.agent_dir.worktree()) {
+    // this node, and only where the answer cannot land in the operator's own config: in a git
+    // worktree claude and codex key trust on the main repository, so answering there would trust
+    // the operator's repository for good. Before `opened`, so the paste driver that publication
+    // starts reads it.
+    let remembers = marion_harness::adapter::harness_spec(node.harness)
+        .boot_dialogs
+        .remembers;
+    if inv.cwd.starts_with(node.agent_dir.worktree()) && remembers.marion_may_answer(node.auth) {
         host.license_boot_dialog_answers();
     }
     // **After the process exists, never before.** See this function's doc, point 3.

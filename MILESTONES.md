@@ -1821,6 +1821,17 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
   those two flag keys from the operator's file (read only), and P-tui on the moved config
   reproduces its recorded result, trust answered then the held warning, with the operator's
   `projects` map unchanged.
+- **Folder trust in a git worktree is keyed on the main repository** (claude 2.1.283, codex 0.155.1,
+  2026-09-27, canned on scratch configs). Answering in `repo-wt` wrote claude's
+  `projects["<repo>"]` and codex's `[projects."<repo>"]`, never a worktree key; with the repo
+  already trusted neither showed a dialog in the worktree nor wrote anything. So a deleted marion
+  worktree leaves no entry, but an answer marion gave there would trust the operator's repository
+  for good. marion now answers only where `Remembers::marion_may_answer(auth)` holds: nowhere
+  past the session (copilot) or a home the overlay moved (codex canned/endpoint); never claude,
+  never codex live. No per-invocation pre-trust exists: claude's trust is not a setting (the
+  undocumented `CLAUDE_CODE_SANDBOXED`/`IS_DEMO` skip the dialog but still write a projects entry
+  and change other behaviour), and codex's `-c projects."<dir>".trust_level="trusted"` neither
+  hides its TUI dialog nor stops the answer persisting.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

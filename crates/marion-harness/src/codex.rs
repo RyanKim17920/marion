@@ -226,7 +226,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // S37 first screens (0.155.1, `tests/fixtures/s37-boot-dialogs/codex-0.155.1.raw`): a fresh
     // `CODEX_HOME` and directory open on directory trust, selection on `1. Yes, continue`. The
     // S37 pane probe saw it swallow the first paste; CR trusts (config.toml gains the project's
-    // `trust_level = "trusted"`) and the composer draws.
+    // `trust_level = "trusted"`) and the composer draws. In a git worktree the trust is keyed on
+    // the **main repository** (0.155.1, 2026-09-27: CR in `repo-wt` wrote `[projects."<repo>"]`,
+    // no worktree table; with the repo trusted the worktree showed no dialog and config.toml was
+    // unchanged). marion answers it only where `CODEX_HOME` is its own (canned, endpoint).
     boot_dialogs: BootDialogs {
         dialogs: &[
             BootDialog {
