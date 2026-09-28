@@ -26,6 +26,7 @@ pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;
 pub mod pi;
+pub mod probe;
 pub mod profile;
 pub mod qwen;
 pub mod spec;
