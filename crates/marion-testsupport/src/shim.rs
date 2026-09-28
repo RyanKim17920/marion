@@ -90,7 +90,7 @@ impl ReleaseStores {
     pub fn from_env() -> Self {
         let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
         let state = marion_core::paths::state_dir_from_env(None)
-        .expect("a state directory resolves from MARION_STATE_DIR, XDG_STATE_HOME or HOME");
+            .expect("a state directory resolves from MARION_STATE_DIR, XDG_STATE_HOME or HOME");
         Self {
             home: PathBuf::from(home.expect("HOME is set")),
             state,

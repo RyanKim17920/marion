@@ -49,13 +49,15 @@ pub fn wait_bounded(
     budget: Duration,
 ) -> Option<std::process::ExitStatus> {
     let mut status = None;
-    poll_until(budget, Duration::from_millis(20), || match child.try_wait() {
-        Ok(Some(s)) => {
-            status = Some(s);
-            true
+    poll_until(budget, Duration::from_millis(20), || {
+        match child.try_wait() {
+            Ok(Some(s)) => {
+                status = Some(s);
+                true
+            }
+            Ok(None) => false,
+            Err(_) => true,
         }
-        Ok(None) => false,
-        Err(_) => true,
     });
     status
 }

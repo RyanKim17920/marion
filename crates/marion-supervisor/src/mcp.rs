@@ -2387,7 +2387,8 @@ mod tests {
     #[test]
     fn documented_state_precedence_is_resolved_beneath_the_project_hash() {
         let root = std::path::Path::new("/canonical/project");
-        let state = marion_core::paths::state_dir(Some("/explicit"), Some("/xdg"), Some("/home")).unwrap();
+        let state =
+            marion_core::paths::state_dir(Some("/explicit"), Some("/xdg"), Some("/home")).unwrap();
         let project = ProjectDir::new(&state, root);
         assert_eq!(
             project.path().parent(),
