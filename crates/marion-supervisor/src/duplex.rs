@@ -388,11 +388,21 @@ pub fn deny_response(request_id: &str, reason: &str) -> String {
 
 /// Wait for the bridge's readiness marker.
 ///
-/// Polling a file rather than sleeping: §6.1 step 8 says a launcher **MUST NOT** substitute a sleep
-/// for this, because a sleep encodes the very race it is covering and the failure it permits is
-/// silent.
+/// Watching a file rather than sleeping: §6.1 step 8 says a launcher **MUST NOT** substitute a
+/// sleep for this, because a sleep encodes the very race it is covering and the failure it permits
+/// is silent. The wait is a [`crate::wake::Watch`] on the marker (its directory, until it exists),
+/// armed before the first look, so the marker's creation ends it at once and nothing polls.
 pub fn wait_for_ready(path: &Path, timeout: StdDuration) -> bool {
-    crate::wake::poll_until(timeout, StdDuration::from_millis(10), || path.exists())
+    let deadline = Instant::now() + timeout;
+    let mut watch = crate::wake::Watch::new(path);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        crate::wake::wait_until(&[watch.fd()], Some(deadline));
+        watch.rearm();
+    }
+    path.exists()
 }
 
 /// Everything the driver observes on a node's stdout, handed to a [`DuplexSpec::sink`] **as it is
@@ -671,7 +681,11 @@ pub fn run_duplex(
     // What the node said after marion's last boundary — a turn it queued itself from a mid-turn
     // write and ran with stdin already closed (see [`FOLD_SETTLE`]). Recorded, never answered: the
     // stream that could carry an answer is gone, and claude errors such an ask rather than hanging.
-    while let Ok(Event::Line(line)) = rx.recv_timeout(DRAIN_GRACE) {
+    // One bound for the whole tail: the drains were joined above, so every line is already queued
+    // and each receive returns at once until the forwarder's Eof.
+    let tail = Instant::now() + DRAIN_GRACE;
+    while let Ok(Event::Line(line)) = rx.recv_timeout(tail.saturating_duration_since(Instant::now()))
+    {
         if let Some(frame) = record_line(spec, &mut outcome, &line) {
             outcome.transcript.push(frame);
         }
@@ -693,7 +707,8 @@ struct RunGuard {
     /// the whole tree (S7's two-step kill). Without one, `signal_targets` would refuse marion's
     /// own pgid and the sweep would reach nothing, so the direct kill is all there is.
     own_group: bool,
-    finished: Arc<AtomicBool>,
+    /// Raised when the run settles; raising it wakes the watchdog at once.
+    finished: Arc<crate::wake::Flag>,
     expired: Arc<AtomicBool>,
     watchdog: Option<std::thread::JoinHandle<()>>,
     stderr: Drain,
@@ -704,7 +719,7 @@ impl RunGuard {
     /// Start the wall clock, if there is one. A watchdog rather than a bound on each read: the
     /// reads are blocking and a node that hangs *between* frames must still be killed.
     fn start(pid: i32, wall_clock: Option<StdDuration>, stderr: Drain, stdout: Drain) -> Self {
-        let finished = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(crate::wake::Flag::new());
         let expired = Arc::new(AtomicBool::new(false));
         let watchdog = wall_clock.map(|bound| {
             let finished = Arc::clone(&finished);
@@ -742,7 +757,7 @@ impl RunGuard {
             let _ = child.kill();
             let _ = child.wait();
         }
-        self.finished.store(true, Ordering::Relaxed);
+        self.finished.store(true, Ordering::SeqCst);
         if let Some(h) = self.watchdog {
             let _ = h.join();
         }
@@ -756,16 +771,14 @@ impl RunGuard {
 }
 
 /// The watchdog thread's body: kill the node's tree once `bound` passes unless the run finished
-/// first.
-fn watchdog(pid: i32, bound: StdDuration, finished: &AtomicBool, expired: &AtomicBool) {
+/// first. It sleeps in `poll(2)` on the finished flag with the bound as its deadline, so it wakes
+/// twice at most: at the finish or at the expiry.
+fn watchdog(pid: i32, bound: StdDuration, finished: &crate::wake::Flag, expired: &AtomicBool) {
     let deadline = Instant::now() + bound;
-    while Instant::now() < deadline {
-        if finished.load(Ordering::Relaxed) {
-            return;
-        }
-        std::thread::sleep(StdDuration::from_millis(20));
+    while Instant::now() < deadline && !finished.load(Ordering::SeqCst) {
+        crate::wake::wait_until(&[finished.fd()], Some(deadline));
     }
-    if finished.load(Ordering::Relaxed) {
+    if finished.load(Ordering::SeqCst) {
         return;
     }
     expired.store(true, Ordering::Relaxed);
