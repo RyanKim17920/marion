@@ -923,6 +923,48 @@ fn watch_task_block_shows_what_marion_sent() {
     assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
 }
 
+/// One token sample is no trend: TOKENS keeps its totals and draws no sparkline until a second
+/// sample arrives.
+#[test]
+fn a_lone_token_sample_draws_no_sparkline() {
+    let tokens_rows = |rate: Vec<u64>| {
+        let e = Expanded {
+            live: true,
+            tokens: Some(TokenView {
+                input: 24_300,
+                output: 643,
+                cached: 111_000,
+                rate,
+                window: s("turn"),
+                context_permille: None,
+            }),
+            ..Default::default()
+        };
+        let v = watch_view(1, Some(e));
+        let text = rows_of(&draw(
+            &screen(Body::Watch(&v), command("x", ""), "watch"),
+            100,
+            30,
+        ))
+        .join("\n");
+        let rows: Vec<String> = text
+            .lines()
+            .skip_while(|l| !l.contains("TOKENS"))
+            .take(2)
+            .map(str::to_string)
+            .collect();
+        (rows, text)
+    };
+    let (one, text) = tokens_rows(vec![136_000]);
+    assert!(one[0].contains("24.3k in"), "{text}");
+    assert!(!text.contains("peak") && !text.contains('█'), "{text}");
+    let (two, text) = tokens_rows(vec![136_000, 40_000]);
+    assert!(
+        two[1].contains('█') && two[1].contains("peak 136k / turn"),
+        "{text}"
+    );
+}
+
 /// **The greying survives the move from the tree screen**: an unmeasured capability is drawn in
 /// the tree's own grey, a measured one is not, and both are on screen.
 #[test]

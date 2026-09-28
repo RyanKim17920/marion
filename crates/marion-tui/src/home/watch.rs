@@ -463,7 +463,8 @@ fn expanded_rows<'a>(
             span(" cached", dim()),
         ]];
         let bar_w = 16.min(value_w.saturating_sub(18));
-        if !compact && !t.rate.is_empty() && bar_w > 0 {
+        // One sample is a lone block, not a trend: the line waits for a second one.
+        if !compact && t.rate.len() >= 2 && bar_w > 0 {
             let peak = t.rate.iter().copied().max().unwrap_or(0);
             block.push(vec![
                 span(pad(&sparkline(&t.rate, bar_w), bar_w), theme.accent()),
