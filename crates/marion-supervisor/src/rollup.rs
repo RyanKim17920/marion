@@ -27,7 +27,7 @@ pub struct Own {
 }
 
 /// A subtree's figures: every node's [`Own`] added.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Totals {
     /// Tokens claimed, summed, saturating: the counters are foreign data.
     pub tokens: u64,
