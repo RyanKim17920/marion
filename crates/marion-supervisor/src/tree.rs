@@ -55,9 +55,6 @@ use marion_tui::tree::{self, Action, Tone, Tree};
 
 use crate::doctor::{SurfaceRole, capabilities_at, surfaces_at};
 
-/// Same as an attach's: a read bound so the loop can look at the keyboard between frames.
-const POLL: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// **The greying, at §3.3's whole key.** All ten fields, always — the absent ones greyed rather
 /// than omitted, because §9's clause is *"greying out what they cannot do"* and an action that is
 /// simply not drawn tells an operator nothing about whether it exists.
@@ -370,11 +367,10 @@ fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), 
             state_dir.display()
         ));
     }
+    // No read bound: the subscribe's own reads block until the answer, and a screen that follows
+    // the forest waits on [`Subscription::fd`] in its own `poll(2)` with the socket non-blocking.
     let stream = UnixStream::connect(paths.socket())
         .map_err(|e| format!("dialling the supervisor for `{}`: {e}", key.display()))?;
-    stream
-        .set_read_timeout(Some(POLL))
-        .map_err(|e| format!("setting a read bound on the supervisor socket: {e}"))?;
     // The status row names the worktree, not its `.git`: §2 keys on the common dir, and an
     // operator with three windows open recognises the directory they ran marion in.
     let shown = match key.file_name().and_then(|f| f.to_str()) {
@@ -452,8 +448,8 @@ pub struct Subscription {
     pub shown: String,
     /// §2's socket, for the errands.
     pub socket: PathBuf,
-    /// A frame whose end has not arrived yet: kept across reads, so a read that stops mid-line
-    /// (a read bound, or a non-blocking socket) loses nothing.
+    /// A frame whose end has not arrived yet: kept across reads, so a read that stops mid-line on
+    /// a non-blocking socket loses nothing.
     partial: Vec<u8>,
 }
 
@@ -509,18 +505,6 @@ impl Subscription {
         Ok(sub)
     }
 
-    /// Wait up to the socket's read bound for one notification and fold it. `Ok(Some(event))` when
-    /// it changed the forest, `Ok(None)` when nothing arrived or nothing changed, and `Err` when
-    /// the supervisor went away.
-    pub fn poll(&mut self) -> Result<Option<Event>, Refusal> {
-        match self.frame()? {
-            Some(Frame::Notification(n)) if fold_tree_event(&mut self.nodes, &n.event) => {
-                Ok(Some(n.event))
-            }
-            _ => Ok(None),
-        }
-    }
-
     /// For a caller that waits on [`Self::fd`] itself: reads stop rather than block, and
     /// [`Self::drain`] folds whatever has arrived.
     pub fn nonblocking(&mut self) -> std::io::Result<()> {
@@ -561,14 +545,7 @@ impl Subscription {
                     .map(Some)
                     .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}"))
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(format!("reading from the supervisor: {e}")),
         }
     }
