@@ -391,7 +391,7 @@ fn custom(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
     let replaced = defs.iter().any(|d| d.id == def.id);
     defs.retain(|d| d.id != def.id);
     defs.push(def.clone());
-    write_atomically(&path, &provider::render_custom(&defs, &order))?;
+    crate::private_fs::write_atomic(&path, provider::render_custom(&defs, &order).as_bytes())?;
     writeln!(
         out,
         "{} provider {} ({}) in {}.",
@@ -404,14 +404,6 @@ fn custom(args: &[String], out: &mut dyn Write) -> Result<(), Failure> {
         writeln!(out, "Store its key with `marion login {}`.", def.id)?;
     }
     Ok(())
-}
-
-fn write_atomically(path: &std::path::Path, body: &str) -> io::Result<()> {
-    let dir = path.parent().expect("a config file has a directory");
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".providers.toml.{}", std::process::id()));
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]

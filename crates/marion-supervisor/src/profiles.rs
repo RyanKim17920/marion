@@ -293,13 +293,8 @@ fn toml_str(s: &str) -> String {
 }
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), ProfileError> {
-    let io = |e: std::io::Error| ProfileError::Io(format!("{}: {e}", path.display()));
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(io)?;
-    }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(io)?;
-    std::fs::rename(&tmp, path).map_err(io)
+    crate::private_fs::write_atomic(path, bytes)
+        .map_err(|e| ProfileError::Io(format!("{}: {e}", path.display())))
 }
 
 /// A harness named the way an operator types it: its wire name (`claude-code`) or its row's

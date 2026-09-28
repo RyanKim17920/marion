@@ -1025,18 +1025,7 @@ fn write_identity(path: &Path, id: &SupervisorIdentity) {
     let Ok(body) = serde_json::to_vec(id) else {
         return;
     };
-    let staged = path.with_extension("identity.staged");
-    let wrote = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&staged)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, &body));
-    if wrote.is_ok() && std::fs::rename(&staged, path).is_ok() {
-        return;
-    }
-    let _ = std::fs::remove_file(&staged);
+    let _ = crate::private_fs::write_atomic(path, &body);
 }
 
 /// A dial that reached nobody. Both readings arrive here and neither is conclusive on its own —

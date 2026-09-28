@@ -200,16 +200,12 @@ impl FileStore {
     }
 
     fn save(&self, keys: &BTreeMap<String, String>) -> Result<(), CredentialError> {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         let dir = self
             .path
             .parent()
             .ok_or_else(|| self.err("has no parent directory"))?;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| self.err(e))?;
+        crate::private_fs::create_dir_all(dir).map_err(|e| self.err(e))?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| self.err(e))?;
         let doc = serde_json::json!({ "providers": keys });
@@ -218,36 +214,9 @@ impl FileStore {
     }
 }
 
-/// Replace `path` with `body`, mode `0600`, through an `O_EXCL` temp file beside it and a rename,
-/// so a reader never sees a partial file and no other user ever sees any.
+/// Replace `path` with `body` and a final newline, `0600`: see [`crate::private_fs::write_atomic`].
 fn write_private(path: &Path, body: &str) -> io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = path
-        .parent()
-        .ok_or_else(|| io::Error::other("has no parent directory"))?;
-    let mut nonce = [0u8; 8];
-    getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp = dir.join(format!(
-        ".{name}.{}.{}",
-        std::process::id(),
-        nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ));
-    let written = (|| -> io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(body.as_bytes())?;
-        f.write_all(b"\n")?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
+    crate::private_fs::write_atomic(path, format!("{body}\n").as_bytes())
 }
 
 /// **Which credentials the user has logged in, in login order** — the non-secret index beside
@@ -304,14 +273,6 @@ impl Logins {
     }
 
     fn save(&self, ids: &[CredentialId]) -> Result<(), CredentialError> {
-        use std::os::unix::fs::DirBuilderExt;
-        if let Some(dir) = self.path.parent() {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)
-                .map_err(|e| self.err(e))?;
-        }
         let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
         let body = serde_json::to_string_pretty(&serde_json::json!({ "logins": ids }))
             .expect("a Value always serialises");

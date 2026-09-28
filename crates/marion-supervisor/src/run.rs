@@ -11,7 +11,7 @@
 //! shortening in this system (design §6.7) — the shortening is *recorded*, in
 //! `ProcessExit.description`, never silent.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::ops::ControlFlow;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -766,11 +766,9 @@ fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskCon
     // too narrow to sample from outside.
     #[cfg(test)]
     at_contract_write::fire();
-    crate::private_fs::create_dir_all(&agent.contracts_dir())?;
-    let path = agent.contract(&contract.task_id);
-    let mut file = std::fs::File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, contract)?;
-    file.write_all(b"\n")?;
+    let mut body = serde_json::to_vec_pretty(contract)?;
+    body.push(b'\n');
+    crate::private_fs::write_atomic(&agent.contract(&contract.task_id), &body)?;
     Ok(cap_for_return(contract.clone()))
 }
 
@@ -3698,6 +3696,64 @@ mod tests {
         assert!(!persisted_narrative.truncated);
         assert!(returned_narrative.truncated);
         assert_eq!(persisted_narrative.original_bytes, 20 * 1024);
+    }
+
+    /// **A contract is replaced, never rewritten in place.** A reader holding the previous
+    /// document — or a crash between truncate and write — must see the old contract whole or the
+    /// new one whole, never an empty or half-written file. Observable as: a handle opened on the
+    /// old file still reads the old bytes after the new contract lands, and the new file is `0600`.
+    ///
+    /// Mutation: write through `File::create` and the old handle reads the new (or a truncated)
+    /// document.
+    #[test]
+    fn a_rewritten_contract_replaces_the_old_file_rather_than_truncating_it() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("supervisor-persist-atomic");
+        let project = ProjectDir::from_hash(&root, "0123456789ab");
+        let agent = project.agent(&AgentId("agent".into()));
+        let task = TaskId("task".into());
+        std::fs::create_dir_all(agent.contracts_dir()).unwrap();
+        std::fs::write(agent.contract(&task), b"the old contract\n").unwrap();
+        let mut old = std::fs::File::open(agent.contract(&task)).unwrap();
+        let contract = build_contract(
+            task.clone(),
+            AgentId("root".into()),
+            RepoIdentity {
+                git_common_dir: None,
+                head_branch: None,
+            },
+            None,
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
+            "do it",
+            &[],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(1),
+            SystemTime(std::time::SystemTime::now()),
+            &ChildOutcome::default(),
+            Some(vec![]),
+            None,
+            vec![],
+            vec![],
+        );
+        persist_then_cap(&agent, &contract).unwrap();
+        let mut seen = String::new();
+        old.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "the old contract\n");
+        let path = agent.contract(&task);
+        let _: TaskContract = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let strays: Vec<_> = std::fs::read_dir(agent.contracts_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != path.file_name().unwrap())
+            .collect();
+        assert!(strays.is_empty(), "no staging file survives: {strays:?}");
     }
 
     /// A short capture that reads as a whole one is the invisible failure design §6.7 exists to

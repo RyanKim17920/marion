@@ -45,16 +45,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Write `bytes` to `path` by way of a sibling temporary and a rename. Errors are the caller's to
-/// drop.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let staged = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&staged, bytes)?;
-    std::fs::rename(&staged, path)
-}
+use crate::private_fs::write_atomic;
 
 /// Remember that the project at `root` (canonical) was opened now.
 pub fn touch_project(project: &ProjectDir, root: &Path) {

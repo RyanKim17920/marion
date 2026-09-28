@@ -106,20 +106,11 @@ fn fill(row: &mut Table, d: &Draft) {
     }
 }
 
-/// Replace the agents file at `path` with `text` through a temp file beside it and a rename, so a
-/// spawn reading it concurrently sees the old file or the new one, never half of either. The file
-/// holds no secret (a type names a provider, never a key), so it keeps the default mode.
+/// Replace the agents file at `path` with `text`, so a spawn reading it concurrently sees the old
+/// file or the new one, never half of either. The file holds no secret (a type names a provider,
+/// never a key), so it keeps the default mode: see [`crate::private_fs::write_atomic_shared`].
 pub fn write(path: &std::path::Path, text: &str) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("has no parent directory"))?;
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".agents.toml.{}", std::process::id()));
-    let written = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
+    crate::private_fs::write_atomic_shared(path, text.as_bytes())
 }
 
 /// One line of a diff: `+` added, `-` removed, ` ` kept for context.
