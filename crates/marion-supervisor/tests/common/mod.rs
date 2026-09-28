@@ -12,6 +12,7 @@
 
 #![allow(dead_code)] // Each test binary uses the part of this bed it needs.
 
+pub mod canned;
 pub mod cap_rules;
 pub mod cast;
 pub mod client;

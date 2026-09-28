@@ -44,10 +44,13 @@ use std::time::{Duration, Instant};
 use marion_core::contract::Isolation;
 use marion_core::contract::{TaskContract, TaskId, Workspace};
 use marion_core::journal::{RecordKind, decode};
-use marion_core::paths::ProjectDir;
-use marion_provider::{CannedServer, Config, Script};
+use marion_provider::Script;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{fixture_repo, git, on_path, persisted_contract, scratch};
+
+mod common;
+
+use common::canned::{CannedFixture as Fixture, canned_fixture};
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the worktree and reported back without committing.";
@@ -75,46 +78,16 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// One repo, one canned provider, and the `Env` `run_spawn` takes — held together so a test can
-/// spawn into the *same* repository twice.
-struct Fixture {
-    repo: PathBuf,
-    state: PathBuf,
-    env: Env,
-    /// Held, not dropped: dropping the server closes the port the child talks to.
-    _server: CannedServer,
-}
-
 fn fixture(root: &Path, patch: &str) -> Fixture {
-    let repo = fixture_repo(root);
-    let state = root.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: root.join("provider-requests.jsonl"),
-        script: Script {
+    canned_fixture(
+        root,
+        fixture_repo(root),
+        Script {
             child_narrative: NARRATIVE.into(),
             child_patch: patch.to_string(),
             ..Script::default()
         },
-    })
-    .expect("the canned provider binds");
-
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
-    Fixture {
-        repo,
-        state,
-        env,
-        _server: server,
-    }
+    )
 }
 
 fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {

@@ -22,9 +22,13 @@ use std::path::{Path, PathBuf};
 use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskContract, TaskId};
 use marion_core::paths::ProjectDir;
-use marion_provider::{CannedServer, Config, EditTurn, Script};
+use marion_provider::{EditTurn, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{fixture_repo, on_path, scratch};
+
+mod common;
+
+use common::canned::{CannedFixture as Fixture, canned_fixture};
 
 const CHILD_TIMEOUT_SECS: u64 = 90;
 const NARRATIVE: &str = "Edited the worktree over ACP and reported back through marion.";
@@ -42,22 +46,11 @@ const NARRATIVE: &str = "Edited the worktree over ACP and reported back through 
 const CHILD_FILE: &str = "src/marion_acp.txt";
 const CHILD_FILE_CONTENT: &str = "marion M5: written by the canned opencode ACP child\n";
 
-struct Fixture {
-    repo: PathBuf,
-    env: Env,
-    /// Held, not dropped: dropping the server closes the port the child talks to.
-    _server: CannedServer,
-}
-
 fn fixture(root: &Path) -> Fixture {
-    let repo = fixture_repo(root);
-    let state = root.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: root.join("provider-requests.jsonl"),
-        script: Script {
+    canned_fixture(
+        root,
+        fixture_repo(root),
+        Script {
             child_narrative: NARRATIVE.into(),
             // S22 measured opencode's model-facing spelling as `marion_report` — `<server>_<tool>`
             // — where the claude shim uses `mcp__marion__report` and the codex shim
@@ -74,22 +67,7 @@ fn fixture(root: &Path) -> Fixture {
             }),
             ..Script::default()
         },
-    })
-    .expect("the canned provider binds");
-
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state,
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
-    Fixture {
-        repo,
-        env,
-        _server: server,
-    }
+    )
 }
 
 fn spawn_acp_child(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {

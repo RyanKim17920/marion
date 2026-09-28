@@ -38,11 +38,14 @@ use std::process::Command;
 use std::time::Duration;
 
 use marion_core::contract::{AgentId, Isolation, TaskContract, TaskId, Workspace};
-use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
+use marion_supervisor::run::{Caller, SpawnRequest, run_bounded, run_spawn};
 use marion_supervisor::spawn::CwdClaim;
 use marion_testsupport::{on_path, pinned_version, scratch};
+
+mod common;
+
+use common::canned::{CannedFixture as Fixture, canned_fixture};
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the shared cwd and reported back.";
@@ -80,41 +83,19 @@ fn plain_dir(root: &Path, name: &str) -> PathBuf {
 }
 
 /// The pieces `run_spawn` takes, over a directory the caller chooses.
-struct Fixture {
-    cwd: PathBuf,
-    env: Env,
-    /// Held, not dropped: dropping the server closes the port the child talks to.
-    _server: CannedServer,
-}
-
+///
+/// §2's fallback, exercised for real: with no git common dir, the project key *is* this
+/// directory. `c71f48a` is what made that derivation single-sourced.
 fn fixture(root: &Path, cwd: PathBuf) -> Fixture {
-    let state = root.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: root.join("provider-requests.jsonl"),
-        script: Script {
+    canned_fixture(
+        root,
+        cwd,
+        Script {
             child_narrative: NARRATIVE.into(),
             child_patch: CHILD_PATCH.into(),
             ..Script::default()
         },
-    })
-    .expect("the canned provider binds");
-    let env = Env {
-        // §2's fallback, exercised for real: with no git common dir, the project key *is* this
-        // directory. `c71f48a` is what made that derivation single-sourced.
-        project_dir: ProjectDir::new(&state, &cwd),
-        state,
-        project_root: cwd.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
-    Fixture {
-        cwd,
-        env,
-        _server: server,
-    }
+    )
 }
 
 fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
@@ -122,7 +103,7 @@ fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
         review: None,
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
-        repo: fx.cwd.clone(),
+        repo: fx.repo.clone(),
         acceptance_criteria: vec!["a file under src/ was edited".into()],
         verification: vec![],
         writable_scope: vec!["src/**".into()],

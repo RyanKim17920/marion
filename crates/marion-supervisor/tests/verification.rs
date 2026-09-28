@@ -27,12 +27,15 @@
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::{ExitStatus, Isolation, TaskContract, TaskId, Workspace};
-use marion_core::paths::ProjectDir;
-use marion_provider::{CannedServer, Config, Script};
+use marion_provider::Script;
 use marion_supervisor::journal::read_path;
-use marion_supervisor::run::{Caller, Env, MAX_VERIFICATION_BYTES, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, MAX_VERIFICATION_BYTES, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
 use marion_testsupport::{fixture_repo, harness_available, persisted_contract, scratch};
+
+mod common;
+
+use common::canned::{CannedFixture as Fixture, canned_fixture};
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the worktree and reported back without committing.";
@@ -43,44 +46,16 @@ const EDIT: &str = "keep, edited by the canned codex child";
 const MODIFY: &str = "*** Begin Patch\n*** Update File: src/keep.txt\n@@\n-keep\n\
                       +keep, edited by the canned codex child\n*** End Patch";
 
-struct Fixture {
-    repo: PathBuf,
-    state: PathBuf,
-    env: Env,
-    /// Held, not dropped: dropping the server closes the port the child talks to.
-    _server: CannedServer,
-}
-
 fn fixture(root: &Path) -> Fixture {
-    let repo = fixture_repo(root);
-    let state = root.join("state");
-    std::fs::create_dir_all(&state).unwrap();
-
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: root.join("provider-requests.jsonl"),
-        script: Script {
+    canned_fixture(
+        root,
+        fixture_repo(root),
+        Script {
             child_narrative: NARRATIVE.into(),
             child_patch: MODIFY.to_string(),
             ..Script::default()
         },
-    })
-    .expect("the canned provider binds");
-
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
-    Fixture {
-        repo,
-        state,
-        env,
-        _server: server,
-    }
+    )
 }
 
 fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
