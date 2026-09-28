@@ -615,6 +615,32 @@ mod tests {
         assert_eq!(connectors("  ├ "), ("   ├─ ".into(), "   │  ".into()));
     }
 
+    /// An endpoint node's expansion carries a `Model` section with `provider:model · route`; a node
+    /// without one has no such section.
+    #[test]
+    fn an_endpoint_nodes_expansion_names_its_model_and_route() {
+        let text = |e: &Expanded| {
+            expanded_rows(e, 80, Theme::TRUECOLOR, 0, false)
+                .into_iter()
+                .map(|(label, spans)| {
+                    let value: String = spans.iter().map(|s| s.content.to_string()).collect();
+                    format!("{label}|{value}")
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain = Expanded::default();
+        assert!(!text(&plain).iter().any(|r| r.starts_with("Model|")));
+        let e = Expanded {
+            endpoint: Some("groq:llama-3.3-70b · translated".into()),
+            ..Expanded::default()
+        };
+        assert!(
+            text(&e).contains(&"Model|groq:llama-3.3-70b · translated".to_string()),
+            "{:?}",
+            text(&e)
+        );
+    }
+
     #[test]
     fn the_window_keeps_the_selected_block_in_view() {
         assert_eq!(window(5, (2, 3), 10), 0, "everything fits");

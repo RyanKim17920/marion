@@ -310,6 +310,7 @@ fn landed() -> Expanded {
             merge: Some(s("git merge --no-ff marion/t-3c33")),
         }),
         workspace: Some(s("worktree marion/t-3c33")),
+        endpoint: None,
         caps: [("steer", true), ("resume", true), ("interrupt", false)]
             .iter()
             .map(|(c, on)| (s(c), *on))
