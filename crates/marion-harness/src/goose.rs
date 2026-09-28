@@ -161,7 +161,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // nothing else), the binary contains no check-for-update, "new version" or "update
     // available" text, and its `GOOSE_*` variable list has no update entry. There is nothing to
     // switch off, and the row says so rather than inventing a variable.
-    updates: UpdatePolicy::None {
+    updates: UpdatePolicy::Never {
         note: "1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
                strings, no `GOOSE_*` update variable; `goose update` is explicit only",
     },

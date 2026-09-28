@@ -9534,8 +9534,9 @@ mod tests {
     /// rendered by the one renderer into the headless shape, the pane shape and the native
     /// overlay alike — never a per-harness branch, never a duplicate `Env` row beside it.
     ///
-    /// A row with no measured switch says so **explicitly**: `UpdatePolicy::None` with a note
-    /// naming what was searched. Silence is the one answer the sweep refuses.
+    /// A row with no measured switch says so **explicitly**: `UpdatePolicy::Never` (the binary
+    /// does not update itself) or `UpdatePolicy::None` (no switch known), with a note naming what
+    /// was searched. Silence is the one answer the sweep refuses.
     /// One launch the row rendered: its name, the invocation, the documents beside it.
     type Launch = (String, Invocation, Vec<(PathBuf, String)>);
 
@@ -9710,9 +9711,9 @@ mod tests {
         }
     }
 
-    /// [`UpdatePolicy::None`]: the row does not know a switch — so it must also not smuggle one in
-    /// as an ordinary `Env` row, where nothing would check it against the binary, and its note
-    /// must say what was searched and not found.
+    /// [`UpdatePolicy::Never`] / [`UpdatePolicy::None`]: the row does not know a switch — so it
+    /// must also not smuggle one in as an ordinary `Env` row, where nothing would check it against
+    /// the binary, and its note must say what was searched and not found.
     fn assert_update_none(h: Harness, note: &str) {
         assert!(
             !harness_spec(h)
@@ -9764,6 +9765,7 @@ mod tests {
                 UpdatePolicy::Env { note, .. }
                 | UpdatePolicy::Pair { note, .. }
                 | UpdatePolicy::Document { note, .. }
+                | UpdatePolicy::Never { note }
                 | UpdatePolicy::None { note } => note,
             };
             assert!(
@@ -9783,7 +9785,9 @@ mod tests {
                 UpdatePolicy::Document { keys, .. } => {
                     assert_update_document(h, &launches, native, keys)
                 }
-                UpdatePolicy::None { note } => assert_update_none(h, note),
+                UpdatePolicy::Never { note } | UpdatePolicy::None { note } => {
+                    assert_update_none(h, note)
+                }
             }
         }
     }

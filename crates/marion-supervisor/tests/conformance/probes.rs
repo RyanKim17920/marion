@@ -305,6 +305,7 @@ fn update_policy_reaches(policy: UpdatePolicy, launch: &Launch) -> (bool, String
             });
             (ok, format!("no-self-update document keys {}", carried(ok)))
         }
+        UpdatePolicy::Never { note } => (true, format!("binary never updates itself ({note})")),
         UpdatePolicy::None { note } => (true, format!("row states no switch ({note})")),
     }
 }

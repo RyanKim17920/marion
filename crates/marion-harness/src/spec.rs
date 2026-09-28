@@ -799,8 +799,15 @@ pub enum UpdatePolicy {
         keys: &'static [(&'static str, bool)],
         note: &'static str,
     },
-    /// The installed binary has no measured switch, or never updates itself. `note` says which,
-    /// and what was searched.
+    /// The installed binary **never updates itself**, so there is nothing to switch off: an update
+    /// is an explicit subcommand the operator runs (goose's `goose update`). `note` says what was
+    /// searched and not found. Running the binary bare is safe, so a `--version` probe may.
+    Never { note: &'static str },
+    /// No switch is known for the program the row runs — none was measured, or the row has no
+    /// single program to measure (ACP, whose binary is the bound agent's). `note` says which, and
+    /// what was searched. Distinct from [`Self::Never`] because the two answer the safety
+    /// question oppositely: a binary that may update itself and has no switch is one marion must
+    /// not run just to read a version.
     None { note: &'static str },
 }
 
@@ -847,7 +854,10 @@ impl UpdatePolicy {
                  probed"
                     .into(),
             ),
-            UpdatePolicy::None { .. } => Ok((Vec::new(), Vec::new())),
+            UpdatePolicy::Never { .. } => Ok((Vec::new(), Vec::new())),
+            UpdatePolicy::None { note } => Err(format!(
+                "no no-self-update switch is known for this harness ({note}); not probed"
+            )),
         }
     }
 
