@@ -758,6 +758,90 @@ fn a_claude_code_child_runs_on_a_chat_only_provider_through_marions_gateway() {
     );
 }
 
+/// **The other translation: opencode (Chat Completions alone) on a provider that serves only
+/// Anthropic Messages** and reads `x-api-key`, as Anthropic's own API does. The gateway sends each
+/// streamed turn as Anthropic Messages with the stored key in that header, and the provider's
+/// `tool_use` comes back as the Chat `tool_calls` that report through marion's bridge.
+#[test]
+fn an_opencode_child_runs_on_an_anthropic_only_provider_through_marions_gateway() {
+    assert!(
+        on_path("opencode"),
+        "put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    let cell = Cell {
+        presents: Presents::XApiKey,
+        provider: "canned-anthropic",
+        agent_type: "opencode",
+        script: Script {
+            root_tool: "marion_report".into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: "marion/endpoint-model-7",
+        wire: "anthropic",
+        route: "translated",
+    };
+    let started = marion_supervisor::gateway::started();
+    let ev = drive(&cell);
+    assert_endpoint_cell(&cell, &ev);
+    assert!(marion_supervisor::gateway::started() > started);
+    assert_eq!(marion_supervisor::gateway::live(), 0);
+    let kept: Vec<&PathBuf> = ev
+        .kept
+        .iter()
+        .filter(|(_, bytes)| bytes.windows(KEY.len()).any(|w| w == KEY.as_bytes()))
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        kept.is_empty(),
+        "the key is kept in {kept:?} — on a translated route not even opencode's config holds it"
+    );
+}
+
+/// A Chat-only harness on `canned-anthropic` through the gateway, reporting under its own spelling
+/// of marion's tool — the same cell as opencode's, for the rows with a Chat recipe alone.
+fn chat_harness_via_gateway(agent_type: &'static str, report_tool: &str) {
+    assert!(
+        on_path(agent_type),
+        "put `{agent_type}` ({}) on PATH",
+        pinned_version(agent_type)
+    );
+    let cell = Cell {
+        presents: Presents::XApiKey,
+        provider: "canned-anthropic",
+        agent_type,
+        script: Script {
+            root_tool: report_tool.into(),
+            root_tool_input: json!({ "narrative": NARRATIVE }),
+            root_final_text: "Reported. Done.".into(),
+            ..Script::default()
+        },
+        compiled_model: MODEL,
+        wire: "anthropic",
+        route: "translated",
+    };
+    let ev = drive(&cell);
+    assert_endpoint_cell(&cell, &ev);
+    assert_eq!(marion_supervisor::gateway::live(), 0);
+}
+
+#[test]
+fn a_goose_child_runs_on_an_anthropic_only_provider_through_marions_gateway() {
+    chat_harness_via_gateway("goose", "marion__report");
+}
+
+#[test]
+fn a_cline_child_runs_on_an_anthropic_only_provider_through_marions_gateway() {
+    chat_harness_via_gateway("cline", "marion__report");
+}
+
+#[test]
+fn a_qwen_child_runs_on_an_anthropic_only_provider_through_marions_gateway() {
+    chat_harness_via_gateway("qwen", "mcp__marion__report");
+}
+
 // ---- credential rotation: API keys only, before the first successful turn ----------------------
 
 /// A codex child on `canned-rot`, whose provider refuses the keys in `refused` with `status`.
@@ -1133,6 +1217,11 @@ fn doctor_providers_matrix_is_computed_by_the_endpoint_resolver() {
     assert_eq!(
         cell(Harness::ClaudeCode, "canned-chat"),
         Cell::Translated("anthropic>openai-chat".into())
+    );
+    // And a Chat-only harness on an Anthropic-only provider.
+    assert_eq!(
+        cell(Harness::OpenCode, "canned-anthropic"),
+        Cell::Translated("openai-chat>anthropic".into())
     );
     match cell(Harness::Codex, "groq") {
         Cell::Unsupported(why) => assert!(

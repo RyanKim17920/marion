@@ -2133,10 +2133,10 @@ ever runs a real login.
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
   Node config documents are now written `0600` (they carry the node token and, on opencode and
   cline endpoint nodes, the key).
-- **Translating gateway — built for Anthropic Messages → OpenAI Chat (2026-09-27).** Where a
+- **Translating gateway — built for Anthropic Messages ↔ OpenAI Chat, both directions (2026-09-27).** Where a
   harness and its provider share no wire, resolution takes the first harness wire the gateway
-  translates to a provider wire (`marion_core::provider::TRANSLATIONS`, one pair today; a native
-  wire always wins) and the route is `translated`. `endpoint::open` starts a
+  translates to a provider wire (`marion_core::provider::TRANSLATIONS`: Anthropic → Chat and
+  Chat → Anthropic; a native wire always wins) and the route is `translated`. `endpoint::open` starts a
   `marion_supervisor::gateway::Gateway` for the attempt: bound to `127.0.0.1` on a kernel port, it
   admits only a per-run 32-byte bearer (a `Secret`, compared in constant time) that the harness is
   handed in place of the key, translates each `POST …/messages` (system, tools, `tool_choice`,
@@ -2157,9 +2157,15 @@ ever runs a real login.
   without the bearer, 429 kept, unreachable 502, drop joins everything), and a real claude 2.1.283
   child on a Chat-only fixture provider reporting through marion — while its turn is in flight no
   descendant argv carries the key or the bearer, no kept file holds the key, and the gateway count
-  is zero once the node exits. **Not built:** Chat → Anthropic (a Chat-only harness on an
-  Anthropic-only provider) and Responses ↔ Chat (codex on a Chat-only provider); each is one more
-  `TRANSLATIONS` pair plus its arm in `gateway::Translation`.
+  is zero once the node exits. **Chat → Anthropic** (`gateway::from_chat`): a Chat harness's
+  `POST …/chat/completions` becomes an Anthropic request (system/developer joined, same-role turns
+  merged, tool results as `tool_result` blocks, `max_tokens` defaulted to 8192, `anthropic-version`
+  sent) and the provider's events come back as `chat.completion.chunk`s ending `[DONE]`, or one
+  `chat.completion`; errors keep their status in OpenAI's error shape. Real opencode, goose, cline
+  and qwen children on an Anthropic-only fixture provider reading `x-api-key` report through marion,
+  and no kept file holds the key (opencode's config included). Every pair-specific decision is one
+  arm of `gateway::Translation`. **Not built:** Responses ↔ Chat or Anthropic (codex on a
+  Chat-only or Anthropic-only provider) — one more `TRANSLATIONS` pair plus its arm.
 - **Endpoint records and resume — built, shown in the tree and Watch.** `provider` and `route`
   (`native` or `translated`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
   default, skipped when absent, so canned and live records are byte-identical to before). A resume
@@ -2208,7 +2214,7 @@ ever runs a real login.
   it is sent as a second credential). opencode: `x-api-key` as a provider-block header with no
   `apiKey`. Canned cells green on 2026-09-27: copilot anthropic Bearer, opencode Chat `x-api-key`.
 
-marion's own gateway covers the one pair above; LiteLLM / Vercel AI Gateway / OpenRouter translate
+marion's own gateway covers the two directions above; LiteLLM / Vercel AI Gateway / OpenRouter translate
 the rest, reached as ordinary providers. **Universally expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
 round-tripping, and accurate token counts.
 
