@@ -150,18 +150,29 @@ mod common;
 use common::cap_rules::normalize_for_cap_rules;
 use common::mcp_result::{codex_call_output_text, contract_json, mcp_blocks_text};
 
-/// The outermost safety net. Every cell has its own `--timeout` below; this only exists so a wedged
-/// `marion` fails loudly instead of wedging the suite.
-const RUN_BOUND: Duration = Duration::from_secs(300);
-
 /// The root's `--timeout`: a wall clock over the whole run, on every surface (§9) — and the child's
-/// entire run happens inside the root's `spawn` call, so this has to cover both. Short enough that
-/// a hang fails fast: measured in S13, opencode never exits on a provider hang (a 500 still
-/// retrying at 90 s, a connection-refused still hung at 180 s).
-const ROOT_WALL_CLOCK_SECS: &str = "150";
+/// entire run happens inside the root's `spawn` call, so this has to cover both: the two nodes' whole runs, from their rows ([`common::boot::run`]). Still a bound that
+/// fails a hang: measured in S13, opencode never exits on a provider hang (a 500 still retrying at
+/// 90 s, a connection-refused still hung at 180 s).
+///
+/// It was a flat 150 s, and at a load average of 150 an opencode root spent ~57 s booting and its
+/// child most of the rest, so the root's wall clock expired with the child still starting.
+fn root_wall_clock(root: &Node, child: &Node) -> Duration {
+    common::boot::run(root.agent_type) + common::boot::run(child.child_agent_type)
+}
 
-/// The child's own wall clock, passed through `spawn`'s `timeout_secs`.
-const CHILD_TIMEOUT_SECS: u64 = 60;
+/// The outermost safety net. Every cell has its own `--timeout`; this only exists so a wedged
+/// `marion` fails loudly instead of wedging the suite. Past the root's wall clock, by the minute
+/// the run takes to wind down after it.
+fn run_bound(root: &Node, child: &Node) -> Duration {
+    root_wall_clock(root, child) + Duration::from_secs(60)
+}
+
+/// The child's own wall clock, passed through `spawn`'s `timeout_secs`: its whole run, from its row.
+/// A flat 60 s used to stand here, and an opencode child under load spent it all booting.
+fn child_timeout_secs(child: &Node) -> u64 {
+    common::boot::run_secs(child.child_agent_type)
+}
 
 /// Present in the **root's** prompt and nowhere in the child's. The provider's role discriminator;
 /// see the module docs. Deliberately not a word either prompt would use on its own.
@@ -403,7 +414,7 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
         "prompt": CHILD_PROMPT,
         "acceptance_criteria": ["a file exists under src/ containing the marker"],
         "writable_scope": ["src/**"],
-        "timeout_secs": CHILD_TIMEOUT_SECS,
+        "timeout_secs": child_timeout_secs(child),
         "model": child.model,
     });
     if !verification.is_empty() {
@@ -682,6 +693,7 @@ fn marion_argv(
     repo: &Path,
     state: &Path,
     base_url: &str,
+    wall_clock: Duration,
     wider_children: bool,
 ) -> Vec<String> {
     let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
@@ -700,7 +712,7 @@ fn marion_argv(
         // argument parsing and the cell never starts.
         "--canned".into(),
         "--timeout".into(),
-        ROOT_WALL_CLOCK_SECS.into(),
+        wall_clock.as_secs().to_string(),
         // Passed for every root, including the two whose `--model` is omissible: see
         // [`Node::model`]. What the adapter does with it is the cell's assertion, not the
         // builder's.
@@ -735,6 +747,7 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
                 Path::new("/tmp/repo"),
                 Path::new("/tmp/state"),
                 base_url,
+                Duration::from_secs(150),
                 false,
             );
             let url = args
@@ -813,13 +826,20 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
     })
     .expect("the canned provider binds");
 
-    let args = marion_argv(root, &repo, &state, &server.base_url(), opt_in);
+    let args = marion_argv(
+        root,
+        &repo,
+        &state,
+        &server.base_url(),
+        root_wall_clock(root, child),
+        opt_in,
+    );
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args(&args)
             .current_dir(&dir),
-        RUN_BOUND,
+        run_bound(root, child),
     )
     .expect("marion run starts");
 
@@ -992,7 +1012,8 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
     // ---- 1: the run finished, and cleanly. ------------------------------------------------------
     assert!(
         !ev.timed_out,
-        "{cell}: marion run did not finish inside {RUN_BOUND:?}\n{}\nRequest log:\n{}",
+        "{cell}: marion run did not finish inside {:?}\n{}\nRequest log:\n{}",
+        run_bound(root, child),
         ev.marion_summary(),
         ev.log_summary()
     );
