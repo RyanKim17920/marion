@@ -85,17 +85,17 @@ Everything below is dated. Re-verify before relying on any harness fact.
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
 dated audit under "Status convention" names the test behind each.
 
-**Harnesses.** Ten rows in `Harness::ALL` (`marion-core/src/harness.rs`): nine terminal
-harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `pi` — as
+**Harnesses.** Eleven rows in `Harness::ALL` (`marion-core/src/harness.rs`): ten terminal
+harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen`, `agy`, `pi` — as
 `HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
 one runs as a child and a root through `run_spawn` (`harness_matrix` 9 cells; `cross_product` 64
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), as a child or — headless, since 2026-09-22 — as a root
-(`acp_root.rs`: `marion run acp:<command>`, frames teed live), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
-`claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
+(`acp_root.rs`: `marion run acp:<command>`, frames teed live), with fifteen refinement rows in `acp::AGENTS` (S33, 2026-09-27; `docs/guide.md` lists them) — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261, 2.1.263, 2.1.268, 2.1.269, 2.1.280 and 2.1.283; codex 0.146.0/0.146.1/0.147.0/0.155.1;
 gemini 0.53.0; opencode 1.17.3, 1.18.29, 1.18.30 and 1.18.32; copilot 1.0.83; goose 1.49.0, 1.50.0, 1.51.0 and 1.52.0; cline 3.0.61;
-qwen 0.23.0; pi 0.80.2.
+qwen 0.23.0; agy 1.2.8; pi 0.80.2. *(Row count, ACP rows and agy's pin brought current
+2026-09-27 at the docs refresh; the rest of this section is as of its heading's date.)*
 
 **User-defined agent types (2026-09-11).** A tree's `.marion/agents.toml` (`[[agent]]` rows: `name`,
 `harness` — a `Harness` spelling or `acp:<command>` — optional `model`, `tools` in marion's
