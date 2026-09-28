@@ -1,0 +1,6 @@
+{"dir":"note","msg":{"args":["acp"],"pid":55324,"spawned":"opencode"},"t":0.011}
+{"dir":"c2s","msg":{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},"protocolVersion":1}},"t":0.011}
+{"dir":"s2c","msg":{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},"promptCapabilities":{"embeddedContext":true,"image":true},"sessionCapabilities":{"close":{},"fork":{},"list":{},"resume":{}}},"agentInfo":{"name":"OpenCode","version":"1.18.32"},"authMethods":[{"description":"Run `opencode auth login` in the terminal","id":"opencode-login","name":"Login with opencode"}],"protocolVersion":1}},"t":3.293}
+{"dir":"note","msg":"signal 9 to process group 55324","t":3.387}
+{"dir":"note","msg":{"code":null,"exited":55324,"signal":9},"t":3.412}
+{"dir":"note","msg":"version Some(\"OpenCode 1.18.32\"); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row)); admitted in PINNED_HARNESSES","t":3.525}

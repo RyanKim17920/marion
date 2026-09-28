@@ -185,7 +185,7 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
 /// This used to fork `ps -o stat=` in a `yield_now` loop — up to five seconds of back-to-back
 /// forks per kill. A SIGKILLed process is usually gone within a millisecond, so the reads back off
 /// from 1 ms to [`OBSERVE_PAUSE_MAX`].
-pub(crate) fn kill_process_tree_and_wait(child_pid: i32) -> bool {
+pub fn kill_process_tree_and_wait(child_pid: i32) -> bool {
     kill_process_tree(child_pid);
     observe_dead(child_pid, Instant::now() + Duration::from_secs(5))
 }

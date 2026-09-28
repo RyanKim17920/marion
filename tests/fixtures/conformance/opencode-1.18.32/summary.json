@@ -1,0 +1,66 @@
+{
+  "result": {
+    "fixtures": "opencode-1.18.32",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f1b52a8b2ffeNNQUoF3T9Q56J3 ; activity marion_report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "the harness asks nothing headless for an MCP tool (row: approval none)",
+        "observed": "`report` answered with no grant: true (S13 on 1.17.3: with no `permission` entry for marion's tool the call runs; `ask` auto-rejects at exit 0, so marion states no permission at all)",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 8.9 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 4 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel did not end the turn within 10 s; 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Document",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []",
+        "status": "PASS"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found",
+        "reason": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the store in a file OPENCODE_DB (db1/db2); `:memory:` failed with Session not found",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session ses_f1b526e22ffeLT2hsKXrn9ZpMy -> ses_f1b526e22ffeLT2hsKXrn9ZpMy; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.2 s after the spawn and listed marion's tools",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "1.18.32 (admitted in PINNED_HARNESSES); no-self-update env OPENCODE_DISABLE_AUTOUPDATE=1 carried",
+        "status": "PASS"
+      }
+    },
+    "version": "1.18.32"
+  },
+  "row": "opencode"
+}

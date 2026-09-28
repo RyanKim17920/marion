@@ -47,9 +47,9 @@ use serde_json::{Value, json};
 
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -196,6 +196,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "qwen's TUI was not measured (S31 probed codex, opencode, copilot and claude), \
                    and its native lane ships disabled",
         },
+    },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "qwen's TUI was not measured",
     },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
@@ -531,13 +535,22 @@ mod tests {
         }
     }
 
-    /// 28 requests, then success: no failure frame, no call, no narrative.
+    /// **28 requests, then a `success` result that is an API error**: `is_error: false`, exit 0,
+    /// and the result's text `[API Error: 500 canned failure]` — qwen's only report of the fault
+    /// (s25; S37 measured a 401 the same way), read as the run's failure claim.
     #[test]
-    fn a_provider_fault_is_the_report_that_never_came() {
+    fn a_successful_result_carrying_an_api_error_is_a_failure_claim() {
         let out = parse_stream(PROVIDER_500);
         assert_eq!(out.narrative, None);
         assert!(marion_calls(PROVIDER_500).is_empty());
-        assert_eq!(out.failure, None, "the result frame says success");
+        assert_eq!(
+            out.failure.as_deref(),
+            Some("[API Error: 500 canned failure]")
+        );
+        assert_eq!(
+            crate::grammar::error_lines(&crate::claude_code::STREAM, PROVIDER_500),
+            ["[API Error: 500 canned failure]"]
+        );
     }
 
     /// `result.subtype: "error_during_execution"`, `is_error: true`, exit 1 — the one qwen fault

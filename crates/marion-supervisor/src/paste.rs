@@ -23,6 +23,18 @@
 //! it has drawn text since turning bracketed paste on, and then been quiet for the row's
 //! [`IdleSignal`] ([`Hold::Booting`]).
 //!
+//! # Boot dialogs (S37, `tests/fixtures/s37-boot-dialogs/`)
+//!
+//! Before that first paste, too: **no dialog the row names is on the screen**
+//! ([`marion_harness::spec::BootDialog`], read by the host as text drawn since anyone last typed).
+//! A TUI in a fresh directory opens on folder trust, and a paste typed into it answers it: claude
+//! 2.1.283's defaults to `No, exit`, so paste + CR quits the session; codex 0.155.1's swallows the
+//! paste. Where the row marks the dialog answerable **and** the host was licensed — the child runs
+//! in a worktree marion created ([`crate::pty::PtyHost::license_boot_dialog_answers`]) — the
+//! injector types the row's keys alone ([`Gate::Answer`]), once, and waits for the TUI to redraw
+//! and settle before pasting. Anywhere else, and for a dialog the row holds, it waits
+//! ([`Hold::BootDialog`]) for someone to dismiss it, and past the grace drops the message by name.
+//!
 //! # Why the row's [`IdleSignal`] is waited on once, not before every paste
 //!
 //! The row carries `OutputQuiet{1500}` — the measured "the TUI is idle" signal. Past boot this
@@ -50,7 +62,9 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_harness::spec::{IdleSignal, TurnDelivery};
+use marion_harness::spec::{
+    BootDialog, DialogAnswer, HarnessSpec, IdleSignal, NodeShape, TurnDelivery,
+};
 
 use crate::inbox::{DeliveryPort, Inboxes, Message, render};
 use crate::pty::{Injected, Injection, InputState, PtyHost};
@@ -94,6 +108,9 @@ pub struct PasteParams {
     /// How long the terminal must be quiet, after drawing its first screen, before the first
     /// paste — the row's [`IdleSignal`], used for boot only. See the module doc.
     pub settle: Duration,
+    /// The dialogs the row's TUI can show before its composer ([`HarnessSpec::boot_dialogs`]):
+    /// the first paste is never typed into one.
+    pub dialogs: &'static [BootDialog],
 }
 
 impl PasteParams {
@@ -119,8 +136,31 @@ impl PasteParams {
             submit,
             submit_delay: Duration::from_millis(u64::from(submit_delay_ms)),
             settle,
+            dialogs: &[],
         })
     }
+
+    /// **A row's paste, whole**: its interactive delivery, if that is a paste, with the dialogs
+    /// its TUI shows at boot.
+    pub fn for_row(row: &HarnessSpec) -> Option<PasteParams> {
+        let params = PasteParams::of(marion_harness::spec::delivery_for(
+            row,
+            NodeShape::Interactive,
+        ))?;
+        Some(PasteParams {
+            dialogs: row.boot_dialogs.dialogs,
+            ..params
+        })
+    }
+}
+
+/// What the first paste into a terminal also waits for: the row's settle time, and whether a
+/// boot dialog on the screen may be answered ([`crate::pty::PtyHost::answers_boot_dialogs`], and
+/// not already answered once — a dialog that is back after marion's keys is held).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boot {
+    pub settle: Duration,
+    pub answer_dialogs: bool,
 }
 
 /// Marion's side of when a paste may be typed — not measured per row, because it is about the
@@ -157,27 +197,32 @@ pub enum Hold {
     /// Before the first paste: the TUI has not yet drawn a screen under bracketed paste and then
     /// gone quiet for the row's settle time.
     Booting,
+    /// Before the first paste: one of the row's boot dialogs is on the screen, and a paste would
+    /// answer it.
+    BootDialog,
 }
 
 /// One look at the terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {
     Ready,
+    /// Not a paste yet: answer this boot dialog with its row's keys first.
+    Answer(&'static BootDialog),
     /// Not now; look again at the instant.
     Wait(Hold, Instant),
     /// Never, for this message.
     Refuse(String),
 }
 
-/// **The decision**, on values: `state` as of `now`. `boot` is the row's settle time while the
-/// injector has not yet pasted into this terminal, `None` after. `unready_since` is the grace's
+/// **The decision**, on values: `state` as of `now`. `boot` is what the first paste also waits for
+/// while the injector has not yet pasted into this terminal ([`Boot`]), `None` after. `unready_since` is the grace's
 /// clock — set the first time the terminal itself (its paste mode, its boot) was the only thing in
 /// the way, cleared when it is ready or a message is refused for it.
 pub fn gate(
     state: &InputState,
     now: Instant,
     policy: &PastePolicy,
-    boot: Option<Duration>,
+    boot: Option<Boot>,
     unready_since: &mut Option<Instant>,
 ) -> Gate {
     if !state.composer_empty {
@@ -189,13 +234,23 @@ pub fn gate(
             return Gate::Wait(Hold::OperatorTyping, quiet_at);
         }
     }
-    let (hold, look) = match (state.bracketed_paste, boot) {
-        (false, _) => (Hold::NoBracketedPaste, now + policy.recheck),
-        (true, None) => {
+    let dialog = boot.and(state.boot_dialog);
+    let (hold, look) = match (dialog, state.bracketed_paste, boot) {
+        // Asked before the paste mode: the answer is keys, not a paste, and a dialog can be up
+        // before the TUI turns bracketed paste on.
+        (Some(d), _, Some(b)) => match d.answer {
+            DialogAnswer::Keys(_) if b.answer_dialogs => {
+                *unready_since = None;
+                return Gate::Answer(d);
+            }
+            _ => (Hold::BootDialog, now + policy.recheck),
+        },
+        (_, false, _) => (Hold::NoBracketedPaste, now + policy.recheck),
+        (_, true, None) => {
             *unready_since = None;
             return Gate::Ready;
         }
-        (true, Some(settle)) => match state.last_output.map(|at| at + settle) {
+        (_, true, Some(Boot { settle, .. })) => match state.last_output.map(|at| at + settle) {
             Some(quiet_at) if state.screen_drawn && now >= quiet_at => {
                 *unready_since = None;
                 return Gate::Ready;
@@ -208,8 +263,14 @@ pub fn gate(
     if now.saturating_duration_since(since) >= policy.paste_mode_grace {
         *unready_since = None;
         let grace = policy.paste_mode_grace.as_secs();
-        return Gate::Refuse(match hold {
-            Hold::Booting => format!(
+        return Gate::Refuse(match (hold, dialog) {
+            (Hold::BootDialog, Some(d)) => format!(
+                "the node's terminal showed a dialog before its composer (`{}`: {}) for {grace} s \
+                 and nobody dismissed it; marion does not answer it here, and a paste typed into \
+                 it would answer it",
+                d.needle, d.note
+            ),
+            (Hold::Booting, _) => format!(
                 "the node's terminal did not finish booting within {grace} s — it never drew a \
                  screen under bracketed paste and then went quiet — and a paste typed into a TUI \
                  that is still booting is discarded"
@@ -353,6 +414,11 @@ impl Worker {
         let mut unready_since = None;
         // Until the first paste lands, the terminal must also have booted.
         let mut booted = false;
+        // A boot dialog is answered once: one that is back after marion's keys is held.
+        let mut answered = false;
+        if let Some(host) = self.host.upgrade() {
+            host.watch_boot_dialogs(self.params.dialogs);
+        }
         let mut next_look: Option<Instant> = None;
         while self.await_work(next_look.take()) {
             let (Some(host), Some(inboxes)) = (self.host.upgrade(), self.inboxes.upgrade()) else {
@@ -361,7 +427,10 @@ impl Worker {
             if held.is_none() && inboxes.queued(&self.agent) == 0 {
                 continue;
             }
-            let boot = (!booted).then_some(self.params.settle);
+            let boot = (!booted).then(|| Boot {
+                settle: self.params.settle,
+                answer_dialogs: !answered && host.answers_boot_dialogs(),
+            });
             let decision = gate(
                 &host.input_state(),
                 Instant::now(),
@@ -372,6 +441,11 @@ impl Worker {
             self.observe(&decision);
             next_look = Some(match decision {
                 Gate::Wait(_, at) => at,
+                Gate::Answer(dialog) => {
+                    answered |= self.answer(&host, &inboxes, &mut held, dialog, boot);
+                    // The TUI redraws after the keys; the next look waits for that as a boot.
+                    Instant::now() + self.policy.recheck
+                }
                 Gate::Refuse(reason) => {
                     if let Some(m) = held.take().or_else(|| inboxes.take_next(&self.agent)) {
                         inboxes.dropped(&self.agent, &m.id, &reason);
@@ -382,7 +456,10 @@ impl Worker {
                 Gate::Ready => match held.take().or_else(|| inboxes.take_next(&self.agent)) {
                     Some(m) => {
                         held = self.paste(&host, &inboxes, m, boot);
-                        booted |= held.is_none();
+                        if !booted && held.is_none() {
+                            booted = true;
+                            host.boot_over();
+                        }
                         if held.is_some() {
                             Instant::now() + self.policy.recheck
                         } else {
@@ -402,13 +479,56 @@ impl Worker {
         }
     }
 
+    /// **Answer `dialog` with its row's keys**, alone — no paste rides with them. `true` once they
+    /// reached the terminal. A write that fails drops the message waiting on the dialog, by name.
+    fn answer(
+        &self,
+        host: &PtyHost,
+        inboxes: &Inboxes,
+        held: &mut Option<Message>,
+        dialog: &'static BootDialog,
+        boot: Option<Boot>,
+    ) -> bool {
+        let DialogAnswer::Keys(keys) = dialog.answer else {
+            return false;
+        };
+        let label = format!("marion: boot dialog answered: {}", dialog.needle);
+        let injection = Injection {
+            label: &label,
+            body: keys,
+            submit: b"",
+            submit_delay: Duration::ZERO,
+        };
+        let admit = |state: &InputState| {
+            gate(state, Instant::now(), &self.policy, boot, &mut None) == Gate::Answer(dialog)
+        };
+        match host.inject(&injection, &admit) {
+            Ok(Injected::Written) => true,
+            Ok(Injected::Declined) => false,
+            Err(error) => {
+                if let Some(m) = held.take().or_else(|| inboxes.take_next(&self.agent)) {
+                    inboxes.dropped(
+                        &self.agent,
+                        &m.id,
+                        &format!(
+                            "the node's terminal showed a boot dialog ({}) and marion's answer \
+                             could not be written to it: {error}",
+                            dialog.needle
+                        ),
+                    );
+                }
+                false
+            }
+        }
+    }
+
     /// Paste `m`, or hand it back when the operator got to the terminal first.
     fn paste(
         &self,
         host: &PtyHost,
         inboxes: &Inboxes,
         m: Message,
-        boot: Option<Duration>,
+        boot: Option<Boot>,
     ) -> Option<Message> {
         let body = frame(&render(&m));
         let label = format!("marion: turn delivery {}", m.id);

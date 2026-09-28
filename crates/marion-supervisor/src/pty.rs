@@ -2568,6 +2568,10 @@ pub struct PtyHost {
     /// operator keystroke can land between "the composer is empty" and marion's paste, nor between
     /// the paste and its submit.
     typing: Mutex<input::Typing>,
+    /// **Marion may answer this terminal's boot dialogs** — set by the launcher, before the host
+    /// is published, only where the child runs in a worktree marion created for it
+    /// ([`Self::license_boot_dialog_answers`]).
+    answers_boot_dialogs: AtomicBool,
     child: Mutex<Option<PtyChild>>,
     reader: Mutex<Option<std::thread::JoinHandle<io::Result<()>>>>,
     reader_completion: Arc<ReaderCompletion>,
@@ -2794,6 +2798,7 @@ impl PtyHost {
             master,
             shared,
             typing: Mutex::new(input::Typing::default()),
+            answers_boot_dialogs: AtomicBool::new(false),
             child: Mutex::new(None),
             reader: Mutex::new(reader),
             reader_completion,
@@ -3619,6 +3624,7 @@ impl PtyHost {
     fn write_operator_keys(&self, bytes: &[u8]) -> io::Result<()> {
         let mut typing = self.typing.lock().unwrap_or_else(|e| e.into_inner());
         typing.operator_wrote(bytes, Instant::now());
+        self.modes().operator_typed();
         #[cfg(test)]
         if let Some(error) = self.take_master_input_failure() {
             return Err(io::Error::other(error));
@@ -3633,14 +3639,42 @@ impl PtyHost {
     }
 
     fn input_state_locked(&self, typing: &input::Typing) -> input::InputState {
-        let modes = self.shared.modes.lock().unwrap_or_else(|e| e.into_inner());
+        let modes = self.modes();
         input::InputState {
             bracketed_paste: modes.bracketed_paste(),
             last_operator_input: typing.last_operator_input(),
             composer_empty: typing.composer_empty(),
             screen_drawn: modes.drawn(),
             last_output: modes.last_output(),
+            boot_dialog: modes.showing(),
         }
+    }
+
+    fn modes(&self) -> std::sync::MutexGuard<'_, input::ModeScan> {
+        self.shared.modes.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Recognise the row's boot dialogs on this terminal ([`input::InputState::boot_dialog`]),
+    /// over what it has drawn already.
+    pub fn watch_boot_dialogs(&self, dialogs: &'static [marion_harness::spec::BootDialog]) {
+        self.modes().watch(dialogs);
+    }
+
+    /// The first paste landed: stop reading the screen for dialogs, and drop what was kept.
+    pub fn boot_over(&self) {
+        self.modes().boot_over();
+    }
+
+    /// **The child runs in a workspace marion created**, so its answerable boot dialogs are marion's
+    /// to answer ([`marion_harness::spec::DialogAnswer::Keys`]). Called by the launcher before the
+    /// host is published; never by default, because an operator's own directory is the operator's
+    /// to trust.
+    pub fn license_boot_dialog_answers(&self) {
+        self.answers_boot_dialogs.store(true, Ordering::SeqCst);
+    }
+
+    pub fn answers_boot_dialogs(&self) -> bool {
+        self.answers_boot_dialogs.load(Ordering::SeqCst)
     }
 
     /// **Marion types into the node's terminal** — turn delivery's paste (`crate::paste`).
@@ -3648,7 +3682,10 @@ impl PtyHost {
     /// Under the write lock every operator keystroke also takes, and in this order: `admit` is
     /// asked with the terminal's [`input::InputState`] as of now; if it declines, nothing is
     /// written or recorded ([`Injected::Declined`]). Otherwise `body` is written, then — still
-    /// under the lock, so no operator key can land between them — `submit` after `submit_delay`.
+    /// under the lock, so no operator key can land between them — `submit` after `submit_delay`
+    /// (nothing, when `submit` is empty: an answer to a boot dialog is its keys alone). Like any
+    /// key, it clears the screen text boot dialogs are read from, and the drawn screen with it, so
+    /// a first paste after it waits for the TUI to redraw ([`input::ModeScan::marion_typed`]).
     /// The lock is held across the delay on purpose: an operator key in that gap would be
     /// submitted as part of marion's message. It costs the operator at most that delay of latency.
     ///
@@ -3683,9 +3720,12 @@ impl PtyHost {
         if !admit(&self.input_state_locked(&typing)) {
             return Ok(Injected::Declined);
         }
+        self.modes().marion_typed();
         self.inject_part(Some(injection.label), injection.body)?;
-        std::thread::sleep(injection.submit_delay);
-        self.inject_part(None, injection.submit)?;
+        if !injection.submit.is_empty() {
+            std::thread::sleep(injection.submit_delay);
+            self.inject_part(None, injection.submit)?;
+        }
         drop(typing);
         Ok(Injected::Written)
     }

@@ -30,14 +30,14 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -133,6 +133,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Not measured: S34 ran pi only against marion's canned models.json provider, and an endpoint
     // recipe (a models.json naming the operator's provider and key) was never tried.
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "S37 0.80.2, fresh directory, --no-extensions: the first screen is the composer. \
+               An operator's own extension may draw a `Press any key to continue` splash; that \
+               is the operator's configuration, not the harness",
+    },
     wires: &[],
     // pi 0.80.2 `dist/config.js`: `getAuthPath()` is `<agent dir>/auth.json` and the agent dir is
     // `PI_CODING_AGENT_DIR` — the variable the canned row already relocates (item 3). A profile is
@@ -209,6 +215,34 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &["/errorMessage"],
         fallback: "pi's last turn ended in error",
     }],
+    // s34 (`pi-provider-500.stdout.jsonl`): each retry is an `auto_retry_start` naming the
+    // error, and the failed turn's `message_end` carries `stopReason: error` and `errorMessage`
+    // (`500 canned failure`, `401 canned failure`).
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "auto_retry_start")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/errorMessage"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "message_end"),
+                    Cond::Eq("/message/stopReason", "error"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/message/errorMessage"],
+        },
+    ],
     file_changes: None,
     session: Some(SessionId {
         at: Where {

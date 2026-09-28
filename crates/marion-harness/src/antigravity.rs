@@ -36,8 +36,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration, MCP_ALIAS,
-    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration,
+    MCP_ALIAS, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
     UpdatePolicy,
 };
 
@@ -81,6 +81,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[],
     // No canned route and so no overlay to point at an endpoint: agy runs only on the operator's
     // own login, and an endpoint launch is refused like a canned one.
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "agy's first screen was not measured for dialogs, and its native lane ships disabled",
+    },
     wires: &[],
     // No carrier: agy keeps its login in the keychain, outside any directory it reads.
     profile: None,
@@ -185,6 +189,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &[],
         label: "agy result status: ",
     }],
+    // agy has no canned route, so no provider fault was ever put in front of it.
+    errors: &[],
     file_changes: None,
     session: Some(SessionId {
         at: Where {

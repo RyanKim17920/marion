@@ -1646,6 +1646,80 @@ login with the cheapest model the harness offered.
   models.` marion inherits the operator's default by design, so this is the operator's
   configuration and not a marion defect. The matrix passed `opencode/big-pickle` (free) explicitly.
 
+**Every row through one conformance battery (S37, 2026-09-27, `tests/fixtures/conformance/`,
+$0.00 metered).** `crates/marion-supervisor/tests/conformance` defines eleven probes once and runs
+them against every row (`Harness::ALL`, ACP expanded over `acp::AGENTS`), each launch compiled by
+the same `run::child_launch_spec` → `config_files` → `compile` a spawn takes, every request
+answered by a hold in front of `CannedServer` that scripts the turn, parks a step, counts usage or
+faults the request (`Hold::answer`). Each probe reads what to expect from the row — surfaces,
+update policy, approval grant, stream grammar, turn delivery, resume, pane — so a new row gets the
+whole battery with no probe code; `scripts/conformance.sh --all` writes `matrix.{json,md}` and one
+trimmed S36-format transcript per probe, and `scripts/admit-harness.sh` now runs it for the admitted
+programs against the committed matrix (a PASS cell that moves is RED). Measured on claude-code
+2.1.283, codex 0.155.1, gemini 0.53.0, opencode 1.18.32 (`run` and `acp`), copilot 1.0.83, goose
+1.52.0, qwen 0.23.0; agy and the ACP agents without a canned recipe are UNSUPPORTED by marion's own
+refusal, cline was not installed, pi's row has not landed. **Confirmed as the rows state:** every
+measured row reads its version under its no-self-update switch, takes a canned turn, lists marion's
+`report` in the turn's first request (codex excepted, below), has `report` answered and read back
+with narrative, usage, session id and activity through its own grammar, resumes with history
+(claude, codex, opencode `run`/`acp`, copilot, qwen), and leaves nothing behind after marion's kill
+sweep. **Every harness that has an MCP client waits for a slow one**: with marion's bridge delayed
+4 s and no gate of marion's, claude, gemini, opencode (both surfaces), copilot, goose and qwen sent
+their first turn request 4.4–8 s after spawn with marion's tools listed — the codex app-server
+hazard (S36) is not general. claude stream-json **folds** a message written during a two-round turn
+(one `result`, the text in the next request), and opencode's ACP agent answers both prompts. The
+grant is load-bearing where marion compiles one: stripped, claude asks (`can_use_tool`, marion's
+deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
+**Contradicting or missing from the rows:**
+- **codex exec lists none of marion's tools in the first request** (`codex-0.155.1/p-tools-*`):
+  the canned config still lacks `omit_tools_from = ["deferred"]`, so the default model sees marion's
+  verbs only behind `tool_search`. The fix is `4223c1a` on `appserver-measure`, not yet landed; a
+  scripted `report` still dispatches, which is why every other suite stays green.
+- **goose's `GOOSE_MODE=auto` grant is not load-bearing on 1.52.0**: with it removed, `report` ran
+  unasked (`goose-1.52.0/p-approval-ungranted.jsonl`). The row approves every tool to get one.
+- **A provider 401 reaches marion's classifier on gemini and goose only.** `auth_failure_line`
+  reads stderr; claude retries a 401 as `system/api_retry` `authentication_failed` (10 retries,
+  backoff to ~35 s, still retrying at 45 s, nothing on stderr); codex exits 1 with
+  `turn.failed` — its row's `failures` is empty, so `stream_failure` is `None`; opencode (`run`
+  and ACP `-32603`) and copilot say it on stdout only; **qwen reports it as a successful turn**:
+  `result` `subtype: success`, `is_error: false`, text `[API Error: 401 …]`, exit 0.
+- **429/5xx have no row markers at all**, and behaviour splits: opencode (both surfaces), claude,
+  qwen and copilot's 429 were still retrying at 45 s; codex exits 1 at once on 429 and after ~30
+  requests on 500; goose gives up in ~7 s at **exit 0**; copilot's 500 exits 1 after ~35 s.
+- **SIGTERM to the harness process alone orphans the real one on copilot and qwen**: copilot's npm
+  launcher dies and the platform `copilot` binary lives on; qwen's re-exec'd `node --expose-gc`
+  child lives on. marion's group kill covers both; a caller that signals one pid does not. gemini
+  ignored SIGTERM for 20 s while a request was held in one run and exited 0 in another; opencode's
+  SIGINT ended a held turn in 0.1 s in one run and not within 10 s in the next.
+- **Both pane rows boot into a folder-trust dialog, and no row names it** (`p-tui.jsonl`): claude's
+  defaults to `No, exit`, so a paste + CR — what marion's paste injector sends first — quits it;
+  codex's defaults to `Yes, continue` and swallows the first paste, after which a second one
+  submits and output goes quiet within `OutputQuiet{1500}`. Both enable DECSET 2004 at boot, and
+  codex's `/mcp` lists `marion: connected (6 tools)`.
+
+**S37 follow-up: boot dialogs, stream-read provider errors, goose's mode (2026-09-27, $0.00).**
+- Every row now states `boot_dialogs` (`tests/fixtures/s37-boot-dialogs/`, first screens in a fresh
+  directory under each row's no-self-update switch): claude 2.1.283 folder trust (default `No,
+  exit`; `ESC[B`+CR trusts, a bare CR quits, measured), then on a claude.ai login its pane's
+  development-channels warning (held); codex 0.155.1 directory trust (CR); copilot 1.0.83 folder
+  trust (CR, session only); gemini 0.53.0 folder trust (held: its answer persists); opencode and pi
+  none. The paste injector never pastes while one is on screen: it answers with the row's keys
+  only where the launcher licensed the host (the child runs in a worktree marion created — no
+  root does today), else holds and drops by name past the grace. P-tui answers the row's dialog:
+  codex now PASSes; claude's pane stops at the held channels warning.
+- Each `StreamGrammar` states `errors` (which frame carries a provider error, its status and
+  code); the one classifier reads those reports instead of guessing error frames by shape (which
+  read claude's retried 429 as a usage window on an API key). qwen's `success` result carrying
+  `[API Error: …]` and goose's `Ran into this error:` text are failure claims. A frame carrying
+  the provider's own 401/403 ends the run at once on every child and root path; 429/5xx are left
+  to the harness's backoff, and a run killed on its bound keeps the cause its retries stated.
+  P-errors, now judged 401→Auth, 429→RateLimit, 500→Outage: claude, codex, copilot, gemini and
+  goose PASS; opencode (`run` and ACP) and qwen still FAIL because they retry a 429/500 in silence
+  past 45 s — nothing marion reads says why.
+- goose keeps `GOOSE_MODE=auto` (`tests/fixtures/s37-goose-mode/`): unset, a write-granted child
+  writes on a fresh config, but `GOOSE_MODE: approve` in an operator's config.yaml (read by a live
+  node) aborts at exit 1 and the env overrides it.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---

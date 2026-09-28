@@ -2188,12 +2188,26 @@ fn launch_only_generation(
     // a root that printed a stack trace as an unexplained silence), and an endpoint node's key is
     // scrubbed from each line by the sink itself (`EventSink::scrub_key`) before it is kept. The
     // capture below is therefore never recorded again.
+    //
+    // A refused credential ends the run at once: a root has no wall clock at all, so a harness
+    // retrying a 401 would otherwise hold it for its whole backoff (`run::launch_only_child`).
     let events = events.map(|es| &*es);
+    let stopped: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let on_line = |line: &str| {
         if let Some(es) = events {
             es.record_line(line);
         }
         session.observe_line(line);
+        let refusal = serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|frame| adapter.auth_refusal(&frame));
+        match refusal {
+            Some(why) => {
+                stopped.borrow_mut().get_or_insert(why);
+                std::ops::ControlFlow::Break(())
+            }
+            None => std::ops::ControlFlow::Continue(()),
+        }
     };
     let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     let stdout = redact(&String::from_utf8_lossy(&out.stdout));
@@ -2211,7 +2225,8 @@ fn launch_only_generation(
         // with a fresh session is the more specific claim.
         failure: adapter
             .resume_refusal(&stdout, node.resumed.as_deref())
-            .or_else(|| adapter.stream_failure(&stdout)),
+            .or_else(|| adapter.stream_failure(&stdout))
+            .or_else(|| stopped.into_inner().map(crate::run::stopped_words)),
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
@@ -2498,6 +2513,12 @@ fn launch_terminal(
         stdin,
         Some(on_started),
     )?);
+    // A boot dialog (folder trust) is marion's to answer only in a worktree marion created for
+    // this node; in the operator's own directory it is the operator's. Before `opened`, so the
+    // paste driver that publication starts reads it.
+    if inv.cwd.starts_with(node.agent_dir.worktree()) {
+        host.license_boot_dialog_answers();
+    }
     // **After the process exists, never before.** See this function's doc, point 3.
     if let Some(owner) = pane {
         owner.opened(&node.agent_id, std::sync::Arc::clone(&host));
@@ -2671,6 +2692,9 @@ fn launch_duplex(
         .clone()
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let inv = &node.invocation;
+    let adapter = marion_harness::adapter::adapter_for(node.harness)
+        .map_err(|_| RootError::UnsupportedRootSurface(node.harness))?;
+    let stop_on = |frame: &serde_json::Value| adapter.auth_refusal(frame);
     let out = duplex::run_duplex(
         &mut inv.command(),
         &DuplexSpec {
@@ -2694,6 +2718,7 @@ fn launch_duplex(
             // See `launch_inner` for the hook and `spawned_record` for the record.
             on_started: Some(on_started),
             turns: node.turns.clone(),
+            stop_on: Some(&stop_on),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;
@@ -2705,8 +2730,8 @@ fn launch_duplex(
         // Gated *before* the turn on this path, so restating it post hoc would add nothing.
         marion_calls: vec![],
         // Same reason: the duplex driver never reaches the post-hoc assertion, so there is nowhere
-        // for a stream failure claim to be read from here.
-        failure: None,
+        // for a stream failure claim to be read from here — save marion's own ending of the run.
+        failure: out.stopped.map(crate::run::stopped_words),
         timed_out: out.timed_out,
         bridge_unused: false,
     })

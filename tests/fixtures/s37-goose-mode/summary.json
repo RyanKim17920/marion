@@ -1,0 +1,55 @@
+{
+  "measured": "2026-09-27, goose 1.52.0, canned OpenAI Chat Completions stub on loopback (spikes/s26/canned_provider.py with the tool's arguments scripted), a fresh HOME per run, `goose run --no-session --no-profile --with-builtin developer -t … --output-format stream-json -q`; the canned model calls developer's `write` with a path in the run's work dir",
+  "runs": [
+    {
+      "scenario": "unset",
+      "GOOSE_MODE env": null,
+      "config.yaml": null,
+      "file written": true,
+      "stdout frame types": [
+        "message",
+        "message",
+        "message",
+        "complete"
+      ],
+      "exit": 0
+    },
+    {
+      "scenario": "auto",
+      "GOOSE_MODE env": "auto",
+      "config.yaml": null,
+      "file written": true,
+      "stdout frame types": [
+        "message",
+        "message",
+        "message",
+        "complete"
+      ],
+      "exit": 0
+    },
+    {
+      "scenario": "cfg-approve",
+      "GOOSE_MODE env": null,
+      "config.yaml": "GOOSE_MODE: approve",
+      "file written": false,
+      "stdout frame types": [
+        "message"
+      ],
+      "stderr": "Error: Tool approval required in non-interactive mode with GooseMode::approve. This is an invalid configuration — Approve/SmartApprove modes require an interactive terminal. Use GooseMode::Auto for headless sessions.",
+      "exit": 1
+    },
+    {
+      "scenario": "cfg-approve+auto",
+      "GOOSE_MODE env": "auto",
+      "config.yaml": "GOOSE_MODE: approve",
+      "file written": true,
+      "stdout frame types": [
+        "message",
+        "message",
+        "message",
+        "complete"
+      ],
+      "exit": 0
+    }
+  ]
+}

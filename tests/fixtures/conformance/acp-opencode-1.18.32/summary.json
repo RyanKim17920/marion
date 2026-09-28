@@ -1,0 +1,65 @@
+{
+  "result": {
+    "fixtures": "acp-opencode-1.18.32",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f1b4c5bc8ffemJkn0W0wnPTvUz ; activity none (row: no activity rule)",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (session-mode), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion",
+        "status": "PASS"
+      },
+      "P-errors": {
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 8.4 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 55.4 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 47.3 s, 8 request(s), still running; cause none said; stream failure None",
+        "status": "FAIL"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.2 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces Headless(Acp)) takes one canned turn and ends it, with marion's declaration on the route Session(\"mcpServers\")",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; still running; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "idle stdin EOF: exit 0, left []; SIGTERM mid-turn: signal 15, left []",
+        "status": "PASS"
+      },
+      "P-midturn": {
+        "expected": "row Fold: the write is folded into the running turn or queued as the next; nothing is dropped and every prompt is answered",
+        "observed": "queued as its own turn (2 turn ends; requests [4]); 2 prompt answer(s)",
+        "status": "PASS"
+      },
+      "P-resume": {
+        "expected": "the row's resume spelling continues the killed session with its history",
+        "observed": "second life ended; its request carries the first life's prompt: true; session ses_f1b4c000cffewMS6VHxBMuWzMM -> ses_f1b4c000cffewMS6VHxBMuWzMM; resume refusal: none",
+        "status": "PASS"
+      },
+      "P-tools": {
+        "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 8.0 s after the spawn and listed marion's tools",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "OpenCode 1.18.32 (admitted in PINNED_HARNESSES); row states no switch (no single program: the switch is the bound agent's; only the opencode agent's canned recipe carries one (opencode's row))",
+        "status": "PASS"
+      }
+    },
+    "version": "OpenCode 1.18.32"
+  },
+  "row": "acp:opencode"
+}

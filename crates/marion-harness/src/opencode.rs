@@ -19,15 +19,15 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -244,6 +244,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              ≤ 361 ms; no structured turn-end signal",
         ),
     },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "S37 1.18.32, fresh directory, the operator's login: the first screen is the \
+               composer, no dialog",
+    },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
@@ -316,6 +321,18 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         words: &["/error/data/message", "/error/name"],
         fallback: "the child's stream carried an error frame",
+    }],
+    // S37 (`opencode-1.18.32/p-errors-401.jsonl`): the `error` frame carries the provider's
+    // status at `error.data.statusCode`. A 429 or 500 is retried with nothing on stdout.
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "error")],
+            each: None,
+            unit: &[],
+        },
+        status: Some("/error/data/statusCode"),
+        kind: None,
+        words: &["/error/data/message", "/error/name"],
     }],
     file_changes: None,
     // `sessionID` (`ses_` + 26 chars) is on **every** event (`s13/README.md`), so the first frame

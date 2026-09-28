@@ -1,0 +1,75 @@
+{
+  "result": {
+    "fixtures": "agy-unknown",
+    "probes": {
+      "P-activity": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-approval": {
+        "expected": "",
+        "observed": "P-activity did not run, so the granted case is unknown",
+        "reason": "P-activity did not run, so the granted case is unknown",
+        "status": "UNSUPPORTED"
+      },
+      "P-errors": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "status": "UNSUPPORTED"
+      },
+      "P-interrupt": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-launch": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-lifecycle": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): s32 on 1.2.8: `--conversation <id> -p …` continues the conversation under the same id and remembers the first turn",
+        "reason": "headless delivery is Continuation (a relaunch per turn, no mid-turn channel): s32 on 1.2.8: `--conversation <id> -p …` continues the conversation under the same id and remembers the first turn",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-tools": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+        "status": "UNSUPPORTED"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "",
+        "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+        "status": "UNSUPPORTED"
+      }
+    },
+    "version": "unknown"
+  },
+  "row": "agy"
+}

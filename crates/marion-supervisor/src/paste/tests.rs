@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_core::journal::{MessageDelivered, MessageDropped, RecordKind};
-use marion_harness::spec::TurnDelivery;
+use marion_harness::spec::{BootDialog, DialogAnswer, TurnDelivery};
 
 use super::*;
 use crate::inbox::{Inboxes, Source, render};
@@ -85,10 +85,89 @@ fn state(bracketed: bool, typed: Option<Instant>, empty: bool) -> crate::pty::In
         composer_empty: empty,
         screen_drawn: true,
         last_output: Some(Instant::now() - Duration::from_secs(60)),
+        boot_dialog: None,
     }
 }
 
 const SETTLE: Duration = Duration::from_millis(1500);
+
+/// Before the first paste, in a directory marion may not answer dialogs in.
+const BOOT: Option<Boot> = Some(Boot {
+    settle: SETTLE,
+    answer_dialogs: false,
+});
+
+/// The measured claude dialog, answerable, and the marker-free fallback the row holds on.
+const TRUST: BootDialog = BootDialog {
+    needle: "❯ No, exit Yes, I trust this folder",
+    answer: DialogAnswer::Keys(b"\x1b[B\r"),
+    note: "test: claude-like folder trust, default No",
+};
+const TRUST_HELD: BootDialog = BootDialog {
+    needle: "Is this a project you created or one you trust?",
+    answer: DialogAnswer::Hold,
+    note: "test: the same dialog, selection unmeasured",
+};
+const CLAUDE_LIKE: &[BootDialog] = &[TRUST, TRUST_HELD];
+
+fn showing(d: &'static BootDialog) -> crate::pty::InputState {
+    crate::pty::InputState {
+        boot_dialog: Some(d),
+        ..state(true, None, true)
+    }
+}
+
+/// **A dialog on the screen holds the first paste** — typed into it, the paste would answer it
+/// (claude's folder trust quits on CR) — and past the grace the message is refused naming it.
+/// Past the first paste the dialog is not asked about: the host stops reading for dialogs then.
+#[test]
+fn a_boot_dialog_holds_the_first_paste_then_is_refused_by_name() {
+    let now = Instant::now();
+    let p = policy();
+    let mut clock = None;
+    assert_eq!(
+        gate(&showing(&TRUST_HELD), now, &p, BOOT, &mut clock),
+        Gate::Wait(Hold::BootDialog, now + p.recheck)
+    );
+    assert!(matches!(
+        gate(&showing(&TRUST_HELD), now + p.paste_mode_grace, &p, BOOT, &mut clock),
+        Gate::Refuse(reason) if reason.contains(TRUST_HELD.needle) && reason.contains("dialog")
+    ));
+    let typing = crate::pty::InputState {
+        last_operator_input: Some(now),
+        ..showing(&TRUST_HELD)
+    };
+    assert_eq!(
+        gate(&typing, now, &p, BOOT, &mut None),
+        Gate::Wait(Hold::OperatorTyping, now + p.operator_quiet),
+        "an operator answering the dialog is waited for as any typing is"
+    );
+}
+
+/// **An answerable dialog is answered only where marion may answer it**: with the row's keys in
+/// a workspace marion created, held like any other dialog everywhere else.
+#[test]
+fn an_answerable_dialog_is_answered_only_in_marions_own_workspace() {
+    let now = Instant::now();
+    let p = policy();
+    let marions = Some(Boot {
+        settle: SETTLE,
+        answer_dialogs: true,
+    });
+    assert_eq!(
+        gate(&showing(&TRUST), now, &p, marions, &mut None),
+        Gate::Answer(&TRUST)
+    );
+    assert_eq!(
+        gate(&showing(&TRUST), now, &p, BOOT, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck)
+    );
+    assert_eq!(
+        gate(&showing(&TRUST_HELD), now, &p, marions, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck),
+        "a held dialog is never answered"
+    );
+}
 
 #[test]
 fn the_gate_opens_only_on_a_quiet_empty_bracketed_terminal() {
@@ -169,7 +248,7 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
         ..state(true, None, true)
     };
     assert_eq!(
-        gate(&undrawn, now, &p, Some(SETTLE), &mut clock),
+        gate(&undrawn, now, &p, BOOT, &mut clock),
         Gate::Wait(Hold::Booting, now + p.recheck)
     );
     let busy_at = now - Duration::from_millis(500);
@@ -178,12 +257,12 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
         ..state(true, None, true)
     };
     assert_eq!(
-        gate(&busy, now, &p, Some(SETTLE), &mut clock),
+        gate(&busy, now, &p, BOOT, &mut clock),
         Gate::Wait(Hold::Booting, busy_at + SETTLE),
         "quiet is measured from the node's last output"
     );
     assert_eq!(
-        gate(&busy, busy_at + SETTLE, &p, Some(SETTLE), &mut clock),
+        gate(&busy, busy_at + SETTLE, &p, BOOT, &mut clock),
         Gate::Ready
     );
     assert_eq!(clock, None, "ready resets the grace");
@@ -193,9 +272,9 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
         "past the first paste a busy terminal is typed into: S31 measured busy input is queued"
     );
 
-    gate(&undrawn, now, &p, Some(SETTLE), &mut clock);
+    gate(&undrawn, now, &p, BOOT, &mut clock);
     assert!(matches!(
-        gate(&undrawn, now + p.paste_mode_grace, &p, Some(SETTLE), &mut clock),
+        gate(&undrawn, now + p.paste_mode_grace, &p, BOOT, &mut clock),
         Gate::Refuse(reason) if reason.contains("booting")
     ));
     let off = crate::pty::InputState {
@@ -203,7 +282,7 @@ fn the_first_paste_waits_for_the_terminal_to_boot() {
         ..undrawn
     };
     assert_eq!(
-        gate(&off, now, &p, Some(SETTLE), &mut None),
+        gate(&off, now, &p, BOOT, &mut None),
         Gate::Wait(Hold::NoBracketedPaste, now + p.recheck),
         "bracketed paste is asked about first: without it there is no boot to wait for"
     );
@@ -233,6 +312,23 @@ fn only_a_terminal_paste_row_gets_an_injector() {
         ),
         "the row's idle signal is the boot settle"
     );
+    // A row's own injector carries the dialogs its TUI shows at boot, and only a paste row has one.
+    for h in marion_core::harness::Harness::ALL {
+        let row = marion_harness::adapter::harness_spec(h);
+        let interactive =
+            marion_harness::spec::delivery_for(row, marion_harness::spec::NodeShape::Interactive);
+        match PasteParams::for_row(row) {
+            Some(p) => assert_eq!(
+                (Some(p.submit), p.dialogs),
+                (
+                    PasteParams::of(interactive).map(|q| q.submit),
+                    row.boot_dialogs.dialogs
+                ),
+                "{h}"
+            ),
+            None => assert!(PasteParams::of(interactive).is_none(), "{h}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -252,6 +348,16 @@ struct Bed {
 
 impl Bed {
     fn new(tag: &str, policy: PastePolicy) -> Bed {
+        Bed::booting(tag, policy, &[], false)
+    }
+
+    /// A bed whose row shows `dialogs` at boot, in a workspace marion may answer them in or not.
+    fn booting(
+        tag: &str,
+        policy: PastePolicy,
+        dialogs: &'static [BootDialog],
+        marions_workspace: bool,
+    ) -> Bed {
         let dir = marion_testsupport::scratch(tag);
         let cast = dir.join("pty.cast");
         let size = WinSize::new(80, 24);
@@ -272,6 +378,9 @@ impl Bed {
             )
             .expect("the host starts"),
         );
+        if marions_workspace {
+            host.license_boot_dialog_answers();
+        }
         let records = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&records);
         let inboxes = Arc::new(Inboxes::new(Box::new(move |k| {
@@ -286,6 +395,7 @@ impl Bed {
             &inboxes,
             PasteParams {
                 settle: BED_SETTLE,
+                dialogs,
                 ..PasteParams::of(PASTE).unwrap()
             },
             policy,
@@ -653,5 +763,99 @@ fn the_injector_ends_with_its_node_and_drops_what_it_held() {
     assert!(
         bed.injector.join_for_test(Duration::from_secs(10)),
         "the injector's thread did not end with its node"
+    );
+}
+
+/// claude 2.1.283's first screen, recorded (`tests/fixtures/s37-boot-dialogs/`): folder trust,
+/// selection on `No, exit`.
+const CLAUDE_TRUST_SCREEN: &[u8] =
+    include_bytes!("../../../../tests/fixtures/s37-boot-dialogs/claude-code-2.1.283.raw");
+
+/// **No paste is typed into a trust dialog.** In the operator's own directory marion holds the
+/// message until the operator answers the dialog and the composer draws, and only then pastes —
+/// the first bytes the node reads are the operator's.
+#[test]
+fn a_paste_waits_for_the_operator_to_dismiss_a_boot_dialog() {
+    let mut bed = Bed::booting("paste-dialog-held", fast(), CLAUDE_LIKE, false);
+    bed.node_writes(CLAUDE_TRUST_SCREEN);
+    let id = bed.steer("after the dialog");
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::BootDialog, _)));
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"\x1b[B\r").unwrap();
+    assert_eq!(
+        bed.read_slave(4),
+        b"\x1b[B\r",
+        "the operator's answer, nothing of marion's"
+    );
+    bed.node_writes(b"\x1b[2J\x1b[H> ");
+    let want = expected_paste("after the dialog");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
+/// **In marion's own workspace the row's keys answer a default-No trust dialog — never a bare
+/// CR**, which would quit claude. The keys are written alone, marked in the cast, and the paste
+/// follows only once the TUI has redrawn and gone quiet.
+#[test]
+fn a_default_no_trust_dialog_is_answered_with_the_rows_keys_never_a_bare_cr() {
+    let mut bed = Bed::booting("paste-dialog-answered", fast(), CLAUDE_LIKE, true);
+    bed.node_writes(CLAUDE_TRUST_SCREEN);
+    let id = bed.steer("after the answer");
+    assert_eq!(
+        bed.read_slave(4),
+        b"\x1b[B\r",
+        "the row's keys, as one write"
+    );
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Booting, _)));
+    bed.node_writes(b"\x1b[2J\x1b[H> ");
+    let drawn_at = Instant::now();
+    let want = expected_paste("after the answer");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(
+        drawn_at.elapsed() >= BED_SETTLE,
+        "the paste waited for the redraw to settle"
+    );
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+    let records = bed.cast_records();
+    assert!(
+        records
+            .iter()
+            .any(|(_, c, d)| c == "m" && d.contains("boot dialog") && d.contains(TRUST.needle)),
+        "the cast marks marion's answer: {records:?}"
+    );
+}
+
+/// **A dialog marion never answers drops the message by name** past the grace, and the node
+/// receives nothing of it — even in marion's own workspace.
+#[test]
+fn a_dialog_marion_never_answers_drops_the_message_by_name() {
+    const HELD_ONLY: &[BootDialog] = &[TRUST_HELD];
+    let mut bed = Bed::booting(
+        "paste-dialog-dropped",
+        PastePolicy {
+            paste_mode_grace: Duration::ZERO,
+            ..fast()
+        },
+        HELD_ONLY,
+        true,
+    );
+    bed.node_writes(CLAUDE_TRUST_SCREEN);
+    let id = bed.steer("never typed");
+    match bed.resolution(&id) {
+        RecordKind::MessageDropped(d) => assert!(d.reason.contains("dialog"), "{d:?}"),
+        other => panic!("expected a drop, got {other:?}"),
+    }
+    let lease = bed.host.lease_writer(ConnId(1)).unwrap();
+    bed.host.write_input(&lease, b"x").unwrap();
+    assert_eq!(
+        bed.read_slave(1),
+        b"x",
+        "nothing of the message reached the node"
     );
 }

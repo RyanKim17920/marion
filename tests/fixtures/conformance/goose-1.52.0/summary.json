@@ -1,0 +1,67 @@
+{
+  "result": {
+    "fixtures": "goose-1.52.0",
+    "probes": {
+      "P-activity": {
+        "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 547, output: 41, cache_read: 25, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session none (row: no session rule) ; activity marion__report",
+        "status": "PASS"
+      },
+      "P-approval": {
+        "expected": "granted (env-var), `report` is answered; ungranted, the harness asks or refuses",
+        "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion — the grant is NOT load-bearing: the harness ran marion's tool without it",
+        "status": "FAIL"
+      },
+      "P-errors": {
+        "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+        "observed": "401: ended after 0.2 s, 2 request(s), exit 1; cause Auth { line: \"Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\" }; stream failure Some(\"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\"); refused credential read off a frame: \"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\" | 429: ended after 7.9 s, 7 request(s), exit 0; cause RateLimit { line: \"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\") | 500: ended after 6.8 s, 7 request(s), exit 0; cause Outage { line: \"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\")",
+        "status": "PASS"
+      },
+      "P-interrupt": {
+        "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+        "observed": "the cancel ended the turn in 0.0 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "status": "PASS"
+      },
+      "P-launch": {
+        "expected": "the headless launch (surfaces LaunchOnly) takes one canned turn and ends it at exit 0, with marion's declaration on the route Argv(\"marion:\")",
+        "observed": "turn ended; provider asked for the marker true on {\"openai\"}; exit 0; declaration route verified at compile; auth failure line: none",
+        "status": "PASS"
+      },
+      "P-lifecycle": {
+        "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []",
+        "status": "PASS"
+      },
+      "P-midturn": {
+        "expected": "",
+        "observed": "headless delivery None { note: \"S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name the caller chooses, which needs this row's --no-session dropped; until it is, there is no second turn\" }",
+        "reason": "headless delivery None { note: \"S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name the caller chooses, which needs this row's --no-session dropped; until it is, there is no second turn\" }",
+        "status": "UNSUPPORTED"
+      },
+      "P-resume": {
+        "expected": "",
+        "observed": "the row states no resume spelling (`resume: None`)",
+        "reason": "the row states no resume spelling (`resume: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-tools": {
+        "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+        "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.4 s after the spawn and listed marion's tools",
+        "status": "PASS"
+      },
+      "P-tui": {
+        "expected": "",
+        "observed": "the row has no pane shape (`pane: None`)",
+        "reason": "the row has no pane shape (`pane: None`)",
+        "status": "UNSUPPORTED"
+      },
+      "P-version": {
+        "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+        "observed": "1.52.0 (admitted in PINNED_HARNESSES); row states no switch (1.49.0 never updates itself on `run`/`session`: no update check in the binary's strings, no `GOOSE_*` update variable; `goose update` is explicit only)",
+        "status": "PASS"
+      }
+    },
+    "version": "1.52.0"
+  },
+  "row": "goose"
+}

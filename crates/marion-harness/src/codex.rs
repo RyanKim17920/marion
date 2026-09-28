@@ -15,15 +15,15 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, PathList, SessionId,
+    ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -202,6 +202,26 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              + CR does not (the paste-burst heuristic eats the CR); busy repaints ≤ 114 ms",
         ),
     },
+    // S37 first screens (0.155.1, `tests/fixtures/s37-boot-dialogs/codex-0.155.1.raw`): a fresh
+    // `CODEX_HOME` and directory open on directory trust, selection on `1. Yes, continue`. The
+    // S37 pane probe saw it swallow the first paste; CR trusts (config.toml gains the project's
+    // `trust_level = "trusted"`) and the composer draws.
+    boot_dialogs: BootDialogs {
+        dialogs: &[
+            BootDialog {
+                needle: "› 1. Yes, continue 2. No, quit",
+                answer: DialogAnswer::Keys(b"\r"),
+                note: "S37 0.155.1 directory trust, default `1. Yes, continue`: CR trusts",
+            },
+            BootDialog {
+                needle: "Do you trust the contents of this directory?",
+                answer: DialogAnswer::Hold,
+                note: "the same dialog with a selection S37 did not measure",
+            },
+        ],
+        note: "S37 0.155.1, fresh CODEX_HOME and directory: directory trust is the only dialog \
+               before the composer",
+    },
     wires: &[WireRecipe {
         wire: Wire::OpenAiResponses,
         env: &[],
@@ -274,6 +294,33 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         words: &["/error/message"],
         fallback: "the child's stream carried a turn.failed frame",
     }],
+    // S37 (`codex-0.155.1/p-errors-*.jsonl`): every provider fault is a `type: error` frame in
+    // codex's words (`Reconnecting... 1/5 (unexpected status 401 …)`, `exceeded retry limit,
+    // last status: 429 …`, a 500 as `We’re currently experiencing high demand …`), then
+    // `turn.failed`.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            // `usage_limit_exceeded` / `usage_limit_reached` on an account's spent window.
+            kind: Some("/codex_error_info"),
+            words: &["/message"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "turn.failed")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/error/message"],
+        },
+    ],
     file_changes: Some(PathList {
         at: Where {
             frame: &[Cond::Eq("/item/type", "file_change")],

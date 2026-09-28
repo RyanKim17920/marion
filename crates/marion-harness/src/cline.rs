@@ -46,14 +46,14 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar,
-    TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -186,6 +186,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "cline is not installed for S31 and its native lane ships disabled",
         },
     },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "cline is not installed; its first screen was not measured",
+    },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
         env: &[],
@@ -267,6 +271,20 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             label: "cline's run_result finishReason: ",
         },
     ],
+    // s27 (`cline-provider-500.stdout.jsonl`): the provider fault is the error `agent_event`.
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[
+                Cond::Eq("/type", "agent_event"),
+                Cond::Eq("/event/type", "error"),
+            ],
+            each: None,
+            unit: &[],
+        },
+        status: None,
+        kind: None,
+        words: &["/event/error/message"],
+    }],
     file_changes: None,
     // No frame carries the session id (s27 item 7): `hook_event.taskId` is a conversation id, and
     // the session id is a directory name.

@@ -138,9 +138,7 @@ impl RegistryHandle {
             return;
         };
         let row = marion_harness::adapter::harness_spec(harness);
-        if let Some(params) =
-            crate::paste::PasteParams::of(delivery_for(row, NodeShape::Interactive))
-        {
+        if let Some(params) = crate::paste::PasteParams::for_row(row) {
             let _ = crate::paste::PasteInjector::start(agent.clone(), host, &self.inboxes, params);
         }
     }

@@ -11,8 +11,9 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, RateLimitRule,
-    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
+    RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict,
+    Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -20,9 +21,9 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When, WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -221,6 +222,39 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    (p0b/tui/claude) and is the fallback a later phase may add",
         },
     },
+    // S37 first screens (2.1.283, `tests/fixtures/s37-boot-dialogs/claude-code-2.1.283.raw`): a
+    // fresh directory opens on folder trust, selection on `No, exit`. A bare CR quits the session
+    // (measured: the process exited); down-arrow + CR in one write trusts and opens the composer.
+    // The pane then shows the development-channels warning on a claude.ai login, which is held.
+    boot_dialogs: BootDialogs {
+        dialogs: &[
+            BootDialog {
+                needle: "❯ No, exit Yes, I trust this folder",
+                answer: DialogAnswer::Keys(b"\x1b[B\r"),
+                note: "S37 2.1.283 folder trust, default `No, exit`: `ESC[B` + CR as one write \
+                       selects `Yes, I trust this folder` and the composer draws; CR alone exits",
+            },
+            BootDialog {
+                needle: "Is this a project you created or one you trust?",
+                answer: DialogAnswer::Hold,
+                note: "the same dialog with a selection S37 did not measure",
+            },
+            BootDialog {
+                needle: "WARNING: Loading development channels",
+                answer: DialogAnswer::Hold,
+                note: "S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a \
+                       claude.ai login shows this for the pane's `--dangerously-load-development-\
+                       channels`, selection on `1. I am using this for local development`; an \
+                       acknowledgement the operator gives, never marion. It appears wherever \
+                       the operator's claude.ai login is present, a canned token beside it \
+                       included (S37 P-tui); without that login channels are refused and it \
+                       does not",
+            },
+        ],
+        note: "S37 2.1.283, fresh directory, the operator's login and an isolated config with \
+               onboarding done: folder trust, then (pane shape, claude.ai login) the development \
+               channels warning",
+    },
     wires: &[WireRecipe {
         wire: Wire::AnthropicMessages,
         env: &[],
@@ -334,6 +368,90 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             },
             words: &["/result", "/subtype"],
             fallback: "the run's result frame reported an error",
+        },
+        // qwen 0.23.0 (S37): a provider error as a `success` result, `is_error: false`, exit 0 —
+        // the one place its stream says the turn failed.
+        Failure::Frame {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "result"),
+                    Cond::Prefix("/result", "[API Error: "),
+                ],
+                each: None,
+                unit: &[],
+            },
+            words: &["/result"],
+            fallback: "the run's result frame carried an API error",
+        },
+    ],
+    // S37 (`tests/fixtures/conformance/claude-code-2.1.283/p-errors-*.jsonl`): claude 2.1.283
+    // retries a provider fault as `system/api_retry` with `error` and `error_status` (401
+    // `authentication_failed`, 429 `rate_limit`, 500 `server_error`), ten times, before any
+    // result. qwen 0.23.0 shares this grammar and writes a provider error as a `success` result
+    // whose text opens `[API Error: ` (`qwen-0.23.0/p-errors-401.jsonl`), at exit 0.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "system"),
+                    Cond::Eq("/subtype", "api_retry"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: Some("/error_status"),
+            kind: Some("/error"),
+            words: &[],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "result"), Cond::Eq("/is_error", "true")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/result"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "result"),
+                    Cond::Prefix("/result", "[API Error: "),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/result"],
+        },
+        // A usage window that refused the request (`status: rejected`, its `resetsAt` beside it),
+        // and the assistant frame it rode with, tagged `error: "rate_limit"` and saying it in
+        // words (`You've hit your session limit · resets …`) — from the installed 2.1.283's
+        // strings, the account-limit shapes the profiles work read.
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/type", "rate_limit_event"),
+                    Cond::Eq("/rate_limit_info/status", "rejected"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: Some("/rate_limit_info/rateLimitType"),
+            words: &["/rate_limit_info/status"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "assistant"), Cond::Has("/error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: Some("/error"),
+            words: &["/message/content"],
         },
     ],
     file_changes: None,

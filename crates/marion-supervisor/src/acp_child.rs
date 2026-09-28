@@ -1120,7 +1120,7 @@ impl Drop for Driver<'_> {
 /// 0.66.0 attaches a `persistent`, `project_local` policy rule to it (S22's capture, for marion's
 /// own `report`), which would write into the operator's project on marion's say-so (§6.4). A turn
 /// that asks again is answered again; that costs a frame, not a hang.
-fn allow_option(params: &Value) -> Option<String> {
+pub fn allow_option(params: &Value) -> Option<String> {
     let options = params.get("options")?.as_array()?;
     let kind = |o: &&Value| {
         o.get("kind")

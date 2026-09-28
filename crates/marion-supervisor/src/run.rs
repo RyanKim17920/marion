@@ -12,6 +12,7 @@
 //! `ProcessExit.description`, never silent.
 
 use std::io::{Read, Write};
+use std::ops::ControlFlow;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -600,11 +601,14 @@ pub fn verification_evidence(outcome: &ChildOutcome, commands: &[Command]) -> Ve
 /// its capture: the harness names its session in its first frame, and a node whose supervisor is
 /// lost mid-run is exactly the node a resume needs that name for. Called on the caller's thread,
 /// between polls of the child, so the capture returned afterwards is still whole.
+/// A live stdout line's hook: `Break` ends the run now (marion kills the tree).
+pub(crate) type LineHook<'a> = &'a dyn Fn(&str) -> ControlFlow<()>;
+
 pub(crate) fn run_bounded_watched(
     command: &mut SysCommand,
     timeout: StdDuration,
     on_started: &dyn Fn(i32),
-    on_line: Option<&dyn Fn(&str)>,
+    on_line: Option<LineHook<'_>>,
 ) -> Result<CommandOutput, SpawnError> {
     run_bounded_with(
         command,
@@ -622,7 +626,7 @@ fn run_bounded_with(
     timeout: StdDuration,
     kill_tree: fn(i32),
     on_started: Option<&dyn Fn(i32)>,
-    on_line: Option<&dyn Fn(&str)>,
+    on_line: Option<LineHook<'_>>,
 ) -> Result<CommandOutput, SpawnError> {
     command
         .process_group(0)
@@ -650,12 +654,16 @@ fn run_bounded_with(
     };
     let stdout_drain = Drain::start_with_lines(stdout, lines_tx);
     let stderr_drain = Drain::start(stderr);
+    // `Break` from the hook: the caller read a line that ends the run now. Every line is still
+    // delivered, so the live view misses nothing said before the kill.
     let deliver_lines = || {
+        let mut stop = false;
         if let (Some(hook), Some(rx)) = (on_line, &lines_rx) {
             for line in rx.try_iter() {
-                hook(&line);
+                stop |= hook(&line).is_break();
             }
         }
+        stop
     };
 
     // **`checked_add`, because the child is already running by this line.** `Instant + Duration`
@@ -674,7 +682,10 @@ fn run_bounded_with(
         .checked_add(timeout)
         .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(MAX_TIMEOUT_SECS));
     let (status, timed_out) = loop {
-        deliver_lines();
+        if deliver_lines() {
+            kill_tree(child.id() as i32);
+            break (child.wait()?, false);
+        }
         if let Some(status) = child.try_wait()? {
             break (status, false);
         }
@@ -691,7 +702,7 @@ fn run_bounded_with(
     let (stderr, stderr_complete) = stderr_drain.finish(drain_deadline);
     // Whatever landed between the last poll and the drain's end, including a final unterminated
     // line: the live view sees every line the capture does.
-    deliver_lines();
+    let _ = deliver_lines();
     Ok(CommandOutput {
         stdout,
         stderr,
@@ -907,6 +918,24 @@ struct ChildRun {
     /// because `run_spawn` journals them — before this field existed `DuplexOutcome`'s copy was
     /// dropped on the floor and a child's denial appeared in no contract and no journal record.
     denied_permissions: Vec<String>,
+    /// marion ended the run itself on a frame that said it had failed already — a refused
+    /// credential the harness was retrying ([`marion_harness::HarnessAdapter::auth_refusal`]) —
+    /// with the harness's words. `None` for a run that ended on its own or on its bound.
+    stopped: Option<String>,
+}
+
+/// **A run marion ended on a refused credential failed, and says so**: where the stream made no
+/// failure claim of its own, marion's reason is the claim, so the contract reads `Failed` in the
+/// harness's words rather than a bare signal.
+fn note_stopped(outcome: &mut ChildOutcome, run: &ChildRun) {
+    if outcome.failure.is_none() {
+        outcome.failure = run.stopped.clone().map(stopped_words);
+    }
+}
+
+/// What a run marion ended on a refused credential says of itself.
+pub(crate) fn stopped_words(why: String) -> String {
+    format!("marion ended the run: the harness was retrying a refused credential ({why})")
 }
 
 /// What a failed attempt relaunches on, where it relaunches at all.
@@ -926,16 +955,19 @@ fn billing(endpoint: Option<&crate::endpoint::Endpoint>) -> marion_harness::Bill
     }
 }
 
-/// **What a finished attempt said about why it failed** — the one classifier
-/// ([`marion_harness::failure_cause`]) over its stderr, its stream's own failure claim and its
-/// error-shaped frames, read with the node's billing.
+/// **What a finished attempt said about why it failed** — the one classifier, read through the
+/// row ([`marion_harness::HarnessAdapter::failure_cause`]): its stderr, its stream's own failure
+/// claim and the provider errors the row's grammar reads off its stream, with the node's billing.
+/// A run killed on its wall clock while the harness retried is read the same way: the retries
+/// said why (claude's `api_retry` carries the status on every attempt).
 fn attempt_cause(
+    adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
     run: &ChildRun,
     stream_failure: Option<&str>,
     endpoint: Option<&crate::endpoint::Endpoint>,
 ) -> Option<marion_core::contract::FailureCause> {
     let said = format!("{}\n{}", run.stderr, stream_failure.unwrap_or_default());
-    marion_harness::failure_cause(&said, &run.stdout, billing(endpoint))
+    adapter.failure_cause(&said, &run.stdout, billing(endpoint))
 }
 
 /// **The one relaunch policy**: whether a finished attempt relaunches, on what, and why — `None`
@@ -974,7 +1006,7 @@ fn next_attempt(
     if base.is_some_and(|b| changed_paths(wt, b).map_or(true, |c| !c.is_empty())) {
         return None;
     }
-    let cause = attempt_cause(run, stream.failure.as_deref(), endpoint)?;
+    let cause = attempt_cause(adapter, run, stream.failure.as_deref(), endpoint)?;
     let next = match (endpoint, &cause) {
         (
             Some(ep),
@@ -1006,12 +1038,17 @@ fn clear_ready_marker(marker: Option<&Path>) {
 /// withhold and nothing to steer. codex, gemini and opencode all declare
 /// `launch_only_with_protocol_events()` and all take this path; §6.1 step 8 asserts their MCP
 /// readiness *post hoc* from their own streams instead.
+///
+/// A line the row reads as a refused credential ([`marion_harness::HarnessAdapter::auth_refusal`])
+/// ends the run at once: no retry heals one, and codex, copilot and the rest retry a 401 before
+/// giving up (S37). Rate limits and outages are left to the harness's backoff.
 fn launch_only_child(
     inv: &Invocation,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
     session: &crate::session_watch::SessionWatch<'_>,
     events: Option<&crate::events::EventSink>,
+    adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = inv.command();
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
@@ -1020,11 +1057,22 @@ fn launch_only_child(
     // ([`record_capture_after_the_fact`] skips this path).
     // An endpoint node's key is scrubbed by the sink itself (`EventSink::scrub_key`), on this
     // live seam as on every other, before a line is kept.
+    let stopped: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let on_line = |line: &str| {
         if let Some(es) = events {
             es.record_line(line);
         }
         session.observe_line(line);
+        let refusal = serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|frame| adapter.auth_refusal(&frame));
+        match refusal {
+            Some(why) => {
+                stopped.borrow_mut().get_or_insert(why);
+                ControlFlow::Break(())
+            }
+            None => ControlFlow::Continue(()),
+        }
     };
     let output = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     Ok(ChildRun {
@@ -1039,6 +1087,7 @@ fn launch_only_child(
         // No control plane, so no ask can reach marion at all: the prompt is already in argv and
         // there is no channel afterwards. An absence by construction, not an empty measurement.
         denied_permissions: vec![],
+        stopped: stopped.into_inner(),
     })
 }
 
@@ -1092,6 +1141,8 @@ struct ChildDuplex<'a> {
     session: &'a crate::session_watch::SessionWatch<'a>,
     /// The node's inbox, for its turns after the first ([`DuplexSpec::turns`]).
     turns: Option<crate::inbox::TurnFeed>,
+    /// The frames that end the run now ([`DuplexSpec::stop_on`]).
+    stop_on: &'a dyn Fn(&serde_json::Value) -> Option<String>,
 }
 
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
@@ -1105,6 +1156,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         on_started,
         session,
         turns,
+        stop_on,
     } = child;
     let mut cmd = inv.command();
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
@@ -1141,6 +1193,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             sink,
             on_started: Some(on_started),
             turns,
+            stop_on: Some(stop_on),
         },
     )?;
     Ok(ChildRun {
@@ -1155,6 +1208,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         // no abandoned drain and nothing to record as short.
         capture_truncated: false,
         denied_permissions: out.denied_permissions,
+        stopped: out.stopped,
     })
 }
 
@@ -1835,6 +1889,7 @@ pub fn run_spawn_watched(
                 &announce_started,
                 &session,
                 events.as_ref(),
+                adapter.as_ref(),
             ),
             // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
             // children through the single ACP adapter*, and until this arm existed the only thing that
@@ -1866,6 +1921,8 @@ pub fn run_spawn_watched(
                 // the field it fills; §11 item 24's two axes are why the distinction is written down
                 // rather than left to look identical.
                 denied_permissions: vec![],
+                // ACP's reader is code, and no refused-credential frame was measured on it.
+                stopped: None,
             })
             .map_err(SpawnError::from),
             LaunchPath::Duplex => duplex_child(
@@ -1882,6 +1939,7 @@ pub fn run_spawn_watched(
                     on_started: &announce_started,
                     session: &session,
                     turns: feed(),
+                    stop_on: &|frame| adapter.auth_refusal(frame),
                 },
             ),
         };
@@ -1986,6 +2044,7 @@ pub fn run_spawn_watched(
         parsed.failure = Some(why);
     }
     let mut outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
+    note_stopped(&mut outcome, &run);
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
     // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
@@ -2071,6 +2130,7 @@ pub fn run_spawn_watched(
                 &announce_generation,
                 &session,
                 events.as_ref(),
+                adapter.as_ref(),
             );
             if let Some(why) = unaccountable.take() {
                 turns.dropped(
@@ -2101,11 +2161,12 @@ pub fn run_spawn_watched(
                 next.stderr = crate::endpoint::redact(&next.stderr, key.expose());
             }
             record_capture_after_the_fact(path, events.as_mut(), &next.stdout);
-            let later = ChildOutcome::from_stream(
+            let mut later = ChildOutcome::from_stream(
                 adapter.parse_stream(&next.stdout, next.exit),
                 next.exit,
                 next.stderr.clone(),
             );
+            note_stopped(&mut later, &next);
             outcome = crate::continuation::fold(outcome, later);
             run = ChildRun {
                 capture_truncated: run.capture_truncated || next.capture_truncated,
@@ -2198,7 +2259,12 @@ pub fn run_spawn_watched(
             at,
             adapter.harness(),
             &mut contract,
-            attempt_cause(&run, stream.failure.as_deref(), endpoint.as_ref()),
+            attempt_cause(
+                adapter.as_ref(),
+                &run,
+                stream.failure.as_deref(),
+                endpoint.as_ref(),
+            ),
         );
     }
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
@@ -2424,7 +2490,10 @@ fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
 
 /// The child's launch, in the neutral vocabulary the adapter compiles from. Every field is either
 /// read off the resolved agent type or decided by the launch path — never by a harness name.
-fn child_launch_spec(
+///
+/// Public for its second reader, the conformance battery (`tests/conformance`), which must drive
+/// each harness under exactly the launch a spawn compiles rather than a copy that could drift.
+pub fn child_launch_spec(
     env: &Env,
     req: &SpawnRequest,
     agent_type: &AgentType,
@@ -3077,6 +3146,169 @@ mod tests {
         );
     }
 
+    /// A `LaunchOnly` child that writes `frame` every 100 ms and never ends on its own, run under a
+    /// 30 s bound through the codex row's reader.
+    fn retrying_child(tag: &str, frame: &str) -> (ChildRun, StdDuration) {
+        let dir = scratch(tag);
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let id = AgentId(format!("n-{tag}"));
+        let inv = Invocation {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("while :; do echo '{frame}'; sleep 0.1; done"),
+            ],
+            env: vec![],
+            cwd: dir.to_path_buf(),
+            model: None,
+            session_mode: None,
+            env_remove: vec![],
+        };
+        let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
+        let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
+        let at = Instant::now();
+        let run = launch_only_child(
+            &inv,
+            StdDuration::from_secs(30),
+            &|_| {},
+            &watch,
+            None,
+            adapter.as_ref(),
+        )
+        .unwrap();
+        (run, at.elapsed())
+    }
+
+    /// **A refused credential ends the run at once, whatever the harness's retry schedule** — no
+    /// retry heals a 401, so waiting the harness out spends the node's clock for nothing. The run
+    /// ends failed in the harness's own words, not timed out, and its cause is still auth.
+    #[test]
+    fn an_auth_refusal_the_harness_retries_ends_the_run_at_once() {
+        let (run, took) = retrying_child(
+            "run-auth-stop",
+            r#"{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided)"}"#,
+        );
+        assert!(took < StdDuration::from_secs(10), "took {took:?}");
+        assert!(!run.exit.timed_out);
+        let why = run.stopped.as_deref().expect("marion ended it");
+        assert!(why.contains("401"), "{why}");
+        let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
+        assert!(matches!(
+            attempt_cause(adapter.as_ref(), &run, None, None),
+            Some(marion_core::contract::FailureCause::Auth { .. })
+        ));
+    }
+
+    /// **A rate limit the harness retries is left to its backoff** — it can recover inside it, as
+    /// an outage can — and a run the bound then ends still records the cause the retries said.
+    #[test]
+    fn a_retried_rate_limit_is_waited_out_and_its_cause_survives_the_timeout() {
+        let dir = scratch("run-limit-bound");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let id = AgentId("n-limit".into());
+        let inv = Invocation {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"while :; do echo '{"type":"error","message":"Reconnecting... 1/5 (exceeded retry limit, last status: 429 Too Many Requests)"}'; sleep 0.1; done"#.into(),
+            ],
+            env: vec![],
+            cwd: dir.to_path_buf(),
+            model: None,
+            session_mode: None,
+            env_remove: vec![],
+        };
+        let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
+        let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
+        let run = launch_only_child(
+            &inv,
+            StdDuration::from_secs(2),
+            &|_| {},
+            &watch,
+            None,
+            adapter.as_ref(),
+        )
+        .unwrap();
+        assert!(run.exit.timed_out, "left to the harness until the bound");
+        assert_eq!(run.stopped, None);
+        // On the operator's own login a 429 is the account's window: the cause the contract
+        // carries, a notice, and never a failover (`next_attempt`).
+        assert!(matches!(
+            attempt_cause(adapter.as_ref(), &run, None, None),
+            Some(marion_core::contract::FailureCause::UsageLimit { .. })
+        ));
+    }
+
+    /// **On the operator's own login only a refused credential fails over; a limit never switches
+    /// profiles.** Two profiles are listed; a run whose retries said 429 is the account's window —
+    /// its cause is recorded and nothing relaunches — while one that said 401 moves to the next
+    /// profile. The rule the coordinator pinned: a usage limit is a notice, never an account swap.
+    #[test]
+    fn a_limit_never_switches_profiles_and_a_refused_login_does() {
+        let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
+        let profile = |name: &str| crate::profiles::Profile {
+            name: name.into(),
+            harness: Harness::Codex,
+            dir: format!("/profiles/{name}"),
+        };
+        let launch = crate::profiles::Launch {
+            chain: vec![profile("work"), profile("personal")],
+            paths: None,
+        };
+        let failed = |message: &str| ChildRun {
+            stdout: format!(r#"{{"type":"error","message":"{message}"}}"#),
+            stderr: String::new(),
+            exit: ChildExit {
+                code: Some(1),
+                signal: None,
+                timed_out: false,
+            },
+            capture_truncated: false,
+            denied_permissions: vec![],
+            stopped: None,
+        };
+        let wt = scratch("run-profile-policy");
+        let next = |run: &ChildRun| {
+            next_attempt(
+                None,
+                &launch,
+                0,
+                run,
+                adapter.as_ref(),
+                &wt,
+                None,
+                StdDuration::from_secs(60),
+            )
+        };
+        assert!(
+            next(&failed(
+                "exceeded retry limit, last status: 429 Too Many Requests"
+            ))
+            .is_none(),
+            "a limit relaunches nothing"
+        );
+        assert!(matches!(
+            attempt_cause(
+                adapter.as_ref(),
+                &failed("exceeded retry limit, last status: 429 Too Many Requests"),
+                None,
+                None
+            ),
+            Some(marion_core::contract::FailureCause::UsageLimit { .. })
+        ));
+        assert!(matches!(
+            next(&failed(
+                "unexpected status 401 Unauthorized: Incorrect API key provided"
+            )),
+            Some((
+                Next::Profile(1),
+                marion_core::contract::FailureCause::Auth { .. }
+            ))
+        ));
+    }
+
     /// **An endpoint child's key never reaches its live event record.** `launch_only_child`
     /// records each line as it lands, before the capture is redacted, so the node's sink has to
     /// scrub the line; a harness echoing its key in an error is the case this defends.
@@ -3107,12 +3339,14 @@ mod tests {
             env_remove: vec![],
         };
         let watch = crate::session_watch::SessionWatch::new(&project, &id, Harness::Codex, false);
+        let adapter = marion_harness::adapter::adapter_for(Harness::Codex).unwrap();
         let run = launch_only_child(
             &inv,
             StdDuration::from_secs(20),
             &|_| {},
             &watch,
             Some(&sink),
+            adapter.as_ref(),
         )
         .unwrap();
         drop(sink);
@@ -3366,6 +3600,7 @@ mod tests {
         );
         let on_line = |line: &str| {
             seen.borrow_mut().push((line.to_string(), marker.exists()));
+            ControlFlow::Continue(())
         };
         let out = run_bounded_with(
             SysCommand::new("sh").args(["-c", &script]),

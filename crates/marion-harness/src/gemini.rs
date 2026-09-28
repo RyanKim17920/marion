@@ -13,15 +13,15 @@ use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, SessionId,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -165,6 +165,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             note: "gemini 0.53's TUI stops at Google's retired sign-in, so S31 could not probe it",
         },
     },
+    // S37 first screen (0.53.0, `tests/fixtures/s37-boot-dialogs/gemini-0.53.0.raw`): folder
+    // trust, selection on `1. Trust folder`. Its answer was not measured (it persists to the
+    // operator's trustedFolders), and the row takes no paste, so it is held.
+    boot_dialogs: BootDialogs {
+        dialogs: &[BootDialog {
+            needle: "Do you trust the files in this folder?",
+            answer: DialogAnswer::Hold,
+            note: "S37 0.53.0 folder trust; its answer persists and was not measured",
+        }],
+        note: "S37 0.53.0, fresh directory, the operator's login, terminal queries answered: \
+               folder trust before the composer",
+    },
     wires: &[WireRecipe {
         wire: Wire::Gemini,
         env: &[],
@@ -258,6 +270,19 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             fallback: "the child's stream carried an error body",
         },
     ],
+    // S37 (`gemini-0.53.0/p-errors-401.jsonl`): the result's `error.message` quotes the
+    // provider's body, status included (`{"error":{"code":401,…}}`). A 429 or 500 is retried with
+    // its status on stderr only (`Attempt 1 failed with status 429`).
+    errors: &[ErrorRule {
+        at: Where {
+            frame: &[Cond::Has("/error")],
+            each: None,
+            unit: &[],
+        },
+        status: None,
+        kind: None,
+        words: &["/error/message", "/message"],
+    }],
     file_changes: None,
     // The first `stream-json` frame (`s12/README.md`): `init` carries `session_id`. Recorded even
     // though the row's `resume` is `None` — the id is a fact about the run, and what 0.53.0 cannot

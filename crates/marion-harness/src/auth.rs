@@ -88,6 +88,10 @@ const AUTH_FAILURE_MARKERS: &[&str] = &[
     "please set an auth method",
     "api key not valid",
     "invalid api key",
+    // OpenAI's own 401 sentence, which OpenAI-compatible providers repeat and harnesses pass on
+    // with no status beside it (S37: opencode's ACP agent, `Internal error: Incorrect API key
+    // provided`).
+    "incorrect api key",
     "not logged in",
     "please run /login",
     "authentication failed",
@@ -137,6 +141,10 @@ const USAGE_LIMIT_MARKERS: &[&str] = &[
 /// A bare 5xx is matched as a token of its own ([`OUTAGE_STATUSES`]).
 const OUTAGE_MARKERS: &[&str] = &[
     "overloaded",
+    // codex 0.155.1's words for a provider 5xx (S37 `codex-0.155.1/p-errors-500.jsonl`): no status
+    // on the frame at all, only `We’re currently experiencing high demand, which may cause
+    // temporary errors.`
+    "experiencing high demand",
     "service unavailable",
     "internal server error",
     "bad gateway",
@@ -182,22 +190,70 @@ const OUTAGE_STATUSES: &[&str] = &["500", "502", "503", "504", "529"];
 /// result or a narrative, where a child writing *about* a 429 would otherwise read as having hit
 /// one. `stderr` is read whole, as [`auth_failure_line`] reads it.
 pub fn failure_cause(stderr: &str, stdout: &str, billing: Billing) -> Option<FailureCause> {
-    let mut lines: Vec<Candidate> = stderr
+    let mut lines = stderr_candidates(stderr);
+    lines.extend(stdout.lines().filter_map(|l| {
+        let frame: Value = serde_json::from_str(l.trim()).ok()?;
+        error_shaped(&frame).then(|| Candidate {
+            raw: l.trim().to_string(),
+            frame: Some(frame),
+            reported: None,
+        })
+    }));
+    classify(&lines, billing)
+}
+
+/// **[`failure_cause`] over the provider errors a row's own grammar read off the stream**
+/// ([`crate::grammar::error_reports`]) instead of every error-shaped frame — the reading a harness
+/// with a stream grammar is classified by (`HarnessAdapter::failure_cause`). Each report's line is
+/// what is matched, never its frame's whole text, so a number elsewhere in the frame (a duration,
+/// a token count) is not read as a status; the frame is kept for what only it carries.
+///
+/// A report is a structured statement of a provider error, not prose, so on a subscription its
+/// rate-limit words are the account's window as surely as a 429 is — claude's `rate_limit` tag.
+pub fn reported_failure_cause(
+    stderr: &str,
+    reports: &[crate::grammar::ErrorReport],
+    billing: Billing,
+) -> Option<FailureCause> {
+    let mut lines = stderr_candidates(stderr);
+    lines.extend(reports.iter().map(|r| Candidate {
+        raw: r.line.clone(),
+        frame: Some(r.frame.clone()),
+        reported: r.words.clone().or_else(|| Some(r.line.clone())),
+    }));
+    classify(&lines, billing)
+}
+
+/// **A provider's refusal of the credential, among `reports`**: the first report that the one
+/// classifier reads as `Auth` **and** that carries the provider's status, a standalone 401 or 403
+/// — what no retry heals, and so what ends a run early. The words alone (`unauthorized`) are not
+/// enough here: codex reports an operator's MCP server refusing it on the same error frame.
+pub fn refused_credential(reports: &[crate::grammar::ErrorReport]) -> Option<String> {
+    reports.iter().find_map(|r| {
+        let lower = r.line.to_ascii_lowercase();
+        let provider = has_status(&lower, "401") || has_status(&lower, "403");
+        match reported_failure_cause("", std::slice::from_ref(r), Billing::Subscription)? {
+            FailureCause::Auth { line } if provider => Some(line),
+            _ => None,
+        }
+    })
+}
+
+fn stderr_candidates(stderr: &str) -> Vec<Candidate> {
+    stderr
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(|l| Candidate {
             raw: l.to_string(),
             frame: None,
+            reported: None,
         })
-        .collect();
-    lines.extend(stdout.lines().filter_map(|l| {
-        let frame: Value = serde_json::from_str(l.trim()).ok()?;
-        error_shaped(&frame).then(|| Candidate {
-            raw: l.trim().to_string(),
-            frame: Some(frame),
-        })
-    }));
+        .collect()
+}
+
+/// The one ranking, over whatever lines were read: limit > auth > outage (module doc).
+fn classify(lines: &[Candidate], billing: Billing) -> Option<FailureCause> {
     // A sentence beats a bare structural signal: the rejected `rate_limit_event` usually rides
     // beside the frame that says it in words, and the words are what a notice quotes.
     if billing == Billing::ApiKey
@@ -243,12 +299,18 @@ pub fn failure_cause(stderr: &str, stdout: &str, billing: Billing) -> Option<Fai
 struct Candidate {
     raw: String,
     frame: Option<Value>,
+    /// A row's grammar read it as a provider error report ([`reported_failure_cause`]): `raw` is
+    /// then the report's line, and this the sentence a notice quotes (the harness's words, else
+    /// the line).
+    reported: Option<String>,
 }
 
 impl Candidate {
     fn is_limit_text(&self) -> bool {
         let lower = self.raw.to_ascii_lowercase();
-        USAGE_LIMIT_MARKERS.iter().any(|m| lower.contains(m)) || has_status(&lower, "429")
+        USAGE_LIMIT_MARKERS.iter().any(|m| lower.contains(m))
+            || has_status(&lower, "429")
+            || (self.reported.is_some() && RATE_LIMIT_MARKERS.iter().any(|m| lower.contains(m)))
     }
 
     fn is_limit(&self) -> bool {
@@ -288,6 +350,9 @@ impl Candidate {
     /// The sentence a person reads: for a frame, its first string that carries one of `markers`
     /// (else its own message), for a plain line the line — trimmed and capped either way.
     fn words(&self, markers: &[&str]) -> String {
+        if let Some(said) = &self.reported {
+            return said.trim().chars().take(512).collect();
+        }
         let text = self
             .frame
             .as_ref()
@@ -665,6 +730,58 @@ mod tests {
         assert_eq!(
             failure_cause("listening on :5030", "", Billing::Subscription),
             None
+        );
+    }
+
+    /// Claude's stream read through its own grammar's error rules, as a claude node is classified.
+    fn through_claude(stdout: &str, billing: Billing) -> Option<FailureCause> {
+        let reports = crate::grammar::error_reports(&crate::claude_code::STREAM, stdout);
+        reported_failure_cause("", &reports, billing)
+    }
+
+    /// **The account-limit shapes survive the row's reading**: a refused usage window with its
+    /// reset, the assistant frame tagged `rate_limit` (words or none), on a subscription — while an
+    /// assistant's prose about a limit is no report at all, and a retried 429 on an API key is the
+    /// provider's rate limit, not the account's window (the heuristic read claude's `rate_limit`
+    /// retry code as a usage window on every billing).
+    #[test]
+    fn claudes_limit_frames_classify_through_its_error_rules() {
+        let stdout = concat!(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790538000,"rateLimitType":"five_hour"}}"#,
+            "\n",
+            r#"{"type":"assistant","error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 7:50pm"}]}}"#,
+        );
+        assert_eq!(
+            through_claude(stdout, Billing::Subscription),
+            limit(
+                "You've hit your session limit · resets 7:50pm",
+                Some(1_790_538_000)
+            )
+        );
+        let tagged = r#"{"type":"assistant","error":"rate_limit","message":{"content":[]}}"#;
+        assert!(matches!(
+            through_claude(tagged, Billing::Subscription),
+            Some(FailureCause::UsageLimit { .. })
+        ));
+        let prose = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your session limit is what users see on a 429"}]}}"#;
+        assert_eq!(through_claude(prose, Billing::Subscription), None);
+        let retry = r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"rate_limit","error_status":429,"retry_delay_ms":584}"#;
+        assert_eq!(
+            through_claude(retry, Billing::ApiKey),
+            Some(FailureCause::RateLimit {
+                line: "HTTP 429 rate_limit".into()
+            })
+        );
+        assert!(matches!(
+            through_claude(retry, Billing::Subscription),
+            Some(FailureCause::UsageLimit { .. })
+        ));
+        let refused = r#"{"type":"system","subtype":"api_retry","attempt":1,"error":"authentication_failed","error_status":401}"#;
+        assert_eq!(
+            through_claude(refused, Billing::Subscription),
+            Some(FailureCause::Auth {
+                line: "HTTP 401 authentication_failed".into()
+            })
         );
     }
 

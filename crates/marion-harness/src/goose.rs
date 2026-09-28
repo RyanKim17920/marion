@@ -22,7 +22,10 @@
 //!   extension that also carries `shell`.
 //! - **Headless approval is `auto` or nothing.** `GOOSE_MODE=approve` aborts the run at exit 1
 //!   after the `toolRequest` frame; `chat` withholds every call; unset behaves as `auto`. marion
-//!   states `auto` rather than leaning on a default.
+//!   states `auto` rather than leaning on a default, and on 1.52.0 (S37,
+//!   `tests/fixtures/s37-goose-mode/`) the statement is what keeps an operator's own config from
+//!   deciding: unset, a write-granted child writes; with `GOOSE_MODE: approve` in the config a live
+//!   node reads, it aborts at exit 1; the env wins over that config.
 //! - **Neither fault is an exit code.** An `isError: true` MCP result arrives as
 //!   `toolResult.status: "success"` with `value.isError: true`, the model gets another turn, exit
 //!   0. A provider 500 is four retries, then an ordinary assistant `message` beginning `Ran into
@@ -36,15 +39,15 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Name, OnRefusedReport, Pairing, StreamGrammar, TextUnit,
-    ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
+    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
-    Approval, Arg, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, Push, Spelling, Surfaces, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -110,7 +113,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Field(Field::ApiKey),
             when: When::Overlay,
         },
-        // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated.
+        // `approve` aborts a headless run at exit 1; `chat` withholds every call. Stated, not left
+        // to the default: a canned node's fresh home would run tools unset (S37), but a live node
+        // reads the operator's config.yaml, and a `GOOSE_MODE` there decides unless this does.
         Env {
             key: MODE_ENV,
             val: Val::Lit(AUTO_MODE),
@@ -163,7 +168,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         scope: "every tool the node is offered, which under --no-profile is marion's and the \
                 declared builtins",
         note: "S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest; chat \
-               withholds every call; auto runs them",
+               withholds every call; auto runs them. S37 on 1.52.0 (s37-goose-mode): unset, a \
+               fresh config runs marion's tool and a granted write unasked, so the grant is not \
+               load-bearing on a canned node; `GOOSE_MODE: approve` in the operator's config.yaml \
+               aborts a headless run at exit 1 and the env overrides it, so it is on a live one",
     },
     client_name: None,
     delivery: Deliveries {
@@ -175,6 +183,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         interactive: TurnDelivery::None {
             note: "goose's TUI was not measured (S31), and its native lane ships disabled",
         },
+    },
+    boot_dialogs: BootDialogs {
+        dialogs: &[],
+        note: "goose's TUI was not measured",
     },
     wires: &[WireRecipe {
         wire: Wire::OpenAiChat,
@@ -225,7 +237,57 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     },
     refused_report: OnRefusedReport::Fail,
-    failures: &[],
+    failures: &[
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/error"],
+            fallback: "the child's stream carried an error frame",
+        },
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message")],
+                each: Some("/message/content"),
+                unit: &[
+                    Cond::Eq("/type", "text"),
+                    Cond::Prefix("/text", "Ran into this error: "),
+                ],
+            },
+            words: &["/text"],
+            fallback: "goose ran into a provider error",
+        },
+    ],
+    // S37 (`goose-1.52.0/p-errors-*.jsonl`, s26): a refused key is a `type: error` frame; a 429
+    // or 500 is an assistant `text` block opening `Ran into this error: `, at exit 0 — goose
+    // gives up after ~7 s and says so nowhere else.
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: None,
+            words: &["/error"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/type", "message")],
+                each: Some("/message/content"),
+                unit: &[
+                    Cond::Eq("/type", "text"),
+                    Cond::Prefix("/text", "Ran into this error: "),
+                ],
+            },
+            status: None,
+            kind: None,
+            words: &["/text"],
+        },
+    ],
     file_changes: None,
     session: None,
     // The terminal `complete` frame (`s26/*.stdout.jsonl`) totals the run at the top level, with
@@ -636,13 +698,23 @@ mod tests {
         assert!(out.failure.is_some(), "a refused report fails the run");
     }
 
-    /// No frame claims a failure; the report simply never comes.
+    /// **A provider fault is goose's own sentence, and the run's failure claim**: goose gives up
+    /// at exit 0 with an assistant text block opening `Ran into this error: ` (s26, S37), the only
+    /// place its stream says the turn failed — and a line the failure classifier reads.
     #[test]
-    fn a_provider_fault_is_the_report_that_never_came() {
+    fn a_provider_fault_is_a_failure_claim_in_goose_s_words() {
         let out = parse_stream(PROVIDER_500);
         assert_eq!(out.narrative, None);
         assert!(marion_calls(PROVIDER_500).is_empty());
-        assert_eq!(out.failure, None, "the stream has no error frame to read");
+        let failure = out.failure.expect("the fault is claimed");
+        assert!(
+            failure.starts_with("Ran into this error: Server error"),
+            "{failure}"
+        );
+        assert_eq!(
+            crate::grammar::error_lines(&STREAM, PROVIDER_500),
+            vec![failure]
+        );
     }
 
     /// `chat` mode answers the request from inside goose: a `toolResponse` with no `isError`.

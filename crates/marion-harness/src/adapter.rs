@@ -567,6 +567,40 @@ pub trait HarnessAdapter {
         }
     }
 
+    /// **Why the run failed**, by the one classifier ([`crate::auth::failure_cause`]'s ranking),
+    /// over stderr and the provider errors the row's grammar reads off the stream
+    /// ([`grammar::StreamGrammar::errors`]) — per row data, never a guess at which frames are
+    /// errors. A row with no grammar (ACP, whose reader is code) falls back to the error-shaped
+    /// frames any JSON stream carries.
+    fn failure_cause(
+        &self,
+        stderr: &str,
+        stdout: &str,
+        billing: crate::auth::Billing,
+    ) -> Option<marion_core::contract::FailureCause> {
+        match self.spec().stream {
+            Some(g) => crate::auth::reported_failure_cause(
+                stderr,
+                &grammar::error_reports(g, stdout),
+                billing,
+            ),
+            None => crate::auth::failure_cause(stderr, stdout, billing),
+        }
+    }
+
+    /// **The refused credential one frame reports**, in the harness's words — `Some` only where
+    /// the row's error rules read the provider's own 401 or 403 off it
+    /// ([`crate::auth::refused_credential`]). No retry
+    /// heals one, so a run showing it while the harness retries (claude's ten `api_retry`s) has
+    /// failed already. `None` for every other frame, and on a row with no grammar.
+    fn auth_refusal(&self, frame: &serde_json::Value) -> Option<String> {
+        let g = self.spec().stream?;
+        crate::auth::refused_credential(&grammar::frame_error_reports(
+            g,
+            std::slice::from_ref(frame),
+        ))
+    }
+
     /// How a message reaches this node's next turn in `shape` — the row's
     /// [`spec::delivery_for`], which an adapter bound to one agent may refine (ACP's per-agent
     /// [`spec::MidTurn`]). The one question a driver asks; no caller reads the row directly.
@@ -2435,6 +2469,164 @@ mod tests {
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
+
+    /// One S37 P-errors run as the harness said it: its stdout (the frames it wrote, one JSON line
+    /// each) and its stderr, read back from the committed transcript.
+    fn p_errors_run(dir: &str, status: u16) -> Option<(String, String)> {
+        let path = format!(
+            "{}/../../tests/fixtures/conformance/{dir}/p-errors-{status}.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(path).ok()?;
+        let (mut stdout, mut stderr) = (String::new(), String::new());
+        for line in text.lines() {
+            let rec: serde_json::Value = serde_json::from_str(line).unwrap();
+            let msg = &rec["msg"];
+            let out = match rec["dir"].as_str() {
+                Some("s2c") => &mut stdout,
+                Some("err") => &mut stderr,
+                _ => continue,
+            };
+            match msg.as_str() {
+                Some(s) => out.push_str(s),
+                None => out.push_str(&msg.to_string()),
+            }
+            out.push('\n');
+        }
+        Some((stdout, stderr))
+    }
+
+    /// The conformance matrix's rows that ran P-errors: `(selector, fixture dir, harness)`.
+    fn p_errors_rows() -> Vec<(String, String, Harness)> {
+        let path = format!(
+            "{}/../../tests/fixtures/conformance/matrix.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let matrix: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        matrix["harnesses"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, row)| row["probes"]["P-errors"]["status"] != "UNSUPPORTED")
+            .map(|(sel, row)| {
+                let name = sel.split(':').next().unwrap();
+                let h = Harness::ALL
+                    .into_iter()
+                    .find(|h| h.as_str() == name)
+                    .unwrap_or_else(|| panic!("{sel} names no harness"));
+                (
+                    sel.clone(),
+                    row["fixtures"].as_str().unwrap().to_string(),
+                    h,
+                )
+            })
+            .collect()
+    }
+
+    /// **Every row's provider errors classify as what the provider said** (S37, the canned
+    /// provider answering every turn request with 401, 429 or 500): through the row's own error
+    /// rules and stderr, on an API key, a 401 is `Auth`, a 429 `RateLimit`, a 500 `Outage` — and
+    /// never another cause. The runs where the harness said nothing within the probe's 45 s (it was
+    /// still retrying in silence) are listed by name: nothing marion reads can classify those,
+    /// and a row that starts saying something moves off the list.
+    #[test]
+    fn every_rows_measured_provider_errors_classify_as_the_provider_said() {
+        use marion_core::contract::FailureCause;
+        let silent: &[(&str, u16)] = &[
+            ("acp:opencode", 429),
+            ("acp:opencode", 500),
+            ("opencode", 429),
+            ("opencode", 500),
+            ("qwen", 429),
+            ("qwen", 500),
+        ];
+        let rows = p_errors_rows();
+        assert!(rows.len() >= 8, "{rows:?}");
+        for (sel, dir, h) in rows {
+            let adapter = adapter_for(h).unwrap();
+            for status in [401u16, 429, 500] {
+                let Some((stdout, stderr)) = p_errors_run(&dir, status) else {
+                    panic!("{sel}: no p-errors-{status} transcript in {dir}");
+                };
+                let got = adapter.failure_cause(&stderr, &stdout, crate::auth::Billing::ApiKey);
+                let kind = match &got {
+                    Some(FailureCause::Auth { .. }) => Some(401),
+                    Some(FailureCause::RateLimit { .. }) => Some(429),
+                    Some(FailureCause::Outage { .. }) => Some(500),
+                    Some(FailureCause::UsageLimit { .. }) => Some(0),
+                    None => None,
+                };
+                let want = (!silent.contains(&(sel.as_str(), status))).then_some(status);
+                assert_eq!(kind, want, "{sel} {status}: {got:?}");
+            }
+        }
+    }
+
+    /// **Every row with a stream grammar says where its provider errors are**, unless no provider
+    /// fault was ever put in front of it: the rows whose P-errors cell is UNSUPPORTED (no canned
+    /// route) are the only ones allowed an empty list.
+    #[test]
+    fn every_row_with_a_grammar_states_its_error_rules() {
+        let path = format!(
+            "{}/../../tests/fixtures/conformance/matrix.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let matrix: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for h in Harness::ALL {
+            let Some(g) = harness_spec(h).stream else {
+                continue;
+            };
+            if g.errors.is_empty() {
+                assert_eq!(
+                    matrix["harnesses"][h.as_str()]["probes"]["P-errors"]["status"],
+                    "UNSUPPORTED",
+                    "{h}: a row that met provider faults states where it reports them"
+                );
+            }
+        }
+    }
+
+    /// **Only a provider's own refusal ends a run early**: an error frame that merely says
+    /// `unauthorized` about something else — an MCP server of the operator's that refused codex —
+    /// is recorded, not a reason to kill the node; the refusal needs the provider's 401 or 403.
+    #[test]
+    fn an_unauthorized_word_without_a_provider_status_is_no_refused_credential() {
+        let codex = adapter_for(Harness::Codex).unwrap();
+        let mcp = serde_json::json!({"type": "error", "message": "MCP client for `github` failed to start: unauthorized"});
+        assert_eq!(codex.auth_refusal(&mcp), None);
+        let provider = serde_json::json!({"type": "error", "message": "Reconnecting... 1/5 (unexpected status 401 Unauthorized: bad key)"});
+        assert!(codex.auth_refusal(&provider).is_some());
+        let forbidden =
+            serde_json::json!({"type": "error", "message": "unexpected status 403 Forbidden"});
+        assert!(codex.auth_refusal(&forbidden).is_some());
+    }
+
+    /// **Which frames end a run early is row data, and only an auth failure does**: on every row
+    /// with a grammar, a frame of the measured 401 run reads as a refused credential, and no frame
+    /// of the 429 or 500 runs does — those can recover inside the harness's own backoff.
+    #[test]
+    fn only_a_measured_auth_failure_frame_is_a_refused_credential() {
+        for (sel, dir, h) in p_errors_rows() {
+            let adapter = adapter_for(h).unwrap();
+            if adapter.spec().stream.is_none() {
+                continue;
+            }
+            for status in [401u16, 429, 500] {
+                let (stdout, _) = p_errors_run(&dir, status).unwrap();
+                let refusals: Vec<String> = crate::stream::json_frames(&stdout)
+                    .iter()
+                    .filter_map(|f| adapter.auth_refusal(f))
+                    .collect();
+                assert_eq!(
+                    !refusals.is_empty(),
+                    status == 401,
+                    "{sel} {status}: {refusals:?}"
+                );
+            }
+        }
+    }
 
     /// **A root is judged by its stream's own failure claims, never by the `report` rule.** The
     /// rule that a refused `report` fails the run is about a node with a contract; a root has
@@ -7820,13 +8012,22 @@ mod tests {
                 ),
                 refused("report", "refused: not authorized"),
             ),
-            // No frame claims the fault: the stream is a text message and a zero-token
-            // `complete`, and the only reading is the report that never came.
+            // The fault is an assistant text block opening `Ran into this error: ` and a
+            // zero-token `complete`, at exit 0: S37 measured it as goose's only report of a
+            // provider fault, so the row reads it as the stream's failure claim.
             (
                 Harness::Goose,
                 "s26/goose-provider-500.stdout.jsonl",
                 fixture!("s26/goose-provider-500.stdout.jsonl"),
-                outcome(None, None),
+                outcome(
+                    None,
+                    Some(
+                        "Ran into this error: Server error: Server error (500 Internal Server \
+                         Error) at http://127.0.0.1:<PORT>/v1/chat/completions: canned 500 from \
+                         s26.\n\nPlease retry if you think this is a transient or recoverable \
+                         error.",
+                    ),
+                ),
                 vec![],
             ),
             // `approve` aborts after the request: a call with no result is `Unknown`, and the
@@ -7889,12 +8090,13 @@ mod tests {
                      \"refused: not authorized\"}]}}}]",
                 ),
             ),
-            // 28 retries, then `result.subtype: "success"`: nothing to read but the missing report.
+            // 28 retries, then `result.subtype: "success"` whose text is the API error: S37
+            // measured it as qwen's only report of the fault, so it is the failure claim.
             (
                 Harness::Qwen,
                 "s25/qwen-provider-500.stdout.jsonl",
                 fixture!("s25/qwen-provider-500.stdout.jsonl"),
-                outcome(None, None),
+                outcome(None, Some("[API Error: 500 canned failure]")),
                 vec![],
             ),
             (
@@ -9137,6 +9339,49 @@ mod tests {
                     }
                     TurnDelivery::None { .. } => {}
                 }
+            }
+        }
+    }
+
+    /// **Every row states the dialogs its TUI shows before the composer**, with the measurement —
+    /// an empty list included, whose note says what was searched. A needle is written the way the
+    /// pty host reads a screen (one space between words, nothing leading or trailing), or it could
+    /// never match; answer keys are never empty; and a row that answers a dialog also names the
+    /// dialog marker-free as `Hold`, so a release that moves the selection is held, not answered
+    /// with keys measured for another selection. Whether each needle is on its measured screen is
+    /// the supervisor's test (`pty::input`), which owns the reader.
+    #[test]
+    fn every_row_states_its_boot_dialogs_as_the_pty_host_reads_them() {
+        use crate::spec::DialogAnswer;
+        for h in Harness::ALL {
+            let row = harness_spec(h).boot_dialogs;
+            assert!(
+                !row.note.trim().is_empty(),
+                "{h}: boot dialogs without the measurement behind them"
+            );
+            for d in row.dialogs {
+                assert!(!d.note.trim().is_empty(), "{h}: {:?} has no note", d.needle);
+                let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    !d.needle.is_empty() && d.needle == normal,
+                    "{h}: needle {:?} is not written as the host reads a screen",
+                    d.needle
+                );
+                if let DialogAnswer::Keys(keys) = d.answer {
+                    assert!(!keys.is_empty(), "{h}: {:?} answers with nothing", d.needle);
+                }
+            }
+            if row
+                .dialogs
+                .iter()
+                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)))
+            {
+                assert!(
+                    row.dialogs
+                        .last()
+                        .is_some_and(|d| d.answer == DialogAnswer::Hold),
+                    "{h}: an answered dialog needs a held, marker-free needle after it"
+                );
             }
         }
     }

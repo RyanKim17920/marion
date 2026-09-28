@@ -1,0 +1,65 @@
+{"dir":"note","msg":{"args":["-m","gemini-2.5-flash","--output-format","stream-json","--approval-mode","auto_edit","-p","CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"pid":48103,"spawned":"gemini"},"t":0.024}
+{"dir":"s2c","msg":{"model":"gemini-2.5-flash","session_id":"ac2f2686-7a17-4fe2-aa56-df3416dd8818","timestamp":"2026-09-27T23:17:12.553Z","type":"init"},"t":5.829}
+{"dir":"s2c","msg":{"content":"CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.","role":"user","timestamp":"2026-09-27T23:17:12.554Z","type":"message"},"t":5.83}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":1,"turn":["CONFERR500",0],"user_texts":["<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\nToday's date is Sunday, September 27, 2026 (formatted according to the user's locale).\nMy operating system is: darwin\nThe project's temporary directory is: <SCRATCH>/p-errors-500/node/.gemini/tmp/repo\n- **Workspace Directories:**\n  - …[314 more chars]","CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"gemini"},"t":6.008}
+{"dir":"prov","msg":{"resp":"fault","status":500},"t":6.009}
+{"dir":"err","msg":"Attempt 1 failed with status 500. Retrying with backoff... _ApiError: {\"error\":{\"code\":500,\"message\":\"internal server error\",\"status\":\"INTERNAL\"}}","t":6.14}
+{"dir":"err","msg":"    at throwErrorIfNotOK (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267184:24)","t":6.141}
+{"dir":"err","msg":"    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)","t":6.141}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:266947:7","t":6.141}
+{"dir":"err","msg":"    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)","t":6.141}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19","t":6.141}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23","t":6.142}
+{"dir":"err","msg":"    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)","t":6.142}
+{"dir":"err","msg":"    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)","t":6.142}
+{"dir":"err","msg":"    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)","t":6.142}
+{"dir":"err","msg":"    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24) {","t":6.142}
+{"dir":"err","msg":"  status: 500","t":6.143}
+{"dir":"err","msg":"}","t":6.143}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":2,"turn":["CONFERR500",0],"user_texts":["<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\nToday's date is Sunday, September 27, 2026 (formatted according to the user's locale).\nMy operating system is: darwin\nThe project's temporary directory is: <SCRATCH>/p-errors-500/node/.gemini/tmp/repo\n- **Workspace Directories:**\n  - …[314 more chars]","CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"gemini"},"t":12.429}
+{"dir":"prov","msg":{"resp":"fault","status":500},"t":12.437}
+{"dir":"err","msg":"Attempt 2 failed with status 500. Retrying with backoff... _ApiError: {\"error\":{\"code\":500,\"message\":\"internal server error\",\"status\":\"INTERNAL\"}}","t":12.455}
+{"dir":"err","msg":"    at throwErrorIfNotOK (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267184:24)","t":12.456}
+{"dir":"err","msg":"    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)","t":12.456}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:266947:7","t":12.456}
+{"dir":"err","msg":"    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)","t":12.456}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19","t":12.456}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23","t":12.456}
+{"dir":"err","msg":"    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)","t":12.456}
+{"dir":"err","msg":"    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)","t":12.456}
+{"dir":"err","msg":"    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)","t":12.456}
+{"dir":"err","msg":"    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24) {","t":12.456}
+{"dir":"err","msg":"  status: 500","t":12.456}
+{"dir":"err","msg":"}","t":12.456}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":3,"turn":["CONFERR500",0],"user_texts":["<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\nToday's date is Sunday, September 27, 2026 (formatted according to the user's locale).\nMy operating system is: darwin\nThe project's temporary directory is: <SCRATCH>/p-errors-500/node/.gemini/tmp/repo\n- **Workspace Directories:**\n  - …[314 more chars]","CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"gemini"},"t":23.355}
+{"dir":"prov","msg":{"resp":"fault","status":500},"t":23.358}
+{"dir":"err","msg":"Attempt 3 failed with status 500. Retrying with backoff... _ApiError: {\"error\":{\"code\":500,\"message\":\"internal server error\",\"status\":\"INTERNAL\"}}","t":23.367}
+{"dir":"err","msg":"    at throwErrorIfNotOK (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267184:24)","t":23.368}
+{"dir":"err","msg":"    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)","t":23.368}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:266947:7","t":23.368}
+{"dir":"err","msg":"    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)","t":23.368}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19","t":23.368}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23","t":23.368}
+{"dir":"err","msg":"    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)","t":23.368}
+{"dir":"err","msg":"    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)","t":23.368}
+{"dir":"err","msg":"    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)","t":23.368}
+{"dir":"err","msg":"    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24) {","t":23.368}
+{"dir":"err","msg":"  status: 500","t":23.369}
+{"dir":"err","msg":"}","t":23.369}
+{"dir":"prov","msg":{"marion_tools":true,"offers_tools":true,"req":4,"turn":["CONFERR500",0],"user_texts":["<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\nToday's date is Sunday, September 27, 2026 (formatted according to the user's locale).\nMy operating system is: darwin\nThe project's temporary directory is: <SCRATCH>/p-errors-500/node/.gemini/tmp/repo\n- **Workspace Directories:**\n  - …[314 more chars]","CONFERR500: follow the conformance script.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is."],"wire":"gemini"},"t":44.19}
+{"dir":"prov","msg":{"resp":"fault","status":500},"t":44.193}
+{"dir":"err","msg":"Attempt 4 failed with status 500. Retrying with backoff... _ApiError: {\"error\":{\"code\":500,\"message\":\"internal server error\",\"status\":\"INTERNAL\"}}","t":44.209}
+{"dir":"err","msg":"    at throwErrorIfNotOK (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267184:24)","t":44.213}
+{"dir":"err","msg":"    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)","t":44.213}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:266947:7","t":44.213}
+{"dir":"err","msg":"    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)","t":44.213}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19","t":44.213}
+{"dir":"err","msg":"    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23","t":44.213}
+{"dir":"err","msg":"    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)","t":44.214}
+{"dir":"err","msg":"    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)","t":44.214}
+{"dir":"err","msg":"    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)","t":44.214}
+{"dir":"err","msg":"    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24) {","t":44.214}
+{"dir":"err","msg":"  status: 500","t":44.214}
+{"dir":"err","msg":"}","t":44.214}
+{"dir":"note","msg":"signal 9 to process group 48103","t":45.388}
+{"dir":"note","msg":{"code":null,"exited":48103,"signal":9},"t":45.428}
