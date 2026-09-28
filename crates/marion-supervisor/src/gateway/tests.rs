@@ -52,7 +52,11 @@ fn gateway_for(base_url: &str) -> Gateway {
 
 /// One request over a fresh connection; the status and the body, de-chunked.
 fn post(gw: &Gateway, credential: Option<&str>, body: &Value) -> (u16, String) {
-    let addr = gw.base_url().trim_start_matches("http://").to_string();
+    post_to(gw, "/v1/messages?beta=true", credential, body)
+}
+
+fn post_to(gw: &Gateway, path: &str, credential: Option<&str>, body: &Value) -> (u16, String) {
+    let addr = gw.addr.to_string();
     let mut s = TcpStream::connect(&addr).unwrap();
     let body = body.to_string();
     let auth = credential
@@ -60,7 +64,7 @@ fn post(gw: &Gateway, credential: Option<&str>, body: &Value) -> (u16, String) {
         .unwrap_or_default();
     write!(
         s,
-        "POST /v1/messages?beta=true HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: application/json\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: application/json\r\n\
          Content-Length: {}\r\n\r\n{body}",
         body.len()
     )
@@ -325,4 +329,166 @@ fn the_bearer_is_random_per_gateway_and_redacted_in_debug() {
     let printed = format!("{a:?} {:?}", a.bearer());
     assert!(!printed.contains(a.bearer().expose()), "{printed}");
     assert!(a.base_url().starts_with("http://127.0.0.1:"));
+}
+
+// ---- Chat Completions from the harness, Anthropic Messages to the provider ----------------------
+
+const CHAT_TOOL: &str = "marion_report";
+
+fn chat_gateway_for(base_url: &str) -> Gateway {
+    Gateway::start(
+        Wire::OpenAiChat,
+        Upstream {
+            provider: "canned-anthropic".into(),
+            wire: Wire::AnthropicMessages,
+            base_url: base_url.into(),
+            model: MODEL.into(),
+            key: Some(Secret::new(KEY)),
+            key_header: KeyHeader::XApiKey,
+        },
+    )
+    .expect("the gateway starts")
+}
+
+fn chat_turn(stream: bool, history: Vec<Value>) -> Value {
+    let mut messages = vec![
+        json!({"role": "system", "content": "You are a marion node."}),
+        json!({"role": "user", "content": "Report back through marion."}),
+    ];
+    messages.extend(history);
+    json!({
+        "model": "marion/whatever",
+        "stream": stream,
+        "stream_options": {"include_usage": true},
+        "tools": [{"type": "function", "function": {"name": CHAT_TOOL, "description": "report",
+            "parameters": {"type": "object", "properties": {"narrative": {"type": "string"}}}}}],
+        "messages": messages,
+    })
+}
+
+fn anthropic_script() -> Script {
+    Script {
+        root_tool: CHAT_TOOL.into(),
+        root_tool_input: json!({"narrative": "done through the gateway"}),
+        root_final_text: "Reported.".into(),
+        ..Script::default()
+    }
+}
+
+/// The `data:` payloads of a Chat Completions SSE body, `[DONE]` excluded, and whether it ended so.
+fn chat_chunks(sse: &str) -> (Vec<Value>, bool) {
+    let data: Vec<&str> = sse
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .collect();
+    let done = data.last() == Some(&"[DONE]");
+    (
+        data.into_iter()
+            .filter(|d| *d != "[DONE]")
+            .map(|d| serde_json::from_str(d).unwrap())
+            .collect(),
+        done,
+    )
+}
+
+/// **A streamed tool-calling turn, the other way round**: Chat Completions in, Anthropic Messages to
+/// the provider with its `x-api-key` and `anthropic-version`, the provider's `tool_use` back as a
+/// streamed `tool_calls` fragment set, then — with the tool's result in the history — its text.
+#[test]
+fn a_chat_harness_completes_a_streamed_tool_turn_on_an_anthropic_provider() {
+    let (_d, server) = canned("chat-to-anthropic", anthropic_script());
+    let gw = chat_gateway_for(&server.base_url());
+    assert!(
+        gw.base_url().ends_with("/v1"),
+        "a Chat client takes a /v1 base"
+    );
+    let bearer = gw.bearer().expose().to_string();
+    let (status, body) = post_to(
+        &gw,
+        "/v1/chat/completions",
+        Some(&bearer),
+        &chat_turn(true, vec![]),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (chunks, done) = chat_chunks(&body);
+    assert!(done, "the stream ends with [DONE]: {body}");
+    let mut c = from_chat::Completion::default();
+    chunks.iter().for_each(|ch| c.push(ch));
+    let m = c.result().unwrap();
+    let call = &m["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(call["function"]["name"], CHAT_TOOL);
+    assert_eq!(
+        serde_json::from_str::<Value>(call["function"]["arguments"].as_str().unwrap()).unwrap(),
+        json!({"narrative": "done through the gateway"})
+    );
+    assert_eq!(m["choices"][0]["finish_reason"], "tool_calls");
+    // The canned Anthropic stream reports zero usage; the counters are carried, whatever they say.
+    assert!(m["usage"]["prompt_tokens"].is_u64(), "{m}");
+
+    let reqs = server.requests().unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0]["wire"], "anthropic");
+    assert_eq!(reqs[0]["path"], "/v1/messages");
+    assert_eq!(reqs[0]["body"]["model"], MODEL);
+    assert_eq!(reqs[0]["body"]["system"], "You are a marion node.");
+    assert_eq!(reqs[0]["credentials"]["x-api-key"], fingerprint(KEY));
+    assert!(
+        reqs[0]["headers"].to_string().contains("anthropic-version"),
+        "{}",
+        reqs[0]["headers"]
+    );
+
+    let id = call["id"].as_str().unwrap().to_string();
+    let history = vec![
+        json!({"role": "assistant", "content": null, "tool_calls": [{"id": id, "type": "function",
+               "function": {"name": CHAT_TOOL, "arguments": call["function"]["arguments"]}}]}),
+        json!({"role": "tool", "tool_call_id": id, "content": "reported"}),
+    ];
+    let (status, body) = post_to(
+        &gw,
+        "/v1/chat/completions",
+        Some(&bearer),
+        &chat_turn(false, history),
+    );
+    assert_eq!(status, 200, "{body}");
+    let m: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(m["object"], "chat.completion");
+    assert_eq!(m["choices"][0]["message"]["content"], "Reported.");
+    let reqs = server.requests().unwrap();
+    let last = reqs[1]["body"]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["content"][0]["type"], "tool_result");
+}
+
+#[test]
+fn a_chat_harness_reads_a_refused_key_as_an_openai_error_with_its_status() {
+    let (_d, server) = canned(
+        "chat-401",
+        Script {
+            refusals: vec![KeyRefusal {
+                key: KEY.into(),
+                status: 401,
+            }],
+            ..anthropic_script()
+        },
+    );
+    let gw = chat_gateway_for(&server.base_url());
+    let bearer = gw.bearer().expose().to_string();
+    let (status, body) = post_to(
+        &gw,
+        "/v1/chat/completions",
+        Some(&bearer),
+        &chat_turn(true, vec![]),
+    );
+    assert_eq!(status, 401, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], 401);
+    assert!(!body.contains(KEY));
+    // The Anthropic path is not served on this gateway.
+    let (status, _) = post(&gw, Some(&bearer), &anthropic_turn(true, vec![]));
+    assert_eq!(status, 404);
 }

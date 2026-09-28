@@ -19,6 +19,7 @@
 //! process and goes to curl on a pipe (`upstream`). Neither is on any argv, and the gateway writes
 //! nothing to disk and logs nothing.
 
+pub mod from_chat;
 mod http;
 pub mod translate;
 mod upstream;
@@ -74,18 +75,169 @@ pub struct Upstream {
 }
 
 /// The translations this gateway performs: one arm per [`marion_core::provider::TRANSLATIONS`]
-/// pair, checked against that table by a sweep test.
+/// pair, checked against that table by a sweep test. Each arm states the harness request it answers,
+/// where the provider is asked, how both bodies map and how an error reads — so nothing below the
+/// arms knows which pair it is serving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Translation {
     /// Anthropic Messages from the harness, Chat Completions to the provider ([`translate`]).
     AnthropicToChat,
+    /// Chat Completions from the harness, Anthropic Messages to the provider ([`from_chat`]).
+    ChatToAnthropic,
 }
 
 impl Translation {
     fn of(harness: Wire, provider: Wire) -> Option<Translation> {
         match (harness, provider) {
             (Wire::AnthropicMessages, Wire::OpenAiChat) => Some(Translation::AnthropicToChat),
+            (Wire::OpenAiChat, Wire::AnthropicMessages) => Some(Translation::ChatToAnthropic),
             _ => None,
+        }
+    }
+
+    /// Whether a `POST` to `path` is the harness request this translation answers.
+    fn serves(self, path: &str) -> bool {
+        match self {
+            Translation::AnthropicToChat => path.ends_with("/messages"),
+            Translation::ChatToAnthropic => path.ends_with("/chat/completions"),
+        }
+    }
+
+    /// Where the provider is asked, from its base as the registry spells it.
+    fn upstream_url(self, base: &str) -> String {
+        let base = base.trim_end_matches('/');
+        match self {
+            Translation::AnthropicToChat => format!("{base}/chat/completions"),
+            // An Anthropic base is the root; one written with the `/v1` of an OpenAI base (a
+            // custom provider giving every wire one base) names the same root.
+            Translation::ChatToAnthropic => {
+                format!("{}/v1/messages", base.trim_end_matches("/v1"))
+            }
+        }
+    }
+
+    /// Header lines the provider's wire requires beside the key.
+    fn upstream_headers(self) -> &'static [&'static str] {
+        match self {
+            Translation::AnthropicToChat => &[],
+            Translation::ChatToAnthropic => &["anthropic-version: 2023-06-01"],
+        }
+    }
+
+    fn request(self, body: &Value, model: &str) -> Value {
+        match self {
+            Translation::AnthropicToChat => translate::chat_request(body, model),
+            Translation::ChatToAnthropic => from_chat::messages_request(body, model),
+        }
+    }
+
+    /// An error body in the harness's own wire, keeping the status's meaning.
+    fn error_body(self, status: u16, message: &str) -> Value {
+        match self {
+            Translation::AnthropicToChat => translate::error_body(status, message),
+            Translation::ChatToAnthropic => from_chat::error_body(status, message),
+        }
+    }
+
+    /// A reader of the provider's answer that speaks the harness's wire.
+    fn answer(self, model: &str) -> Box<dyn Answer> {
+        match self {
+            Translation::AnthropicToChat => Box::new(AsAnthropic {
+                t: StreamTranslator::new(model),
+                c: Collected::default(),
+            }),
+            Translation::ChatToAnthropic => Box::new(AsChat {
+                t: from_chat::ChunkTranslator::new(model),
+                c: from_chat::Completion::default(),
+            }),
+        }
+    }
+}
+
+/// **The provider's answer, in the harness's wire.** Each call returns the SSE text a streaming
+/// harness is sent at once, and folds the same into the one body a non-streaming harness is sent at
+/// the end ([`Self::folded`]).
+trait Answer {
+    /// One `data:` payload of the provider's stream.
+    fn data(&mut self, data: &str) -> String;
+    /// A provider that answered one JSON body rather than a stream.
+    fn whole(&mut self, body: &Value) -> String;
+    /// The end of the provider's answer; called once.
+    fn end(&mut self) -> String;
+    /// The folded answer, and its status.
+    fn folded(self: Box<Self>) -> (u16, Value);
+}
+
+/// Chat Completions from the provider, Anthropic's events to the harness.
+struct AsAnthropic {
+    t: StreamTranslator,
+    c: Collected,
+}
+
+impl AsAnthropic {
+    fn take(&mut self, events: Vec<Event>) -> String {
+        events.iter().for_each(|e| self.c.push(e));
+        events.iter().map(Event::sse).collect()
+    }
+}
+
+impl Answer for AsAnthropic {
+    fn data(&mut self, data: &str) -> String {
+        let events = self.t.chunk(data);
+        self.take(events)
+    }
+    fn whole(&mut self, body: &Value) -> String {
+        translate::completion_as_chunks(body)
+            .iter()
+            .map(|c| self.data(c))
+            .collect()
+    }
+    fn end(&mut self) -> String {
+        let events = self.t.finish();
+        self.take(events)
+    }
+    fn folded(self: Box<Self>) -> (u16, Value) {
+        match self.c.result() {
+            Ok(m) => (200, m),
+            Err(e) => (502, e),
+        }
+    }
+}
+
+/// Anthropic's events from the provider, Chat Completions chunks to the harness.
+struct AsChat {
+    t: from_chat::ChunkTranslator,
+    c: from_chat::Completion,
+}
+
+impl AsChat {
+    fn take(&mut self, chunks: Vec<Value>) -> String {
+        chunks.iter().for_each(|c| self.c.push(c));
+        chunks.iter().map(|c| format!("data: {c}\n\n")).collect()
+    }
+}
+
+impl Answer for AsChat {
+    fn data(&mut self, data: &str) -> String {
+        let chunks = self.t.event(data);
+        self.take(chunks)
+    }
+    fn whole(&mut self, body: &Value) -> String {
+        from_chat::message_as_events(body)
+            .iter()
+            .map(|e| self.data(e))
+            .collect()
+    }
+    fn end(&mut self) -> String {
+        let chunks = self.t.finish();
+        let mut text = self.take(chunks);
+        text.push_str("data: [DONE]\n\n");
+        text
+    }
+    fn folded(self: Box<Self>) -> (u16, Value) {
+        match self.c.result() {
+            Ok(m) => (200, m),
+            Err(e) => (502, e),
         }
     }
 }
@@ -250,7 +402,9 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
         let mut conns = shared.conns.lock().unwrap_or_else(|p| p.into_inner());
         if conns.len() >= MAX_CONNS {
             drop(conns);
-            let body = translate::error_body(503, "marion gateway: too many connections");
+            let body = shared
+                .translation
+                .error_body(503, "marion gateway: too many connections");
             let _ = http::respond(
                 &mut &stream,
                 503,
@@ -308,40 +462,51 @@ fn presents(req: &http::Request, bearer: &Secret) -> bool {
     offered.is_some_and(|v| Secret::new(v.trim()) == *bearer)
 }
 
-fn error_response(mut w: &TcpStream, status: u16, message: &str) {
-    let body = translate::error_body(status, message).to_string();
+fn error_response(t: Translation, mut w: &TcpStream, status: u16, message: &str) {
+    let body = t.error_body(status, message).to_string();
     let _ = http::respond(&mut w, status, "application/json", &[], body.as_bytes());
 }
 
 fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
+    let t = shared.translation;
     // No read timeout: a connection that never sends holds one of `MAX_CONNS` permits until the
     // gateway stops, which shuts it — and a timer would be a wakeup an idle node does not need.
     let w = stream;
     let req = match http::read_request(&mut BufReader::new(stream)) {
         Ok(r) => r,
         Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-            return error_response(w, 400, &format!("marion gateway: {e}"));
+            return error_response(t, w, 400, &format!("marion gateway: {e}"));
         }
         Err(_) => return,
     };
     if !presents(&req, &shared.bearer) {
         return error_response(
+            t,
             w,
             401,
             "marion gateway: this request does not carry the node's gateway credential",
         );
     }
     let method = req.method.to_ascii_uppercase();
-    if method == "GET" || method == "HEAD" {
-        let _ = http::respond(&mut { w }, 200, "text/plain", &[], b"");
-        return;
-    }
-    let is_messages = req.path.ends_with("/messages");
-    match shared.translation {
-        Translation::AnthropicToChat if method == "POST" && is_messages => {
-            messages(shared, conn, &req, w);
+    match method.as_str() {
+        // A model listing names the one model every request goes to, whatever a harness asks for.
+        "GET" if req.path.ends_with("/models") => {
+            let list = serde_json::json!({"object": "list", "data": [
+                {"id": shared.upstream.model, "object": "model", "type": "model"}]});
+            let _ = http::respond(
+                &mut { w },
+                200,
+                "application/json",
+                &[],
+                list.to_string().as_bytes(),
+            );
         }
-        Translation::AnthropicToChat => error_response(
+        "GET" | "HEAD" => {
+            let _ = http::respond(&mut { w }, 200, "text/plain", &[], b"");
+        }
+        "POST" if t.serves(&req.path) => forward(shared, conn, &req, w),
+        _ => error_response(
+            t,
             w,
             404,
             &format!("marion gateway: {} {} is not served", method, req.path),
@@ -349,22 +514,27 @@ fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
     }
 }
 
-/// `POST /v1/messages`: translate, send, and relay the provider's answer back as Anthropic's.
-fn messages(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
+/// The harness's request: translated, sent to the provider, and the provider's answer relayed back
+/// in the harness's wire.
+fn forward(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
+    let t = shared.translation;
     let Ok(body) = serde_json::from_slice::<Value>(&req.body) else {
-        return error_response(w, 400, "marion gateway: the request body is not JSON");
+        return error_response(t, w, 400, "marion gateway: the request body is not JSON");
     };
     let up = &shared.upstream;
-    let chat = translate::chat_request(&body, &up.model);
-    let url = format!("{}/chat/completions", up.base_url.trim_end_matches('/'));
     let auth = upstream::Auth {
         key: up.key.clone(),
         header: up.key_header,
+        extra: t.upstream_headers(),
     };
-    let (child, answer) = match upstream::post(&url, &auth, chat.to_string().as_bytes()) {
-        Ok(x) => x,
-        Err(e) => return error_response(w, 502, &format!("marion gateway: cannot run curl: {e}")),
-    };
+    let request = t.request(&body, &up.model).to_string();
+    let (child, answer) =
+        match upstream::post(&t.upstream_url(&up.base_url), &auth, request.as_bytes()) {
+            Ok(x) => x,
+            Err(e) => {
+                return error_response(t, w, 502, &format!("marion gateway: cannot run curl: {e}"));
+            }
+        };
     *conn.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
     if shared.stopping.load(Ordering::SeqCst) {
         reap(conn);
@@ -373,6 +543,7 @@ fn messages(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
     let wants_stream = body.get("stream") == Some(&Value::Bool(true));
     match answer {
         Err(words) => error_response(
+            t,
             w,
             502,
             &format!(
@@ -390,7 +561,7 @@ fn messages(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
                 a.status,
                 scrub(up, &translate::upstream_message(&text))
             );
-            let body = translate::error_body(a.status, &message).to_string();
+            let body = t.error_body(a.status, &message).to_string();
             let retry: Vec<(&str, &str)> = a
                 .retry_after
                 .as_deref()
@@ -406,7 +577,7 @@ fn messages(shared: &Shared, conn: &Conn, req: &http::Request, w: &TcpStream) {
             );
         }
         Ok(a) => {
-            let _ = relay(a, wants_stream, &up.model, w);
+            let _ = relay(t, a, wants_stream, t.answer(&up.model), w);
         }
     }
     reap(conn);
@@ -428,46 +599,33 @@ fn scrub(up: &Upstream, text: &str) -> String {
     }
 }
 
-/// Where translated events go: a streaming harness request gets each batch as SSE at once, a
-/// non-streaming one gets the events folded into one message at the end.
-enum Sink<'a> {
-    Stream(Option<http::Chunked<&'a TcpStream>>, &'a TcpStream),
-    Whole(Collected),
-}
-
-impl Sink<'_> {
-    fn send(&mut self, events: Vec<Event>) -> io::Result<()> {
-        if events.is_empty() {
-            return Ok(());
-        }
-        match self {
-            Sink::Stream(chunked, stream) => {
-                if chunked.is_none() {
-                    *chunked = Some(http::Chunked::start(*stream, "text/event-stream")?);
-                }
-                let text: String = events.iter().map(Event::sse).collect();
-                chunked
-                    .as_mut()
-                    .expect("started above")
-                    .send(text.as_bytes())
-            }
-            Sink::Whole(c) => {
-                events.iter().for_each(|e| c.push(e));
-                Ok(())
-            }
-        }
+/// Send `text` to a streaming harness now, starting the chunked response on the first send.
+fn send<'w>(
+    out: &mut Option<http::Chunked<&'w TcpStream>>,
+    w: &'w TcpStream,
+    text: &str,
+) -> io::Result<()> {
+    if text.is_empty() {
+        return Ok(());
     }
+    if out.is_none() {
+        *out = Some(http::Chunked::start(w, "text/event-stream")?);
+    }
+    out.as_mut().expect("started above").send(text.as_bytes())
 }
 
-/// A 2xx answer, translated: read as SSE where the provider streamed, as one completion where it
-/// did not, and sent on as the harness asked.
-fn relay(a: upstream::Answer, wants_stream: bool, model: &str, w: &TcpStream) -> io::Result<()> {
-    let mut t = StreamTranslator::new(model);
-    let mut sink = if wants_stream {
-        Sink::Stream(None, w)
-    } else {
-        Sink::Whole(Collected::default())
-    };
+/// A 2xx answer, translated: read as SSE where the provider streamed, as one body where it did not,
+/// and sent on as the harness asked — event by event, or folded into one body at the end.
+fn relay(
+    t: Translation,
+    a: upstream::Answer,
+    wants_stream: bool,
+    mut answer: Box<dyn Answer>,
+    w: &TcpStream,
+) -> io::Result<()> {
+    let mut out: Option<http::Chunked<&TcpStream>> = None;
+    // Only a streaming harness is sent anything before the end.
+    let wanted = |text: String| if wants_stream { text } else { String::new() };
     let mut body = a.body;
     if a.content_type.contains("event-stream") {
         let mut data = String::new();
@@ -480,7 +638,7 @@ fn relay(a: upstream::Answer, wants_stream: bool, model: &str, w: &TcpStream) ->
             let l = line.trim_end_matches(['\r', '\n']);
             if l.is_empty() {
                 if !data.is_empty() {
-                    sink.send(t.chunk(&data))?;
+                    send(&mut out, w, &wanted(answer.data(&data)))?;
                     data.clear();
                 }
             } else if let Some(d) = l.strip_prefix("data:") {
@@ -491,19 +649,16 @@ fn relay(a: upstream::Answer, wants_stream: bool, model: &str, w: &TcpStream) ->
             }
         }
         if !data.is_empty() {
-            sink.send(t.chunk(&data))?;
+            send(&mut out, w, &wanted(answer.data(&data)))?;
         }
     } else {
         let mut text = String::new();
         body.take(http::MAX_BODY as u64).read_to_string(&mut text)?;
         match serde_json::from_str::<Value>(&text) {
-            Ok(completion) => {
-                for c in translate::completion_as_chunks(&completion) {
-                    sink.send(t.chunk(&c))?;
-                }
-            }
+            Ok(whole) => send(&mut out, w, &wanted(answer.whole(&whole)))?,
             Err(_) => {
                 error_response(
+                    t,
                     w,
                     502,
                     "marion gateway: the provider's answer was neither a stream nor JSON",
@@ -512,27 +667,21 @@ fn relay(a: upstream::Answer, wants_stream: bool, model: &str, w: &TcpStream) ->
             }
         }
     }
-    sink.send(t.finish())?;
-    match sink {
-        Sink::Stream(Some(chunked), _) => chunked.end(),
-        Sink::Stream(None, _) => Ok(()),
-        Sink::Whole(c) => match c.result() {
-            Ok(m) => http::respond(
-                &mut { w },
-                200,
-                "application/json",
-                &[],
-                m.to_string().as_bytes(),
-            ),
-            Err(e) => http::respond(
-                &mut { w },
-                502,
-                "application/json",
-                &[],
-                e.to_string().as_bytes(),
-            ),
-        },
+    send(&mut out, w, &wanted(answer.end()))?;
+    if wants_stream {
+        return match out {
+            Some(chunked) => chunked.end(),
+            None => Ok(()),
+        };
     }
+    let (status, body) = answer.folded();
+    http::respond(
+        &mut { w },
+        status,
+        "application/json",
+        &[],
+        body.to_string().as_bytes(),
+    )
 }
 
 #[cfg(test)]

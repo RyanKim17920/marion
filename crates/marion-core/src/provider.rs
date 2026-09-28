@@ -78,7 +78,10 @@ impl Wire {
 /// and the provider share no wire and their pair is listed here; everywhere else the harness talks
 /// to the provider directly, or the launch is refused naming both wire lists. An operator's own
 /// gateway needs no entry: it is a provider in `providers.toml` serving the wire it speaks.
-pub const TRANSLATIONS: &[(Wire, Wire)] = &[(Wire::AnthropicMessages, Wire::OpenAiChat)];
+pub const TRANSLATIONS: &[(Wire, Wire)] = &[
+    (Wire::AnthropicMessages, Wire::OpenAiChat),
+    (Wire::OpenAiChat, Wire::AnthropicMessages),
+];
 
 /// Whether marion's gateway bridges a harness speaking `harness` to a provider serving `provider`.
 pub fn translates(harness: Wire, provider: Wire) -> bool {

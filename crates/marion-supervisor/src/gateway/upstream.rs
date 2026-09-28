@@ -27,11 +27,17 @@ const HEADER_FD: i32 = 3;
 pub struct Auth {
     pub key: Option<Secret>,
     pub header: KeyHeader,
+    /// Header lines the provider's wire requires beside the key (`anthropic-version`).
+    pub extra: &'static [&'static str],
 }
 
 /// The header lines curl is handed on descriptor 3.
 fn header_lines(auth: &Auth) -> String {
     let mut lines = String::from("Content-Type: application/json\nAccept: text/event-stream\n");
+    for line in auth.extra {
+        lines.push_str(line);
+        lines.push('\n');
+    }
     if let Some(k) = &auth.key {
         match auth.header {
             KeyHeader::Bearer => lines.push_str("Authorization: Bearer "),
@@ -178,16 +184,20 @@ mod tests {
         let bearer = header_lines(&Auth {
             key: key.clone(),
             header: KeyHeader::Bearer,
+            extra: &[],
         });
         assert!(bearer.contains("\nAuthorization: Bearer sk-header-test-1\n"));
         let xkey = header_lines(&Auth {
             key,
             header: KeyHeader::XApiKey,
+            extra: &["anthropic-version: 2023-06-01"],
         });
+        assert!(xkey.contains("\nanthropic-version: 2023-06-01\n"));
         assert!(xkey.contains("\nx-api-key: sk-header-test-1\n") && !xkey.contains("Bearer"));
         let none = header_lines(&Auth {
             key: None,
             header: KeyHeader::Bearer,
+            extra: &[],
         });
         assert!(!none.contains("Authorization") && none.contains("Content-Type"));
     }

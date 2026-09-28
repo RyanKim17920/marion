@@ -684,6 +684,29 @@ mod tests {
             .unwrap();
         assert_eq!(ep.route, Route::Native, "a native wire always wins");
         assert_eq!(ep.wire, Wire::AnthropicMessages);
+        // And the other way round: a Chat-only harness on Anthropic's own API.
+        let store = MemStore::with("anthropic", "sk-ant-test-1");
+        let ep = resolve_endpoint(
+            Some("anthropic:claude-sonnet-4-5"),
+            &ty(Harness::OpenCode, None, None),
+            CHAT,
+            &reg,
+            &store,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ep.route,
+            Route::Translated {
+                harness: Wire::OpenAiChat
+            }
+        );
+        assert_eq!(ep.wire, Wire::AnthropicMessages);
+        assert_eq!(
+            ep.key_header,
+            KeyHeader::XApiKey,
+            "the gateway presents the row's header"
+        );
         let e = resolve_endpoint(
             Some("groq:llama"),
             &ty(Harness::Codex, None, None),
