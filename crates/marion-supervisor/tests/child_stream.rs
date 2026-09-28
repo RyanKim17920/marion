@@ -171,7 +171,7 @@ fn a_childs_start_reaches_the_terminal_before_the_spawn_that_created_it_returns(
 
     // The line that used to be the first news of the child: the contract, coming back through the
     // root's own frame stream. The start must precede it — that is the silence being closed.
-    let returned = first(&lines, |l| l.contains("child returned")).unwrap_or_else(|| {
+    let returned = first(&lines, |l| l.contains("child finished")).unwrap_or_else(|| {
         panic!("the root never saw its spawn return a contract\nstderr:\n{shown}")
     });
     assert!(
@@ -182,7 +182,7 @@ fn a_childs_start_reaches_the_terminal_before_the_spawn_that_created_it_returns(
     );
 
     // ---- and its end, read out of the journal rather than out of the root's stream. -------------
-    let exited = first(&lines, |l| l.contains("exited Ok")).unwrap_or_else(|| {
+    let exited = first(&lines, |l| l.contains("ended: done")).unwrap_or_else(|| {
         panic!("the child's terminal transition never reached the terminal\nstderr:\n{shown}")
     });
     assert!(

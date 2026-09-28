@@ -243,6 +243,34 @@ pub enum ExitStatus {
     Killed,
 }
 
+impl ExitStatus {
+    /// The status as a person reads it on a screen or in `marion ls`: `done`, `failed`,
+    /// `cancelled`, `unreported`, `timed out`, `killed`. The one spelling, so no view prints
+    /// `timedout` because it lowercased the variant's name.
+    pub fn word(self) -> &'static str {
+        match self {
+            ExitStatus::Ok => "done",
+            ExitStatus::Failed => "failed",
+            ExitStatus::Cancelled => "cancelled",
+            ExitStatus::Unreported => "unreported",
+            ExitStatus::TimedOut => "timed out",
+            ExitStatus::Killed => "killed",
+        }
+    }
+
+    /// What a node with this status did, to follow its name: "the codex child *timed out*".
+    pub fn verb_phrase(self) -> &'static str {
+        match self {
+            ExitStatus::Ok => "finished",
+            ExitStatus::Failed => "failed",
+            ExitStatus::Cancelled => "was cancelled",
+            ExitStatus::Unreported => "ended without reporting an outcome",
+            ExitStatus::TimedOut => "timed out",
+            ExitStatus::Killed => "was killed",
+        }
+    }
+}
+
 pub type ResultStatus = ExitStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -181,8 +181,7 @@ fn recent(nodes: &[NodeSummary]) -> Vec<RecentRow> {
 fn outcome_word(n: &NodeSummary) -> String {
     use marion_core::node::NodeState;
     match n.state {
-        NodeState::Exited(ExitStatus::Ok) => "done".into(),
-        NodeState::Exited(s) => format!("{s:?}").to_lowercase(),
+        NodeState::Exited(s) => s.word().into(),
         NodeState::Blocked(_) => "blocked".into(),
         _ => "running".into(),
     }
@@ -466,7 +465,7 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
                 ExitStatus::Cancelled | ExitStatus::Unreported => Tone::Unknown,
                 _ => Tone::Failed,
             };
-            let status = format!("{:?}", c.status).to_lowercase();
+            let status = c.status.word().to_string();
             let summary = match &c.narrative {
                 Some(n) => format!("{status}: {}", n.lines().next().unwrap_or("")),
                 None => status,

@@ -538,7 +538,7 @@ fn detail_text(
         }
     }
     if let Some(c) = &d.completion {
-        kv("result", &format!("{:?}", c.status).to_lowercase());
+        kv("result", c.status.word());
         if let Some(n) = &c.narrative {
             kv("said", n.lines().next().unwrap_or(""));
         }
@@ -715,13 +715,12 @@ fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
     Ok(match killed {
         Ok((id, r)) => {
             let state = match r.state {
-                marion_core::node::NodeState::Exited(s) => format!("{s:?}"),
-                other => format!("{other:?}"),
+                marion_core::node::NodeState::Exited(s) => s.word().to_string(),
+                other => format!("{other:?}").to_lowercase(),
             };
             println!(
-                "marion: {} ended: {}",
-                marion_supervisor::tree::short_id(&id.0),
-                state.to_lowercase()
+                "marion: {} ended: {state}",
+                marion_supervisor::tree::short_id(&id.0)
             );
             ExitCode::SUCCESS
         }
@@ -1294,19 +1293,42 @@ fn render_tool_use(block: &Value, out: &mut dyn Write) -> io::Result<()> {
 /// interesting three fields are the child's harness, its status, and the narrative it reported;
 /// everything else in a contract is for the journal, which keeps all of it.
 ///
-/// **This reads marion's own shape, not a harness's**, which is why it is allowed to be specific:
-/// `TaskContract` is defined in this workspace and changing it breaks this compile-adjacent
-/// expectation loudly, in a test. A missing field yields `None` and the caller falls back to the
-/// generic brief, so a contract that grows or loses a field degrades rather than lies.
+/// **This reads marion's own types, not a harness's JSON**: the fields are deserialized as
+/// [`marion_core::contract::TaskContract`] declares them — the child's `Harness`, the completion's
+/// `ExitStatus`, its capped narrative and the branch and commit marion read back — so the status is
+/// said with [`ExitStatus::verb_phrase`] like every other place a status is said, and a contract
+/// whose shape changed fails to parse and falls back to the generic brief rather than being read
+/// wrong. Only these fields, because a watcher's sentence needs no more of it.
 fn contract_summary(text: &str) -> Option<String> {
+    use marion_core::contract::{Capped, Oid};
+    #[derive(serde::Deserialize)]
+    struct Contract {
+        child: Child,
+        completion: Option<Completion>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Child {
+        harness: marion_core::harness::Harness,
+    }
+    #[derive(serde::Deserialize)]
+    struct Completion {
+        status: ExitStatus,
+        narrative: Option<Capped<String>>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        commit: Option<Oid>,
+    }
     // A failed spawn puts a one-line account *above* the contract (`bridge::failure_line`), so the
     // JSON starts at the first `{` rather than at byte zero.
     let start = text.find('{')?;
-    let v: Value = serde_json::from_str(text[start..].trim()).ok()?;
-    let harness = v["child"]["harness"].as_str()?;
-    let completion = v.get("completion")?;
-    let status = completion["status"].as_str().unwrap_or("(no status)");
-    let mut summary = format!("the {harness} child returned {status}");
+    let contract: Contract = serde_json::from_str(text[start..].trim()).ok()?;
+    let completion = contract.completion?;
+    let mut summary = format!(
+        "the {} child {}",
+        contract.child.harness,
+        completion.status.verb_phrase()
+    );
     if let Some(head) = text[..start]
         .trim()
         .lines()
@@ -1316,15 +1338,15 @@ fn contract_summary(text: &str) -> Option<String> {
         // The failure line marion itself wrote, kept whole: it names what went wrong.
         summary = format!("{}\n{summary}", head.trim());
     }
-    let summary = match completion["narrative"]["value"].as_str() {
-        Some(n) => format!("{summary}: {}", brief(n, LINE_CHARS)),
+    let summary = match &completion.narrative {
+        Some(n) => format!("{summary}: {}", brief(&n.value, LINE_CHARS)),
         None => format!("{summary}, reporting no narrative"),
     };
     // Where the work is, once its worktree is gone — the one thing a watcher must act on.
-    match (completion["branch"].as_str(), completion["commit"].as_str()) {
+    match (&completion.branch, &completion.commit) {
         (Some(branch), Some(commit)) => Some(format!(
             "{summary}\n{}",
-            marion_core::contract::landed_line(branch, commit)
+            marion_core::contract::landed_line(branch, &commit.0)
         )),
         _ => Some(summary),
     }
@@ -1767,23 +1789,20 @@ fn render_child_started(
     )
 }
 
-/// The `exited` line: `CHILD` for a success, `FAILED` otherwise, with [`exit_detail`]'s text.
+/// The `ended` line: `CHILD` for a success, `FAILED` otherwise, with [`exit_detail`]'s text.
 fn render_child_exited(
     agent_type: &Option<String>,
     status: Option<ExitStatus>,
     exit: Option<&marion_core::contract::ProcessExit>,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let verdict = match status {
-        Some(s) => format!("{s:?}"),
-        None => "an unrecorded status".into(),
-    };
+    let verdict = status.map_or("an unrecorded status", ExitStatus::word);
     let ok = status == Some(ExitStatus::Ok);
     let detail = exit_detail(exit, ok);
     say(
         out,
         if ok { "CHILD" } else { "FAILED" },
-        &format!("{} exited {verdict}{detail}", child_name(agent_type)),
+        &format!("{} ended: {verdict}{detail}", child_name(agent_type)),
     )
 }
 
@@ -3745,7 +3764,7 @@ mod tests {
         ));
         assert_eq!(ok.len(), 1, "{ok:?}");
         assert!(ok[0].starts_with("CHILD"), "{:?}", ok[0]);
-        assert!(ok[0].contains("the codex child returned Ok"), "{:?}", ok[0]);
+        assert!(ok[0].contains("the codex child finished"), "{:?}", ok[0]);
         assert!(
             ok[0].contains("fixed the failing test and pushed one commit"),
             "the narrative is what the child actually reported: {:?}",
@@ -3777,7 +3796,7 @@ mod tests {
             failed[0]
         );
         assert!(
-            failed[1].contains("the codex child returned Failed"),
+            failed[1].contains("the codex child failed"),
             "{:?}",
             failed[1]
         );
@@ -3800,7 +3819,7 @@ mod tests {
   "child": {"harness": "codex"},
   "completion": {
     "status": "Ok",
-    "narrative": {"value": "added subtract", "truncated": false},
+    "narrative": {"value": "added subtract", "truncated": false, "original_bytes": 14},
     "branch": "marion/01a0ca90",
     "commit": "52dff3a0123456789abcdef0123456789abcdef0"
   }
@@ -3812,7 +3831,7 @@ mod tests {
         ));
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(
-            lines[0].contains("the codex child returned Ok: added subtract"),
+            lines[0].contains("the codex child finished: added subtract"),
             "{lines:?}"
         );
         assert!(
@@ -3895,7 +3914,7 @@ mod tests {
         });
         assert_eq!(ok.len(), 1, "{ok:?}");
         assert!(ok[0].starts_with("CHILD"), "{:?}", ok[0]);
-        assert!(ok[0].contains("codex-impl exited Ok"), "{:?}", ok[0]);
+        assert!(ok[0].contains("codex-impl ended: done"), "{:?}", ok[0]);
         assert!(
             ok[0].chars().count() < 300,
             "a successful child's warnings must not be dragged across the terminal: {} chars",
@@ -3914,7 +3933,7 @@ mod tests {
             }),
         });
         assert!(failed[0].starts_with("FAILED"), "{:?}", failed[0]);
-        assert!(failed[0].contains("exited TimedOut"), "{:?}", failed[0]);
+        assert!(failed[0].contains("ended: timed out"), "{:?}", failed[0]);
         assert!(
             failed[0].contains("its process group was killed"),
             "a failure keeps every byte that explains it: {:?}",
@@ -4296,7 +4315,9 @@ mod tests {
     fn a_finished_acp_spawn_renders_the_childs_verdict() {
         let contract = serde_json::json!({
             "child": {"harness": "acp"},
-            "completion": {"status": "Ok", "narrative": {"value": "wrote the file"}},
+            "completion": {"status": "Ok", "narrative": {
+                "value": "wrote the file", "truncated": false, "original_bytes": 14
+            }},
         })
         .to_string();
         let wrapped =
@@ -4311,7 +4332,7 @@ mod tests {
             assert_eq!(lines.len(), 1, "{lines:#?}");
             assert!(lines[0].starts_with("CHILD"), "{lines:#?}");
             assert!(
-                lines[0].contains("the acp child returned Ok: wrote the file"),
+                lines[0].contains("the acp child finished: wrote the file"),
                 "{lines:#?}"
             );
         }

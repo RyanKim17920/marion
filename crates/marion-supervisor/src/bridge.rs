@@ -736,10 +736,7 @@ fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
                 format!("marion: the {harness} child never called report, so it returned no answer")
             }
         },
-        ExitStatus::TimedOut => format!("marion: the {harness} child timed out"),
-        ExitStatus::Cancelled => format!("marion: the {harness} child was cancelled"),
-        ExitStatus::Killed => format!("marion: the {harness} child was killed"),
-        ExitStatus::Failed => format!("marion: the {harness} child failed"),
+        other => format!("marion: the {harness} child {}", other.verb_phrase()),
     };
     Some((
         bounded(&format!("{head} — {}", comp.exit.description)),
@@ -1026,16 +1023,7 @@ pub fn root_text(
     exit: &marion_core::contract::ProcessExit,
     events: &std::path::Path,
 ) -> (String, bool) {
-    let head = match status {
-        ExitStatus::Ok => format!("marion: the {agent_type} root finished"),
-        ExitStatus::Unreported => {
-            format!("marion: the {agent_type} root ended without reporting an outcome")
-        }
-        ExitStatus::TimedOut => format!("marion: the {agent_type} root timed out"),
-        ExitStatus::Cancelled => format!("marion: the {agent_type} root was cancelled"),
-        ExitStatus::Killed => format!("marion: the {agent_type} root was killed"),
-        ExitStatus::Failed => format!("marion: the {agent_type} root failed"),
-    };
+    let head = format!("marion: the {agent_type} root {}", status.verb_phrase());
     (
         bounded(&format!(
             "{head} — {desc}. It is node {node}, and it is a **root**: a root has no task \

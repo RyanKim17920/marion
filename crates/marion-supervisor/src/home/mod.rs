@@ -1119,10 +1119,7 @@ fn feed_items(old: &[NodeSummary], new: &[NodeSummary]) -> Vec<FeedItem> {
             })),
             Some(o) if o.state != n.state => {
                 let text = match n.state {
-                    NodeState::Exited(marion_core::contract::ExitStatus::Ok) => {
-                        Some("done".to_string())
-                    }
-                    NodeState::Exited(s) => Some(format!("{s:?}").to_lowercase()),
+                    NodeState::Exited(s) => Some(s.word().to_string()),
                     NodeState::Blocked(_) => attention_of(n),
                     _ => None,
                 };
