@@ -1955,7 +1955,11 @@ impl RegistryHandle {
     /// when the cache is over budget. `None` means nothing is due. An attachment whose watch thread
     /// could not be started is re-read at [`crate::wake::DEGRADED_RECHECK`].
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        if lock(&self.shared).attached.iter().any(|a| a.watch.is_none()) {
+        if lock(&self.shared)
+            .attached
+            .iter()
+            .any(|a| a.watch.is_none())
+        {
             return Some(std::time::Instant::now() + crate::wake::DEGRADED_RECHECK);
         }
         let panes = lock(&self.panes);
@@ -11607,9 +11611,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let changes = w.fx.handle.live.changes();
         let seen = changes.generation();
-        let waiter = std::thread::spawn(move || {
-            changes.wait_past(seen, std::time::Duration::from_secs(5))
-        });
+        let waiter =
+            std::thread::spawn(move || changes.wait_past(seen, std::time::Duration::from_secs(5)));
         std::thread::sleep(std::time::Duration::from_millis(50));
         say(&stream, "root", &["after"]);
         assert_ne!(

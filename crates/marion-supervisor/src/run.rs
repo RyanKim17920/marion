@@ -640,8 +640,7 @@ fn run_bounded_with(
     // when someone listens; `None` inside if no descriptor could be had (lines are then looked at
     // on the degraded re-check).
     let lines_wake = on_line.map(|_| crate::wake::Pipe::new().ok().map(Arc::new));
-    let stdout_drain =
-        Drain::start_with_lines(stdout, lines_tx, lines_wake.clone().flatten());
+    let stdout_drain = Drain::start_with_lines(stdout, lines_tx, lines_wake.clone().flatten());
     let stderr_drain = Drain::start(stderr);
     // `Break` from the hook: the caller read a line that ends the run now. Every line is still
     // delivered, so the live view misses nothing said before the kill.
@@ -692,12 +691,7 @@ fn run_bounded_with(
         let lines = lines_wake
             .as_ref()
             .map(|wake| wake.as_ref().map(|w| w.fd()));
-        exited = crate::wake::step_child(
-            &mut child,
-            &exit,
-            lines.as_slice(),
-            Some(deadline),
-        )?;
+        exited = crate::wake::step_child(&mut child, &exit, lines.as_slice(), Some(deadline))?;
     };
     // The child is reaped; anything still holding a write end is an escapee. One deadline for both
     // drains, so the total wait is `DRAIN_GRACE`, not twice it.

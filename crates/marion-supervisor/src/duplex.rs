@@ -684,7 +684,8 @@ pub fn run_duplex(
     // One bound for the whole tail: the drains were joined above, so every line is already queued
     // and each receive returns at once until the forwarder's Eof.
     let tail = Instant::now() + DRAIN_GRACE;
-    while let Ok(Event::Line(line)) = rx.recv_timeout(tail.saturating_duration_since(Instant::now()))
+    while let Ok(Event::Line(line)) =
+        rx.recv_timeout(tail.saturating_duration_since(Instant::now()))
     {
         if let Some(frame) = record_line(spec, &mut outcome, &line) {
             outcome.transcript.push(frame);

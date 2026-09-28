@@ -472,8 +472,11 @@ mod signal_imp {
     type SigSet = [u64; 16];
 
     unsafe extern "C" {
-        fn signalfd(fd: std::ffi::c_int, mask: *const SigSet, flags: std::ffi::c_int)
-        -> std::ffi::c_int;
+        fn signalfd(
+            fd: std::ffi::c_int,
+            mask: *const SigSet,
+            flags: std::ffi::c_int,
+        ) -> std::ffi::c_int;
     }
 
     /// `SFD_CLOEXEC | SFD_NONBLOCK`: `O_CLOEXEC` and `O_NONBLOCK` on every Linux marion builds for.
@@ -1019,7 +1022,10 @@ mod tests {
         let signal = rustix::process::Signal::from_named_raw(SIGUSR2).unwrap();
         rustix::process::kill_process(rustix::process::getpid(), signal).unwrap();
         assert!(readable(watch.fd(), BOUND), "the posting makes it readable");
-        assert!(readable(watch.fd(), Duration::ZERO), "and it stays readable");
+        assert!(
+            readable(watch.fd(), Duration::ZERO),
+            "and it stays readable"
+        );
         watch.drain();
         #[cfg(not(target_os = "linux"))]
         assert!(
