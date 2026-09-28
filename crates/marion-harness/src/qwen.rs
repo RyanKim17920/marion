@@ -53,10 +53,11 @@ use crate::env_filter::{EnvGrant, LoginEnv};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push,
-    ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint,
+    Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
+    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
+    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -241,6 +242,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         interactive: TurnDelivery::None {
             note: "qwen's TUI was not measured (S31 probed codex, opencode, copilot and claude), \
                    and its native lane ships disabled",
+        },
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "launch-only: no channel after launch, and SIGINT mid-turn is unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "no interactive shape marion can type into was measured, so a cancel kills the \
+                   node",
         },
     },
     boot_dialogs: BootDialogs {

@@ -42,10 +42,10 @@ use crate::grammar::{
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
-    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need,
-    Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn,
+    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
@@ -161,6 +161,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Not measured: S34 ran pi only against marion's canned models.json provider, and an endpoint
     // recipe (a models.json naming the operator's provider and key) was never tried.
+    abort: Aborts {
+        headless: AbortVerb::Channel {
+            grace_ms: 5_000,
+            note: "S34 pi-rpc-abort-mid-tool (0.80.2): `{\"type\":\"abort\"}` lets the in-flight \
+                   call finish and ends the next model request with stopReason `aborted`",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
+        },
+    },
     boot_dialogs: BootDialogs {
         dialogs: &[],
         remembers: Remembers::Nothing,
@@ -324,6 +335,13 @@ pub const LAUNCH_ONLY: HarnessSpec = HarnessSpec {
             note: "S34 pi-resume-turn-2 (0.80.2): `--session <id> -p …` continues the session",
         },
         ..SPEC.delivery
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "launch-only: no channel after launch; the channel row's `abort` is what ends a \
+                   turn early",
+        },
+        ..SPEC.abort
     },
     ..SPEC
 };

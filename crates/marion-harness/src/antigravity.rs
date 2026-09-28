@@ -38,10 +38,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
-    Field, HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, McpServers, ModelForm,
-    Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes,
+    McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume,
+    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -84,6 +84,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[],
     // No canned route and so no overlay to point at an endpoint: agy runs only on the operator's
     // own login, and an endpoint launch is refused like a canned one.
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "`agy -p` is launch-only: no channel after launch, and SIGINT mid-turn is \
+                   unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
+        },
+    },
     boot_dialogs: BootDialogs {
         dialogs: &[],
         remembers: Remembers::Nothing,

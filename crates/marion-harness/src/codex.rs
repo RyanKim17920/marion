@@ -31,10 +31,11 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::rpc_channel::{Answer, ReadyGate, RpcChannel, Turns};
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint,
-    Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces,
-    TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal,
+    Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling,
+    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -248,6 +249,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              0.155.1: a paste + CR on the startup draft (first draw, before the window title) is \
              never submitted; after the title and 1.5 s quiet it is",
         ),
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "`codex exec` is launch-only: no channel is open after launch to carry an \
+                   interrupt, and SIGINT mid-turn is unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
+        },
     },
     // S37 first screens (0.155.1, `tests/fixtures/s37-boot-dialogs/codex-0.155.1.raw`): a fresh
     // `CODEX_HOME` and directory open on directory trust, selection on `1. Yes, continue`. The

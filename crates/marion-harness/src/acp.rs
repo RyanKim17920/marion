@@ -60,9 +60,9 @@ use crate::grammar::{
 };
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Field, HarnessSpec,
-    McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Spelling,
-    Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries,
+    Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness,
+    Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -169,6 +169,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     },
     // None: ACP has no provider channel in its handshake, and the per-agent canned recipes are not endpoint recipes yet. An endpoint launch of an ACP type is refused by name.
+    abort: Aborts {
+        headless: AbortVerb::Channel {
+            grace_ms: 5_000,
+            note: "protocol-generic: `session/cancel` is the spec's notification, and the prompt \
+                   resolves with stopReason `cancelled`",
+        },
+        interactive: AbortVerb::None {
+            note: "ACP has no interactive shape",
+        },
+    },
     boot_dialogs: BootDialogs {
         dialogs: &[],
         remembers: Remembers::Nothing,

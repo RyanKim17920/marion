@@ -9256,6 +9256,69 @@ mod tests {
         }
     }
 
+    /// **Every row states how a running turn is ended early, for both shapes**, and each verb has
+    /// exactly one precondition on the rest of the row, so a row cannot claim an interrupt it has
+    /// no way to send:
+    ///
+    /// * `Channel` needs a typed channel with an interrupt of its own — a JSONL channel (its
+    ///   `abort` command), ACP (`session/cancel`) or codex's app-server (`turn/interrupt`) — and
+    ///   is headless only. Stream-json joins once its `interrupt` is measured.
+    /// * `Keys` needs a terminal marion can type into, is interactive only, and sends something.
+    /// * Every grace is within [`crate::spec::MAX_CANCEL_GRACE_MS`], and above zero where a verb
+    ///   is sent at all.
+    /// * Every note is non-empty, `None` included.
+    #[test]
+    fn every_row_states_its_abort_verb_for_both_shapes() {
+        use crate::spec::{AbortVerb, MAX_CANCEL_GRACE_MS, NodeShape, Surfaces, abort_for};
+        use crate::surfaces::TypedKind;
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            for shape in [NodeShape::Headless, NodeShape::Interactive] {
+                let verb = abort_for(row, shape);
+                assert!(
+                    !verb.note().trim().is_empty(),
+                    "{h} {shape:?}: an abort verb without the measurement behind it"
+                );
+                assert!(
+                    verb.grace_ms() <= MAX_CANCEL_GRACE_MS,
+                    "{h} {shape:?}: a grace past the cancel bound"
+                );
+                let headless = shape == NodeShape::Headless;
+                match verb {
+                    AbortVerb::Channel { grace_ms, .. } => {
+                        assert!(
+                            headless
+                                && matches!(
+                                    row.surfaces,
+                                    Surfaces::JsonlRpc(_)
+                                        | Surfaces::Headless(TypedKind::Acp | TypedKind::AppServer)
+                                ),
+                            "{h} {shape:?}: a channel abort needs a typed channel with an interrupt"
+                        );
+                        assert!(grace_ms > 0, "{h}: a channel abort with no time to land");
+                    }
+                    AbortVerb::Keys { keys, grace_ms, .. } => {
+                        assert!(
+                            !headless && (row.pane.is_some() || row.live_declaration.is_some()),
+                            "{h} {shape:?}: keys need a terminal marion can type into"
+                        );
+                        assert!(
+                            !keys.is_empty() && keys.iter().all(|k| !k.is_empty()),
+                            "{h}: an abort that types nothing"
+                        );
+                        assert!(grace_ms > 0, "{h}: a keyed abort with no time to land");
+                    }
+                    AbortVerb::None { .. } => {}
+                }
+            }
+        }
+        // The launch-only fallback of a channel row must not inherit the channel's abort.
+        assert!(matches!(
+            crate::pi::LAUNCH_ONLY.abort.headless,
+            AbortVerb::None { .. }
+        ));
+    }
+
     /// **Every row states the dialogs its TUI shows before the composer**, with the measurement —
     /// an empty list included, whose note says what was searched. A needle is written the way the
     /// pty host reads a screen (one space between words, nothing leading or trailing), or it could

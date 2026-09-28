@@ -24,10 +24,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries,
-    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
-    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -212,6 +212,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // S37 first screen (0.53.0, `tests/fixtures/s37-boot-dialogs/gemini-0.53.0.raw`): folder
     // trust, selection on `1. Trust folder`. Its answer was not measured (it persists to the
     // operator's trustedFolders), and the row takes no paste, so it is held.
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "launch-only: no channel after launch, and SIGINT mid-turn is unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "no interactive shape marion can type into was measured, so a cancel kills the \
+                   node",
+        },
+    },
     boot_dialogs: BootDialogs {
         dialogs: &[BootDialog {
             needle: "Do you trust the files in this folder?",

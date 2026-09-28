@@ -33,10 +33,10 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
-    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly,
-    Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -290,6 +290,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             "S31 p0b/tui/opencode (1.18.32): bracketed paste + CR submits at 0 ms; busy repaints \
              ≤ 361 ms; no structured turn-end signal",
         ),
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "`opencode run` is launch-only: no channel after launch, and SIGINT mid-turn is \
+                   unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
+        },
     },
     boot_dialogs: BootDialogs {
         dialogs: &[],

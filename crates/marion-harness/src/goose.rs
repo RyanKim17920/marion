@@ -49,10 +49,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly,
-    Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint,
+    Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
+    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -217,6 +217,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
         interactive: TurnDelivery::None {
             note: "goose's TUI was not measured (S31), and its native lane ships disabled",
+        },
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "launch-only: no channel after launch, and SIGINT mid-turn is unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "no interactive shape marion can type into was measured, so a cancel kills the \
+                   node",
         },
     },
     boot_dialogs: BootDialogs {

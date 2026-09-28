@@ -44,11 +44,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, BootSignal, Constraint,
-    Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume,
-    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    BootSignal, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers,
+    Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -241,6 +241,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // S37 first screens (1.0.83, `tests/fixtures/s37-boot-dialogs/copilot-1.0.83.raw`): a fresh
     // directory opens on `Confirm folder trust`, selection on `1. Yes` (this session only). CR
     // selects it and the composer draws; nothing is remembered past the session.
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "`copilot -p` is launch-only: no channel after launch, and SIGINT mid-turn is \
+                   unmeasured",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
+        },
+    },
     boot_dialogs: BootDialogs {
         dialogs: &[
             BootDialog {

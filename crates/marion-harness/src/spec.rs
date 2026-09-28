@@ -151,6 +151,11 @@ pub struct HarnessSpec {
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
     /// surfaces_can_carry` checks each strategy against the rest of the row.
     pub delivery: Deliveries,
+    /// **How a running turn is ended early**, per shape — what a cancel writes before its grace,
+    /// and what a node past its wall clock gets before the kill. Resolved by [`abort_for`] alone;
+    /// the sweep `every_row_states_its_abort_verb_for_both_shapes` checks each verb against the
+    /// rest of the row.
+    pub abort: Aborts,
     /// **The dialogs this harness's TUI can put up before its composer exists** — measured first
     /// screens in a fresh directory. A paste typed into one answers it: claude 2.1.283's folder
     /// trust defaults to `No, exit`, so a paste + CR quits the session. The paste driver holds
@@ -729,6 +734,81 @@ pub fn delivery_for(row: &HarnessSpec, shape: NodeShape) -> TurnDelivery {
     match shape {
         NodeShape::Headless => row.delivery.headless,
         NodeShape::Interactive => row.delivery.interactive,
+    }
+}
+
+/// A row's [`AbortVerb`] for each of the two shapes a node can run in — how a running turn is ended
+/// early, so a cancelled node stops with its work on disk rather than being killed mid-write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Aborts {
+    /// The node marion drives over pipes.
+    pub headless: AbortVerb,
+    /// The node a person can watch: a pane marion hosts, or a native `marion <harness>` session.
+    pub interactive: AbortVerb,
+}
+
+/// The longest grace any row may give its abort before marion kills the node anyway. A cancel of a
+/// tree waits at most one grace per depth level, so an unbounded row would make `marion cancel`
+/// unbounded too.
+pub const MAX_CANCEL_GRACE_MS: u32 = 30_000;
+
+/// **How marion asks a running node to stop** — measured per harness and per shape, like
+/// [`TurnDelivery`]. Whatever the verb, a node still running when its grace ends is killed: the
+/// verb decides only whether the harness gets the chance to close its turn first.
+///
+/// Every variant carries a `note` naming the measurement, `None` included — an absence says what
+/// was searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortVerb {
+    /// The typed channel's own interrupt: pi's JSONL `abort`, ACP's `session/cancel`, codex
+    /// app-server's `turn/interrupt`. The frame is the dialect's; the row states only that it was
+    /// measured and how long the harness takes to close the turn.
+    Channel { grace_ms: u32, note: &'static str },
+    /// Keystrokes into the node's terminal, `gap_ms` apart — Esc, then Ctrl-C, for a TUI whose
+    /// composer interrupts the running turn on them.
+    Keys {
+        keys: &'static [&'static [u8]],
+        gap_ms: u16,
+        grace_ms: u32,
+        note: &'static str,
+    },
+    /// Nothing measured ends a turn early on this shape: a cancel kills the node at once.
+    None { note: &'static str },
+}
+
+impl AbortVerb {
+    /// The measurement behind the row's verb.
+    pub const fn note(self) -> &'static str {
+        match self {
+            AbortVerb::Channel { note, .. }
+            | AbortVerb::Keys { note, .. }
+            | AbortVerb::None { note } => note,
+        }
+    }
+
+    /// The verb's stable name, for `marion doctor`, the journal and the sweep that pins each row's.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            AbortVerb::Channel { .. } => "channel",
+            AbortVerb::Keys { .. } => "keys",
+            AbortVerb::None { .. } => "none",
+        }
+    }
+
+    /// How long marion waits after the verb before it kills the node; zero for [`Self::None`].
+    pub const fn grace_ms(self) -> u32 {
+        match self {
+            AbortVerb::Channel { grace_ms, .. } | AbortVerb::Keys { grace_ms, .. } => grace_ms,
+            AbortVerb::None { .. } => 0,
+        }
+    }
+}
+
+/// The abort-verb resolver, beside [`delivery_for`]: the row's verb for a node of this shape.
+pub fn abort_for(row: &HarnessSpec, shape: NodeShape) -> AbortVerb {
+    match shape {
+        NodeShape::Headless => row.abort.headless,
+        NodeShape::Interactive => row.abort.interactive,
     }
 }
 

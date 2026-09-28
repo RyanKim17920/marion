@@ -295,6 +295,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         adapter.spec().approval,
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     ));
+    notes.push(abort_note(adapter.spec()));
 
     let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
     let identity = identify(
@@ -336,6 +337,22 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             )
         })
         .collect()
+}
+
+/// **How a cancel ends this row's running turn**, per shape: the verb's kind and its grace — a
+/// `none` is a cancel that kills at once, which is what an operator needs to know before pressing
+/// `x` on a node mid-write.
+fn abort_note(row: &marion_harness::spec::HarnessSpec) -> String {
+    use marion_harness::spec::AbortVerb;
+    let one = |verb: AbortVerb| match verb {
+        AbortVerb::None { .. } => "none (killed at once)".to_string(),
+        v => format!("{} ({} ms grace)", v.kind(), v.grace_ms()),
+    };
+    format!(
+        "abort: headless {}, interactive {}",
+        one(row.abort.headless),
+        one(row.abort.interactive)
+    )
 }
 
 /// **The row's approval grant, as doctor reports it** — one line per row, whatever the shape.

@@ -24,10 +24,11 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries,
-    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
-    MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
+    McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume,
+    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -281,6 +282,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    auth claude refuses them (\"Channels are not currently available\") and the \
                    message is not delivered; bracketed paste into the TUI is measured to work \
                    (p0b/tui/claude) and is the fallback a later phase may add",
+        },
+    },
+    abort: Aborts {
+        headless: AbortVerb::None {
+            note: "stream-json has an `interrupt` control request, unmeasured on the pinned build \
+                   (probe P-cancel-1); until it is, a cancel kills the node",
+        },
+        interactive: AbortVerb::None {
+            note: "Esc or Ctrl-C into this TUI mid-turn is unmeasured (probe P-cancel-2), so a \
+                   cancel kills the pane",
         },
     },
     // S37 first screens (2.1.283, `tests/fixtures/s37-boot-dialogs/claude-code-2.1.283.raw`): a
