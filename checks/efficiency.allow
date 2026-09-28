@@ -14,7 +14,6 @@ crates/marion-supervisor/src/rpc.rs:LIVENESS_TICK  bounded: the safety bound on 
 crates/marion-supervisor/src/acp_child.rs:prompt_session  bounded: the held-inbox wait blocks on the shared driver's condvar (rpc::Driver::wait_event); try_wait once per wake or LIVENESS_TICK (2 s)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
-crates/marion-supervisor/src/doctor.rs:AcpChild::response  untracked: doctor's ACP probe sleeps in a loop for a response (one-shot command, bounded)
 crates/marion-supervisor/src/socket.rs:acquire_within  untracked: sleep loop acquiring the socket lock until a deadline
 
 # --- bounded one-shot waits with a clear deadline -----------------------------------------------

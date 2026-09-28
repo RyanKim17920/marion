@@ -42,24 +42,25 @@ pub fn poll_until(budget: Duration, step: Duration, mut cond: impl FnMut() -> bo
     cond()
 }
 
-/// `Child::wait` with a ceiling, over [`poll_until`]. `None` is "still running at the deadline",
-/// which is a finding and not an error — or a child that can no longer be waited on at all.
+/// `Child::wait` with a ceiling, blocking on the child's exit ([`ProcExit`]) rather than re-asking on
+/// a timer. `None` is "still running at the deadline", which is a finding and not an error — or a
+/// child that can no longer be waited on at all.
 pub fn wait_bounded(
     child: &mut std::process::Child,
     budget: Duration,
 ) -> Option<std::process::ExitStatus> {
-    let mut status = None;
-    poll_until(budget, Duration::from_millis(20), || {
-        match child.try_wait() {
-            Ok(Some(s)) => {
-                status = Some(s);
-                true
-            }
-            Ok(None) => false,
-            Err(_) => true,
+    let deadline = Instant::now() + budget;
+    let exit = ProcExit::new(child.id() as i32);
+    loop {
+        match step_child(child, &exit, &[], Some(deadline)) {
+            Ok(Some(s)) => return Some(s),
+            Ok(None) => {}
+            Err(_) => return None,
         }
-    });
-    status
+        if Instant::now() >= deadline {
+            return None;
+        }
+    }
 }
 
 /// A self-pipe: [`Self::wake`] from any thread makes [`Self::fd`] readable until [`Self::drain`].

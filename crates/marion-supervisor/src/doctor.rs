@@ -1075,6 +1075,10 @@ struct AcpChild {
     /// Set by the stdout reader when the pipe closes: the agent has exited (or closed stdout), so
     /// no answer can arrive and waiting out a budget would only delay the report.
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Rung by the stdout reader after every frame and at the close, so [`Self::response`] waits
+    /// on it rather than re-reading the frames on a timer. `None` only if no descriptor could be
+    /// had; the wait then re-checks at [`crate::wake::DEGRADED_RECHECK`].
+    wake: Option<std::sync::Arc<crate::wake::Pipe>>,
     /// The agent's stderr, the last [`STDERR_TAIL`] lines of it — where an agent that exits at
     /// startup says why (S33: `vtcode acp` "integration is disabled", `fast-agent-acp` "No model
     /// configured").
@@ -1114,16 +1118,25 @@ impl AcpChild {
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stderr = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let wake = crate::wake::Pipe::new().ok().map(std::sync::Arc::new);
         if let Some(out) = child.stdout.take() {
             let sink = std::sync::Arc::clone(&frames);
             let done = std::sync::Arc::clone(&closed);
+            let ring = wake.clone();
             // Detached: the reader ends when the pipe closes, which the kill in `Drop` guarantees.
             std::thread::spawn(move || {
                 use std::io::BufRead;
+                let ring = || {
+                    if let Some(ring) = &ring {
+                        ring.wake();
+                    }
+                };
                 for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
                     sink.lock().expect("frame sink").push(line);
+                    ring();
                 }
                 done.store(true, std::sync::atomic::Ordering::SeqCst);
+                ring();
             });
         }
         if let Some(err) = child.stderr.take() {
@@ -1146,6 +1159,7 @@ impl AcpChild {
             stdin,
             frames,
             closed,
+            wake,
             stderr,
             _tmp: tmp,
         })
@@ -1171,6 +1185,10 @@ impl AcpChild {
     fn response(&self, id: u64, budget: Duration) -> Option<String> {
         let deadline = Instant::now() + budget;
         while Instant::now() < deadline {
+            // Drain, then look: a frame after the drain rings again for the next wait.
+            if let Some(wake) = &self.wake {
+                wake.drain();
+            }
             // Read before the scan, so a frame written just before the close is still seen.
             let closed = self.closed.load(std::sync::atomic::Ordering::SeqCst);
             let seen = self.frames.lock().expect("frame sink").clone();
@@ -1187,7 +1205,7 @@ impl AcpChild {
             if closed {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            crate::wake::wait_until(&[self.wake.as_ref().map(|w| w.fd())], Some(deadline));
         }
         None
     }
