@@ -48,7 +48,9 @@ mod common;
 use common::script::{Delegation, claude_delegates_to_codex};
 
 const RUN_BOUND: Duration = Duration::from_secs(300);
-const ROOT_BLOCKED_SECS: &str = "5";
+/// The root's `--timeout`: a wall clock over the whole run (§9), which the child's run happens
+/// inside, so it covers both.
+const ROOT_WALL_CLOCK_SECS: &str = "150";
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const ROOT_MARKER: &str = "MARION-CHILD-EVENTS-ROOT-TURN-8d24";
 const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
@@ -135,7 +137,7 @@ fn a_real_run_leaves_both_node_kinds_replayable_from_streams_one_supervisor_wrot
             &server.base_url(),
             "--canned",
             "--timeout",
-            ROOT_BLOCKED_SECS,
+            ROOT_WALL_CLOCK_SECS,
         ])
         .current_dir(&*dir)
         .output()

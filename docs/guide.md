@@ -38,9 +38,9 @@ An `<id>` is a node's whole id, the short id its tree row shows, or a unique sta
 `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every verb follows that rule, so
 `marion ls` shows a session only when it sees the same value the session started with.
 
-`--timeout` is the root's bound: on claude, the budget for one blocked permission request; on
-the other harnesses, a wall-clock limit, after which marion kills the node's process tree and
-confirms it is gone.
+`--timeout` is the root's wall clock on every harness: past it, marion kills the node's process
+tree, confirms it is gone and records the run as timed out. A permission the node asks for that
+no rule decides is refused at once, since marion has nobody to ask.
 
 `marion resume` survives the supervisor's own death: `kill -9` it, and `resume` relaunches the
 lost root under the same id against the same harness session, recorded as a second generation.

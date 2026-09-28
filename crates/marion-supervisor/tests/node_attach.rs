@@ -69,7 +69,9 @@ const FINAL_MARKER: &str = "MARION-ATTACH-AFTER-RELEASE-6f2b";
 const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
 const CHILD_FILE: &str = "src/node-attach-marker.txt";
 const CHILD_TIMEOUT_SECS: u64 = 120;
-const ROOT_BLOCKED_SECS: &str = "5";
+/// The root's `--timeout`: a wall clock over the whole run (§9), which the child's run happens
+/// inside, so it covers both.
+const ROOT_WALL_CLOCK_SECS: &str = "150";
 /// The child's wire. Counted per wire because arrival order across the port is a race by
 /// construction — see `marion_provider::gate`.
 const CHILD_WIRE: &str = "responses";
@@ -226,7 +228,7 @@ fn a_re_attaching_client_replays_the_detached_window_and_then_hears_what_the_nod
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     let paths = paths_for(&state, &repo);
 
@@ -368,7 +370,7 @@ fn a_node_that_lived_and_died_while_nobody_watched_replays_with_its_terminal_boo
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     let status = run.wait();
     assert!(status.success(), "the run itself succeeded: {status:?}");

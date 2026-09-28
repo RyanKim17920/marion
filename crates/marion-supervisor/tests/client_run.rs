@@ -90,7 +90,9 @@ const ROOT_FINAL_MARKER: &str = "MARION-CLIENT-RUN-AFTER-RELEASE-9d3e";
 const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
 const CHILD_FILE: &str = "src/client-run-marker.txt";
 const CHILD_TIMEOUT_SECS: u64 = 120;
-const ROOT_BLOCKED_SECS: &str = "5";
+/// The root's `--timeout`: a wall clock over the whole run (§9), which the child's run happens
+/// inside, so it covers both.
+const ROOT_WALL_CLOCK_SECS: &str = "150";
 /// The child's wire, and the one whose turn is held. Counted per wire because arrival order across
 /// the port is a race by construction — see `marion_provider::gate`.
 const CHILD_WIRE: &str = "responses";
@@ -335,7 +337,7 @@ fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tre
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     let client_pid = run.pid();
     let paths = paths_for(&state, &repo);
@@ -581,7 +583,7 @@ fn the_roots_spawned_record_names_a_live_process_while_the_root_is_still_running
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     assert!(
         until(|| gate.parked() == 1),
@@ -992,7 +994,7 @@ fn a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     let client_pid = run.pid();
     let paths = paths_for(&state, &repo);
@@ -1252,7 +1254,7 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         &server.base_url(),
         &gate,
         ROOT_MARKER,
-        ROOT_BLOCKED_SECS,
+        ROOT_WALL_CLOCK_SECS,
     );
     assert!(
         until(|| gate.parked() == 1),
@@ -1525,7 +1527,7 @@ fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_re
     let root = a.spawn_root(
         &repo,
         &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
-        ROOT_BLOCKED_SECS.parse().expect("a number"),
+        ROOT_WALL_CLOCK_SECS.parse().expect("a number"),
     );
     assert!(
         until(|| journal_nodes(&state, &repo).len() == 2),

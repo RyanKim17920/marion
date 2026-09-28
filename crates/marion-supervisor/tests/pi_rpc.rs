@@ -174,8 +174,9 @@ impl Bed {
                 "--base-url",
                 &self.server.base_url(),
                 "--canned",
+                // A wall clock over the whole run (§9), on this duplex root as on every node.
                 "--timeout",
-                "5",
+                "150",
             ])
             .current_dir(&self.dir)
             .env("PATH", &self.path)

@@ -141,7 +141,7 @@ struct Bed {
 impl Bed {
     /// A claude root. `None` (announced) on a runner with no harnesses.
     fn new(tag: &str, nodes: Vec<NodeScript>, hold: Arc<Held>) -> Option<Bed> {
-        Bed::rooted(("claude", "5"), "claude", tag, nodes, hold)
+        Bed::rooted(("claude", "150"), "claude", tag, nodes, hold)
     }
 
     /// A root of `root_type`, which runs `program`. `None` (announced) on a runner with no

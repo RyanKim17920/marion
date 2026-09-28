@@ -168,10 +168,10 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
                 "--canned",
                 "--base-url",
                 &server.base_url(),
-                // The root's per-episode `Blocked` bound. Short, so a permission request that
-                // cannot be answered fails this test in seconds instead of stalling it for 900.
+                // The root's wall clock over the whole run (§9), which the child's run happens
+                // inside. An unanswerable permission ask costs none of it: marion denies it at once.
                 "--timeout",
-                "5",
+                "150",
             ])
             .current_dir(&root_dir),
         RUN_BOUND,

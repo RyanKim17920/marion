@@ -39,9 +39,9 @@ use common::script::{Delegation, claude_delegates_to_codex};
 /// Generous. It exists so a hung run fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
 
-/// The root's `--timeout`. On a duplex surface this is §9's per-episode `Blocked`-only budget and
-/// **not** a wall clock, so it is short: an unanswerable permission must fail in seconds.
-const ROOT_BLOCKED_SECS: &str = "5";
+/// The root's `--timeout`: a wall clock over the whole run (§9), which the child's run happens
+/// inside, so it covers both.
+const ROOT_WALL_CLOCK_SECS: &str = "150";
 
 /// The child's own wall clock, through `spawn`'s `timeout_secs`.
 const CHILD_TIMEOUT_SECS: u64 = 60;
@@ -101,7 +101,7 @@ fn a_childs_start_reaches_the_terminal_before_the_spawn_that_created_it_returns(
             &server.base_url(),
             "--canned",
             "--timeout",
-            ROOT_BLOCKED_SECS,
+            ROOT_WALL_CLOCK_SECS,
         ])
         .current_dir(&*dir)
         .stdout(Stdio::piped())

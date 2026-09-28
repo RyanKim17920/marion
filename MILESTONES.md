@@ -295,6 +295,19 @@ runs on the admitted release and each admission re-runs it — the installer had
 and the file skipped. Not
 yet: the pane and bridge lanes; `node/prompt`.
 
+**`marion run --timeout` is one wall clock on every root surface (2026-09-27).** A headless
+claude root (the duplex path) used to take `--timeout` as the time one unanswerable permission ask
+was held before marion denied it, with no wall clock on the run; every other root, and every child,
+already took it as a wall clock that kills the process group. Now the duplex root runs under the
+same wall clock (`root::launch_duplex` passes `wall_clock: Some(bound)`) and ends `TimedOut` when it
+passes, and an ask no rule decides is denied the moment it arrives on every node, with a sentence
+that says marion has nobody to ask (`duplex::NO_ANSWERER`). `DuplexSpec::blocked_bound` and its
+sleep are gone. A root must now be given a bound that covers the children it waits on. Witnesses:
+`duplex::tests::an_ask_marion_cannot_answer_is_denied_at_once_and_the_node_proceeds`,
+`duplex::tests::a_node_that_hangs_between_frames_is_killed_on_its_wall_clock_root_or_child`,
+`root::tests::a_root_killed_on_its_wall_clock_ends_timed_out`, and with a real claude
+`permission_round_trip::an_unanswerable_ask_is_denied_at_once_and_the_root_survives_it`.
+
 **Turn delivery — the continuation lane delivers (2026-09-27).** A supervisor-owned `LaunchOnly`
 node whose row's headless `TurnDelivery` is `Continuation` (codex, opencode, copilot, qwen) takes
 its next turn as a **relaunch of the same node**: at each stop of its process

@@ -81,8 +81,8 @@ impl Drop for Run {
 }
 
 /// `marion run claude --canned` against `base_url`, prompted to delegate the marker-file task to a
-/// child. `root_marker` keys the root's half of the suite's canned script; `blocked_secs` is the
-/// root's `--timeout`, §9's per-episode `Blocked`-only budget rather than a wall clock.
+/// child. `root_marker` keys the root's half of the suite's canned script; `timeout_secs` is the
+/// root's `--timeout`, a wall clock over the whole run (§9).
 pub fn start_run(
     dir: &Path,
     repo: &Path,
@@ -90,7 +90,7 @@ pub fn start_run(
     base_url: &str,
     gate: &Arc<TurnGate>,
     root_marker: &str,
-    blocked_secs: &str,
+    timeout_secs: &str,
 ) -> Run {
     let child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
@@ -106,7 +106,7 @@ pub fn start_run(
             base_url,
             "--canned",
             "--timeout",
-            blocked_secs,
+            timeout_secs,
         ])
         .current_dir(dir)
         .stdout(std::process::Stdio::null())

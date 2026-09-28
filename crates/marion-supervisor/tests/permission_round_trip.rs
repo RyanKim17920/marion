@@ -10,7 +10,7 @@
 //! `report` is deliberately **absent** from [`root::ROOT_VERBS`] — §9 rejects `report` on a
 //! node with no contract, and a root has none. So pointing the canned root at
 //! `mcp__marion__report` gives the exact situation `root.rs` warns about ("omitting a *reachable*
-//! verb would deny calls that then block until the root's bound expires"). The CLI offers the tool
+//! verb would deny calls the root reaches for"). The CLI offers the tool
 //! (MCP tools are the availability axis) and refuses to run it unasked (the permission axis), so it
 //! asks — over stdout, as a `control_request`.
 //!
@@ -21,11 +21,12 @@
 //! declaration — the broken launch the listing is kept for, and the one a root can still reach
 //! `report` through. Everything else is marion's production invocation, bridge and allowlist.
 //!
-//! **What marion answers that ask with is now two different things**, and the split is §5.4's: a
-//! root's `report` is refused by a rule marion can evaluate on arrival, so it is denied at once with
-//! that rule's sentence, while an ask with nobody to ask — a built-in `Bash` call outside the root's
-//! cwd — is still held for the node's whole `Blocked` budget first (§9). Both are driven here,
-//! because the file's subject is the channel and the channel carries both.
+//! **What marion answers that ask with is two different sentences**, and the split is §5.4's: a
+//! root's `report` is refused by a rule marion can evaluate on arrival, so it is denied with that
+//! rule's sentence, while an ask with nobody to ask — a built-in `Bash` call outside the root's
+//! cwd — is denied with [`NO_ANSWERER`]. Both are denied the moment they arrive (§9): marion has no
+//! permission answerer, so holding an ask could only spend the root's wall clock. Both are driven
+//! here, because the file's subject is the channel and the channel carries both.
 //!
 //! # Running it
 //!
@@ -45,6 +46,7 @@ use std::time::{Duration, Instant};
 
 use marion_provider::script::ROOT_TOOL_USE_ID;
 use marion_provider::{CannedServer, Config, Script};
+use marion_supervisor::duplex::NO_ANSWERER;
 use marion_supervisor::root::{
     self, RootSpec, can_use_tool_request, deny_response, initialize_request,
     is_control_response_to, user_message,
@@ -56,14 +58,19 @@ use serde_json::{Value, json};
 /// `ROOT_VERBS`.
 const ASKED_TOOL: &str = "mcp__marion__report";
 
-/// The root's per-episode `Blocked` budget for the expiry test. Short enough to keep the suite
-/// fast, long enough that "the bound was actually waited out" is measurable.
-const BLOCKED_BOUND: Duration = Duration::from_millis(750);
+/// The wall clock `root::launch` is given in the tests that watch how an ask is answered. Large
+/// enough that reaching it is unmistakable next to any plausible start-up cost, and never actually
+/// reached — so it costs the suite nothing except on the failure it exists to catch: an ask held
+/// instead of denied at once would run the root into it and end the run `TimedOut`.
+const ROOT_WALL_CLOCK: Duration = Duration::from_secs(120);
 
-/// The budget given to a root whose ask marion can **decide** (§5.4). Large enough that spending it
-/// is unmistakable next to any plausible start-up cost, and never actually spent — so it costs the
-/// suite nothing except on the failure this exists to catch.
-const UNSPENDABLE_BOUND: Duration = Duration::from_secs(120);
+/// **The denial the committed S9 recording carries** — marion's sentence in 2026-08, when an ask
+/// was still held for the root's bound before it was denied. The recording is a measurement of a
+/// pinned `claude` and is not re-recorded as a side effect of rewording marion's answer, so this is
+/// declared and checked ([`the_recorded_response_is_the_envelope_the_supervisor_actually_writes`])
+/// rather than assumed to be [`NO_ANSWERER`], which it no longer is.
+const RECORDED_DENIAL: &str =
+    "marion: no permission answerer in M1; the root's Blocked bound expired";
 
 const MCP_READY: Duration = Duration::from_secs(60);
 
@@ -274,7 +281,7 @@ fn wait_for_ready(path: &Path, timeout: Duration) -> bool {
 /// What marion answers a `can_use_tool` with.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Answer {
-    /// §9's rule: nobody to ask, so the bound expires and the request is denied.
+    /// §9's rule: nobody to ask, so the request is denied at once.
     Deny,
     /// The other branch of the same wire, so the fixture records both.
     Allow,
@@ -410,10 +417,7 @@ fn drive(fx: &Fixture, answer: Answer) -> Capture {
         if let Some((request_id, _tool)) = can_use_tool_request(&frame) {
             let reply = match answer {
                 // marion's own production string, byte for byte.
-                Answer::Deny => deny_response(
-                    &request_id,
-                    "marion: no permission answerer in M1; the root's Blocked bound expired",
-                ),
+                Answer::Deny => deny_response(&request_id, NO_ANSWERER),
                 // `updatedInput` is optional — S9 measured a bare `allow` running the tool with the
                 // model's original input — but marion echoes the input back rather than relying on
                 // that, because an answerer that rewrites arguments is the point of the field.
@@ -806,9 +810,9 @@ fn require_claude() {
 /// and why the two are one `#[test]` that cannot be half-`#[ignore]`d.
 ///
 /// The **no-ask** assertion in (A) is the second half of §11 item 24 and is not decoration: a tool
-/// that reached availability without permission is offered, asked about, and — marion having no
-/// answerer in M1 — denied after the root's whole `Blocked` budget. That is a stall wearing a
-/// grant's clothes, and it is what this asserts did not happen.
+/// that reached availability without permission is offered, asked about, and — marion having
+/// nobody to ask — denied. That is a refusal wearing a grant's clothes, and it is what this asserts
+/// did not happen.
 #[test]
 fn a_root_granted_read_reads_and_the_same_root_without_a_change_record_gets_no_tool() {
     require_claude();
@@ -832,8 +836,8 @@ fn a_root_granted_read_reads_and_the_same_root_without_a_change_record_gets_no_t
         cap.frames()
             .iter()
             .all(|f| can_use_tool_request(f).is_none()),
-        "a granted tool must not be asked about: an ask marion cannot answer is held for the \
-         root's whole Blocked bound and then denied, which is item 22's dead end and not a read.\n\
+        "a granted tool must not be asked about: an ask marion cannot answer is denied, which is \
+         item 22's dead end and not a read.\n\
          stderr:\n{}",
         cap.stderr
     );
@@ -917,7 +921,7 @@ fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denia
     assert_eq!(result["subtype"], "success");
     assert_eq!(
         result["terminal_reason"], "completed",
-        "§9: expiry denies the pending request and lets the root proceed — it does not kill it"
+        "§9: a denial refuses the pending request and lets the root proceed — it does not kill it"
     );
     assert_eq!(
         result["permission_denials"][0]["tool_name"], ASKED_TOOL,
@@ -989,23 +993,21 @@ fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_r
     drop(fx.server);
 }
 
-/// **§9's block-then-deny, on an ask marion genuinely has nobody to ask about.**
+/// **§9's deny, on an ask marion genuinely has nobody to ask about — at once, not held.**
 ///
-/// The probe is a built-in `Bash` call and **not** marion's `report`, which is what it used to be.
-/// A root's `report` is now decided by §5.4 the instant the ask arrives (see the test below), so it
-/// no longer spends the bound and could no longer witness this rule: the run would still take
-/// longer than 750 ms — claude has to start — and the assertion would pass while measuring nothing.
-/// A `Bash` call outside the root's cwd is the ask §9 is actually written for: no rule decides it
-/// and only an operator could, so it is held for the whole budget and then denied.
+/// The probe is a built-in `Bash` call outside the root's cwd: no rule decides it and only an
+/// operator could, and marion has none. It used to be held for the root's whole bound (900 s by
+/// default) and then denied anyway; now it is denied the moment it arrives, with
+/// [`NO_ANSWERER`], and the root proceeds under a wall clock it has spent none of.
 #[test]
-fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() {
+fn an_unanswerable_ask_is_denied_at_once_and_the_root_survives_it() {
     // The branch in `root::launch` that §11 item 14 calls out as written-but-unexercised. Every
     // verb the M1 hop reaches is allowlisted, so nothing else in this suite runs it.
     require_claude();
     let fx = prepare("bound", Target::BuiltinBash);
 
     let started = Instant::now();
-    let outcome = root::launch(&fx.node, BLOCKED_BOUND, MCP_READY).expect("the root runs");
+    let outcome = root::launch(&fx.node, ROOT_WALL_CLOCK, MCP_READY).expect("the root runs");
     let elapsed = started.elapsed();
 
     assert_eq!(
@@ -1018,13 +1020,20 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
         "the denied command must not have run"
     );
     assert!(
-        elapsed >= BLOCKED_BOUND,
-        "the answer must not have been sent before the bound expired: {elapsed:?}"
+        !outcome.timed_out && elapsed < ROOT_WALL_CLOCK / 2,
+        "the ask was held instead of denied at once: {elapsed:?} of {ROOT_WALL_CLOCK:?}"
+    );
+    // The CLI turns a denial's `message` into the call's `tool_result` verbatim (S9), so the
+    // sentence the root was actually given is readable off its own transcript.
+    let said = serde_json::to_string(&outcome.transcript).unwrap();
+    assert!(
+        said.contains(NO_ANSWERER),
+        "the root must be told marion had nobody to ask: {said}"
     );
     assert_eq!(
         outcome.exit_code,
         Some(0),
-        "§9: expired and terminated are different events for a root.\nstderr:\n{}",
+        "§9: a denied call and a terminated root are different events.\nstderr:\n{}",
         outcome.stderr
     );
     let result = outcome
@@ -1054,31 +1063,28 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
     );
 }
 
-/// **An ask marion can decide costs nothing**, through the same real control channel.
+/// **An ask a rule decides is denied in that rule's terms**, through the same real control channel.
 ///
 /// §5.4 rejects `report` on a root, so a root's `report` ask has an answer that depends on nothing
-/// but which node is asking. §9's block-then-deny rule is written for the other kind — an ask with
-/// *nobody to ask* — and applying it here made a decidable rule violation cost the root's whole
-/// `Blocked` budget: **900 s** by default (`bin/marion.rs`'s `blocked_bound_secs`), after which the
-/// root was told *"no permission answerer in M1; the node's Blocked bound expired"* — a missing
-/// answerer blamed for a decision marion had already made.
+/// but which node is asking — and the root must be told that rule, not that marion had nobody to
+/// ask ([`NO_ANSWERER`]), which would blame a missing answerer for a decision marion had made.
 ///
-/// The bound here is deliberately far larger than the run: the property is that it is **not spent**,
-/// and a bound close to a plausible start-up cost could not distinguish that from spending it.
+/// The wall clock here is deliberately far larger than the run: the property is that it is **not
+/// spent**, and a bound close to a plausible start-up cost could not distinguish that.
 #[test]
-fn a_roots_report_is_denied_at_once_in_5_4s_terms_rather_than_costing_the_blocked_bound() {
+fn a_roots_report_is_denied_at_once_in_5_4s_terms() {
     require_claude();
     let fx = prepare("decided", Target::MarionReport);
 
     let started = Instant::now();
-    let outcome = root::launch(&fx.node, UNSPENDABLE_BOUND, MCP_READY).expect("the root runs");
+    let outcome = root::launch(&fx.node, ROOT_WALL_CLOCK, MCP_READY).expect("the root runs");
     let elapsed = started.elapsed();
 
     assert_eq!(outcome.denied_permissions, vec![ASKED_TOOL.to_string()]);
     assert!(
-        elapsed < UNSPENDABLE_BOUND / 2,
+        !outcome.timed_out && elapsed < ROOT_WALL_CLOCK / 2,
         "the root stalled on an ask marion could answer from §5.4 alone: {elapsed:?} of \
-         {UNSPENDABLE_BOUND:?}"
+         {ROOT_WALL_CLOCK:?}"
     );
     // The CLI turns a denial's `message` into the call's `tool_result` verbatim (S9), so the
     // sentence the root was actually given is readable off its own transcript.
@@ -1088,8 +1094,8 @@ fn a_roots_report_is_denied_at_once_in_5_4s_terms_rather_than_costing_the_blocke
         "the root must be told which rule refused it, not that marion had nobody to ask: {said}"
     );
     assert!(
-        !said.contains("Blocked bound expired"),
-        "nothing expired — the answer was known before the ask arrived: {said}"
+        !said.contains(NO_ANSWERER),
+        "a rule decided this ask, so the root must not be told nobody was there to ask: {said}"
     );
     assert_eq!(
         outcome.exit_code,
@@ -1140,10 +1146,12 @@ fn the_same_subtype_carries_a_different_field_set_for_a_builtin_tool() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn the_recorded_response_is_the_string_the_supervisor_actually_writes() {
+fn the_recorded_response_is_the_envelope_the_supervisor_actually_writes() {
     // Not "a deny-shaped frame": the byte string `root::deny_response` produces, modulo the
     // request_id redaction. If the two ever diverge, the fixture is no longer evidence about
-    // marion.
+    // marion. The message is the recording's own ([`RECORDED_DENIAL`]); today's is asserted to
+    // differ, so a re-recording (which would carry `NO_ANSWERER`) fails here and retires the
+    // declaration instead of leaving it to go stale.
     // `fixture_frames`, not a `filter_map(…ok())` over the lines: a committed recording carrying a
     // line that is not a frame is a broken fixture, and skipping it would let this comparison find
     // its answer among whatever else still parsed.
@@ -1152,12 +1160,13 @@ fn the_recorded_response_is_the_string_the_supervisor_actually_writes() {
         .find(|v| v.pointer("/response/response/behavior").is_some())
         .expect("the committed recording holds marion's answer");
     let rid = recorded["response"]["request_id"].as_str().unwrap();
-    let produced: Value = serde_json::from_str(&deny_response(
-        rid,
-        "marion: no permission answerer in M1; the root's Blocked bound expired",
-    ))
-    .unwrap();
+    let produced: Value = serde_json::from_str(&deny_response(rid, RECORDED_DENIAL)).unwrap();
     assert_eq!(produced, recorded);
+    assert_ne!(
+        RECORDED_DENIAL, NO_ANSWERER,
+        "the recording now carries marion's current denial: drop RECORDED_DENIAL and compare the \
+         recording against NO_ANSWERER directly"
+    );
 }
 
 #[test]

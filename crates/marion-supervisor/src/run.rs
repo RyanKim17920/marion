@@ -1206,28 +1206,17 @@ fn launch_only_child(
 /// Driven by [`crate::duplex`], which is the same code `marion run` drives a duplex *root* with —
 /// deliberately, because the gate is normative for any launcher driving Claude Code headlessly and
 /// a second implementation of it here would be exactly the drift §9 warns about. What a child adds
-/// is what a child *is*: a wall clock (its contract's `timeout_secs`), which a root is offered
-/// none of.
+/// is what a child *is*: a contract, and a wall clock its contract records (`timeout_secs`) — the
+/// same kind of bound a root runs under.
 ///
-/// **The `Blocked` budget is zero, and that is a decision — but not the one this comment used to
-/// claim.** It said the child is compiled *without* `--permission-prompt-tool`, so §5.2's rule
-/// applies and no `can_use_tool` ever reaches marion. **That premise is false.** There is one
-/// compile path for a Claude Code node — `ClaudeCodeAdapter::compile` over `claude_code::SPEC` — and it
-/// emits `--permission-prompt-tool stdio` **unconditionally**, guarded by its own test
+/// **An ask is reachable here, and it is denied at once.** There is one compile path for a Claude
+/// Code node — `ClaudeCodeAdapter::compile` over `claude_code::SPEC` — and it emits
+/// `--permission-prompt-tool stdio` **unconditionally**, guarded by its own test
 /// (`permission_prompt_tool_is_set_or_can_use_tool_never_fires`). A duplex child is compiled with
 /// `--tools ""` plus exactly one allowlisted verb (`report`), so **every other tool call it makes
-/// asks** — the ask is reachable, not hypothetical, and its denial is journaled below.
-///
-/// The zero survives the correction, for the half of the original reasoning that was never about
-/// the premise. §9's rule — block until the bound, then deny and let the node proceed — is written
-/// for a **root**, whose `Blocked` budget stands outside any wall clock. A child has no such
-/// separate budget: its only bound is the wall clock its contract records (`timeout_secs`), so time
-/// spent holding an ask is spent out of the task's own, and can turn a run that should have been
-/// `Ok` into `TimedOut` — a worse outcome, on the same evidence, than the denial that is coming
-/// anyway. And the wait could not produce an answer if it were taken: M1 has no permission answerer,
-/// and the wait is a blocking `sleep` inside the single reader loop, so there is no channel on which
-/// one could arrive (§9). Zero therefore reaches §9's outcome — denied, node proceeds — at the
-/// only cost that is honest to pay, and the denial is no longer silent: it leaves a
+/// asks**. marion has nobody to ask, so the driver denies the ask the moment it arrives and the
+/// node proceeds, on a child exactly as on a root (§9): holding it could only spend the task's own
+/// wall clock and turn a run that should have been `Ok` into `TimedOut`. The denial leaves a
 /// `PermissionDenied` record.
 /// What a child's duplex launch needs beyond its compiled [`Invocation`] — the node, rather than the
 /// program.
@@ -1301,7 +1290,6 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             prompt,
             init_id: init_request_id(agent_id),
             mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
-            blocked_bound: StdDuration::ZERO,
             // The child's own depth, not the caller's — the same value its bridge is told, so the
             // driver and the bridge answer the same question about the same node.
             depth,
@@ -2235,8 +2223,8 @@ pub fn run_spawn_watched(
         &env.project_dir,
         &agent_id,
         &run.denied_permissions,
-        "denied immediately: a child's Blocked bound is zero, because its only bound is the wall \
-         clock its contract records and M1 has no answerer to spend it on",
+        "denied at once: marion has nobody to ask for a permission, so it denies every ask no rule \
+         decides (§9)",
     );
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a

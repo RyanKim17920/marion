@@ -47,7 +47,6 @@ use marion_core::paths::ProjectDir;
 use marion_harness::adapter_for;
 use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
-use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::{Caller, SpawnRequest, run_bounded, run_spawn};
 use marion_testsupport::{fixture_repo, judge, on_path, persisted_contracts, scratch};
 use serde_json::json;
@@ -59,15 +58,11 @@ use common::canned::canned_env;
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
 
-/// The root's bound on a **`LaunchOnly`** surface, where `--timeout` is a wall clock over the whole
-/// run — and the child's entire run happens inside the root's `spawn` call, so this has to cover
-/// both. Matches `cross_product`, for the reason that file gives: opencode never exits on a
-/// provider hang, so a short-enough ceiling is what turns a hang into a failure.
+/// The root's `--timeout`: a wall clock over the whole run, on every surface (§9) — and the child's
+/// entire run happens inside the root's `spawn` call, so this has to cover both. Matches
+/// `cross_product`, for the reason that file gives: opencode never exits on a provider hang, so a
+/// short-enough ceiling is what turns a hang into a failure.
 const ROOT_WALL_CLOCK_SECS: &str = "150";
-
-/// The root's bound on a **duplex** surface, where `--timeout` is §9's per-episode `Blocked`-only
-/// budget and *not* a wall clock. Short: an unanswerable permission request must fail in seconds.
-const ROOT_BLOCKED_SECS: &str = "5";
 
 /// The child's own wall clock, through `spawn`'s `timeout_secs`.
 const CHILD_TIMEOUT_SECS: u64 = 60;
@@ -229,13 +224,7 @@ fn script(root: &Node, child: &Node) -> Script {
     s
 }
 
-fn marion_argv(
-    root: &Node,
-    repo: &Path,
-    state: &Path,
-    base_url: &str,
-    timeout: &str,
-) -> Vec<String> {
+fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "run".into(),
         root.agent_type.into(),
@@ -251,7 +240,7 @@ fn marion_argv(
         // at argument parsing and the pairing never starts.
         "--canned".into(),
         "--timeout".into(),
-        timeout.into(),
+        ROOT_WALL_CLOCK_SECS.into(),
     ];
     if let Some(m) = root.model {
         args.push("--model".into());
@@ -364,14 +353,7 @@ fn drive(root: &Node, child: &Node) -> JournalEvidence {
     })
     .expect("the canned provider binds");
 
-    // §3.4: what `--timeout` bounds follows the surface, so the value does too — derived from the
-    // adapter exactly as `marion run` derives the path itself, never from the harness's name.
-    let adapter = adapter_for(root.harness).expect("the root's harness has an adapter");
-    let timeout = match root_path(&adapter.surfaces()) {
-        Some(RootPath::Duplex) => ROOT_BLOCKED_SECS,
-        _ => ROOT_WALL_CLOCK_SECS,
-    };
-    let args = marion_argv(root, &repo, &state, &server.base_url(), timeout);
+    let args = marion_argv(root, &repo, &state, &server.base_url());
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
@@ -707,7 +689,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
                 "--base-url",
                 &server.base_url(),
                 "--timeout",
-                "5",
+                ROOT_WALL_CLOCK_SECS,
             ])
             .current_dir(&*root_dir),
         RUN_BOUND,
@@ -917,8 +899,8 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
 /// The ask is real, and the comment that used to say otherwise was wrong: a Claude Code child is
 /// compiled through the same `compile_headless` a root is, which emits
 /// `--permission-prompt-tool stdio` **unconditionally**, so a call to any verb outside the child's
-/// one-entry allowlist (`report`) produces an inbound `can_use_tool`. marion denies it — with a
-/// zero `Blocked` bound, because a child's only bound is the wall clock its contract records — and
+/// one-entry allowlist (`report`) produces an inbound `can_use_tool`. marion denies it at once —
+/// it has nobody to ask, and holding the ask would only spend the child's wall clock — and
 /// until this test existed that denial went **nowhere**: `duplex_child` dropped
 /// `DuplexOutcome.denied_permissions` and the only `PermissionDenied` emitter was the root's.
 ///
@@ -1016,8 +998,8 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
         "§4.3: every record is about exactly one node, and this one is about the child"
     );
     assert!(
-        node.denied_permissions[0].reason.contains("bound is zero"),
-        "the record must say why marion denied rather than waited: {}",
+        node.denied_permissions[0].reason.contains("nobody to ask"),
+        "the record must say why marion denied: {}",
         node.denied_permissions[0].reason
     );
     // The same replay still reconstructs the rest of the node, so the new record is additive

@@ -658,6 +658,9 @@ pub const MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 ///
 /// Zero from either source means *unset*, not *instant*: an agent type with `timeout: 0` and a
 /// `--timeout 0` are both a bound nobody chose, and §3.1's default is what a node gets then.
+///
+/// The name predates §9's single bound: what it resolves is the root's wall clock on every path,
+/// not a budget for a `Blocked` episode.
 pub fn blocked_bound_secs(explicit: Option<u64>, agent_type_secs: u64) -> u64 {
     match explicit.filter(|s| *s > 0) {
         Some(s) => s,
@@ -1190,18 +1193,16 @@ fn root_grant_record(
 
 /// Start the root and run it to completion, on whichever path its **surfaces** select (§3.4).
 ///
-/// `bound` is the root's node-level timeout (§9), and what it bounds is derived from the surface
-/// exactly like everything else here:
+/// `bound` is the root's node-level timeout (§9) — `marion run --timeout`, resolved by
+/// [`blocked_bound_secs`] — and it has **one meaning on every path**: a wall clock on the whole run.
+/// When it passes, the root's process group is killed and the run ends [`ExitStatus::TimedOut`],
+/// whether the root is duplex, launch-only, ACP or a pane. It is not optional: measured in S13,
+/// **opencode never exits on a provider hang** — a 500 still retrying at 90 s, a connection-refused
+/// still hung at 180 s, no backoff ceiling. Without a bound `marion run opencode` is an unbounded
+/// hang.
 ///
-/// - on [`RootPath::Duplex`] it is §9's **per-episode `Blocked`-only** budget, consumed only while
-///   marion is holding an answer the root is waiting on. Deliberately not a wall-clock ceiling —
-///   marion offers a root none — so that path has no deadline of its own;
-/// - on [`RootPath::LaunchOnly`] there *is* no `Blocked` state to budget: the node has no
-///   permission channel to block on and no descendant hold marion can observe, so a `Blocked`-only
-///   budget would bound nothing at all. The same knob is therefore the **wall-clock** bound, and it
-///   is not optional: measured in S13, **opencode never exits on a provider hang** — a 500 still
-///   retrying at 90 s, a connection-refused still hung at 180 s, no backoff ceiling. Without a
-///   bound `marion run opencode` is an unbounded hang.
+/// No part of it is spent holding a permission ask: marion has nobody to ask, so a duplex root's
+/// unanswerable ask is denied the moment it arrives (`duplex::NO_ANSWERER`).
 pub fn launch(
     node: &RootNode,
     bound: StdDuration,
@@ -1801,15 +1802,13 @@ fn journal_the_roots_outcome(
         &node.agent_id,
         &outcome.denied_permissions,
         // **One sentence for two routes to the same denial**, because `denied_permissions` carries
-        // tool names and not reasons: an ask marion cannot answer is held for the root's whole
-        // `Blocked` budget and then denied (§9), while one §5.4 decides — a root's `report` — is
-        // denied on arrival (`duplex::decided_permission`). Saying "the bound expired" about both
-        // would put a false event in the audit record for the second. The per-ask sentence is not
-        // lost: it is written to the node itself as the denial's `message`, and a root's transcript
-        // is what `marion run` prints.
-        "denied without an answerer: M1 has no permission answerer, so an ask marion cannot decide \
-         is held for the root's Blocked bound and then denied (§9), and one §5.4 decides is denied \
-         at once",
+        // tool names and not reasons: an ask nobody can answer is denied because marion has nobody
+        // to ask (§9), while one §5.4 decides — a root's `report` — is denied by that rule
+        // (`duplex::decided_permission`). Both are denied the moment they arrive. The per-ask
+        // sentence is not lost: it is written to the node itself as the denial's `message`, and a
+        // root's transcript is what `marion run` prints.
+        "denied at once: marion has nobody to ask for a permission, so it denies every ask no rule \
+         decides (§9), and one §5.4 decides is denied by that rule",
     );
 }
 
@@ -2263,8 +2262,8 @@ fn launch_only_generation(
     // scrubbed from each line by the sink itself (`EventSink::scrub_key`) before it is kept. The
     // capture below is therefore never recorded again.
     //
-    // A refused credential ends the run at once: a root has no wall clock at all, so a harness
-    // retrying a 401 would otherwise hold it for its whole backoff (`run::launch_only_child`).
+    // A refused credential ends the run at once: a harness retrying a 401 would otherwise hold it
+    // for its whole backoff, up to the root's wall clock (`run::launch_only_child`).
     let events = events.map(|es| &*es);
     let stopped: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let on_line = |line: &str| {
@@ -2524,14 +2523,11 @@ fn tell_pane_owner_failed(
 ///    the foreground group, and the record then reads *"the terminal hung up"* on every node, every
 ///    time, when the truth is that marion decided to stop.
 ///
-/// # What `bound` means here, and why it is the wall clock
+/// # What `bound` means here
 ///
-/// It is [`RootPath::LaunchOnly`]'s reading rather than the duplex path's. A pane has no typed
-/// control plane, so there is no `Blocked` state for marion to budget: marion is not holding an
-/// answer this node is waiting on, and never will be. The only thing marion can bound is elapsed
-/// time. A node still running when it expires is killed and reported `timed_out`, which
-/// `roots_exit` turns into [`ExitStatus::TimedOut`] — marion's own attributed kill, and not a
-/// failure of the harness.
+/// The wall clock, as on every root path ([`launch`]). A node still running when it expires is
+/// killed and reported `timed_out`, which `roots_exit` turns into [`ExitStatus::TimedOut`] —
+/// marion's own attributed kill, and not a failure of the harness.
 ///
 /// # What this deliberately does not do
 ///
@@ -2836,12 +2832,13 @@ fn describe_call(call: &MarionCall) -> String {
 /// implementation a root and a child share.**
 ///
 /// What is left here is only what a root *is*: it has no `TaskContract`, so its result is its
-/// stream and its exit (§9); and marion offers it no wall clock, so `wall_clock` is `None` and
-/// `bound` is spent only on a `Blocked` episode.
+/// stream and its exit (§9). Its `bound` is the same wall clock as any node's — a child's contract
+/// `timeout_secs`, this root's `marion run --timeout` — so an expiry kills its process group and
+/// ends the run `TimedOut`, as on every other root path.
 fn launch_duplex(
     node: &RootNode,
     tmpdir: &Path,
-    blocked_bound: StdDuration,
+    bound: StdDuration,
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
     on_started: &dyn Fn(i32),
@@ -2861,11 +2858,10 @@ fn launch_duplex(
             prompt: &node.prompt,
             init_id: format!("marion-init-{}", node.agent_id.0),
             mcp_ready_timeout,
-            blocked_bound,
             // A root, by construction: this is `root::launch`.
             depth: ROOT_DEPTH,
-            // §9: marion offers a root no wall-clock ceiling on this path, so there is none here.
-            wall_clock: None,
+            // §9: one bound, a wall clock on the whole run, the same on every node and path.
+            wall_clock: Some(bound),
             // A root's frames are the only ones with a human on the other end; a child's stream is
             // never streamed anywhere, see `duplex::DuplexSpec::sink`.
             sink: watcher,
@@ -4879,6 +4875,27 @@ mod tests {
             repository_of(&plain),
             plain.canonicalize().unwrap().display().to_string()
         );
+    }
+
+    /// **A root killed on its wall clock ends `TimedOut`, whatever else its run says** — the one
+    /// outcome every root path reports for `marion run --timeout` expiring, the duplex path
+    /// included now that it runs under the same wall clock (§9). A killed process has no exit code
+    /// and may leave a stream failure behind; neither outranks marion's own attributed kill.
+    #[test]
+    fn a_root_killed_on_its_wall_clock_ends_timed_out() {
+        for exit in [None, Some(0), Some(1)] {
+            let (status, described) = roots_exit(&RootOutcome {
+                timed_out: true,
+                failure: Some("the stream ended mid-turn".into()),
+                ..ran(&["spawn"], 2, exit, "")
+            });
+            assert_eq!(status, ExitStatus::TimedOut, "exit {exit:?}");
+            assert!(
+                described.description.contains("exceeded marion's bound"),
+                "{}",
+                described.description
+            );
+        }
     }
 
     /// **What still guards a genuinely broken run**: no marion call *and* no answer (no frame at

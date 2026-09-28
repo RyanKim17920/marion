@@ -3792,12 +3792,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `TaskContract.timeout` is not: absent an explicit value marion authors the agent type's
   `timeout_secs`, else a **900 s** default. **The root has no contract but still has a
   node-level timeout** — `marion run --timeout`, else its agent type's `timeout_secs`, else the
-  same 900 s — because the root is the only M1 node that can raise a permission request, and
-  "blocks until `timeout`" needs a value to read. So every bound M1 depends on — the blocking
-  `spawn`, the descendant hold (§7.6), an unanswerable permission (below) — is finite by
-  construction, on the root as well as on children.
+  same 900 s. So every bound M1 depends on — the blocking `spawn`, the descendant hold (§7.6) —
+  is finite by construction, on the root as well as on children. **Since 2026-09-27 the root's
+  bound is a wall clock on every surface** (below): `marion run --timeout` has one meaning, and an
+  unanswerable permission spends none of it.
 
-  **The two bounds measure different things, and must:**
+  **The two bounds measure different things:**
   - **A child's `TaskContract.timeout` is a total-task bound**, running from `Spawned`. It has to
     be, or a child that works forever is never `TimedOut` and the blocking `spawn` never returns.
     **`spawn` clamps the child's `timeout` to the requester's remaining bound — but only when the
@@ -3822,30 +3822,31 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     tells a reader so, and `completion: None` is what makes the contract unreadable as a result.
     The branch then takes step 8's cleanup verbatim: kill the process, journal the abort against
     the intent record, leave the contract `completion: None`** — or marion leaks a live child with a written
-    contract and no terminal, which §7.2 would later mis-mark `Orphaned`. **A root is never clamped against**: its bound
-    is a per-episode `Blocked`-only budget, not a remaining wall-clock allowance (below), so
-    `marion run --timeout 60` — which §9 blesses — must not truncate or refuse M1's single
-    `spawn`. Without the clamp,
+    contract and no terminal, which §7.2 would later mis-mark `Orphaned`. **A root is never clamped against**: it
+    has no contract, so a child it spawns keeps its own requested bound, and a root whose wall clock
+    is shorter than its child's simply ends `TimedOut` first (below). Without the clamp,
     nesting is broken on defaults at every depth below one: an intermediate node spawned at t=0
     with 900 s spawns its own child at t=100 with 900 s, so the parent expires at 900 while blocked
     in `spawn` and is killed before the grandchild's contract at 1000 could ever reach it. §6.1
     step 2 checks `depth`, so nesting is designed, not excluded.
-  - **A root's node-level bound is consumed only while the root is `Blocked`** — a §7.6 descendant
-    hold or an unanswered permission — and **not** while it is working or awaiting a blocking
-    `spawn`. A root is not a task and has no deliverable to bound; what needs bounding is how long
-    marion waits on an answer that may never come. **It is a per-episode limit**: it starts at each
-    entry into `Blocked` and is discarded on exit, so a root that survives a denied permission gets
-    a full bound for its next block. A lifetime budget would make every permission after the first
-    deny instantly and would collapse the §7.6 hold into an immediate expiry — and since a root
-    outlives many blocks by design, repeated blocking is the normal path, not a corner case.
+  - **A root's node-level bound is a wall clock on the whole run**, running from its launch and
+    covering every turn it takes — the same kind of bound as a child's, enforced the same way:
+    when it passes, marion kills the root's process group and the run ends `TimedOut`. It is the
+    same on every root surface — duplex, launch-only, ACP and pane. A root is not a task, so the
+    bound is not a deliverable's deadline; it is the operator's ceiling on how long the run may
+    hold a harness, which is what `marion run --timeout` promises.
 
-  Reading the root's bound as wall-clock instead would make M1 unreachable on default settings: the
-  root's 900 s starts before it spawns anything and the child's 900 s starts later, so the root
-  would always expire first and the parent could never receive the contract as a tool result.
-  **marion therefore offers no wall-clock ceiling on a root at all** — `marion run --timeout` sets
-  only the `Blocked` bound. A short root bound is legitimate (a root whose only wait is a 60 s
-  permission answer), so there is no minimum and nothing to refuse: the two bounds measure
-  different things and are not comparable.
+  **Superseded (2026-09-27): the root's bound as a per-episode `Blocked`-only budget.** This
+  section used to make a duplex root's bound a limit consumed only while the root was `Blocked`,
+  and offer that root no wall clock at all, so that the root's 900 s could not expire before a
+  child's 900 s that started later. In practice it meant one thing only: how long marion held a
+  permission ask nobody could answer before denying it anyway — up to 900 s of a stalled root,
+  bought for nothing, since marion has no permission answerer. Every other root surface was
+  already under a wall clock, so `--timeout` meant two different things depending on the harness.
+  It now means one. The cost is the one the old rule was written to avoid, and it is stated rather
+  than hidden: **a root must be given a bound that covers the children it waits on** — a root
+  whose wall clock passes while a blocking `spawn` is in flight ends `TimedOut`, and the child
+  runs on under its own contract.
 - **marion launches the root node itself.** The `claude` root is not hand-started: `marion run
   <agent-type> --prompt <…>` spawns it through the same §6.1 path as any child, which is what gives
   it an `AgentId`, an agent-dir, and a capability token — without which its `spawn` call cannot be
@@ -3887,23 +3888,21 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     child always affords the diff, so M1 records `true` — a value that was designed to hold under
     every S6 outcome and does hold on the branch taken (§9).
     **False confidence is worse than no check.**
-- **Permissions in M1** otherwise: there is no TUI to prompt, so anything genuinely requiring a
-  human blocks until the root's bound expires. **This depends entirely on
-  `--permission-prompt-tool stdio`** (§5.2): without it the call never reaches marion, nothing
-  blocks, `Blocked(Permission)` is unreachable, and the root's node-level bound has nothing to
-  bound. **On expiry marion denies the pending permission and
-  lets the root proceed** — it does *not* kill the root. **The bound being consumed here is the
-  permission's, not the root's life**: a root's budget is per-episode and `Blocked`-only (below),
-  so expiry ends *that episode* by denying the request, and the root resumes with a fresh budget
-  the next time it blocks. marion offers no wall-clock ceiling on a root at all, which is why
-  "expired" and "terminated" are different events for it and the same event for a child. The child rule is different (a `TimedOut`
-  child is killed) because there the contract would otherwise be terminal over a live process;
-  here the root is alive and answerable, and denying one tool call is the smaller, recoverable act.
-  The denial is recorded in the **journal** (§4.3), not in a contract — a root has none.
-  **This rule is now measured, not merely designed (S9, 2026-08-03, `tests/fixtures/s9/`).** With
-  `--permission-prompt-tool stdio` set, the ask reached marion, the root sat in
-  `Blocked(Permission)` until its bound expired, marion sent the deny, and **the root proceeded and
-  finished normally** — `terminal_reason: "completed"`, `is_error: false`, exit 0, with the CLI's
+- **Permissions in M1** otherwise: there is no TUI to prompt and marion has no permission
+  answerer, so **an ask marion cannot decide is denied the moment it arrives, on every node** —
+  with a sentence that says plainly marion had nobody to ask (`duplex::NO_ANSWERER`). An ask a
+  rule decides — a root's `report` (§5.4) — is denied at once too, with that rule's sentence.
+  **This depends entirely on `--permission-prompt-tool stdio`** (§5.2): without it the call never
+  reaches marion and the CLI refuses it in-process. **A denial does not kill the node**: the node
+  proceeds, and its wall clock — the only bound it has — is untouched by the ask. (Until
+  2026-09-27 a root's ask was held for the root's whole bound, 900 s by default, before the same
+  denial; holding it could produce no answer, so it only stalled the run.) The denial is recorded
+  in the **journal** (§4.3), not in a contract — a root has none, and a child's denials go to the
+  same place. **This rule is measured, not merely designed (S9, 2026-08-03,
+  `tests/fixtures/s9/`).** With `--permission-prompt-tool stdio` set, the ask reached marion,
+  marion sent the deny (the recording predates the at-once rule: the root sat in
+  `Blocked(Permission)` until its bound expired, and its `message` is the older sentence), and
+  **the root proceeded and finished normally** — `terminal_reason: "completed"`, `is_error: false`, exit 0, with the CLI's
   own terminal frame listing the call under `permission_denials` and the denied call surfacing as an
   `is_error` `tool_result` carrying marion's `message` verbatim, tagged
   `non_execution_kind: "permission-rule"`. On the allow leg the tool ran and returned marion's own

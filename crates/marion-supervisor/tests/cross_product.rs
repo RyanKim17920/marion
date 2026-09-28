@@ -126,7 +126,6 @@ use marion_harness::adapter_for;
 use marion_provider::script::{ROOT_CALL_ID, ROOT_TOOL_USE_ID};
 use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
-use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::run_bounded;
 use marion_testsupport::{
     carries, fixture_repo, judge, kill_hard, on_path, persisted_contracts, scratch, survivors,
@@ -141,16 +140,11 @@ use common::mcp_result::{codex_call_output_text, contract_json, mcp_blocks_text}
 /// `marion` fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
 
-/// The root's bound on a **`LaunchOnly`** surface, where `--timeout` is a wall clock over the whole
-/// run — and the child's entire run happens inside the root's `spawn` call, so this has to cover
-/// both. Short enough that a hang fails fast: measured in S13, opencode never exits on a provider
-/// hang (a 500 still retrying at 90 s, a connection-refused still hung at 180 s).
+/// The root's `--timeout`: a wall clock over the whole run, on every surface (§9) — and the child's
+/// entire run happens inside the root's `spawn` call, so this has to cover both. Short enough that
+/// a hang fails fast: measured in S13, opencode never exits on a provider hang (a 500 still
+/// retrying at 90 s, a connection-refused still hung at 180 s).
 const ROOT_WALL_CLOCK_SECS: &str = "150";
-
-/// The root's bound on a **duplex** surface, where `--timeout` is §9's per-episode `Blocked`-only
-/// budget and *not* a wall clock. Short, exactly as `m1_hop` keeps it: a permission request that
-/// cannot be answered must fail this test in seconds rather than stall it.
-const ROOT_BLOCKED_SECS: &str = "5";
 
 /// The child's own wall clock, passed through `spawn`'s `timeout_secs`.
 const CHILD_TIMEOUT_SECS: u64 = 60;
@@ -665,13 +659,7 @@ fn is_loopback(url: &str) -> bool {
 /// prevent. Every cell in this file is driven at $0.00 against the in-process canned provider, so
 /// every cell **says** it wants the fixture. See
 /// [`argv_that_names_a_loopback_endpoint_always_says_canned`].
-fn marion_argv(
-    root: &Node,
-    repo: &Path,
-    state: &Path,
-    base_url: &str,
-    timeout: &str,
-) -> Vec<String> {
+fn marion_argv(root: &Node, repo: &Path, state: &Path, base_url: &str) -> Vec<String> {
     let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
     let args: Vec<String> = vec![
         "run".into(),
@@ -688,7 +676,7 @@ fn marion_argv(
         // argument parsing and the cell never starts.
         "--canned".into(),
         "--timeout".into(),
-        timeout.into(),
+        ROOT_WALL_CLOCK_SECS.into(),
         // Passed for every root, including the two whose `--model` is omissible: see
         // [`Node::model`]. What the adapter does with it is the cell's assertion, not the
         // builder's.
@@ -719,7 +707,6 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
                 Path::new("/tmp/repo"),
                 Path::new("/tmp/state"),
                 base_url,
-                ROOT_BLOCKED_SECS,
             );
             let url = args
                 .iter()
@@ -776,14 +763,7 @@ fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
     })
     .expect("the canned provider binds");
 
-    let adapter = adapter_for(root.harness).expect("the root's harness has an adapter");
-    // §3.4: what `--timeout` bounds follows the surface, so the value does too. Derived from the
-    // adapter rather than from the harness's name, exactly as `marion run` derives the path itself.
-    let timeout = match root_path(&adapter.surfaces()) {
-        Some(RootPath::Duplex) => ROOT_BLOCKED_SECS,
-        _ => ROOT_WALL_CLOCK_SECS,
-    };
-    let args = marion_argv(root, &repo, &state, &server.base_url(), timeout);
+    let args = marion_argv(root, &repo, &state, &server.base_url());
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))
