@@ -627,8 +627,18 @@ impl Fixture {
         std::fs::write(&self.chatty, b"say").expect("the chatty marker is written");
     }
 
+    /// The shim now hangs on `--version` — and is **a changed binary**, its mtime moved: marion
+    /// reads a harness's version once per binary identity (`run::harness_version`'s cache), so
+    /// the root launch's earlier, instant answer would otherwise stand in for the probe this test
+    /// needs to hang.
     fn make_version_slow(&self) {
         std::fs::write(&self.slow_version, b"hang").expect("the slow-version marker is written");
+        let later = std::time::SystemTime::now() + Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(self.shim_dir.join("codex"))
+            .and_then(|f| f.set_modified(later))
+            .expect("the shim's mtime moves");
     }
 
     /// Release every blocked child. The root has its own gate and is untouched.

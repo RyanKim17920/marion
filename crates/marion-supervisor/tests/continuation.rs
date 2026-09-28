@@ -187,7 +187,8 @@ fn shim(dir: &Path, bed: &Gates, program: &str, version: Option<&str>) -> PathBu
     let real = which(program);
     let version = match version {
         Some(line) => format!("echo {}; exit 0", common::shell_quote(Path::new(line))),
-        None => format!("exec {} --version", common::shell_quote(&real)),
+        // The probe's whole argv, so the row's no-self-update switch reaches the real binary.
+        None => format!("exec {} \"$@\"", common::shell_quote(&real)),
     };
     let script = format!(
         r#"#!/bin/sh
