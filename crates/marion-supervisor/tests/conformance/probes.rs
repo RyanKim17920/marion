@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use marion_core::contract::FailureCause;
 use marion_harness::grammar;
 use marion_harness::spec::{
-    Approval, DialogAnswer, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
+    Approval, DialogAnswer, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
 };
 use marion_harness::stream::{CallOutcome, ChildExit, json_frames};
 use marion_supervisor::duplex::LaunchPath;
@@ -212,7 +212,7 @@ fn p_version(c: &mut Ctx<'_>) -> (String, Outcome) {
     };
     let version = match c.t.path {
         LaunchPath::Acp => acp_version(&launch, &s.log),
-        _ => flag_version(&launch.inv.program, c.t.spec.updates),
+        _ => flag_version(&launch.inv.program, c.t.spec),
     };
     let (policy_ok, policy) = update_policy_reaches(c.t.spec.updates, &launch);
     let admitted = marion_testsupport::PINNED_HARNESSES
@@ -244,13 +244,11 @@ fn p_version(c: &mut Ctx<'_>) -> (String, Outcome) {
     (version.unwrap_or_else(|| "unknown".into()), o)
 }
 
-fn flag_version(program: &str, updates: UpdatePolicy) -> Option<String> {
-    let mut cmd = std::process::Command::new(program);
-    cmd.arg("--version");
-    if let Some((k, v)) = updates.env() {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().ok()?;
+/// Through `marion_harness::probe`, the constructor every marion probe uses, so the switch here is
+/// the row's in whatever shape it has; a row that probe refuses has no version read.
+fn flag_version(program: &str, spec: &HarnessSpec) -> Option<String> {
+    let mut probe = marion_harness::probe::version_probe(spec, program).ok()?;
+    let out = probe.command.output().ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
