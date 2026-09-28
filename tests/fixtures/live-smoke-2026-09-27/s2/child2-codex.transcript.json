@@ -1,0 +1,152 @@
+[
+ {
+  "ts": "2026-09-28T02:57:22.101Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:22.648Z",
+  "key": "thread.started",
+  "frame": {
+   "thread_id": "<UUID>",
+   "type": "thread.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:23.027Z",
+  "key": "turn.started",
+  "frame": {
+   "type": "turn.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:29.061Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_0",
+    "text": "I’ll run the unit tests in the current directory and show the output.",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:32.725Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "aggregated_output": "",
+    "command": "/bin/zsh -lc 'python3 -m unittest -q'",
+    "exit_code": null,
+    "id": "item_1",
+    "status": "in_progress",
+    "type": "command_execution"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:32.730Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "aggregated_output": "----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+    "command": "/bin/zsh -lc 'python3 -m unittest -q'",
+    "exit_code": 0,
+    "id": "item_1",
+    "status": "completed",
+    "type": "command_execution"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:37.992Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest -q` in the current directory; all 2 tests passed with exit code 0."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": null,
+    "server": "marion",
+    "status": "in_progress",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:37.995Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest -q` in the current directory; all 2 tests passed with exit code 0."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": {
+     "content": [
+      {
+       "text": "report recorded",
+       "type": "text"
+      }
+     ],
+     "structured_content": null
+    },
+    "server": "marion",
+    "status": "completed",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:40.860Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_3",
+    "text": "```text\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n```\n\nExit code: 0. Report sent.",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:40.937Z",
+  "key": "turn.completed",
+  "frame": {
+   "type": "turn.completed",
+   "usage": {
+    "cache_write_input_tokens": 0,
+    "cached_input_tokens": 51584,
+    "input_tokens": 78216,
+    "output_tokens": 140,
+    "reasoning_output_tokens": 0
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T02:57:43.097Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Ok",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0; stderr: Reading additional input from stdin..."
+     }
+    }
+   }
+  }
+ }
+]

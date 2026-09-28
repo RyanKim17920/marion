@@ -1,0 +1,152 @@
+[
+ {
+  "ts": "2026-09-28T02:58:15.628Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:16.096Z",
+  "key": "thread.started",
+  "frame": {
+   "thread_id": "<UUID>",
+   "type": "thread.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:16.254Z",
+  "key": "turn.started",
+  "frame": {
+   "type": "turn.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:21.204Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_0",
+    "text": "I’ll run the test discovery command and show its complete output.\n",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:23.886Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "aggregated_output": "",
+    "command": "/bin/zsh -lc 'python3 -m unittest discover -v'",
+    "exit_code": null,
+    "id": "item_1",
+    "status": "in_progress",
+    "type": "command_execution"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:23.968Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "aggregated_output": "test_counts_lines (test_textutil.CountLinesTest.test_counts_lines) ... ok\ntest_empty (test_textutil.CountLinesTest.test_empty) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+    "command": "/bin/zsh -lc 'python3 -m unittest discover -v'",
+    "exit_code": 0,
+    "id": "item_1",
+    "status": "completed",
+    "type": "command_execution"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:28.607Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest discover -v`; both discovered tests, `test_counts_lines (test_textutil.CountLinesTest.test_counts_lines)` and `test_empty (test_textutil.CountLinesTest.test_empty)`, passed (Ran 2 tests in 0.000s; OK; exit code 0)."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": null,
+    "server": "marion",
+    "status": "in_progress",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:28.612Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest discover -v`; both discovered tests, `test_counts_lines (test_textutil.CountLinesTest.test_counts_lines)` and `test_empty (test_textutil.CountLinesTest.test_empty)`, passed (Ran 2 tests in 0.000s; OK; exit code 0)."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": {
+     "content": [
+      {
+       "text": "report recorded",
+       "type": "text"
+      }
+     ],
+     "structured_content": null
+    },
+    "server": "marion",
+    "status": "completed",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:31.706Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_3",
+    "text": "```text\ntest_counts_lines (test_textutil.CountLinesTest.test_counts_lines) ... ok\ntest_empty (test_textutil.CountLinesTest.test_empty) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n```\n\nExit code: 0. Marion report recorded.",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:31.756Z",
+  "key": "turn.completed",
+  "frame": {
+   "type": "turn.completed",
+   "usage": {
+    "cache_write_input_tokens": 0,
+    "cached_input_tokens": 51712,
+    "input_tokens": 78282,
+    "output_tokens": 219,
+    "reasoning_output_tokens": 0
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T02:58:32.479Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Ok",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0; stderr: Reading additional input from stdin..."
+     }
+    }
+   }
+  }
+ }
+]

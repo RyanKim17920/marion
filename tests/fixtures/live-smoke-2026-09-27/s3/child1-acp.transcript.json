@@ -1,0 +1,147 @@
+[
+ {
+  "ts": "2026-09-28T03:08:07.381Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:08:08.568Z",
+  "key": "",
+  "frame": {
+   "id": 0,
+   "jsonrpc": "2.0",
+   "result": {
+    "agentCapabilities": {
+     "loadSession": true,
+     "mcpCapabilities": {
+      "http": true,
+      "sse": true
+     },
+     "promptCapabilities": {
+      "embeddedContext": true,
+      "image": true
+     },
+     "sessionCapabilities": {
+      "close": {},
+      "fork": {},
+      "list": {},
+      "resume": {}
+     }
+    },
+    "agentInfo": {
+     "name": "OpenCode",
+     "version": "1.18.32"
+    },
+    "authMethods": [
+     {
+      "description": "Run `opencode auth login` in the terminal",
+      "id": "opencode-login",
+      "name": "Login with opencode"
+     }
+    ],
+    "protocolVersion": 1
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:08:09.380Z",
+  "key": "",
+  "frame": {
+   "id": 1,
+   "jsonrpc": "2.0",
+   "result": {
+    "configOptions": "<2 entries dropped: operator catalogue>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:08:09.391Z",
+  "key": "",
+  "frame": {
+   "jsonrpc": "2.0",
+   "method": "session/update",
+   "params": {
+    "update": {
+     "availableCommands": "<28 entries dropped: operator catalogue>",
+     "sessionUpdate": "available_commands_update"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:08:09.416Z",
+  "key": "",
+  "frame": {
+   "jsonrpc": "2.0",
+   "method": "session/update",
+   "params": {
+    "update": {
+     "configOptions": "<3 entries dropped: operator catalogue>",
+     "sessionUpdate": "config_option_update"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:08:09.417Z",
+  "key": "",
+  "frame": {
+   "id": 3,
+   "jsonrpc": "2.0",
+   "result": {
+    "configOptions": "<3 entries dropped: operator catalogue>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:09:50.721Z",
+  "key": "",
+  "frame": {
+   "jsonrpc": "2.0",
+   "method": "session/update",
+   "params": {
+    "update": {
+     "cost": {
+      "amount": 0,
+      "currency": "USD"
+     },
+     "sessionUpdate": "usage_update",
+     "size": 1048576,
+     "used": 0
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:09:50.726Z",
+  "key": "",
+  "frame": {
+   "error": {
+    "code": -32603,
+    "data": {
+     "errorName": "APIError",
+     "service": "session"
+    },
+    "message": "Internal error: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."
+   },
+   "id": 2,
+   "jsonrpc": "2.0"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:09:50.970Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Failed",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0; the child's stream reported: Internal error: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.; stderr: Error handling request {\n  id: 2,\n  jsonrpc: \"2.0\",\n  method: \"session/prompt\",\n  params: {\n    prompt: [\n      [Object ...]\n    ],\n    sessionId: \"<SESSION>\",\n  },\n} {\n  code: -32603,\n…[211 more chars]"
+     }
+    }
+   }
+  }
+ }
+]

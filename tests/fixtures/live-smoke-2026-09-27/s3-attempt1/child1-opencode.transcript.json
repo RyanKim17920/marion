@@ -1,0 +1,55 @@
+[
+ {
+  "ts": "2026-09-28T03:00:52.353Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:02:18.399Z",
+  "key": "error",
+  "frame": {
+   "error": {
+    "data": {
+     "isRetryable": false,
+     "message": "Upstream request failed: An active OpenCode Go subscription is required to use Go models.",
+     "metadata": {
+      "url": "https://opencode.ai/zen/go/v1/chat/completions"
+     },
+     "responseBody": "{\"error\":{\"type\":\"server_error\",\"message\":\"Upstream request failed: An active OpenCode Go subscription is required to use Go models.\"}}",
+     "responseHeaders": {
+      "cf-placement": "remote-ORD",
+      "cf-ray": "a41f8229aec41183-ORD",
+      "connection": "keep-alive",
+      "content-encoding": "br",
+      "content-type": "application/json",
+      "date": "Mon, 28 Sep 2026 03:02:18 GMT",
+      "server": "cloudflare",
+      "transfer-encoding": "chunked",
+      "x-opencode-log-id": "<UUID>"
+     },
+     "statusCode": 403
+    },
+    "name": "APIError"
+   },
+   "sessionID": "<SESSION>",
+   "timestamp": 1790564538398,
+   "type": "error"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:02:18.875Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Failed",
+     "exit": {
+      "code": null,
+      "signal": 9,
+      "description": "child terminated by signal 9; the child's stream reported: Upstream request failed: An active OpenCode Go subscription is required to use Go models."
+     }
+    }
+   }
+  }
+ }
+]

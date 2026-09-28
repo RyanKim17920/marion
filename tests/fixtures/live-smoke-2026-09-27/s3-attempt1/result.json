@@ -1,0 +1,110 @@
+{
+ "scenario": "s3-attempt1",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.283 (Claude Code)",
+  "usage": {
+   "input": 26,
+   "output": 1302,
+   "cache_read": 31264,
+   "cache_write": 11348,
+   "reasoning": 0,
+   "total": 43940
+  },
+  "cost_usd": 0.032358399999999995,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "opencode",
+   "agent_type": "opencode",
+   "depth": 1,
+   "version": "1.18.32",
+   "generations": 1,
+   "exit": "Failed",
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.283 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 12,
+    "output": 3002,
+    "cache_read": 62003,
+    "cache_write": 16343,
+    "reasoning": 0,
+    "total": 81360
+   },
+   "cost_usd": 0.2032326
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26392,
+    "output": 165,
+    "cache_read": 51072,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 77629
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26407,
+    "output": 235,
+    "cache_read": 51456,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78098
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "opencode",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": false,
+ "status": "Failed",
+ "failure_cause": {
+  "Auth": {
+   "line": "Upstream request failed: An active OpenCode Go subscription is required to use Go models."
+  }
+ },
+ "narrative": null,
+ "declared_verification": [
+  "sh -c python3 -m unittest -q"
+ ],
+ "marion_evidence_exit_codes": [
+  0
+ ],
+ "branch_landed": false,
+ "changed_paths": [],
+ "scope_violations": [],
+ "verify": "none",
+ "steer": null,
+ "steer_records": [],
+ "wall_secs": 196,
+ "timed_out": false
+}

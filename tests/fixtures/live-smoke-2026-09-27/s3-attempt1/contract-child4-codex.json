@@ -1,0 +1,124 @@
+{
+ "task_id": "<UUID>",
+ "requester": "<UUID>",
+ "child": {
+  "harness": "codex",
+  "version": "codex-cli 0.155.1",
+  "model": null
+ },
+ "repo": {
+  "git_common_dir": "<SCRATCH>/s3/repo/.git",
+  "head_branch": null
+ },
+ "base_commit": "ba7f3b8389f20b4f02701bfa07fff4b810b2e19a",
+ "workspace": {
+  "SharedCwd": {
+   "path": "<SCRATCH>/s3/repo"
+  }
+ },
+ "instructions": {
+  "value": "Run exactly: `cd <SCRATCH>/s3/state/e0d8de86f5b3/agents/<UUID>/worktree && python3 -m unittest -q` and report the full output verbatim. Do NOT modify any files.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.",
+  "truncated": false,
+  "original_bytes": 486
+ },
+ "acceptance_criteria": [
+  {
+   "value": "Ran the command and reported its output verbatim",
+   "truncated": false,
+   "original_bytes": 48
+  },
+  {
+   "value": "No files modified",
+   "truncated": false,
+   "original_bytes": 17
+  }
+ ],
+ "allowed_tools": [
+  "sandbox:workspace-write"
+ ],
+ "scope_ceiling": [
+  "**"
+ ],
+ "scope_requested": [
+  "**"
+ ],
+ "timeout": 300,
+ "verification": [
+  {
+   "program": "sh",
+   "args": [
+    "-c",
+    "cd <SCRATCH>/s3/state/e0d8de86f5b3/agents/<UUID>/worktree && python3 -m unittest -q"
+   ],
+   "cwd": "<SCRATCH>/s3/repo",
+   "timeout": 300
+  }
+ ],
+ "timestamps": {
+  "spawned": "2026-09-28T03:03:20.462Z",
+  "first_output": null,
+  "reported": "2026-09-28T03:03:48.899Z",
+  "exited": "2026-09-28T03:03:48.899Z"
+ },
+ "completion": {
+  "status": "Ok",
+  "died_before_gate": false,
+  "reported_early": false,
+  "held_to_timeout": false,
+  "live_descendants_at_report": [],
+  "narrative": {
+   "value": "I ran the exact requested command without editing any files; it exited with code 0 and its full output was:\n----------------------------------------------------------------------\nRan 8 tests in 0.000s\n\nOK\n",
+   "truncated": false,
+   "original_bytes": 205
+  },
+  "narrative_synthesized": false,
+  "result_commits": [],
+  "changed_paths": [],
+  "acceptance_criteria_omitted": 0,
+  "changed_paths_omitted": 0,
+  "result_commits_omitted": 0,
+  "scope_violations_omitted": 0,
+  "scope_enforced": true,
+  "scope_violations": [],
+  "diff": null,
+  "evidence": [
+   {
+    "command": {
+     "program": "sh",
+     "args": [
+      "-c",
+      "cd <SCRATCH>/s3/state/e0d8de86f5b3/agents/<UUID>/worktree && python3 -m unittest -q"
+     ],
+     "cwd": "<SCRATCH>/s3/repo",
+     "timeout": 300
+    },
+    "exit_code": 0,
+    "stdout": {
+     "value": "",
+     "truncated": false,
+     "original_bytes": 0
+    },
+    "stderr": {
+     "value": "----------------------------------------------------------------------\nRan 8 tests in 0.000s\n\nOK\n",
+     "truncated": false,
+     "original_bytes": 97
+    },
+    "duration": 125,
+    "timed_out": false
+   }
+  ],
+  "evidence_omitted": 0,
+  "exit": {
+   "code": 0,
+   "signal": null,
+   "description": "child exited with code 0; stderr: Reading additional input from stdin..."
+  },
+  "usage": {
+   "input": 26407,
+   "output": 235,
+   "cache_read": 51456,
+   "cache_write": 0,
+   "reasoning": 0
+  }
+ }
+}

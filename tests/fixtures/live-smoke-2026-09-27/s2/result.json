@@ -1,0 +1,187 @@
+{
+ "scenario": "s2",
+ "root": {
+  "harness": "codex",
+  "version": "codex-cli 0.155.1",
+  "usage": {
+   "input": 38518,
+   "output": 1779,
+   "cache_read": 604928,
+   "cache_write": 0,
+   "reasoning": 152,
+   "total": 645225
+  },
+  "cost_usd": null,
+  "exit": "Ok",
+  "marion_tools": [
+   "spawn",
+   "spawn",
+   "wait",
+   "status",
+   "wait",
+   "status"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.283 (Claude Code)",
+   "generations": 1,
+   "exit": "TimedOut",
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26632,
+    "output": 140,
+    "cache_read": 51584,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78356
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26662,
+    "output": 240,
+    "cache_read": 51712,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78614
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26570,
+    "output": 219,
+    "cache_read": 51712,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78501
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 27228,
+    "output": 420,
+    "cache_read": 77824,
+    "cache_write": 0,
+    "reasoning": 14,
+    "total": 105472
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26822,
+    "output": 352,
+    "cache_read": 51968,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 79142
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26641,
+    "output": 305,
+    "cache_read": 51968,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78914
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "claude",
+ "child_harness_matches": true,
+ "child_model": "haiku",
+ "reported": false,
+ "status": "TimedOut",
+ "failure_cause": null,
+ "narrative": null,
+ "declared_verification": [
+  "sh -c python3 -m unittest -q"
+ ],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "steer_records": [
+  {
+   "record": "MessageQueued",
+   "detail": {
+    "agent_id": "<UUID>",
+    "message_id": "m-8bc571debb41894d",
+    "source": {
+     "ChildEnded": {
+      "child": "<UUID>",
+      "task_id": "<UUID>",
+      "status": "timedout"
+     }
+    },
+    "len": 6132,
+    "sha256": "38ba19d2d262b003cd923d404649f875c271de503a8871290c2bd23f3734086e"
+   }
+  },
+  {
+   "record": "MessageDelivered",
+   "detail": {
+    "agent_id": "<UUID>",
+    "message_id": "m-8bc571debb41894d",
+    "via": "continuation:gen2"
+   }
+  }
+ ],
+ "wall_secs": 247,
+ "timed_out": false
+}

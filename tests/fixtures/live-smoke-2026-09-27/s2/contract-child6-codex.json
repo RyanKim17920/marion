@@ -1,0 +1,90 @@
+{
+ "task_id": "<UUID>",
+ "requester": "<UUID>",
+ "child": {
+  "harness": "codex",
+  "version": "codex-cli 0.155.1",
+  "model": null
+ },
+ "repo": {
+  "git_common_dir": "<SCRATCH>/s2/repo/.git",
+  "head_branch": null
+ },
+ "base_commit": "3bab04a92b6eaab1f8ef53cc4832bf3736232148",
+ "workspace": {
+  "Worktree": {
+   "path": "<SCRATCH>/s2/state/488dec3bce44/agents/<UUID>/worktree",
+   "branch": "marion/<UUID>"
+  }
+ },
+ "instructions": {
+  "value": "Run these commands to show git status and verify the test_textutil.py changes:\n1. git status\n2. git diff test_textutil.py\n3. cat test_textutil.py\n\nShow all output.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.",
+  "truncated": false,
+  "original_bytes": 387
+ },
+ "acceptance_criteria": [
+  {
+   "value": "git status output shown",
+   "truncated": false,
+   "original_bytes": 23
+  },
+  {
+   "value": "test_textutil.py contents displayed",
+   "truncated": false,
+   "original_bytes": 35
+  }
+ ],
+ "allowed_tools": [
+  "sandbox:workspace-write"
+ ],
+ "scope_ceiling": [
+  "**"
+ ],
+ "scope_requested": [
+  "**"
+ ],
+ "timeout": 900,
+ "verification": [],
+ "timestamps": {
+  "spawned": "2026-09-28T02:59:14.347Z",
+  "first_output": null,
+  "reported": "2026-09-28T02:59:40.053Z",
+  "exited": "2026-09-28T02:59:40.053Z"
+ },
+ "completion": {
+  "status": "Ok",
+  "died_before_gate": false,
+  "reported_early": false,
+  "held_to_timeout": false,
+  "live_descendants_at_report": [],
+  "narrative": {
+   "value": "Ran git status, git diff test_textutil.py, and cat test_textutil.py and displayed their complete output, confirming a clean working tree and no uncommitted diff for the test file.",
+   "truncated": false,
+   "original_bytes": 179
+  },
+  "narrative_synthesized": false,
+  "result_commits": [],
+  "changed_paths": [],
+  "acceptance_criteria_omitted": 0,
+  "changed_paths_omitted": 0,
+  "result_commits_omitted": 0,
+  "scope_violations_omitted": 0,
+  "scope_enforced": true,
+  "scope_violations": [],
+  "diff": null,
+  "evidence": [],
+  "evidence_omitted": 0,
+  "exit": {
+   "code": 0,
+   "signal": null,
+   "description": "child exited with code 0; stderr: Reading additional input from stdin..."
+  },
+  "usage": {
+   "input": 26822,
+   "output": 352,
+   "cache_read": 51968,
+   "cache_write": 0,
+   "reasoning": 0
+  }
+ }
+}

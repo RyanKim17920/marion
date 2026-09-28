@@ -1,0 +1,152 @@
+[
+ {
+  "ts": "2026-09-28T03:11:31.708Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:32.442Z",
+  "key": "thread.started",
+  "frame": {
+   "thread_id": "<UUID>",
+   "type": "thread.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:32.524Z",
+  "key": "turn.started",
+  "frame": {
+   "type": "turn.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:37.350Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_0",
+    "text": "I’ll run the test command and report its full output verbatim.\n",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:38.869Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "aggregated_output": "",
+    "command": "/bin/zsh -lc 'python3 -m unittest -q'",
+    "exit_code": null,
+    "id": "item_1",
+    "status": "in_progress",
+    "type": "command_execution"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:38.874Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "aggregated_output": "----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+    "command": "/bin/zsh -lc 'python3 -m unittest -q'",
+    "exit_code": 0,
+    "id": "item_1",
+    "status": "completed",
+    "type": "command_execution"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:43.558Z",
+  "key": "item.started",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest -q` in the current working directory without editing files; it exited with code 0 and produced the full output verbatim: `----------------------------------------------------------------------\\nRan 2 tests in 0.000s\\n\\nOK\\n`."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": null,
+    "server": "marion",
+    "status": "in_progress",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.started"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:43.563Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "arguments": {
+     "narrative": "Ran `python3 -m unittest -q` in the current working directory without editing files; it exited with code 0 and produced the full output verbatim: `----------------------------------------------------------------------\\nRan 2 tests in 0.000s\\n\\nOK\\n`."
+    },
+    "error": null,
+    "id": "item_2",
+    "result": {
+     "content": [
+      {
+       "text": "report recorded",
+       "type": "text"
+      }
+     ],
+     "structured_content": null
+    },
+    "server": "marion",
+    "status": "completed",
+    "tool": "report",
+    "type": "mcp_tool_call"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:48.046Z",
+  "key": "item.completed",
+  "frame": {
+   "item": {
+    "id": "item_3",
+    "text": "```text\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n```",
+    "type": "agent_message"
+   },
+   "type": "item.completed"
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:48.085Z",
+  "key": "turn.completed",
+  "frame": {
+   "type": "turn.completed",
+   "usage": {
+    "cache_write_input_tokens": 0,
+    "cached_input_tokens": 51072,
+    "input_tokens": 77454,
+    "output_tokens": 159,
+    "reasoning_output_tokens": 0
+   }
+  }
+ },
+ {
+  "ts": "2026-09-28T03:11:48.883Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Ok",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0; stderr: Reading additional input from stdin..."
+     }
+    }
+   }
+  }
+ }
+]

@@ -1,0 +1,89 @@
+{
+ "task_id": "<UUID>",
+ "requester": "<UUID>",
+ "child": {
+  "harness": "acp",
+  "version": "1.18.32",
+  "model": "google/gemini-3.5-flash"
+ },
+ "repo": {
+  "git_common_dir": "<SCRATCH>/s3/repo/.git",
+  "head_branch": null
+ },
+ "base_commit": "835a6fe01d83020d1957450e53ccf2e549885339",
+ "workspace": {
+  "Worktree": {
+   "path": "<SCRATCH>/s3/state/76a472503f17/agents/<UUID>/worktree",
+   "branch": "marion/<UUID>"
+  }
+ },
+ "instructions": {
+  "value": "Fix the off-by-one bug in the `last_n_lines` function in textutil.py. Then add a regression test to test_textutil.py that would have caught this bug. Run the test suite with `python3 -m unittest -q` to verify your fix works and all tests pass.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.",
+  "truncated": false,
+  "original_bytes": 467
+ },
+ "acceptance_criteria": [
+  {
+   "value": "The off-by-one bug in last_n_lines is fixed",
+   "truncated": false,
+   "original_bytes": 43
+  },
+  {
+   "value": "A regression test is added to test_textutil.py",
+   "truncated": false,
+   "original_bytes": 46
+  },
+  {
+   "value": "All tests pass when running `python3 -m unittest -q`",
+   "truncated": false,
+   "original_bytes": 52
+  }
+ ],
+ "allowed_tools": [
+  "acp:no-tool-availability-surface (marion compiles no constraint; the protocol has none)"
+ ],
+ "scope_ceiling": [
+  "**"
+ ],
+ "scope_requested": [
+  "**"
+ ],
+ "timeout": 900,
+ "verification": [],
+ "timestamps": {
+  "spawned": "2026-09-28T03:08:07.326Z",
+  "first_output": null,
+  "reported": null,
+  "exited": "2026-09-28T03:09:50.962Z"
+ },
+ "completion": {
+  "status": "Failed",
+  "died_before_gate": true,
+  "reported_early": false,
+  "held_to_timeout": false,
+  "live_descendants_at_report": [],
+  "narrative": null,
+  "narrative_synthesized": false,
+  "result_commits": [],
+  "changed_paths": [],
+  "acceptance_criteria_omitted": 0,
+  "changed_paths_omitted": 0,
+  "result_commits_omitted": 0,
+  "scope_violations_omitted": 0,
+  "scope_enforced": true,
+  "scope_violations": [],
+  "diff": null,
+  "evidence": [],
+  "evidence_omitted": 0,
+  "exit": {
+   "code": 0,
+   "signal": null,
+   "description": "child exited with code 0; the child's stream reported: Internal error: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.; stderr: Error handling request {\n  id: 2,\n  jsonrpc: \"2.0\",\n  method: \"session/prompt\",\n  params: {\n    prompt: [\n      [Object ...]\n    ],\n    sessionId: \"<SESSION>\",\n  },\n} {\n  code: -32603,\n  message: \"Internal error: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n  data: {\n    service: \"session\",\n    errorName: \"APIError\",\n  },\n}"
+  },
+  "failure_cause": {
+   "Outage": {
+    "line": "message: \"Internal error: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\","
+   }
+  }
+ }
+}

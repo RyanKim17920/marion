@@ -1,0 +1,64 @@
+{
+ "scenario": "s1",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.283 (Claude Code)",
+  "usage": {
+   "input": 18,
+   "output": 1008,
+   "cache_read": 12111,
+   "cache_write": 15185,
+   "reasoning": 0,
+   "total": 28322
+  },
+  "cost_usd": 0.0366391,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 1,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 30912,
+    "output": 1037,
+    "cache_read": 271104,
+    "cache_write": 0,
+    "reasoning": 33,
+    "total": 303053
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "codex",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "Added word_count(s) with comprehensive whitespace and word-boundary unit tests, verified all 9 tests pass using python3 -m unittest -q, and committed the changes as 2727976.",
+ "declared_verification": [
+  "sh -c python3 -m unittest -q"
+ ],
+ "marion_evidence_exit_codes": [
+  0
+ ],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "steer_records": [],
+ "wall_secs": 91,
+ "timed_out": false
+}

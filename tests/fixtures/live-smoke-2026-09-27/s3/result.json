@@ -1,0 +1,117 @@
+{
+ "scenario": "s3",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.283 (Claude Code)",
+  "usage": {
+   "input": 34,
+   "output": 1651,
+   "cache_read": 46552,
+   "cache_write": 12171,
+   "reasoning": 0,
+   "total": 60408
+  },
+  "cost_usd": 0.0372862,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "acp",
+   "agent_type": "acp-opencode",
+   "depth": 1,
+   "version": "1.18.32",
+   "generations": 1,
+   "exit": "Failed",
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "opencode",
+   "agent_type": "opencode",
+   "depth": 1,
+   "version": "1.18.32",
+   "generations": 1,
+   "exit": "Failed",
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.283 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 12,
+    "output": 2683,
+    "cache_read": 60703,
+    "cache_write": 16026,
+    "reasoning": 0,
+    "total": 79424
+   },
+   "cost_usd": 0.1940566
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26382,
+    "output": 159,
+    "cache_read": 51072,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 77613
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 2,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 12593,
+    "output": 503,
+    "cache_read": 65664,
+    "cache_write": 0,
+    "reasoning": 0,
+    "total": 78760
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "opencode",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": false,
+ "status": "Failed",
+ "failure_cause": {
+  "Auth": {
+   "line": "Upstream request failed: An active OpenCode Go subscription is required to use Go models."
+  }
+ },
+ "narrative": null,
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": false,
+ "changed_paths": [],
+ "scope_violations": [],
+ "verify": "none",
+ "steer": null,
+ "steer_records": [],
+ "wall_secs": 270,
+ "timed_out": false
+}
