@@ -9,7 +9,9 @@
 //!
 //! The matrix is [`crate::endpoint`]'s own answer: the first wire of the harness row's recipes the
 //! provider serves ([`crate::endpoint::shared_wire`]), and whether that recipe can present the
-//! provider's key header — the two checks a launch makes, asked of every pair.
+//! provider's key header — the two checks a launch makes, asked of every pair. Where no wire is
+//! shared, a pair marion's gateway translates ([`crate::endpoint::translated_wire`]) is a
+//! `translated` cell, spelled `<harness wire>><provider wire>`.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -63,6 +65,9 @@ pub struct MatrixCell {
 pub enum Cell {
     /// The provider serves this wire of the harness's recipes natively.
     Native(String),
+    /// No wire is shared, and marion's gateway translates the harness's wire to the provider's:
+    /// `<harness wire>><provider wire>`, as `anthropic>openai-chat`.
+    Translated(String),
     /// Why not, naming both wire lists or the key header.
     Unsupported(String),
 }
@@ -254,12 +259,23 @@ pub fn matrix(registry: &Registry) -> Vec<MatrixCell> {
         let wires: Vec<Wire> = spec.wires.iter().map(|r| r.wire).collect();
         for p in registry.iter() {
             let cell = match crate::endpoint::shared_wire(&wires, p) {
-                None => Cell::Unsupported(format!(
-                    "{h} speaks {} and {} serves {}",
-                    crate::endpoint::wire_list(&wires),
-                    p.id,
-                    p.wire_list()
-                )),
+                // The gateway reads a Bearer credential whatever the provider reads, so the
+                // harness's recipe must present that one.
+                None => match crate::endpoint::translated_wire(&wires, p) {
+                    Some((hw, pw, _))
+                        if marion_harness::spec::recipe_for(spec, Some(hw)).is_some_and(|r| {
+                            r.keys.iter().any(|k| k.header == KeyHeader::Bearer)
+                        }) =>
+                    {
+                        Cell::Translated(format!("{hw}>{pw}"))
+                    }
+                    _ => Cell::Unsupported(format!(
+                        "{h} speaks {} and {} serves {}",
+                        crate::endpoint::wire_list(&wires),
+                        p.id,
+                        p.wire_list()
+                    )),
+                },
                 Some((w, _)) => {
                     let presents = marion_harness::spec::recipe_for(spec, Some(w))
                         .is_some_and(|r| r.keys.iter().any(|k| k.header == p.key_header));
@@ -341,7 +357,7 @@ pub fn render(rows: &[CredentialRow], matrix: &[MatrixCell]) -> String {
                     .iter()
                     .find(|c| c.harness == h && c.provider == *p)
                     .map(|c| match &c.cell {
-                        Cell::Native(w) => format!("{}={w}", h.cli_name()),
+                        Cell::Native(w) | Cell::Translated(w) => format!("{}={w}", h.cli_name()),
                         Cell::Unsupported(_) => format!("{}=-", h.cli_name()),
                     })
             })
