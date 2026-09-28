@@ -12,6 +12,9 @@ publish.workspace = true
 marion-core = { path = "../marion-core" }
 serde.workspace = true
 serde_json.workspace = true
+# codex's trust guard reads whether the operator's `config.toml` already states a trust for the
+# checkout (`codex::live_trust_override`); `toml` is already in the lock through marion-core.
+toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

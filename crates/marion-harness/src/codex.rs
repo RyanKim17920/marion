@@ -10,6 +10,8 @@
 //! request rather than a second harness — the two share this file's configuration, its isolation
 //! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
+use std::path::{Path, PathBuf};
+
 use marion_core::agent_type;
 use marion_core::harness::Harness;
 use marion_core::provider::Wire;
@@ -33,7 +35,6 @@ use crate::spec::{
     MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces,
     TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use std::path::PathBuf;
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
 /// one binary over one isolation.
@@ -840,6 +841,55 @@ pub fn live_sandbox_override() -> (String, String) {
     (SANDBOX_KEY.to_string(), toml_str(SANDBOX_MODE))
 }
 
+/// **The `-c` pair that keeps [`live_sandbox_override`] from trusting the operator's repository.**
+///
+/// Measured on 0.155.1 (2026-09-28, scratch `CODEX_HOME`): `codex exec` asked for
+/// `workspace-write` in a project with no `trust_level` writes `[projects."<main checkout>"]
+/// trust_level = "trusted"` into the `config.toml` it read — one entry per repository, keyed on
+/// the main checkout even from a worktree — while `read-only` writes nothing. Codex persists only
+/// where the project's trust is unset (`thread_start_task`), and a `-c projects={…}` inline table
+/// counts as set (the dotted `projects."<p>".trust_level` spelling does not reach it): with
+/// `trust_level = "untrusted"` there the run still resolves `workspace-write` and nothing is
+/// written. `untrusted` is what an unset trust already means, so the run is the one codex would
+/// have made — marion only declines to record a trust the operator never gave.
+///
+/// `None` — nothing to add — outside git, or where the operator's `config.toml` (`theirs`)
+/// already states a trust for the checkout: there codex writes nothing either, and their choice
+/// stands.
+pub fn live_trust_override(cwd: &Path, theirs: Option<&str>) -> Option<(String, String)> {
+    let checkout = main_checkout(cwd)?;
+    let key = checkout.to_string_lossy().into_owned();
+    let stated = theirs
+        .and_then(|t| t.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("projects")?.get(&key)?.get("trust_level").cloned())
+        .is_some();
+    (!stated).then(|| {
+        (
+            "projects".to_string(),
+            format!("{{{}={{trust_level=\"untrusted\"}}}}", toml_str(&key)),
+        )
+    })
+}
+
+/// The main checkout of the git repository `cwd` is in — codex's key for a project's trust —
+/// read off the `.git` entry rather than by running git: the checkout that holds `.git` as a
+/// directory, or, from a linked worktree's `.git` file, the parent of its common dir.
+pub fn main_checkout(cwd: &Path) -> Option<PathBuf> {
+    let cwd = cwd.canonicalize().ok()?;
+    let top = cwd.ancestors().find(|d| d.join(".git").exists())?;
+    let dot = top.join(".git");
+    if dot.is_dir() {
+        return Some(top.to_path_buf());
+    }
+    let text = std::fs::read_to_string(&dot).ok()?;
+    let gitdir = top.join(text.strip_prefix("gitdir:")?.trim());
+    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(rel) => gitdir.join(rel.trim()),
+        Err(_) => gitdir,
+    };
+    common.canonicalize().ok()?.parent().map(Path::to_path_buf)
+}
+
 /// TOML basic-string escaping, for the handful of characters a path may legally contain.
 ///
 /// Not decorative. Every value below is a filesystem path or a URL that marion did not author — an
@@ -1057,6 +1107,19 @@ impl HarnessAdapter for CodexAdapter {
                 .chain(live_config_overrides(&declared_bridge(self, spec, ctx)))
                 .collect(),
         };
+        // ... and the sandbox must not record a trust the operator never gave in their own
+        // `config.toml` (`live_trust_override`), read here and never written.
+        if spec.auth == Auth::Inherited {
+            let theirs = spec
+                .extra
+                .profile_dir
+                .clone()
+                .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
+                .and_then(|d| std::fs::read_to_string(d.join("config.toml")).ok());
+            f.pairs
+                .extend(live_trust_override(&spec.cwd, theirs.as_deref()));
+        }
         Ok(f)
     }
 
@@ -1157,6 +1220,59 @@ mod tests {
             .filter(|w| w[0] == "-c")
             .map(|w| w[1].clone())
             .collect()
+    }
+
+    /// **A live node's sandbox does not trust the operator's repository for them.** Unset, the
+    /// override pins the main checkout — also from a linked worktree — to `untrusted` in memory;
+    /// where their `config.toml` states any trust for it, or outside git, nothing is added.
+    #[test]
+    fn a_live_sandbox_pins_an_unstated_trust_to_untrusted_and_leaves_a_stated_one() {
+        let dir = marion_testsupport::scratch("codex-trust-override");
+        let main = dir.join("main");
+        let wt = dir.join("wt");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let (m, w) = (main.to_string_lossy(), wt.to_string_lossy());
+        git(&["init", "-q", &m]);
+        git(&["-C", &m, "commit", "-q", "--allow-empty", "-m", "i"]);
+        git(&["-C", &m, "worktree", "add", "-q", &w]);
+        let canon = main.canonicalize().unwrap();
+        assert_eq!(main_checkout(&wt).as_deref(), Some(canon.as_path()));
+        assert_eq!(main_checkout(&main).as_deref(), Some(canon.as_path()));
+
+        let key = canon.to_string_lossy().into_owned();
+        let (k, v) = live_trust_override(&wt, None).expect("unset trust is pinned");
+        assert_eq!(k, "projects");
+        assert_eq!(
+            v,
+            format!("{{{}={{trust_level=\"untrusted\"}}}}", toml_str(&key))
+        );
+        // What codex parses the pair into: the checkout, untrusted, and nothing else.
+        let parsed: toml::Table = format!("{k}={v}").parse().unwrap();
+        assert_eq!(
+            parsed["projects"][key.as_str()]["trust_level"].as_str(),
+            Some("untrusted")
+        );
+        let other = "[projects.\"/elsewhere\"]\ntrust_level = \"trusted\"\n";
+        assert!(live_trust_override(&wt, Some(other)).is_some());
+        for stated in ["trusted", "untrusted"] {
+            let theirs = format!(
+                "[projects.{}]\ntrust_level = \"{stated}\"\n",
+                toml_str(&key)
+            );
+            assert_eq!(live_trust_override(&wt, Some(&theirs)), None, "{stated}");
+        }
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(live_trust_override(&plain, None), None, "outside git");
     }
 
     /// **A failed turn is the stream's failure claim, in codex's own words** — measured on 0.155.1
