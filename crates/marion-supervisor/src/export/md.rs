@@ -22,7 +22,7 @@ pub fn render(r: &Report) -> String {
         "{} · project {} · generated {} by marion {}\n",
         inline(&words::totals(r)),
         code(&r.project),
-        time(&r.generated_at),
+        words::time(&r.generated_at),
         inline(&r.version)
     );
     out.push_str(&fence(&r.tree.join("\n"), "text"));
@@ -44,7 +44,7 @@ fn node(out: &mut String, n: &NodeReport) {
     }
     if let Some(s) = &n.started {
         let ran = words::ran_for(n).map_or(String::new(), |d| format!(" · ran {d}"));
-        facts.push(("started", format!("{}{ran}", time(s))));
+        facts.push(("started", format!("{}{ran}", words::time(s))));
     }
     if let Some(u) = &n.usage {
         let turns = match n.turns {
@@ -180,15 +180,6 @@ fn action(l: &ActionLine) -> String {
         ActionKind::Said => format!("{:>8}  “{}”", l.at, l.text),
         // A call's end, under the call it ends: its outcome and how long it took.
         ActionKind::Ended => format!("{:>8}    {}", l.at, l.text),
-    }
-}
-
-/// An event time as a person reads it: `2026-09-21 16:26:40 UTC`.
-fn time(t: &marion_core::encoding::SystemTime) -> String {
-    let s = crate::activity::rfc3339(*t);
-    match (s.get(..10), s.get(11..19)) {
-        (Some(d), Some(hms)) => format!("{d} {hms} UTC"),
-        _ => s,
     }
 }
 

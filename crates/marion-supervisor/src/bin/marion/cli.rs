@@ -522,16 +522,16 @@ fn profile_help() -> String {
 }
 
 fn export_help() -> String {
-    format!(
-        "usage: {}\n\
-         \n\
-         Write a shareable report of a node and everything under it: each node's task, steers,\n\
-         activity, checks, result, landed branch and tokens, as Markdown. Keys, secret-shaped\n\
-         strings and your home directory are scrubbed; the root's own prompt is left out unless\n\
-         --include-prompt. -o writes the file owner-only. It reads the project's files and starts\n\
-         no supervisor.",
-        marion_supervisor::export::cli::USAGE
-    )
+    "usage: marion export <id> [--md | --html] [-o <file>] [--include-prompt] [--full-diff]\n\
+     \x20                     [--timeline all|<n>] [--repo <path>] [--state-dir <path>]\n\
+     \n\
+     Write a shareable report of a node and everything under it: each node's task, steers,\n\
+     activity, checks, result, landed branch and tokens, as Markdown (the default) or one\n\
+     self-contained HTML file (--html, or -o report.html). Keys, secret-shaped strings and\n\
+     your home directory are scrubbed; the root's own prompt is left out unless\n\
+     --include-prompt. -o writes the file owner-only. It reads the project's files and starts\n\
+     no supervisor."
+        .to_string()
 }
 
 fn trust_help() -> String {

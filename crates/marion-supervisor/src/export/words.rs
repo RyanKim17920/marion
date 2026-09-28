@@ -112,6 +112,15 @@ pub fn short_commit(c: &str) -> &str {
     c.get(..12).unwrap_or(c)
 }
 
+/// An event time as a person reads it: `2026-09-21 16:26:40 UTC`.
+pub fn time(t: &marion_core::encoding::SystemTime) -> String {
+    let s = crate::activity::rfc3339(*t);
+    match (s.get(..10), s.get(11..19)) {
+        (Some(d), Some(hms)) => format!("{d} {hms} UTC"),
+        _ => s,
+    }
+}
+
 /// The harness, and the model where one reached it.
 pub fn harness(n: &NodeReport) -> String {
     match &n.model {

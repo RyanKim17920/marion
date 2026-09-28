@@ -11,6 +11,7 @@
 
 pub mod cli;
 pub mod collect;
+pub mod html;
 pub mod md;
 pub mod model;
 pub mod scrub;
@@ -32,7 +33,7 @@ pub fn render(report: Report, scrubber: &Scrubber, format: Format) -> Result<Str
     let report = report.scrub(scrubber)?;
     let text = match format {
         Format::Markdown => md::render(&report),
-        Format::Html => return Err("HTML output is not built yet; use --md".into()),
+        Format::Html => html::render(&report),
     };
     Ok(scrubber.clean(&text))
 }
@@ -258,6 +259,141 @@ mod tests {
                 assert_eq!(md.contains(fixture::ROOT_PROMPT), include_prompt);
             }
         }
+    }
+
+    #[test]
+    fn the_html_report_matches_its_snapshot() {
+        let f = fixture::build("export-html-snapshot");
+        let html = rendered(&f, &opts(false), super::model::Format::Html);
+        insta::assert_snapshot!("run_report_html", html);
+    }
+
+    /// **The HTML page carries no planted secret, loads nothing and runs nothing**: no script, no
+    /// stylesheet or image fetched, no outside link, and a policy that forbids all of it anyway.
+    #[test]
+    fn the_html_report_is_scrubbed_and_self_contained() {
+        let f = fixture::build("export-sentinel-html");
+        for include_prompt in [false, true] {
+            let html = rendered(&f, &opts(include_prompt), super::model::Format::Html);
+            for (source, planted) in SENTINELS {
+                assert!(!html.contains(planted), "{source} leaked: {planted}");
+            }
+            assert!(!html.contains(fixture::HOME), "the home directory leaked");
+            assert!(html.contains("~/code/app"));
+            assert_eq!(html.contains(fixture::ROOT_PROMPT), include_prompt);
+            let lower = html.to_ascii_lowercase();
+            for banned in [
+                "<script",
+                "<link",
+                "<iframe",
+                "<img",
+                "src=",
+                "href=\"http",
+                "href=\"//",
+                "url(",
+                "@import",
+                "javascript:",
+            ] {
+                assert!(
+                    !lower.contains(banned),
+                    "the page fetches or runs something: {banned}"
+                );
+            }
+            assert!(html.contains(&format!(
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"{}\">",
+                super::html::CSP
+            )));
+        }
+    }
+
+    /// **Hostile text stays text**: markup in every field a node can fill is escaped in the HTML
+    /// and cannot open a tag or leave its block in the Markdown.
+    #[test]
+    fn markup_a_node_wrote_is_escaped_in_both_formats() {
+        let f = fixture::build("export-hostile");
+        let mut c = collect(&f.project, &f.repo, "8ea3", &opts(true), fixture::now()).unwrap();
+        let evil = "<script>alert(1)</script><img src=x onerror=alert(2)> ``` </pre></details>";
+        for n in &mut c.report.nodes {
+            n.label = evil.into();
+            n.narrative = Some(evil.into());
+            n.failure = Some(evil.into());
+            n.changed_paths = vec![evil.into()];
+            n.full_diff = Some(evil.into());
+            for l in n.timeline.head.iter_mut() {
+                l.text = evil.into();
+            }
+            for c in n.checks.iter_mut() {
+                c.command = evil.into();
+                c.output = Some(evil.into());
+            }
+        }
+        c.report.tree = vec![format!("└── {evil}"); c.report.nodes.len()];
+        let s = fixture::scrubber(&c.credentials);
+        let html = super::render(c.report.clone(), &s, super::model::Format::Html).unwrap();
+        let lower = html.to_ascii_lowercase();
+        assert!(
+            !lower.contains("<script") && !lower.contains("<img"),
+            "{html}"
+        );
+        assert_eq!(
+            lower.matches("</pre>").count(),
+            lower.matches("<pre").count()
+        );
+        assert_eq!(
+            lower.matches("</details>").count(),
+            lower.matches("<details").count()
+        );
+        let md = super::render(c.report, &s, super::model::Format::Markdown).unwrap();
+        // In Markdown, code shows verbatim; outside code, no `<` may survive unescaped.
+        let prose = outside_code(&md)
+            .replace("<details><summary>Full diff</summary>", "")
+            .replace("</details>", "");
+        assert!(!prose.contains('<'), "markup escaped into prose:\n{prose}");
+    }
+
+    /// The text of `md` outside fenced blocks and code spans — where a renderer would read markup.
+    fn outside_code(md: &str) -> String {
+        let mut out = String::new();
+        let mut fence: Option<usize> = None;
+        for line in md.lines() {
+            // A fence may be indented (a check's output sits inside its list item).
+            let ticks = line.trim_start().chars().take_while(|c| *c == '`').count();
+            match fence {
+                Some(n) if ticks >= n && line.trim().trim_start_matches('`').is_empty() => {
+                    fence = None
+                }
+                Some(_) => {}
+                None if ticks >= 3 => fence = Some(ticks),
+                None => {
+                    // Outside a fence: drop code spans, honouring `\` escapes as CommonMark does.
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut i = 0;
+                    while i < chars.len() {
+                        match chars[i] {
+                            '\\' => {
+                                out.extend(chars.get(i..i + 2).unwrap_or(&chars[i..]));
+                                i += 2;
+                            }
+                            '`' => {
+                                let run = chars[i..].iter().take_while(|c| **c == '`').count();
+                                let body = i + run;
+                                let close = (body..chars.len()).find(|&j| {
+                                    chars[j..].iter().take_while(|c| **c == '`').count() == run
+                                        && chars[j - 1] != '`'
+                                });
+                                i = close.map_or(chars.len(), |j| j + run);
+                            }
+                            c => {
+                                out.push(c);
+                                i += 1;
+                            }
+                        }
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+        out
     }
 
     /// **`marion export -o` writes owner-only and starts nothing**: the file is `0600` (an

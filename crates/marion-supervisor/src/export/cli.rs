@@ -1,4 +1,4 @@
-//! `marion export <agent-id|short-id> [--md] [-o <file>] [--include-prompt] [--full-diff]
+//! `marion export <agent-id|short-id> [--md|--html] [-o <file>] [--include-prompt] [--full-diff]
 //! [--timeline all|<n>] [--repo <path>] [--state-dir <path>]`.
 //!
 //! Reads the project's files and writes the report; it starts no supervisor, dials none, and
@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use super::model::{ExportOpts, Format, TimelineMode};
 
 /// The verb's usage line, for the top-level usage text and for a refusal here.
-pub const USAGE: &str = "marion export <agent-id|short-id> [--md] [-o <file>] [--include-prompt] \
+pub const USAGE: &str = "marion export <agent-id|short-id> [--md|--html] [-o <file>] [--include-prompt] \
                          [--full-diff] [--timeline all|<n>] [--repo <path>] [--state-dir <path>]";
 
 /// `marion export`'s arguments, parsed.
