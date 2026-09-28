@@ -1043,21 +1043,22 @@ pub fn adapter_for(h: Harness) -> Result<BoxedAdapter, HarnessError> {
 
 /// The adapter for a resolved **agent type**, which is what a launch actually has.
 ///
-/// Four of the five harnesses ignore the second argument entirely: their adapter is a property of
-/// the harness. ACP's is not — §5.2's `acp` row is one adapter over many agents, each with its own
-/// argv and its own name for marion's verbs — so this is the seam where an agent type's
-/// `acp_agent` becomes behaviour: the row binds the agent it names, and naming `acp` without naming
-/// an agent is refused rather than defaulted. A default here would run some other vendor's agent
-/// than the one the type asked for, which is the bug the whole `HarnessAdapter` seam exists to end.
+/// A row with a fixed spelling ignores the second argument: its adapter is a property of the
+/// harness. A [`Spelling::PerAgent`] row's is not — it is one adapter over many agents, each with
+/// its own argv and its own name for marion's verbs — so this is the seam where an agent type's
+/// `acp_agent` becomes behaviour: the row binds the agent it names, and naming none is refused
+/// rather than defaulted. A default here would run some other vendor's agent than the one the type
+/// asked for, which is the bug the whole `HarnessAdapter` seam exists to end.
 pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdapter, HarnessError> {
-    match (h, acp_agent) {
-        (Harness::Acp, None) => Err(HarnessError::MissingInput {
-            harness: Harness::Acp,
-            what: "`acp` is a protocol, not a program: one adapter serves many agents and marion \
-                   may not choose one for the operator (§6.4). Name it in the agent type's \
+    let row = row(h);
+    match (row.spec.spelling, acp_agent) {
+        (Spelling::PerAgent, None) => Err(HarnessError::MissingInput {
+            harness: h,
+            what: "this harness is a protocol, not a program: one adapter serves many agents and \
+                   marion may not choose one for the operator (§6.4). Name it in the agent type's \
                    `acp_agent` — a refinement row's id, or the agent's command",
         }),
-        (_, agent) => (row(h).adapter)(agent),
+        (_, agent) => (row.adapter)(agent),
     }
 }
 
@@ -1080,6 +1081,18 @@ mod tests {
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
 
+    /// [`ROWS`] is the registry: each row's adapter answers for its own harness, and whether a type
+    /// must name an agent is the row's spelling, never its name. Mutation: key the refusal on a
+    /// harness, or misplace a row.
+    #[test]
+    fn every_row_serves_its_own_harness_and_only_a_per_agent_row_needs_an_agent() {
+        for h in Harness::ALL {
+            assert_eq!(row(h).spec.harness, h);
+            assert_eq!(adapter_for(h).unwrap().harness(), h);
+            let per_agent = matches!(row(h).spec.spelling, Spelling::PerAgent);
+            assert_eq!(adapter_for_type(h, None).is_err(), per_agent, "{h}");
+        }
+    }
     use marion_core::agent_type;
 
     /// One S37 P-errors run as the harness said it: its stdout (the frames it wrote, one JSON line
