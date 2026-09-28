@@ -59,6 +59,6 @@ columns of the vt100-vs-alacritty scrollback comparison from these files.
    re-derived 2026-08-01.
 
 Accepted residue, both stated in `REVIEW.md`: ~4.4 KB of an unrelated project's file bodies inside
-the 0.145.0 `/diff` pager span (generated `.serena/*` boilerplate, no identity content), kept because
+the 0.145.0 `/diff` pager span (a developer tool's generated `.tool01/*` boilerplate, renamed from its real directory on 2026-09-27; no identity content), kept because
 that span is exactly what fixtures the transient alt-screen entry; and the plugin/skill catalogue
 above. **Do not add a capture here without adding its row to `REVIEW.md`.**

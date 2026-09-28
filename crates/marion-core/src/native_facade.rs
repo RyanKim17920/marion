@@ -756,7 +756,7 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
 /// * `opencode`, `copilot` — enabled 2026-09-05, on measurement of the TUI's own reading of the
 ///   declaration through the shipped facade (`tests/native_facade_e2e.rs` fixture, darwin
 ///   25.5.0). opencode 1.17.3 with `OPENCODE_CONFIG_CONTENT`: its `/mcp` dialog lists
-///   `marion connected ✓ Enabled` **beside the operator's own servers** (`pencil`, `semble`), so
+///   `marion connected ✓ Enabled` **beside the operator's own servers**, so
 ///   the inline document merges rather than replaces; the status bar counts marion in `⊙ 2 MCP`.
 ///   copilot 1.0.83 with `--additional-mcp-config @<path>`: its `/mcp` view lists
 ///   `marion · User · mcp:marion · 646 tokens` beside the built-in `github-mcp-server`, `2/2

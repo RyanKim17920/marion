@@ -2459,7 +2459,7 @@ mod tests {
             "marion",
             "marion_report_extra",
             "other_report",
-            "Using skill: mcp2cli",
+            "Using skill: skill01",
             "ToolSearch",
             "write",
             "",

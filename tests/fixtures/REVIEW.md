@@ -108,6 +108,15 @@ Add a row to the table below. A fixture with no row is not reviewed and must not
 
 ## Provenance
 
+**2026-09-27, operator inventory pass.** Skill, plugin, agent and MCP server names from the
+operator's own profile were replaced by same-length placeholders (`skillNN…`, `agentNN…`,
+`plugin-alpha`, `plugb1`, `mcp-01`, `tool01`) in the qwen 0.23.0 conformance transcripts, S33
+`claude-acp.jsonl`, S28, the S2 claude 2.1.220 and codex 0.145.0 captures (both encodings, and the
+`l45_claude_boot_exit` snapshot) and S35's debug excerpts. Every capture's byte length is
+unchanged. The one exception is S28's `copilot-acp-session-new-mcp-ignored.jsonl`, where the loaded
+skill's full text was replaced by a one-line placeholder; its test reads only the model's
+message chunks.
+
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
 `TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**
@@ -171,7 +180,7 @@ table rows.
   the evidence that they did, and §3's rule targets a model *roster* — which was stubbed — rather
   than a single resolved id.
 - **`s2`'s 0.145.0 capture embeds ~4.4 KB of an unrelated project's file bodies** in the `/diff`
-  pager span (38963–43372): generated `.serena/*` tool boilerplate, no host or identity content.
+  pager span (38963–43372): a developer tool's generated `.tool01/*` boilerplate (renamed 2026-09-27), no host or identity content.
   Kept because that span is precisely what fixtures the transient alt-screen entry §5.3 cites.
 - **`s2` renders the operator's installed plugin/skill catalogue and MCP state** — the `/help` and
   boot panels list plugin-scoped command names and an "N MCP server needs authentication" line.

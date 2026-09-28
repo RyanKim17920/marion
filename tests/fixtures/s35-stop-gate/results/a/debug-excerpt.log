@@ -1,7 +1,7 @@
 2026-09-27T19:22:04.619Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json
-2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: ralph-wiggum
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: plugin-alpha
 2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: watch
-2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: vercel
+2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: plugb1
 2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: warp
 2026-09-27T19:22:05.071Z [DEBUG] Loading hooks from plugin: codex
 2026-09-27T19:22:05.079Z [DEBUG] Registered 17 hooks from 17 plugins
