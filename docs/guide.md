@@ -79,8 +79,8 @@ A message for a running node goes into its inbox and reaches its model at the no
 boundary, never mid-sentence. Whether that is a fold into the running turn, a paste, or the next
 generation is per harness; see [Harness detail](#harness-detail).
 
-- **A parent** steers with its `steer` tool, addressed by the `task_id` its `spawn` handle
-  carries or by an `agent_id` from `list` (the only way to name a grandchild). A node may steer
+- **A parent** steers with its `steer` tool, addressed by an `id`: the `task_id` its `spawn`
+  handle carries, or an agent id from `list` (the only way to name a grandchild). A node may steer
   any node below it; its parent, siblings and itself are refused with one sentence. `wait` and
   `status` reach only its direct children. Before steering, a parent's `status` on a running
   child shows its last few tool calls and the last line it wrote.

@@ -568,6 +568,46 @@ fn spawn_handle(
     }
 }
 
+/// What a `wait`, `status` or `steer` call is about.
+enum Address {
+    /// A handle in this bridge's table, by its `task_id`.
+    Task(String),
+    /// A node this bridge holds no handle for — a grandchild `list` showed — sent on as given.
+    Agent(AgentId),
+}
+
+/// **Read a call's address.** `id` is the one parameter the schema declares: the task_id from a
+/// `spawn` handle, or a child's agent id — whole, the short id a tree row shows, or a unique start
+/// of it — resolved through this bridge's own table ([`background::Background::task_of`]); an id
+/// the table does not hold goes on as an agent id. `task_id` and `agent_id` are the spellings the
+/// schema used to declare and are still read, each meaning only what it says. More than one is a
+/// refusal: acting on the one the caller did not mean would reach the wrong child.
+fn address(
+    bg: &background::Background,
+    args: &serde_json::Value,
+) -> Result<Option<Address>, String> {
+    let given: Vec<(&str, &str)> = ["id", "task_id", "agent_id"]
+        .into_iter()
+        .filter_map(|k| args[k].as_str().map(|v| (k, v)))
+        .collect();
+    match given.as_slice() {
+        [] => Ok(None),
+        [("task_id", t)] => Ok(Some(Address::Task(t.to_string()))),
+        [("agent_id", a)] => Ok(Some(Address::Agent(AgentId(a.to_string())))),
+        [(_, id)] => Ok(Some(
+            match bg.task_of(id).map_err(|e| format!("marion: {e}"))? {
+                Some(task) => Address::Task(task),
+                None => Address::Agent(AgentId(id.to_string())),
+            },
+        )),
+        _ => Err(
+            "marion: this takes one of `id`, `task_id` or `agent_id`, not several — acting \
+                  on the one you did not mean would reach the wrong child. Nothing was done."
+                .into(),
+        ),
+    }
+}
+
 /// **The handle's resolving verb** (§5.4). Deliberately the same `bridge::spawn_result` that a
 /// synchronous `spawn` returns through: the two paths differ in *when* the caller gets the contract
 /// and in nothing else, so a model that has learnt to read one reads the other. Answering a `wait`
@@ -578,16 +618,21 @@ fn tool_wait(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
-    let Some(task_id) = args["task_id"].as_str() else {
-        return Err(bridge::tool_result(
-            id,
-            "marion: `wait` needs the `task_id` from the handle a `background: true` \
-             spawn returned. Refusing rather than guessing which of your children you \
-             meant — a wait on the wrong child would block on work you were not asking \
-             about.",
-            true,
-        ));
+    let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
+        Some(Address::Task(t)) => t,
+        Some(Address::Agent(a)) => return Err(bridge::wait_unknown(id, &a.0)),
+        None => {
+            return Err(bridge::tool_result(
+                id,
+                "marion: `wait` needs an `id`: the task_id from the handle a `background: true` \
+                 spawn returned, or the child's agent id. Refusing rather than guessing which of \
+                 your children you meant — a wait on the wrong child would block on work you were \
+                 not asking about.",
+                true,
+            ));
+        }
     };
+    let task_id = task_id.as_str();
     let (agent_id, agent_type, bound, contract) = pending_handle(bg, id, task_id)?;
     let (sock, project) = paths_or_refuse(who, id)?;
     // The contract to read at the end comes from the **table**, not from the handle: for a
@@ -675,17 +720,22 @@ fn tool_status(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
-    let Some(task_id) = args["task_id"].as_str() else {
-        return Err(bridge::tool_result(
-            id,
-            "marion: `status` needs the `task_id` from the handle a `background: true` \
-             spawn returned. Refusing rather than guessing which of your children you \
-             meant — a state reported about the wrong child is worse than no answer, \
-             because nothing in it would look wrong. Call `list` to see every child of \
-             yours and its state.",
-            true,
-        ));
+    let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
+        Some(Address::Task(t)) => t,
+        Some(Address::Agent(a)) => return Err(bridge::status_unknown(id, &a.0)),
+        None => {
+            return Err(bridge::tool_result(
+                id,
+                "marion: `status` needs an `id`: the task_id from the handle a `background: true` \
+                 spawn returned, or the child's agent id. Refusing rather than guessing which of \
+                 your children you meant — a state reported about the wrong child is worse than \
+                 no answer, because nothing in it would look wrong. Call `list` to see every \
+                 child of yours and its state.",
+                true,
+            ));
+        }
     };
+    let task_id = task_id.as_str();
     let Some((agent_id, _)) = bg.node_of(task_id) else {
         return Err(bridge::status_unknown(id, task_id));
     };
@@ -725,28 +775,22 @@ fn tool_steer(
              next turn boundary. Nothing was queued.",
         ));
     };
-    let agent_id = match (args["task_id"].as_str(), args["agent_id"].as_str()) {
-        (Some(task_id), None) => match bg.node_of(task_id) {
+    let agent_id = match address(bg, args).map_err(|e| refuse(&e))? {
+        Some(Address::Task(task_id)) => match bg.node_of(&task_id) {
             Some((agent_id, _)) => agent_id,
             None => {
                 return Err(refuse(&format!(
                     "marion: this bridge has no record of task_id {task_id:?}; it knows only the \
                      handles its own `spawn` calls returned, in this process. Pass the child's \
-                     `agent_id` from `list` instead. Nothing was queued."
+                     agent id from `list` as `id` instead. Nothing was queued."
                 )));
             }
         },
-        (None, Some(agent_id)) => AgentId(agent_id.to_string()),
-        (None, None) => {
+        Some(Address::Agent(agent_id)) => agent_id,
+        None => {
             return Err(refuse(
-                "marion: `steer` needs an address: the `task_id` from a `spawn` handle, or an \
-                 `agent_id` that `list` shows. Nothing was queued.",
-            ));
-        }
-        (Some(_), Some(_)) => {
-            return Err(refuse(
-                "marion: `steer` takes one of `task_id` or `agent_id`, not both — steering the \
-                 one you did not mean would redirect the wrong child. Nothing was queued.",
+                "marion: `steer` needs an `id`: the task_id from a `spawn` handle, or an agent id \
+                 that `list` shows. Nothing was queued.",
             ));
         }
     };
@@ -910,10 +954,12 @@ fn report_refusal(depth: Option<String>) -> Option<String> {
 }
 
 /// Whether this bridge lists `report` ([`bridge::report_is_offered`]). A top-level client is not
-/// a node and keeps the declared-and-refused shape it has always had.
+/// a node, has no contract to report against, and is never offered it — listing a tool that can
+/// only refuse is an invitation, as roots that called it showed. A call that arrives anyway is
+/// still refused by name.
 fn report_offered(who: &Principal) -> bool {
     match who {
-        Principal::TopLevel(_) => true,
+        Principal::TopLevel(_) => false,
         Principal::Node => {
             bridge::report_is_offered(caller_depth(std::env::var(DEPTH_ENV).ok()).ok())
         }
@@ -1580,7 +1626,7 @@ mod tests {
         assert!(blank.contains("`message`"), "{blank}");
         let nobody = call(serde_json::json!({"message": "use v2"}));
         assert!(
-            nobody.contains("`task_id`") && nobody.contains("`agent_id`"),
+            nobody.contains("`id`") && nobody.contains("`list`"),
             "{nobody}"
         );
         let both = call(serde_json::json!({"task_id": "t", "agent_id": "a", "message": "use v2"}));
@@ -1608,8 +1654,24 @@ mod tests {
             .as_str()
             .unwrap_or_default();
         assert!(
-            text.contains("task_id"),
+            text.contains("`id`"),
             "a wait with nothing to wait on must name what is missing, got: {text}"
+        );
+
+        // `id`, the one declared address, names nothing in an empty table either way.
+        let by_id = handle_tool_call(
+            &Principal::Node,
+            &bg,
+            &serde_json::json!(3),
+            "wait",
+            &serde_json::json!({"id": "01a093dc"}),
+        );
+        let by_id = by_id["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            by_id.contains("01a093dc") && by_id.contains("grandchild"),
+            "{by_id}"
         );
 
         let unknown = handle_tool_call(

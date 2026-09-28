@@ -315,8 +315,10 @@ fn tools_describing(agent_type_description: &str) -> Value {
                                         land in evidence."
                     },
                     "writable_scope": {"type": "array", "items": {"type": "string"}},
-                    "name": {"type": "string"},
-                    "isolation": {"type": "string", "enum": ["worktree", "shared-cwd", "remote"]},
+                    // Only what marion performs: `remote` is still refused by name if it arrives
+                    // (`spawn::SpawnError::IsolationUnimplemented`), but it is not offered, and
+                    // neither is a `name` nothing reads.
+                    "isolation": {"type": "string", "enum": ["worktree", "shared-cwd"]},
                     "timeout_secs": {"type": "integer"},
                     "allow_concurrent_writes": {"type": "boolean"},
                     "background": {"type": "boolean"},
@@ -367,17 +369,15 @@ fn tools_describing(agent_type_description: &str) -> Value {
             // returns stops this bridge reading *any* later frame, from anyone.
             "name": "wait",
             "description": "Collect a backgrounded child's task contract, blocking until that \
-                            child reaches a terminal state. Takes the task_id from the handle \
-                            `spawn` returned. Returns immediately if the child has already \
-                            finished. If the child is still running well past its own timeout, \
-                            this returns saying so instead of blocking forever — the child keeps \
-                            running and the handle stays valid, so you can wait on it again.",
+                            child reaches a terminal state. Returns immediately if the child has \
+                            already finished. If the child is still running well past its own \
+                            timeout, this returns saying so instead of blocking forever — the \
+                            child keeps running and the handle stays valid, so you can wait on it \
+                            again.",
             "inputSchema": {
                 "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"}
-                },
-                "required": ["task_id"]
+                "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}},
+                "required": ["id"]
             }
         },
         {
@@ -405,8 +405,7 @@ fn tools_describing(agent_type_description: &str) -> Value {
             // an answer that is wrong precisely when it is asked for.
             "name": "status",
             "description": "Check what a backgrounded child is doing right now, without blocking. \
-                            Takes the task_id from the handle `spawn` returned, and answers with \
-                            the child's current state as marion's supervisor holds it — and, while \
+                            Answers with the child's current state as marion's supervisor holds it — and, while \
                             it has not finished, its last few tool calls and the last line it \
                             wrote, where marion reads its harness's stream. Works after \
                             the child has finished, and after `wait` has already collected it. \
@@ -414,10 +413,8 @@ fn tools_describing(agent_type_description: &str) -> Value {
                             result, call `wait`, which blocks and returns the contract.",
             "inputSchema": {
                 "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"}
-                },
-                "required": ["task_id"]
+                "properties": {"id": {"type": "string", "description": ID_DESCRIPTION}},
+                "required": ["id"]
             }
         },
         {
@@ -459,9 +456,8 @@ fn tools_describing(agent_type_description: &str) -> Value {
             // (`TurnDelivery`) and a model cannot read the row: never "now", never "read".
             "name": "steer",
             "description": "Queue a message for a running child agent of yours — or any agent \
-                            below you — that it will see at its next turn boundary. Address it \
-                            by the task_id from the handle `spawn` returned, or by an agent_id \
-                            that `list` shows (the only way to reach a grandchild). Where the \
+                            below you — that it will see at its next turn boundary. A \
+                            grandchild is reached by the agent id `list` shows. Where the \
                             child's harness folds a message into work in progress, that boundary \
                             is its next tool round, mid-task; otherwise it is the child's next \
                             turn or resume. The reply says the message was queued, not that the \
@@ -471,11 +467,10 @@ fn tools_describing(agent_type_description: &str) -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string"},
-                    "agent_id": {"type": "string"},
+                    "id": {"type": "string", "description": ID_DESCRIPTION},
                     "message": {"type": "string"}
                 },
-                "required": ["message"]
+                "required": ["id", "message"]
             }
         },
         {
@@ -493,6 +488,12 @@ fn tools_describing(agent_type_description: &str) -> Value {
         }
     ])
 }
+
+/// What `wait`, `status` and `steer` are addressed by: one `id`, whichever of the two a caller
+/// holds. The older `task_id` and `agent_id` keys are still read (`mcp::address`) and no longer
+/// declared, so a model sees one way to name a child.
+const ID_DESCRIPTION: &str = "The child: the task_id from the handle `spawn` returned, or its \
+     agent id as `list` shows it (a unique start of it is enough).";
 
 /// marion's own name for the child's return path, in the vocabulary [`tools`] declares it under.
 ///
@@ -1650,10 +1651,10 @@ mod tests {
             .expect("steer is declared");
         let schema = &steer["inputSchema"];
         assert_eq!(schema["type"], "object");
-        for p in ["task_id", "agent_id", "message"] {
+        for p in ["id", "message"] {
             assert_eq!(schema["properties"][p]["type"], "string", "{p}: {schema}");
         }
-        assert_eq!(schema["required"], json!(["message"]), "{schema}");
+        assert_eq!(schema["required"], json!(["id", "message"]), "{schema}");
         let desc = steer["description"].as_str().unwrap();
         for needle in [
             "queue",

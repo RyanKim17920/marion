@@ -279,6 +279,22 @@ impl Background {
             .map(|h| (h.agent_id.clone(), h.agent_type.clone()))
     }
 
+    /// **The handle an `id` names**: a `task_id` as itself, else the handle whose node
+    /// [`crate::tree::resolve_node`] picks out of this table — a whole agent id, the short id a
+    /// tree row shows, or a unique start of one. `Ok(None)` when it names no handle here; `Err`
+    /// naming every candidate when it could be more than one.
+    pub fn task_of(&self, id: &str) -> Result<Option<String>, String> {
+        let handed = self.lock();
+        if handed.iter().any(|h| h.task_id.0 == id) {
+            return Ok(Some(id.to_string()));
+        }
+        let agent = crate::tree::resolve_node(id, handed.iter().map(|h| h.agent_id.0.as_str()))?;
+        Ok(handed
+            .iter()
+            .find(|h| h.agent_id == agent)
+            .map(|h| h.task_id.0.clone()))
+    }
+
     /// Remember *what* a `wait` collected, not merely that something was. See [`Collected`].
     ///
     /// **Only a `wait` that reached the node's terminal state collects.** One that expired against
@@ -481,5 +497,20 @@ mod tests {
         hand(&bg, "task-slow");
         // What `main` does on the expiry path: nothing at all.
         assert!(matches!(bg.resolve("task-slow"), Wait::Pending { .. }));
+    }
+
+    /// **An `id` names a handle by its `task_id` or by its node** — the whole agent id or any
+    /// unique start of it — and names nothing when this table has no such node.
+    #[test]
+    fn an_id_names_a_handle_by_its_task_or_its_node() {
+        let bg = Background::new();
+        hand(&bg, "task-a");
+        hand(&bg, "task-b");
+        assert_eq!(bg.task_of("task-a"), Ok(Some("task-a".into())));
+        assert_eq!(bg.task_of("node-for-task-b"), Ok(Some("task-b".into())));
+        assert_eq!(bg.task_of("node-for-task-a"), Ok(Some("task-a".into())));
+        assert_eq!(bg.task_of("grandchild"), Ok(None));
+        let both = bg.task_of("node-for").expect_err("two nodes start with it");
+        assert!(both.contains("node-for-task-a") && both.contains("node-for-task-b"));
     }
 }

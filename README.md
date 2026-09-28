@@ -14,7 +14,7 @@ merged) goes here. Do not put a screen tour here. -->
 
 - **Delegation by tool call.** A running agent gets marion's MCP tools (`spawn`, `wait`,
   `status`, `list`, `steer`, `report`), so it hands work to another harness by calling a tool,
-  not by shelling out. The same tools work from any MCP client (`marion mcp`).
+  not by shelling out. The same tools but `report` work from any MCP client (`marion mcp`).
 - **One tree, whatever the vendor.** Every node is journaled and addressable by id. `marion` opens a
   terminal UI over the whole tree: start a task, watch each node's live tool calls and tokens,
   steer it, attach to its terminal, take the branch it landed.

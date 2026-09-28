@@ -598,8 +598,8 @@ fn tools_list_names_are_bare_and_in_the_pinned_order() {
         .iter()
         .find(|t| t["name"] == "steer")
         .expect("steer is declared")["inputSchema"];
-    assert_eq!(steer["required"], json!(["message"]), "{steer}");
-    for p in ["task_id", "agent_id", "message"] {
+    assert_eq!(steer["required"], json!(["id", "message"]), "{steer}");
+    for p in ["id", "message"] {
         assert_eq!(steer["properties"][p]["type"], "string", "{p}: {steer}");
     }
 

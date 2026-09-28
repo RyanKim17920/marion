@@ -360,6 +360,13 @@ six tools now): a `task_id` resolves through the bridge's handle table as `statu
 `mcp::tests::steer_refuses_a_call_without_one_address_and_a_message`,
 `bridge::tests::steer_declares_its_address_and_says_when_the_child_reads_it`, and the tools/list
 pins in `mcp_conformance` and `background_spawn`.
+Since the CLI simplification stage, `wait`, `status` and `steer` declare one `id` (a handle's
+`task_id`, or an agent id whole, short or by a unique start, resolved through
+`Background::task_of` and `tree::resolve_node`); `task_id` and `agent_id` are still read and no
+longer declared. `marion mcp` lists five tools (no `report`, which it refuses by name if called),
+and `spawn` no longer offers `name` or `isolation: remote` (still refused by name). Witnesses:
+`background::tests::an_id_names_a_handle_by_its_task_or_its_node`,
+`tree::tests::a_unique_prefix_of_a_whole_id_names_its_agent`.
 In `marion tree`, `s` (`Nav::Steer`; `!` stays attention) opens a one-line `marion_tui::tree::Compose`
 on the hint row for the selected node: printable bytes and UTF-8 are buffered, Backspace removes a
 whole character, arrows are skipped, a bracketed paste is flattened to one line, Enter sends through
