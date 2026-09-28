@@ -46,10 +46,20 @@ mod common;
 
 use common::canned::canned_env;
 
-/// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call
-/// running (measured at ~4 s here); short enough that the test is not a wait. The tool call is
-/// still in flight when it expires — that is the whole point.
-const CHILD_TIMEOUT_SECS: u64 = 25;
+/// The child's bound: long enough for its harness to boot, take turn one and get its tool call
+/// running, and the tool call is still in flight when it expires — that is the whole point.
+///
+/// The boot is the row's budget ([`common::boot::budget`]) and not a number typed here: this was a
+/// flat 25 s, measured against `codex exec` reaching its call in ~4 s on a quiet machine, and
+/// every opencode cell failed it under load with no tool call recorded — opencode had not finished
+/// booting. The turn after the boot is one small request and a spawn.
+fn child_timeout_secs(agent_type: &str) -> u64 {
+    (common::boot::budget(agent_type) + TOOL_CALL_TURN).as_secs()
+}
+
+/// What a child spends after its boot to get its tool call running: one small request answered by
+/// the canned provider, and the spawn of the call's process.
+const TOOL_CALL_TURN: Duration = Duration::from_secs(10);
 
 /// How long the runaway `sleep`s live if nothing kills them. Far past this test, so a survivor is
 /// unmistakable rather than a race with its own exit.
@@ -256,7 +266,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         acceptance_criteria: vec!["the command is running".into()],
         verification: vec![],
         writable_scope: vec!["src/**".into()],
-        timeout_secs: CHILD_TIMEOUT_SECS,
+        timeout_secs: child_timeout_secs(agent_type),
         model,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
@@ -343,7 +353,8 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         completion.status,
         ExitStatus::TimedOut,
         "the child must have been expired by marion's bound, not have exited on its own; \
-         ran for {elapsed:?} against a {CHILD_TIMEOUT_SECS}s bound. exit: {}",
+         ran for {elapsed:?} against a {}s bound. exit: {}",
+        child_timeout_secs(agent_type),
         completion.exit.description
     );
 }
