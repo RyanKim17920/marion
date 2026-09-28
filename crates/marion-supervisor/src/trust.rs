@@ -18,7 +18,6 @@
 //! **Never a prompt.** A spawn arrives over MCP from a model, which cannot consent on the
 //! operator's behalf; the refusal names the one command the operator runs instead.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -228,7 +227,7 @@ impl Store {
                 )
             })
             .collect();
-        write_private(&self.path, body.as_bytes())
+        crate::private_fs::write_atomic(&self.path, body.as_bytes())
             .map_err(|e| TrustError::Io(format!("{}: {e}", self.path.display())))
     }
 }
@@ -262,32 +261,6 @@ fn check_private(path: &Path) -> Result<(), TrustError> {
         }
     }
     Ok(())
-}
-
-/// Write `bytes` to `path` owner-only (directory 0700, file 0600), by way of a synced sibling
-/// temporary and a rename, so a reader sees the old store or the new one and never half of one.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    let staged = path.with_extension(format!("tmp.{}", std::process::id()));
-    let result = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staged)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&staged, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&staged);
-    }
-    result
 }
 
 /// `file`'s canonical path; for a file that no longer exists, its directory's canonical path and
