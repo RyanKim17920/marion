@@ -714,6 +714,14 @@ fn failure_line(c: &TaskContract) -> Option<(String, bool)> {
     }
     let head = match comp.status {
         ExitStatus::Ok => return None,
+        // **Checks over a tree the child never touched vouch for nothing it did** (live, s2
+        // 2026-09-27: a child that failed on auth changed nothing, and its parent read "verification
+        // 1/1 passed" as the child's success). So a silent child that changed nothing is not
+        // promoted, however its checks went.
+        ExitStatus::Unreported if ran_on_the_unchanged_base(c) => format!(
+            "marion: the {harness} child never called report and changed nothing, so its \
+             verification ran on the unchanged base and vouches for no work of the child's"
+        ),
         ExitStatus::Unreported => match verification_passed(c) {
             Some(n) => {
                 let line = format!(
@@ -766,7 +774,11 @@ fn summary_facts(agent_type: &str, c: &TaskContract) -> String {
             .iter()
             .filter(|e| e.exit_code == Some(0) && !e.timed_out)
             .count();
-        format!("verification {passed}/{total} passed")
+        if ran_on_the_unchanged_base(c) {
+            format!("verification ran on the unchanged base ({passed}/{total} passed)")
+        } else {
+            format!("verification {passed}/{total} passed")
+        }
     };
     const SHOWN: usize = 5;
     let changed = if comp.changed_paths.is_empty() {
@@ -807,6 +819,19 @@ fn where_the_change_lives(c: &TaskContract) -> String {
             "in the shared checkout (no branch)".to_string()
         }
     }
+}
+
+/// **Did the declared checks run over a tree the child left exactly as it found it?** Then they
+/// measured the base, not the child: true when marion ran at least one check, git could say what
+/// changed (`scope_enforced`), and the answer was nothing at all.
+fn ran_on_the_unchanged_base(c: &TaskContract) -> bool {
+    c.completion.as_ref().is_some_and(|comp| {
+        !comp.evidence.is_empty()
+            && comp.scope_enforced
+            && comp.changed_paths.is_empty()
+            && comp.changed_paths_omitted == 0
+            && comp.result_commits.is_empty()
+    })
 }
 
 /// The first failed verification command and its outcome, with how many failed — `None` when
@@ -1910,6 +1935,55 @@ mod tests {
         c
     }
 
+    /// `c`, having changed one file.
+    fn changed(mut c: TaskContract) -> TaskContract {
+        c.completion
+            .as_mut()
+            .expect("a contract that ran has a completion")
+            .changed_paths = vec!["src/lib.rs".into()];
+        c
+    }
+
+    /// **Checks that ran over a tree the child never touched are not the child's success.**
+    /// Measured live (s2, 2026-09-27): a child that failed on auth changed nothing, its parent was
+    /// told "verification 1/1 passed", and the model told the user the tests passed. The failure
+    /// leads, the facts say where the checks ran, and a silent child that changed nothing is an
+    /// error however its checks went.
+    #[test]
+    fn verification_over_an_unchanged_tree_is_never_reported_as_the_childs_success() {
+        let v = spawn_result(&json!(2), "claude", Ok(verified(ran(failed()), &[Some(0)])));
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        let line = text(&v).lines().next().unwrap_or_default().to_string();
+        assert!(line.starts_with("marion: the codex child failed"), "{line}");
+        assert!(
+            line.contains("verification ran on the unchanged base (1/1 passed)")
+                && !line.contains("verification 1/1 passed"),
+            "{line}"
+        );
+
+        let silent = verified(
+            ran(crate::spawn::ChildOutcome {
+                exit_code: Some(0),
+                ..Default::default()
+            }),
+            &[Some(0)],
+        );
+        let v = spawn_result(&json!(2), "claude", Ok(silent.clone()));
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        assert!(
+            first_line(&v).contains("changed nothing")
+                && first_line(&v).contains("unchanged base")
+                && !first_line(&v).contains("verification passed"),
+            "{}",
+            first_line(&v)
+        );
+
+        // The same checks over a change are the child's, and read as before.
+        let v = spawn_result(&json!(2), "claude", Ok(changed(silent)));
+        assert_eq!(v["result"]["isError"], false, "{v}");
+        assert!(text(&v).contains("verification 1/1 passed"), "{}", text(&v));
+    }
+
     /// **A child that did the work, passed every check its parent declared, and only omitted
     /// `report` is not an error to its parent.** Measured live (2026-09-22): ten claude and codex
     /// children wrote their file, passed `test -f` and `grep -q`, and ended `Unreported`, and each
@@ -1918,13 +1992,13 @@ mod tests {
     /// on follows the evidence marion itself ran.
     #[test]
     fn an_unreported_child_whose_verification_all_passed_is_not_an_error() {
-        let c = verified(
+        let c = changed(verified(
             ran(crate::spawn::ChildOutcome {
                 exit_code: Some(0),
                 ..Default::default()
             }),
             &[Some(0), Some(0)],
-        );
+        ));
         let v = spawn_result(&json!(2), "codex-impl", Ok(c));
         assert_eq!(v["result"]["isError"], false, "{v}");
         assert_eq!(

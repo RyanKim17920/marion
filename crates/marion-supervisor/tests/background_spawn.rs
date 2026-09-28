@@ -121,6 +121,9 @@ const ROOT_MARKER: &str = "MARION-BACKGROUND-SPAWN-ROOT-a41f";
 /// It writes nothing to stdout, so a child's contract lands `Unreported`. That is correct and
 /// irrelevant: this file asserts about *when* contracts arrive and *whether* spawns are refused,
 /// never about what a child said.
+/// A child prompt carrying this makes the shim write `work.txt` in its workspace before it exits.
+const WORK_MARKER: &str = "marion-shim-write-work";
+
 fn shim(
     dir: &Path,
     gate: &Path,
@@ -183,6 +186,8 @@ while [ ! -e "$wait_for" ]; do
 done
 case "$*" in
   *{root_marker}*) : ;;
+  # A child whose prompt says so leaves one file in its workspace: work its checks can vouch for.
+  *{work_marker}*) echo work > work.txt; : > {done}/$$ ;;
   # A second marker at exit, so "the child has finished" is an event the test can observe rather
   # than a time it has to guess.
   *) : > {done}/$$ ;;
@@ -194,6 +199,7 @@ exit 0
         gate = common::shell_quote(gate),
         root_gate = common::shell_quote(root_gate),
         root_marker = ROOT_MARKER,
+        work_marker = WORK_MARKER,
         slow_version = common::shell_quote(slow_version),
         chatty = common::shell_quote(chatty),
         long = "x".repeat(300),
@@ -1380,16 +1386,18 @@ fn a_blocking_spawns_task_id_resolves_for_wait_and_status() {
 }
 
 /// **An unreported child whose declared verification passed is not an error to its parent** —
-/// the live matrix's commonest cell (2026-09-22), end to end: the shim child exits without calling
-/// `report`, marion runs the parent's one check in its worktree, and the parent's `spawn` result
-/// says both halves without `isError`.
+/// the live matrix's commonest cell (2026-09-22), end to end: the shim child writes its file and
+/// exits without calling `report`, marion runs the parent's one check in its worktree, and the
+/// parent's `spawn` result says both halves without `isError`. The same child changing nothing is
+/// an error however its check goes: the check then measured the base, not the child.
 #[test]
 fn an_unreported_child_whose_verification_passed_is_not_an_error_to_its_parent() {
     let fx = fixture("bg-unreported-verified");
     fx.open_gate();
     let mut bridge = fx.bridge();
     let mut args = spawn_args(false);
-    args["verification"] = json!(["true"]);
+    args["prompt"] = json!(format!("{WORK_MARKER}: write the file"));
+    args["verification"] = json!(["test -f work.txt"]);
     let reply = bridge.tool("spawn", args);
     assert!(!is_error(&reply), "{reply}");
     let first = text_of(&reply)
@@ -1404,6 +1412,14 @@ fn an_unreported_child_whose_verification_passed_is_not_an_error_to_its_parent()
     assert!(
         text_of(&reply).contains("\"status\":\"Unreported\""),
         "the contract still says no report arrived: {reply}"
+    );
+    let mut args = spawn_args(false);
+    args["verification"] = json!(["true"]);
+    let unchanged = bridge.tool("spawn", args);
+    assert!(is_error(&unchanged), "{unchanged}");
+    assert!(
+        text_of(&unchanged).contains("verification ran on the unchanged base (1/1 passed)"),
+        "{unchanged}"
     );
     assert!(bridge.close().success());
 }
