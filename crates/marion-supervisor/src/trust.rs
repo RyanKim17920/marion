@@ -26,7 +26,7 @@ use marion_core::agent_type::{AgentType, AgentTypes};
 /// The trust store's file name, under `$XDG_DATA_HOME/marion/`.
 pub const STORE_FILE: &str = "trusted.toml";
 
-const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | list\n\
+pub const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | list\n\
     \x20 <file> defaults to the nearest .marion/agents.toml at or above the current directory";
 
 /// Why a repository command was not run, or the trust store could not be used.

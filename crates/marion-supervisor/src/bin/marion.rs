@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 
-use marion_core::agent_type::{AgentTypes, builtin_names};
+use marion_core::agent_type::AgentTypes;
 use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir_from_env;
 use marion_core::production_native_facades;
@@ -28,121 +28,20 @@ use marion_supervisor::socket;
 use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
 
-fn usage_text() -> String {
-    let native: String = production_native_facades()
-        .enabled_native_commands()
-        .iter()
-        .map(|c| format!("\x20      marion {c} [<its own flags>…]\n"))
-        .collect();
-    let tools = mcp_tool_names();
-    format!(
-        "usage: marion                                (the home screen: start, watch, set up)\n\
-         {native}\
-         \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
-         \x20                 [--profile <name>]\n\
-         \x20                 [--pane | --detach] [--canned [--base-url <url>]]\n\
-         \x20      marion ls [<agent-id|short-id>] [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion list [--attention] [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--canned [--base-url <url>]]\n\
-         \x20      marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] <text…|->\n\
-         \x20      marion cancel <agent-id|short-id> [--repo <path>] [--state-dir <path>]\n\
-         \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
-         \x20      marion login <provider>[:<label>] [--stdin | --from-env]\n\
-         \x20      marion login --list\n\
-         \x20      marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--auth none]\n\
-         \x20      marion logout <provider>[:<label>]\n\
-         \x20      marion profile add <harness> <name> [--dir <path>] | list | use <harness> <name>\n\
-         \x20                     | remove <name> [--purge]\n\
-         \x20      marion trust allow [<file>] | deny [<file>] | list\n\
-         \x20      marion doctor [--capabilities|--adapter] [--harness <name>] | --providers\n\
-         \x20      marion --version\n\
-         \n\
-         marion <harness> runs that harness's own TUI, with its own flags, login and keys, as a\n\
-         marion root with marion's MCP server connected. ^] d detaches, ^] s toggles a status row.\n\
-         \n\
-         agent types: {types}, plus any in the repository's .marion/agents.toml. A plain harness\n\
-         name is that harness's implementer; <harness>-orchestrator is the read-only planner.\n\
-         \n\
-         marion with no arguments, on a terminal, opens the home screen. Start lists each\n\
-         harness's readiness (what marion doctor finds) and runs a task: pick the harness,\n\
-         the type (^o for the read-only flavour), the model and headless or pane (^p), type\n\
-         the prompt, enter. Watch is the forest: the selected node opens in place with what\n\
-         marion sent it, its steers, a live stream of what it runs, its tokens and the branch\n\
-         it landed; enter attaches, s steers, x cancels (asking first), u resumes, c copies the\n\
-         merge, ! jumps to what needs you. Setup shows the harness checks with their fixes and\n\
-         the agent types (e edits them). The box at the bottom shows the command each key is.\n\
-         Tab changes screen, ^c quits. In a pipe it prints this text and exits non-zero.\n\
-         \n\
-         marion ls opens the home screen on Watch; without a terminal it prints marion list's\n\
-         lines. marion ls <id> prints one node's detail. marion tree is its old name. None of\n\
-         these start a supervisor.\n\
-         \n\
-         marion list prints the same forest once, one node per line, and exits 0. --attention\n\
-         keeps only nodes that need an operator (blocked, failed, timed out, unreported, orphaned).\n\
-         \n\
-         marion steer queues a message for a running node's next turn, as the operator. The node\n\
-         is named by its whole id or by the short id its tree row shows; `-` reads the message\n\
-         from stdin. It exits 0 when the message was queued and says which node takes it, and 1\n\
-         with the supervisor's own sentence when it was refused. Like list, it starts no\n\
-         supervisor.\n\
-         \n\
-         marion login stores an API key you give it for a provider (a terminal prompt, stdin, or\n\
-         the provider's own env var with your consent); a node whose agent type or --model names\n\
-         that provider (`--model openrouter:<model>`) then runs on it. --list shows each provider\n\
-         and which credentials are stored, never a key. No vendor subscription login is reused.\n\
-         \n\
-         marion mcp serves marion's {n} tools — {tool_list} — over stdio, for an MCP client to\n\
-         be configured with (report answers only inside a child marion started). Its spawn\n\
-         creates a root over the same socket `marion run` uses. Point a client at it with\n\
-         `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. stdout is JSON-RPC.\n\
-         \n\
-         marion cancel ends a running node, as the operator: it is recorded as cancelled, and\n\
-         its children keep running. It asks nothing; a typed command is the confirmation.\n\
-         \n\
-         A run uses the login you already have for each harness and makes real model calls that\n\
-         cost real money. marion never logs in to a harness; `marion login` stores API keys you\n\
-         give it.\n\
-         \n\
-         --canned points the node at marion's canned test provider ({CANNED_BASE_URL}) instead:\n\
-         no credential, no cost, and answers nothing useful. Start it first (`marion-canned`,\n\
-         installed from crates/marion-provider); a run refuses at once if nothing listens there.\n\
-         `--live` is still accepted and does nothing: real auth is the default.\n\
-         \n\
-         --base-url belongs to --canned and is refused without it. A loopback endpoint would aim\n\
-         a real credential at a fake server; any other endpoint (a proxy, a gateway) is refused\n\
-         because marion does not implement it, and the run would reach the vendor directly.\n\
-         \n\
-         --repo defaults to the enclosing git repository, else the working directory.\n\
-         \n\
-         --state-dir defaults to $MARION_STATE_DIR, else $XDG_STATE_HOME/marion, else\n\
-         ~/.local/state/marion, for every verb. Use the same one for `marion ls` as for the\n\
-         session it should show.\n\
-         \n\
-         --no-change-record skips the snapshot marion takes of your checkout at a root's launch\n\
-         and exit. That snapshot is the only record of what a root changed, so a type with file\n\
-         tools is refused where marion cannot take it (outside a git repository); with this flag\n\
-         the root runs with no built-in tool at all instead.\n\
-         \n\
-         --pane runs the root in a terminal marion owns, so `marion attach <agent-id>` shows its\n\
-         TUI and types into it. Like --detach, it returns as soon as the root has started.\n\
-         \n\
-         --detach starts a headless root and returns instead of watching it; marion ls watches.\n\
-         \n\
-         --timeout is the root's bound: on claude, the budget for one blocked permission request;\n\
-         on the other harnesses, a wall-clock limit.",
-        types = builtin_names().join(", "),
-        n = tools.len(),
-        tool_list = tools.join(", "),
-    )
-}
+use cli::{Backend, Exit, Place, Word, Words};
 
-/// The tool names `marion mcp` declares in `tools/list`, read off the list itself so `--help`
+#[path = "marion/cli.rs"]
+mod cli;
+
+/// The tool names `marion mcp` declares in `tools/list`, read off the answer it gives so `--help`
 /// cannot drift from it.
 fn mcp_tool_names() -> Vec<String> {
-    marion_supervisor::bridge::tools(&AgentTypes::builtins_only())
+    let listed = marion_supervisor::bridge::tools_list_result(
+        &Value::Null,
+        Ok(&AgentTypes::builtins_only()),
+        false,
+    );
+    listed["result"]["tools"]
         .as_array()
         .into_iter()
         .flatten()
@@ -150,17 +49,18 @@ fn mcp_tool_names() -> Vec<String> {
         .collect()
 }
 
+/// Bare `marion` with no terminal, or a first word that is an option marion does not have:
+/// `marion --help`'s text on stderr, and exit 2.
 fn usage() -> ! {
-    eprintln!("{}", usage_text());
+    eprintln!("{}", cli::top_help());
     std::process::exit(2)
 }
 
 struct Args {
     agent_type: String,
     prompt: String,
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
-    base_url: Option<String>,
+    place: Place,
+    backend: Backend,
     model: Option<String>,
     timeout_secs: Option<u64>,
     /// `--no-change-record`: launch without snapshotting the repository, and therefore without
@@ -173,128 +73,115 @@ struct Args {
     /// root always does. What the home screen's Start runs, and what a script that only wants the
     /// node started asks for; `marion ls` and `marion attach` are the view.
     detach: bool,
-    /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
-    /// is what a person at a terminal means, and the canned server is a test fixture.
-    canned: bool,
     /// `--profile <name>`: which of the operator's own logins the root runs on (`profiles.toml`).
     profile: Option<String>,
 }
 
-/// `marion attach <agent-id> [--repo <path>] [--state-dir <path>]`.
+/// `marion attach|cancel <id> [--repo <path>] [--state-dir <path>]`: one agent, and which project.
 ///
-/// **A second parser rather than a generalised one**, and that is the whole of the refactor this
-/// verb needed. `parse_args` is `run`'s: it takes an agent *type*, six run-shaping flags and a
-/// prompt, none of which an attach has. Widening it into a table would have meant making every
-/// one of those flags optional-per-verb, which is how a flag ends up accepted by a verb that
-/// ignores it — the accept-and-ignore shape §11 item 23 is about, with marion on the producing
-/// end. Two small parsers cannot do that to each other.
-///
-/// The two flags it *does* share are the two that answer "which supervisor": §2 keys one on the
-/// git common dir, so an attach has to resolve the same project the run did or it will ask a
-/// different supervisor about a node it has never heard of.
+/// Its own small parser, as every command has: the only flags it shares with another are the two
+/// that answer "which supervisor", and those come from [`Place`], so an attach resolves the same
+/// project the run did rather than asking a different supervisor about a node it never heard of.
 struct AttachArgs {
     agent_id: String,
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
+    place: Place,
 }
 
-fn parse_attach(argv: &[String]) -> Option<AttachArgs> {
-    let agent_id = argv.get(1)?.clone();
-    if agent_id.starts_with('-') {
-        return None;
-    }
-    let mut args = AttachArgs {
-        agent_id,
-        repo: None,
-        state_dir: None,
-    };
-    let mut rest = argv[2..].iter();
-    while let Some(flag) = rest.next() {
-        match flag.as_str() {
-            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
-            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
-            // An unknown flag is a refusal here for the same reason it is in `parse_args`: a
-            // mistyped `--state-dir` that fell through would dial a supervisor under `$HOME` and
-            // report the operator's node as missing.
-            _ => return None,
+fn parse_attach(argv: &[String]) -> Result<AttachArgs, Exit> {
+    let mut words = Words::after_verb(argv);
+    let (mut target, mut place) = (None, Place::default());
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(id) if target.is_none() => target = Some(id),
+            Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
         }
     }
-    Some(args)
+    Ok(AttachArgs {
+        agent_id: cli::required(target, "an agent <id>")?,
+        place,
+    })
 }
 
 /// The whole of `marion attach`, from argv to exit code.
-///
-/// Kept out of `main` deliberately. `main` is three thousand lines of one verb's lifecycle, and
-/// the smallest dispatch that admits a second verb is one that hands the second verb its own
-/// function rather than threading a mode through all of it.
-fn attach_main(argv: &[String]) -> ExitCode {
-    let Some(args) = parse_attach(argv) else {
-        usage()
+fn attach_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_attach(argv)?;
+    let Some((repo, state)) = resolve_project(&args.place) else {
+        return Ok(ExitCode::FAILURE);
     };
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
-        return ExitCode::FAILURE;
+    // With nobody serving there is no tree to resolve against, and the id goes on as typed so
+    // attach's own refusal — which says why it will not start a supervisor — is what is printed.
+    let agent_id = match marion_supervisor::tree::snapshot(&repo, &state) {
+        Ok(nodes) => match marion_supervisor::tree::resolve_target(&args.agent_id, &nodes) {
+            Ok(id) => id.0,
+            Err(e) => {
+                eprintln!("marion: {e}");
+                return Ok(ExitCode::FAILURE);
+            }
+        },
+        Err(_) => args.agent_id.clone(),
     };
-    match marion_supervisor::attach::run(&args.agent_id, &repo, &state) {
-        Ok(marion_supervisor::attach::Leave::Ended) => ExitCode::SUCCESS,
-        // After the `Screen` guard has restored the terminal, as the refusal below is.
-        Ok(marion_supervisor::attach::Leave::Detached) => {
-            eprintln!(
-                "{}",
-                marion_supervisor::attach::reattach_hint(&args.agent_id)
-            );
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            // After the `Screen` guard has restored the terminal — `Session::drop` runs before
-            // this returns — so the sentence lands on the operator's real screen rather than on
-            // an alternate one that is about to disappear.
-            eprintln!("marion: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    Ok(
+        match marion_supervisor::attach::run(&agent_id, &repo, &state) {
+            Ok(marion_supervisor::attach::Leave::Ended) => ExitCode::SUCCESS,
+            // After the `Screen` guard has restored the terminal, as the refusal below is.
+            Ok(marion_supervisor::attach::Leave::Detached) => {
+                eprintln!("{}", marion_supervisor::attach::reattach_hint(&agent_id));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                // After the `Screen` guard has restored the terminal — `Session::drop` runs before
+                // this returns — so the sentence lands on the operator's real screen rather than on
+                // an alternate one that is about to disappear.
+                eprintln!("marion: {e}");
+                ExitCode::FAILURE
+            }
+        },
+    )
 }
 
-/// `marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]
-/// [--canned [--base-url <url>]]`.
+/// **The agent `target` names in this project's live tree** ([`marion_supervisor::tree::resolve_target`]):
+/// a whole id, a short id or a unique start of one, read off one `tree/subscribe` snapshot. Fails
+/// with the snapshot's own sentence when nobody is serving, which is the answer every command that
+/// uses this would have given anyway.
+fn find_node(
+    target: &str,
+    repo: &Path,
+    state: &Path,
+) -> Result<marion_core::contract::AgentId, String> {
+    marion_supervisor::tree::snapshot(repo, state)
+        .and_then(|nodes| marion_supervisor::tree::resolve_target(target, &nodes))
+}
+
+/// `marion resume <id> [--prompt <text>] [--canned [--base-url <url>]] [--repo …] [--state-dir …]`.
 struct ResumeArgs {
     agent_id: String,
     prompt: String,
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
-    base_url: Option<String>,
-    canned: bool,
+    place: Place,
+    backend: Backend,
 }
 
-/// A third small parser, for [`parse_attach`]'s reason: resume takes a prompt and the auth flags an
-/// attach never has, and widening one parser to hold both is how a flag ends up accepted by a verb
-/// that ignores it. It shares only the two project flags, which every verb keying on §2's socket
-/// must resolve the same way.
-fn parse_resume(argv: &[String]) -> Option<ResumeArgs> {
-    let agent_id = argv.get(1)?.clone();
-    if agent_id.starts_with('-') {
-        return None;
-    }
-    let mut args = ResumeArgs {
-        agent_id,
-        prompt: String::new(),
-        repo: None,
-        state_dir: None,
-        base_url: None,
-        canned: false,
-    };
-    let mut rest = argv[2..].iter();
-    while let Some(flag) = rest.next() {
-        match flag.as_str() {
-            "--prompt" => args.prompt = rest.next()?.clone(),
-            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
-            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
-            "--base-url" => args.base_url = Some(rest.next()?.clone()),
-            "--canned" => args.canned = true,
-            // An unknown flag is a refusal, for `parse_attach`'s reason.
-            _ => return None,
+fn parse_resume(argv: &[String]) -> Result<ResumeArgs, Exit> {
+    let mut words = Words::after_verb(argv);
+    let (mut target, mut prompt) = (None, String::new());
+    let (mut place, mut backend) = (Place::default(), Backend::default());
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag("--prompt", v) => prompt = words.value("--prompt", v)?,
+            Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
+            Word::Flag(f, v) if backend.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(id) if target.is_none() => target = Some(id),
+            Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
         }
     }
-    Some(args)
+    Ok(ResumeArgs {
+        agent_id: cli::required(target, "an agent <id>")?,
+        prompt,
+        place,
+        backend,
+    })
 }
 
 /// **The whole of `marion resume`, from argv to exit code** (`plan-restart-resume.md` step 7).
@@ -305,47 +192,43 @@ fn parse_resume(argv: &[String]) -> Option<ResumeArgs> {
 /// Resume is the opposite case *by definition*: the node it brings back is one whose supervisor
 /// **died with it**, so there is deliberately no supervisor to dial, and starting one is not a
 /// silent fallback — it is the operation. The relaunch reads the node from the on-disk journal the
-/// new supervisor boots over, so the node is exactly as re-findable as it was before.
-fn resume_main(argv: &[String]) -> ExitCode {
-    match resume(argv) {
+/// new supervisor boots over, so the node is exactly as re-findable as it was before — and the id
+/// is resolved against that same journal, since there is no live tree to ask.
+fn resume_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_resume(argv)?;
+    Ok(match resume(&args) {
         Ok(code) | Err(code) => code,
-    }
+    })
 }
 
-/// The resume's stages in order: parse, resolve, dial, `node/resume`, announce, then
-/// [`root_follow`]'s rule — watch a headless node to its exit as `run` does, or say a paned one
-/// started. Each refusal has already printed its sentence and carries only the code, as [`run`]'s
-/// do.
-fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
-    let Some(args) = parse_resume(argv) else {
-        usage()
-    };
-    let (repo, state) =
-        resolve_project(args.repo.clone(), args.state_dir.as_deref()).ok_or(ExitCode::FAILURE)?;
-    let base_url = resume_base_url(&args)?;
-    let auth = if args.canned {
-        marion_harness::Auth::Canned
-    } else {
-        marion_harness::Auth::Inherited
-    };
+/// The resume's stages in order: resolve, dial, `node/resume`, announce, then [`root_follow`]'s
+/// rule — watch a headless node to its exit as `run` does, or say a paned one started. Each
+/// refusal has already printed its sentence and carries only the code, as [`run`]'s do.
+fn resume(args: &ResumeArgs) -> Result<ExitCode, ExitCode> {
+    let (repo, state) = resolve_project(&args.place).ok_or(ExitCode::FAILURE)?;
+    let base_url = endpoint(&args.backend)?;
     let project_key = socket::project_root(&repo);
+    let project = marion_core::paths::ProjectDir::new(&state, &project_key);
+    let agent_id = journal_node(&args.agent_id, &project.journal()).map_err(|e| {
+        eprintln!("marion: {e}");
+        ExitCode::FAILURE
+    })?;
     let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
     let launch = detach::Launch {
         program: supervisor_binary(),
         state_dir: state.clone(),
         project_root: project_key.clone(),
         idle_grace: RUN_IDLE_GRACE,
-        auth,
+        auth: args.backend.auth(),
         base_url,
     };
     let (mut session, started) = connect_supervisor(&sock, &launch)?;
-    let project = marion_core::paths::ProjectDir::new(&state, &project_key);
     let terminal = std::sync::Arc::new(Terminal::new(io::stderr()));
     // The same journal tail `run` starts before its spawn, for the same reason: measured before
     // the relaunch, so the second life's children are the only news it can report.
     let stop = std::sync::Arc::new(marion_supervisor::wake::Flag::new());
     let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
-    let resumed = match resume_node(&mut session, &args) {
+    let resumed = match resume_node(&mut session, &agent_id, &args.prompt) {
         Ok(r) => r,
         Err(e) => {
             stop.store(true, Ordering::Relaxed);
@@ -382,6 +265,18 @@ fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
             report_watched(watched, &project.journal(), &root_id, shape.bound)
         }
     }
+}
+
+/// **The agent `target` names in this project's journal**, for a command that must work with no
+/// supervisor running — [`marion_supervisor::tree::resolve_node`] over every node the journal
+/// records. A journal that cannot be read resolves nothing, and `target` goes on as typed.
+fn journal_node(target: &str, journal: &Path) -> Result<marion_core::contract::AgentId, String> {
+    let mut replay = marion_core::registry::Replay::default();
+    replay.extend(&std::fs::read(journal).unwrap_or_default());
+    marion_supervisor::tree::resolve_node(
+        target,
+        replay.nodes().iter().map(|n| n.agent_id.0.as_str()),
+    )
 }
 
 /// The two facts about a resumed node the client needs after the relaunch and the supervisor's
@@ -421,11 +316,12 @@ fn resumed_shape(journal: &Path, agent_id: &marion_core::contract::AgentId) -> R
     }
 }
 
-/// The resume's base URL, by [`resolve_base_url`]'s rule; a refusal is its sentence and the code.
-fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
+/// The endpoint a `run` or `resume` points at, by [`resolve_reachable_base_url`]'s rule; a refusal
+/// is its sentence and the code.
+fn endpoint(backend: &Backend) -> Result<Option<String>, ExitCode> {
     resolve_reachable_base_url(
-        args.canned,
-        args.base_url.clone(),
+        backend.canned,
+        backend.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
     )
     .map_err(|e| {
@@ -438,12 +334,13 @@ fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
 /// prefix included.
 fn resume_node(
     session: &mut SupervisorSession,
-    args: &ResumeArgs,
+    agent_id: &marion_core::contract::AgentId,
+    prompt: &str,
 ) -> Result<marion_core::proto::result::NodeResumeResult, String> {
     let id = session.send(marion_core::proto::Call::NodeResume(
         marion_core::proto::params::NodeResumeParams {
-            agent_id: marion_core::contract::AgentId(args.agent_id.clone()),
-            prompt: args.prompt.clone(),
+            agent_id: agent_id.clone(),
+            prompt: prompt.to_string(),
         },
     ))?;
     match session.pump(Awaited::Response(id), &mut |_| {})? {
@@ -479,42 +376,58 @@ fn resume_refused(session: &mut SupervisorSession, started: bool, reason: &str) 
     ExitCode::FAILURE
 }
 
-/// `marion ls [<agent-id|short-id>] [--repo <path>] [--state-dir <path>]`.
-///
-/// With no node, on a terminal: the home screen on its Watch tab. With no node and no terminal —
-/// a pipe, a script — the forest one node per line, as `marion list` prints it, because there is
-/// nobody to press a key. With a node: that node's detail as text (what marion sent it, its
-/// messages, its tokens, where it works and how it ended), which is what the Watch tab's expansion
-/// shows. Like `list` it starts no supervisor.
-fn ls_main(argv: &[String]) -> ExitCode {
-    let mut target = None;
-    let (mut repo, mut state_dir) = (None, None);
-    let mut rest = argv[1..].iter();
-    while let Some(word) = rest.next() {
-        match word.as_str() {
-            "--repo" => match rest.next() {
-                Some(v) => repo = Some(PathBuf::from(v)),
-                None => usage(),
-            },
-            "--state-dir" => match rest.next() {
-                Some(v) => state_dir = Some(v.clone()),
-                None => usage(),
-            },
-            // An unknown flag is a refusal, for `parse_attach`'s reason.
-            f if f.starts_with('-') => usage(),
-            id if target.is_none() => target = Some(id.to_string()),
-            _ => usage(),
+/// `marion ls [<id>] [--attention] [--repo <path>] [--state-dir <path>]` — and `marion list`,
+/// which is the same command printed as lines.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ListArgs {
+    target: Option<String>,
+    /// Keep only the nodes `tree::attention_of` names; a filter is text, so it prints lines.
+    attention: bool,
+    place: Place,
+}
+
+fn parse_list(argv: &[String]) -> Result<ListArgs, Exit> {
+    let mut words = Words::after_verb(argv);
+    let mut args = ListArgs::default();
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag("--attention", v) => args.attention = cli::switch("--attention", v)?,
+            Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(id) if args.target.is_none() => args.target = Some(id.to_string()),
+            Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
         }
     }
-    let Some((repo, state)) = resolve_project(repo, state_dir.as_deref()) else {
+    Ok(args)
+}
+
+/// **The whole of `marion ls`.** With an agent: that agent's detail as text (what marion sent it,
+/// its messages, its tokens, where it works and how it ended), which is what the Watch tab's
+/// expansion shows. Without one, on a terminal: the home screen on its Watch tab. Without one and
+/// with no terminal — a pipe, a script — or with `--attention`: the forest one node per line,
+/// because there is nobody to press a key or the operator asked for a filtered list. It starts no
+/// supervisor.
+fn ls_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_list(argv)?;
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    Ok(ls(args, interactive))
+}
+
+/// `marion list`: [`ls_main`], always as lines.
+fn list_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    Ok(ls(parse_list(argv)?, false))
+}
+
+fn ls(args: ListArgs, interactive: bool) -> ExitCode {
+    let Some((repo, state)) = resolve_project(&args.place) else {
         return ExitCode::FAILURE;
     };
-    match target {
+    match args.target {
         Some(id) => ls_one(&id, &repo, &state),
-        None if io::stdin().is_terminal() && io::stdout().is_terminal() => {
+        None if interactive && !args.attention => {
             home_on(marion_tui::home::Tab::Watch, repo, state)
         }
-        None => list_lines(&repo, &state, false),
+        None => list_lines(&repo, &state, args.attention),
     }
 }
 
@@ -523,7 +436,7 @@ fn home_main() -> ExitCode {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         usage()
     }
-    let Some((repo, state)) = resolve_project(None, None) else {
+    let Some((repo, state)) = resolve_project(&Place::default()) else {
         return ExitCode::FAILURE;
     };
     home_on(marion_tui::home::Tab::Start, repo, state)
@@ -647,49 +560,6 @@ fn detail_text(
     out
 }
 
-/// `marion list [--attention] [--repo <path>] [--state-dir <path>]`.
-struct ListArgs {
-    /// Keep only the nodes `tree::attention_of` names.
-    attention: bool,
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
-}
-
-/// A parser of its own, for [`parse_attach`]'s reason: `list` shares only the two flags that
-/// choose a supervisor, and its one other flag means nothing to any other verb.
-fn parse_list(argv: &[String]) -> Option<ListArgs> {
-    let mut args = ListArgs {
-        attention: false,
-        repo: None,
-        state_dir: None,
-    };
-    let mut rest = argv[1..].iter();
-    while let Some(flag) = rest.next() {
-        match flag.as_str() {
-            "--attention" => args.attention = true,
-            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
-            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
-            // An unknown flag or a positional is a refusal, for `parse_attach`'s reason.
-            _ => return None,
-        }
-    }
-    Some(args)
-}
-
-/// **The whole of `marion list`**: one `tree/subscribe` snapshot from the supervisor `marion tree`
-/// would dial, printed one [`marion_supervisor::tree::list_line`] per node, filtered to
-/// [`marion_supervisor::tree::attention_of`] under `--attention`. Refuses like `tree` when nobody
-/// is serving; an empty answer is exit 0, because nothing needing attention is an answer.
-fn list_main(argv: &[String]) -> ExitCode {
-    let Some(args) = parse_list(argv) else {
-        usage()
-    };
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
-        return ExitCode::FAILURE;
-    };
-    list_lines(&repo, &state, args.attention)
-}
-
 /// The forest, one [`marion_supervisor::tree::list_line`] per node, filtered to the nodes that
 /// need the operator under `attention`: `marion list`, and `marion ls` without a terminal.
 fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
@@ -714,13 +584,12 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `marion steer <agent-id|short-id> [--repo <path>] [--state-dir <path>] [--] <text…>`.
+/// `marion steer <id> [--repo <path>] [--state-dir <path>] [--] <text…>`.
 struct SteerArgs {
-    /// A whole agent id, or the short id the tree row shows ([`marion_supervisor::tree::short_id`]).
+    /// A whole agent id, a short id or a unique start of one ([`find_node`]).
     target: String,
     text: SteerText,
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
+    place: Place,
 }
 
 /// Where the message comes from.
@@ -732,48 +601,41 @@ enum SteerText {
     Stdin,
 }
 
-/// A parser of its own, for [`parse_attach`]'s reason. The project flags come only **before** the
-/// message and `--` ends them, so a message may say anything — including `--repo` — without being
-/// read as a flag; an unknown flag before the message is a refusal rather than the start of it,
-/// because a mistyped `--state-dir` taken as text would steer the right node with the wrong words.
-fn parse_steer(argv: &[String]) -> Option<SteerArgs> {
-    let target = argv.get(1)?.clone();
-    if target.starts_with('-') {
-        return None;
-    }
-    let (mut repo, mut state_dir) = (None, None);
-    let mut rest = argv[2..].iter().peekable();
-    while let Some(flag) = rest.peek().map(|f| f.as_str()) {
-        match flag {
-            "--repo" => {
-                rest.next();
-                repo = Some(PathBuf::from(rest.next()?));
-            }
-            "--state-dir" => {
-                rest.next();
-                state_dir = Some(rest.next()?.clone());
-            }
-            "--" => {
-                rest.next();
+/// The project flags come only **before** the message and `--` ends them, so a message may say
+/// anything — including `--repo` or `--help` — without being read as a flag; an unknown flag before
+/// the message is a refusal rather than the start of it, because a mistyped `--state-dir` taken as
+/// text would steer the right node with the wrong words.
+fn parse_steer(argv: &[String]) -> Result<SteerArgs, Exit> {
+    let mut words = Words::after_verb(argv);
+    let (mut target, mut place, mut first) = (None, Place::default(), None);
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(id) if target.is_none() => target = Some(id),
+            Word::Plain(w) => {
+                first = Some(w);
                 break;
             }
-            "-" => break,
-            f if f.starts_with('-') => return None,
-            _ => break,
         }
     }
-    let words: Vec<&str> = rest.map(String::as_str).collect();
-    let text = match words.as_slice() {
-        [] => return None,
+    let target = cli::required(target, "an agent <id> and a message")?;
+    let mut message: Vec<&str> = first.into_iter().collect();
+    message.extend(words.rest());
+    let text = match message.as_slice() {
+        [] => return Err(Exit::Usage("needs a message after the <id>".into())),
         ["-"] => SteerText::Stdin,
-        ["-", ..] => return None,
-        _ => SteerText::Words(words.join(" ")),
+        ["-", ..] => {
+            return Err(Exit::Usage(
+                "`-` reads the message from stdin and takes nothing after it".into(),
+            ));
+        }
+        _ => SteerText::Words(message.join(" ")),
     };
-    Some(SteerArgs {
+    Ok(SteerArgs {
         target,
         text,
-        repo,
-        state_dir,
+        place,
     })
 }
 
@@ -793,39 +655,34 @@ fn piped_message(mut text: String) -> String {
 /// `node/steer` as the operator (`caller: None`), and print what the supervisor said.
 ///
 /// Exit 0 when the message was queued, printing where it goes; exit 1 with the supervisor's own
-/// sentence when it was refused. Like `list` it starts no supervisor: a supervisor started here
+/// sentence when it was refused. Like `ls` it starts no supervisor: a supervisor started here
 /// would have no node to steer, and "unknown node" would be a lie about the operator's agents.
-fn steer_main(argv: &[String]) -> ExitCode {
-    let Some(args) = parse_steer(argv) else {
-        usage()
-    };
+fn steer_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_steer(argv)?;
     let text = match args.text {
         SteerText::Words(w) => w,
         SteerText::Stdin => {
             let mut buf = String::new();
             if let Err(e) = io::Read::read_to_string(&mut io::stdin(), &mut buf) {
                 eprintln!("marion: reading the message from stdin: {e}");
-                return ExitCode::FAILURE;
+                return Ok(ExitCode::FAILURE);
             }
             piped_message(buf)
         }
     };
     if text.trim().is_empty() {
         eprintln!("marion: the message is empty, so there is nothing to steer with");
-        return ExitCode::FAILURE;
+        return Ok(ExitCode::FAILURE);
     }
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
-        return ExitCode::FAILURE;
+    let Some((repo, state)) = resolve_project(&args.place) else {
+        return Ok(ExitCode::FAILURE);
     };
-    let steered = marion_supervisor::tree::snapshot(&repo, &state)
-        .and_then(|nodes| marion_supervisor::tree::resolve_target(&args.target, &nodes))
-        .and_then(|agent_id| {
-            let sock =
-                socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
-            marion_supervisor::courier::steer(sock.socket(), &agent_id, &text, None)
-                .map_err(|e| e.to_string())
-        });
-    match steered {
+    let steered = find_node(&args.target, &repo, &state).and_then(|agent_id| {
+        let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
+        marion_supervisor::courier::steer(sock.socket(), &agent_id, &text, None)
+            .map_err(|e| e.to_string())
+    });
+    Ok(match steered {
         Ok(s) => {
             println!("marion: {}", s.sentence());
             ExitCode::SUCCESS
@@ -834,33 +691,28 @@ fn steer_main(argv: &[String]) -> ExitCode {
             eprintln!("marion: {e}");
             ExitCode::FAILURE
         }
-    }
+    })
 }
 
-/// **The whole of `marion cancel`**: resolve the target (a whole id, or the short id a tree row
-/// shows) against one snapshot, send `node/kill` as the operator, and print what happened.
+/// **The whole of `marion cancel`**: resolve the target against one snapshot, send `node/kill` as
+/// the operator, and print what happened.
 ///
 /// Exit 0 with the node's new state; exit 1 with the supervisor's own sentence when it refused —
 /// a node already ended, one still spawning with nothing to signal. Like `steer` it starts no
 /// supervisor, for `steer`'s reason. It does not ask for confirmation: a command typed at a shell
 /// is the confirmation, and the home screen asks before it runs this.
-fn cancel_main(argv: &[String]) -> ExitCode {
-    let Some(args) = parse_attach(argv) else {
-        usage()
+fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_attach(argv)?;
+    let Some((repo, state)) = resolve_project(&args.place) else {
+        return Ok(ExitCode::FAILURE);
     };
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
-        return ExitCode::FAILURE;
-    };
-    let killed = marion_supervisor::tree::snapshot(&repo, &state)
-        .and_then(|nodes| marion_supervisor::tree::resolve_target(&args.agent_id, &nodes))
-        .and_then(|agent_id| {
-            let sock =
-                socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
-            marion_supervisor::courier::kill(sock.socket(), &agent_id)
-                .map(|r| (agent_id, r))
-                .map_err(|e| e.to_string())
-        });
-    match killed {
+    let killed = find_node(&args.agent_id, &repo, &state).and_then(|agent_id| {
+        let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
+        marion_supervisor::courier::kill(sock.socket(), &agent_id)
+            .map(|r| (agent_id, r))
+            .map_err(|e| e.to_string())
+    });
+    Ok(match killed {
         Ok((id, r)) => {
             let state = match r.state {
                 marion_core::node::NodeState::Exited(s) => format!("{s:?}"),
@@ -877,19 +729,16 @@ fn cancel_main(argv: &[String]) -> ExitCode {
             eprintln!("marion: {e}");
             ExitCode::FAILURE
         }
-    }
+    })
 }
 
-/// The two flags `attach` and `tree` share, resolved once.
+/// **Which project a command means**: [`Place`]'s two flags, resolved once for every command.
 ///
-/// Extracted when the second verb needed it rather than in anticipation: the pair is a *repo* and
-/// a *state dir* resolved together because §2 keys the socket on both, and two copies of that
-/// resolution is exactly how one verb ends up dialling a different supervisor than the other.
-fn resolve_project(
-    repo: Option<PathBuf>,
-    state_dir: Option<&str>,
-) -> Option<(PathBuf, std::path::PathBuf)> {
-    let repo = repo.unwrap_or_else(|| {
+/// The pair is a *repo* and a *state dir* resolved together because §2 keys the socket on both,
+/// and two copies of that resolution is exactly how one command ends up dialling a different
+/// supervisor than another.
+fn resolve_project(place: &Place) -> Option<(PathBuf, PathBuf)> {
+    let repo = place.repo.clone().unwrap_or_else(|| {
         default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     });
     let repo = match repo.canonicalize() {
@@ -899,111 +748,89 @@ fn resolve_project(
             return None;
         }
     };
-    let state = state_dir_or_report(state_dir)?;
+    let state = state_dir_or_report(place.state_dir.as_deref())?;
     Some((repo, state))
 }
 
 /// **The one place the CLI resolves a state directory**, for every verb: `--state-dir`, else
-/// `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. The native
-/// facade (`socket::resolve_state_dir`) reads the same variable, so `marion claude` and `marion
-/// tree` in one shell find the same supervisor.
+/// [`state_dir_from_env`]'s rule, which the native facade (`socket::resolve_state_dir`) reads too,
+/// so `marion claude` and `marion ls` in one shell find the same supervisor.
 fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
-    match state_dir_from_env(explicit) {
-        Some(s) => Some(s),
-        None => {
-            eprintln!(
-                "marion: cannot resolve a state directory (set --state-dir, $MARION_STATE_DIR or \
-                 $HOME)"
-            );
-            None
-        }
+    let state = state_dir_from_env(explicit);
+    if state.is_none() {
+        eprintln!(
+            "marion: cannot resolve a state directory (set --state-dir, $MARION_STATE_DIR or $HOME)"
+        );
     }
+    state
 }
 
-/// Hand-rolled, because `run`'s whole surface is one subcommand and six flags.
-///
-/// **An unknown flag is a refusal, never a silent ignore.** A mistyped `--state-dir` that fell
-/// through would write the run's state under `$HOME` and leave the operator hunting for a
-/// contract that is not where they looked.
-fn parse_args(argv: &[String]) -> Option<Args> {
-    if argv.first().map(String::as_str) != Some("run") {
-        return None;
-    }
-    let agent_type = argv.get(1)?.clone();
-    if agent_type.starts_with('-') {
-        return None;
-    }
+/// `run`'s words. **An unknown flag is a refusal, never a silent ignore**: a mistyped
+/// `--state-dir` that fell through would write the run's state under `$HOME` and leave the
+/// operator hunting for a contract that is not where they looked.
+fn parse_args(argv: &[String]) -> Result<Args, Exit> {
+    let mut words = Words::after_verb(argv);
+    let mut agent_type = None;
     let mut args = Args {
-        agent_type,
+        agent_type: String::new(),
         prompt: String::new(),
-        repo: None,
-        state_dir: None,
-        base_url: None,
+        place: Place::default(),
+        backend: Backend::default(),
         model: None,
         timeout_secs: None,
         no_change_record: false,
         pane: false,
         detach: false,
-        canned: false,
         profile: None,
     };
-    let mut rest = argv[2..].iter();
-    while let Some(flag) = rest.next() {
-        apply_run_flag(&mut args, flag, &mut rest)?;
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if apply_run_flag(&mut args, f, v, &mut words)? => {}
+            Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
+            Word::Flag(f, v) if args.backend.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(t) if agent_type.is_none() => agent_type = Some(t),
+            Word::Plain(extra) => {
+                return Err(Exit::Usage(format!(
+                    "unexpected `{extra}`; the task goes in --prompt"
+                )));
+            }
+        }
     }
+    args.agent_type = cli::required(agent_type, "an agent type, e.g. `marion run claude`")?;
+    // A root with no turn does nothing, so there is nothing to start without one.
     if args.prompt.is_empty() {
-        return None;
+        return Err(Exit::Usage("needs --prompt <text>, the task".into()));
     }
-    Some(args)
+    Ok(args)
 }
 
-/// One flag of `run`, taking its value from `rest` when it has one. `None` is the refusal: a flag
-/// `run` does not know, a valued flag with nothing after it, or a `--timeout` that is not a number.
+/// One of `run`'s own flags, taking its value from `words` when it has one. `false` when `flag` is
+/// not one of them.
 fn apply_run_flag(
     args: &mut Args,
     flag: &str,
-    rest: &mut std::slice::Iter<'_, String>,
-) -> Option<()> {
-    if set_valueless_flag(args, flag) {
-        return Some(());
-    }
-    set_valued_flag(args, flag, rest.next()?.clone())
-}
-
-/// The flags that are a decision by their presence. `true` if `flag` was one of them.
-fn set_valueless_flag(args: &mut Args, flag: &str) -> bool {
+    inline: Option<&str>,
+    words: &mut Words,
+) -> Result<bool, Exit> {
     match flag {
-        // The one flag with no value. Deliberately not `--canned=true`: which provider a run
-        // talks to should read as a decision at the call site, not as a setting.
-        "--canned" => args.canned = true,
-        // Also valueless, and for the same reason: declining the audit that a grant is
-        // conditional on is a decision, and it should read as one at the call site.
-        "--no-change-record" => args.no_change_record = true,
-        "--pane" => args.pane = true,
-        "--detach" => args.detach = true,
-        // Accepted and inert. It used to select real auth, which is now the default; every
-        // script and note already carrying it keeps working, and refusing it would break
-        // them to say nothing the run does not already do.
-        "--live" => {}
-        _ => return false,
+        // Valueless, and deliberately so: declining the audit that a grant is conditional on is
+        // a decision, and it should read as one at the call site.
+        "--no-change-record" => args.no_change_record = cli::switch(flag, inline)?,
+        "--pane" => args.pane = cli::switch(flag, inline)?,
+        "--detach" => args.detach = cli::switch(flag, inline)?,
+        "--prompt" => args.prompt = words.value(flag, inline)?,
+        "--model" => args.model = Some(words.value(flag, inline)?),
+        "--profile" => args.profile = Some(words.value(flag, inline)?),
+        "--timeout" => {
+            let secs = words.value(flag, inline)?;
+            args.timeout_secs = Some(secs.parse().map_err(|_| {
+                Exit::Usage(format!("--timeout takes whole seconds, not `{secs}`"))
+            })?);
+        }
+        _ => return Ok(false),
     }
-    true
-}
-
-/// The flags that take the word after them. `None` for a flag `run` does not know, or a
-/// `--timeout` that is not a number.
-fn set_valued_flag(args: &mut Args, flag: &str, value: String) -> Option<()> {
-    match flag {
-        "--prompt" => args.prompt = value,
-        "--repo" => args.repo = Some(PathBuf::from(value)),
-        "--state-dir" => args.state_dir = Some(value),
-        "--base-url" => args.base_url = Some(value),
-        "--model" => args.model = Some(value),
-        "--timeout" => args.timeout_secs = Some(value.parse().ok()?),
-        "--profile" => args.profile = Some(value),
-        _ => return None,
-    }
-    Some(())
+    Ok(true)
 }
 
 /// §9: "`marion run --timeout`, else its agent type's `timeout_secs`, else the same 900 s".
@@ -1200,8 +1027,8 @@ fn default_repo(cwd: &Path) -> PathBuf {
     git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-/// `marion mcp`'s flags — the four of `marion run`'s that say *which project and which provider*,
-/// and none of the four that describe a run.
+/// `marion mcp`'s flags — the two groups of `marion run`'s that say *which project and which
+/// provider*, and none of the ones that describe a run.
 ///
 /// There is no `--prompt`, no `--model`, no `--timeout` and no `--no-change-record`, because this
 /// command does not perform a run: it serves a tool the client's model calls, and every one of
@@ -1210,33 +1037,32 @@ fn default_repo(cwd: &Path) -> PathBuf {
 /// disagreed.
 #[derive(Debug, PartialEq, Eq, Default)]
 struct McpArgs {
-    repo: Option<PathBuf>,
-    state_dir: Option<String>,
-    base_url: Option<String>,
-    canned: bool,
+    place: Place,
+    backend: Backend,
 }
 
-/// Same rule as [`parse_args`]: **an unknown flag is a refusal, never a silent ignore.** It matters
-/// more here than there, because these flags arrive out of an MCP client's config file where nobody
-/// is watching a terminal — a mistyped `--state-dir` that fell through would serve a different
-/// project's fleet than the one the operator wrote down, and answer every call successfully.
-fn parse_mcp_args(argv: &[String]) -> Option<McpArgs> {
+/// **An unknown flag is a refusal, never a silent ignore** — and it matters more here than
+/// anywhere, because these flags arrive out of an MCP client's config file where nobody is watching
+/// a terminal: a mistyped `--state-dir` that fell through would serve a different project's fleet
+/// than the one the operator wrote down, and answer every call successfully.
+fn parse_mcp_args(argv: &[String]) -> Result<McpArgs, Exit> {
+    let mut words = Words::after_verb(argv);
     let mut args = McpArgs::default();
-    let mut rest = argv.iter();
-    while let Some(flag) = rest.next() {
-        let mut take = || rest.next().cloned();
-        match flag.as_str() {
-            "--repo" => args.repo = Some(PathBuf::from(take()?)),
-            "--state-dir" => args.state_dir = Some(take()?),
-            "--base-url" => args.base_url = Some(take()?),
-            "--canned" => args.canned = true,
-            // Inert here for the same reason it is inert on `run`: real auth is the default it
-            // used to have to ask for, and refusing it would break configs to say nothing.
-            "--live" => {}
-            _ => return None,
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
+            Word::Flag(f, v) if args.backend.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(extra) => return Err(Exit::Usage(format!("unexpected `{extra}`"))),
         }
     }
-    Some(args)
+    Ok(args)
+}
+
+/// `marion mcp`. **It never falls through to another parser**: it speaks JSON-RPC on stdout from
+/// its first line, and a refusal goes to stderr as [`cli::dispatch`] prints every refusal.
+fn mcp_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    Ok(run_mcp(parse_mcp_args(argv)?))
 }
 
 /// **`marion mcp` — marion as an MCP server, for a client marion did not start.**
@@ -1265,22 +1091,14 @@ fn parse_mcp_args(argv: &[String]) -> Option<McpArgs> {
 /// every line of it — so each refusal below goes to stderr and ends the process, rather than
 /// printing something the client would try to read as a frame.
 fn run_mcp(args: McpArgs) -> ExitCode {
-    let repo = args.repo.unwrap_or_else(|| {
-        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    });
-    let repo = match repo.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
+    let Some((repo, state)) = resolve_project(&args.place) else {
         return ExitCode::FAILURE;
     };
+    // Not probed for a listener, unlike `run`'s: this server may outlive a canned provider that
+    // starts after it, and each spawn is refused on its own if nothing answers.
     let base_url = match resolve_base_url(
-        args.canned,
-        args.base_url.clone(),
+        args.backend.canned,
+        args.backend.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
     ) {
         Ok(u) => u,
@@ -1289,20 +1107,13 @@ fn run_mcp(args: McpArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let program = match std::env::current_exe().map(|p| p.with_file_name("marion-supervisor")) {
-        Ok(p) if p.exists() => p,
-        _ => PathBuf::from("marion-supervisor"),
-    };
+    let program = supervisor_binary();
     // §2's key — the git common dir — for the socket and for §4.3's tree both, which is the pairing
     // the run path documents at length. One `project_root`, spent twice.
     let project_key = socket::project_root(&repo);
     let sock = socket::socket_paths(&state, &project_key, socket::own_uid());
     let project = marion_core::paths::ProjectDir::new(&state, &project_key);
-    let auth = if args.canned {
-        marion_harness::Auth::Canned
-    } else {
-        marion_harness::Auth::Inherited
-    };
+    let auth = args.backend.auth();
     marion_supervisor::mcp::serve_stdio(marion_supervisor::mcp::Principal::TopLevel(Box::new(
         marion_supervisor::mcp::TopLevel::new(
             sock,
@@ -2504,80 +2315,72 @@ fn supervisor_binary() -> PathBuf {
 
 fn legacy_main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{}", usage_text());
-        return ExitCode::SUCCESS;
-    }
-    if matches!(argv.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("marion {}", env!("CARGO_PKG_VERSION"));
-        return ExitCode::SUCCESS;
-    }
-    // **One `if` per verb**, each handing its argv to the verb's own function, and `run` the one
-    // left at the end.
-    if argv.first().map(String::as_str) == Some("attach") {
-        return attach_main(&argv);
-    }
-    // Bare `marion`: the home screen, on a terminal. Anywhere else there is nobody to press a
-    // key, so it prints usage and fails rather than drawing into a pipe.
-    if argv.is_empty() {
+    let Some(first) = argv.first().map(String::as_str) else {
+        // Bare `marion`: the home screen, on a terminal. Anywhere else there is nobody to press a
+        // key, so it prints the help and fails rather than drawing into a pipe.
         return home_main();
+    };
+    match first {
+        "--help" | "-h" | "help" => match argv.get(1).map(|w| (w, cli::verb(w))) {
+            None => println!("{}", cli::top_help()),
+            Some((_, Some(verb))) => println!("{}", (verb.help)()),
+            Some((word, None)) => return unknown_command(word),
+        },
+        "--version" | "-V" => println!("marion {}", env!("CARGO_PKG_VERSION")),
+        word => match cli::verb(word) {
+            Some(verb) => return cli::dispatch(verb, &argv),
+            // `marion <anything> --help` still answers with the help, as it always has.
+            None if cli::asks_for_help(&argv[1..]) => println!("{}", cli::top_help()),
+            None => return unknown_command(word),
+        },
     }
-    // `ls` is the home screen on its Watch tab; `tree` is kept as its old name.
-    if matches!(argv.first().map(String::as_str), Some("ls" | "tree")) {
-        return ls_main(&argv);
+    ExitCode::SUCCESS
+}
+
+/// A first word that is no command: one line naming it, not a screen of help that would bury what
+/// went wrong.
+fn unknown_command(word: &str) -> ExitCode {
+    eprintln!(
+        "marion: unknown command `{word}`; `marion run <agent-type> --prompt <text>` runs an \
+         agent, and `marion --help` lists every command"
+    );
+    ExitCode::from(2)
+}
+
+/// `marion login` and `marion logout`, parsed by their own module.
+fn login_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    if cli::asks_for_help(&argv[1..]) {
+        return Err(Exit::Help);
     }
-    if argv.first().map(String::as_str) == Some("list") {
-        return list_main(&argv);
+    Ok(marion_supervisor::login::main(argv))
+}
+
+/// `marion profile`, parsed by its own module.
+fn profile_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    if cli::asks_for_help(&argv[1..]) {
+        return Err(Exit::Help);
     }
-    if argv.first().map(String::as_str) == Some("resume") {
-        return resume_main(&argv);
+    Ok(marion_supervisor::profile_cli::main(&argv[1..]))
+}
+
+/// `marion trust`, parsed by its own module.
+fn trust_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    if cli::asks_for_help(&argv[1..]) {
+        return Err(Exit::Help);
     }
-    if argv.first().map(String::as_str) == Some("steer") {
-        return steer_main(&argv);
-    }
-    if argv.first().map(String::as_str) == Some("cancel") {
-        return cancel_main(&argv);
-    }
-    if argv.first().map(String::as_str) == Some("doctor") {
-        return doctor_main(&argv[1..]);
-    }
-    if matches!(argv.first().map(String::as_str), Some("login" | "logout")) {
-        return marion_supervisor::login::main(&argv);
-    }
-    if argv.first().map(String::as_str) == Some("profile") {
-        return marion_supervisor::profile_cli::main(&argv[1..]);
-    }
-    if argv.first().map(String::as_str) == Some("trust") {
-        return marion_supervisor::trust::cli_main(&argv[1..]);
-    }
-    // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
-    // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
-    // the protocol stream and leave the client parsing prose.
-    if argv.first().map(String::as_str) == Some("mcp") {
-        return match parse_mcp_args(&argv[1..]) {
-            Some(a) => run_mcp(a),
-            None => usage(),
-        };
-    }
-    // Every verb is matched above and `run` is the one left; any other first word is a typo or a
-    // command marion does not have, and a screen of usage text would bury what went wrong.
-    if let Some(word) = argv.first().filter(|w| *w != "run" && !w.starts_with('-')) {
-        eprintln!(
-            "marion: unknown command `{word}`; `marion run <agent-type> --prompt <text>` runs an \
-             agent, and `marion --help` lists every command"
-        );
-        return ExitCode::from(2);
-    }
-    run_main(&argv)
+    Ok(marion_supervisor::trust::cli_main(&argv[1..]))
 }
 
 /// `marion doctor …` is `marion-supervisor doctor …`: the supervisor owns the probes, and this
 /// replaces the process with it so its output, exit code and signals are the doctor's own.
-fn doctor_main(args: &[String]) -> ExitCode {
+fn doctor_main(argv: &[String]) -> Result<ExitCode, Exit> {
     use std::os::unix::process::CommandExt;
+    if cli::asks_for_help(&argv[1..]) {
+        return Err(Exit::Help);
+    }
     let supervisor = supervisor_binary();
     let mut doctor = std::process::Command::new(&supervisor);
-    doctor.arg("doctor").args(args);
+    doctor.arg("doctor").args(&argv[1..]);
     // So the doctor reports this marion, not whichever one it would find on its own.
     if let Ok(me) = std::env::current_exe() {
         doctor.env(marion_supervisor::preflight::CLIENT_EXE_ENV, me);
@@ -2588,7 +2391,7 @@ fn doctor_main(args: &[String]) -> ExitCode {
          sit in the same directory",
         supervisor.display()
     );
-    ExitCode::FAILURE
+    Ok(ExitCode::FAILURE)
 }
 
 /// `marion run <agent-type> --prompt <text> …`: start a root over the socket and render it until it
@@ -2597,19 +2400,11 @@ fn doctor_main(args: &[String]) -> ExitCode {
 /// [`run`] answers with a `Result` so that every stage's refusal is one `?`. A refusal has already
 /// printed its sentence and carries only the exit code, so `Err` and `Ok` are both an exit code and
 /// folding them here loses nothing.
-fn run_main(argv: &[String]) -> ExitCode {
-    match run(argv) {
+fn run_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    let args = parse_args(argv)?;
+    Ok(match run(&args) {
         Ok(code) | Err(code) => code,
-    }
-}
-
-/// The run's arguments, parsed from argv. Bare `marion` never reaches here: it opens the home
-/// screen (or prints usage without a terminal) before the run parser is consulted.
-fn run_args(argv: &[String]) -> Result<Args, ExitCode> {
-    match parse_args(argv) {
-        Some(a) => Ok(a),
-        None => usage(),
-    }
+    })
 }
 
 /// What a run resolves before it can name a supervisor: the agent type, the repository, the state
@@ -2624,16 +2419,7 @@ struct RunTarget {
 /// Resolve [`RunTarget`] from the arguments and the environment. Each refusal prints its own
 /// sentence and answers the exit code.
 fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
-    let repo = args.repo.clone().unwrap_or_else(|| {
-        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    });
-    let repo = match repo.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
-            return Err(ExitCode::FAILURE);
-        }
-    };
+    let (repo, state) = resolve_project(&args.place).ok_or(ExitCode::FAILURE)?;
     // After the repository, because the table is the repository's: the built-ins plus its
     // `.marion/agents.toml`. `root::prepare` resolves the same table again one layer down.
     let types = match marion_supervisor::run::agent_types(&repo) {
@@ -2651,20 +2437,7 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
         );
         return Err(ExitCode::FAILURE);
     };
-    let Some(state) = state_dir_or_report(args.state_dir.as_deref()) else {
-        return Err(ExitCode::FAILURE);
-    };
-    let base_url = match resolve_reachable_base_url(
-        args.canned,
-        args.base_url.clone(),
-        std::env::var("MARION_BASE_URL").ok(),
-    ) {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("marion: {e}");
-            return Err(ExitCode::FAILURE);
-        }
-    };
+    let base_url = endpoint(&args.backend)?;
     Ok(RunTarget {
         agent_type,
         repo,
@@ -2673,14 +2446,13 @@ fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
     })
 }
 
-fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
-    let args = run_args(argv)?;
+fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     let RunTarget {
         agent_type,
         repo,
         state,
         base_url,
-    } = resolve_run_target(&args)?;
+    } = resolve_run_target(args)?;
     let bridge = supervisor_binary();
 
     // **§10's ownership move, completed.** The table moves the socket exactly once — M1 *"the
@@ -2751,11 +2523,7 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     // prepares. Two literals here would let a `--canned` run start an `Inherited` supervisor, whose
     // children would then reach the vendor directly while the root talked to the canned endpoint —
     // and nothing would say so.
-    let auth = if args.canned {
-        marion_harness::Auth::Canned
-    } else {
-        marion_harness::Auth::Inherited
-    };
+    let auth = args.backend.auth();
     let launch = detach::Launch {
         program: bridge.clone(),
         state_dir: state.clone(),
@@ -2818,7 +2586,7 @@ fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let stop = std::sync::Arc::new(marion_supervisor::wake::Flag::new());
     let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
 
-    let spawned = match spawn_root(&mut supervisor, &args, &repo) {
+    let spawned = match spawn_root(&mut supervisor, args, &repo) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{e}");
@@ -3437,47 +3205,127 @@ mod tests {
         );
     }
 
-    /// **The second verb exists and is not `run`.**
-    ///
-    /// `parse_args` returns `None` for anything whose first word is not `run`, and before this
-    /// there was nothing else to try — every other argv fell through to `usage()`. This is the
-    /// dispatch's whole contract, from both sides: `attach` parses here and does not parse as a
-    /// run, and `run` still does not parse as an attach.
+    fn words(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **Every command is one row of the table, and every row is reachable by its word** — the
+    /// dispatch's whole contract. An old spelling reaches its command and is listed nowhere; a
+    /// word that is no command is not guessed at.
     #[test]
-    fn attach_is_a_verb_of_its_own_and_run_is_not_it() {
-        let argv: Vec<String> = ["attach", "a-1"].iter().map(|s| s.to_string()).collect();
-        let got = parse_attach(&argv).expect("`marion attach a-1` parses");
-        assert_eq!(got.agent_id, "a-1");
-        assert_eq!(got.repo, None);
-        assert!(
-            parse_args(&argv).is_none(),
-            "an attach must not be readable as a run: it has no agent type and no prompt"
+    fn every_command_is_a_row_and_its_old_spellings_reach_it() {
+        for name in [
+            "run", "ls", "list", "attach", "steer", "cancel", "resume", "mcp", "login", "logout",
+            "profile", "trust", "doctor",
+        ] {
+            assert_eq!(cli::verb(name).map(|v| v.name), Some(name));
+        }
+        assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
+        assert!(cli::verb("bogus").is_none());
+        let top = cli::top_help();
+        for v in cli::VERBS {
+            match v.summary {
+                Some(_) => assert!(top.contains(&format!("  {:<9}", v.name)), "{}", v.name),
+                None => assert!(!top.contains(&format!("  {} ", v.name)), "{}", v.name),
+            }
+        }
+        assert!(!top.contains("  tree"), "an old spelling is listed:\n{top}");
+    }
+
+    /// **Each command's `--help` is its own**, short enough to read, and names the command it
+    /// belongs to — not one screen of every command's details.
+    #[test]
+    fn each_command_has_its_own_short_help() {
+        for v in cli::VERBS {
+            let help = (v.help)();
+            assert!(help.starts_with("usage: marion "), "{}:\n{help}", v.name);
+            assert!(
+                help.lines().count() <= 40,
+                "{} help is a wall:\n{help}",
+                v.name
+            );
+            assert!(
+                !help.contains('§'),
+                "{} help cites the spec:\n{help}",
+                v.name
+            );
+        }
+        assert!(!cli::top_help().contains('§'));
+        assert!(cli::top_help().lines().count() <= 30);
+    }
+
+    /// **`--help` is a request for help anywhere before `--`, and a word after it.** So `marion
+    /// steer ab12 -- --help` sends the text `--help`, and `marion run claude --prompt --help` sets
+    /// the prompt: a value is taken whatever it looks like.
+    #[test]
+    fn help_is_asked_for_before_the_double_dash_only() {
+        assert_eq!(
+            parse_attach(&words(&["attach", "--help"])).err(),
+            Some(Exit::Help)
         );
-
-        let run: Vec<String> = ["run", "claude", "--prompt", "go"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert!(parse_args(&run).is_some(), "`run` still parses");
+        assert_eq!(
+            parse_attach(&words(&["attach", "a", "-h"])).err(),
+            Some(Exit::Help)
+        );
+        let steer = parse_steer(&words(&["steer", "a", "--", "--help"])).expect("text");
+        assert_eq!(steer.text, SteerText::Words("--help".into()));
+        let steer = parse_steer(&words(&["steer", "a", "say", "--help"])).expect("text");
+        assert_eq!(steer.text, SteerText::Words("say --help".into()));
+        let run = parse_args(&words(&["run", "claude", "--prompt", "--help"])).expect("a value");
+        assert_eq!(run.prompt, "--help");
+        assert!(cli::asks_for_help(&words(&["add", "--help"])));
+        assert!(!cli::asks_for_help(&words(&["--", "--help"])));
     }
 
-    /// The two flags an attach shares with a run, and they are the two that answer *which
-    /// supervisor* — §2 keys one on the git common dir, so an attach that resolved a different
-    /// project would ask a supervisor that has never heard of the node.
+    /// **`--flag=value` is the same as `--flag value`**, and a switch given a value is refused
+    /// rather than read as `true`.
     #[test]
-    fn attach_takes_the_two_flags_that_choose_a_supervisor() {
-        let argv: Vec<String> = ["attach", "a-1", "--repo", "/r", "--state-dir", "/s"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let got = parse_attach(&argv).expect("both flags parse");
-        assert_eq!(got.repo.as_deref(), Some(std::path::Path::new("/r")));
-        assert_eq!(got.state_dir.as_deref(), Some("/s"));
+    fn a_flag_value_may_be_joined_with_an_equals_sign() {
+        let run = parse_args(&words(&["run", "claude", "--prompt=go", "--timeout=30"])).unwrap();
+        assert_eq!((run.prompt.as_str(), run.timeout_secs), ("go", Some(30)));
+        let attach = parse_attach(&words(&["attach", "a", "--repo=/r"])).unwrap();
+        assert_eq!(attach.place.repo.as_deref(), Some(Path::new("/r")));
+        assert!(parse_args(&words(&["run", "claude", "--prompt", "x", "--pane=yes"])).is_err());
     }
 
-    /// An unknown flag is a refusal, never a silent ignore — the same rule `parse_args` states,
-    /// and it matters more here: a mistyped `--state-dir` that fell through would dial a
-    /// supervisor under `$HOME` and report the operator's live node as missing.
+    /// **A usage refusal says what was wrong**, in plain words, rather than printing the help.
+    #[test]
+    fn a_usage_refusal_names_what_was_wrong() {
+        let why = |argv: &[&str]| match parse_args(&words(argv)) {
+            Err(Exit::Usage(why)) => why,
+            other => panic!("{argv:?} parsed: {:?}", other.map(|a| a.prompt)),
+        };
+        assert!(why(&["run"]).contains("agent type"));
+        assert!(why(&["run", "claude"]).contains("--prompt"));
+        assert!(why(&["run", "claude", "--prompt", "x", "--bogus"]).contains("--bogus"));
+        assert!(why(&["run", "claude", "--prompt"]).contains("needs a value"));
+        assert!(why(&["run", "claude", "--prompt", "x", "--timeout", "soon"]).contains("seconds"));
+        assert!(why(&["run", "claude", "fix", "it"]).contains("--prompt"));
+    }
+
+    /// The two flags an attach shares with a run are the two that answer *which supervisor* — §2
+    /// keys one on the git common dir, so an attach that resolved a different project would ask a
+    /// supervisor that has never heard of the node.
+    #[test]
+    fn attach_takes_an_id_and_the_two_flags_that_choose_a_supervisor() {
+        let got = parse_attach(&words(&["attach", "a-1"])).expect("`marion attach a-1` parses");
+        assert_eq!(got.agent_id, "a-1");
+        assert_eq!(got.place, Place::default());
+        let got = parse_attach(&words(&[
+            "attach",
+            "a-1",
+            "--repo",
+            "/r",
+            "--state-dir",
+            "/s",
+        ]))
+        .expect("both flags parse");
+        assert_eq!(got.place.repo.as_deref(), Some(Path::new("/r")));
+        assert_eq!(got.place.state_dir.as_deref(), Some("/s"));
+    }
+
+    /// An unknown flag is a refusal, never a silent ignore: a mistyped `--state-dir` that fell
+    /// through would dial a supervisor under `$HOME` and report the operator's live node as missing.
     #[test]
     fn an_attach_flag_marion_does_not_know_is_refused_rather_than_ignored() {
         for bad in [
@@ -3486,26 +3334,22 @@ mod tests {
             vec!["attach", "a-1", "--prompt", "go"],
             vec!["attach", "a-1", "--repo"],
             vec!["attach", "a-1", "--canned"],
+            vec!["attach", "a-1", "b-2"],
         ] {
-            let argv: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
-            assert!(parse_attach(&argv).is_none(), "{bad:?} was accepted");
+            assert!(parse_attach(&words(&bad)).is_err(), "{bad:?} was accepted");
         }
     }
 
-    /// **`marion list` takes the two flags that choose a supervisor and `--attention`, and
-    /// nothing else** — an unknown flag, a positional, or a flag missing its value is a refusal,
-    /// for `parse_attach`'s reason: a mistyped `--state-dir` that fell through would list the
-    /// empty forest under `$HOME` and report every agent as absent.
+    /// **`marion ls` takes an optional id, `--attention` and the two flags that choose a
+    /// supervisor, and nothing else** — for `parse_attach`'s reason: a mistyped `--state-dir` that
+    /// fell through would list the empty forest under `$HOME` and report every agent as absent.
     #[test]
-    fn list_takes_the_project_flags_and_attention_and_refuses_the_rest() {
-        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let bare = parse_list(&argv(&["list"])).expect("`marion list` parses");
-        assert_eq!(bare.repo, None);
-        assert_eq!(bare.state_dir, None);
-        assert!(!bare.attention);
-
-        let full = parse_list(&argv(&[
+    fn ls_takes_an_id_attention_and_the_project_flags_and_refuses_the_rest() {
+        let bare = parse_list(&words(&["ls"])).expect("`marion ls` parses");
+        assert_eq!(bare, ListArgs::default());
+        let full = parse_list(&words(&[
             "list",
+            "a-1",
             "--attention",
             "--repo",
             "/r",
@@ -3513,23 +3357,19 @@ mod tests {
             "/s",
         ]))
         .expect("every flag parses");
+        assert_eq!(full.target.as_deref(), Some("a-1"));
         assert!(full.attention);
-        assert_eq!(full.repo.as_deref(), Some(std::path::Path::new("/r")));
-        assert_eq!(full.state_dir.as_deref(), Some("/s"));
-
+        assert_eq!(full.place.repo.as_deref(), Some(Path::new("/r")));
+        assert_eq!(full.place.state_dir.as_deref(), Some("/s"));
         for bad in [
-            vec!["list", "a-1"],
-            vec!["list", "--repo"],
-            vec!["list", "--state-dir"],
-            vec!["list", "--canned"],
-            vec!["list", "--attention=yes"],
+            vec!["ls", "a-1", "b-2"],
+            vec!["ls", "--repo"],
+            vec!["ls", "--state-dir"],
+            vec!["ls", "--canned"],
+            vec!["ls", "--attention=yes"],
         ] {
-            assert!(parse_list(&argv(&bad)).is_none(), "{bad:?} was accepted");
+            assert!(parse_list(&words(&bad)).is_err(), "{bad:?} was accepted");
         }
-        assert!(
-            parse_args(&argv(&["list"])).is_none(),
-            "a list must not be readable as a run"
-        );
     }
 
     /// **`marion steer <id> [--repo p] [--state-dir p] [--] <text…>`**: the project flags only
@@ -3538,14 +3378,13 @@ mod tests {
     /// other shape is a refusal — above all a missing message, which would queue an empty turn.
     #[test]
     fn steer_takes_a_target_the_project_flags_and_a_message() {
-        let argv = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let words = parse_steer(&argv(&["steer", "8ea3", "use", "the", "v2", "API"]))
+        let plain = parse_steer(&words(&["steer", "8ea3", "use", "the", "v2", "API"]))
             .expect("`marion steer <id> <text…>` parses");
-        assert_eq!(words.target, "8ea3");
-        assert_eq!(words.text, SteerText::Words("use the v2 API".into()));
-        assert_eq!((words.repo, words.state_dir), (None, None));
+        assert_eq!(plain.target, "8ea3");
+        assert_eq!(plain.text, SteerText::Words("use the v2 API".into()));
+        assert_eq!(plain.place, Place::default());
 
-        let flagged = parse_steer(&argv(&[
+        let flagged = parse_steer(&words(&[
             "steer",
             "8ea3",
             "--repo",
@@ -3558,30 +3397,26 @@ mod tests {
             "text",
         ]))
         .expect("flags, then `--`, then text");
-        assert_eq!(flagged.repo.as_deref(), Some(std::path::Path::new("/r")));
-        assert_eq!(flagged.state_dir.as_deref(), Some("/s"));
+        assert_eq!(flagged.place.repo.as_deref(), Some(Path::new("/r")));
+        assert_eq!(flagged.place.state_dir.as_deref(), Some("/s"));
         assert_eq!(flagged.text, SteerText::Words("--repo is text".into()));
 
-        let piped = parse_steer(&argv(&["steer", "8ea3", "-"])).expect("`-` reads stdin");
+        let piped = parse_steer(&words(&["steer", "8ea3", "-"])).expect("`-` reads stdin");
         assert_eq!(piped.text, SteerText::Stdin);
-        let quoted = parse_steer(&argv(&["steer", "8ea3", "text", "-"])).expect("a dash in text");
+        let quoted = parse_steer(&words(&["steer", "8ea3", "text", "-"])).expect("a dash in text");
         assert_eq!(quoted.text, SteerText::Words("text -".into()));
 
         for bad in [
             vec!["steer"],
             vec!["steer", "8ea3"],
             vec!["steer", "8ea3", "--"],
-            vec!["steer", "--repo", "/r", "hi"],
+            vec!["steer", "--repo", "/r"],
             vec!["steer", "8ea3", "--repo"],
             vec!["steer", "8ea3", "--canned", "hi"],
             vec!["steer", "8ea3", "-", "more"],
         ] {
-            assert!(parse_steer(&argv(&bad)).is_none(), "{bad:?} was accepted");
+            assert!(parse_steer(&words(&bad)).is_err(), "{bad:?} was accepted");
         }
-        assert!(
-            parse_args(&argv(&["steer", "8ea3", "hi"])).is_none(),
-            "a steer must not be readable as a run"
-        );
     }
 
     /// A message read from stdin loses the one newline a pipe adds, and nothing else.
@@ -3593,58 +3428,11 @@ mod tests {
         assert_eq!(piped_message("  keep  ".into()), "  keep  ");
     }
 
-    /// `steer` is discoverable and dispatched before the run parser.
+    /// Endpoint mode starts with `marion login`, so its help names `logout` and the forms a user
+    /// reaches for: a label, stdin, the provider's env var, the listing, a custom provider.
     #[test]
-    fn the_steer_verb_is_named_and_dispatched() {
-        let text = usage_text();
-        assert!(
-            text.contains("marion steer <agent-id|short-id>"),
-            "usage does not name `steer`:\n{text}"
-        );
-        let src = include_str!("marion.rs");
-        let (production, _tests) = src
-            .split_once("\n#[cfg(test)]\n")
-            .expect("this file has a test module");
-        assert!(
-            production.contains(r#"== Some("steer") {"#)
-                && production.contains("return steer_main(&argv);"),
-            "`main` no longer dispatches `steer`"
-        );
-    }
-
-    /// `list` is discoverable and dispatched before the run parser, for `tree`'s reasons.
-    #[test]
-    fn the_list_verb_is_named_and_dispatched() {
-        let text = usage_text();
-        assert!(
-            text.contains("marion list ["),
-            "usage does not name `list`:\n{text}"
-        );
-        let src = include_str!("marion.rs");
-        let (production, _tests) = src
-            .split_once("\n#[cfg(test)]\n")
-            .expect("this file has a test module");
-        assert!(
-            production.contains(r#"== Some("list") {"#)
-                && production.contains("return list_main(&argv);"),
-            "`main` no longer dispatches `list`"
-        );
-    }
-
-    /// The usage text names the verb. A subcommand nobody can discover is a subcommand that does
-    /// not exist for the operator who needs it.
-    #[test]
-    fn the_usage_text_names_attach() {
-        let text = usage_text();
-        assert!(text.contains("marion attach <agent-id>"), "{text}");
-    }
-
-    /// Endpoint mode starts with `marion login`, so the usage text names it, `logout`, and the
-    /// forms a user reaches for: a label, stdin, the provider's env var, the listing, a custom
-    /// provider.
-    #[test]
-    fn the_usage_text_names_login_and_logout() {
-        let text = usage_text();
+    fn the_login_help_names_login_and_logout() {
+        let text = (cli::verb("login").unwrap().help)();
         for needle in [
             "marion login <provider>[:<label>]",
             "--stdin",
@@ -3659,48 +3447,16 @@ mod tests {
 
     /// **§9's M5 clause 3 needs a UI an operator can actually open**, and a tree screen reachable
     /// from no binary is the "fully tested in isolation, wired to nothing" failure this repo has
-    /// shipped more than once. Three links, each asserted rather than assumed.
-    ///
-    /// The middle one is a source latch for the reason `l45_tree`'s hook latch is: `main` takes
-    /// `std::env::args()` and returns `ExitCode`, so the dispatch arm cannot be called from a test
-    /// without spawning the binary — and a test that spawned it would be asserting the same string
-    /// through a slower door. Deleting the arm must fail *something*, and this is that something.
+    /// shipped more than once. Discoverable (bare `marion` and `ls` are both in the help), and
+    /// wired: `ls` resolves a project, so an unresolvable repo fails there.
     #[test]
     fn the_watch_screen_is_reachable_from_this_binary() {
-        // 1. Discoverable: `ls` is in the usage text, and bare `marion` is described as the home
-        //    screen.
-        let text = usage_text();
-        assert!(
-            text.contains("marion ls ["),
-            "usage does not name `ls`:\n{text}"
-        );
-        assert!(
-            text.contains("home screen"),
-            "usage does not describe bare `marion`:\n{text}"
-        );
-
-        // 2. Dispatched, before the run parser, for `ls`, for its old name `tree`, and for bare
-        //    `marion`. **Only the production half of the file is searched**: `include_str!` pulls
-        //    in this test too, and the needles below appear here as literals.
-        let src = include_str!("marion.rs");
-        let (production, _tests) = src
-            .split_once("\n#[cfg(test)]\n")
-            .expect("this file has a test module, and the split is what keeps this honest");
-        assert!(
-            production.contains(r#"Some("ls" | "tree")"#)
-                && production.contains("return ls_main(&argv);")
-                && production.contains("return home_main();"),
-            "`main` no longer dispatches the home screen"
-        );
-
-        // 3. Wired: `ls_main` resolves a project, so an unresolvable repo fails there.
+        let text = cli::top_help();
+        assert!(text.contains("home screen"), "{text}");
+        assert!(text.contains("  ls "), "{text}");
         assert_eq!(
-            ls_main(&[
-                "ls".to_string(),
-                "--repo".to_string(),
-                "/nonexistent-marion-ls-smoke".to_string(),
-            ]),
-            ExitCode::FAILURE
+            ls_main(&words(&["ls", "--repo", "/nonexistent-marion-ls-smoke"])),
+            Ok(ExitCode::FAILURE)
         );
     }
     use super::*;
@@ -4641,15 +4397,11 @@ mod tests {
             assert!(marion_core::provider::CredentialId::parse(&a[1]).is_some());
         }
         // The verbs the echoes name are the verbs this binary dispatches.
-        let production = include_str!("marion.rs");
-        let production = &production[..production.find("#[cfg(test)]").unwrap()];
-        assert!(
-            production.contains("Some(\"login\" | \"logout\")"),
-            "`marion login`/`logout` are echoed and not dispatched"
-        );
-        for v in ["attach", "cancel", "resume", "steer"] {
+        for v in [
+            "attach", "cancel", "resume", "steer", "login", "logout", "run",
+        ] {
             assert!(
-                production.contains(&format!("== Some(\"{v}\")")),
+                cli::verb(v).is_some(),
                 "`marion {v}` is echoed and not dispatched"
             );
         }
@@ -4676,7 +4428,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(a.profile.as_deref(), Some("work"));
-        assert!(parse_args(&argv(&["run", "claude", "--prompt", "x", "--profile"])).is_none());
+        assert!(parse_args(&argv(&["run", "claude", "--prompt", "x", "--profile"])).is_err());
     }
 
     #[test]
@@ -4692,19 +4444,14 @@ mod tests {
                 "--stat-dir",
                 "/x"
             ]))
-            .is_none()
+            .is_err()
         );
     }
 
     #[test]
     fn a_prompt_is_required_because_a_root_with_no_turn_does_nothing() {
-        assert!(parse_args(&argv(&["run", "claude"])).is_none());
-    }
-
-    #[test]
-    fn anything_but_run_is_not_this_binarys_business() {
-        assert!(parse_args(&argv(&["doctor"])).is_none());
-        assert!(parse_args(&argv(&["run", "--prompt", "p"])).is_none());
+        assert!(parse_args(&argv(&["run", "claude"])).is_err());
+        assert!(parse_args(&argv(&["run", "--prompt", "p"])).is_err());
     }
 
     /// The canned provider is a **fixture**, so reaching it is the thing that must be typed. A
@@ -4715,14 +4462,15 @@ mod tests {
         assert!(
             !parse_args(&argv(&["run", "claude", "--prompt", "p"]))
                 .unwrap()
+                .backend
                 .canned
         );
         let a = parse_args(&argv(&["run", "claude", "--prompt", "p", "--canned"])).unwrap();
-        assert!(a.canned);
-        assert!(a.base_url.is_none());
+        assert!(a.backend.canned);
+        assert!(a.backend.base_url.is_none());
         // It takes no value, so a following flag is still parsed as a flag rather than eaten.
         let a = parse_args(&argv(&["run", "claude", "--canned", "--prompt", "p"])).unwrap();
-        assert!(a.canned && a.prompt == "p");
+        assert!(a.backend.canned && a.prompt == "p");
     }
 
     /// `--live` used to select real auth. Real auth is now the default, so the flag says nothing
@@ -4731,7 +4479,10 @@ mod tests {
     #[test]
     fn live_is_still_accepted_and_now_means_exactly_nothing() {
         let a = parse_args(&argv(&["run", "claude", "--prompt", "p", "--live"])).unwrap();
-        assert!(!a.canned, "--live is the default, not the canned provider");
+        assert!(
+            !a.backend.canned,
+            "--live is the default, not the canned provider"
+        );
         assert_eq!(a.prompt, "p");
         // Still valueless: a following flag is parsed, not eaten.
         let a = parse_args(&argv(&["run", "claude", "--live", "--prompt", "p"])).unwrap();
@@ -4742,6 +4493,7 @@ mod tests {
                 "run", "claude", "--prompt", "p", "--live", "--canned"
             ]))
             .unwrap()
+            .backend
             .canned
         );
     }
@@ -4957,64 +4709,54 @@ mod tests {
 
     /// **`--help` names the headline commands and the real tool list.** The native `marion
     /// <harness>` lanes come from the facade registry, so a lane switched on is listed the same
-    /// day; the MCP tools are read off the list `marion mcp` actually declares; and a person
-    /// reading help meets no design-doc section numbers.
+    /// day; the MCP tools are read off the list `marion mcp` actually declares — without `report`,
+    /// which only a child marion started can use.
     #[test]
-    fn the_usage_text_lists_the_native_commands_and_the_declared_tools() {
-        let u = usage_text();
+    fn the_help_lists_the_native_commands_and_the_declared_tools() {
+        let top = cli::top_help();
         for command in production_native_facades().enabled_native_commands() {
             assert!(
-                u.contains(&format!("marion {command} ")),
-                "`marion {command}` is missing from help:\n{u}"
+                top.contains(command),
+                "`marion {command}` is missing:\n{top}"
             );
         }
         let declared = mcp_tool_names();
-        assert_eq!(declared.len(), 6, "{declared:?}");
-        assert!(
-            u.contains(&format!(
-                "{} tools — {}",
-                declared.len(),
-                declared.join(", ")
-            )),
-            "{u}"
-        );
-        assert!(!u.contains('§'), "help cites no spec sections:\n{u}");
+        assert_eq!(declared, ["spawn", "wait", "status", "list", "steer"]);
+        let mcp = (cli::verb("mcp").unwrap().help)();
+        assert!(mcp.contains(&declared.join(", ")), "{mcp}");
     }
 
-    /// The usage text is the only place the flag semantics are stated to a person, so it has to
-    /// track them. A stale line here is the same bug as a stale default.
+    /// `run --help` is the only place its flags are stated to a person, so it has to track them. A
+    /// stale line here is the same bug as a stale default.
     #[test]
-    fn the_usage_text_describes_the_flags_that_exist() {
-        let u = usage_text();
-        assert!(u.contains("--canned"), "the flag that reaches the fixture");
-        assert!(u.contains(CANNED_BASE_URL), "and where that points");
-        assert!(u.contains("`--live` is still accepted"), "{u}");
-        // The stale-promise check. The text used to advertise `--base-url` under real auth as a
-        // legitimate way to reach a proxy, which marion refuses as unimplemented — a promise in
-        // `--help` is the same class of bug as a stale default, one layer out.
-        assert!(
-            u.contains("--base-url belongs to --canned and is refused without it"),
-            "the usage text must not promise an endpoint under real auth that marion refuses: {u}"
-        );
-        assert!(
-            u.contains("marion does not implement it"),
-            "and it must say which of the two refusals is a capability limit: {u}"
-        );
-        for name in builtin_names() {
+    fn the_run_help_describes_the_flags_that_exist() {
+        let u = (cli::verb("run").unwrap().help)();
+        for flag in [
+            "--prompt",
+            "--model",
+            "--timeout",
+            "--profile",
+            "--pane",
+            "--detach",
+            "--no-change-record",
+            "--canned",
+            "--base-url",
+            "--repo",
+            "--state-dir",
+        ] {
+            assert!(u.contains(flag), "{flag} is not documented:\n{u}");
+        }
+        // Inert, and kept only for old scripts: documenting it would be advertising nothing.
+        assert!(!u.contains("--live"), "{u}");
+        // `--base-url` must not read as a way to reach a gateway under real auth, which marion
+        // refuses as unimplemented.
+        assert!(u.contains("(only with --canned)"), "{u}");
+        for name in marion_core::agent_type::builtin_names() {
             assert!(u.contains(name), "{name} must be listed");
         }
-        assert!(u.contains("terminal"), "the non-TTY guard is documented");
-        // The escape hatch on §9's grant gate. A flag whose whole purpose is to be reachable when
-        // the run has just been refused is useless if the only place it is written down is a doc
-        // comment — the refusal names it, and so must `--help`.
-        assert!(
-            u.contains("--no-change-record"),
-            "the way past a refused grant must be documented where an operator will look: {u}"
-        );
-        assert!(
-            u.contains("no built-in tool at all"),
-            "and what it costs, since it is a trade and not a bypass: {u}"
-        );
+        // The escape hatch on the grant gate, and what it costs, since it is a trade and not a
+        // bypass: the refusal names it, and so must `--help`.
+        assert!(u.contains("no file tools"), "{u}");
     }
 
     /// **The gate's escape hatch parses, and it is valueless.**
@@ -5046,7 +4788,7 @@ mod tests {
                 "p",
                 "--no-change-recrd"
             ]))
-            .is_none()
+            .is_err()
         );
     }
 

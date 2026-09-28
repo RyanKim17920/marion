@@ -193,6 +193,12 @@ pub struct Row {
     pub capabilities: Capabilities,
 }
 
+/// The doctor's flags, as a person types them through `marion doctor`. `--capabilities` is still
+/// accepted and not shown: it names the default.
+pub const USAGE: &str = "usage: marion doctor [--harness <name>] [--adapter [--model <id>]] \
+                         [--acp-command <cmd>]\n\
+                         \x20      marion doctor --providers [--model <id>]";
+
 /// Parse `doctor`'s argv (everything after the subcommand).
 ///
 /// Unknown flags are an error rather than an ignore. §8's neighbours in the design doc make the

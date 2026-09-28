@@ -2056,7 +2056,7 @@ mod tests {
     /// the one place the rule is not checked, which is exactly where a "just start it here" edit is
     /// cheapest: the argv is right there, the repo has already been resolved, and nothing about the
     /// call site says the process must come from somewhere else. So the `mcp` verb's own three
-    /// regions are cut out and scanned, and the positive half asserts each region is still the
+    /// regions (its entry point, its flag parser and its command function) are cut out and scanned, and the positive half asserts each region is still the
     /// region it claims to be.
     #[test]
     fn the_mcp_entry_point_has_no_spawn_path_of_its_own() {
@@ -2103,11 +2103,11 @@ mod tests {
             (
                 "`marion mcp`'s flag parser",
                 strip_comments(region(marion, "fn parse_mcp_args(", "\n}\n")),
-                vec!["--repo"],
+                vec!["place.take(", "backend.take("],
             ),
             (
-                "`marion`'s `mcp` argv arm",
-                strip_comments(region(marion, r#"== Some("mcp")"#, "\n    }")),
+                "`marion`'s `mcp` command",
+                strip_comments(region(marion, "fn mcp_main(", "\n}\n")),
                 // The arm delegates and does not decide: a launch added *here* would be inside
                 // neither function above, which is why the arm is its own region.
                 vec!["run_mcp("],

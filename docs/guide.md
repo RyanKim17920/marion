@@ -1,8 +1,8 @@
 # marion guide
 
 The reference behind the [README](../README.md): every verb, the home screen, logins and
-profiles, where a child's work lands, and the per-harness detail. `marion --help` is the
-authoritative list of verbs and flags; `MILESTONES.md` is the engineering log behind every claim
+profiles, where a child's work lands, and the per-harness detail. `marion --help` lists the
+commands and `marion <command> --help` explains one; `MILESTONES.md` is the engineering log behind every claim
 here.
 
 - [Running and watching nodes](#running-and-watching-nodes)
@@ -23,13 +23,15 @@ marion run codex --prompt "…" --detach    # return once the root has started
 marion run claude --prompt "…" --pane     # run in a terminal marion owns; attach to it later
 marion run claude --prompt "…" --model haiku --timeout 600
 marion ls                                 # the home screen on Watch; in a pipe, list's lines
-marion ls <agent-id|short-id>             # one node's detail
-marion list [--attention]                 # the forest once, one node per line
-marion attach <agent-id>                  # a pane node's terminal; ^] d comes back
-marion resume <agent-id> [--prompt <text>]
-marion cancel <agent-id|short-id>         # recorded as cancelled; its children keep running
-marion steer <agent-id|short-id> <text…>  # `-` reads the message from stdin
+marion ls <id>                            # one node's detail
+marion ls --attention                     # only the nodes that need you
+marion attach <id>                        # a pane node's terminal; ^] d comes back
+marion resume <id> [--prompt <text>]
+marion cancel <id>                        # recorded as cancelled; its children keep running
+marion steer <id> <text…>                 # `-` reads the message from stdin
 ```
+
+An `<id>` is a node's whole id, the short id its tree row shows, or a unique start of its id.
 
 `--repo` defaults to the enclosing git repository, else the working directory. State
 (journals, transcripts, sockets) lives under `--state-dir`, else `$MARION_STATE_DIR`, else
@@ -48,7 +50,7 @@ folder, then a one-time "Loading development channels" warning, because marion l
 so that a background child's result reaches the session without a `wait`. `marion codex` asks its
 own trust question. They are the harness's prompts, so you answer them; marion never does.
 Inside `marion <harness>`, `^] d` detaches and leaves the session running (`marion attach
-<agent-id>` brings it back) and `^] s` toggles marion's status row. Every other key goes to the
+<id>` brings it back) and `^] s` toggles marion's status row. Every other key goes to the
 harness.
 
 ## The home screen
@@ -82,7 +84,7 @@ generation is per harness; see [Harness detail](#harness-detail).
   any node below it; its parent, siblings and itself are refused with one sentence. `wait` and
   `status` reach only its direct children. Before steering, a parent's `status` on a running
   child shows its last few tool calls and the last line it wrote.
-- **The operator** presses `s` on a node in Watch, or runs `marion steer <id|short-id> <text…>`.
+- **The operator** presses `s` on a node in Watch, or runs `marion steer <id> <text…>`.
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
   points at `marion resume`).
 
@@ -127,7 +129,7 @@ An agent type is a launch spec, not a persona: harness, model, tools, isolation,
 profile. A plain harness name (`claude`, `codex`, `opencode`, …) is that harness's implementer
 with `read` and `write`; `<harness>-impl` is kept as an alias on every row except pi.
 `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold
-writes (not codex, opencode or cline). `acp-<row>` types reach the ACP agents below. `marion --help` lists
+writes (not codex, opencode or cline). `acp-<row>` types reach the ACP agents below. `marion run --help` lists
 every built-in type; a repository adds its own in `.marion/agents.toml`.
 
 Delegation stops at depth 3 (the root is depth 0): `max_depth` is a field of every agent type,
@@ -153,7 +155,7 @@ hides no credential source, and never runs a harness's login command.
 
 ```sh
 marion login openrouter                  # read with echo off; or --stdin, or --from-env
-marion login openrouter --label work     # several keys per provider: openrouter:work
+marion login openrouter:work            # several keys per provider, kept apart by label
 marion login --list                      # providers and which keys are stored, never a key
 marion login custom local --base-url http://127.0.0.1:11434/v1 --wire openai-chat --auth none
 marion logout openrouter
@@ -224,7 +226,7 @@ only; `--canned` runs keep marion's own isolation.
 
 "Pin" is the oldest version whose evidence is on record, not a ceiling; the test suite admits
 newer versions only after re-running against them (`scripts/admit-harness.sh`), and `marion
-doctor --capabilities` measures whatever is installed at runtime.
+doctor` measures whatever is installed at runtime.
 
 | harness | admitted | headless shape | resume | a steer reaches it | native lane |
 |---|---|---|---|---|---|
@@ -287,6 +289,6 @@ once pointed at a model provider through its own configuration. **Refused** rows
 | `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
 | `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
 
-`marion doctor --capabilities --harness acp` probes every row and names the MCP transports each
+`marion doctor --harness acp` probes every row and names the MCP transports each
 agent advertises; `marion-supervisor doctor --acp-command "<cmd>"` probes your own agent and says
 when it turns out to be one of these rows.

@@ -95,7 +95,7 @@ marion claude                 # Claude Code's own TUI, with marion's tools; ^] d
 marion                        # the home screen: Start a task, Watch the tree, Setup
 marion run codex --prompt "…" --detach
 marion ls                     # watch it
-marion steer <short-id> "use the v2 API, not v1"
+marion steer <id> "use the v2 API, not v1"
 ```
 
 **4. Or drive marion from any MCP client.**

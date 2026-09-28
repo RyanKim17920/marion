@@ -120,6 +120,13 @@ fn the_binarys_help_names_the_attach_verb() {
         .output()
         .expect("the marion binary runs");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("marion attach <agent-id>"), "{text}");
+    assert!(text.contains("  attach "), "{text}");
+    assert!(out.status.success());
+    let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args(["attach", "--help"])
+        .output()
+        .expect("the marion binary runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("usage: marion attach <id>"), "{text}");
     assert!(out.status.success());
 }

@@ -17,14 +17,16 @@ use marion_core::provider::{self, AuthKind, CredentialId, ProviderDef, Registry,
 
 use crate::credentials::{self, CredentialStore, Logins, Secret, parse_key};
 
-const USAGE: &str = "\
-usage: marion login <provider>[:<label>] [--label <label>] [--from-env | --stdin]
+/// `marion login --help`'s first half, and what a malformed `login`/`logout` prints. `--label
+/// <label>` is still accepted as the other spelling of `:<label>`, and not shown.
+pub const USAGE: &str = "\
+usage: marion login <provider>[:<label>] [--from-env | --stdin]
        marion login --list
        marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--name <name>] [--auth api-key|none]
-       marion logout <provider>[:<label>] [--label <label>]
+       marion logout <provider>[:<label>]
 
   <provider>   a provider id; `marion login --list` shows them all
-  --label      keep this key beside the provider's others (`openrouter:work`)
+  :<label>     keep this key beside the provider's others (`openrouter:work`)
   --stdin      read the key from standard input instead of a terminal
   --from-env   import the key from the provider's own environment variable
   wires:       anthropic, openai-chat, openai-responses, gemini";

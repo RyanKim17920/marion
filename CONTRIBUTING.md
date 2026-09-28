@@ -147,6 +147,13 @@ throwaway probe scripts that produced the measurements, and `tests/fixtures/` ho
 recorded output — `tests/fixtures/REVIEW.md` is the redaction ledger for that corpus, and any
 new fixture goes through it before it is committed.
 
+`marion`'s commands are the rows of `VERBS` in
+`crates/marion-supervisor/src/bin/marion/cli.rs`, each with its own `--help`; `marion --help` is
+built from the table. A command parses its own flags through `Words`, taking `--repo`/`--state-dir`
+from `Place` and `--canned`/`--base-url` from `Backend`, and refuses any flag it does not know.
+Help and errors use plain words: no spec section numbers. An old spelling kept for a script or a
+doc is an alias in the table (or an accepted, unlisted flag), never a second command.
+
 ## Releasing
 
 Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`, 0.33.0).

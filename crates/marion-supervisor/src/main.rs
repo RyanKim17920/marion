@@ -12,13 +12,9 @@
 
 use marion_supervisor::{detach, doctor, mcp, preflight};
 
-/// The doctor's flags, as a person types them through `marion doctor`.
-const DOCTOR_USAGE: &str = "usage: marion doctor [--capabilities|--adapter] [--harness <name>] \
-                            [--model <id>] [--acp-command <cmd>] | --providers [--model <id>]";
-
 fn usage() -> ! {
     eprintln!(
-        "usage: marion-supervisor doctor [--capabilities|--adapter] [--harness <name>] …\n\
+        "usage: marion-supervisor doctor [--adapter] [--harness <name>] …\n\
          \x20      marion-supervisor --version\n\
          \n\
          `marion-supervisor doctor` is the same as `marion doctor`. `mcp` and `serve` are \
@@ -86,7 +82,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("marion doctor: {e}");
-                eprintln!("{DOCTOR_USAGE}");
+                eprintln!("{}", doctor::USAGE);
                 std::process::exit(2);
             }
         },
