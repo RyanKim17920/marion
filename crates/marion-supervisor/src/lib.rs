@@ -133,6 +133,8 @@ pub mod registry;
 /// tree, and what it refuses to decide without a process to look at.
 pub mod restart;
 pub mod review;
+/// What a subtree adds up to — tokens, changed files, nodes, wall time — as pure arithmetic.
+pub mod rollup;
 pub mod root;
 pub mod rpc;
 pub mod run;
