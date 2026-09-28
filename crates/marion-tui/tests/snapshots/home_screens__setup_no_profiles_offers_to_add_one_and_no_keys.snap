@@ -1,6 +1,6 @@
 ---
 source: crates/marion-tui/tests/home_screens.rs
-expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
+expression: "report(&screen(Body::Setup(&v), input, \"profiles\"), 100, 30)"
 ---
 --- 100x30 ---
  ◆ marion  ~/code/acme-api                                            Start   Watch ◐2   Setup   ?
@@ -13,7 +13,7 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   ◐ gemini       0.9.1     sign-in needed              headless · pane
   ● opencode     1.2.3     ready                       headless · pane · ACP
   ✗ copilot      0.0.339   too old, needs ≥ 0.0.350    headless · ACP
-❯ ○ agy          —         not installed               —
+  ○ agy          —         not installed               —
 
   PROJECT
   repo ~/code/acme-api · state ~/.local/state/marion · agents .marion/agents.toml
@@ -26,20 +26,20 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
   no keys stored · a adds one with marion login <provider>
 
   PROFILES
-  several logins per harness arrive with marion profile; until then each harness uses its own
-
+❯ + add a profile
+  each harness uses its own login · a runs marion profile add, then you run the login it prints
 
  ╭────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ❯ marion doctor                                                                              r │
+ │ ❯ marion profile add <harness> <name>                                                        a │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
-  j/k move · enter expand · r re-check · n new type · a add key · x remove key         ? shortcuts
+  j/k move · a add profile · u use · x remove · r re-check                             ? shortcuts
 --- styles ---
-  131  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
-    9  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionagy"
-   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
-  718  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion+addaprofile"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+  721  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
-   42  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯amarionlogin<provi"
+   46  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupamarionlogin<provid"
    10  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
    17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"

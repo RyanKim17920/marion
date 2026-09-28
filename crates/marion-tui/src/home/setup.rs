@@ -4,7 +4,7 @@
 
 use super::GUTTER;
 use super::start::{HarnessRow, harness_line, name_col, readiness};
-use super::text::{clip, fit, pad};
+use super::text::{clip, fit, pad, width};
 use super::theme::{CARET, Ready, Theme, bad, bold, dim, good};
 use super::widgets::{code_spans, expansion, section, span};
 use ratatui::buffer::Buffer;
@@ -32,13 +32,21 @@ pub struct LoginRow {
     pub note: Option<String>,
 }
 
-/// One profile, when `marion profile` exists: its harness, its name, whether it is logged in, and
-/// the last rate-limit reading marion took of it.
+/// One profile `marion profile add` made: its harness, its name, its login as the harness's own
+/// read-only probe answered, and the last usage-limit reading a child's stream left for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileRow {
     pub harness: String,
     pub name: String,
-    pub logged_in: bool,
+    /// The harness's default: what its nodes run on when nothing names another.
+    pub default: bool,
+    /// Signed in, signed out (the operator's to fix), or still being asked.
+    pub ready: Ready,
+    /// The probe's answer in words: `logged in`, `logged out`, `checking…`, or why it could not say.
+    pub note: String,
+    /// The command that signs it in, shown under the selected row while it is signed out. Shown,
+    /// never run: a login is the operator's.
+    pub login: Option<String>,
     pub limit: Option<String>,
 }
 
@@ -73,7 +81,8 @@ pub struct FormView {
 pub struct SetupView {
     pub harnesses: Vec<HarnessRow>,
     pub checking: bool,
-    /// Into the harnesses, then on into [`Self::logins`].
+    /// Into the harnesses, then on into [`Self::logins`], then [`Self::profiles`] — or, while there
+    /// are none, the one row that adds the first.
     pub cursor: usize,
     /// Whether the selected harness shows its detail rows.
     pub expanded: bool,
@@ -88,8 +97,10 @@ pub struct SetupView {
     pub logins: Vec<LoginRow>,
     /// One dim line under them: where keys are kept, or why they could not be listed.
     pub logins_note: String,
-    /// `None` until profiles exist: the section then says where they will come from.
-    pub profiles: Option<Vec<ProfileRow>>,
+    /// The profiles, by harness then name.
+    pub profiles: Vec<ProfileRow>,
+    /// One dim line under them: what the keys do, or why they could not be listed.
+    pub profiles_note: String,
     /// The agent-type form, drawn in place of everything else while it is open.
     pub form: Option<FormView>,
 }
@@ -296,35 +307,97 @@ fn body_lines<'a>(
     }
 
     blank(&mut out);
-    out.push((g, section("Profiles", "")));
-    match &v.profiles {
-        Some(rows) if !rows.is_empty() => {
-            for p in rows {
-                let (glyph, style) = if p.logged_in {
-                    ("●", good())
-                } else {
-                    ("○", dim())
-                };
-                let l = vec![
-                    span(format!("{glyph} "), style),
-                    span(pad(&p.harness, 10), Style::default()),
-                    span(pad(&p.name, 16), Style::default()),
-                    span(p.limit.clone().unwrap_or_default(), dim()),
-                ];
-                out.push((g, Line::from(fit(l, w))));
+    let count = match v.profiles.len() {
+        0 => String::new(),
+        1 => "1 profile".to_string(),
+        n => format!("{n} profiles"),
+    };
+    out.push((g, section("Profiles", &count)));
+    let first = v.harnesses.len() + v.logins.len();
+    let harness_w = column(v.profiles.iter().map(|p| p.harness.as_str()), 8, 12);
+    let profile_w = column(v.profiles.iter().map(|p| p.name.as_str()), 8, 20);
+    for (i, p) in v.profiles.iter().enumerate() {
+        let sel = first + i == v.cursor;
+        let start = out.len();
+        let mut l = vec![
+            span(if sel { CARET } else { " " }, theme.key()),
+            Span::raw(" "),
+            span(
+                format!("{} ", p.ready.glyph(frame + i)),
+                p.ready.style(theme),
+            ),
+            span(pad(&p.harness, harness_w + 2), dim()),
+            span(
+                pad(&p.name, profile_w + 2),
+                if sel { bold() } else { Style::default() },
+            ),
+        ];
+        if p.default {
+            l.push(span("default · ", theme.accent()));
+        }
+        l.push(span(p.note.clone(), p.ready.note_style()));
+        if let Some(limit) = &p.limit {
+            l.push(span(format!(" · {limit}"), dim()));
+        }
+        out.push((0, Line::from(fit(l, w + g as usize))));
+        if let (true, Some(login)) = (sel, &p.login) {
+            // The whole command, broken across rows where it must be: a clipped one cannot be run.
+            let lw = w.saturating_sub(4).max(1);
+            const LABEL: &str = "log in yourself: ";
+            if width(LABEL) + width(login) <= lw {
+                let l = vec![span(LABEL, dim()), span(login.clone(), theme.key())];
+                out.push((g + 4, Line::from(l)));
+            } else {
+                out.push((g + 4, Line::from(span(LABEL.trim_end(), dim()))));
+                for part in break_at(login, lw) {
+                    out.push((g + 4, Line::from(span(part, theme.key()))));
+                }
             }
         }
-        Some(_) => out.push((g, Line::from(span("no profiles yet", dim())))),
-        None => {
-            let l = code_spans(
-                "several logins per harness arrive with `marion profile`; until then each harness uses its own",
-                dim(),
-                theme,
-            );
-            out.push((g, Line::from(fit(l, w))));
+        if sel {
+            selected = (start, out.len());
         }
     }
+    if v.profiles.is_empty() {
+        let sel = first == v.cursor;
+        if sel {
+            selected = (out.len(), out.len() + 1);
+        }
+        let l = vec![
+            span(if sel { CARET } else { " " }, theme.key()),
+            Span::raw(" "),
+            span("+ add a profile", if sel { bold() } else { dim() }),
+        ];
+        out.push((0, Line::from(fit(l, w + g as usize))));
+    }
+    if !v.profiles_note.is_empty() {
+        let l = code_spans(&v.profiles_note, dim(), theme);
+        out.push((g, Line::from(fit(l, w))));
+    }
     (out, selected)
+}
+
+/// `s` in rows of at most `w` columns, broken anywhere — for a command that has no spaces to wrap
+/// at and must be shown whole.
+fn break_at(s: &str, w: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    for c in s.chars() {
+        let row = rows.last_mut().expect("never empty");
+        if !row.is_empty() && width(row) + width(c.encode_utf8(&mut [0; 4])) > w {
+            rows.push(String::new());
+        }
+        rows.last_mut().expect("never empty").push(c);
+    }
+    rows
+}
+
+/// A column as wide as its widest entry, held between `min` and `max`.
+fn column<'a>(entries: impl Iterator<Item = &'a str>, min: usize, max: usize) -> usize {
+    entries
+        .map(|e| e.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(min, max)
 }
 
 /// The agent-type form: one row per field, the one being edited marked, then the loader's

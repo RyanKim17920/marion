@@ -642,9 +642,11 @@ fn setup_cursor_runs_on_from_the_harnesses_into_the_stored_keys() {
         h.key(Key::Char('j'));
     }
     assert_eq!(
-        h.setup.cursor, 3,
-        "two harnesses, then two keys, and no further"
+        h.setup.cursor, 4,
+        "two harnesses, two keys, then the row that adds the first profile, and no further"
     );
+    assert_eq!(h.selected_login(), None);
+    h.key(Key::Char('k'));
     assert_eq!(
         h.selected_login().map(|l| l.id.as_str()),
         Some("openrouter:work")
@@ -728,6 +730,223 @@ fn login_and_logout_echo_the_commands_they_run_and_only_logout_asks_first() {
     );
     assert!(!Effect::Login("x".into()).destructive());
     assert!(Effect::Logout("x".into()).destructive());
+}
+
+fn profile(harness: &str, name: &str, default: bool) -> StoredProfile {
+    StoredProfile {
+        harness: harness.into(),
+        name: name.into(),
+        default,
+        login: None,
+        login_command: format!("CODEX_HOME='/p/{name}' {harness} login"),
+        limit: None,
+    }
+}
+
+/// Two harnesses, two keys, then two profiles: rows 4 and 5.
+fn profiles_home() -> Home {
+    let mut h = setup_home();
+    h.setup.profile_harnesses = vec!["claude".into(), "codex".into()];
+    h.setup.profiles = vec![
+        profile("claude", "work", true),
+        profile("codex", "cx", false),
+    ];
+    h.setup.profiles_listed = true;
+    h
+}
+
+#[test]
+fn setup_cursor_runs_on_from_the_stored_keys_into_the_profiles() {
+    let mut h = profiles_home();
+    for _ in 0..10 {
+        h.key(Key::Char('j'));
+    }
+    assert_eq!(h.setup.cursor, 5, "two harnesses, two keys, two profiles");
+    assert_eq!(h.selected_profile().map(|p| p.name.as_str()), Some("cx"));
+    assert_eq!(h.selected_login(), None, "a profile row is not a key");
+    // With none, the cursor still reaches the one row that adds the first.
+    let mut h = setup_home();
+    for _ in 0..10 {
+        h.key(Key::Char('j'));
+    }
+    assert_eq!(h.setup.cursor, 4);
+    assert!(h.on_profiles());
+    assert_eq!(h.selected_profile(), None);
+}
+
+#[test]
+fn u_makes_the_selected_profile_its_harness_default_and_says_so_when_it_already_is() {
+    let mut h = profiles_home();
+    h.setup.cursor = 5;
+    assert_eq!(
+        h.key(Key::Char('u')),
+        Effect::ProfileUse {
+            harness: "codex".into(),
+            name: "cx".into()
+        }
+    );
+    h.setup.cursor = 4;
+    assert_eq!(h.key(Key::Char('u')), Effect::None);
+    assert_eq!(h.notice.as_deref(), Some("claude already runs on work"));
+    h.setup.cursor = 0;
+    assert_eq!(h.key(Key::Char('u')), Effect::None, "u off the profiles");
+    assert!(h.notice.is_some());
+}
+
+#[test]
+fn removing_a_profile_waits_for_y_and_n_keeps_it() {
+    let mut h = profiles_home();
+    h.setup.cursor = 4;
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.mode, Mode::Confirm(Effect::ProfileRemove("work".into())));
+    assert_eq!(h.key(Key::Char('n')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+    assert_eq!(h.notice.as_deref(), Some("profile kept"));
+    h.key(Key::Char('x'));
+    assert_eq!(h.key(Key::Char('y')), Effect::ProfileRemove("work".into()));
+    // On the row that adds the first profile there is nothing to remove.
+    let mut h = setup_home();
+    h.setup.cursor = 4;
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+}
+
+#[test]
+fn adding_a_profile_asks_for_harness_and_name_and_hands_off_to_marion_profile_add() {
+    let mut h = profiles_home();
+    h.setup.cursor = 5;
+    assert_eq!(h.key(Key::Char('a')), Effect::None);
+    assert_eq!(
+        h.mode,
+        Mode::Profile {
+            text: "codex ".into()
+        },
+        "on a profile's row the box starts with its harness"
+    );
+    typed(&mut h, "personal");
+    assert_eq!(
+        h.key(Key::Enter),
+        Effect::ProfileAdd {
+            harness: "codex".into(),
+            name: "personal".into()
+        }
+    );
+    // Refused here, before the terminal changes hands: a harness with no carrier, a name that is
+    // not one, a name taken, and a box without both words.
+    for (text, says) in [
+        ("copilot gh", "takes no profiles"),
+        ("claude ../x", "not a profile name"),
+        ("claude work", "already exists"),
+        ("claude", "a harness and a name"),
+    ] {
+        h.key(Key::Char('a'));
+        h.mode = Mode::Profile { text: text.into() };
+        assert_eq!(h.key(Key::Enter), Effect::None, "{text}");
+        assert!(
+            h.notice.as_deref().unwrap_or("").contains(says),
+            "{text}: {:?}",
+            h.notice
+        );
+    }
+    // Off the profiles, `a` is still the key box.
+    h.setup.cursor = 3;
+    h.key(Key::Char('a'));
+    assert!(matches!(h.mode, Mode::Login { .. }));
+    // On the row that adds the first, the box starts empty.
+    let mut h = setup_home();
+    h.setup.cursor = 4;
+    h.key(Key::Char('a'));
+    assert_eq!(
+        h.mode,
+        Mode::Profile {
+            text: String::new()
+        }
+    );
+    assert_eq!(h.key(Key::Esc), Effect::None);
+    assert_eq!(h.mode, Mode::Normal);
+}
+
+#[test]
+fn no_single_key_on_a_profile_is_destructive() {
+    let keys = (b'!'..=b'~').map(|b| Key::Char(b as char)).chain([
+        Key::Enter,
+        Key::Esc,
+        Key::Backspace,
+        Key::Up,
+        Key::Down,
+    ]);
+    for k in keys {
+        let mut h = profiles_home();
+        h.setup.cursor = 4;
+        let e = h.key(k.clone());
+        assert!(!e.destructive(), "{k:?} returned {e:?} without a confirm");
+    }
+}
+
+#[test]
+fn profile_verbs_echo_the_commands_they_run_and_only_remove_asks_first() {
+    let add = Effect::ProfileAdd {
+        harness: "claude".into(),
+        name: "work".into(),
+    };
+    let use_ = Effect::ProfileUse {
+        harness: "claude".into(),
+        name: "work".into(),
+    };
+    let remove = Effect::ProfileRemove("work".into());
+    assert_eq!(
+        add.argv().unwrap(),
+        ["marion", "profile", "add", "claude", "work"]
+    );
+    assert_eq!(
+        use_.argv().unwrap(),
+        ["marion", "profile", "use", "claude", "work"]
+    );
+    assert_eq!(
+        remove.argv().unwrap(),
+        ["marion", "profile", "remove", "work"]
+    );
+    assert!(!add.destructive() && !use_.destructive());
+    assert!(remove.destructive());
+}
+
+/// The echoed commands are the verbs `marion profile` runs: each one, handed to the verb's own
+/// dispatcher over a scratch profile store, does what the pane says — and `add` only **prints**
+/// the login command, which nothing runs.
+#[test]
+fn the_profile_echoes_run_through_marion_profiles_own_verbs() {
+    let s = marion_testsupport::scratch("home-profile-echo");
+    let paths = crate::profiles::ProfilePaths {
+        config: s.join("config/marion/profiles.toml"),
+        data: s.join("data/marion/profiles"),
+        state: s.join("state/profiles"),
+    };
+    let run = |e: &Effect| {
+        let argv = e.argv().unwrap();
+        assert_eq!(argv[..2], ["marion", "profile"]);
+        let mut out = Vec::new();
+        crate::profile_cli::run(&argv[2..], &paths, None, &mut out).expect("the verb accepts it");
+        String::from_utf8(out).unwrap()
+    };
+    let said = run(&Effect::ProfileAdd {
+        harness: "claude".into(),
+        name: "work".into(),
+    });
+    assert!(said.contains("marion never runs this"), "{said}");
+    assert!(said.contains("claude auth login"), "{said}");
+    run(&Effect::ProfileUse {
+        harness: "claude".into(),
+        name: "work".into(),
+    });
+    let file = crate::profiles::ProfilesFile::load(&paths.config).unwrap();
+    assert_eq!(file.default["claude-code"], "work");
+    run(&Effect::ProfileRemove("work".into()));
+    let file = crate::profiles::ProfilesFile::load(&paths.config).unwrap();
+    assert!(file.profile.is_empty() && file.default.is_empty());
+    assert!(
+        paths.dir_for(H::ClaudeCode, "work").is_dir(),
+        "remove keeps the directory; only `--purge` deletes it"
+    );
 }
 
 #[test]
@@ -878,4 +1097,62 @@ fn recent_runs_say_when_they_started() {
         whens[1].len() == 5 && whens[1].as_bytes()[2] == b':',
         "a start: hh:mm, {whens:?}"
     );
+}
+
+/// A profile's row says what its probe said, and shows the login command only while it is logged
+/// out or the probe could not tell — the command for the operator to run, never marion.
+#[test]
+fn a_logged_out_profile_shows_its_login_command_and_a_logged_in_one_does_not() {
+    use crate::profiles::LoginState;
+    let mut h = profiles_home();
+    h.setup.profiles[0].login = Some(LoginState::LoggedIn);
+    h.setup.profiles[1].login = Some(LoginState::LoggedOut);
+    let f = view::frame(&h, &view::Places::default());
+    let rows = &f.setup.profiles;
+    assert_eq!(
+        (rows[0].note.as_str(), rows[0].login.as_deref()),
+        ("logged in", None)
+    );
+    assert_eq!(rows[1].note, "logged out");
+    assert_eq!(
+        rows[1].login.as_deref(),
+        Some("CODEX_HOME='/p/cx' codex login")
+    );
+    assert!(rows[0].default && !rows[1].default);
+    h.setup.profiles[1].login = Some(LoginState::Unknown("timed out".into()));
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.setup.profiles[1].login.is_some(),
+        "an unknown login offers the command too"
+    );
+    h.setup.profiles[1].login = None;
+    let f = view::frame(&h, &view::Places::default());
+    assert_eq!(f.setup.profiles[1].note, "checking…");
+    assert!(h.animating(), "a probe still out keeps the spinner turning");
+    // On a profile the box echoes `use`; on the add row, `add`.
+    h.setup.cursor = 5;
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        matches!(&f.input, marion_tui::home::Input::Command { line, .. } if line == "marion profile use codex cx"),
+        "{:?}",
+        f.input
+    );
+}
+
+#[test]
+fn a_new_listing_selects_the_profile_just_added_and_keeps_the_cursor_on_a_real_row() {
+    let mut h = profiles_home();
+    let harnesses = h.setup.profile_harnesses.clone();
+    let mut rows = h.setup.profiles.clone();
+    rows.push(profile("claude", "personal", false));
+    h.set_profiles(rows, harnesses.clone(), Some("personal"));
+    assert_eq!(
+        h.selected_profile().map(|p| p.name.as_str()),
+        Some("personal"),
+        "the profile just added is selected, so its login command shows"
+    );
+    // The last profile removed: the cursor comes back to the row that adds one.
+    h.set_profiles(Vec::new(), harnesses, None);
+    assert_eq!(h.setup.cursor, 4);
+    assert!(h.on_profiles() && h.selected_profile().is_none());
 }

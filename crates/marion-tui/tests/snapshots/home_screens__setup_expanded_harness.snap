@@ -111,11 +111,11 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
   ● openrouter  openrouter:work
   keys in the macOS Keychain · a adds one · x removes the selected
 
-  PROFILES
-  several logins per harness arrive with marion profile; until then each harness uses its own
-
-
-
+  PROFILES   3 profiles
+  ● claude    work      default · logged in
+  ◐ codex     cx        logged out
+  ⠹ opencode  oc        checking…
+  a adds one · u makes the selected the default · x removes it, keeping its directory · marion never logs in for you
 
 
 
@@ -132,12 +132,12 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter expand · r re-check · n new type · a add key · x remove key                                                                     ? shortcuts
 --- styles ---
-  210  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  218  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
    73  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
-  999  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
-   17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
-   28  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminiaxmarionprof"
-   13  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●"
+ 1068  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+   26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
+   18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminiaxaux❯"
+   14  Style::new().green().bg(Color::Reset)  "●●●●●●●●●✓●●●●"
    21  Style::new().red().bg(Color::Reset)  "✗tooold,needs≥0.0.350"
-   17  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐"
+   27  Style::new().yellow().bg(Color::Reset)  "◐2◐sign-inneeded◐◐logged"

@@ -10,8 +10,8 @@ use marion_tui::home::help::KeyRow;
 use marion_tui::home::text::shell_line;
 use marion_tui::home::{
     AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint, Input,
-    LoginRow, MessageView, NodeRow, Ready, RecentRow, ResultView, SetupView, StartView, StreamLine,
-    Tab, TaskView, TokenView, WatchView,
+    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView, StartView,
+    StreamLine, Tab, TaskView, TokenView, WatchView,
 };
 use marion_tui::tree::Tone;
 
@@ -532,8 +532,8 @@ fn setup(home: &Home, places: &Places) -> SetupView {
             })
             .collect(),
         logins_note: logins_note(home),
-        // `marion profile` has not landed: the section says so until it does.
-        profiles: None,
+        profiles: home.setup.profiles.iter().map(profile_row).collect(),
+        profiles_note: profiles_note(home),
         form: form_view(home),
     }
 }
@@ -573,6 +573,46 @@ fn logins_note(home: &Home) -> String {
         )
     } else {
         format!("{store} · `a` adds a key · `x` removes the selected one")
+    }
+}
+
+/// One profile as Setup draws it: its login in the probe's words, and — while it is logged out —
+/// the command that logs in to it, for the operator to run.
+fn profile_row(p: &super::StoredProfile) -> ProfileRow {
+    use crate::profiles::LoginState;
+    let (ready, note) = match &p.login {
+        None => (Ready::Checking, "checking…".to_string()),
+        Some(LoginState::LoggedIn) => (Ready::Ready, "logged in".to_string()),
+        Some(LoginState::LoggedOut) => (Ready::Attention, "logged out".to_string()),
+        Some(LoginState::Unknown(why)) => (Ready::Attention, format!("login unknown: {why}")),
+    };
+    ProfileRow {
+        harness: p.harness.clone(),
+        name: p.name.clone(),
+        default: p.default,
+        login: (ready == Ready::Attention).then(|| p.login_command.clone()),
+        ready,
+        note,
+        limit: p.limit.clone(),
+    }
+}
+
+/// The line under the profiles: why they could not be listed, else what the keys do. marion
+/// never logs in for anyone: `add` prints the command, and the row shows it.
+fn profiles_note(home: &Home) -> String {
+    if let Some(e) = &home.setup.profiles_error {
+        return format!("profiles could not be listed: {e}");
+    }
+    if !home.setup.profiles_listed {
+        return "listing profiles…".into();
+    }
+    if home.setup.profiles.is_empty() {
+        "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints"
+            .into()
+    } else {
+        "`a` adds one · `u` makes the selected the default · `x` removes it, keeping its \
+         directory · marion never logs in for you"
+            .into()
     }
 }
 
@@ -671,6 +711,17 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("n", "new agent type, previewed", ".marion/agents.toml"),
             ("a", "add a provider key", "marion login <provider>"),
             ("x", "remove a key, asks first", "marion logout <id>"),
+            (
+                "a",
+                "on Profiles: add one",
+                "marion profile add <harness> <name>",
+            ),
+            ("u", "use a profile", "marion profile use <harness> <name>"),
+            (
+                "x",
+                "on Profiles: remove one, asks first",
+                "marion profile remove <name>",
+            ),
         ],
     ),
 ];
@@ -701,6 +752,7 @@ fn hints(home: &Home) -> Vec<Hint> {
         (Mode::Compose { .. }, _) => h(&[("enter", "send"), ("esc", "cancel")]),
         (Mode::Confirm(_), _) => h(&[("y", "yes"), ("any key", "no")]),
         (Mode::Login { .. }, _) => h(&[("enter", "log in"), ("esc", "cancel")]),
+        (Mode::Profile { .. }, _) => h(&[("enter", "add"), ("esc", "cancel")]),
         (Mode::Form(_), _) => h(&[
             ("tab", "next field"),
             ("←→", "choose"),
@@ -722,6 +774,13 @@ fn hints(home: &Home) -> Vec<Hint> {
             ("u", "resume"),
             ("c", "copy merge"),
             ("!", "needs you"),
+        ]),
+        (_, Tab::Setup) if home.on_profiles() => h(&[
+            ("j/k", "move"),
+            ("a", "add profile"),
+            ("u", "use"),
+            ("x", "remove"),
+            ("r", "re-check"),
         ]),
         (_, Tab::Setup) => h(&[
             ("j/k", "move"),
@@ -750,6 +809,10 @@ fn input(home: &Home) -> Input {
             target: "marion login".into(),
             text: text.clone(),
         },
+        Mode::Profile { text } => Input::Compose {
+            target: "marion profile add".into(),
+            text: text.clone(),
+        },
         Mode::Form(_) => Input::Command {
             line: crate::run::AGENT_TYPES_FILE.into(),
             note: "enter previews".into(),
@@ -764,6 +827,10 @@ fn input(home: &Home) -> Input {
         }
         Mode::Confirm(effect @ Effect::Logout(id)) => Input::Confirm {
             question: format!("Remove the key {id}?"),
+            command: line(effect),
+        },
+        Mode::Confirm(effect @ Effect::ProfileRemove(name)) => Input::Confirm {
+            question: format!("Remove the profile {name}?"),
             command: line(effect),
         },
         Mode::Confirm(effect) => {
@@ -794,12 +861,23 @@ fn input(home: &Home) -> Input {
                     String::new()
                 },
             },
-            Tab::Setup => match home.selected_login() {
-                Some(l) => Input::Command {
+            Tab::Setup => match (home.selected_login(), home.selected_profile()) {
+                (Some(l), _) => Input::Command {
                     line: line(&Effect::Logout(l.id.clone())),
                     note: "x".into(),
                 },
-                None => Input::Command {
+                (_, Some(p)) => Input::Command {
+                    line: line(&Effect::ProfileUse {
+                        harness: p.harness.clone(),
+                        name: p.name.clone(),
+                    }),
+                    note: "u".into(),
+                },
+                _ if home.on_profiles() => Input::Command {
+                    line: "marion profile add <harness> <name>".into(),
+                    note: "a".into(),
+                },
+                _ => Input::Command {
                     line: line(&Effect::Recheck),
                     note: "r".into(),
                 },

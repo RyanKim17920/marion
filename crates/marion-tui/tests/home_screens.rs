@@ -16,8 +16,8 @@
 
 use marion_tui::home::{
     self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint,
-    Input, KeyRow, LoginRow, MessageView, NodeRow, Ready, RecentRow, ResultView, Screen, SetupView,
-    StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
+    Input, KeyRow, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView,
+    Screen, SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -442,8 +442,42 @@ fn setup_view(checking: bool) -> SetupView {
             login("openrouter", "openrouter:work"),
         ],
         logins_note: s("keys in the macOS Keychain · `a` adds one · `x` removes the selected"),
-        profiles: None,
+        profiles: vec![
+            profile("claude", "work", true, Ready::Ready, "logged in", None),
+            profile(
+                "codex",
+                "cx",
+                false,
+                Ready::Attention,
+                "logged out",
+                Some("CODEX_HOME='/Users/me/.local/share/marion/profiles/codex/cx' codex login"),
+            ),
+            profile("opencode", "oc", false, Ready::Checking, "checking…", None),
+        ],
+        profiles_note: s(
+            "`a` adds one · `u` makes the selected the default · `x` removes it, keeping its \
+             directory · marion never logs in for you",
+        ),
         form: None,
+    }
+}
+
+fn profile(
+    harness: &str,
+    name: &str,
+    default: bool,
+    ready: Ready,
+    note: &str,
+    login: Option<&str>,
+) -> ProfileRow {
+    ProfileRow {
+        harness: s(harness),
+        name: s(name),
+        default,
+        ready,
+        note: s(note),
+        login: login.map(s),
+        limit: None,
     }
 }
 
@@ -559,6 +593,13 @@ fn hints(tab: &str) -> Vec<Hint> {
             ("n", "new type"),
             ("a", "add key"),
             ("x", "remove key"),
+        ]),
+        "profiles" => h(&[
+            ("j/k", "move"),
+            ("a", "add profile"),
+            ("u", "use"),
+            ("x", "remove"),
+            ("r", "re-check"),
         ]),
         "confirm" => h(&[("y", "yes"), ("any key", "no")]),
         "form" => h(&[
@@ -1047,15 +1088,43 @@ fn setup_logins_listed() {
     insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "setup")));
 }
 
+/// The profiles, by harness: the selected one is logged out, so its row shows the command that
+/// logs in to it — for the operator to run — and the box echoes what `u` would run.
 #[test]
-fn setup_profiles_placeholder_and_no_keys() {
+fn setup_profiles_listed_with_the_login_command_shown() {
     let mut v = setup_view(false);
     v.expanded = false;
-    v.cursor = v.harnesses.len() - 1;
+    v.cursor = v.harnesses.len() + v.logins.len() + 1;
+    v.profiles[0].limit = Some(s("last limit allowed_warning (five_hour)"));
+    let input = command("marion profile use codex cx", "u");
+    insta::assert_snapshot!(at_every_size(&screen(Body::Setup(&v), input, "profiles")));
+}
+
+#[test]
+fn setup_no_profiles_offers_to_add_one_and_no_keys() {
+    let mut v = setup_view(false);
+    v.expanded = false;
     v.logins.clear();
     v.logins_note = s("no keys stored · `a` adds one with `marion login <provider>`");
-    let input = command("marion doctor", "r");
-    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "setup"), 100, 30));
+    v.profiles.clear();
+    v.profiles_note = s(
+        "each harness uses its own login · `a` runs `marion profile add`, then you run the login it prints",
+    );
+    v.cursor = v.harnesses.len();
+    let input = command("marion profile add <harness> <name>", "a");
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "profiles"), 100, 30));
+}
+
+#[test]
+fn setup_profile_remove_waits_for_y() {
+    let mut v = setup_view(false);
+    v.expanded = false;
+    v.cursor = v.harnesses.len() + v.logins.len();
+    let input = Input::Confirm {
+        question: s("Remove the profile work?"),
+        command: s("marion profile remove work"),
+    };
+    insta::assert_snapshot!(report(&screen(Body::Setup(&v), input, "confirm"), 100, 30));
 }
 
 #[test]

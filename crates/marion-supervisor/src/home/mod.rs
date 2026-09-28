@@ -71,6 +71,20 @@ pub enum Effect {
     Login(String),
     /// Leave the screen, run `marion logout <credential id>`, come back. Destructive: after a `y`.
     Logout(String),
+    /// Leave the screen, run `marion profile add <harness> <name>` — which makes the profile's
+    /// directory and **prints** the command that logs in to it, never running it — come back and
+    /// list the profiles again.
+    ProfileAdd {
+        harness: String,
+        name: String,
+    },
+    /// `marion profile use <harness> <name>`: the harness's nodes run on it from now on.
+    ProfileUse {
+        harness: String,
+        name: String,
+    },
+    /// `marion profile remove <name>`: forgotten, its directory kept. Destructive: after a `y`.
+    ProfileRemove(String),
     /// Work out what the form's draft does to the agents file: the session reads the file, applies
     /// the draft, holds the result to the spawn path's loader, and shows the diff for a `y`.
     PreviewType(types_form::Draft),
@@ -93,6 +107,9 @@ impl Effect {
             }
             Effect::Login(id) => v(&["marion", "login", id]),
             Effect::Logout(id) => v(&["marion", "logout", id]),
+            Effect::ProfileAdd { harness, name } => v(&["marion", "profile", "add", harness, name]),
+            Effect::ProfileUse { harness, name } => v(&["marion", "profile", "use", harness, name]),
+            Effect::ProfileRemove(name) => v(&["marion", "profile", "remove", name]),
             Effect::Run {
                 agent_type,
                 model,
@@ -130,7 +147,10 @@ impl Effect {
     pub fn destructive(&self) -> bool {
         matches!(
             self,
-            Effect::Cancel(_) | Effect::Logout(_) | Effect::WriteTypes { .. }
+            Effect::Cancel(_)
+                | Effect::Logout(_)
+                | Effect::ProfileRemove(_)
+                | Effect::WriteTypes { .. }
         )
     }
 }
@@ -173,6 +193,10 @@ pub enum Mode {
     Confirm(Effect),
     /// Typing the credential id (`<provider>[:<label>]`) to hand to `marion login`.
     Login {
+        text: String,
+    },
+    /// Typing `<harness> <name>` to hand to `marion profile add`.
+    Profile {
         text: String,
     },
     /// Filling in the agent-type form.
@@ -232,6 +256,22 @@ pub struct StoredLogin {
     pub id: String,
     /// Why the store could not say, when it could not.
     pub note: Option<String>,
+}
+
+/// One profile, as `marion profile list` finds it — never a credential, only where one lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProfile {
+    /// The harness as the operator types it (`claude`).
+    pub harness: String,
+    pub name: String,
+    /// The harness's default profile.
+    pub default: bool,
+    /// What the harness's own read-only probe said; `None` until it has answered.
+    pub login: Option<crate::profiles::LoginState>,
+    /// The command that logs in to it, from its row's carrier: shown, never run.
+    pub login_command: String,
+    /// The last usage-limit reading a child's stream left for it.
+    pub limit: Option<String>,
 }
 
 /// Start's choices.
@@ -313,6 +353,14 @@ pub struct Setup {
     pub logins_error: Option<String>,
     /// The previewed change to the agents file, while it waits for a `y`.
     pub preview: Vec<types_form::DiffLine>,
+    /// The profiles, by harness then name, as `marion profile list` finds them.
+    pub profiles: Vec<StoredProfile>,
+    /// The harnesses a profile can be added for: those whose row names a carrier.
+    pub profile_harnesses: Vec<String>,
+    /// The profiles have been listed at least once.
+    pub profiles_listed: bool,
+    /// Why the profiles could not be listed, when they could not.
+    pub profiles_error: Option<String>,
 }
 
 /// The whole home screen's state.
@@ -424,7 +472,8 @@ impl Home {
     pub fn animating(&self) -> bool {
         match self.tab {
             Tab::Watch => self.watch.nodes.iter().any(|n| !n.state.is_exited()),
-            Tab::Start | Tab::Setup => self.checking,
+            Tab::Start => self.checking,
+            Tab::Setup => self.checking || self.setup.profiles.iter().any(|p| p.login.is_none()),
             Tab::Help => false,
         }
     }
@@ -516,6 +565,7 @@ impl Home {
                         self.notice = Some("not written; still editing".into());
                     }
                     Effect::Logout(_) => self.notice = Some("key kept".into()),
+                    Effect::ProfileRemove(_) => self.notice = Some("profile kept".into()),
                     _ => self.notice = Some("not cancelled".into()),
                 }
                 Effect::None
@@ -540,6 +590,29 @@ impl Home {
                 }
                 _ => {
                     self.mode = Mode::Login { text };
+                    Effect::None
+                }
+            },
+            Mode::Profile { mut text } => match key {
+                Key::Enter => self.profile_add(text),
+                Key::Esc | Key::Ctrl('c') => Effect::None,
+                Key::Backspace => {
+                    text.pop();
+                    self.mode = Mode::Profile { text };
+                    Effect::None
+                }
+                Key::Char(c) => {
+                    push_bounded(&mut text, &c.to_string());
+                    self.mode = Mode::Profile { text };
+                    Effect::None
+                }
+                Key::Paste(p) => {
+                    push_bounded(&mut text, p.trim());
+                    self.mode = Mode::Profile { text };
+                    Effect::None
+                }
+                _ => {
+                    self.mode = Mode::Profile { text };
                     Effect::None
                 }
             },
@@ -752,7 +825,8 @@ impl Home {
             Key::Char('q') => return Effect::Quit,
             Key::Char('?') => self.tab = Tab::Help,
             Key::Char('j') | Key::Down => {
-                let n = self.harnesses.len() + self.setup.logins.len();
+                // The profiles, or the one row that adds the first while there are none.
+                let n = self.profiles_start() + self.setup.profiles.len().max(1);
                 self.setup.cursor = (self.setup.cursor + 1).min(n.saturating_sub(1));
             }
             Key::Char('k') | Key::Up => self.setup.cursor = self.setup.cursor.saturating_sub(1),
@@ -768,6 +842,13 @@ impl Home {
                     ..Default::default()
                 })
             }
+            Key::Char('a') if self.on_profiles() => {
+                let text = self
+                    .selected_profile()
+                    .map(|p| format!("{} ", p.harness))
+                    .unwrap_or_default();
+                self.mode = Mode::Profile { text };
+            }
             Key::Char('a') => {
                 let text = self
                     .selected_login()
@@ -775,9 +856,22 @@ impl Home {
                     .unwrap_or_default();
                 self.mode = Mode::Login { text };
             }
-            Key::Char('x') => match self.selected_login() {
-                Some(l) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
-                None => self.notice = Some("select a stored key to remove it".into()),
+            Key::Char('u') => match self.selected_profile() {
+                Some(p) if p.default => {
+                    self.notice = Some(format!("{} already runs on {}", p.harness, p.name))
+                }
+                Some(p) => {
+                    return Effect::ProfileUse {
+                        harness: p.harness.clone(),
+                        name: p.name.clone(),
+                    };
+                }
+                None => self.notice = Some("select a profile to use it".into()),
+            },
+            Key::Char('x') => match (self.selected_login(), self.selected_profile()) {
+                (Some(l), _) => self.mode = Mode::Confirm(Effect::Logout(l.id.clone())),
+                (_, Some(p)) => self.mode = Mode::Confirm(Effect::ProfileRemove(p.name.clone())),
+                _ => self.notice = Some("select a stored key or a profile to remove it".into()),
             },
             _ => {}
         }
@@ -788,6 +882,45 @@ impl Home {
     pub fn selected_login(&self) -> Option<&StoredLogin> {
         let i = self.setup.cursor.checked_sub(self.harnesses.len())?;
         self.setup.logins.get(i)
+    }
+
+    /// Where Setup's profile rows begin: after the harnesses and the stored keys.
+    fn profiles_start(&self) -> usize {
+        self.harnesses.len() + self.setup.logins.len()
+    }
+
+    /// Setup's cursor is on the profiles: one of them, or the row that adds the first.
+    pub fn on_profiles(&self) -> bool {
+        self.setup.cursor >= self.profiles_start()
+    }
+
+    /// The profile under Setup's cursor.
+    pub fn selected_profile(&self) -> Option<&StoredProfile> {
+        let i = self.setup.cursor.checked_sub(self.profiles_start())?;
+        self.setup.profiles.get(i)
+    }
+
+    /// A new listing of the profiles. The cursor moves onto `select` where the listing has it — a
+    /// profile just added, whose row shows the login it needs — and otherwise stays on a row that
+    /// still exists.
+    pub fn set_profiles(
+        &mut self,
+        rows: Vec<StoredProfile>,
+        harnesses: Vec<String>,
+        select: Option<&str>,
+    ) {
+        let s = &mut self.setup;
+        s.profiles = rows;
+        s.profile_harnesses = harnesses;
+        s.profiles_listed = true;
+        s.profiles_error = None;
+        let start = self.profiles_start();
+        let last = start + self.setup.profiles.len().max(1) - 1;
+        let chosen = select.and_then(|n| self.setup.profiles.iter().position(|p| p.name == n));
+        self.setup.cursor = match chosen {
+            Some(i) => start + i,
+            None => self.setup.cursor.min(last),
+        };
     }
 
     /// The harnesses an agents file can name, in doctor's order: the rows whose name is a harness
@@ -815,6 +948,37 @@ impl Home {
             return Effect::None;
         }
         Effect::Login(text)
+    }
+
+    /// Enter in the profile box: `marion profile add <harness> <name>` when the harness takes
+    /// profiles and the name is one — refused here, before the terminal changes hands, otherwise.
+    fn profile_add(&mut self, text: String) -> Effect {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let [harness, name] = words.as_slice() else {
+            self.notice = Some("type a harness and a name for the profile, then enter".into());
+            return Effect::None;
+        };
+        if !self.setup.profile_harnesses.iter().any(|h| h == harness) {
+            self.notice = Some(format!(
+                "`{harness}` takes no profiles; these do: {}",
+                self.setup.profile_harnesses.join(", ")
+            ));
+            return Effect::None;
+        }
+        if !marion_core::agent_type::is_valid_name(name) {
+            self.notice = Some(format!(
+                "`{name}` is not a profile name: letters, digits, - and _"
+            ));
+            return Effect::None;
+        }
+        if self.setup.profiles.iter().any(|p| p.name == *name) {
+            self.notice = Some(format!("a profile named `{name}` already exists"));
+            return Effect::None;
+        }
+        Effect::ProfileAdd {
+            harness: harness.to_string(),
+            name: name.to_string(),
+        }
     }
 
     fn form_key(&mut self, mut form: Form, key: Key) -> Effect {

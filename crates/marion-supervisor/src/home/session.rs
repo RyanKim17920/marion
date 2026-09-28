@@ -76,6 +76,8 @@ enum Handoff {
     /// `marion login <credential id>` / `marion logout <credential id>`, in the foreground.
     Login(String),
     Logout(String),
+    /// `marion profile add <harness> <name>`, in the foreground: it prints the login command.
+    ProfileAdd(String, String),
 }
 
 /// What the side threads report.
@@ -85,6 +87,10 @@ enum Report {
     DoctorDone,
     /// The stored keys, as `marion login --list` finds them, and the store's name; or why not.
     Logins(Result<(Vec<crate::login::ProviderLogins>, String), String>),
+    /// The profiles, before any probe has answered; or why they could not be listed.
+    Profiles(Result<Vec<super::StoredProfile>, String>),
+    /// One profile's login, as its harness's read-only probe answered.
+    ProfileLogin(String, crate::profiles::LoginState),
     /// A `marion run` finished: whether it started, its last line, and the root it named.
     Ran {
         ok: bool,
@@ -137,6 +143,17 @@ pub fn run(opts: &Options) -> Result<(), String> {
             }
             Handoff::Login(id) => s.credential("login", &id),
             Handoff::Logout(id) => s.credential("logout", &id),
+            Handoff::ProfileAdd(harness, name) => {
+                let c = s.profile_command(&["add", &harness, &name]);
+                s.foreground(c, "marion profile add");
+                if s.home.notice.is_none() {
+                    s.home.notice = Some(format!(
+                        "profile {name} added · log in to it yourself with the command under it"
+                    ));
+                }
+                s.added_profile = Some(name);
+                s.load_profiles();
+            }
         }
     }
 }
@@ -165,6 +182,11 @@ struct Session {
     next_tick: Instant,
     /// Something changed since the last paint.
     dirty: bool,
+    /// The profiles have been asked for: once Setup is first shown, since listing them runs each
+    /// harness's status probe.
+    profiles_asked: bool,
+    /// A profile `marion profile add` just made, to select once the listing shows it.
+    added_profile: Option<String>,
 }
 
 impl Session {
@@ -212,10 +234,15 @@ impl Session {
             tick: 0,
             next_tick: Instant::now(),
             dirty: true,
+            profiles_asked: false,
+            added_profile: None,
         };
         s.load_types();
         s.recheck();
         s.load_logins();
+        if opts.tab == Tab::Setup {
+            s.load_profiles();
+        }
         s
     }
 
@@ -325,6 +352,15 @@ impl Session {
     /// whole terminal.
     fn key(&mut self, key: Key) -> Option<Handoff> {
         self.home.notice = None;
+        let handoff = self.effect(key);
+        if self.home.tab == Tab::Setup && !self.profiles_asked {
+            self.load_profiles();
+        }
+        handoff
+    }
+
+    /// The key's effect, carried out.
+    fn effect(&mut self, key: Key) -> Option<Handoff> {
         match self.home.key(key) {
             Effect::None => None,
             Effect::Quit => Some(Handoff::Quit),
@@ -342,6 +378,15 @@ impl Session {
             Effect::EditTypes => Some(Handoff::EditTypes),
             Effect::Login(id) => Some(Handoff::Login(id)),
             Effect::Logout(id) => Some(Handoff::Logout(id)),
+            Effect::ProfileAdd { harness, name } => Some(Handoff::ProfileAdd(harness, name)),
+            Effect::ProfileUse { harness, name } => {
+                self.profile_verb(&["use", &harness, &name]);
+                None
+            }
+            Effect::ProfileRemove(name) => {
+                self.profile_verb(&["remove", &name]);
+                None
+            }
             Effect::PreviewType(draft) => {
                 self.preview_type(&draft);
                 None
@@ -543,6 +588,68 @@ impl Session {
         self.load_logins();
     }
 
+    /// `marion profile <args>`: this binary, and no project flags — the verb takes none, and keeps
+    /// its profiles where every other `marion profile` does.
+    fn profile_command(&self, args: &[&str]) -> std::process::Command {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("marion"));
+        let mut c = std::process::Command::new(exe);
+        c.arg("profile").args(args);
+        c
+    }
+
+    /// A `marion profile` verb that only edits the profiles file (`use`, `remove`): run to its end
+    /// beside the screen, its last line as the notice, then the profiles listed again.
+    fn profile_verb(&mut self, args: &[&str]) {
+        let mut c = self.profile_command(args);
+        self.home.notice = Some(match c.stdin(std::process::Stdio::null()).output() {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                stdout
+                    .lines()
+                    .chain(stderr.lines())
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .to_string()
+            }
+            Err(e) => format!("marion profile did not start: {e}"),
+        });
+        self.load_profiles();
+    }
+
+    /// List the profiles on a thread, then ask each one's harness whether it is logged in — a
+    /// read-only probe per profile, carrying its row's update switch, reported as it answers.
+    fn load_profiles(&mut self) {
+        self.profiles_asked = true;
+        let tx = self.reporter.clone();
+        let state = self.state.clone();
+        std::thread::spawn(move || {
+            let Some(paths) = crate::profiles::ProfilePaths::from_env() else {
+                tx.send(Report::Profiles(Err(
+                    "none of $XDG_CONFIG_HOME, $XDG_DATA_HOME or $HOME is set".into(),
+                )));
+                return;
+            };
+            let listed = match crate::profiles::listed(&paths.with_state_root(&state)) {
+                Ok(listed) => listed,
+                Err(e) => {
+                    tx.send(Report::Profiles(Err(e.to_string())));
+                    return;
+                }
+            };
+            let rows = listed.iter().map(stored_profile).collect();
+            if !tx.send(Report::Profiles(Ok(rows))) {
+                return;
+            }
+            for l in listed {
+                let login = crate::profiles::login_state(&l.profile);
+                if !tx.send(Report::ProfileLogin(l.profile.name, login)) {
+                    return;
+                }
+            }
+        });
+    }
+
     /// List the stored keys on a thread: the Keychain answers one `security` call per id, which is
     /// too slow for a frame.
     fn load_logins(&mut self) {
@@ -727,6 +834,21 @@ impl Session {
                     s.logins_error = None;
                 }
                 Report::Logins(Err(e)) => self.home.setup.logins_error = Some(e),
+                Report::Profiles(Ok(rows)) => {
+                    let select = self.added_profile.take();
+                    self.home
+                        .set_profiles(rows, profile_harnesses(), select.as_deref());
+                }
+                Report::Profiles(Err(e)) => {
+                    let s = &mut self.home.setup;
+                    s.profiles_listed = true;
+                    s.profiles_error = Some(e);
+                }
+                Report::ProfileLogin(name, login) => {
+                    if let Some(p) = self.home.setup.profiles.iter_mut().find(|p| p.name == name) {
+                        p.login = Some(login);
+                    }
+                }
                 Report::Ran { ok, line, root } => {
                     self.home.notice = Some(line);
                     if ok {
@@ -740,6 +862,38 @@ impl Session {
             }
         }
     }
+}
+
+/// One listed profile as Setup holds it, its login not yet asked. The login command is the one
+/// `marion profile add` printed — from the row's carrier, shown and never run.
+fn stored_profile(l: &crate::profiles::Listed) -> super::StoredProfile {
+    let p = &l.profile;
+    let login_command = crate::profiles::carrier(p.harness)
+        .map(|c| crate::profile_cli::login_command(p.harness, c.env, &p.dir, c.login_hint))
+        .unwrap_or_default();
+    super::StoredProfile {
+        harness: crate::profiles::display_name(p.harness).to_string(),
+        name: p.name.clone(),
+        default: l.default,
+        login: None,
+        login_command,
+        limit: l.usage.limit.as_ref().map(|limit| {
+            format!(
+                "last limit {} ({})",
+                limit.status,
+                limit.window.as_deref().unwrap_or("usage")
+            )
+        }),
+    }
+}
+
+/// The harnesses a profile can be added for, as the operator types them: every row with a carrier.
+fn profile_harnesses() -> Vec<String> {
+    marion_core::harness::Harness::ALL
+        .into_iter()
+        .filter(|h| crate::profiles::carrier(*h).is_ok())
+        .map(|h| crate::profiles::display_name(h).to_string())
+        .collect()
 }
 
 /// The branch checked out at `dir`, read once when the screen opens; `None` outside git.
