@@ -13,13 +13,14 @@ use std::time::{Duration, Instant};
 
 use marion_core::proto::params::AgentSpawnParams;
 use marion_core::proto::{
-    Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1,
-    OpaqueOsValueV1, Outcome, Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
+    Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, Outcome,
+    Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
 };
 use marion_testsupport::{Scratch, fixture_repo, scratch, write_executable};
 
 mod common;
 use common::Supervisor;
+use common::native::opaque;
 
 const BOUND: Duration = Duration::from_secs(30);
 /// Not a performance assertion. A forbidden process has already crossed `command.spawn()` before
@@ -31,10 +32,6 @@ const PROBE_POLL: Duration = Duration::from_millis(10);
 /// if the test process itself is killed before cleanup can run.
 const SHIM_LIFE_TICKS: u32 = 200;
 const CLEANUP_ACK_BOUND: Duration = Duration::from_secs(3);
-
-fn opaque(value: &OsStr) -> OpaqueOsValueV1 {
-    OpaqueOsValueV1::from_os_str(value).expect("Unix preserves native launch bytes")
-}
 
 struct Bed {
     _scratch: Scratch,

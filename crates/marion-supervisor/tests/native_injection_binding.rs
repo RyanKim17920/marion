@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use marion_core::PRODUCTION_NATIVE_FACADES;
 use marion_core::contract::AgentId;
 use marion_core::proto::{
-    NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1,
+    NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV2, TerminalGeometryV1,
 };
 use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
@@ -18,11 +18,11 @@ use marion_harness::{
 use marion_supervisor::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use marion_testsupport::{Scratch, scratch, write_executable};
 
-const EXECUTABLE: &str = "atlas-cli";
+mod common;
 
-fn opaque(value: &OsStr) -> OpaqueOsValueV1 {
-    OpaqueOsValueV1::from_os_str(value).expect("Unix preserves native launch bytes")
-}
+use common::native::opaque;
+
+const EXECUTABLE: &str = "atlas-cli";
 
 fn env_var(name: &OsStr, value: &OsStr) -> NativeEnvVarV1 {
     NativeEnvVarV1 {

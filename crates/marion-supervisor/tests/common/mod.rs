@@ -18,6 +18,7 @@ pub mod cast;
 pub mod client;
 pub mod journal;
 pub mod mcp_result;
+pub mod native;
 pub mod run;
 pub mod script;
 pub mod socket_spawn;
