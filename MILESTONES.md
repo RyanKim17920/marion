@@ -2133,13 +2133,42 @@ ever runs a real login.
   `tests/endpoint_matrix.rs` holds the three refusal cells (logged out, no shared wire, ACP).
   Node config documents are now written `0600` (they carry the node token and, on opencode and
   cline endpoint nodes, the key).
-- **Endpoint records and resume — built; tree display not yet.** `provider` and `route`
-  (`native`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
+- **Translating gateway — built for Anthropic Messages → OpenAI Chat (2026-09-27).** Where a
+  harness and its provider share no wire, resolution takes the first harness wire the gateway
+  translates to a provider wire (`marion_core::provider::TRANSLATIONS`, one pair today; a native
+  wire always wins) and the route is `translated`. `endpoint::open` starts a
+  `marion_supervisor::gateway::Gateway` for the attempt: bound to `127.0.0.1` on a kernel port, it
+  admits only a per-run 32-byte bearer (a `Secret`, compared in constant time) that the harness is
+  handed in place of the key, translates each `POST …/messages` (system, tools, `tool_choice`,
+  history with tool results, images, sampling, stop sequences; thinking blocks and server tools
+  dropped) to a streamed Chat Completions request for the endpoint's model, and relays the
+  provider's SSE back as Anthropic's event stream (text and `tool_use` blocks, arguments streamed as
+  `input_json_delta`, `stop_reason`, usage with cache reads split out) — or folds it into one
+  message for a request that did not stream. A provider refusal keeps its status in Anthropic's
+  error vocabulary (429 stays `rate_limit_error`), so the harness's retries and marion's classifier
+  read it unchanged. The provider key goes to `curl` on a pipe read as `-H @/dev/fd/3` (body on
+  stdin, `-q` ignores `~/.curlrc`): on no argv, in no file, never in the harness. Idle cost is one
+  thread blocked in `accept`; a child opens one per attempt (a rotated key gets a fresh one) and a
+  root holds one for its life; dropping the handle closes the listener, shuts every connection,
+  kills in-flight curls and joins the threads. The bearer is scrubbed from the node's stream and
+  captures like the key. **External gateways** (LiteLLM, a claude-code-router-style proxy) need
+  nothing new: a `providers.toml` entry with the gateway's base URL and the wire it speaks.
+  Canned cells green: the gateway's own suite (streamed tool turn both ways, non-streamed, 401
+  without the bearer, 429 kept, unreachable 502, drop joins everything), and a real claude 2.1.283
+  child on a Chat-only fixture provider reporting through marion — while its turn is in flight no
+  descendant argv carries the key or the bearer, no kept file holds the key, and the gateway count
+  is zero once the node exits. **Not built:** Chat → Anthropic (a Chat-only harness on an
+  Anthropic-only provider) and Responses ↔ Chat (codex on a Chat-only provider); each is one more
+  `TRANSLATIONS` pair plus its arm in `gateway::Translation`.
+- **Endpoint records and resume — built, shown in the tree and Watch.** `provider` and `route`
+  (`native` or `translated`) ride the journal's `Spawned`, the contract's `ChildRef` and the replayed node (serde
   default, skipped when absent, so canned and live records are byte-identical to before). A resume
   re-requests `<provider>:<model>` with the adapter's own spelling undone
   (`HarnessAdapter::endpoint_model`; opencode's `marion/` block prefix), so it re-resolves the
-  provider and re-reads the key. `marion tree`/`list` do not show model or provider yet:
-  `NodeSummary` carries neither, and the tree UX is being reworked on another branch.
+  provider and re-reads the key. `NodeSummary.endpoint` (`NodeEndpoint { provider, model, route
+  }`, serde-optional) projects them off the latest `Spawned` with the model's harness spelling
+  undone; the tree row and the Watch row append `provider:model`, and the Watch expansion shows a
+  `Model` block with the route. `marion list` is unchanged.
 - **Endpoint cells — green for codex, opencode, copilot (×2), gemini, cline and qwen; claude and
   goose written, not run.** Added 2026-09-27: gemini on its own wire (the key in
   `x-goog-api-key`, the model in the request path), cline and qwen on Chat — green; goose's cell is
@@ -2161,8 +2190,9 @@ ever runs a real login.
   with the key header on stdin (`-H @-`, so the key is on no argv and marion links no TLS),
   reporting listed/refused/status/unreachable and whether the requested model is listed. Then the
   harness × provider matrix from the resolver's own rule (`endpoint::shared_wire` plus whether the
-  recipe presents the provider's key header), with each unsupported pair's reason (both wire lists,
-  or the header). Canned tests: the probe (listed, a 401-refused key, a missing key), the matrix,
+  recipe presents the provider's key header, else `endpoint::translated_wire` as a translated cell
+  spelled `anthropic>openai-chat`), with each unsupported pair's reason (both wire lists, or the
+  header). Canned tests: the probe (listed, a 401-refused key, a missing key), the matrix,
   and the command line. **Not done:** the fold into the default `marion doctor` summary and `marion
   doctor` forwarding, which live on the onboarding branch and are not in this base.
 - **Key header — built.** Which header a provider reads its key from is a provider column,
@@ -2178,8 +2208,8 @@ ever runs a real login.
   it is sent as a second credential). opencode: `x-api-key` as a provider-block header with no
   `apiKey`. Canned cells green on 2026-09-27: copilot anthropic Bearer, opencode Chat `x-api-key`.
 
-marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
-expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
+marion's own gateway covers the one pair above; LiteLLM / Vercel AI Gateway / OpenRouter translate
+the rest, reached as ordinary providers. **Universally expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
 round-tripping, and accurate token counts.
 
 ---
