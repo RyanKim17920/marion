@@ -15,7 +15,8 @@
 //! that field yet.
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use marion_core::contract::{AgentId, Oid, TaskContract};
 use marion_core::harness::Harness;
@@ -157,6 +158,114 @@ pub fn verdict(
 ) -> Option<Result<Verdict, review::Unparseable>> {
     let parsed = review::parse(narrative?);
     Some(parsed.map(|p| review::decide(p, &target.changed_paths, ReviewSpec::default().block_on)))
+}
+
+/// **`marion review` as the operator**: ask the supervisor at `socket` for a review of `target`
+/// (no `caller`, the operator's own `repo`), wait for the reviewer to end, and return its contract.
+/// `agent_type` empty lets the supervisor choose ([`default_reviewer`]).
+///
+/// The same `agent/spawn` a parent model sends through its bridge, so the two client forms share
+/// one spawn path; this adds only the wait a terminal command needs.
+pub fn request(
+    socket: &Path,
+    project: &marion_core::paths::ProjectDir,
+    target: &AgentId,
+    agent_type: &str,
+    model: Option<String>,
+    repo: &Path,
+    bound: Duration,
+) -> Result<(AgentId, TaskContract), String> {
+    let spawned = crate::courier::spawn(
+        socket,
+        marion_core::proto::params::AgentSpawnParams {
+            review_of: Some(target.clone()),
+            notify_parent: false,
+            agent_type: agent_type.to_string(),
+            prompt: String::new(),
+            native_launch: None,
+            caller: None,
+            repo: Some(repo.to_path_buf()),
+            acceptance_criteria: vec![],
+            verification: vec![],
+            writable_scope: vec![],
+            timeout_secs: Some(bound.as_secs()),
+            model,
+            no_change_record: None,
+            pane: None,
+            isolation: None,
+            allow_concurrent_writes: None,
+            profile: None,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let reviewer = spawned.agent_id;
+    let task = spawned
+        .task_id
+        .ok_or_else(|| "the supervisor started a reviewer with no contract".to_string())?;
+    match crate::courier::await_contract(socket, project, &reviewer, Some(&task), bound)
+        .map_err(|e| e.to_string())?
+    {
+        crate::courier::Delivered::StillRunning => Err(format!(
+            "reviewer {} is still running after {} s; `marion ls` shows it when it ends",
+            reviewer.0,
+            bound.as_secs()
+        )),
+        _ => {
+            let path = project.agent(&reviewer).contract(&task);
+            std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+                .map(|c| (reviewer, c))
+                .map_err(|e| format!("reading the reviewer's contract at {}: {e}", path.display()))
+        }
+    }
+}
+
+/// A finished reviewer's contract as the lines `marion review` prints: who reviewed, marion's
+/// decision and count, then one line per finding, most severe and grounded first.
+pub fn summary_lines(reviewer: &AgentId, contract: &TaskContract) -> Vec<String> {
+    let short = crate::tree::short_id(&reviewer.0);
+    let Some(c) = contract.completion.as_ref() else {
+        return vec![format!(
+            "review {short}: the reviewer's contract has no completion"
+        )];
+    };
+    let Some(f) = c.findings.as_ref() else {
+        return vec![format!(
+            "review {short}: no findings could be read ({})",
+            c.exit.description
+        )];
+    };
+    let total = f.findings.len() + f.findings_omitted;
+    let mut lines = vec![format!(
+        "review {short}: {total} finding{}{}",
+        if total == 1 { "" } else { "s" },
+        if f.summary.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", f.summary)
+        }
+    )];
+    for finding in &f.findings {
+        let at = finding
+            .line
+            .map(|l| format!("{}:{l}", finding.file))
+            .unwrap_or_else(|| finding.file.clone());
+        lines.push(format!(
+            "  {:?} {at}{}: {}",
+            finding.severity,
+            if finding.grounded {
+                ""
+            } else {
+                " (outside the change)"
+            },
+            finding.claim
+        ));
+    }
+    if f.findings_omitted > 0 {
+        lines.push(format!("  … {} more in the contract", f.findings_omitted));
+    }
+    lines
 }
 
 #[cfg(test)]
