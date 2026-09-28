@@ -41,13 +41,26 @@ SECRET_PATTERNS = [
     re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     re.compile(r"-----BEGIN [A-Z ]+-----"),
 ]
+OPENCODE_SESSION = re.compile(r"\bses_[A-Za-z0-9]{16,}")
 UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-# claude's init frame carries the operator's catalogue; keep only what the transcript needs.
+# The operator's catalogue, at any depth of any harness's frame: claude's `system/init` (skills,
+# plugins, MCP servers, memory paths), ACP's `available_commands_update` (skill descriptions can
+# carry the account holder's name), `configOptions` (the model roster the login can reach), and
+# claude's `rate_limit_event` (the account's plan windows, utilization and overage policy).
 CATALOGUE_KEYS = {
+    "rate_limit_info",
     "agents", "skills", "slash_commands", "plugins", "mcp_servers", "memory_paths", "tools",
-    "terminal_slash_commands", "capabilities", "cwd", "session_id", "uuid",
+    "terminal_slash_commands", "capabilities", "availableCommands", "available_commands",
+    "configOptions", "availableModels", "models", "modes",
 }
+# Per-run identifiers, dropped rather than replaced: nothing in a transcript correlates on them.
+ID_KEYS = {"cwd", "session_id", "sessionId", "uuid"}
+# Where a tool call's output lives, per harness: codex items, claude tool_result blocks, ACP updates.
+OUTPUT_KEYS = {"aggregated_output", "output", "content", "result", "stdout", "stderr", "rawOutput"}
+CALL_ID_KEYS = ("id", "tool_use_id", "call_id", "toolCallId")
+# A call that names a dot-directory under HOME read the operator's own config or memory.
+OPERATOR_READ = "<HOME>/."
 
 
 class Redactor:
@@ -73,6 +86,7 @@ class Redactor:
             if lit:
                 s = s.replace(lit, rep)
         s = UUID.sub("<UUID>", s)
+        s = OPENCODE_SESSION.sub("<SESSION>", s)
         s = EMAIL.sub("redacted@example.invalid", s)
         return s
 
@@ -204,6 +218,44 @@ def tool_calls(events):
     return names
 
 
+def reduce_catalogue(v):
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            if k in ID_KEYS:
+                continue
+            if k in CATALOGUE_KEYS and isinstance(x, (list, dict)) and x:
+                out[k] = f"<{len(x)} entries dropped: operator catalogue>"
+            else:
+                out[k] = reduce_catalogue(x)
+        return out
+    if isinstance(v, list):
+        return [reduce_catalogue(x) for x in v]
+    return v
+
+
+def call_ids(v, found):
+    if isinstance(v, dict):
+        for k in CALL_ID_KEYS:
+            if isinstance(v.get(k), str):
+                found.add(v[k])
+        for x in v.values():
+            call_ids(x, found)
+    elif isinstance(v, list):
+        for x in v:
+            call_ids(x, found)
+    return found
+
+
+def drop_outputs(v):
+    if isinstance(v, dict):
+        return {k: ("<dropped: output of a call that read operator config>" if k in OUTPUT_KEYS else drop_outputs(x))
+                for k, x in v.items()}
+    if isinstance(v, list):
+        return [drop_outputs(x) for x in v]
+    return v
+
+
 def transcript(events, red: Redactor):
     lines = []
     for ev in events:
@@ -211,15 +263,20 @@ def transcript(events, red: Redactor):
         ts = ev.get("ts", "")
         if isinstance(payload, dict) and "Vendor" in payload:
             vendor = payload["Vendor"]
-            frame = vendor.get("json")
-            if isinstance(frame, dict) and frame.get("type") == "system" and "skills" in frame:
-                frame = {"type": "system", "subtype": frame.get("subtype"), "model": frame.get("model"),
-                         "note": "catalogue frame reduced by live-smoke-collect.py"}
-            elif isinstance(frame, dict):
-                frame = {k: v for k, v in frame.items() if k not in CATALOGUE_KEYS}
-            lines.append({"ts": ts, "key": vendor.get("key"), "frame": red.value(frame)})
+            frame = red.value(reduce_catalogue(vendor.get("json")))
+            lines.append({"ts": ts, "key": vendor.get("key"), "frame": frame})
         else:
             lines.append({"ts": ts, "marion": red.value(payload)})
+    # A call that read under the operator's dot-directories keeps its command, never its output —
+    # in its own frame and in the later frame that answers the same call id.
+    tainted = set()
+    for line in lines:
+        if "frame" in line and OPERATOR_READ in json.dumps(line["frame"]):
+            call_ids(line["frame"], tainted)
+            line["frame"] = drop_outputs(line["frame"])
+    for line in lines:
+        if "frame" in line and tainted & call_ids(line["frame"], set()):
+            line["frame"] = drop_outputs(line["frame"])
     if len(lines) > MAX_FRAMES:
         half = MAX_FRAMES // 2
         dropped = len(lines) - MAX_FRAMES
@@ -271,9 +328,8 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     pdir = project_dir(a.state)
     nodes, steers = walk_nodes(pdir)
-    by_task = {}
-    for path, c in contracts(pdir):
-        by_task[c.get("task_id")] = c
+    # A contract sits under the agent dir of the child it describes: agents/<agent_id>/contracts/.
+    by_agent = {path.parent.parent.name: c for path, c in contracts(pdir)}
 
     # marion's rendered console, minus the raw frames it echoes (those are in the transcripts).
     if a.console and a.console.exists():
@@ -292,14 +348,20 @@ def main():
         (a.out / f"{role}-{n['harness']}.transcript.json").write_text(
             json.dumps(transcript(events, red), indent=1, ensure_ascii=False) + "\n")
 
-    child_contracts = []
-    for c in by_task.values():
-        child_contracts.append(c)
-        (a.out / f"contract-{c['child']['harness']}.json").write_text(
-            json.dumps(red.value(c, cut=False), indent=1, ensure_ascii=False) + "\n")
+    for i, n in enumerate(children):
+        c = by_agent.get(n["agent_id"])
+        if c:
+            (a.out / f"contract-child{i + 1}-{n['harness']}.json").write_text(
+                json.dumps(red.value(c, cut=False), indent=1, ensure_ascii=False) + "\n")
 
-    wanted = [c for c in child_contracts if c["child"]["harness"] == a.expect_child]
-    main_c = wanted[0] if wanted else (child_contracts[0] if child_contracts else None)
+    # The row judges the root's own first child on the harness the prompt named. Journal harness
+    # ids are the registry's (`claude-code`), the prompt's the agent type's (`claude`).
+    def is_expected(n):
+        return n["depth"] == 1 and (n["harness"] == a.expect_child or n["agent_type"] == a.expect_child)
+
+    wanted = [by_agent[n["agent_id"]] for n in children if is_expected(n) and n["agent_id"] in by_agent]
+    firsts = [by_agent[n["agent_id"]] for n in children if n["depth"] == 1 and n["agent_id"] in by_agent]
+    main_c = wanted[0] if wanted else (firsts[0] if firsts else None)
     comp = (main_c or {}).get("completion") or {}
     narrative = (comp.get("narrative") or {}).get("value")
     evidence = comp.get("evidence") or []
@@ -318,7 +380,8 @@ def main():
                           "usage": fmt_usage(root["usage"]), "cost_usd": root["cost_usd"],
                           "exit": root["exit"], "marion_tools": [t for t in root["tool_calls"] if "marion" in t or t in ("spawn", "wait", "steer", "status", "list")]},
         "delegated": bool(children),
-        "children": [{"harness": n["harness"], "agent_type": n["agent_type"], "version": n["version"],
+        "children": [{"harness": n["harness"], "agent_type": n["agent_type"], "depth": n["depth"],
+                      "version": n["version"],
                       "generations": n["generations"], "exit": n["exit"],
                       "usage": fmt_usage(n["usage"]), "cost_usd": n["cost_usd"]} for n in children],
         "child_harness_expected": a.expect_child,
