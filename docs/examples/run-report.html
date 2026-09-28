@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>marion report: claude 8ea3</title>
+<style>:root{--bg:#fbfaf8;--fg:#1d1c1a;--dim:#6b6862;--line:#e4e1dc;--card:#fff;--ok:#1f7a4d;--bad:#b3261e;--warn:#946200;--live:#2458b3;--code:#f3f1ed;color-scheme:light}@media (prefers-color-scheme:dark){:root{--bg:#161614;--fg:#e8e6e1;--dim:#9a968e;--line:#2e2d2a;--card:#1e1e1b;--ok:#5fc48f;--bad:#f2867c;--warn:#e0b44d;--live:#86a9f0;--code:#262622;color-scheme:dark}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}main{max-width:62rem;margin:0 auto;padding:2rem 1rem 4rem}h1{font-size:1.5rem;margin:0 0 .25rem}h2{font-size:1.1rem;margin:0 0 .5rem}.sum{font-size:1.05rem;margin:.25rem 0}.meta{color:var(--dim);margin:0 0 1.25rem}pre,code{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}pre{background:var(--code);padding:.75rem 1rem;border-radius:6px;overflow-x:auto;margin:.5rem 0}code{background:var(--code);padding:.05rem .3rem;border-radius:4px}pre.tree a{color:inherit;text-decoration:none}pre.tree a:hover{text-decoration:underline}section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem 1.25rem;margin:1rem 0}.st{font-size:.8rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;border:1px solid currentColor;margin-left:.4rem;vertical-align:middle}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.live{color:var(--live)}dl{display:grid;grid-template-columns:max-content 1fr;gap:.15rem 1rem;margin:.25rem 0 .75rem}dt{color:var(--dim)}dd{margin:0}details{margin:.5rem 0}summary{cursor:pointer;font-weight:600}blockquote{margin:.5rem 0;padding:.25rem 1rem;border-left:3px solid var(--line);white-space:pre-wrap}ul{margin:.25rem 0;padding-left:1.25rem}.said{color:var(--dim)}.gap{color:var(--dim)}.why{color:var(--bad)}</style>
+</head>
+<body>
+<main>
+<h1>marion report: claude 8ea3</h1>
+<p class="sum">3 nodes · 342.4k tokens · Σ 2 files changed · 4m19s wall</p>
+<p class="meta">project <code>~/code/app</code> · generated 2026-09-21 15:13:20 UTC by marion 0.0.0-test</p>
+<pre class="tree"><a href="#n0">claude 8ea3 · exited:ok · claude (claude-opus-5-5) · 257.1k tokens</a>
+├── <a href="#n1">codex 1b2c · exited:ok · codex (gpt-5.5-codex) · 84.4k tokens</a>
+└── <a href="#n2">codex 5d6e · exited:failed · codex (gpt-5.5) · 912 tokens</a>
+</pre>
+<section id="n0">
+<h2>claude 8ea3<span class="st ok">exited:ok</span></h2>
+<dl><dt>harness</dt><dd>claude (claude-opus-5-5)</dd><dt>type</dt><dd>claude</dd><dt>started</dt><dd>2026-09-21 14:13:21 UTC · ran 4m19s</dd><dt>tokens</dt><dd>42.0k in · 5.1k out · 210.0k cached · 2 turns</dd></dl>
+<p><strong>Task</strong> <span class="said">(the root&#39;s prompt is withheld; export with --include-prompt to include it)</span></p>
+<details open><summary>Activity (6)</summary><pre>  +00:05  <span class="said">“I&#39;ll read the api first, then hand the limiter to codex.”</span>
+  +00:09  Read ~/code/app/src/lib.rs, ~/code/app/src/api.rs … ×3
+  +00:21  spawn &quot;add a token bucket to src/limits&quot;
+  +00:25  $ curl -s -H &#39;Authorization: Bearer ***&#39; https://api.example.invalid/health
+  +00:29  $ echo *** &gt; /dev/null
+  +00:33  <span class="said">“The child landed marion/t-1; merge it with git merge --no-ff marion/t-1.”</span>
+</pre></details>
+</section>
+<section id="n1">
+<h2>codex 1b2c<span class="st ok">exited:ok</span></h2>
+<dl><dt>harness</dt><dd>codex (gpt-5.5-codex)</dd><dt>type</dt><dd>codex</dd><dt>parent</dt><dd>8ea3</dd><dt>started</dt><dd>2026-09-21 14:13:26 UTC · ran 3m14s</dd><dt>tokens</dt><dd>18.0k in · 2.4k out · 64.0k cached · 3 turns</dd></dl>
+<details open><summary>Task</summary><blockquote>add a token bucket to src/limits; use ***</blockquote><ul><li>accept: cargo test passes (not ***)</li></ul></details>
+<details><summary>Steers (1)</summary><p class="said">length and outcome; marion never keeps the text</p><ul><li><code>+00:34</code> ancestor 8ea3 · 58 bytes · delivered via turn</li></ul></details>
+<details open><summary>Activity (7)</summary><pre>  +00:22  $ rg -n limiter src, -n bucket src … ×3
+  +01:22  ~ src/limits/bucket.rs +1 more
+  +01:42  $ curl -H &quot;x-api-key: ***&quot; localhost:1
+  +02:02  $ OPENROUTER_KEY=*** ./probe
+  +02:22  $ cargo test -q
+  +02:42  report &quot;token bucket added; tests pass&quot;
+  +03:02  <span class="said">“Done. (debug: ***)”</span>
+</pre></details>
+<details open><summary>Checks</summary><ul><li><span class="ok">✓</span> <code>cargo test -q</code> · 41.2s</li><li><span class="bad">✗ exit 101</span> <code>cargo clippy -- -D warnings</code> · 9.8s<pre>warning: unused
+error: token *** in ~/code/app/src/x.rs</pre></li></ul></details>
+<details open><summary>Result</summary><blockquote>Added src/limits/bucket.rs with a refill-on-read token bucket. ***</blockquote></details>
+<p><strong>Landed</strong> on <code>marion/t-1</code> at <code>4f2a9c1e0b7d</code> · merge with <code>git merge --no-ff marion/t-1</code></p>
+<p>Changed: <code>src/limits/bucket.rs</code>, <code>src/limits/mod.rs</code></p>
+</section>
+<section id="n2">
+<h2>codex 5d6e<span class="st bad">exited:failed</span></h2>
+<dl><dt>harness</dt><dd>codex (gpt-5.5)</dd><dt>type</dt><dd>codex</dd><dt>parent</dt><dd>8ea3</dd><dt>started</dt><dd>2026-09-21 14:13:41 UTC · ran 29s</dd><dt>tokens</dt><dd>900 in · 12 out · 1 turn</dd></dl>
+<details open><summary>Task</summary><blockquote>benchmark the limiter against the old one</blockquote></details>
+<details open><summary>Activity (0)</summary><p class="said">(no activity recorded)</p></details>
+<p class="why"><strong>Why it failed</strong> login refused: 401 Unauthorized: key *** was refused</p>
+</section>
+</main>
+</body>
+</html>

@@ -140,6 +140,10 @@ the rest, recorded as cancelled; so does a race whose requester ends. With
 the seats. The scoreboard is also kept in the project state as `races/<race_id>.json`. A race
 costs every seat's tokens.
 
+## Sharing a run
+
+`marion export <id>` writes a report of a node and everything under it — the tree, each node's task, steers, a condensed timeline of what it ran, its checks, what it reported, the branch it landed and the tokens it spent — as Markdown for a pull request or issue, or with `-o report.html` as one self-contained page (inline style, no script, a CSP that fetches nothing). Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings (`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from every string and again from the rendered file; the root's own prompt is left out unless `--include-prompt`, and `-o` writes the file `0600`. It reads the journal and contracts directly and starts no supervisor. [`examples/run-report.md`](examples/run-report.md) is what it writes for the test fixture (and [`run-report.html`](examples/run-report.html) the page).
+
 ## Agent types
 
 An agent type is a launch spec, not a persona: harness, model, tools, isolation, prompt,

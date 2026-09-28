@@ -96,6 +96,7 @@ marion                        # the home screen: Start a task, Watch the tree, S
 marion run codex --prompt "…" --detach
 marion ls                     # watch it
 marion steer <id> "use the v2 API, not v1"
+marion export <id> -o run.html  # a shareable, secret-scrubbed report of a node and its subtree
 ```
 
 **4. Or drive marion from any MCP client.**
@@ -106,6 +107,10 @@ claude mcp add marion -- marion mcp --repo "$PWD"
 
 [docs/guide.md](docs/guide.md) covers every verb, the home screen's keys, steering, profiles,
 endpoints and where work lands.
+
+## Sharing a run
+
+`marion export <id|short-id>` writes a report of a node and everything under it — the tree, each node's task, steers, a condensed timeline of what it ran, its checks, what it reported, the branch it landed and the tokens it spent — as Markdown for a pull request or issue, or with `-o report.html` as one self-contained page (inline style, no script, a CSP that fetches nothing). Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings (`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from every string and again from the rendered file; the root's own prompt is left out unless `--include-prompt`, and `-o` writes the file `0600`. It reads the journal and contracts directly and starts no supervisor. [`docs/examples/run-report.md`](docs/examples/run-report.md) is what it writes for the test fixture (and [`run-report.html`](docs/examples/run-report.html) the page).
 
 ## Harnesses
 

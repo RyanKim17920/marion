@@ -396,6 +396,32 @@ mod tests {
         out
     }
 
+    /// **The documented examples are this fixture's report**, byte for byte, under the options a
+    /// plain `marion export` uses — so the page a reader is shown is what the command writes.
+    /// `MARION_UPDATE_EXAMPLES=1` rewrites them after a deliberate change.
+    #[test]
+    fn the_documented_examples_are_the_fixtures_report() {
+        let f = fixture::build("export-docs-example");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
+        for (name, format) in [
+            ("run-report.md", super::model::Format::Markdown),
+            ("run-report.html", super::model::Format::Html),
+        ] {
+            let text = rendered(&f, &ExportOpts::default(), format);
+            let path = dir.join(name);
+            if std::env::var_os("MARION_UPDATE_EXAMPLES").is_some() {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(&path, &text).unwrap();
+            }
+            let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                on_disk == text,
+                "docs/examples/{name} is not what the export writes; rerun with \
+                 MARION_UPDATE_EXAMPLES=1 and review the diff"
+            );
+        }
+    }
+
     /// **`marion export -o` writes owner-only and starts nothing**: the file is `0600` (an
     /// existing one narrowed before it is written), a symlink in its place is refused, and the
     /// state directory holds no socket or lock afterwards — no supervisor was started.
