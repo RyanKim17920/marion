@@ -282,14 +282,15 @@ impl PtyMaster {
         Ok(master)
     }
 
-    /// **The master is non-blocking, and the reader polls it.**
+    /// **The master is non-blocking, and the reader waits for it in `poll(2)`.**
     ///
     /// A blocking `read` cannot be interrupted by a flag, so a host whose child never produces EOF
     /// — a grandchild inherited the slave, or there is no child at all — would hang its reader
-    /// thread forever, and `shutdown` would hang joining it. `serve.rs`'s accept loop makes the
-    /// same choice for the same reason and states it: a sleep cannot fail in the ways a signal or a
-    /// self-connection can. The poll interval is `POLL`, and the cost is one `read` returning
-    /// `EAGAIN` every 5 ms on an idle node.
+    /// thread forever, and `shutdown` would hang joining it. The reader instead blocks in `poll`
+    /// on the master, the stop flag's descriptor and the resize queue's wake pipe, so an idle node
+    /// costs no wakeups at all and a stop or a resize is seen the moment it is asked for. The
+    /// master stays non-blocking so a readiness `poll` reports that a read then finds empty (a
+    /// racing drain) costs one `EAGAIN`, never a hang.
     fn set_nonblocking(&self) -> io::Result<()> {
         let raw = self.fd.as_raw_fd();
         // SAFETY: `fd` is open; `F_GETFL` reads and `F_SETFL` writes only the descriptor's flags.
@@ -384,7 +385,7 @@ impl PtyMaster {
     /// read failure, and a host that stops on the first "error" stops on every clean exit.
     /// `EINTR` is retried, because a signal arriving mid-read is not information. `EAGAIN` is
     /// surfaced as [`io::ErrorKind::WouldBlock`] — the master is non-blocking, see
-    /// [`Self::set_nonblocking`] — and is the reader loop's cue to sleep, never to stop.
+    /// [`Self::set_nonblocking`] — and is the reader loop's cue to wait, never to stop.
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             // SAFETY: `fd` is open and `buf` is a live slice whose length is passed exactly.
@@ -402,8 +403,9 @@ impl PtyMaster {
     }
 
     /// Write keystrokes into the master. Partial writes are looped; `EINTR` is retried; `EAGAIN`
-    /// waits, because the master is non-blocking and a full tty input buffer is backpressure from a
-    /// harness that has not read yet, not a failure.
+    /// waits in `poll(2)` for the master to become writable, because the master is non-blocking and
+    /// a full tty input buffer is backpressure from a harness that has not read yet, not a failure.
+    /// A hangup or error ends that wait too, and the next `write` reports it.
     pub fn write_all(&self, mut buf: &[u8]) -> io::Result<()> {
         while !buf.is_empty() {
             // SAFETY: `fd` is open and `buf` is a live slice whose length is passed exactly.
@@ -416,13 +418,23 @@ impl PtyMaster {
             match e.kind() {
                 io::ErrorKind::Interrupted => continue,
                 io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(POLL);
+                    self.wait_writable();
                     continue;
                 }
                 _ => return Err(e),
             }
         }
         Ok(())
+    }
+
+    /// Block until the master can take a byte, or reports a hangup or error. An `EINTR` returns
+    /// early, and the caller's `write` decides what happened either way.
+    fn wait_writable(&self) {
+        use rustix::event::{PollFd, PollFlags, poll};
+        use std::os::fd::AsFd;
+        let fd = self.fd.as_fd();
+        let mut fds = [PollFd::new(&fd, PollFlags::OUT)];
+        let _ = poll(&mut fds, None);
     }
 }
 
@@ -980,11 +992,6 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// a ceiling rather than a size.
 const READ_CHUNK: usize = 65536;
 
-/// How long the reader sleeps when the master has nothing. `tests/fixtures/s2/ptyhost.py` used a
-/// 50 ms `select` timeout; `serve.rs`'s accept loop uses 5 ms. This takes the smaller: a pty is
-/// interactive and a viewer feels 50 ms of added latency on every keystroke echo.
-const POLL: std::time::Duration = std::time::Duration::from_millis(5);
-
 /// Maximum time shutdown waits for a cast-recorded input's master-write outcome.
 ///
 /// A write to a terminal whose peer stopped reading can remain blocked independently of process
@@ -1002,9 +1009,9 @@ const CONTROL_DELIVERY_GRACE: Duration = Duration::from_millis(100);
 /// has stopped reading, or simply never scheduled) into a supervisor that cannot be shut down at
 /// all, and a test that exercises the path into one that hangs instead of failing.
 ///
-/// Four hundred times the reader's own [`POLL`] interval, so it cannot fire on a merely loaded
-/// machine; past it the caller does the same two steps itself, which is exactly what it already
-/// does when there is no reader at all.
+/// Long enough that it cannot fire on a merely loaded machine (the reader is woken the moment a
+/// resize is queued); past it the caller does the same two steps itself, which is exactly what it
+/// already does when there is no reader at all.
 const RESIZE_APPLY_GRACE: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------------------------
@@ -1528,6 +1535,10 @@ struct Shared {
     /// Resizes handed to the reader thread, and the answer coming back. See [`PtyHost::resize`].
     resize: Mutex<ResizeQueue>,
     resize_done: Condvar,
+    /// Rung when a resize is queued, so a reader blocked in `poll` on an idle master performs it
+    /// at once. `None` only if no descriptor could be had; the reader then re-checks at
+    /// [`crate::wake::DEGRADED_RECHECK`].
+    resize_wake: Option<crate::wake::Pipe>,
     /// See [`PtyHost::set_resize_hook`]. On `Shared` rather than on `PtyHost` because the point it
     /// has to run at is inside the reader thread.
     #[cfg(test)]
@@ -2586,7 +2597,7 @@ pub struct PtyHost {
     child: Mutex<Option<PtyChild>>,
     reader: Mutex<Option<std::thread::JoinHandle<io::Result<()>>>>,
     reader_completion: Arc<ReaderCompletion>,
-    stopped: Arc<AtomicBool>,
+    stopped: Arc<crate::wake::Flag>,
     replay_completion: Mutex<Option<Result<usize, String>>>,
     control: Arc<ControlGate>,
     #[cfg(test)]
@@ -2779,6 +2790,7 @@ impl PtyHost {
                 reader: options.start_reader,
             }),
             resize_done: Condvar::new(),
+            resize_wake: crate::wake::Pipe::new().ok(),
             #[cfg(test)]
             resize_hook: Mutex::new(None),
             #[cfg(test)]
@@ -2787,7 +2799,7 @@ impl PtyHost {
             resize_cast_failure: Mutex::new(None),
         });
         let master = Arc::new(master);
-        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(crate::wake::Flag::new());
         let reader_completion = ReaderCompletion::new();
         let reader = if options.start_reader {
             let master = Arc::clone(&master);
@@ -3870,6 +3882,9 @@ impl PtyHost {
             q.requested
         };
         self.shared.resize_done.notify_all();
+        if let Some(wake) = &self.shared.resize_wake {
+            wake.wake();
+        }
 
         let deadline = Instant::now() + RESIZE_APPLY_GRACE;
         let mut q = self.shared.resize.lock().unwrap_or_else(|e| e.into_inner());
@@ -4177,8 +4192,8 @@ impl Drop for PtyHost {
     /// **Kill and reap first, stop the reader second — the same order [`PtyHost::shutdown`] uses,
     /// and for a reason `shutdown` did not have to state.**
     ///
-    /// This used to raise `stopped` before killing anything. That flag ends the reader thread
-    /// within one [`POLL`] of its next `WouldBlock`, so on a node that had fallen quiet nothing was
+    /// This used to raise `stopped` before killing anything. That flag ends the reader thread at
+    /// its next `WouldBlock`, so on a node that had fallen quiet nothing was
     /// reading the master by the time `kill_and_reap` ran. A pty child that is a session leader
     /// cannot finish exiting until its controlling terminal's output queue has drained, and on a
     /// pty the only thing that drains it is a read on the master. The child therefore sat in the
@@ -4228,11 +4243,12 @@ impl Drop for PtyHost {
     }
 }
 
-fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::Result<()> {
+fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &crate::wake::Flag) -> io::Result<()> {
     let _gone = ReaderGone(shared);
     let mut buf = vec![0u8; READ_CHUNK];
     let mut utf8 = Utf8Stream::default();
     let mut probes = ProbeScan::default();
+    let mut empty_wakes = 0u32;
     let reached_eof = loop {
         // **At the top, and it drains before it resizes.** See [`apply_pending_resize`]: the whole
         // of the labelling fix is that everything the node emitted at the old geometry is in the
@@ -4241,9 +4257,12 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
         let n = match master.read(&mut buf) {
             // EOF: the last slave closed. `PtyMaster::read` reports Linux's `EIO` this way too.
             Ok(0) => break true,
-            Ok(n) => n,
+            Ok(n) => {
+                empty_wakes = 0;
+                n
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if keep_reading_after_would_block(shared, stopped) {
+                if keep_reading_after_would_block(master, shared, stopped, &mut empty_wakes) {
                     continue;
                 }
                 break false;
@@ -4266,20 +4285,53 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
     }
 }
 
-/// Nothing to read yet: wait a poll interval, or report that the reader should leave.
+/// Nothing to read yet: block until the master has something (or hangs up), a resize is queued or
+/// the reader is told to stop — or report that the reader should leave.
 ///
 /// A stop request bounds teardown, but it is not terminal-stream evidence. A descendant may still
 /// hold the slave open and write later, so a stopped reader leaves without End and reports the
 /// replay as incomplete. Only `Ok(0)` proves EOF (and includes the terminal `EIO` normalized by
 /// [`PtyMaster::read`]).
-fn keep_reading_after_would_block(shared: &Shared, stopped: &AtomicBool) -> bool {
+///
+/// **Drain, then look**: the resize pipe is drained only when it woke this wait, and the loop's
+/// next pass looks at the queue after that drain, so a resize queued at any point is either seen
+/// by that look or leaves the pipe readable for the next wait. The stop flag's descriptor is never
+/// drained — once raised, every wait returns and the flag is read above.
+///
+/// `empty_wakes` counts the master reporting ready and the next read finding nothing, reset by any
+/// read that returns bytes. No platform marion runs on does that more than once in a row (a hangup
+/// reads as EOF), but a master that did would spin a core, so past [`EMPTY_WAKE_LIMIT`] the wait
+/// is capped at [`crate::wake::DEGRADED_RECHECK`] instead.
+fn keep_reading_after_would_block(
+    master: &PtyMaster,
+    shared: &Shared,
+    stopped: &crate::wake::Flag,
+    empty_wakes: &mut u32,
+) -> bool {
+    use std::os::fd::BorrowedFd;
     shared.observe_reader_would_block();
     if stopped.load(Ordering::SeqCst) {
         return false;
     }
-    std::thread::sleep(POLL);
+    // SAFETY: the master outlives this call; the borrow ends with the wait.
+    let master_fd = unsafe { BorrowedFd::borrow_raw(master.as_raw()) };
+    let resize = shared.resize_wake.as_ref();
+    let degraded = (*empty_wakes >= EMPTY_WAKE_LIMIT).then_some(None);
+    let mut fds = vec![Some(master_fd), stopped.fd(), resize.map(|w| w.fd())];
+    fds.extend(degraded);
+    let ready = crate::wake::wait_until(&fds, None);
+    *empty_wakes = if ready[0] { *empty_wakes + 1 } else { 0 };
+    if ready[2]
+        && let Some(wake) = resize
+    {
+        wake.drain();
+    }
     true
 }
+
+/// How many times in a row the master may wake the reader with nothing to read before its wait is
+/// capped. See [`keep_reading_after_would_block`].
+const EMPTY_WAKE_LIMIT: u32 = 3;
 
 /// Publish whatever partial UTF-8 the stream ended mid-sequence on, once the loop is over.
 fn flush_utf8_tail(shared: &Shared, utf8: &mut Utf8Stream) {
