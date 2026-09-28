@@ -17,14 +17,14 @@ use serde::{Deserialize, Serialize};
 use crate::proto::error::RpcError;
 use crate::proto::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
-    NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams, NodeRenameParams,
-    NodeResumeParams, NodeSteerParams, POLICY_SET_UNSPECIFIED, PermissionReplyParams,
-    SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
+    NodeCollectedParams, NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams,
+    NodeRenameParams, NodeResumeParams, NodeSteerParams, POLICY_SET_UNSPECIFIED,
+    PermissionReplyParams, SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
 };
 use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
-    NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult, NodeResumeResult,
-    ReplyResult, SessionQuitResult, TreeSubscribeResult,
+    NodeCollectedResult, NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult,
+    NodeResumeResult, ReplyResult, SessionQuitResult, TreeSubscribeResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -40,6 +40,9 @@ pub enum Method {
     NodeDetach,
     NodePrompt,
     NodeSteer,
+    /// A node read one of its children's end for itself (its `wait` returned it, or its `status`
+    /// said it finished), so marion need not spend a turn announcing it.
+    NodeCollected,
     NodeCancel,
     NodeKill,
     NodeRename,
@@ -68,6 +71,7 @@ impl Method {
             Method::NodeDetach => "node/detach",
             Method::NodePrompt => "node/prompt",
             Method::NodeSteer => "node/steer",
+            Method::NodeCollected => "node/collected",
             Method::NodeCancel => "node/cancel",
             Method::NodeKill => "node/kill",
             Method::NodeRename => "node/rename",
@@ -81,13 +85,14 @@ impl Method {
         }
     }
 
-    pub const ALL: [Method; 16] = [
+    pub const ALL: [Method; 17] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
         Method::NodeDetach,
         Method::NodePrompt,
         Method::NodeSteer,
+        Method::NodeCollected,
         Method::NodeCancel,
         Method::NodeKill,
         Method::NodeRename,
@@ -125,6 +130,7 @@ impl Method {
             Method::NodeDetach => MethodResult::NodeDetach(take(self, body)?),
             Method::NodePrompt => MethodResult::NodePrompt(take(self, body)?),
             Method::NodeSteer => MethodResult::NodeSteer(take(self, body)?),
+            Method::NodeCollected => MethodResult::NodeCollected(take(self, body)?),
             Method::NodeCancel => MethodResult::NodeCancel(take(self, body)?),
             Method::NodeKill => MethodResult::NodeKill(take(self, body)?),
             Method::NodeRename => MethodResult::NodeRename(take(self, body)?),
@@ -166,6 +172,8 @@ pub enum Call {
     NodePrompt(NodePromptParams),
     #[serde(rename = "node/steer")]
     NodeSteer(NodeSteerParams),
+    #[serde(rename = "node/collected")]
+    NodeCollected(NodeCollectedParams),
     #[serde(rename = "node/cancel")]
     NodeCancel(NodeCancelParams),
     #[serde(rename = "node/kill")]
@@ -199,6 +207,7 @@ impl Call {
             Call::NodeDetach(_) => Method::NodeDetach,
             Call::NodePrompt(_) => Method::NodePrompt,
             Call::NodeSteer(_) => Method::NodeSteer,
+            Call::NodeCollected(_) => Method::NodeCollected,
             Call::NodeCancel(_) => Method::NodeCancel,
             Call::NodeKill(_) => Method::NodeKill,
             Call::NodeRename(_) => Method::NodeRename,
@@ -227,6 +236,7 @@ pub enum MethodResult {
     NodeDetach(NodeDetachResult),
     NodePrompt(DeliveryResult),
     NodeSteer(DeliveryResult),
+    NodeCollected(NodeCollectedResult),
     NodeCancel(NodeCancelResult),
     NodeKill(NodeKillResult),
     NodeRename(NodeRenameResult),
@@ -248,6 +258,7 @@ impl MethodResult {
             MethodResult::NodeDetach(_) => Method::NodeDetach,
             MethodResult::NodePrompt(_) => Method::NodePrompt,
             MethodResult::NodeSteer(_) => Method::NodeSteer,
+            MethodResult::NodeCollected(_) => Method::NodeCollected,
             MethodResult::NodeCancel(_) => Method::NodeCancel,
             MethodResult::NodeKill(_) => Method::NodeKill,
             MethodResult::NodeRename(_) => Method::NodeRename,
@@ -273,6 +284,7 @@ impl MethodResult {
             MethodResult::NodeAttach(r) => v(r),
             MethodResult::NodeDetach(r) => v(r),
             MethodResult::NodePrompt(r) | MethodResult::NodeSteer(r) => v(r),
+            MethodResult::NodeCollected(r) => v(r),
             MethodResult::NodeCancel(r) => v(r),
             MethodResult::NodeKill(r) => v(r),
             MethodResult::NodeRename(r) => v(r),
@@ -408,6 +420,16 @@ mod tests {
                 }),
             ),
             (
+                Call::NodeCollected(NodeCollectedParams {
+                    agent_id: agent("a"),
+                    caller: SpawnCaller {
+                        agent_id: agent("p"),
+                        node_token: "tok".into(),
+                    },
+                }),
+                MethodResult::NodeCollected(NodeCollectedResult { withdrawn: true }),
+            ),
+            (
                 Call::NodeCancel(NodeCancelParams {
                     agent_id: agent("a"),
                 }),
@@ -541,8 +563,8 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            16,
-            "§2's fifteen plus node/resume (plan step 6)"
+            17,
+            "§2's fifteen plus node/resume (plan step 6) and node/collected"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -554,6 +576,7 @@ mod tests {
                 "node/detach",
                 "node/prompt",
                 "node/steer",
+                "node/collected",
                 "node/cancel",
                 "node/kill",
                 "node/rename",

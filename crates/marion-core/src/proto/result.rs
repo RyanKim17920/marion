@@ -283,6 +283,14 @@ pub struct DeliveryResult {
     pub arrives: Option<String>,
 }
 
+/// `node/collected`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCollectedResult {
+    /// A queued announcement of the child's end was withdrawn. `false` means none was queued yet,
+    /// and the announcement will be resolved when it is made.
+    pub withdrawn: bool,
+}
+
 /// `node/cancel`. §6.7 requires a cancel to reach a process that exists; where it does, the node's
 /// terminal is `Cancelled`, and that classification is the node's state here rather than a
 /// separate boolean.

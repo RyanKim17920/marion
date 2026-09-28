@@ -26,8 +26,8 @@
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::node::{BlockReason, NodeState, ReapState};
-use marion_core::proto::params::NodeSteerParams;
-use marion_core::proto::result::DeliveryResult;
+use marion_core::proto::params::{NodeCollectedParams, NodeSteerParams};
+use marion_core::proto::result::{DeliveryResult, NodeCollectedResult};
 use marion_core::proto::{Delivery, RpcError, SpawnCaller};
 use marion_core::registry::Replay;
 use marion_harness::spec::{NodeShape, TurnDelivery, delivery_for};
@@ -110,6 +110,36 @@ impl RegistryHandle {
             message_id: Some(message_id),
             queued: true,
             arrives: Some(arrival(delivery, node.state).to_string()),
+        })
+    }
+
+    /// **§2's `node/collected`: a node read one of its children's end for itself**, so its inbox
+    /// resolves that end's announcement instead of spending a turn on it
+    /// ([`crate::inbox::Inboxes::received`]). Only the child's own parent, proved by its token,
+    /// may say so — the announcement is the parent's; anyone else gets the one §5.4 refusal.
+    pub(super) fn node_collected(
+        &self,
+        p: &NodeCollectedParams,
+    ) -> Result<NodeCollectedResult, RpcError> {
+        self.live.refresh();
+        let authentic = self.authenticate(&p.caller).is_some();
+        let parent = self.live.read(|r| {
+            r.tree()
+                .get(&p.agent_id)
+                .and_then(|n| n.parent_id().cloned())
+        });
+        if !authentic || parent.as_ref() != Some(&p.caller.agent_id) {
+            return Err(RpcError::refused(
+                "caller",
+                "only a node's parent can say it already read that node's end, and marion could \
+                 not establish that of this caller: either its token is not one this supervisor \
+                 minted for the node it names, or it is not the target's parent. One refusal for \
+                 every case, so it says nothing about which.",
+                "§5.4",
+            ));
+        }
+        Ok(NodeCollectedResult {
+            withdrawn: self.inboxes.received(&p.caller.agent_id, &p.agent_id),
         })
     }
 
@@ -421,6 +451,21 @@ mod tests {
             }
         }
 
+        fn collected(&self, child: &str, caller: (&str, &str)) -> Result<bool, RpcError> {
+            let out = crate::serve::sink(ConnId(7));
+            let call = Call::NodeCollected(marion_core::proto::params::NodeCollectedParams {
+                agent_id: id(child),
+                caller: SpawnCaller {
+                    agent_id: id(caller.0),
+                    node_token: caller.1.into(),
+                },
+            });
+            match self.handle.call(ConnId(7), &call, &out)? {
+                MethodResult::NodeCollected(r) => Ok(r.withdrawn),
+                other => panic!("wrong result: {}", other.method().as_str()),
+            }
+        }
+
         fn queued_records(&self) -> Vec<marion_core::journal::MessageQueued> {
             std::fs::read(&self.path)
                 .unwrap()
@@ -620,6 +665,42 @@ mod tests {
             })
             .collect();
         assert_eq!(dropped, vec![m]);
+    }
+
+    /// **A parent that read its child's end with `wait` is not handed it again as a turn** —
+    /// `node/collected`, from the child's own parent, withdraws the queued announcement. A live
+    /// codex root was relaunched for a whole generation to hear about a child it had waited on.
+    /// Only the parent may say so: anyone else is refused, and the announcement stays.
+    #[test]
+    fn only_a_childs_parent_can_say_it_already_read_the_childs_end() {
+        let (fx, [root, child, _grand, sibling]) = family("collected");
+        assert!(fx.handle.inboxes.owe(&id("root")));
+        let outcome = Err(crate::spawn::SpawnError::NoContract {
+            path: "/nowhere".into(),
+            why: "the test's child left none".into(),
+        });
+        let task = marion_core::contract::TaskId("t-1".into());
+        fx.handle.announce_child_end(
+            &id("root"),
+            super::ChildEnd {
+                child: &id("child"),
+                agent_type: "type-child",
+                task_id: &task,
+                outcome: &outcome,
+            },
+        );
+        assert_eq!(fx.handle.inboxes.queued(&id("root")), 1);
+        for (who, token) in [
+            ("sibling", sibling.as_str()),
+            ("child", child.as_str()),
+            ("root", "not-the-token"),
+        ] {
+            let e = fx.collected("child", (who, token)).expect_err(who);
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{who}: {e:?}");
+        }
+        assert_eq!(fx.handle.inboxes.queued(&id("root")), 1, "still announced");
+        assert_eq!(fx.collected("child", ("root", &root)), Ok(true));
+        assert_eq!(fx.handle.inboxes.queued(&id("root")), 0, "withdrawn");
     }
 
     /// **A backgrounded child's end, queued for its parent's next turn** — its few-line

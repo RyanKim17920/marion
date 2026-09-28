@@ -5331,6 +5331,7 @@ impl Handle for RegistryHandle {
                 .node_resume(p, out.peer())
                 .map(MethodResult::NodeResume),
             Call::NodeSteer(p) => self.node_steer(p, out.peer()).map(MethodResult::NodeSteer),
+            Call::NodeCollected(p) => self.node_collected(p).map(MethodResult::NodeCollected),
             Call::NodeKill(p) => self.node_kill(p, out.peer()).map(MethodResult::NodeKill),
             Call::NodePrompt(_) => Err(RpcError::unimplemented(
                 "node/prompt",
@@ -5348,8 +5349,8 @@ impl Handle for RegistryHandle {
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
                      `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit`, \
-                     `node/resume`, `node/steer` and `node/kill`; the remaining methods land with \
-                     the milestone that needs them.",
+                     `node/resume`, `node/steer`, `node/collected` and `node/kill`; the remaining \
+                     methods land with the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",

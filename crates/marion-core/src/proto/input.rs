@@ -309,11 +309,16 @@ mod tests {
     ///
     /// A keystroke transport arriving as a request method would have grown [`Method::ALL`]; this
     /// asserts from the other side that the inbound table is disjoint from it. The count moves only
-    /// when a genuine request method lands (`node/resume` took it from fifteen to sixteen), never
+    /// when a genuine request method lands (`node/resume` took it to sixteen, `node/collected` to
+    /// seventeen), never
     /// because an `Input` name leaked in — which the loop below is what proves.
     #[test]
     fn the_inbound_table_is_not_part_of_the_request_surface() {
-        assert_eq!(Method::ALL.len(), 16, "§2's fifteen plus node/resume");
+        assert_eq!(
+            Method::ALL.len(),
+            17,
+            "§2's fifteen plus node/resume and node/collected"
+        );
         for n in Input::METHODS {
             assert_eq!(
                 Method::from_wire(n),

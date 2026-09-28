@@ -178,6 +178,20 @@ pub struct NodeSteerParams {
     pub caller: Option<SpawnCaller>,
 }
 
+/// `node/collected` — a node tells marion it read one of its children's end for itself.
+///
+/// Sent by a node's bridge when its `wait` returned the child's terminal outcome, or its `status`
+/// found the child finished. marion then spends no turn of the node announcing that end: a queued
+/// announcement is withdrawn, and one not yet made is resolved as it arrives. The caller is proved
+/// exactly as [`NodeSteerParams::caller`] is, and must be the child's parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeCollectedParams {
+    /// The child whose end was read.
+    pub agent_id: AgentId,
+    pub caller: SpawnCaller,
+}
+
 /// The most one `node/steer` may carry, in bytes of its UTF-8 `text`.
 ///
 /// A steer is a message into another agent's running turn, so it is sized for a message and not a
