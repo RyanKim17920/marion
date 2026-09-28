@@ -168,6 +168,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
             RecordKind::KillIntent(_) => "KillIntent",
             RecordKind::KillConfirmed(_) => "KillConfirmed",
+            RecordKind::CancelRequested(_) => "CancelRequested",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
             RecordKind::WiderDelegation(_) => "WiderDelegation",

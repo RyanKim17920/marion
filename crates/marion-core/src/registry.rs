@@ -172,6 +172,18 @@ pub struct ReplayedNode {
     /// Each turn's spend across those runs, oldest first, the latest
     /// [`crate::journal::MAX_RECORDED_TURNS`]: what a sparkline draws for an ended node.
     pub turns: Vec<u64>,
+    /// **This process lifetime was cancelled**: who asked, and whether marion had to kill it
+    /// after its grace ([`CancelView::forced`]). `None` for a node never cancelled; a resume
+    /// clears it with the rest of the lifetime.
+    pub cancel: Option<CancelView>,
+}
+
+/// A cancel as replay reads it: [`crate::journal::CancelRequested`]'s `by`, and whether the
+/// confirmation that followed had to signal — the node ignored its abort, or its row had none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelView {
+    pub by: crate::journal::CancelBy,
+    pub forced: bool,
 }
 
 impl ReplayedNode {
@@ -212,6 +224,7 @@ impl ReplayedNode {
             spawned_ts: None,
             usage: None,
             turns: Vec::new(),
+            cancel: None,
         }
     }
 
@@ -354,6 +367,16 @@ impl ReplayedNode {
             RecordKind::ReapConfirmed(_) => self.fold_reap_confirmed(),
             RecordKind::KillIntent(_) => {}
             RecordKind::KillConfirmed(k) => self.fold_kill_confirmed(k),
+            // The first cancel of a lifetime is the one that decided it; a second (an escalation,
+            // a cascade reaching a node already cancelling) changes nothing about who asked.
+            RecordKind::CancelRequested(c) => {
+                if self.cancel.is_none() && !self.state.is_exited() {
+                    self.cancel = Some(CancelView {
+                        by: c.by,
+                        forced: false,
+                    });
+                }
+            }
             RecordKind::ContractPersisted(c) => self.fold_contract_persisted(c),
             RecordKind::PermissionDenied(d) => self.denied_permissions.push(d),
             RecordKind::WiderDelegation(d) => self.widened = d.axes,
@@ -427,6 +450,7 @@ impl ReplayedNode {
             self.exit = None;
             self.reap_state = ReapState::Live;
             self.reap_intent = None;
+            self.cancel = None;
         }
     }
 
@@ -452,6 +476,9 @@ impl ReplayedNode {
     }
 
     fn fold_kill_confirmed(&mut self, k: KillConfirmed) {
+        if let Some(cancel) = self.cancel.as_mut() {
+            cancel.forced = k.exit.signal.is_some();
+        }
         self.state = NodeState::Exited(crate::contract::ExitStatus::Cancelled);
         self.state_reason = None;
         self.exit = Some(k.exit);
@@ -1444,6 +1471,74 @@ mod tests {
             None,
             "a confirmation resolves the intent; §5.7 blocks only an unconfirmed one"
         );
+    }
+
+    /// **A cancel replays who asked and whether it had to kill**: a confirmation with no signal
+    /// is a node that closed its turn in its grace, one with a signal was forced; a second cancel
+    /// never rewrites the first's `by`, and an unconfirmed cancel leaves the node unresolved —
+    /// the process may still be running.
+    #[test]
+    fn a_cancel_replays_who_asked_and_whether_it_was_forced() {
+        use crate::journal::{CancelBy, CancelRequested};
+        let cancel = |n: u64, by: CancelBy| {
+            record(
+                n,
+                RecordKind::CancelRequested(CancelRequested {
+                    agent_id: id("child"),
+                    was: NodeState::Running,
+                    by,
+                    verb: "channel".into(),
+                    grace: crate::encoding::Millis(std::time::Duration::from_secs(5)),
+                }),
+            )
+        };
+        let confirm = |n: u64, signal: Option<i32>| {
+            record(
+                n,
+                RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: id("child"),
+                    exit: ProcessExit {
+                        code: None,
+                        signal,
+                        description: "cancelled".into(),
+                    },
+                }),
+            )
+        };
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("child")));
+        let n = j.len() as u64;
+        j.push(cancel(n, CancelBy::Operator));
+        let r = replay(&bytes(&j));
+        let c = r.get(&id("child")).unwrap();
+        assert_eq!(
+            c.cancel,
+            Some(CancelView {
+                by: CancelBy::Operator,
+                forced: false
+            })
+        );
+        assert!(c.is_unresolved(), "a cancel intent is not a decided fate");
+
+        let mut graceful = j.clone();
+        graceful.push(cancel(n + 1, CancelBy::Cascade { from: id("root") }));
+        graceful.push(confirm(n + 2, None));
+        let r = replay(&bytes(&graceful));
+        let c = r.get(&id("child")).unwrap();
+        assert_eq!(c.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(
+            c.cancel,
+            Some(CancelView {
+                by: CancelBy::Operator,
+                forced: false
+            }),
+            "the first cancel decided it, and it closed in its grace"
+        );
+
+        let mut forced = j.clone();
+        forced.push(confirm(n + 1, Some(9)));
+        let r = replay(&bytes(&forced));
+        assert!(r.get(&id("child")).unwrap().cancel.as_ref().unwrap().forced);
     }
 
     #[test]

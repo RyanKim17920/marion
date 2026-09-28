@@ -133,6 +133,12 @@ pub enum RecordKind {
     /// The process was observed dead after marion's per-node two-step group kill. This is the
     /// terminal transition to `Cancelled`; an additional `Exited` would assert the same fact twice.
     KillConfirmed(KillConfirmed),
+    /// **A graceful cancel was decided**, durable before the first abort byte or signal reaches
+    /// the node: who asked, the state it was in, and the verb and grace the row gave it. The
+    /// intent half of a cancel, as [`Self::KillIntent`] is of a kill; its confirmation is the same
+    /// [`Self::KillConfirmed`], whose `exit.signal` is `None` where the node closed its turn within
+    /// the grace and `Some(9)` where marion had to kill it.
+    CancelRequested(CancelRequested),
     /// §4.3's `contracts/<task_id>.json` was written. The journal records *that a contract exists
     /// and how it ended*, never its contents: the file is the contract, and copying it here would
     /// be a second source of truth for a document §6.7 already makes authoritative.
@@ -236,6 +242,7 @@ impl RecordKind {
                 | RecordKind::ReapConfirmed(_)
                 | RecordKind::KillIntent(_)
                 | RecordKind::KillConfirmed(_)
+                | RecordKind::CancelRequested(_)
                 | RecordKind::SupervisorExited(_)
                 // A record whose *whole purpose* is to survive a crash, and which is therefore
                 // worth nothing on the ~50 ms group-commit timer: the window it exists to cover
@@ -257,6 +264,7 @@ impl RecordKind {
             RecordKind::ReapConfirmed(r) => Some(&r.agent_id),
             RecordKind::KillIntent(r) => Some(&r.agent_id),
             RecordKind::KillConfirmed(r) => Some(&r.agent_id),
+            RecordKind::CancelRequested(r) => Some(&r.agent_id),
             RecordKind::ContractPersisted(r) => Some(&r.agent_id),
             RecordKind::PermissionDenied(r) => Some(&r.agent_id),
             RecordKind::WiderDelegation(r) => Some(&r.agent_id),
@@ -475,6 +483,43 @@ pub struct KillIntent {
 pub struct KillConfirmed {
     pub agent_id: AgentId,
     pub exit: ProcessExit,
+}
+
+/// See [`RecordKind::CancelRequested`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRequested {
+    pub agent_id: AgentId,
+    /// The state the node was in when the cancel reached it.
+    pub was: NodeState,
+    pub by: CancelBy,
+    /// The row's abort verb for the node's shape, by its stable name (`channel`, `keys`, `none`).
+    pub verb: String,
+    /// How long the node was given to close its turn before marion kills it; zero for `none`.
+    pub grace: crate::encoding::Millis,
+}
+
+/// **Who cancelled a node** — the operator, a node above it, the cancel of an ancestor it was
+/// cascaded from, or (with budgets) a limit it crossed. Recorded so a cancelled contract and a
+/// view can say why the node stopped, not only that it did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CancelBy {
+    /// A client speaking for the operator: the TUI, `marion cancel`, a top-level `marion mcp`.
+    Operator,
+    /// A node above the cancelled one, proved by its token.
+    Node { caller: AgentId },
+    /// The cancel of an ancestor reached this node: `from` is the node the cancel was asked of.
+    Cascade { from: AgentId },
+}
+
+impl CancelBy {
+    /// Who, in words, for a contract's description and a view.
+    pub fn describe(&self) -> String {
+        match self {
+            CancelBy::Operator => "the operator".into(),
+            CancelBy::Node { caller } => format!("its ancestor {}", caller.0),
+            CancelBy::Cascade { from } => format!("the cancel of its ancestor {}", from.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -840,6 +885,31 @@ mod tests {
                     description: "marion sent SIGKILL".into(),
                 },
             }),
+            RecordKind::CancelRequested(CancelRequested {
+                agent_id: AgentId("a-1".into()),
+                was: NodeState::Running,
+                by: CancelBy::Operator,
+                verb: "channel".into(),
+                grace: crate::encoding::Millis(std::time::Duration::from_millis(5_000)),
+            }),
+            RecordKind::CancelRequested(CancelRequested {
+                agent_id: AgentId("a-2".into()),
+                was: NodeState::Idle,
+                by: CancelBy::Cascade {
+                    from: AgentId("a-1".into()),
+                },
+                verb: "none".into(),
+                grace: crate::encoding::Millis(std::time::Duration::ZERO),
+            }),
+            RecordKind::CancelRequested(CancelRequested {
+                agent_id: AgentId("a-3".into()),
+                was: NodeState::Running,
+                by: CancelBy::Node {
+                    caller: AgentId("root".into()),
+                },
+                verb: "keys".into(),
+                grace: crate::encoding::Millis(std::time::Duration::from_millis(1_500)),
+            }),
             RecordKind::ContractPersisted(ContractPersisted {
                 review: None,
                 agent_id: AgentId("a-1".into()),
@@ -919,6 +989,17 @@ mod tests {
                 },
             })
             .is_barrier()
+        );
+        assert!(
+            RecordKind::CancelRequested(CancelRequested {
+                agent_id: a.clone(),
+                was: NodeState::Running,
+                by: CancelBy::Operator,
+                verb: "none".into(),
+                grace: crate::encoding::Millis(std::time::Duration::ZERO),
+            })
+            .is_barrier(),
+            "the intent is durable before the first abort byte"
         );
         assert!(RecordKind::SupervisorExited(SupervisorExited {}).is_barrier());
         // Not barriers: losing one costs a stale replay, not an untracked process (§4.3).
