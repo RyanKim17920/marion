@@ -143,13 +143,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `apply_patch` under `--allow-tool=write` added the file. `--available-tools` is a filter —
     // names the model lacks are dropped without error — so listing all three costs nothing and
     // leaves no model without its edit tool. The three are the tools 1.0.87's own `app.js` files
-    // under the `edit` category alone (`str_replace_editor` also reads, and is not named). `bash`
-    // can write too; marion's vocabulary has no verb for it, so it is not named.
+    // under the `edit` category alone (`str_replace_editor` also reads, and is not named). `edit`
+    // is the same two tools that change a file in place. `bash` → `bash`, one of the eighteen tools
+    // 1.0.83 offers under `--allow-all` (`copilot-allow-all-baseline.stdout.jsonl`), granted by the
+    // `shell` kind ([`SHELL_PERMISSION`]).
     tool_names: &[
         (agent_type::TOOL_READ, "view"),
         (agent_type::TOOL_WRITE, "create"),
         (agent_type::TOOL_WRITE, "edit"),
         (agent_type::TOOL_WRITE, "apply_patch"),
+        (agent_type::TOOL_EDIT, "edit"),
+        (agent_type::TOOL_EDIT, "apply_patch"),
+        (agent_type::TOOL_BASH, "bash"),
     ],
     // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
     // `toolName` alike). The permission pattern for the same tool is a *different* string
@@ -481,11 +486,20 @@ pub const WRITE_PERMISSION: &str = "write";
 ///
 /// The built-ins whose calls the permission help files under `write(path?)`: `create` and `edit`,
 /// and `apply_patch`, which the live `auto` model is offered in their place (1.0.87) and which
-/// `--allow-tool=write` was measured to grant. `bash` can write too, through redirection, and is
-/// deliberately **not** here: marion's vocabulary has no verb that means it, and the help says
-/// shell redirections need `--allow-all-tools`, which marion never compiles.
+/// `--allow-tool=write` was measured to grant. `bash` is not here: the help files it under a kind
+/// of its own ([`SHELL_PERMISSION`]).
 pub fn is_write_tool(native: &str) -> bool {
     matches!(native, "create" | "edit" | "apply_patch")
+}
+
+/// The `--allow-tool` kind that grants the shell tool: `shell(command:*?)`, where *"if the command
+/// is omitted, all shell commands are allowed"* (1.0.83 `copilot help permissions`, from the
+/// installed `app.js`). Compiled only when the declaration reaches [`is_shell_tool`].
+pub const SHELL_PERMISSION: &str = "shell";
+
+/// Is this copilot-native tool name one [`SHELL_PERMISSION`] is required for?
+pub fn is_shell_tool(native: &str) -> bool {
+    native == "bash"
 }
 
 /// The model-facing spelling of one of marion's tools: `<alias>-<tool>`. Measured in the request

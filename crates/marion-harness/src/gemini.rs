@@ -49,6 +49,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // Ahead of `-p`, and only when the declaration names an edit tool, so a node that declares
         // nothing compiles the argv it always compiled, in the order it always compiled it.
         Arg::Flag("--approval-mode", Field::Mode),
+        // Only when the declaration names the shell ([`is_allowed_by_name`]).
+        Arg::Each("--allowed-tools", Field::Allowed),
         Arg::Flag("-p", Field::Prompt),
     ],
     pane: None,
@@ -101,9 +103,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the **default** mode (s14), so that grant is a no-op — answered anyway, because making it
     // conditional would narrow what this harness has always been able to do. s14 also measured
     // `--allowed-tools` neither gating nor validating on 0.53.0, so there is no flag to compile.
+    //
+    // `edit` → `replace`, the other name `auto_edit` puts back (§11 item 24). `bash` →
+    // `run_shell_command`, which neither mode offers headless until it is allowed by name: measured
+    // on 0.53.0 against a capture endpoint (2026-09-28), `--allowed-tools run_shell_command` put it
+    // in `functionDeclarations` under both `default` and `auto_edit`, as did a `--policy` rule
+    // allowing it; without either it is absent.
     tool_names: &[
         (agent_type::TOOL_READ, "read_file"),
         (agent_type::TOOL_WRITE, "write_file"),
+        (agent_type::TOOL_EDIT, "replace"),
+        (agent_type::TOOL_BASH, "run_shell_command"),
     ],
     // `mcp_<server>_<tool>`, single underscores — S12 captured `"tool_name":"mcp_marion_report"`.
     spelling: Spelling::Fixed(ToolSpelling::McpSingleUnderscore),
@@ -127,6 +137,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     constraint: Constraint::Mode {
         prefix: "approval-mode:",
         default: DEFAULT_APPROVAL_MODE,
+        allowed: Some("allowed-tools:"),
     },
     // 0.53.0's `-r, --resume` takes `"latest"` or an index number, not a session id, and
     // `--session-id` **starts** a session with a given UUID. Resuming a named session is unmeasured,
@@ -433,6 +444,18 @@ pub const DEFAULT_APPROVAL_MODE: &str = "default";
 /// job is only to hand marion's declaration to the harness that owns the answer.
 pub fn is_edit_tool(native: &str) -> bool {
     matches!(native, "write_file" | "replace")
+}
+
+/// Is this gemini-native tool one that runs headless only when `--allowed-tools` names it?
+///
+/// `run_shell_command`, which no approval mode short of yolo offers: measured on 0.53.0 against a
+/// capture endpoint (2026-09-28), it is absent from `functionDeclarations` under `default` and under
+/// `auto_edit`, and present under either once `--allowed-tools run_shell_command` is passed. The
+/// flag is marked deprecated in favour of the policy engine (it prints one stderr line saying so);
+/// a `--policy` document allowing the tool was measured to do the same, and is the route to take
+/// when a gemini release drops the flag.
+pub fn is_allowed_by_name(native: &str) -> bool {
+    native == "run_shell_command"
 }
 
 /// The MCP server alias. **It must not contain `_`**: gemini exposes MCP tools as

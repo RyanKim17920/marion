@@ -792,7 +792,7 @@ fn require_claude() {
 /// change record of the repository it runs in (`root::availability_axis`). Two claims follow, and
 /// neither is worth anything without the other:
 ///
-/// **(A) A root granted `read` can actually read.** `claude-impl` declares `[read, write]`; the
+/// **(A) A root granted `read` can actually read.** `claude-impl` declares `[read, write, edit, bash]`; the
 /// adapter maps `read` → `Read` and puts it on **both** of §3.1's axes; the CLI runs the call
 /// without asking, and the file's bytes come back. `tests/fixtures/s14/README.md` is the
 /// measurement behind the spelling — `--tools read`, marion's own word passed through, yields
@@ -824,7 +824,7 @@ fn a_root_granted_read_reads_and_the_same_root_without_a_change_record_gets_no_t
     );
     assert_eq!(
         tools_flag(&granted),
-        "Read,Write",
+        "Read,Write,Edit,Bash",
         "this test is vacuous unless marion really compiled the grant"
     );
     let cap = drive(&granted, Answer::Deny);

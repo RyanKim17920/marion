@@ -113,6 +113,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     constraint: Constraint::Mode {
         prefix: "mode:",
         default: DEFAULT_MODE,
+        allowed: None,
     },
     resume: Some(Resume::Flag("--conversation")),
     updates: UpdatePolicy::Env {

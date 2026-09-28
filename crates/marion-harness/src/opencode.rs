@@ -195,6 +195,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     tool_names: &[
         (agent_type::TOOL_READ, "read"),
         (agent_type::TOOL_WRITE, "write"),
+        (agent_type::TOOL_EDIT, "edit"),
+        (agent_type::TOOL_BASH, "bash"),
     ],
     // `<serverName>_<toolName>` (S13, verified live). The JSON-RPC `tools/call` opencode then makes
     // carries the **unprefixed** `report`: that is the MCP wire layer, not the model-facing name.

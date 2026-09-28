@@ -93,10 +93,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     stream: Some(&RPC_STREAM),
     // `read`, and both built-ins that change a file: `write` creates, `edit` replaces text in an
     // existing file, and each is offered only when named (`pi-report.provider-request-1.json`).
+    // `bash` is pi's shell built-in, offered on the same terms; pi asks no approval for any tool.
     tool_names: &[
         (agent_type::TOOL_READ, "read"),
         (agent_type::TOOL_WRITE, "write"),
         (agent_type::TOOL_WRITE, "edit"),
+        (agent_type::TOOL_EDIT, "edit"),
+        (agent_type::TOOL_BASH, "bash"),
     ],
     // The names marion's own extension registers: Claude Code's spelling, passed to the provider
     // verbatim and repeated in `tool_execution_start.toolName` (item 2).

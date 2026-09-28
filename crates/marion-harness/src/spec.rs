@@ -1716,9 +1716,14 @@ pub enum Constraint {
     /// A coarse mode: `prefix` followed by the axes' mode, or by `default` where the launch relaxed
     /// nothing — recorded in **both** states, because a node that ran under the default mode ran
     /// under a real constraint.
+    ///
+    /// `allowed` is where a mode row that also grants single tools past the mode records them:
+    /// each entry of the axes' allow list, under that prefix (gemini's `--allowed-tools`). `None`
+    /// on a row whose adapter never grants one, and the sweep holds the two together.
     Mode {
         prefix: &'static str,
         default: &'static str,
+        allowed: Option<&'static str>,
     },
     /// One fixed value for every launch: the sandbox mode codex always compiles, or the honest
     /// record that marion compiled no constraint at all. Not `[]`, which would read as "no tool

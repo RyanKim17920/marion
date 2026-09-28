@@ -122,10 +122,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
-    // `write` → the developer extension's `write` (`goose-with-builtin-developer.provider-request-1.json`).
-    // `read` is absent on purpose: the extension has no read-only tool, and the `--with-builtin`
-    // it would compile carries `shell` and `write` too.
-    tool_names: &[(agent_type::TOOL_WRITE, "write")],
+    // `write` → the developer extension's `write` (`goose-with-builtin-developer.provider-request-1.json`),
+    // and `edit` and `bash` → the same extension's `edit` and `shell` (s26 item: `--with-builtin
+    // developer` gives exactly `edit read_image shell tree write`). `read` is absent on purpose: the
+    // extension has no read-only tool, and the `--with-builtin` it would compile carries `shell`
+    // and `write` too.
+    tool_names: &[
+        (agent_type::TOOL_WRITE, "write"),
+        (agent_type::TOOL_EDIT, "edit"),
+        (agent_type::TOOL_BASH, "shell"),
+    ],
     // `<extension>__<tool>`, a double underscore and no `mcp` prefix — measured in `tools[]` and in
     // `toolCall.value.name` (`goose-report.stdout.jsonl`).
     spelling: Spelling::Fixed(ToolSpelling::ServerDoubleUnderscoreTool),
@@ -151,6 +157,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     constraint: Constraint::Mode {
         prefix: "with-builtin:",
         default: NO_BUILTIN,
+        allowed: None,
     },
     // `--resume -n <name>` / `--resume --session-id <id>` exist on 1.49.0, but no frame of the
     // stream carries the id (`goose-session-first.stdout.jsonl` is byte-identical to the

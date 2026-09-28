@@ -100,14 +100,13 @@ pub const PI_DEFAULT_MODEL: &str = "marion-canned";
 
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
-/// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
-/// reads `tools: [read, edit, bash]`, and those three are the vocabulary's *shape*, not a catalogue
-/// marion has earned. `write` was the first verb whose harness-native mapping was **measured** on
-/// the two harnesses that were blocked (§11 item 24: `claude` 2.1.222 declares `Write` under
-/// `--tools "Write"`; `gemini` 0.53.0 declares `write_file` under `--approval-mode auto_edit`);
-/// [`TOOL_READ`] is the second, measured on all four in `tests/fixtures/s14/`. `edit` and `bash`
-/// are still refused, because item 24 says in as many words that `Edit` and `Bash` *"were never
-/// tried"* and s14 declared `Bash` once only to settle a separator. Every unmapped name is refused
+/// **Every word in the vocabulary arrived measured.** §3.1's example line reads `tools: [read,
+/// edit, bash]`, and those three were the vocabulary's *shape*, not a catalogue marion had earned.
+/// `write` was the first verb whose harness-native mapping was **measured** on the two harnesses
+/// that were blocked (§11 item 24: `claude` 2.1.222 declares `Write` under `--tools "Write"`;
+/// `gemini` 0.53.0 declares `write_file` under `--approval-mode auto_edit`); [`TOOL_READ`] is the
+/// second, measured on all four in `tests/fixtures/s14/`; [`TOOL_EDIT`] and [`TOOL_BASH`] followed
+/// once a live run showed an implementer without them (see each). Every unmapped name is refused
 /// by the adapter, naming the tool and the harness, rather than mapped to a guess: a guessed name
 /// that the CLI silently ignores is the §12 accept-and-ignore shape with marion on the producing
 /// end, and this axis exists precisely to end one instance of it.
@@ -154,6 +153,35 @@ pub const TOOL_WRITE: &str = "write";
 /// names. Reading it as "one of the four rejects bad names" would suggest the axis is safe
 /// somewhere, and it is safe nowhere.
 pub const TOOL_READ: &str = "read";
+
+/// The third entry in §3.1's `tools:` vocabulary: *may change part of an existing file in place*.
+///
+/// Its own word rather than a spelling of [`TOOL_WRITE`] because the harnesses that withhold
+/// built-ins name it apart: claude's `Edit`, gemini's `replace`, qwen's `edit` and goose's `edit`
+/// are separate tools from each one's whole-file writer, and a node offered only the writer
+/// rewrites a whole file to change one line. Each row maps it to the name it measured
+/// (`tests/fixtures/s14/`, `s25/`, `s26/`, and the gemini `auto_edit` declaration in §11 item 24).
+pub const TOOL_EDIT: &str = "edit";
+
+/// The fourth entry in §3.1's `tools:` vocabulary: *may run a shell command in its workspace*.
+///
+/// **An implementer needs it to do what it is told.** Measured live (2026-09-27, `s2`): a claude
+/// child granted only `Read` and `Write` could not run the tests its parent asked it to, and spawned
+/// six codex grandchildren to run `python3 -m unittest` for it. The command runs in the node's own
+/// working directory — for a child, the worktree marion made — and marion's writable-scope check
+/// judges whatever it changed there after the fact, exactly as it judges a file tool's write.
+///
+/// §3.1's example line spells it `bash`, and so does this vocabulary; each row maps it to its own
+/// shell tool (claude's `Bash`, gemini's and qwen's `run_shell_command`, goose's `shell`, pi's and
+/// copilot's `bash`).
+pub const TOOL_BASH: &str = "bash";
+
+/// marion's whole `tools:` vocabulary, in the order a declaration lists it.
+pub const TOOL_VOCABULARY: [&str; 4] = [TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_BASH];
+
+/// What an implementer type declares on a harness that offers nothing it is not told to: read,
+/// write and edit files, and run commands.
+const IMPLEMENTER_TOOLS: &[&str] = &[TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_BASH];
 
 /// §5.4/§6.7: an omitted `writable_scope` is **stored** as `["**"]`, never absent, so the
 /// conjunction in `scope::Scope` has two lists to work with in every case.
@@ -295,12 +323,21 @@ impl AgentType {
     /// the scope would put every read-only node in §6.6's table and refuse a second reader from a
     /// directory no writer is in, which is a refusal §6.6 does not ask for.
     ///
-    /// [`TOOL_WRITE`] is the whole of the declared write vocabulary today. `edit` and `bash` are
-    /// refused by every adapter and are not in this list because they are not mappable yet (§11
-    /// item 24); when either is added it must be added here too, and that is a property of this
-    /// being one predicate rather than a `contains` spelled out at the call site.
+    /// Every verb but [`TOOL_READ`] writes: [`TOOL_WRITE`] and [`TOOL_EDIT`] change files, and a
+    /// shell ([`TOOL_BASH`]) can change anything its redirections reach. A verb added later lands
+    /// on one side of this predicate or the other, here, rather than in a `contains` at a call site.
     pub fn writes_files(&self) -> bool {
-        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t == TOOL_WRITE)
+        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t != TOOL_READ)
+    }
+
+    /// **Can a node of this type run a command** — its tests, its build — in its workspace?
+    ///
+    /// Two terms, as in [`Self::writes_files`]: the harnesses that grant their whole tool set
+    /// without a declaration offer their shell with it (codex's `exec_command` under every sandbox
+    /// mode and opencode's `bash`, s14; cline's `run_commands`, S27; an ACP agent's own tools,
+    /// S21), and every other harness offers one only when [`TOOL_BASH`] is declared.
+    pub fn runs_commands(&self) -> bool {
+        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t == TOOL_BASH)
     }
 
     /// The model a spawn of this type runs on when the request names none.
@@ -417,10 +454,10 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "claude",
         aliases: &["claude-impl"],
-        description: "Implementer on Claude Code: may read and write files.",
+        description: "Implementer on Claude Code: may read, write and edit files and run commands.",
         harness: Harness::ClaudeCode,
         model: None,
-        tools: &[TOOL_READ, TOOL_WRITE],
+        tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
     },
     Builtin {
@@ -447,10 +484,11 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "gemini",
         aliases: &["gemini-impl"],
-        description: "Implementer on the Gemini CLI: may read and write files.",
+        description: "Implementer on the Gemini CLI: may read, write and edit files and run \
+                      commands.",
         harness: Harness::Gemini,
         model: Some(GEMINI_DEFAULT_MODEL),
-        tools: &[TOOL_READ, TOOL_WRITE],
+        tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
     },
     Builtin {
@@ -478,10 +516,11 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "copilot",
         aliases: &["copilot-impl"],
-        description: "Implementer on the GitHub Copilot CLI: may read and write files.",
+        description: "Implementer on the GitHub Copilot CLI: may read, write and edit files and run \
+                      commands.",
         harness: Harness::Copilot,
         model: Some(COPILOT_DEFAULT_MODEL),
-        tools: &[TOOL_READ, TOOL_WRITE],
+        tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
     },
     Builtin {
@@ -500,10 +539,10 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "goose",
         aliases: &["goose-impl"],
-        description: "Implementer on goose: may write files and run shell commands.",
+        description: "Implementer on goose: may write and edit files and run shell commands.",
         harness: Harness::Goose,
         model: Some(GOOSE_DEFAULT_MODEL),
-        tools: &[TOOL_WRITE],
+        tools: &[TOOL_WRITE, TOOL_EDIT, TOOL_BASH],
         acp_agent: None,
     },
     Builtin {
@@ -532,10 +571,10 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "qwen",
         aliases: &["qwen-impl"],
-        description: "Implementer on Qwen Code: may read and write files.",
+        description: "Implementer on Qwen Code: may read, write and edit files and run commands.",
         harness: Harness::Qwen,
         model: Some(QWEN_DEFAULT_MODEL),
-        tools: &[TOOL_READ, TOOL_WRITE],
+        tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
     },
     Builtin {
@@ -550,7 +589,10 @@ const BUILTINS: &[Builtin] = &[
     },
     // The ninth binary, run only on the operator's own login: agy has no canned provider route.
     // The default `request-review` mode auto-denies a headless write, and a `write` declaration
-    // is what compiles `--mode accept-edits` (s32), so the grant lives on the type.
+    // is what compiles `--mode accept-edits` (s32), so the grant lives on the type. No `bash`:
+    // `accept-edits` approves file edits only, and a headless `run_command` is approved by the
+    // operator's own allowlist or not at all, so a declaration would offer a tool marion cannot
+    // grant (see `every_implementer_can_run_commands`).
     Builtin {
         canonical: "agy",
         aliases: &["agy-impl"],
@@ -575,10 +617,10 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         canonical: "pi",
         aliases: &[],
-        description: "Implementer on pi: may read and write files.",
+        description: "Implementer on pi: may read, write and edit files and run commands.",
         harness: Harness::Pi,
         model: Some(PI_DEFAULT_MODEL),
-        tools: &[TOOL_READ, TOOL_WRITE],
+        tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
     },
     Builtin {
@@ -819,7 +861,8 @@ pub enum AgentTypesError {
     )]
     UnknownHarness { name: String, harness: String },
     #[error(
-        "agent type {name:?} declares tool {tool:?}; marion's tool vocabulary is {TOOL_READ}, {TOOL_WRITE}"
+        "agent type {name:?} declares tool {tool:?}; marion's tool vocabulary is {TOOL_READ}, \
+         {TOOL_WRITE}, {TOOL_EDIT}, {TOOL_BASH}"
     )]
     UnknownTool { name: String, tool: String },
     #[error(
@@ -978,7 +1021,10 @@ impl FileRow {
             }
         };
         let tools = self.tools.unwrap_or_default();
-        if let Some(tool) = tools.iter().find(|t| *t != TOOL_READ && *t != TOOL_WRITE) {
+        if let Some(tool) = tools
+            .iter()
+            .find(|t| !TOOL_VOCABULARY.contains(&t.as_str()))
+        {
             return Err(AgentTypesError::UnknownTool {
                 name: self.name,
                 tool: tool.clone(),
@@ -1297,7 +1343,10 @@ mod tests {
         );
         assert_eq!(
             builtin("copilot-impl").unwrap().tools,
-            vec![TOOL_READ.to_string(), TOOL_WRITE.to_string()],
+            IMPLEMENTER_TOOLS
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>(),
             "the implementer flavour declares both, as claude-impl and gemini-impl do (§11 item 24)"
         );
         // opencode's `-m` accepts nothing else, and the generated provider block has to repeat it.
@@ -1350,12 +1399,14 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude" | "gemini" | "copilot" | "qwen" | "agy" | "pi" => {
-                    vec![TOOL_READ.into(), TOOL_WRITE.into()]
+                "claude" | "gemini" | "copilot" | "qwen" | "pi" => {
+                    IMPLEMENTER_TOOLS.iter().map(|t| t.to_string()).collect()
                 }
-                // `write` alone: goose's developer extension has no read-only tool to answer
-                // `read` with, and the grant is the whole extension (S26).
-                "goose" => vec![TOOL_WRITE.into()],
+                // No `bash`: agy's headless commands are approved by the operator or not at all.
+                "agy" => vec![TOOL_READ.into(), TOOL_WRITE.into()],
+                // No `read`: goose's developer extension has no read-only tool to answer it with,
+                // and the grant is the whole extension (S26).
+                "goose" => vec![TOOL_WRITE.into(), TOOL_EDIT.into(), TOOL_BASH.into()],
                 _ => vec![],
             };
             assert_eq!(
@@ -1364,6 +1415,48 @@ mod tests {
                  lose the grant that closes item 24"
             );
         }
+    }
+
+    /// **Every implementer can run the commands it is told to run** — its tests above all — and
+    /// no orchestrator is granted a shell.
+    ///
+    /// Measured live (2026-09-27, `s2`): a claude implementer granted `Read` and `Write` alone could
+    /// not run `python3 -m unittest`, and spawned six codex grandchildren to run it. Stated over
+    /// every listed type, so a new implementer has to land on the right side.
+    ///
+    /// agy is the one named exception: its headless mode approves a command only through the
+    /// operator's own allowlist (`--mode accept-edits` approves file edits and nothing else, s32),
+    /// so a declaration would offer a tool marion cannot grant.
+    #[test]
+    fn every_implementer_can_run_commands() {
+        for name in builtin_names() {
+            let t = builtin(name).unwrap();
+            if name.ends_with("-orchestrator") {
+                assert!(
+                    !t.runs_commands(),
+                    "{name}: an orchestrator stays tool-light"
+                );
+            } else if *name == "agy" {
+                assert!(!t.runs_commands(), "{name}: see this test's doc comment");
+            } else {
+                assert!(
+                    t.runs_commands(),
+                    "{name}: an implementer must run commands"
+                );
+            }
+        }
+    }
+
+    /// Every word a type may declare is one the file format accepts.
+    #[test]
+    fn the_file_format_accepts_the_whole_vocabulary() {
+        let types = AgentTypes::parse(
+            "[[agent]]\nname = \"runner\"\nharness = \"claude\"\ndescription = \"x\"\n\
+             tools = [\"read\", \"write\", \"edit\", \"bash\"]\n",
+        )
+        .expect("the whole vocabulary parses");
+        let t = types.resolve("runner").unwrap();
+        assert!(t.runs_commands() && t.writes_files());
     }
 
     /// **A plain harness name is that harness's full implementer**, and `<harness>-impl` is the
@@ -1499,8 +1592,8 @@ mod tests {
         for name in ["claude", "gemini"] {
             let t = builtin(name).unwrap();
             assert_eq!(
-                t.tools,
-                vec![TOOL_READ.to_string(), TOOL_WRITE.to_string()],
+                t.tools[..2],
+                [TOOL_READ.to_string(), TOOL_WRITE.to_string()],
                 "{name}: a node that may write and may not read is item 24 half-closed"
             );
         }
@@ -1830,14 +1923,14 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
     #[test]
     fn an_unknown_tool_or_field_is_refused() {
         let e = AgentTypes::parse(
-            "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\ntools = [\"bash\"]\n",
+            "[[agent]]\nname = \"r\"\nharness = \"codex\"\ndescription = \"x\"\ntools = [\"shell\"]\n",
         )
         .unwrap_err();
         assert_eq!(
             e,
             AgentTypesError::UnknownTool {
                 name: "r".into(),
-                tool: "bash".into()
+                tool: "shell".into()
             }
         );
         let msg = e.to_string();

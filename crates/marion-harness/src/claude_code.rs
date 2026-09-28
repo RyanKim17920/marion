@@ -149,11 +149,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--tools Read` puts `Read` there where the default `--tools ""` has none. **This is the one
     // harness where the grant buys something.** The negative half is why the mapping exists rather
     // than a pass-through: `--tools read`, marion's own word unmapped, yields `body.tools []`,
-    // exit 0, empty stderr — indistinguishable from a healthy run. `Edit` and `Bash` were never
-    // tried and are not named.
+    // exit 0, empty stderr — indistinguishable from a healthy run. `edit` → `Edit` and `bash` →
+    // `Bash`: 2.1.222 declared `Bash` beside `Read` under `--tools "Read,Bash"` (s14 `readbash`),
+    // and both names are in its default tool list (s14 `default`). Each rides `--allowedTools`
+    // too, which is what lets a headless call run rather than ask (S9).
     tool_names: &[
         (agent_type::TOOL_READ, "Read"),
         (agent_type::TOOL_WRITE, "Write"),
+        (agent_type::TOOL_EDIT, "Edit"),
+        (agent_type::TOOL_BASH, "Bash"),
     ],
     spelling: Spelling::Fixed(ToolSpelling::McpDoubleUnderscore),
     // `--mcp-config` names a document in both auth modes: live mode drops three env vars and

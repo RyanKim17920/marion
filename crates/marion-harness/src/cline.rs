@@ -130,6 +130,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     tool_names: &[
         (agent_type::TOOL_READ, "read_files"),
         (agent_type::TOOL_WRITE, "editor"),
+        (agent_type::TOOL_EDIT, "editor"),
+        (agent_type::TOOL_BASH, "run_commands"),
     ],
     // `<serverName>__<toolName>` — measured in `tools[]` and in `content_start.toolName`
     // (`cline-report-ok.provider-request-1.json`, `cline-report-ok.stdout.jsonl`).

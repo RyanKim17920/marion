@@ -5011,11 +5011,11 @@ mod tests {
             let i = args.iter().position(|a| a == flag).expect("flag present");
             args[i + 1].clone()
         };
-        assert_eq!(after("--tools"), "Read,Write", "availability");
+        assert_eq!(after("--tools"), "Read,Write,Edit,Bash", "availability");
         assert_eq!(
             after("--allowedTools"),
             "mcp__marion__report,mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,\
-             mcp__marion__list,mcp__marion__steer,Read,Write",
+             mcp__marion__list,mcp__marion__steer,Read,Write,Edit,Bash",
             "permission carries marion's verbs AND the whole declaration; either alone is a dead \
              end, and a verb that reached availability and not permission is item 22's"
         );

@@ -142,7 +142,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // read tool in it — reading a file is `exec_command`, the shell, which also writes and reaches
     // the network. A reader of `tools: [read]` would take a codex node for read-only when it is
     // nothing of the kind.
-    tool_names: &[(agent_type::TOOL_WRITE, "sandbox:workspace-write")],
+    //
+    // `edit` and `bash` are satisfied the same way: `apply_patch` and `exec_command` are in the
+    // declaration under every sandbox mode (s14), and the sandbox is what bounds them.
+    tool_names: &[
+        (agent_type::TOOL_WRITE, "sandbox:workspace-write"),
+        (agent_type::TOOL_EDIT, "sandbox:workspace-write"),
+        (agent_type::TOOL_BASH, "sandbox:workspace-write"),
+    ],
     // Flat, as on Claude Code: S6 measured codex running **code mode**, where a model reaches marion
     // by writing `await tools.mcp__marion__report({…})`. The `{"name","namespace"}` pair is codex's
     // internal wire dispatch form, never something a child types.

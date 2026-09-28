@@ -731,9 +731,15 @@ pub trait HarnessAdapter {
     /// the two harnesses that do nothing with the result — because the refusal is the part that is
     /// owed to a declaration on all four.
     fn native_tools(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        let mut out = Vec::new();
+        let mut out: Vec<String> = Vec::new();
         for t in &spec.tools {
-            out.extend(self.tool_names(t)?);
+            // Two verbs can map to one native tool (copilot's and pi's `edit` answers both `write`
+            // and `edit`); the harness is offered it once.
+            for native in self.tool_names(t)? {
+                if !out.contains(&native) {
+                    out.push(native);
+                }
+            }
         }
         Ok(out)
     }
@@ -771,11 +777,16 @@ pub trait HarnessAdapter {
                 .iter()
                 .map(|a| format!("{prefix}{a}"))
                 .collect(),
-            Constraint::Mode { prefix, default } => {
-                vec![format!(
-                    "{prefix}{}",
-                    axes.mode.as_deref().unwrap_or(default)
-                )]
+            Constraint::Mode {
+                prefix,
+                default,
+                allowed,
+            } => {
+                let mode = format!("{prefix}{}", axes.mode.as_deref().unwrap_or(default));
+                let grants = allowed
+                    .into_iter()
+                    .flat_map(|p| axes.allowed.iter().map(move |a| format!("{p}{a}")));
+                std::iter::once(mode).chain(grants).collect()
             }
             Constraint::Fixed { prefix, value } => vec![format!("{prefix}{value}")],
         })
@@ -1209,9 +1220,15 @@ impl HarnessAdapter for GeminiAdapter {
     fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
         let tools = self.native_tools(spec)?;
         let relaxed = tools.iter().any(|t| gemini::is_edit_tool(t));
+        // The shell is past what `auto_edit` approves, so it is granted by name.
+        let allowed = tools
+            .iter()
+            .filter(|t| gemini::is_allowed_by_name(t))
+            .cloned()
+            .collect();
         Ok(spec::Axes {
             tools,
-            allowed: Vec::new(),
+            allowed,
             mode: relaxed.then(|| gemini::AUTO_EDIT_APPROVAL_MODE.to_string()),
         })
     }
@@ -1477,6 +1494,9 @@ impl HarnessAdapter for CopilotAdapter {
             .collect();
         if native.iter().any(|t| copilot::is_write_tool(t)) {
             allowed.push(copilot::WRITE_PERMISSION.into());
+        }
+        if native.iter().any(|t| copilot::is_shell_tool(t)) {
+            allowed.push(copilot::SHELL_PERMISSION.into());
         }
         Ok(spec::Axes {
             tools,
@@ -3405,7 +3425,17 @@ mod tests {
             )
             .unwrap();
         let i = both.args.iter().position(|a| a == "--tools").unwrap();
-        assert_eq!(both.args[i + 1], "Read,Write");
+        assert_eq!(both.args[i + 1], "Read,Write,Edit,Bash");
+        let i = both
+            .args
+            .iter()
+            .position(|a| a == "--allowedTools")
+            .unwrap();
+        assert!(
+            both.args[i + 1].ends_with(",Read,Write,Edit,Bash"),
+            "an implementer's shell must run headless, not ask: {}",
+            both.args[i + 1]
+        );
     }
 
     /// **gemini and opencode already declare a read tool, so marion compiles nothing for it.**
@@ -3599,6 +3629,71 @@ mod tests {
         }
     }
 
+    /// **An implementer's shell is granted on both axes**, in each harness's own spelling: offered
+    /// to the model, and allowed to run headless rather than ask. A shell offered and not allowed
+    /// is a tool the model reaches for and is refused, which is the s2 dead end one step later.
+    #[test]
+    fn a_declared_shell_is_offered_and_allowed_on_every_harness_that_withholds_one() {
+        let bash = || vec![agent_type::TOOL_BASH.to_string()];
+        let claude = ClaudeCodeAdapter
+            .compile(
+                &LaunchSpec {
+                    tools: bash(),
+                    ..claude_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        let at = |args: &[String], flag: &str| {
+            args[args.iter().position(|a| a == flag).unwrap() + 1].clone()
+        };
+        assert_eq!(at(&claude.args, "--tools"), "Bash");
+        assert!(at(&claude.args, "--allowedTools").ends_with(",Bash"));
+
+        let spec = LaunchSpec {
+            tools: bash(),
+            ..gemini_spec()
+        };
+        let gemini = GeminiAdapter.compile(&spec, &ctx()).unwrap();
+        assert_eq!(at(&gemini.args, "--allowed-tools"), "run_shell_command");
+        assert_eq!(
+            GeminiAdapter.compiled_permissions(&spec).unwrap(),
+            vec![
+                format!("approval-mode:{}", gemini::DEFAULT_APPROVAL_MODE),
+                "allowed-tools:run_shell_command".to_string()
+            ],
+            "the record names the grant past the mode"
+        );
+        let plain = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
+        assert!(
+            !plain.args.iter().any(|a| a == "--allowed-tools"),
+            "no declaration, no flag"
+        );
+
+        let copilot = CopilotAdapter
+            .compile(
+                &LaunchSpec {
+                    tools: bash(),
+                    ..copilot_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        assert!(
+            copilot.args.iter().any(|a| a == "--allow-tool=shell"),
+            "{:?}",
+            copilot.args
+        );
+        assert!(
+            copilot
+                .args
+                .iter()
+                .any(|a| a.starts_with("--available-tools=") && a.ends_with(",bash")),
+            "{:?}",
+            copilot.args
+        );
+    }
+
     /// **A tool no adapter can provide is refused by name, on every harness, before anything
     /// launches.**
     ///
@@ -3607,9 +3702,9 @@ mod tests {
     /// — the node launches, is offered no such tool, does no work, and persists `changed_paths: []`,
     /// which §11 item 24 records as byte-identical to a child whose write escaped its worktree.
     ///
-    /// `edit` and `bash` are in the sample deliberately: they are §3.1's own example vocabulary,
-    /// and item 24 says in as many words that they *"were never tried"*. Refusing a §3.1 word is
-    /// the honest state, and the message has to be good enough to say so.
+    /// `shell` and `Bash` are in the sample deliberately: the first is a word a caller reaches for
+    /// in place of marion's `bash`, the second a harness's own spelling of it, and neither is
+    /// marion's vocabulary.
     ///
     /// `read` **left the sample** when it gained a measured mapping on three of the four harnesses
     /// (`tests/fixtures/s14/`), which is exactly the transition §3.1's rule describes — a verb is
@@ -3619,7 +3714,7 @@ mod tests {
     #[test]
     fn a_tool_a_harness_cannot_provide_is_refused_by_name_not_dropped() {
         for (name, adapter, spec) in adapters_and_specs() {
-            for unmapped in ["edit", "bash", "Write", "write_file", ""] {
+            for unmapped in ["shell", "Bash", "Write", "write_file", ""] {
                 let spec = LaunchSpec {
                     tools: vec![unmapped.into()],
                     ..spec.clone()
@@ -3644,12 +3739,12 @@ mod tests {
     #[test]
     fn one_unmappable_tool_refuses_the_whole_declaration() {
         let spec = LaunchSpec {
-            tools: vec![agent_type::TOOL_WRITE.into(), "bash".into()],
+            tools: vec![agent_type::TOOL_WRITE.into(), "shell".into()],
             ..claude_spec()
         };
         assert!(matches!(
             ClaudeCodeAdapter.compile(&spec, &ctx()),
-            Err(HarnessError::UnsupportedTool { tool, .. }) if tool == "bash"
+            Err(HarnessError::UnsupportedTool { tool, .. }) if tool == "shell"
         ));
     }
 
@@ -3776,13 +3871,13 @@ mod tests {
     fn the_record_refuses_a_tool_the_harness_cannot_provide() {
         for (name, adapter, spec) in adapters_and_specs() {
             let spec = LaunchSpec {
-                tools: vec!["bash".into()],
+                tools: vec!["shell".into()],
                 ..spec
             };
             let Err(err) = adapter.compiled_permissions(&spec) else {
                 panic!("{name}: an unmappable tool must not yield a record");
             };
-            assert!(err.to_string().contains("bash"), "{name}: {err}");
+            assert!(err.to_string().contains("shell"), "{name}: {err}");
         }
     }
 
@@ -10847,7 +10942,7 @@ mod tests {
             );
             for (verb, native) in row.tool_names {
                 assert!(
-                    [agent_type::TOOL_READ, agent_type::TOOL_WRITE].contains(verb),
+                    agent_type::TOOL_VOCABULARY.contains(verb),
                     "{h}: `{verb}` is not marion's vocabulary"
                 );
                 assert!(
@@ -10856,7 +10951,7 @@ mod tests {
                 );
             }
             assert!(matches!(
-                a.tool_names("bash"),
+                a.tool_names("shell"),
                 Err(HarnessError::UnsupportedTool { harness, .. }) if harness == h
             ));
             match row.spelling {
@@ -10907,10 +11002,21 @@ mod tests {
                 Constraint::Fixed { prefix, value } => {
                     assert_eq!(recorded, vec![format!("{prefix}{value}")], "{h}")
                 }
-                Constraint::Mode { prefix, .. } | Constraint::Allowed { prefix } => {
+                Constraint::Allowed { prefix } => {
                     assert!(
                         recorded.iter().all(|r| r.starts_with(prefix)),
                         "{h}: {recorded:?}"
+                    )
+                }
+                Constraint::Mode {
+                    prefix, allowed, ..
+                } => {
+                    assert!(recorded[0].starts_with(prefix), "{h}: {recorded:?}");
+                    assert!(
+                        recorded[1..]
+                            .iter()
+                            .all(|r| allowed.is_some_and(|p| r.starts_with(p))),
+                        "{h}: a grant past the mode needs the row's `allowed` prefix: {recorded:?}"
                     )
                 }
             }

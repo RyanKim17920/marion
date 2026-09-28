@@ -3629,7 +3629,7 @@ mod tests {
     fn a_root_over_a_recorded_repository_compiles_the_grant_its_agent_type_declares() {
         assert_eq!(
             builtin("claude-impl").unwrap().tools,
-            vec!["read".to_string(), "write".to_string()],
+            vec!["read", "write", "edit", "bash"],
             "this test is vacuous unless the type really does declare a grant"
         );
         let (dir, repo) = temp_repo("root-tools");
@@ -3653,12 +3653,12 @@ mod tests {
 
         let (tools, allowed) = axis("claude-impl");
         assert_eq!(
-            tools, "Read,Write",
+            tools, "Read,Write,Edit,Bash",
             "availability, in claude's own spelling"
         );
         assert_eq!(
             allowed,
-            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,Read,Write",
+            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,Read,Write,Edit,Bash",
             "permission must carry the same grant beside marion's own verbs, or the tool exists \
              and every call to it is refused (§11 items 22 and 24)"
         );
@@ -3907,7 +3907,7 @@ mod tests {
             .expect("the intent introduced the node");
         let grant = n.root_grant.as_ref().expect("the grant is journalled");
         assert_eq!(grant.pre_tree.as_ref(), Some(pre_tree));
-        assert_eq!(grant.granted.as_str(), "read, write");
+        assert_eq!(grant.granted.as_str(), "read, write, edit, bash");
         assert!(
             n.granted_without_a_record(),
             "this is the crash: a grant on the operator's checkout with nothing yet saying what \

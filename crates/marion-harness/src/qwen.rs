@@ -140,10 +140,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `{tool_use_id, is_error, content}`, `result` `{subtype, is_error}`.
     stream: Some(&crate::claude_code::STREAM),
     // Both measured in `tools[]` under `--core-tools`: `write_file` lands a file
-    // (`qwen-write-then-report.stdout.jsonl`), `read_file` is one of the 28 defaults.
+    // (`qwen-write-then-report.stdout.jsonl`), `read_file` is one of the 28 defaults. `edit` and
+    // `run_shell_command` are two more of those defaults (`qwen-baseline-deferred-mcp.stdout.jsonl`'s
+    // `init.tools`), and `--yolo` runs whatever `--core-tools` offers.
     tool_names: &[
         (agent_type::TOOL_READ, "read_file"),
         (agent_type::TOOL_WRITE, "write_file"),
+        (agent_type::TOOL_EDIT, "edit"),
+        (agent_type::TOOL_BASH, "run_shell_command"),
     ],
     // `mcp__<server>__<tool>` — Claude Code's spelling, measured in `tools[]`, in `tool_use.name`
     // and in `permission_denials[].tool_name`.
