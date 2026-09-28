@@ -3949,6 +3949,9 @@ impl RegistryHandle {
                 // The same attribution the child path asks through the trait: did a `node/kill`
                 // (or KillTree) end this root, so its terminal record is the kill's?
                 let ended_by_kill = || observer.process_ended(&node.agent_id);
+                // And the ask between a failed attempt and a key rotation's next, which settles
+                // nothing: a kill asked for then ends the root rather than its next credential.
+                let kill_requested = || observer.kill_requested(&node.agent_id);
                 crate::root::launch_owned(
                     &node,
                     bound,
@@ -3963,6 +3966,7 @@ impl RegistryHandle {
                     // so it is the only process for which a registered pane means anything.
                     Some(&observer),
                     Some(&ended_by_kill),
+                    Some(&kill_requested),
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())

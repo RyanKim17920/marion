@@ -2077,7 +2077,7 @@ ever runs a real login.
   rides `credential` on `Spawned`, `ChildRef` and the replayed node. The ids after the chosen one
   are kept as `Endpoint::fallbacks`. A resume re-resolves by the stated order rather than the
   journaled credential.
-- **API-key rotation — built for children.** A child endpoint launch whose process failed with no
+- **API-key rotation — built for children and headless roots.** A child endpoint launch whose process failed with no
   report and nothing changed in its worktree (the evidence available that no turn succeeded), and
   whose stderr or stream failure names a rate limit (`429`, `rate limit`), a refused key
   (`401`/`403` and the shared auth markers) or an outage (`5xx`, overload, a refused or reset
@@ -2089,9 +2089,20 @@ ever runs a real login.
   lists each move as `{from, to, cause}` (`auth` | `rate_limit` | `outage`), ids only. API keys
   alone: a subscription login is never a credential of a provider. Canned cells green on
   2026-09-27 (codex 0.155.1): key `a` answered 429 fails over to `b` and succeeds; both answered 401
-  fail after one failover. **Not built:** rotation for a root (`root::prepare`), and a stricter
-  "no successful turn" signal than no-report-and-no-change (a run that made tool calls without
-  editing and then hit a 429 would rotate). **TODO, not built:** a
+  fail after one failover. **Roots (2026-09-27):** the decision is one function for both,
+  `run::relaunch_on(endpoint, profiles, at, cause)`; a child's evidence is read by `next_attempt`, a
+  root's by `root::root_failure_before_a_turn` — a headless (duplex or `LaunchOnly`) endpoint root
+  with another stated credential (`RootNode::rotation`, the launch from before the endpoint was
+  applied) whose attempt failed with no marion call, no token spent and nothing git saw change in
+  its directory (a `LaunchOnly` root's `BridgeNeverReached` refusal counts as such a failure). It is
+  recompiled on the next credential (`root::rotated`: documents rewritten, a fresh gateway on a
+  translated route) and relaunched as the same node on what is left of its bound, each attempt its
+  own `Spawned` naming the credential by id; a kill asked for between attempts
+  (`SpawnObserver::kill_requested`, passed to `launch_owned`) ends it instead. A pane root is not
+  rotated: its operator sees the refused key. Canned cell green on 2026-09-27 (codex root, key `a`
+  answered 429, finished on `b`, no key in any kept file). **Not built:** a stricter "no successful
+  turn" signal for a child than no-report-and-no-change (a run that made tool calls without editing
+  and then hit a 429 would rotate). **TODO, not built:** a
   `profile` field selecting one of several native harness profiles the user set up
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), explicitly per type or spawn and never rotated.
 - **Endpoint auth mode — built for children and roots.** `Auth::Endpoint` is a per-node mode that

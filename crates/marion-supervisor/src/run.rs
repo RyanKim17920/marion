@@ -1059,7 +1059,7 @@ fn redact_run(
 }
 
 /// What a failed attempt relaunches on, where it relaunches at all.
-enum Next {
+pub(crate) enum Next {
     /// The endpoint's next stated API key.
     Credential(crate::endpoint::Endpoint),
     /// The next profile the agent type listed, by index into the node's profiles.
@@ -1068,7 +1068,7 @@ enum Next {
 
 /// **The node's billing**: an endpoint node spends an API key, and every other node the operator's
 /// own login — a subscription, whether or not it runs on a profile.
-fn billing(endpoint: Option<&crate::endpoint::Endpoint>) -> marion_harness::Billing {
+pub(crate) fn billing(endpoint: Option<&crate::endpoint::Endpoint>) -> marion_harness::Billing {
     match endpoint {
         Some(_) => marion_harness::Billing::ApiKey,
         None => marion_harness::Billing::Subscription,
@@ -1090,19 +1090,13 @@ fn attempt_cause(
     adapter.failure_cause(&said, &run.stdout, billing(endpoint))
 }
 
-/// **The one relaunch policy**: whether a finished attempt relaunches, on what, and why — `None`
-/// for any run that must stand as it is.
+/// **A child attempt, as the relaunch policy reads it**: the cause it failed on, from the one
+/// classifier — or `None` for any run that must stand as it is.
 ///
-/// A relaunch needs every one of these: the process ended on its own, with wall clock left to
-/// spend; it failed (a nonzero exit or a stream that says so) with no report and nothing changed
-/// in its worktree — the evidence available that no turn of it succeeded; and the cause, from the
-/// one classifier, is one the next attempt may fare differently on. Then:
-///
-/// * an **endpoint** node rotates to its next stated API key on a rate limit, a refused key or an
-///   outage — each credential tried once;
-/// * a node on the operator's **own login** fails over to the next profile its type listed on an
-///   auth failure only;
-/// * a **usage limit** relaunches nothing, on either: it is reported and never worked around.
+/// A child is a relaunch candidate when every one of these holds: the process ended on its own,
+/// with wall clock left to spend; it failed (a nonzero exit or a stream that says so) with no
+/// report and nothing changed in its worktree — the evidence available that no turn of it
+/// succeeded. A root's evidence is read by `root`'s own gatherer; both then go to [`relaunch_on`].
 #[allow(clippy::too_many_arguments)]
 fn next_attempt(
     endpoint: Option<&crate::endpoint::Endpoint>,
@@ -1114,7 +1108,6 @@ fn next_attempt(
     base: Option<&Oid>,
     remaining: StdDuration,
 ) -> Option<(Next, marion_core::contract::FailureCause)> {
-    use marion_core::contract::FailureCause;
     if run.exit.timed_out || remaining.is_zero() {
         return None;
     }
@@ -1129,28 +1122,48 @@ fn next_attempt(
         return None;
     }
     let cause = attempt_cause(adapter, run, stream.failure.as_deref(), endpoint)?;
-    let next = match (endpoint, &cause) {
+    Some((relaunch_on(endpoint, profiles, at, &cause)?, cause))
+}
+
+/// **The one relaunch policy**, for a child and a root alike: given an attempt that failed before
+/// any turn of it succeeded, and the cause the one classifier read, what it relaunches on — `None`
+/// where it must stand as it ended.
+///
+/// * an **endpoint** node rotates to its next stated API key on a rate limit, a refused key or an
+///   outage — each credential tried once;
+/// * a node on the operator's **own login** fails over to the next profile its type listed on an
+///   auth failure only (a root lists one profile, so never);
+/// * a **usage limit** relaunches nothing, on either: it is reported and never worked around.
+pub(crate) fn relaunch_on(
+    endpoint: Option<&crate::endpoint::Endpoint>,
+    profiles: &crate::profiles::Launch,
+    at: usize,
+    cause: &marion_core::contract::FailureCause,
+) -> Option<Next> {
+    use marion_core::contract::FailureCause;
+    match (endpoint, cause) {
         (
             Some(ep),
             FailureCause::RateLimit { .. }
             | FailureCause::Auth { .. }
             | FailureCause::Outage { .. },
         ) if !ep.fallbacks.is_empty() => {
-            // A store that cannot be read now is no reason to lose the failed run's own contract:
+            // A store that cannot be read now is no reason to lose the failed run's own record:
             // the run stands as it ended, and the failure it recorded says why.
-            Next::Credential(crate::endpoint::next_for_launch(ep).ok().flatten()?)
+            Some(Next::Credential(
+                crate::endpoint::next_for_launch(ep).ok().flatten()?,
+            ))
         }
-        (None, FailureCause::Auth { .. }) => Next::Profile(profiles.next_after(at)?),
-        _ => return None,
-    };
-    Some((next, cause))
+        (None, FailureCause::Auth { .. }) => Some(Next::Profile(profiles.next_after(at)?)),
+        _ => None,
+    }
 }
 
 /// **The readiness marker a relaunch must not inherit.** The failed attempt's bridge touched it; left
 /// in place, it would let the prompt reach the next attempt before that attempt's own bridge has
 /// the tool list. Found on the profile failover (`ccf06a3`); the credential rotation relaunches the
 /// same way and needs the same.
-fn clear_ready_marker(marker: Option<&Path>) {
+pub(crate) fn clear_ready_marker(marker: Option<&Path>) {
     if let Some(m) = marker {
         let _ = std::fs::remove_file(m);
     }

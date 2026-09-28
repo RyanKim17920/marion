@@ -426,6 +426,10 @@ pub struct RootNode {
     /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
     /// no measured continuation (`TurnDelivery::Continuation`).
     pub relaunch: Option<RootRelaunch>,
+    /// **What a key rotation recompiles the root from**: its launch before any endpoint was
+    /// applied, and its context. `Some` only for a headless root whose endpoint has another stated
+    /// credential to move to ([`rotated`]); a pane root's operator sees a refused key directly.
+    pub rotation: Option<RootRelaunch>,
 }
 
 impl RootNode {
@@ -821,6 +825,12 @@ pub fn prepare_watched(
         Some(ep) => crate::endpoint::open(ep)?.map(std::sync::Arc::new),
         None => None,
     };
+    // The launch as it was before the endpoint, for a rotation to point at the next credential.
+    let unapplied = endpoint
+        .as_ref()
+        .filter(|e| !e.fallbacks.is_empty())
+        .filter(|_| matches!(path, RootPath::Duplex | RootPath::LaunchOnly))
+        .map(|_| launch.clone());
     if let Some(ep) = &endpoint {
         crate::endpoint::apply(&mut launch, ep, gateway.as_deref());
     }
@@ -945,9 +955,14 @@ pub fn prepare_watched(
         launch: launch.clone(),
         ctx: ctx.clone(),
     });
+    let rotation = unapplied.map(|launch| RootRelaunch {
+        launch,
+        ctx: ctx.clone(),
+    });
     Ok(RootNode {
         turns,
         relaunch,
+        rotation,
         agent_id,
         project,
         agent_dir,
@@ -1239,7 +1254,16 @@ pub fn launch_watched(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
-    launch_owned(node, bound, mcp_ready_timeout, watcher, None, None, None)
+    launch_owned(
+        node,
+        bound,
+        mcp_ready_timeout,
+        watcher,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 /// **Where a root's pane goes**, for an owner that can serve it.
@@ -1290,6 +1314,9 @@ pub trait PaneOwner: Send + Sync {
 /// `ended_by_kill` is the owner's [`crate::run::SpawnObserver::process_ended`] for this root, asked
 /// once when the process has ended and before anything terminal is written. `None` is a caller that
 /// holds the root for its whole turn and so can never have been asked to kill it from outside.
+/// `kill_requested` is its [`crate::run::SpawnObserver::kill_requested`]: the check between one
+/// attempt and a key rotation's next, which settles nothing.
+#[allow(clippy::too_many_arguments)]
 pub fn launch_owned(
     node: &RootNode,
     bound: StdDuration,
@@ -1298,6 +1325,7 @@ pub fn launch_owned(
     on_started: Option<&dyn Fn(i32)>,
     pane: Option<&dyn PaneOwner>,
     ended_by_kill: Option<&dyn Fn() -> bool>,
+    kill_requested: Option<&dyn Fn() -> bool>,
 ) -> Result<RootOutcome, RootError> {
     launch_inner(
         node,
@@ -1307,9 +1335,11 @@ pub fn launch_owned(
         on_started,
         pane,
         ended_by_kill,
+        kill_requested,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn launch_inner(
     node: &RootNode,
     bound: StdDuration,
@@ -1318,6 +1348,7 @@ fn launch_inner(
     on_started: Option<&dyn Fn(i32)>,
     pane: Option<&dyn PaneOwner>,
     ended_by_kill: Option<&dyn Fn() -> bool>,
+    kill_requested: Option<&dyn Fn() -> bool>,
 ) -> Result<RootOutcome, RootError> {
     // **§6.1 step 7's confirmation, at the instant the process exists** — §11 item 28 step 1's rule,
     // applied to the node it had left out. Written here rather than after the run returns, and
@@ -1349,16 +1380,6 @@ fn launch_inner(
     // resolved program, and at the cost `run.rs` states: [`crate::run::harness_version`]'s bound
     // sits on the pre-launch path, inside `handler.rs`'s `LAUNCH_BOUND`.
     let harness_version = crate::run::harness_version(&node.invocation.program, node.harness);
-    let started = |pid: i32| {
-        confirm_root_started(
-            node,
-            &harness_version,
-            on_started,
-            &spawned,
-            &unaccountable,
-            pid,
-        )
-    };
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
     // complementary reason: the journal says a root existed and how it ended, this says what it
     // said. `None` on an open failure — a viewer may never fail a run (`events::EventSink::open`).
@@ -1390,13 +1411,37 @@ fn launch_inner(
         node.path == RootPath::Terminal,
     )
     .with_profiles(&node.profiles);
-    // The root's own `TMPDIR`, held across every generation below and removed once the last
-    // process is reaped (see [`crate::node_tmp`]). A failure to make it is a failure to launch,
-    // carried into `result` rather than returned, so the outcome is journaled like any other.
+    // **One attempt loop, the children's policy** (`crate::run::relaunch_on`): a headless endpoint
+    // root whose provider refused, rate-limited or failed its key before any turn of it succeeded
+    // is relaunched fresh on its next stated credential, on what is left of its one wall clock.
+    // Each attempt is its own `Spawned`, naming the credential it ran on — by id, never the key.
+    //
+    // The root's own `TMPDIR`, held across every attempt and generation below and removed once the
+    // last process is reaped (see [`crate::node_tmp`]). A failure to make it is a failure to
+    // launch, carried into `result` rather than returned, so the outcome is journaled like any
+    // other.
     let node_tmp = crate::node_tmp::NodeTmp::create(&node.agent_dir);
-    let result = match node_tmp.as_ref().map(crate::node_tmp::NodeTmp::path) {
-        Err(e) => Err(RootError::Io(std::io::Error::new(e.kind(), e.to_string()))),
-        Ok(tmpdir) => match node.path {
+    let mut current = std::borrow::Cow::Borrowed(node);
+    let launched_at = std::time::Instant::now();
+    let whole_bound = bound;
+    let result = loop {
+        let node: &RootNode = &current;
+        let bound = whole_bound.saturating_sub(launched_at.elapsed());
+        let started = |pid: i32| {
+            confirm_root_started(
+                node,
+                &harness_version,
+                on_started,
+                &spawned,
+                &unaccountable,
+                pid,
+            )
+        };
+        let tmpdir = match node_tmp.as_ref().map(crate::node_tmp::NodeTmp::path) {
+            Ok(tmpdir) => tmpdir,
+            Err(e) => break Err(RootError::Io(std::io::Error::new(e.kind(), e.to_string()))),
+        };
+        let result = match node.path {
             // The same three readers as the duplex tee, fed from the ACP driver's live line seam.
             RootPath::Acp => {
                 let tee = |ev: duplex::StreamEvent<'_>| {
@@ -1446,22 +1491,44 @@ fn launch_inner(
             // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
             // the byte-level record is `AgentDir::pty_cast()`.
             RootPath::Terminal => launch_terminal(node, tmpdir, bound, &started, pane),
-        },
+        };
+        // **Substituted for whatever the kill made the driver return.** The kill above produces a
+        // signalled exit on one path and a torn stream on the other, and reporting either as itself
+        // would name the symptom and bury the cause. `journal_the_roots_outcome` then journals this as
+        // a `SpawnAborted` — the record for a node marion decided the fate of before it produced
+        // anything — and, because `spawned` is still false, does not claim a confirmation either.
+        let result = match unaccountable.take() {
+            // The error's shape, never a copy of the record that would not fit: this string is
+            // journaled, and pasting an over-cap record into the explanation of why it was over the cap
+            // would fail the same cap twice.
+            Some(why) => Err(RootError::UnaccountableNode {
+                why: why.to_string(),
+            }),
+            None => result,
+        };
+        let killed = kill_requested.is_some_and(|asked| asked());
+        let remaining = whole_bound.saturating_sub(launched_at.elapsed());
+        let spent = events.as_ref().and_then(|es| es.spent().usage);
+        let next =
+            root_failure_before_a_turn(node, &result, spent, remaining, killed).and_then(|cause| {
+                crate::run::relaunch_on(node.endpoint.as_ref(), &node.profiles, 0, &cause)
+            });
+        let Some(crate::run::Next::Credential(next)) = next else {
+            break result;
+        };
+        // A rotation that cannot be compiled leaves the failed attempt standing, as it ended.
+        let Ok(next) = rotated(node, next) else {
+            break result;
+        };
+        if let Some(es) = &events {
+            for key in next.held_keys() {
+                es.scrub_key(key);
+            }
+        }
+        crate::run::clear_ready_marker(next.ready_file.as_deref());
+        current = std::borrow::Cow::Owned(next);
     };
-    // **Substituted for whatever the kill made the driver return.** The kill above produces a
-    // signalled exit on one path and a torn stream on the other, and reporting either as itself
-    // would name the symptom and bury the cause. `journal_the_roots_outcome` then journals this as
-    // a `SpawnAborted` — the record for a node marion decided the fate of before it produced
-    // anything — and, because `spawned` is still false, does not claim a confirmation either.
-    let result = match unaccountable.take() {
-        // The error's shape, never a copy of the record that would not fit: this string is
-        // journaled, and pasting an over-cap record into the explanation of why it was over the cap
-        // would fail the same cap twice.
-        Some(why) => Err(RootError::UnaccountableNode {
-            why: why.to_string(),
-        }),
-        None => result,
-    };
+    let node: &RootNode = &current;
     // **The process has ended; nothing terminal is written yet** — the one instant the owner's
     // attribution can be asked and settled (`SpawnObserver::process_ended`).
     let ended_by_kill = ended_by_kill.is_some_and(|asked| asked());
@@ -1487,6 +1554,82 @@ fn launch_inner(
         ));
     }
     result
+}
+
+/// **A root attempt, as the relaunch policy reads it** (`crate::run::relaunch_on`): the cause it
+/// failed on, from the one classifier — or `None` where it stands as it ended.
+///
+/// A candidate is a root that can rotate at all ([`RootNode::rotation`]) whose process ended on
+/// its own with wall clock left and no kill asked for, failed (a nonzero exit or a stream that
+/// says so), and shows no sign that any turn succeeded: no marion call, no token spent, and
+/// nothing git saw change in its directory.
+fn root_failure_before_a_turn(
+    node: &RootNode,
+    result: &Result<RootOutcome, RootError>,
+    spent: Option<marion_core::contract::TokenUsage>,
+    remaining: StdDuration,
+    killed: bool,
+) -> Option<marion_core::contract::FailureCause> {
+    node.rotation.as_ref()?;
+    if killed || remaining.is_zero() || spent.is_some_and(|u| u.total() > 0) {
+        return None;
+    }
+    let (failed, called, said, stdout) = match result {
+        Ok(o) if !o.timed_out => (
+            o.exit_code != Some(0) || o.failure.is_some(),
+            !o.marion_calls.is_empty(),
+            format!("{}\n{}", o.stderr, o.failure.as_deref().unwrap_or_default()),
+            o.transcript
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        // A `LaunchOnly` root's post-hoc refusal for never reaching marion's bridge: not one marion
+        // call, and the harness's own words — its stream's failure and its stderr — in the error.
+        Err(e @ RootError::BridgeNeverReached { .. }) => {
+            (true, false, e.to_string(), String::new())
+        }
+        _ => return None,
+    };
+    if !failed || called {
+        return None;
+    }
+    if let RootDelta::Observed { changed_paths, .. } =
+        observe_the_roots_change(node).working_tree_delta
+        && !changed_paths.is_empty()
+    {
+        return None;
+    }
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref()).ok()?;
+    adapter.failure_cause(&said, &stdout, crate::run::billing(node.endpoint.as_ref()))
+}
+
+/// **The same root on its next credential**: the launch from before any endpoint was applied,
+/// pointed at `next` (through a fresh gateway where its route is translated), its documents
+/// written again and its invocation compiled again — everything else the node's own, its identity
+/// included.
+fn rotated(node: &RootNode, next: crate::endpoint::Endpoint) -> Result<RootNode, RootError> {
+    let r = node
+        .rotation
+        .as_ref()
+        .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
+    let gateway = crate::endpoint::open(&next)?.map(std::sync::Arc::new);
+    let mut launch = r.launch.clone();
+    crate::endpoint::apply(&mut launch, &next, gateway.as_deref());
+    crate::run::write_config_documents(adapter.config_files(&launch, &r.ctx)?)?;
+    let invocation = compile_root(adapter.as_ref(), false, &launch, &r.ctx)?;
+    Ok(RootNode {
+        invocation,
+        relaunch: node.relaunch.as_ref().map(|rl| RootRelaunch {
+            launch: launch.clone(),
+            ctx: rl.ctx.clone(),
+        }),
+        endpoint: Some(next),
+        gateway,
+        ..node.clone()
+    })
 }
 
 /// `launch_inner`'s `on_started` hook: `Spawned { pid: Some(_) }` through the fallible barrier,

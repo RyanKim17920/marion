@@ -931,6 +931,115 @@ fn rotation_tries_each_credential_once_and_then_fails() {
     assert_no_key_kept(&ev);
 }
 
+/// **A root rotates as a child does**, through the same policy (`run::relaunch_on`): a codex root on
+/// `canned-rot` whose provider answers key `a` with 429 before any turn is relaunched fresh on `b`
+/// — the same node, a second `Spawned` naming the credential by id — and finishes there. The key
+/// is in no file the tree keeps.
+#[test]
+fn a_rate_limited_root_fails_over_to_the_next_stated_credential_before_its_first_turn() {
+    use marion_supervisor::root::{self, RootSpec};
+    assert!(
+        on_path("codex"),
+        "put `codex` ({}) on PATH",
+        pinned_version("codex")
+    );
+    let reqlog_dir = scratch("endpoint-reqlog-root-rot");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script: Script {
+            child_narrative: NARRATIVE.into(),
+            refusals: vec![marion_provider::KeyRefusal {
+                key: KEY_A.into(),
+                status: 429,
+            }],
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+    let _cells = providers_at(&base_url);
+    let t = tree("root-rot", Some(base_url.clone()));
+    let node = root::prepare(&RootSpec {
+        agent_type: "codex".into(),
+        prompt: "Report back through marion.".into(),
+        native_launch: None,
+        repo: t.repo.canonicalize().unwrap(),
+        state: t.state.clone(),
+        base_url: Some(base_url),
+        auth: marion_harness::Auth::Canned,
+        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+        model: Some(format!("canned-rot:{MODEL}")),
+        no_change_record: false,
+        pane: false,
+        resume: None,
+        bound_secs: 120,
+        profile: None,
+    })
+    .expect("the endpoint root prepares");
+    assert!(
+        node.rotation.is_some(),
+        "a headless root with a second credential can rotate"
+    );
+    let outcome = root::launch(
+        &node,
+        std::time::Duration::from_secs(120),
+        root::MCP_READY_TIMEOUT,
+    );
+    let requests = server.requests().unwrap_or_default();
+    // The root's own project key: `prepare` keys it on the canonical repository root.
+    let journal = std::fs::read_to_string(node.project.journal()).unwrap_or_default();
+    let mut kept = Vec::new();
+    every_file(&t.state, &mut kept);
+    drop(node);
+    drop(server);
+    let leaked = survivors(&t.state.parent().unwrap().to_string_lossy());
+    for (pid, _) in &leaked {
+        kill_hard(*pid);
+    }
+    let summary = requests
+        .iter()
+        .map(|r| format!("  {} {} {}", r["method"], r["path"], r["credentials"]))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let outcome = outcome.unwrap_or_else(|e| panic!("the root ran: {e}\n{summary}"));
+    assert_eq!(
+        outcome.exit_code,
+        Some(0),
+        "the root finished on b: {:?} {}\n{summary}",
+        outcome.failure,
+        outcome.stderr
+    );
+    let first_b = requests
+        .iter()
+        .position(|r| presented(r, KEY_B))
+        .unwrap_or_else(|| panic!("key b was never presented\n{summary}"));
+    assert!(
+        first_b > 0 && presented(&requests[0], KEY_A),
+        "a first\n{summary}"
+    );
+    assert!(
+        requests[first_b..].iter().all(|r| presented(r, KEY_B)),
+        "after the failover only b is presented\n{summary}"
+    );
+    // One node, two process lifetimes, each naming the credential it ran on.
+    let a = journal.find("\"credential\":\"canned-rot:a\"");
+    let b = journal.find("\"credential\":\"canned-rot:b\"");
+    assert!(
+        matches!((a, b), (Some(a), Some(b)) if a < b),
+        "the journal's Spawned records name a, then b:\n{journal}"
+    );
+    for key in [KEY_A, KEY_B] {
+        let holding: Vec<&PathBuf> = kept
+            .iter()
+            .filter(|(_, bytes)| bytes.windows(key.len()).any(|w| w == key.as_bytes()))
+            .map(|(p, _)| p)
+            .collect();
+        assert!(holding.is_empty(), "a key is kept in {holding:?}");
+    }
+    assert!(leaked.is_empty(), "leaked {leaked:?}");
+}
+
 // ---- `marion doctor --providers`: each stored credential, probed; the harness x provider matrix --
 
 /// **Each stored credential is checked by id, and the key is never shown**: present or not, its
