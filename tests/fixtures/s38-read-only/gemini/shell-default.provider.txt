@@ -1,0 +1,2 @@
+requests: 3
+tools: ['update_topic', 'list_directory', 'read_file', 'grep_search', 'glob', 'google_web_search', 'enter_plan_mode', 'invoke_agent']

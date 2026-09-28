@@ -1,0 +1,2 @@
+exit=0
+file src/ro.txt: s38 marker

@@ -1,0 +1,2 @@
+argv: <SCRATCH>/bin/gs auto --with-builtin developer
+env names: HOME GOOSE_PROVIDER GOOSE_MODEL OPENAI_HOST OPENAI_BASE_PATH OPENAI_API_KEY GOOSE_MODE=<mode> (goose UpdatePolicy::None)

@@ -1,0 +1,2 @@
+argv: env PI_CODING_AGENT_DIR=<SCRATCH>/pi-agent pi -p --mode json --no-extensions --provider marion --model canned-1 --tools read,write,edit S38RO write the file
+env names: PI_CODING_AGENT_DIR PI_SKIP_VERSION_CHECK

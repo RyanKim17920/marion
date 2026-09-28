@@ -1,0 +1,2 @@
+argv: <SCRATCH>/bin/oc
+env names: (as positive); config permission block via opencode.json

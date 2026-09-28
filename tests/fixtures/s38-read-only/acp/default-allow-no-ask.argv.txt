@@ -1,0 +1,2 @@
+argv: python3 <SCRATCH>/acpclient.py reject <SCRATCH>/work-acp <SCRATCH>/bin/ocacp
+env names: opencode env as opencode/positive; no permission block (opencode default allow); ACP session/set_config_option mode=plan

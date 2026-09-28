@@ -1,0 +1,2 @@
+requests: 2
+tools: ['glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch']

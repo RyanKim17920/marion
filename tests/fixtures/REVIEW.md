@@ -124,6 +124,10 @@ unchanged. The one exception is S28's `copilot-acp-session-new-mcp-ignored.jsonl
 skill's full text was replaced by a one-line placeholder; its test reads only the model's
 message chunks.
 
+**2026-09-28, S38.** The qwen 0.23.0 stdout captures under `s38-read-only/qwen/` listed the
+operator's installed skills; each name was replaced by a same-length `skillNN…` placeholder. The
+other S38 captures were recorded on relocated homes and carry no inventory.
+
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
 `TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**

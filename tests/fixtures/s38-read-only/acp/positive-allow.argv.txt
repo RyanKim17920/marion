@@ -1,0 +1,2 @@
+argv: python3 <SCRATCH>/acpclient.py allow <SCRATCH>/work-acp <SCRATCH>/bin/ocacp
+env names: opencode env as opencode/positive; config permission {edit:ask,bash:ask}; ACP client answers request_permission

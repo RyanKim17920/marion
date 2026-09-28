@@ -1,0 +1,43 @@
+//! Scratch: marion's canned provider with a Script taken from S38_SCRIPT (JSON).
+use marion_provider::{CannedServer, Config, EditTurn, Script};
+use marion_provider::script::{RootScript, RootTurn};
+use marion_provider::script::{NodeScript, ScriptedCall};
+use serde_json::Value;
+
+fn edit(v: &Value) -> Option<EditTurn> {
+    v.as_object().map(|o| EditTurn { tool: o["tool"].as_str().unwrap().into(), args: o["args"].clone() })
+}
+
+fn main() {
+    let cfg: Value = serde_json::from_str(&std::env::var("S38_SCRIPT").unwrap_or("{}".into())).unwrap();
+    let mut s = Script::default();
+    if let Some(v) = cfg.get("anthropic_edit") { s.anthropic_edit = edit(v); }
+    if let Some(v) = cfg.get("openai_edit") { s.openai_edit = edit(v); }
+    if let Some(v) = cfg.get("gemini_edit") { s.gemini_edit = edit(v); }
+    if let Some(v) = cfg.get("root_tool").and_then(Value::as_str) { s.root_tool = v.into(); }
+    if let Some(v) = cfg.get("root_tool_input") { s.root_tool_input = v.clone(); }
+    if let Some(v) = cfg.get("openai_report_tool").and_then(Value::as_str) { s.openai_report_tool = v.into(); }
+    if let Some(v) = cfg.get("openai_report_args") { s.openai_report_args = v.clone(); }
+    if let Some(v) = cfg.get("gemini_report_tool").and_then(Value::as_str) { s.gemini_report_tool = v.into(); }
+    if let Some(v) = cfg.get("gemini_report_args") { s.gemini_report_args = v.clone(); }
+    if let Some(v) = cfg.get("child_patch").and_then(Value::as_str) { s.child_patch = v.into(); }
+    if let Some(v) = cfg.get("child_exec_js").and_then(Value::as_str) { s.child_exec_js = Some(v.into()); }
+    if let Some(n) = cfg.get("node") {
+        s.nodes.push(NodeScript {
+            marker: n["marker"].as_str().unwrap().into(),
+            call_prefix: n["prefix"].as_str().unwrap_or("call_s38").into(),
+            turns: n["turns"].as_array().unwrap().iter()
+                .map(|t| ScriptedCall::new(t["tool"].as_str().unwrap(), t["args"].clone())).collect(),
+            final_text: n["final"].as_str().unwrap_or("done").into(),
+        });
+    }
+    if let Some(r) = cfg.get("root") {
+        s.root = Some(RootScript { marker: r["marker"].as_str().unwrap().into(), turn: RootTurn {
+            tool: r["tool"].as_str().unwrap().into(), args: r["args"].clone(), final_text: "root done".into() } });
+    }
+    let mut c = Config::from_env().unwrap();
+    c.script = s;
+    let server = CannedServer::start(c).expect("bind");
+    eprintln!("s38-canned {} reqlog {}", server.base_url(), server.reqlog_path().display());
+    loop { std::thread::park(); }
+}

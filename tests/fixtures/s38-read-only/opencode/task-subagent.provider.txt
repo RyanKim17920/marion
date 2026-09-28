@@ -1,0 +1,3 @@
+requests: 5
+tools: ['glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch']
+tools: ['glob', 'grep', 'read', 'skill', 'webfetch']

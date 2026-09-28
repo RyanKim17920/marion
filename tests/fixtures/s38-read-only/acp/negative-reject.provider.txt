@@ -1,0 +1,2 @@
+requests: 2
+tools: ['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch', 'write']

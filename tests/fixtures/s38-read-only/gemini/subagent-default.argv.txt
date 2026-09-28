@@ -1,0 +1,2 @@
+argv: <SCRATCH>/bin/gm
+env names: as gemini/positive

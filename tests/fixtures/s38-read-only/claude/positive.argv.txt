@@ -1,0 +1,2 @@
+argv: <SCRATCH>/bin/cl --tools Read,Write --allowedTools Write
+env names: ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY(empty) DISABLE_AUTOUPDATER=1

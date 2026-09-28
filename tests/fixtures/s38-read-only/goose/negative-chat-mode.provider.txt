@@ -1,0 +1,2 @@
+requests: 3
+tools: ['edit', 'read_image', 'shell', 'tree', 'write']

@@ -1,0 +1,2 @@
+argv: <SCRATCH>/bin/qw --yolo read_file write_file
+env names: QWEN_HOME OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL QWEN_CODE_LEGACY_MCP_BLOCKING QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true NO_COLOR TERM; settings memory.enableManagedAutoMemory=false

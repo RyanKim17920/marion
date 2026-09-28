@@ -1,0 +1,2 @@
+[LocalAgentExecutor] Blocked call: Unauthorized tool call: 'write_file' is not available to this agent.
+[LocalAgentExecutor] Blocked call: Unauthorized tool call: 'mcp_marion_report' is not available to this agent.

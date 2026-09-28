@@ -1,0 +1,3 @@
+Reading additional input from stdin...
+2026-09-28T03:51:38.197904Z ERROR codex_core::tools::router: error=patch rejected: writing is blocked by read-only sandbox; rejected by user approval settings
+2026-09-28T03:51:38.419835Z ERROR codex_core::tools::router: error=unsupported call: mcp__marionreport

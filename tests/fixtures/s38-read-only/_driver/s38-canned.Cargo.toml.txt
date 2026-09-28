@@ -1,0 +1,8 @@
+[package]
+name = "s38-canned"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+marion-provider = { path = "<HOME>/Desktop/CODING/mw-review/crates/marion-provider" }
+serde_json = "1"
+[workspace]

@@ -1,0 +1,24 @@
+[
+ {
+  "call_id": "call_marion_patch_1",
+  "id": "ct_call_marion_patch_1",
+  "input": "const r = await tools.apply_patch(\"*** Begin Patch\\n*** Add File: src/ro.txt\\n+s38 marker\\n*** End Patch\");\ntext(JSON.stringify(r));",
+  "name": "exec",
+  "type": "custom_tool_call"
+ },
+ {
+  "call_id": "call_marion_patch_1",
+  "id": "ctco_01a0e623-c1e9-7bc3-89d3-f0db8e467a0b",
+  "output": [
+   {
+    "text": "Script failed\nWall time 0.1 seconds\nOutput:\n",
+    "type": "input_text"
+   },
+   {
+    "text": "Script error:\npatch rejected: writing is blocked by read-only sandbox; rejected by user approval settings",
+    "type": "input_text"
+   }
+  ],
+  "type": "custom_tool_call_output"
+ }
+]
