@@ -1,0 +1,54 @@
+# Publishes the release's npm package, @ryankim17920/marion. release.yml calls this
+# (dist-workspace.toml names it in `publish-jobs`) after the GitHub Release exists.
+#
+# The body is dist 0.33's own `publish-npm` job with one change: without the NPM_TOKEN secret it
+# prints a notice and succeeds instead of failing, so a release made before the owner creates the
+# token still publishes its archives, installer and checksums. Adding the secret turns publishing
+# on with no change here. See CONTRIBUTING.md, "Releasing".
+
+name: Publish npm package
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: "ubuntu-22.04"
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      # `secrets` cannot appear in a job-level `if`, so the check is a step the others key on.
+      - id: token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=npm package not published::The NPM_TOKEN secret is not set, so @ryankim17920/marion was not published. The rest of the release is unaffected. See CONTRIBUTING.md, Releasing."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Fetch npm packages
+        if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: npm/
+          merge-multiple: true
+      - if: steps.token.outputs.present == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+      - if: steps.token.outputs.present == 'true'
+        run: |
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
+            pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
+            npm publish --access public "./npm/${pkg}"
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

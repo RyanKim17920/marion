@@ -19,7 +19,11 @@ tap = "RyanKim17920/homebrew-tap"
 # Plain `marion` is taken on npm; the package is `@ryankim17920/marion` (npm-package is set on the
 # crate, in crates/marion-supervisor/Cargo.toml).
 npm-scope = "@ryankim17920"
-publish-jobs = ["homebrew", "npm"]
+# The formula and npm publish jobs are local copies of dist's own (.github/workflows/publish-*.yml)
+# that skip with a notice when their secret is absent instead of failing the release. dist warns
+# "a Homebrew tap was specified but the Homebrew publish job is disabled" because it cannot see
+# that ./publish-homebrew is that job; the formula is still built and still names this tap.
+publish-jobs = ["./publish-homebrew", "./publish-npm"]
 # macOS, glibc Linux and musl Linux, both architectures. musl gives a static binary for Alpine and
 # other non-glibc systems; both musl targets were cross-linked with cargo-zigbuild on macOS and are
 # built natively on the release runners. No native Windows (marion needs POSIX PTYs and Unix
