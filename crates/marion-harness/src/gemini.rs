@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 use crate::grammar::{
@@ -95,7 +94,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // neither pushed, rather than an overlay that quietly outranks the operator's own resolution.
         Env {
             key: BASE_URL_ENV,
-            val: Val::Field(Field::BaseUrl),
+            val: Val::Field(Field::BaseUrlRoot),
             when: When::Overlay,
         },
         Env {
@@ -229,12 +228,26 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
-    requires: &[Requirement {
-        modes: Modes::All,
-        need: Need::Model,
-        why: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
-                   a classifier call that retried 5x and hung, and marion will not guess a model",
-    }],
+    requires: &[
+        // **The model is refused rather than defaulted.** A pinned id would be a guess marion has
+        // no basis for, and S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to
+        // `gemini-3.5-flash` in the request path — so a "safe" default is not even reliably the
+        // model that runs. The failure it prevents is the expensive one: with model `auto` the CLI
+        // issues a classifier call to gemini-3.1-flash-lite over non-streaming `:generateContent`
+        // and hung on retry 5.
+        Requirement {
+            modes: Modes::All,
+            need: Need::Model,
+            why: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
+                  a classifier call that retried 5x and hung, and marion will not guess a model",
+        },
+        Requirement {
+            modes: Modes::All,
+            need: Need::HttpsOrLoopback,
+            why: "GOOGLE_GEMINI_BASE_URL must be https unless the host is loopback; a non-loopback \
+                  plain-http endpoint is refused by the CLI",
+        },
+    ],
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).
@@ -487,44 +500,6 @@ pub fn is_allowed_by_name(native: &str) -> bool {
 /// extra underscores is mis-parsed and **fails silently** (S12). `marion` is safe.
 pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 
-/// `GOOGLE_GEMINI_BASE_URL` from the base URL marion carries.
-///
-/// The same derivation Claude Code needs, for a different reason: marion stores the Codex
-/// `model_providers` spelling (`…/v1`, the one that appears verbatim in a config file), while the
-/// google-genai SDK appends its own `/v1beta/models/<model>:streamGenerateContent` — so the `/v1`
-/// would be doubled. Deliberately *not* borrowed from [`crate::claude_code`]: two adapters that
-/// happen to need the same string edit are not a dependency between peers.
-pub fn google_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed
-        .strip_suffix("/v1")
-        .unwrap_or(trimmed)
-        .trim_end_matches('/')
-        .to_string()
-}
-
-/// S12/§6.4: base-URL overrides **must be HTTPS unless the host is loopback**. marion's proxy is
-/// on `127.0.0.1`, so it needs no TLS — but a non-loopback plain-HTTP endpoint is refused by the
-/// CLI, and refusing it at compile time turns a confusing runtime failure into a launch error.
-pub fn base_url_is_acceptable(base_url: &str) -> bool {
-    let u = base_url.trim();
-    if u.starts_with("https://") {
-        return true;
-    }
-    let Some(rest) = u.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = match authority.strip_prefix('[') {
-        // An IPv6 literal keeps its brackets: `[::1]:8099`.
-        Some(r) => r
-            .split_once(']')
-            .map_or(String::new(), |(h, _)| format!("[{h}]")),
-        None => authority.split(':').next().unwrap_or("").to_string(),
-    };
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
-}
-
 /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names.
 ///
 /// **`"trust": true` is load-bearing and its omission is silent.** Measured in S12 against 0.53.0,
@@ -643,37 +618,6 @@ impl HarnessAdapter for GeminiAdapter {
             allowed,
             mode: relaxed.then(|| AUTO_EDIT_APPROVAL_MODE.to_string()),
         })
-    }
-
-    /// The base URL's refusal, and the one derivation. The model's refusal is the row's
-    /// ([`SPEC`]'s `requires`):
-    ///
-    /// **The model is refused rather than defaulted.** A pinned id would be a guess marion has no
-    /// basis for, and S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to
-    /// `gemini-3.5-flash` in the request path — so a "safe" default is not even reliably the model
-    /// that runs. The failure it prevents is the expensive one: with model `auto` the CLI issues a
-    /// classifier call to gemini-3.1-flash-lite over non-streaming `:generateContent` and hung on
-    /// retry 5.
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        if let Some(u) = &spec.base_url
-            && !base_url_is_acceptable(u)
-        {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::Gemini,
-                what: "GOOGLE_GEMINI_BASE_URL must be https unless the host is loopback; a \
-                       non-loopback plain-http endpoint is refused by the CLI",
-            });
-        }
-        let mut f = neutral_fields(spec, self.axes(spec)?);
-        // The google-genai SDK appends its own `/v1beta/...`, so the `/v1` marion stores would be
-        // doubled; the derivation is this harness's ([`google_base_url`]).
-        f.base_url = f.base_url.as_deref().map(google_base_url);
-        Ok(f)
     }
 
     fn config_files(
@@ -813,10 +757,13 @@ mod tests {
         let (_, v) = inv.env.iter().find(|(k, _)| k == BASE_URL_ENV).unwrap();
         assert_eq!(v, "http://127.0.0.1:8099");
         assert_eq!(
-            google_base_url("https://x.example/v1/"),
+            crate::spec::base_url_root("https://x.example/v1/"),
             "https://x.example"
         );
-        assert_eq!(google_base_url("https://x.example"), "https://x.example");
+        assert_eq!(
+            crate::spec::base_url_root("https://x.example"),
+            "https://x.example"
+        );
     }
 
     #[test]
@@ -841,10 +788,10 @@ mod tests {
             "http://[::1]:9/v1",
             "https://generativelanguage.googleapis.com",
         ] {
-            assert!(base_url_is_acceptable(ok), "{ok}");
+            assert!(crate::spec::https_or_loopback(ok), "{ok}");
         }
         for bad in ["http://example.com/v1", "http://10.0.0.1:8099", "ftp://x"] {
-            assert!(!base_url_is_acceptable(bad), "{bad}");
+            assert!(!crate::spec::https_or_loopback(bad), "{bad}");
         }
     }
 

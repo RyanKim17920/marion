@@ -208,6 +208,9 @@ pub enum Need {
     ModelOtherThan(&'static str),
     /// Nothing satisfies it: the row has no measured recipe for the mode.
     NoRecipe,
+    /// A base URL, where one is given, that is HTTPS or plain HTTP to a loopback host
+    /// ([`https_or_loopback`]). No base URL satisfies it.
+    HttpsOrLoopback,
 }
 
 /// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that
@@ -942,8 +945,12 @@ pub enum Field {
     Mode,
     /// How argv names the MCP declaration document — a path, or copilot's `@path`.
     McpConfig,
-    /// The provider base URL in this harness's spelling, or `None` where none is overlaid.
+    /// The provider base URL in marion's canonical `…/v1` form, or `None` where none is overlaid.
     BaseUrl,
+    /// [`Self::BaseUrl`] without its trailing `/v1` ([`base_url_root`]): the form a harness whose
+    /// SDK appends its own versioned path wants — Claude Code adds `/v1/messages`, the google-genai
+    /// SDK `/v1beta/...` — so the `/v1` marion stores is not doubled.
+    BaseUrlRoot,
     ApiKey,
     /// Repeatable `key=value` overrides (codex `-c`).
     Pairs,
@@ -1184,6 +1191,39 @@ impl std::fmt::Debug for Fields {
     }
 }
 
+/// Whether a base URL is HTTPS, or plain HTTP to a loopback host — [`Need::HttpsOrLoopback`]. A
+/// harness that refuses a non-loopback plain-HTTP endpoint at runtime (gemini, S12/§6.4) states
+/// the requirement, so the refusal is a launch error rather than a confusing runtime failure.
+pub fn https_or_loopback(base_url: &str) -> bool {
+    let u = base_url.trim();
+    if u.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = u.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        // An IPv6 literal keeps its brackets: `[::1]:8099`.
+        Some(r) => r
+            .split_once(']')
+            .map_or(String::new(), |(h, _)| format!("[{h}]")),
+        None => authority.split(':').next().unwrap_or("").to_string(),
+    };
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+}
+
+/// A base URL without its trailing `/v1` (and without trailing slashes either side of it) —
+/// [`Field::BaseUrlRoot`]'s value. A URL with no `/v1` is returned as it is, minus trailing slashes.
+pub fn base_url_root(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .to_string()
+}
+
 impl Fields {
     /// The scalar a field carries, or the list it carries comma-joined — `None` where it carries
     /// nothing, which for a list means empty.
@@ -1197,6 +1237,7 @@ impl Fields {
             Field::Mode => self.axes.mode.clone(),
             Field::McpConfig => self.mcp_config.clone(),
             Field::BaseUrl => self.base_url.clone(),
+            Field::BaseUrlRoot => self.base_url.as_deref().map(base_url_root),
             Field::ApiKey => self.api_key.as_ref().map(|k| k.expose().to_string()),
             Field::InlineConfig => self.inline_config.clone(),
             Field::Title => self.title.clone(),

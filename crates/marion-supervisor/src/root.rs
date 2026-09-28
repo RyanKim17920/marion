@@ -2886,7 +2886,8 @@ fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
 mod tests {
     use super::*;
     use marion_core::agent_type::builtin;
-    use marion_harness::claude_code::{anthropic_base_url, mcp_config_json};
+    use marion_harness::claude_code::mcp_config_json;
+    use marion_harness::spec::base_url_root as anthropic_base_url;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 

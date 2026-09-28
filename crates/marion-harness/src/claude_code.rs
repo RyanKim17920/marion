@@ -119,7 +119,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     env: &[
         Env {
             key: "ANTHROPIC_BASE_URL",
-            val: Val::Field(Field::BaseUrl),
+            val: Val::Field(Field::BaseUrlRoot),
             when: When::Always,
         },
         Env {
@@ -617,22 +617,6 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
 };
 
-/// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.
-///
-/// The two harnesses disagree about the `/v1`: a Codex `model_providers` entry names the full
-/// `…/v1`, while Claude Code appends `/v1/messages` to whatever it is given and would otherwise
-/// request `/v1/v1/messages`. marion stores the Codex form — it is the one that appears verbatim
-/// in a config file — and derives the other. This lives with the adapter that needs the
-/// derivation, so the supervisor never has to know which harness wants which spelling.
-pub fn anthropic_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed
-        .strip_suffix("/v1")
-        .unwrap_or(trimmed)
-        .trim_end_matches('/')
-        .to_string()
-}
-
 /// The `--mcp-config` document declaring marion's control MCP.
 ///
 /// The bridge is a *short-lived process the harness starts*, not one marion spawns (§5.4), so
@@ -747,9 +731,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         // one where both axes are marion's to set and where opening only the first is a measured
         // dead end (§11 item 24).
         let mut f = neutral_fields(spec, self.axes(spec)?);
-        // Claude Code wants the base URL **without** the `/v1` marion stores (it appends
-        // `/v1/messages` itself); the derivation is this harness's and lives beside it.
-        f.base_url = f.base_url.as_deref().map(anthropic_base_url);
         f.mcp_config = Some(Self::mcp_config_path(spec).to_string_lossy().into_owned());
         Ok(f)
     }

@@ -886,6 +886,7 @@ pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result
         spec::Need::ApiKey => spec.api_key.is_some(),
         spec::Need::ModelOtherThan(canned) => spec.model.as_deref() != Some(canned),
         spec::Need::NoRecipe => false,
+        spec::Need::HttpsOrLoopback => spec.base_url.as_deref().is_none_or(spec::https_or_loopback),
     };
     match row
         .requires
@@ -1130,6 +1131,7 @@ mod tests {
                     Need::ApiKey => launch.api_key = None,
                     Need::ModelOtherThan(canned) => launch.model = Some(canned.into()),
                     Need::NoRecipe => {}
+                    Need::HttpsOrLoopback => launch.base_url = Some("http://gw.example/v1".into()),
                 }
                 let got = launch_adapter(h).unwrap().compile(&launch, &ctx());
                 assert!(

@@ -46,7 +46,7 @@ pub use auth::{
 };
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::ClaudeCodeAdapter;
-pub use claude_code::{anthropic_base_url, mcp_config_json};
+pub use claude_code::mcp_config_json;
 pub use cline::ClineAdapter;
 pub use codex::CodexAdapter;
 pub use codex::config_toml;
