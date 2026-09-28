@@ -45,7 +45,7 @@ use crate::spec::{
     LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -173,6 +173,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    login, so launch it without --canned or a provider",
         },
     ],
+    // A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
+    // and agy's default otherwise — under which a headless edit is auto-denied (s32).
+    axes: AxesRule::Mode {
+        mode: ACCEPT_EDITS_MODE,
+        when_any: &[WRITE_TOOL],
+        by_name: &[],
+    },
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).
@@ -339,18 +346,6 @@ pub struct AntigravityAdapter;
 impl HarnessAdapter for AntigravityAdapter {
     fn harness(&self) -> Harness {
         Harness::Antigravity
-    }
-
-    /// A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
-    /// and agy's default otherwise — under which a headless edit is auto-denied (s32).
-    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
-        let tools = self.native_tools(spec)?;
-        let relaxed = tools.iter().any(|t| is_edit_tool(t));
-        Ok(spec::Axes {
-            tools,
-            allowed: Vec::new(),
-            mode: relaxed.then(|| ACCEPT_EDITS_MODE.to_string()),
-        })
     }
 
     /// The root and the working-directory preamble. Canned and endpoint are refused by the row

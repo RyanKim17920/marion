@@ -31,6 +31,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
+use crate::spec::AxesRule;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
     LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces,
@@ -307,6 +308,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
     requires: &[],
+    axes: AxesRule::Split,
 };
 
 /// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).

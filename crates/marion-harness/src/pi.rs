@@ -46,7 +46,7 @@ use crate::spec::{
     LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Remembers, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
 /// and [`models_path`].
@@ -222,6 +222,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    pi's own default",
         },
     ],
+    // One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    // built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
+    // (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
+    axes: AxesRule::OneList { refuse_empty: None },
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).
@@ -531,19 +535,6 @@ pub struct PiAdapter;
 impl HarnessAdapter for PiAdapter {
     fn harness(&self) -> Harness {
         Harness::Pi
-    }
-
-    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
-    /// built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
-    /// (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
-    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
-        let mut tools = spec.allowed_tools.clone();
-        tools.extend(self.native_tools(spec)?);
-        Ok(spec::Axes {
-            allowed: tools.clone(),
-            tools,
-            mode: None,
-        })
     }
 
     /// The extension path; the refusals are the row's ([`SPEC`]'s `requires`).

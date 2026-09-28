@@ -26,6 +26,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
+use crate::spec::AxesRule;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
@@ -299,6 +300,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
     requires: &[],
+    axes: AxesRule::Split,
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).

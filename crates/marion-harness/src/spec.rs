@@ -160,6 +160,29 @@ pub struct HarnessSpec {
     /// checked — each refused by name with its own measured reason before the row's hook runs
     /// ([`crate::adapter::requirements`]). Empty where the row needs nothing a launch could omit.
     pub requires: &'static [Requirement],
+    /// How §3.1's two axes are compiled from a launch ([`crate::HarnessAdapter::axes`]).
+    pub axes: AxesRule,
+}
+
+/// **How a row compiles §3.1's availability and permission axes**, from the declared tools mapped
+/// into its own spelling and marion's own verbs ([`crate::LaunchSpec::allowed_tools`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxesRule {
+    /// Availability is the declared tools; permission is marion's verbs plus the same tools.
+    Split,
+    /// A coarse mode instead of lists: `mode` exactly when a declared tool is one of `when_any`,
+    /// none otherwise. The permission list is the declared tools among `by_name`: those no mode
+    /// short of the widest approves, granted by name instead.
+    Mode {
+        mode: &'static str,
+        when_any: &'static [&'static str],
+        by_name: &'static [&'static str],
+    },
+    /// One list on both axes: marion's verbs plus the declared tools. `refuse_empty` refuses an
+    /// empty list by name where the harness reads an empty list as no constraint at all.
+    OneList { refuse_empty: Option<&'static str> },
+    /// The row's hook computes them, because no rule above says what it measured; the row says why.
+    Hook,
 }
 
 /// **One input a row cannot launch without**, under the auth modes it names. Row data rather

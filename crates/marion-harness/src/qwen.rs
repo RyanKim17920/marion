@@ -57,7 +57,7 @@ use crate::spec::{
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -271,6 +271,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    own default",
         },
     ],
+    // One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    // built-ins, as `--core-tools` names them — and the audit record is that same list.
+    //
+    // **Never empty.** `--core-tools` with no names is silently no allowlist at all: the run
+    // starts, nothing warns, and the model is offered every built-in but the twelve excluded
+    // (`qwen-core-tools-empty.provider-request-1.json`). A launch with no marion verb and no
+    // declaration is refused by name rather than compiled into that.
+    axes: AxesRule::OneList {
+        refuse_empty: Some(
+            "a launch must name at least one tool: `--core-tools` with no names is silently no \
+             allowlist, and the model would be offered every built-in (s25 item 16)",
+        ),
+    },
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,
@@ -353,31 +366,6 @@ pub struct QwenAdapter;
 impl HarnessAdapter for QwenAdapter {
     fn harness(&self) -> Harness {
         Harness::Qwen
-    }
-
-    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
-    /// built-ins, as `--core-tools` names them — and the audit record is that same list.
-    ///
-    /// **Never empty.** `--core-tools` with no names is silently no allowlist at all: the run
-    /// starts, nothing warns, and the model is offered every built-in but the twelve excluded
-    /// (`qwen-core-tools-empty.provider-request-1.json`). A launch with no marion verb and no
-    /// declaration is refused by name rather than compiled into that.
-    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
-        let mut tools = spec.allowed_tools.clone();
-        tools.extend(self.native_tools(spec)?);
-        if tools.is_empty() {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::Qwen,
-                what: "a launch must name at least one tool: `--core-tools` with no names is \
-                       silently no allowlist, and the model would be offered every built-in \
-                       (s25 item 16)",
-            });
-        }
-        Ok(spec::Axes {
-            allowed: tools.clone(),
-            tools,
-            mode: None,
-        })
     }
 
     /// The declaration token; the refusals are the row's ([`SPEC`]'s `requires`).

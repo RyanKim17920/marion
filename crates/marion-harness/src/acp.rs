@@ -59,6 +59,7 @@ use crate::grammar::{
     ActivityRule, Cond, Reasoning, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
 use crate::spec;
+use crate::spec::AxesRule;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
     MidTurn, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery,
@@ -168,6 +169,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            refused session/new vendor-side). The argv of every refinement row is the one those \
            spikes launched; a generic `acp:<command>` row is the operator's own",
     requires: &[],
+    axes: AxesRule::Split,
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**

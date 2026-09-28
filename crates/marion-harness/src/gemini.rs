@@ -22,13 +22,12 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
-use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -56,7 +55,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // Ahead of `-p`, and only when the declaration names an edit tool, so a node that declares
         // nothing compiles the argv it always compiled, in the order it always compiled it.
         Arg::Flag("--approval-mode", Field::Mode),
-        // Only when the declaration names the shell ([`is_allowed_by_name`]).
+        // Only when the declaration names the shell ([`ALLOWED_BY_NAME`]).
         Arg::Each("--allowed-tools", Field::Allowed),
         Arg::Flag("-p", Field::Prompt),
     ],
@@ -248,6 +247,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                   plain-http endpoint is refused by the CLI",
         },
     ],
+    // §3.1's availability axis, in the only form this harness has one: **a mode, not a list.**
+    // `mode` is `Some(auto_edit)` exactly when the declaration names an edit tool, and `None` —
+    // the default mode, which this row then compiles no flag for — otherwise. The marion →
+    // gemini mapping is `tool_names` above, and which *gemini* names need the mode is
+    // `EDIT_TOOLS`, so neither half is restated here.
+    // The shell is past what `auto_edit` approves, so it is granted by name.
+    axes: AxesRule::Mode {
+        mode: AUTO_EDIT_APPROVAL_MODE,
+        when_any: EDIT_TOOLS,
+        by_name: ALLOWED_BY_NAME,
+    },
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).
@@ -480,10 +490,10 @@ pub const DEFAULT_APPROVAL_MODE: &str = "default";
 /// Lives here rather than in the adapter because it is knowledge about gemini, and the adapter's
 /// job is only to hand marion's declaration to the harness that owns the answer.
 pub fn is_edit_tool(native: &str) -> bool {
-    matches!(native, "write_file" | "replace")
+    EDIT_TOOLS.contains(&native)
 }
 
-/// Is this gemini-native tool one that runs headless only when `--allowed-tools` names it?
+/// The gemini-native tools that run headless only when `--allowed-tools` names them.
 ///
 /// `run_shell_command`, which no approval mode short of yolo offers: measured on 0.53.0 against a
 /// capture endpoint (2026-09-28), it is absent from `functionDeclarations` under `default` and under
@@ -491,9 +501,10 @@ pub fn is_edit_tool(native: &str) -> bool {
 /// flag is marked deprecated in favour of the policy engine (it prints one stderr line saying so);
 /// a `--policy` document allowing the tool was measured to do the same, and is the route to take
 /// when a gemini release drops the flag.
-pub fn is_allowed_by_name(native: &str) -> bool {
-    native == "run_shell_command"
-}
+pub const ALLOWED_BY_NAME: &[&str] = &["run_shell_command"];
+
+/// The gemini-native tools [`is_edit_tool`] answers for.
+pub const EDIT_TOOLS: &[&str] = &["write_file", "replace"];
 
 /// The MCP server alias. **It must not contain `_`**: gemini exposes MCP tools as
 /// `mcp_<server>_<tool>`, and the shipped policy-engine docs warn that a fully-qualified name with
@@ -597,27 +608,6 @@ impl GeminiAdapter {
 impl HarnessAdapter for GeminiAdapter {
     fn harness(&self) -> Harness {
         Harness::Gemini
-    }
-
-    /// §3.1's availability axis, in the only form this harness has one: **a mode, not a list.**
-    /// `mode` is `Some(auto_edit)` exactly when the declaration names an edit tool, and `None` —
-    /// the default mode, which [`SPEC`] then compiles no flag for — otherwise. The marion →
-    /// gemini mapping is [`Self::tool_name`]'s, and which *gemini* names need the mode is
-    /// [`is_edit_tool`]'s, so neither half is restated here.
-    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
-        let tools = self.native_tools(spec)?;
-        let relaxed = tools.iter().any(|t| is_edit_tool(t));
-        // The shell is past what `auto_edit` approves, so it is granted by name.
-        let allowed = tools
-            .iter()
-            .filter(|t| is_allowed_by_name(t))
-            .cloned()
-            .collect();
-        Ok(spec::Axes {
-            tools,
-            allowed,
-            mode: relaxed.then(|| AUTO_EDIT_APPROVAL_MODE.to_string()),
-        })
     }
 
     fn config_files(

@@ -382,12 +382,53 @@ pub trait HarnessAdapter {
     /// the audit record cannot disagree.
     fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
         let tools = self.native_tools(spec)?;
-        let mut allowed = spec.allowed_tools.clone();
-        allowed.extend(tools.iter().cloned());
-        Ok(spec::Axes {
-            tools,
-            allowed,
-            mode: None,
+        Ok(match self.spec().axes {
+            spec::AxesRule::Split => {
+                let mut allowed = spec.allowed_tools.clone();
+                allowed.extend(tools.iter().cloned());
+                spec::Axes {
+                    tools,
+                    allowed,
+                    mode: None,
+                }
+            }
+            spec::AxesRule::Mode {
+                mode,
+                when_any,
+                by_name,
+            } => spec::Axes {
+                mode: tools
+                    .iter()
+                    .any(|t| when_any.contains(&t.as_str()))
+                    .then(|| mode.to_string()),
+                allowed: tools
+                    .iter()
+                    .filter(|t| by_name.contains(&t.as_str()))
+                    .cloned()
+                    .collect(),
+                tools,
+            },
+            spec::AxesRule::OneList { refuse_empty } => {
+                let mut all = spec.allowed_tools.clone();
+                all.extend(tools);
+                if let (true, Some(why)) = (all.is_empty(), refuse_empty) {
+                    return Err(HarnessError::MissingInput {
+                        harness: self.harness(),
+                        what: why,
+                    });
+                }
+                spec::Axes {
+                    allowed: all.clone(),
+                    tools: all,
+                    mode: None,
+                }
+            }
+            spec::AxesRule::Hook => {
+                return Err(HarnessError::MissingInput {
+                    harness: self.harness(),
+                    what: "the row states its axes are its hook's, and no hook computes them",
+                });
+            }
         })
     }
 

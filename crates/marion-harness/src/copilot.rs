@@ -51,7 +51,7 @@ use crate::spec::{
     Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
     WireRecipe,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
 /// live declaration and [`mcp_config_path`].
@@ -323,6 +323,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    Copilot's own default",
         },
     ],
+    // Its two axes spell one tool two ways (`--available-tools` names, `--allow-tool` patterns)
+    // and marion's verbs are re-read out of the model-facing spelling, with a refusal of its own:
+    // no rule above states that, so [`CopilotAdapter::axes`] does.
+    axes: AxesRule::Hook,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).

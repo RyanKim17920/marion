@@ -53,7 +53,7 @@ use crate::spec::{
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{Modes, Need, Requirement};
+use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -250,6 +250,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                    own default",
         },
     ],
+    // §3.1's availability axis, in the only form this harness has one: **a builtin, not a
+    // list.** `mode` is `Some(developer)` exactly when the declaration names a developer-extension
+    // tool, and `None` — no `--with-builtin`, nothing but marion — otherwise.
+    axes: AxesRule::Mode {
+        mode: DEVELOPER_BUILTIN,
+        when_any: DEVELOPER_TOOLS,
+        by_name: &[],
+    },
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).
@@ -440,8 +448,11 @@ pub const EXTENSION_KEY: &str = "marion:";
 
 /// Is this goose-native tool name one the developer extension carries?
 pub fn is_developer_tool(native: &str) -> bool {
-    matches!(native, "write" | "edit" | "shell" | "tree" | "read_image")
+    DEVELOPER_TOOLS.contains(&native)
 }
+
+/// The goose-native tools the developer extension carries ([`is_developer_tool`]).
+pub const DEVELOPER_TOOLS: &[&str] = &["write", "edit", "shell", "tree", "read_image"];
 
 /// `$HOME` for a node: a directory under marion's own config dir, never the operator's home.
 pub fn home(config_dir: &std::path::Path) -> std::path::PathBuf {
@@ -502,19 +513,6 @@ pub struct GooseAdapter;
 impl HarnessAdapter for GooseAdapter {
     fn harness(&self) -> Harness {
         Harness::Goose
-    }
-
-    /// §3.1's availability axis, in the only form this harness has one: **a builtin, not a
-    /// list.** `mode` is `Some(developer)` exactly when the declaration names a developer-extension
-    /// tool, and `None` — no `--with-builtin`, nothing but marion — otherwise.
-    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
-        let tools = self.native_tools(spec)?;
-        let relaxed = tools.iter().any(|t| is_developer_tool(t));
-        Ok(spec::Axes {
-            tools,
-            allowed: Vec::new(),
-            mode: relaxed.then(|| DEVELOPER_BUILTIN.to_string()),
-        })
     }
 
     /// The unspellable-path refusal, the declaration token, and the environment the bridge

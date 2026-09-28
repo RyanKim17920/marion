@@ -25,6 +25,7 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
+use crate::spec::AxesRule;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Relocation,
@@ -362,6 +363,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
     requires: &[],
+    axes: AxesRule::Split,
 };
 
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
