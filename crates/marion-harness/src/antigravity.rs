@@ -31,7 +31,7 @@ use marion_core::harness::Harness;
 use serde_json::json;
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
 use crate::grammar::{
@@ -389,6 +389,12 @@ impl HarnessAdapter for AntigravityAdapter {
         )])
     }
 }
+
+/// This row's entry in [`crate::adapter::ROWS`].
+pub const ROW: Row = Row {
+    spec: &SPEC,
+    adapter: |_| Ok(Box::new(AntigravityAdapter)),
+};
 
 #[cfg(test)]
 mod tests {

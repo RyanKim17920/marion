@@ -9,9 +9,7 @@
 # `Option<acp::Binding>` paths.
 
 # --- tracked: generalization wave B1–B8 ---------------------------------------------------------
-crates/marion-harness/src/adapter.rs:adapter_for  tracked: generalization wave B1–B8 (registry lookup instead of a per-variant match)
 crates/marion-harness/src/adapter.rs:adapter_for_type  tracked: generalization wave B1–B8 (ACP selector special case)
-crates/marion-harness/src/adapter.rs:harness_spec  tracked: generalization wave B1–B8 (spec table belongs on each row)
 crates/marion-core/src/agent_type.rs:FileRow::into_type  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix and Harness::Acp compare)
 crates/marion-core/src/agent_type.rs:acp_command  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix parse)
 crates/marion-supervisor/src/doctor.rs:probe  tracked: generalization wave B1–B8 (doctor ACP special case)

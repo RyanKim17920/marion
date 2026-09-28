@@ -968,22 +968,52 @@ fn render_row(
     })
 }
 
-/// The row for a harness (`plan-harness-spec.md`). **Every harness marion names has one**; a
-/// harness without a row is a compile error here, not a fallback.
-pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
-    match h {
-        Harness::ClaudeCode => &claude_code::SPEC,
-        Harness::Codex => &codex::SPEC,
-        Harness::Gemini => &gemini::SPEC,
-        Harness::OpenCode => &opencode::SPEC,
-        Harness::Copilot => &copilot::SPEC,
-        Harness::Goose => &goose::SPEC,
-        Harness::Cline => &cline::SPEC,
-        Harness::Qwen => &qwen::SPEC,
-        Harness::Antigravity => &antigravity::SPEC,
-        Harness::Pi => &pi::SPEC,
-        Harness::Acp => &acp::SPEC,
+/// An adapter as the supervisor holds one: shared across the threads that service a node.
+pub type BoxedAdapter = Box<dyn HarnessAdapter + Send + Sync>;
+
+/// One harness as marion knows it: its row (`plan-harness-spec.md`) and the adapter that serves it.
+/// Each row file states its own ([`crate::codex::ROW`], …); [`ROWS`] is the only list of them.
+pub struct Row {
+    pub spec: &'static spec::HarnessSpec,
+    /// The adapter. `agent` is the launch's selector on a [`Spelling::PerAgent`] row, which binds
+    /// the adapter to that agent, and `None` there asks for the unbound protocol adapter; a row
+    /// with a fixed spelling has one adapter and ignores it.
+    pub adapter: fn(Option<&str>) -> Result<BoxedAdapter, HarnessError>,
+}
+
+/// **Every harness marion names, one row each, indexed by the [`Harness`] discriminant.** The
+/// assertion below makes a missing, extra or misplaced row a compile error rather than a fallback.
+pub const ROWS: [Row; Harness::ALL.len()] = [
+    claude_code::ROW,
+    codex::ROW,
+    gemini::ROW,
+    opencode::ROW,
+    copilot::ROW,
+    goose::ROW,
+    cline::ROW,
+    qwen::ROW,
+    antigravity::ROW,
+    pi::ROW,
+    acp::ROW,
+];
+
+const _: () = {
+    let mut i = 0;
+    while i < ROWS.len() {
+        assert!(ROWS[i].spec.harness as usize == i);
+        assert!(Harness::ALL[i] as usize == i);
+        i += 1;
     }
+};
+
+/// The row for a harness. **Every harness marion names has one** ([`ROWS`]).
+pub fn row(h: Harness) -> &'static Row {
+    &ROWS[h as usize]
+}
+
+/// The row's spec (`plan-harness-spec.md`).
+pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
+    row(h).spec
 }
 
 /// Object safety and the thread bounds, checked by the compiler. §5.2 requires both and says so of
@@ -1003,24 +1033,12 @@ pub const SESSION_NEW_ID: u64 = 1;
 /// difference is a typed error rather than a panic or a silent fallback — a fallback here would
 /// reintroduce exactly the bug this seam exists to end, where a `claude` agent type quietly ran
 /// `codex`.
-pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, HarnessError> {
-    match h {
-        Harness::ClaudeCode => Ok(Box::new(claude_code::ClaudeCodeAdapter)),
-        Harness::Codex => Ok(Box::new(codex::CodexAdapter)),
-        Harness::Gemini => Ok(Box::new(gemini::GeminiAdapter)),
-        Harness::OpenCode => Ok(Box::new(opencode::OpenCodeAdapter)),
-        Harness::Copilot => Ok(Box::new(copilot::CopilotAdapter)),
-        Harness::Goose => Ok(Box::new(goose::GooseAdapter)),
-        Harness::Cline => Ok(Box::new(cline::ClineAdapter)),
-        Harness::Qwen => Ok(Box::new(qwen::QwenAdapter)),
-        Harness::Antigravity => Ok(Box::new(antigravity::AntigravityAdapter)),
-        Harness::Pi => Ok(Box::new(pi::PiAdapter)),
-        // The **protocol** row, bound to no agent. Enough for every question a harness name can
-        // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
-        // harness name is not enough to say what a model will call marion's verbs. See
-        // [`acp::AcpAdapter`] and [`adapter_for_type`].
-        Harness::Acp => Ok(Box::new(acp::AcpAdapter::unbound())),
-    }
+pub fn adapter_for(h: Harness) -> Result<BoxedAdapter, HarnessError> {
+    // A per-agent row answers with its unbound protocol adapter: enough for every question a
+    // harness name can answer — the surfaces, the declaration route, the ceiling — and
+    // unlaunchable, because a harness name is not enough to say what a model will call marion's
+    // verbs. See [`adapter_for_type`].
+    (row(h).adapter)(None)
 }
 
 /// The adapter for a resolved **agent type**, which is what a launch actually has.
@@ -1028,23 +1046,18 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
 /// Four of the five harnesses ignore the second argument entirely: their adapter is a property of
 /// the harness. ACP's is not — §5.2's `acp` row is one adapter over many agents, each with its own
 /// argv and its own name for marion's verbs — so this is the seam where an agent type's
-/// `acp_agent` becomes behaviour: a refinement row's id binds that row, any other command binds
-/// the generic path ([`acp::Binding::resolve`]), and naming `acp` without naming an agent is refused
-/// rather than defaulted. A default here would run some other vendor's agent than the one the type
-/// asked for, which is the bug the whole `HarnessAdapter` seam exists to end.
-pub fn adapter_for_type(
-    h: Harness,
-    acp_agent: Option<&str>,
-) -> Result<Box<dyn HarnessAdapter + Send + Sync>, HarnessError> {
+/// `acp_agent` becomes behaviour: the row binds the agent it names, and naming `acp` without naming
+/// an agent is refused rather than defaulted. A default here would run some other vendor's agent
+/// than the one the type asked for, which is the bug the whole `HarnessAdapter` seam exists to end.
+pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdapter, HarnessError> {
     match (h, acp_agent) {
-        (Harness::Acp, Some(selector)) => Ok(Box::new(acp::AcpAdapter::resolve(selector)?)),
         (Harness::Acp, None) => Err(HarnessError::MissingInput {
             harness: Harness::Acp,
             what: "`acp` is a protocol, not a program: one adapter serves many agents and marion \
                    may not choose one for the operator (§6.4). Name it in the agent type's \
                    `acp_agent` — a refinement row's id, or the agent's command",
         }),
-        _ => adapter_for(h),
+        (_, agent) => (row(h).adapter)(agent),
     }
 }
 
@@ -1066,6 +1079,7 @@ mod tests {
     use crate::qwen::QwenAdapter;
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
+
     use marion_core::agent_type;
 
     /// One S37 P-errors run as the harness said it: its stdout (the frames it wrote, one JSON line

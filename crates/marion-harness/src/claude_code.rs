@@ -11,7 +11,7 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
 use crate::grammar::{
@@ -767,6 +767,12 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         )])
     }
 }
+
+/// This row's entry in [`crate::adapter::ROWS`].
+pub const ROW: Row = Row {
+    spec: &SPEC,
+    adapter: |_| Ok(Box::new(ClaudeCodeAdapter)),
+};
 
 #[cfg(test)]
 mod tests {

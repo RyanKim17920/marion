@@ -39,7 +39,7 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
 use crate::auth::Auth;
@@ -564,6 +564,12 @@ impl HarnessAdapter for GooseAdapter {
         Ok(Vec::new())
     }
 }
+
+/// This row's entry in [`crate::adapter::ROWS`].
+pub const ROW: Row = Row {
+    spec: &SPEC,
+    adapter: |_| Ok(Box::new(GooseAdapter)),
+};
 
 #[cfg(test)]
 mod tests {

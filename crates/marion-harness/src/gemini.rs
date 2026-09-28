@@ -13,7 +13,7 @@ use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
 use crate::auth::Auth;
@@ -701,6 +701,12 @@ impl HarnessAdapter for GeminiAdapter {
         Ok(vec![(Self::settings_path(spec), document)])
     }
 }
+
+/// This row's entry in [`crate::adapter::ROWS`].
+pub const ROW: Row = Row {
+    spec: &SPEC,
+    adapter: |_| Ok(Box::new(GeminiAdapter)),
+};
 
 #[cfg(test)]
 mod tests {
