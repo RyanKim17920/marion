@@ -20,7 +20,7 @@ use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_wit
 use marion_supervisor::socket::{
     SocketPaths, SupervisorIdentity, own_uid, read_identity, socket_paths,
 };
-use marion_testsupport::{until_within, write_executable};
+use marion_testsupport::{alive, until_within, write_executable};
 
 mod common;
 use common::journal::seed;
@@ -731,13 +731,6 @@ fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
 }
 
 // ---------------------------------------------------------- §5.7's stop, over a real supervisor
-
-/// Three-valued liveness, S15's guard 2 and `marion-testsupport::alive`'s rule: `ESRCH` is dead,
-/// success is alive, and **any other errno is not a "dead" answer**. Used here only where a `false`
-/// would fail the test anyway, so a wrong reading cannot become a silent pass.
-fn alive(pid: i32) -> bool {
-    marion_testsupport::alive(pid)
-}
 
 /// A node the journal describes as **running**: intent, confirmation, and a state that is not
 /// terminal. Three records and not one, because `resident_reason` distinguishes `SpawnOutstanding`
