@@ -201,13 +201,7 @@ fn task_sent(c: &TaskContract) -> TaskSent {
             .collect(),
         c.verification
             .iter()
-            .map(|v| {
-                std::iter::once(&v.program)
-                    .chain(&v.args)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+            .map(crate::bridge::command_line)
             .collect(),
     )
 }
@@ -454,6 +448,34 @@ mod tests {
         let c = d.completion.expect("a completion");
         assert_eq!(c.branch.as_deref(), Some("marion/t-1"));
         assert_eq!(c.commit, Some(Oid("0123456789abcdef".into())));
+    }
+
+    /// **A check reads the same live and ended.** A running node shows its verification lines as
+    /// the parent wrote them; once it ends they are read back off the contract, where each is
+    /// marion's `sh -c` wrapper — and must come back as the same line, not `sh -c <script>`. A
+    /// command that was not wrapped is shell-quoted, so the line is still one a shell runs as-is.
+    #[test]
+    fn a_check_reads_the_same_before_and_after_the_node_ends() {
+        let lines = vec![
+            "python3 -m unittest -q".to_string(),
+            "test \"$(cat out)\" = 'a b'".to_string(),
+        ];
+        let live = task_of("p", Vec::new(), lines.clone());
+        let ended: Vec<String> = crate::run::verification_commands(&lines, Path::new("/wt"))
+            .iter()
+            .map(crate::bridge::command_line)
+            .collect();
+        assert_eq!(ended, live.verification);
+        let unwrapped = marion_core::contract::Command {
+            program: "grep".into(),
+            args: vec!["-q".into(), "top N".into(), "wordfreq.py".into()],
+            cwd: "/wt".into(),
+            timeout: marion_core::encoding::Duration(Duration::from_secs(300)),
+        };
+        assert_eq!(
+            crate::bridge::command_line(&unwrapped),
+            "grep -q \"top N\" wordfreq.py"
+        );
     }
 
     /// **A root's task is the prompt it was launched with**, kept 0600 beside its stream because

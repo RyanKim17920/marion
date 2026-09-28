@@ -858,13 +858,15 @@ fn verification_failed(c: &TaskContract) -> Option<String> {
     ))
 }
 
-/// A verification command as the parent wrote it: the script of marion's `sh -c` wrapper, or the
-/// program and its arguments.
-fn command_line(cmd: &marion_core::contract::Command) -> String {
+/// A verification command as the parent wrote it: the script of marion's `sh -c` wrapper, which
+/// is already a shell line, or else the program and its arguments each shell-quoted — so a line
+/// read back off a contract is the line that was run, whether the node is live or ended.
+pub(crate) fn command_line(cmd: &marion_core::contract::Command) -> String {
     match (cmd.program.as_str(), cmd.args.as_slice()) {
         ("sh", [flag, script]) if flag == "-c" => script.clone(),
         _ => std::iter::once(cmd.program.as_str())
             .chain(cmd.args.iter().map(String::as_str))
+            .map(marion_tui::home::text::shell_word)
             .collect::<Vec<_>>()
             .join(" "),
     }
