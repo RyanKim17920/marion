@@ -381,6 +381,12 @@ impl Keyboard {
         Ok(Self { fd })
     }
 
+    /// The descriptor being read, for a caller that waits on it beside others in its own `poll`
+    /// and then reads with [`Self::read_ready`].
+    pub fn fd(&self) -> RawFd {
+        self.fd
+    }
+
     /// Wait up to `timeout` for input, then read what is there: [`Self::wait_within`], then
     /// [`Self::read_ready`].
     ///

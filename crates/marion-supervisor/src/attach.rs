@@ -78,12 +78,14 @@ use marion_term::Term;
 use marion_tui::{Action, Keys, Pane, Redraw, Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
 
-/// How long a socket read may block before the loop looks at the flags again.
-///
-/// The loop has two other things to notice — a `SIGWINCH` and the reader thread's detach — and
-/// neither of them writes to the socket. A blocking read would make an idle node's pane unable to
-/// resize and unable to be left, which is the failure a reader would report as "attach hangs".
-const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+/// How long one write to the supervisor may block. A bound on a stalled peer, never a cadence: a
+/// write that completes costs nothing, and one that cannot is a supervisor that stopped reading.
+const WRITE_BOUND: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long the stream must stay quiet after output before an unbracketed straggler is painted —
+/// a **deadline set by the last frame**, not a tick. See [`Session::pump`]: with nothing dirty the
+/// loop waits with no timeout at all.
+const PAINT_QUIET: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// How long the supervisor may stay silent before answering `node/attach`. No keyboard runs before the answer — it says which
 /// pane protocol keys are encoded in — so an unbounded wait here is a terminal nothing can leave.
@@ -110,6 +112,19 @@ fn attach_answer_bound() -> std::time::Duration {
 /// not. The size is read *in the loop*, where a syscall is allowed.
 static RESIZED: AtomicBool = AtomicBool::new(false);
 
+/// The self-pipe the `SIGWINCH` handler rings so the loop's `poll(2)` returns: the signal may be
+/// delivered to the keyboard thread, which would leave the main thread's wait uninterrupted.
+/// [`crate::wake::Pipe::wake`] is an atomic swap and one `write(2)`, both async-signal-safe, and
+/// the pipe is created before the handler is installed. `None` inside only if no descriptor could
+/// be had, in which case a resize is noticed at the next frame.
+static RESIZE_WAKE: std::sync::OnceLock<Option<crate::wake::Pipe>> = std::sync::OnceLock::new();
+
+fn resize_wake() -> Option<&'static crate::wake::Pipe> {
+    RESIZE_WAKE
+        .get_or_init(|| crate::wake::Pipe::new().ok())
+        .as_ref()
+}
+
 unsafe extern "C" {
     fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
 }
@@ -119,6 +134,9 @@ const SIGWINCH: std::ffi::c_int = 28;
 
 extern "C" fn on_winch(_sig: std::ffi::c_int) {
     RESIZED.store(true, Ordering::SeqCst);
+    if let Some(Some(wake)) = RESIZE_WAKE.get() {
+        wake.wake();
+    }
 }
 
 fn arm_resize_tracking(resized: &AtomicBool, install: impl FnOnce()) {
@@ -194,9 +212,6 @@ pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<Leave, Refusal>
             paths.socket().display()
         )
     })?;
-    stream
-        .set_read_timeout(Some(POLL))
-        .map_err(|e| format!("setting a read bound on the supervisor socket: {e}"))?;
 
     let id = AgentId(agent.to_string());
     let mut session = Session::open(stream, id)?;
@@ -218,8 +233,9 @@ struct Session {
     /// sends nothing, and the operator was told which connection has the keyboard.
     writable: bool,
     pane_stream: PaneStream,
-    /// Set by the stdin thread when the operator types `^] d`.
-    leaving: Arc<AtomicBool>,
+    /// Set by the stdin thread when the operator types `^] d`, and by the session on its way out;
+    /// raising it wakes whichever of the two threads is waiting.
+    leaving: Arc<crate::wake::Flag>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     keyboard: Option<std::thread::JoinHandle<()>>,
 }
@@ -251,14 +267,15 @@ fn write_serialized<W: Write>(
 enum Fill {
     /// Bytes arrived, or the read was interrupted: either way, look for a frame again.
     Again,
-    /// The read timed out with nothing new, which is the loop's chance to notice a `SIGWINCH`
-    /// or a detach.
+    /// Nothing arrived before the deadline, or a resize or a detach woke the wait: the loop's
+    /// chance to notice a `SIGWINCH`, a detach, or a stream gone quiet.
     Idle,
 }
 
-/// What one bounded keyboard read produced.
+/// What one keyboard wait produced.
 enum KeyRead {
-    /// The poll expired with nothing typed: the loop's chance to notice `leaving`.
+    /// Woken with nothing typed (a detach raised `leaving`, or an interrupted wait): the loop's
+    /// chance to notice `leaving`.
     Idle,
     Bytes(usize),
     /// The worker is done, and has already recorded why and set `leaving`.
@@ -275,7 +292,7 @@ fn watch_keyboard(
     writable: bool,
     input_fd: std::os::fd::RawFd,
     writer: Arc<std::sync::Mutex<UnixStream>>,
-    leaving: Arc<AtomicBool>,
+    leaving: Arc<crate::wake::Flag>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
     encoder: KeyboardEncoder,
 ) {
@@ -285,17 +302,21 @@ fn watch_keyboard(
     pump_keyboard(&mut stdin, id, writable, writer, leaving, failure, encoder);
 }
 
-/// The operator's keyboard as [`pump_keyboard`] reads it: a bounded wait for input, then the read,
-/// as two steps so the worker can look at `leaving` between them. A trait only so a test can hold
+/// The operator's keyboard as [`pump_keyboard`] reads it: a wait for input or a detach, then the
+/// read, as two steps so the worker can look at `leaving` between them. A trait only so a test can hold
 /// the wait open at the one instant that matters.
 trait KeyboardInput {
-    fn wait(&mut self, timeout: std::time::Duration) -> std::io::Result<bool>;
+    /// Block until input is ready (`true`) or `leaving` is raised (`false`), with no timeout.
+    fn wait(&mut self, leaving: &crate::wake::Flag) -> std::io::Result<bool>;
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>>;
 }
 
 impl KeyboardInput for marion_tui::guard::Keyboard {
-    fn wait(&mut self, timeout: std::time::Duration) -> std::io::Result<bool> {
-        self.wait_within(timeout)
+    fn wait(&mut self, leaving: &crate::wake::Flag) -> std::io::Result<bool> {
+        // SAFETY: the keyboard descriptor is open for this reader's lifetime (`Keyboard::open`
+        // checked it); the borrow ends with the wait.
+        let keyboard = unsafe { std::os::fd::BorrowedFd::borrow_raw(self.fd()) };
+        Ok(crate::wake::wait_until(&[Some(keyboard), leaving.fd()], None)[0])
     }
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
         self.read_ready(buf)
@@ -308,7 +329,7 @@ fn pump_keyboard(
     id: AgentId,
     writable: bool,
     writer: Arc<std::sync::Mutex<UnixStream>>,
-    leaving: Arc<AtomicBool>,
+    leaving: Arc<crate::wake::Flag>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
     mut encoder: KeyboardEncoder,
 ) {
@@ -337,7 +358,7 @@ fn pump_keyboard(
 fn open_keyboard(
     input_fd: std::os::fd::RawFd,
     failure: &std::sync::Mutex<Option<String>>,
-    leaving: &AtomicBool,
+    leaving: &crate::wake::Flag,
 ) -> Option<marion_tui::guard::Keyboard> {
     match marion_tui::guard::Keyboard::open(input_fd) {
         Ok(stdin) => Some(stdin),
@@ -350,8 +371,13 @@ fn open_keyboard(
     }
 }
 
-/// One bounded read. A closed stdin is reported rather than treated as a detach, and the report
-/// names a half-typed scalar because that is the one case where bytes were actually lost.
+/// One wait for a key or a detach, then a read of what is there. A closed stdin is reported rather
+/// than treated as a detach, and the report names a half-typed scalar because that is the one case
+/// where bytes were actually lost.
+///
+/// The wait is `poll(2)` on the keyboard and on `leaving`'s descriptor with no timeout, so an idle
+/// attach's keyboard thread never wakes, and the session's drop — which raises `leaving` before
+/// joining this thread — ends it at once.
 ///
 /// **`leaving` is looked at again between the wait and the read.** The session can end while the
 /// wait is open — a detach, the supervisor closing the connection — and a keystroke that woke the
@@ -362,9 +388,9 @@ fn read_keyboard(
     buf: &mut [u8; 4096],
     encoder: &KeyboardEncoder,
     failure: &std::sync::Mutex<Option<String>>,
-    leaving: &AtomicBool,
+    leaving: &crate::wake::Flag,
 ) -> KeyRead {
-    let read = match stdin.wait(POLL) {
+    let read = match stdin.wait(leaving) {
         Ok(false) => Ok(None),
         Ok(true) if leaving.load(Ordering::SeqCst) => return KeyRead::Stop,
         Ok(true) => stdin.read(buf),
@@ -400,7 +426,7 @@ fn forward_key(
     encoder: &mut KeyboardEncoder,
     writer: &Arc<std::sync::Mutex<UnixStream>>,
     failure: &std::sync::Mutex<Option<String>>,
-    leaving: &AtomicBool,
+    leaving: &crate::wake::Flag,
 ) -> std::ops::ControlFlow<()> {
     let bytes = match action {
         Action::Detach => {
@@ -683,14 +709,13 @@ impl Session {
         input_fd: std::os::fd::RawFd,
         geometry: Option<(u16, u16)>,
     ) -> Result<Session, Refusal> {
-        stream
-            .set_read_timeout(Some(POLL))
-            .map_err(|e| format!("bounding supervisor socket reads: {e}"))?;
+        // Reads block, and are only issued after `poll(2)` said the socket is readable — see
+        // [`Self::next_frame`] — so no read timeout is needed to keep the loop responsive.
         let writer_stream = stream
             .try_clone()
             .map_err(|e| format!("cloning the supervisor socket writer: {e}"))?;
         writer_stream
-            .set_write_timeout(Some(POLL))
+            .set_write_timeout(Some(WRITE_BOUND))
             .map_err(|e| format!("bounding supervisor socket writes: {e}"))?;
         let writer = Arc::new(std::sync::Mutex::new(writer_stream));
         let mut s = Session {
@@ -703,7 +728,7 @@ impl Session {
             view: None,
             writable: false,
             pane_stream: PaneStream::Negotiating,
-            leaving: Arc::new(AtomicBool::new(false)),
+            leaving: Arc::new(crate::wake::Flag::new()),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             keyboard: None,
         };
@@ -741,6 +766,7 @@ impl Session {
         // Clear, install, then take the authoritative size. A signal before installation is
         // reflected by the size read; one after installation remains set for the pump. Reversing
         // the first two steps would erase an edge arriving between them.
+        resize_wake();
         arm_resize_tracking(&RESIZED, || unsafe {
             signal(SIGWINCH, on_winch as *const () as usize);
         });
@@ -902,7 +928,7 @@ impl Session {
         let bound = attach_answer_bound();
         let mut deadline = std::time::Instant::now() + bound;
         loop {
-            match self.next_frame()? {
+            match self.next_frame(Some(deadline))? {
                 Some(Frame::Response(response)) if response.id == expected => return Ok(response),
                 Some(Frame::Response(response)) => {
                     return Err(format!(
@@ -1017,7 +1043,7 @@ impl Session {
             writer
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .set_write_timeout(Some(POLL))
+                .set_write_timeout(Some(WRITE_BOUND))
                 .map_err(|e| format!("bounding pane keyboard writes: {e}"))?;
         }
         self.keyboard = Some(
@@ -1031,9 +1057,13 @@ impl Session {
         Ok(())
     }
 
-    /// One frame, or `None` if the read timed out. A timeout is not an error: it is the loop's
-    /// chance to notice a `SIGWINCH` or a detach.
-    fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
+    /// One frame, or `None` if none arrived by `deadline` (`None`: no deadline) or a resize or a
+    /// detach woke the wait. `None` is not an error: it is the loop's chance to notice a
+    /// `SIGWINCH`, a detach, or a stream gone quiet.
+    fn next_frame(
+        &mut self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<Frame>, Refusal> {
         loop {
             if let Some(end) = self.inbound.iter().position(|byte| *byte == b'\n') {
                 return self.take_frame(end).map(Some);
@@ -1044,11 +1074,36 @@ impl Session {
                     crate::serve::MAX_FRAME_BYTES
                 ));
             }
+            if !self.wait_inbound(deadline) {
+                return Ok(None);
+            }
             match self.fill_inbound()? {
                 Fill::Again => continue,
                 Fill::Idle => return Ok(None),
             }
         }
+    }
+
+    /// Block in `poll(2)` until the supervisor's socket is readable (`true`), or until `deadline`,
+    /// a `SIGWINCH` or a detach (`false`). The resize pipe is drained here, before the loop reads
+    /// [`RESIZED`], so an edge after the drain leaves it readable for the next wait.
+    fn wait_inbound(&self, deadline: Option<std::time::Instant>) -> bool {
+        use std::os::fd::AsFd;
+        let resize = resize_wake();
+        let ready = crate::wake::wait_until(
+            &[
+                Some(self.stream.as_fd()),
+                resize.map(|w| w.fd()),
+                self.leaving.fd(),
+            ],
+            deadline,
+        );
+        if ready[1]
+            && let Some(wake) = resize
+        {
+            wake.drain();
+        }
+        ready[0]
     }
 
     /// The completed line ending at `end`, taken out of the inbound buffer and decoded.
@@ -1083,20 +1138,18 @@ impl Session {
                 Ok(Fill::Again)
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(Fill::Again),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(Fill::Idle)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(Fill::Idle),
             Err(e) => Err(format!("reading from the supervisor: {e}")),
         }
     }
 
     /// The render loop: bytes out, geometry in, until the operator leaves or the node ends.
+    ///
+    /// **Event-driven**: the wait is `poll(2)` on the socket, the resize pipe and the detach flag.
+    /// Its only deadline is [`PAINT_QUIET`] after the last frame, while something fed is still
+    /// unpainted; with nothing pending it has none, so an idle pane makes no wakeups.
     fn pump(&mut self) -> Result<Leave, Refusal> {
+        let mut quiet_at: Option<std::time::Instant> = None;
         loop {
             // The worker records a failure for every stop but the operator's `^] d`.
             if self.leaving.load(Ordering::SeqCst) {
@@ -1111,19 +1164,23 @@ impl Session {
                 return Ok(Leave::Detached);
             }
             self.forward_size()?;
-            match self.next_frame() {
+            match self.next_frame(quiet_at) {
                 Ok(Some(Frame::Notification(note))) => {
                     if self.consume_pane_event(note.event)? == PaneProgress::End {
                         return Ok(Leave::Ended);
                     }
+                    quiet_at = Some(std::time::Instant::now() + PAINT_QUIET);
                 }
-                // A read timeout is the one moment the loop knows the stream is quiet. That is
-                // exactly when an unbracketed straggler must be painted — a node that wrote and
-                // opened no DECSET 2026 frame
-                // would otherwise sit unpainted until its next byte.
+                // The quiet deadline passing is the one moment the loop knows the stream is quiet.
+                // That is exactly when an unbracketed straggler must be painted — a node that
+                // wrote and opened no DECSET 2026 frame would otherwise sit unpainted until its
+                // next byte. A resize or a detach waking the wait early is not quiet.
                 Ok(None) => {
-                    if let Some(v) = &mut self.view {
-                        v.idle()?;
+                    if quiet_at.is_some_and(|at| std::time::Instant::now() >= at) {
+                        quiet_at = None;
+                        if let Some(v) = &mut self.view {
+                            v.idle()?;
+                        }
                     }
                 }
                 Ok(Some(other)) => {
@@ -1261,7 +1318,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.leaving.store(true, Ordering::SeqCst);
-        // The reader polls stdin with a `POLL` bound, so this join is bounded by `POLL`. It must
+        // Raising the flag wakes the reader's `poll`, so this join returns at once. It must
         // finish before the screen leaves raw mode or the detached thread could steal the first
         // key from the tree/shell that resumes afterwards.
         if let Some(keyboard) = self.keyboard.take() {
@@ -1295,7 +1352,7 @@ mod tests {
             reads: Arc<std::sync::atomic::AtomicUsize>,
         }
         impl KeyboardInput for HeldWait {
-            fn wait(&mut self, _: std::time::Duration) -> std::io::Result<bool> {
+            fn wait(&mut self, _: &crate::wake::Flag) -> std::io::Result<bool> {
                 self.entered.send(()).unwrap();
                 self.release.recv().unwrap();
                 Ok(true)
@@ -1310,7 +1367,7 @@ mod tests {
         let (entered, entered_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release) = std::sync::mpsc::sync_channel(0);
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let leaving = Arc::new(AtomicBool::new(false));
+        let leaving = Arc::new(crate::wake::Flag::new());
         let failure = Arc::new(std::sync::Mutex::new(None));
         let mut input = HeldWait {
             entered,
@@ -1846,9 +1903,8 @@ mod tests {
     }
 
     fn bare_session(stream: UnixStream, pane_stream: PaneStream, view: Option<View>) -> Session {
-        stream.set_read_timeout(Some(POLL)).unwrap();
         let writer = stream.try_clone().unwrap();
-        writer.set_write_timeout(Some(POLL)).unwrap();
+        writer.set_write_timeout(Some(WRITE_BOUND)).unwrap();
         Session {
             stream,
             writer: Arc::new(std::sync::Mutex::new(writer)),
@@ -1859,7 +1915,7 @@ mod tests {
             view,
             writable: false,
             pane_stream,
-            leaving: Arc::new(AtomicBool::new(false)),
+            leaving: Arc::new(crate::wake::Flag::new()),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             keyboard: None,
         }
@@ -2054,10 +2110,12 @@ mod tests {
         let middle = line.len() / 2;
         server.write_all(&line[..middle]).unwrap();
         server.flush().unwrap();
-        assert!(session.next_frame().unwrap().is_none());
+        let soon = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        assert!(session.next_frame(Some(soon)).unwrap().is_none());
         server.write_all(&line[middle..]).unwrap();
         server.flush().unwrap();
-        let Some(Frame::Notification(note)) = session.next_frame().unwrap() else {
+        let bound = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let Some(Frame::Notification(note)) = session.next_frame(Some(bound)).unwrap() else {
             panic!("the completed frame was not decoded")
         };
         let Event::NodePaneFrame(frame) = note.event else {
@@ -2081,10 +2139,10 @@ mod tests {
             session.inbound = vec![b'x'; bytes];
             session.inbound.push(b'\n');
             if rejected {
-                assert!(session.next_frame().unwrap_err().contains("larger"));
+                assert!(session.next_frame(None).unwrap_err().contains("larger"));
             } else {
                 // Exactly at the transport limit reaches parsing; it is invalid JSON, not oversize.
-                let error = session.next_frame().unwrap_err();
+                let error = session.next_frame(None).unwrap_err();
                 assert!(
                     !error.contains("larger"),
                     "exact boundary was rejected: {error}"
