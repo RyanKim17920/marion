@@ -23,16 +23,19 @@
 //!
 //! It needs a real `codex` on `PATH`. Every model call is the canned server's: no paid tokens.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marion_core::contract::{AgentId, Isolation, TaskContract, TaskId, TokenUsage};
 use marion_core::journal::{RecordKind, decode};
-use marion_core::paths::ProjectDir;
 use marion_provider::USAGE;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::journal::read_path;
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
 use marion_testsupport::{fixture_repo, harness_available, persisted_contracts, scratch};
+
+mod common;
+
+use common::canned::canned_env;
 
 const NARRATIVE: &str = "Edited the file under src/ and reported back.";
 const PATCH: &str = "*** Begin Patch\n*** Update File: src/keep.txt\n@@\n-keep\n\
@@ -69,14 +72,7 @@ fn a_childs_usage_lands_in_its_contract_and_one_journal_record_and_survives_repl
         },
     })
     .expect("the canned provider binds");
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
+    let env = canned_env(&state, &repo, Some(server.base_url()));
     let task = TaskId("usage-1".into());
     let contract = run_spawn(
         &env,

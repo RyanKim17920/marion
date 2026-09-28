@@ -48,12 +48,16 @@ use marion_core::contract::{ExitStatus, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
 use marion_testsupport::{
     fixture_repo, judge, kill_hard, on_path, persisted_contracts, pinned_version, scratch,
     survivors,
 };
 use serde_json::{Value, json};
+
+mod common;
+
+use common::canned::canned_env;
 
 /// Every child's bound. Short on purpose: **opencode never exits on a provider hang** (S13
 /// measured a 500 still retrying at 90 s and a connection-refused still hung at 180 s), so this is
@@ -175,14 +179,7 @@ fn drive(cell: &Cell) -> Evidence {
     })
     .expect("the canned provider binds");
 
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
+    let env = canned_env(&state, &repo, Some(server.base_url()));
     let req = SpawnRequest {
         review: None,
         agent_type: cell.agent_type.into(),

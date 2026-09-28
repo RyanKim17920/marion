@@ -48,9 +48,13 @@ use marion_harness::adapter_for;
 use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::root::{RootPath, root_path};
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
+use marion_supervisor::run::{Caller, SpawnRequest, run_bounded, run_spawn};
 use marion_testsupport::{fixture_repo, judge, on_path, persisted_contracts, scratch};
 use serde_json::json;
+
+mod common;
+
+use common::canned::canned_env;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
@@ -953,14 +957,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     })
     .expect("the canned provider binds");
 
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
+    let env = canned_env(&state, &repo, Some(server.base_url()));
     let contract = run_spawn(
         &env,
         &SpawnRequest {

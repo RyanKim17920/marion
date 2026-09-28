@@ -23,11 +23,15 @@ use marion_core::contract::{ExitStatus, Isolation, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{AGENT_TYPES_FILE, Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::run::{AGENT_TYPES_FILE, Caller, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
 use marion_testsupport::{
     carries, fixture_repo, git, harness_available, kill_hard, scratch, survivors,
 };
+
+mod common;
+
+use common::canned::canned_env;
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Reviewed the tree and reported back.";
@@ -69,17 +73,6 @@ fn repo_with_reviewer(root: &std::path::Path) -> PathBuf {
         ],
     );
     repo
-}
-
-fn env_for(state: &std::path::Path, repo: &std::path::Path, base_url: Option<String>) -> Env {
-    Env {
-        project_dir: ProjectDir::new(state, repo),
-        project_root: repo.to_path_buf(),
-        state: state.to_path_buf(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url,
-        auth: marion_harness::Auth::Canned,
-    }
 }
 
 fn request(repo: &std::path::Path) -> SpawnRequest {
@@ -137,7 +130,7 @@ fn a_user_defined_reviewer_runs_on_codex_and_is_journaled_under_its_own_name() {
         },
     })
     .expect("the canned provider binds");
-    let env = env_for(&state, &repo, Some(server.base_url()));
+    let env = canned_env(&state, &repo, Some(server.base_url()));
 
     let contract = run_spawn(
         &env,
@@ -201,7 +194,7 @@ fn a_reviewer_whose_file_is_gone_is_an_unknown_type_and_nothing_is_journaled() {
     std::fs::remove_file(repo.join(AGENT_TYPES_FILE)).unwrap();
     let state = root.join("state");
     std::fs::create_dir_all(&state).unwrap();
-    let env = env_for(&state, &repo, Some("http://127.0.0.1:9/v1".into()));
+    let env = canned_env(&state, &repo, Some("http://127.0.0.1:9/v1".into()));
 
     let err = run_spawn(
         &env,
@@ -240,7 +233,7 @@ fn a_row_granting_a_tool_codex_lacks_is_refused_by_name_before_any_process() {
     .unwrap();
     let state = root.join("state");
     std::fs::create_dir_all(&state).unwrap();
-    let env = env_for(&state, &repo, Some("http://127.0.0.1:9/v1".into()));
+    let env = canned_env(&state, &repo, Some("http://127.0.0.1:9/v1".into()));
 
     let err = run_spawn(
         &env,

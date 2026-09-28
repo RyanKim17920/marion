@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use marion_core::contract::{Isolation, TaskId};
-use marion_core::paths::ProjectDir;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{fixture_repo, scratch};
 
@@ -122,14 +121,7 @@ fn tree(tag: &str, base_url: Option<String>) -> Tree {
     let repo = fixture_repo(&root);
     let state = root.join("state");
     std::fs::create_dir_all(&state).unwrap();
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url,
-        auth: marion_harness::Auth::Canned,
-    };
+    let env = canned_env(&state, &repo, base_url);
     Tree {
         _root: root,
         repo,
@@ -221,6 +213,10 @@ use marion_testsupport::{
     judge, kill_hard, on_path, persisted_contracts, pinned_version, survivors,
 };
 use serde_json::{Value, json};
+
+mod common;
+
+use common::canned::canned_env;
 
 /// The model every cell asks the provider for, through the `canned-test:` prefix.
 const MODEL: &str = "endpoint-model-7";

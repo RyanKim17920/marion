@@ -30,16 +30,19 @@
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
-use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::kill::last_kill_sweep;
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
 use marion_testsupport::{alive, fixture_repo, kill_hard, on_path, pinned_version, scratch};
+
+mod common;
+
+use common::canned::canned_env;
 
 /// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call
 /// running (measured at ~4 s here); short enough that the test is not a wait. The tool call is
@@ -239,14 +242,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     })
     .expect("the canned provider binds");
 
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        project_root: repo.clone(),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
+    let env = canned_env(&state, &repo, Some(server.base_url()));
     let req = SpawnRequest {
         review: None,
         agent_type: agent_type.into(),
