@@ -127,6 +127,8 @@ case "$*" in
     exit 0 ;;
 esac
 printf 'codex|%s|%s\n' "${{CODEX_HOME-<unset>}}" "$*" >> {log}
+# The status probe carries the row's update switch ahead of its own argv, as codex takes it.
+[ "$1" = -c ] && shift 2
 if [ "$1" = login ] && [ "$2" = status ]; then
   if [ -e "$CODEX_HOME/.fake-login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
   echo "Not logged in"; exit 1
@@ -856,8 +858,11 @@ fn a_codex_profile_is_listed_from_its_login_status_and_add_runs_nothing() {
     for line in std::fs::read_to_string(&log).unwrap().lines() {
         assert_eq!(
             line,
-            format!("codex|{}|login status", home_dir.display()),
-            "only the status probe runs"
+            format!(
+                "codex|{}|-c check_for_update_on_startup=false login status",
+                home_dir.display()
+            ),
+            "only the status probe runs, carrying the row's update switch"
         );
     }
 }

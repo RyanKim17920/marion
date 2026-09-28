@@ -442,8 +442,14 @@ pub fn login_state(profile: &Profile) -> LoginState {
     let Some(program) = harness_spec(profile.harness).program else {
         return LoginState::Unknown("the row names no program to ask".into());
     };
+    let (switch_env, switch_args) = match update_switch(profile.harness) {
+        Ok(switch) => switch,
+        Err(why) => return LoginState::Unknown(why),
+    };
     let mut cmd = std::process::Command::new(program);
-    cmd.args(argv)
+    cmd.args(&switch_args)
+        .args(argv)
+        .envs(switch_env)
         .env(carrier.env, &profile.dir)
         .stdin(std::process::Stdio::null());
     for key in carrier.clear {
@@ -468,6 +474,38 @@ pub fn login_state(profile: &Profile) -> LoginState {
             text_absent(&format!("{stdout}{stderr}"), out.code, text)
         }
         Status::FileExists(_) => LoginState::Unknown("answered above".into()),
+    }
+}
+
+/// A probe's share of the row's update switch: the variables it sets, and the arguments ahead of
+/// its own.
+type ProbeSwitch = (Vec<(String, String)>, Vec<String>);
+
+/// **The row's no-self-update switch, as a bare probe of the installed binary carries it**: the
+/// variable, or the pair on the row's own override flag ahead of the probe's argv. A probe is a
+/// launch of the operator's real binary, and a launch without the switch can update their install.
+/// `Err` — and no probe — where the switch cannot ride a bare command (a settings document, or a
+/// pair the row has no flag for).
+fn update_switch(harness: Harness) -> Result<ProbeSwitch, String> {
+    use marion_harness::spec::{Arg, Field, UpdatePolicy};
+    let spec = harness_spec(harness);
+    match spec.updates {
+        UpdatePolicy::Env { key, value, .. } => Ok((vec![(key.into(), value.into())], Vec::new())),
+        UpdatePolicy::Pair { key, value, .. } => spec
+            .argv
+            .iter()
+            .find_map(|arg| match *arg {
+                Arg::Each(flag, Field::Pairs) => Some(vec![flag.into(), format!("{key}={value}")]),
+                Arg::EachEq(flag, Field::Pairs) => Some(vec![format!("{flag}={key}={value}")]),
+                _ => None,
+            })
+            .map(|args| (Vec::new(), args))
+            .ok_or_else(|| format!("{key}={value} has no override flag to ride; not probed")),
+        UpdatePolicy::Document { .. } => Err(
+            "the row's update switch is a settings document a bare probe cannot carry; not probed"
+                .into(),
+        ),
+        UpdatePolicy::None { .. } => Ok((Vec::new(), Vec::new())),
     }
 }
 
@@ -882,6 +920,48 @@ mod tests {
                 entry("cx", "codex", &d("cx")),
                 entry("gone", "claude-code", "/nonexistent/marion-profile"),
             ],
+        }
+    }
+
+    /// Every carrier whose status is a probe launches its binary with the row's update switch:
+    /// claude's variable, codex's pair on its own `-c`. A carrier the switch cannot ride is not
+    /// probed at all.
+    #[test]
+    fn a_status_probe_carries_its_rows_update_switch() {
+        assert_eq!(
+            update_switch(Harness::ClaudeCode),
+            Ok((
+                vec![("DISABLE_AUTOUPDATER".to_string(), "1".to_string())],
+                Vec::new()
+            ))
+        );
+        assert_eq!(
+            update_switch(Harness::Codex),
+            Ok((
+                Vec::new(),
+                vec![
+                    "-c".to_string(),
+                    "check_for_update_on_startup=false".to_string()
+                ]
+            ))
+        );
+        for harness in Harness::ALL {
+            let Some(carrier) = harness_spec(harness).profile.as_ref() else {
+                continue;
+            };
+            if matches!(carrier.status, Status::FileExists(_)) {
+                continue;
+            }
+            let (vars, args) = update_switch(harness)
+                .unwrap_or_else(|why| panic!("{harness:?}'s probe cannot carry its switch: {why}"));
+            assert!(
+                !(vars.is_empty() && args.is_empty())
+                    || matches!(
+                        harness_spec(harness).updates,
+                        marion_harness::spec::UpdatePolicy::None { .. }
+                    ),
+                "{harness:?}'s probe launches without the row's switch"
+            );
         }
     }
 
