@@ -547,6 +547,27 @@ mod tests {
         assert_eq!(got, want);
     }
 
+    /// **No harness is named here, and none is left out**: across every harness, a node's
+    /// timeline says it is unread exactly when its adapter has no activity rule, and otherwise is
+    /// read — the same answer `activity::page` gives the Watch tab.
+    #[test]
+    fn every_harness_is_read_by_its_row_or_said_to_be_unread() {
+        let dir = marion_testsupport::scratch("export-generality");
+        let missing = dir.join("events.jsonl");
+        for h in Harness::ALL {
+            let rule = marion_harness::adapter::adapter_for(h)
+                .ok()
+                .and_then(|a| a.activity())
+                .is_some();
+            let t = timeline(&missing, h, None, TimelineMode::All);
+            assert_eq!(t.unread.is_none(), rule, "{h:?}: {t:?}");
+            assert!(
+                t.head.is_empty() && t.tail.is_empty(),
+                "{h:?}: nothing was recorded"
+            );
+        }
+    }
+
     #[test]
     fn times_read_as_the_time_since_the_node_started() {
         let start = Some(SystemTime::from_unix_millis(1_790_000_000_000));
