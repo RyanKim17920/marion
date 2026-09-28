@@ -1472,6 +1472,11 @@ pub trait SpawnObserver: Sync {
     fn spending(&self) -> Option<std::sync::Arc<crate::spending::Spending>> {
         None
     }
+    /// **The tree the node runs in, the instant it is chosen** — the tree the node's own children
+    /// will branch from. A worktree child's children branch from its worktree (and from the work in
+    /// it, `spawn::make_worktree`), not from the tree its parent named. Defaulted to nothing for an
+    /// owner whose node has no children to hand it to.
+    fn workspace_chosen(&self, _agent_id: &AgentId, _workspace: &Workspace) {}
 }
 
 /// The observer for a caller that owns the node **by holding this call** — which is every caller
@@ -1778,7 +1783,9 @@ pub fn run_spawn_watched(
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
     let (workspace, base, cwd_claim, mut prelaunch) =
-        select_workspace(req, &agent_type, &agent_dir, task_id, &agent_id)?;
+        select_workspace(req, &agent_type, &env.project_dir, task_id, &agent_id)?;
+    // The tree this child's own children branch from is the one it runs in.
+    observer.workspace_chosen(&agent_id, &workspace);
     // Held for the child's whole run. Named rather than `_`, because `let _ = ..` drops immediately
     // and would release §6.6's claim before the child it is protecting had started — the guard would
     // still compile, still be tested by a single-spawn test, and protect nothing.
@@ -2633,7 +2640,7 @@ fn requested_scope(req: &SpawnRequest) -> Vec<Glob> {
 fn select_workspace(
     req: &SpawnRequest,
     agent_type: &AgentType,
-    agent_dir: &AgentDir,
+    project: &ProjectDir,
     task_id: &TaskId,
     agent_id: &AgentId,
 ) -> Result<
@@ -2645,6 +2652,7 @@ fn select_workspace(
     ),
     SpawnError,
 > {
+    let agent_dir = &project.agent(agent_id);
     // **A resume takes the tree it left, and this arm is why the workspace is journaled at all.**
     // Neither branch below is right for a second life: `make_worktree` on a tree that already
     // exists fails, and a *fresh* worktree would be a directory the resumed session has never seen
@@ -2678,7 +2686,11 @@ fn select_workspace(
             let branch = worktree_branch(task_id);
             // A reviewer's tree is the reviewed work as it landed, so it reads what it judges.
             let at = req.review.as_ref().and_then(|t| t.commit.as_ref());
-            let base = crate::spawn::make_worktree_at(&req.repo, &wt, &branch, at)?;
+            // A caller in a worktree marion made (under this project's agent dirs) hands its child
+            // its current state; the operator's own checkout is never committed to. See
+            // `make_worktree`.
+            let carry_work = req.repo.starts_with(project.agents_dir());
+            let base = crate::spawn::make_worktree_at(&req.repo, &wt, &branch, at, carry_work)?;
             let prelaunch = PrelaunchWorktree {
                 repo: req.repo.clone(),
                 target: Some((wt.clone(), branch.clone(), base.clone())),
@@ -3318,6 +3330,81 @@ mod tests {
         );
     }
 
+    /// **Whose work a new worktree carries is decided by where the caller's tree is.** A caller in
+    /// a worktree marion made under this project hands its child its uncommitted work; a caller in
+    /// the operator's own checkout does not, and that checkout is left exactly as it was.
+    #[test]
+    fn only_a_caller_in_a_marion_worktree_hands_its_child_its_uncommitted_work() {
+        let dir = scratch("select-workspace-carry");
+        let repo = fixture_repo(&dir);
+        let project = ProjectDir::new(&dir.join("state"), &repo);
+        let agent_type = builtin("codex").unwrap();
+        let request = |from: &Path| SpawnRequest {
+            review: None,
+            agent_type: "codex".into(),
+            prompt: "test it".into(),
+            repo: from.to_path_buf(),
+            acceptance_criteria: vec![],
+            verification: vec![],
+            writable_scope: vec![],
+            timeout_secs: 1,
+            model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
+            resume: None,
+            profile: None,
+        };
+        let caller_wt = project.agent(&AgentId("caller".into())).worktree();
+        std::fs::create_dir_all(caller_wt.parent().unwrap()).unwrap();
+        crate::spawn::make_worktree(&repo, &caller_wt, "marion/caller", false).unwrap();
+        std::fs::write(caller_wt.join("src/keep.txt"), "the caller's edit\n").unwrap();
+        std::fs::write(repo.join("src/keep.txt"), "the operator's edit\n").unwrap();
+
+        let child = AgentId("child".into());
+        // Held: a `PrelaunchWorktree` dropped here would take the new tree back at once.
+        let (ws, _, _, _child_tree) = select_workspace(
+            &request(&caller_wt),
+            &agent_type,
+            &project,
+            &TaskId("t-child".into()),
+            &child,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("src/keep.txt")).unwrap(),
+            "the caller's edit\n"
+        );
+
+        let sibling = AgentId("sibling".into());
+        let (ws, _, _, _sibling_tree) = select_workspace(
+            &request(&repo),
+            &agent_type,
+            &project,
+            &TaskId("t-sibling".into()),
+            &sibling,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("src/keep.txt")).unwrap(),
+            "keep\n",
+            "a child of the operator's checkout starts from its HEAD"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("src/keep.txt")).unwrap(),
+            "the operator's edit\n"
+        );
+        let log = SysCommand::new("git")
+            .current_dir(&repo)
+            .args(["rev-list", "--count", "main"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "1",
+            "and no commit was made on the operator's branch"
+        );
+    }
+
     /// **A resume takes the tree its session was created in, and cuts none.**
     ///
     /// The two arms of [`select_workspace`] are wrong for a second life in opposite ways:
@@ -3341,7 +3428,7 @@ mod tests {
         };
         let agent_type = builtin("claude").unwrap();
         let agent_id = AgentId("child".into());
-        let agent_dir = ProjectDir::new(&dir.join("state"), &repo).agent(&agent_id);
+        let project = ProjectDir::new(&dir.join("state"), &repo);
         let task_id = TaskId("t-1".into());
         let mut req = SpawnRequest {
             review: None,
@@ -3360,7 +3447,7 @@ mod tests {
         };
         assert!(
             matches!(
-                select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id),
+                select_workspace(&req, &agent_type, &project, &task_id, &agent_id),
                 Err(SpawnError::NotAGitRepo { .. })
             ),
             "the fixture's repo is deliberately not a repository, so a fresh spawn cannot cut a \
@@ -3374,14 +3461,14 @@ mod tests {
             usage: None,
         });
         let (workspace, _base, _claim, _prelaunch) =
-            select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id)
+            select_workspace(&req, &agent_type, &project, &task_id, &agent_id)
                 .expect("the recorded tree needs no repository question asked of it");
         assert_eq!(
             workspace, recorded,
             "the relaunch runs where the journal says the session was created"
         );
         assert!(
-            !agent_dir.worktree().exists(),
+            !project.agent(&agent_id).worktree().exists(),
             "and no second tree was cut under the agent dir"
         );
     }
@@ -4428,18 +4515,18 @@ mod tests {
         };
 
         let unchanged = root.join("wt-unchanged");
-        let base = crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged").unwrap();
+        let base = crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false).unwrap();
         cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
         assert!(!unchanged.exists(), "the worktree is removed");
         assert!(
             !exists("marion/unchanged"),
             "and its unchanged branch with it"
         );
-        crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged")
+        crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false)
             .expect("so the task id can be used again");
 
         let advanced = root.join("wt-advanced");
-        let base = crate::spawn::make_worktree(&repo, &advanced, "marion/advanced").unwrap();
+        let base = crate::spawn::make_worktree(&repo, &advanced, "marion/advanced", false).unwrap();
         git(
             &advanced,
             &[

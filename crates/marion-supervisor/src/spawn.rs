@@ -577,22 +577,51 @@ impl CwdClaim {
 /// different `base_commit`s for the same instant, or one could record a base its worktree was not
 /// actually created at. §6.7 calls `base_commit` an audit record; an audit record raced against the
 /// thing it describes is worse than a slower spawn.
-pub fn make_worktree(repo: &Path, path: &Path, branch: &str) -> Result<Oid, SpawnError> {
-    make_worktree_at(repo, path, branch, None)
+///
+/// **`carry_work`: the child starts from its parent's current state, not its parent's last
+/// commit.** Measured live (s2, 2026-09-27): a claude child in its own worktree wrote the code, then
+/// spawned codex grandchildren to run its tests, and every grandchild's worktree was cut from the
+/// base commit — none of them saw the edits they were asked to test. So where `repo` is a worktree
+/// marion made for the caller, the caller's uncommitted work is first committed onto the caller's
+/// own `marion/<task_id>` branch ([`CARRIED_WORK_MESSAGE`]), by the same recipe that lands a child's
+/// work at its end ([`commit_child_work`]), and the child is cut from that commit.
+///
+/// Committed on the caller's branch rather than held in a commit on no branch, because that branch
+/// is marion's and is where the caller's work lands at its end anyway: the caller's tree is left
+/// clean, its contract's `changed_paths` still count the work (they diff from the caller's own
+/// base), and the child's branch then merges back as a fast-forward. The operator's own checkout —
+/// a root's tree, or a `shared-cwd` child's — is never committed to, and a child of it branches from
+/// its HEAD as it always did. The same guard covers the commit and the cut, so no sibling's spawn
+/// can interleave between them.
+pub fn make_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+    carry_work: bool,
+) -> Result<Oid, SpawnError> {
+    make_worktree_at(repo, path, branch, None, carry_work)
 }
 
 /// [`make_worktree`], cut at `at` where one is named — a reviewer's tree, at the reviewed node's
-/// landed commit — and at `repo`'s HEAD otherwise.
+/// landed commit — and at `repo`'s HEAD otherwise. `carry_work` applies only to a HEAD cut: a
+/// named commit already is the work the child is to see.
 pub fn make_worktree_at(
     repo: &Path,
     path: &Path,
     branch: &str,
     at: Option<&Oid>,
+    carry_work: bool,
 ) -> Result<Oid, SpawnError> {
     let _serialized = repo_write_guard();
     let head = match at {
         Some(commit) => commit.0.clone(),
-        None => git(repo, &["rev-parse", "HEAD"])?.trim().to_string(),
+        None => {
+            if carry_work {
+                let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+                commit_all(repo, &Oid(head), CARRIED_WORK_MESSAGE)?;
+            }
+            git(repo, &["rev-parse", "HEAD"])?.trim().to_string()
+        }
     };
     git(
         repo,
@@ -822,6 +851,16 @@ pub fn commit_message(
 /// added; a tree with no changes and no commits returns `None`.
 pub fn commit_child_work(wt: &Path, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
     let _serialized = repo_write_guard();
+    commit_all(wt, base, message)
+}
+
+/// The subject of the commit that carries a caller's work in progress to the child it spawns
+/// ([`make_worktree`]'s `carry_work`).
+pub const CARRIED_WORK_MESSAGE: &str =
+    "marion: work in progress, carried to a child spawned from it";
+
+/// [`commit_child_work`]'s body, for a caller already holding [`repo_write_guard`].
+fn commit_all(wt: &Path, base: &Oid, message: &str) -> Result<Option<Oid>, SpawnError> {
     let get = |key: &str| {
         git(wt, &["config", "--get", key])
             .ok()
@@ -2082,6 +2121,59 @@ mod tests {
             "",
             "and the tree is clean after it, the ignored file still ignored"
         );
+    }
+
+    /// **A child cut from a worktree marion made starts from that tree's current state**, not its
+    /// last commit — the s2 grandchildren that tested old code (live smoke, 2026-09-27). The
+    /// parent's uncommitted edit and its new file are committed onto the parent's own branch, its
+    /// tree is left clean, and the child's worktree holds both. Without `carry_work` — a child of
+    /// the operator's own checkout — nothing is committed and the child is cut from HEAD.
+    #[test]
+    fn a_child_cut_from_a_marion_worktree_starts_from_its_parents_uncommitted_work() {
+        let (dir, repo, base) = committed_repo("spawn-carry-work");
+        let parent = dir.join("parent-wt");
+        make_worktree(&repo, &parent, "marion/parent", false).expect("the parent's worktree");
+        std::fs::write(parent.join("keep.txt"), "the parent's edit\n").unwrap();
+        std::fs::write(parent.join("new.txt"), "the parent's new file\n").unwrap();
+
+        let child = dir.join("child-wt");
+        let child_base = make_worktree(&parent, &child, "marion/child", true)
+            .expect("the child's worktree, carrying the parent's work");
+        assert_eq!(
+            std::fs::read_to_string(child.join("keep.txt")).unwrap(),
+            "the parent's edit\n"
+        );
+        assert!(
+            child.join("new.txt").exists(),
+            "an untracked file travels too"
+        );
+        assert_eq!(
+            child_base.0,
+            tgit(&parent, &["rev-parse", "HEAD"]),
+            "the child's base is the parent's new tip"
+        );
+        assert_eq!(
+            tgit(&parent, &["rev-parse", "HEAD^"]),
+            base.0,
+            "one commit, on the parent's own branch"
+        );
+        assert_eq!(
+            tgit(&parent, &["log", "-1", "--format=%s"]),
+            CARRIED_WORK_MESSAGE
+        );
+        assert_eq!(tgit(&parent, &["status", "--porcelain"]), "");
+        assert_eq!(
+            changed_paths(&parent, &base).unwrap().len(),
+            2,
+            "the parent's contract still counts its own work"
+        );
+
+        // The operator's checkout is never committed to.
+        std::fs::write(repo.join("keep.txt"), "the operator's edit\n").unwrap();
+        let plain = dir.join("plain-wt");
+        let plain_base = make_worktree(&repo, &plain, "marion/plain", false).unwrap();
+        assert_eq!(plain_base, base, "cut from HEAD");
+        assert_eq!(tgit(&repo, &["status", "--porcelain"]), "M keep.txt");
     }
 
     #[test]

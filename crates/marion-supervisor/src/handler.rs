@@ -775,7 +775,9 @@ pub struct NodeHandle {
     ///
     /// One supervisor serves `/r` and every linked worktree of `/r` (§2 keys on the git common
     /// dir), so the repository cannot be a field of the supervisor; it has to be remembered per
-    /// node and inherited down the tree from whichever root stated it.
+    /// node and inherited down the tree from whichever root stated it — until a child runs in a
+    /// worktree of its own, whose entry then names that worktree (`workspace_chosen`), so the
+    /// child's children start from the child's work and not from the root's HEAD.
     ///
     /// **In memory, and deliberately not in the journal.** This entry's lifetime is exactly the
     /// lifetime of the capability token beside it: both are minted at [`RegistryHandle::claim`]
@@ -1108,6 +1110,16 @@ impl crate::root::PaneOwner for NodeOwner {
 }
 
 impl crate::run::SpawnObserver for NodeOwner {
+    /// A worktree child's own children branch from its worktree, so its entry's tree becomes that
+    /// worktree. A `shared-cwd` child runs in the tree it inherited, which its entry already names.
+    fn workspace_chosen(&self, agent_id: &AgentId, workspace: &marion_core::contract::Workspace) {
+        if let marion_core::contract::Workspace::Worktree { path, .. } = workspace
+            && let Some(node) = lock(&self.handle.nodes).get_mut(agent_id)
+        {
+            node.repo = path.clone();
+        }
+    }
+
     fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
         let token = self
             .handle
@@ -12852,6 +12864,47 @@ mod tests {
                 e.message
             );
             assert_eq!(journal_len(&fx), 0, "and nothing was created");
+        }
+
+        /// **A worktree child's children branch from its worktree**, not from the tree its parent
+        /// named (live smoke s2, 2026-09-27: every grandchild was cut from the root's HEAD and
+        /// tested none of its parent's code). Choosing the workspace re-points the child's entry;
+        /// a `shared-cwd` child keeps the tree it inherited, which is where it runs.
+        #[test]
+        fn a_worktree_childs_own_children_branch_from_its_worktree() {
+            let fx = owning("owns-child-tree", vec![]);
+            let (progress, _rx) = std::sync::mpsc::channel();
+            let owner = NodeOwner {
+                handle: Arc::clone(&fx.handle),
+                task_id: Some(marion_core::contract::TaskId("t-child".into())),
+                repo: fx.repo.clone(),
+                tx: progress,
+                identified: Mutex::new(None),
+                announce_to: None,
+                owes: Default::default(),
+            };
+            let child = id("child");
+            let _token = <NodeOwner as crate::run::SpawnObserver>::identified(&owner, &child);
+            let tree_of = |n: &AgentId| lock(&fx.handle.nodes).get(n).map(|node| node.repo.clone());
+            assert_eq!(tree_of(&child), Some(fx.repo.clone()), "inherited at claim");
+
+            let shared = marion_core::contract::Workspace::SharedCwd {
+                path: fx.repo.clone(),
+            };
+            crate::run::SpawnObserver::workspace_chosen(&owner, &child, &shared);
+            assert_eq!(tree_of(&child), Some(fx.repo.clone()));
+
+            let wt = fx.project.agent(&child).worktree();
+            let worktree = marion_core::contract::Workspace::Worktree {
+                path: wt.clone(),
+                branch: "marion/t-child".into(),
+            };
+            crate::run::SpawnObserver::workspace_chosen(&owner, &child, &worktree);
+            assert_eq!(
+                tree_of(&child),
+                Some(wt),
+                "its children branch from its worktree"
+            );
         }
 
         /// **The load-bearing one: two roots in two linked worktrees of one repository, whose
