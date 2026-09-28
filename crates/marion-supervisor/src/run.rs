@@ -312,7 +312,7 @@ pub struct Env {
     ///
     /// **Carried rather than recovered from `project_dir.path().parent()`.** That derivation is
     /// true by construction today and is exactly the kind of fact a later `ProjectDir` constructor
-    /// could quietly falsify, and what depends on it is not internal: it is `MARION_STATE` in every
+    /// could quietly falsify, and what depends on it is not internal: it is `MARION_STATE_DIR` in every
     /// node's MCP declaration (`marion_harness::SpawnCtx::state_dir`), which is how that node's own
     /// bridge finds this project again. A supervisor is told `<state>` on its argv (`detach::Launch`)
     /// and a bridge reads it from its declaration, so both already have it; this is where the two

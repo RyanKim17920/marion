@@ -17,7 +17,7 @@ use std::io::{BufRead, Write};
 use std::time::Duration;
 
 use marion_core::contract::{AgentId, Isolation, TaskId};
-use marion_core::paths::{ProjectDir, state_dir};
+use marion_core::paths::ProjectDir;
 use marion_harness::AGENT_TYPE_ENV;
 use marion_harness::claude_code::NODE_TOKEN_ENV;
 use marion_harness::spec::Push;
@@ -1056,14 +1056,7 @@ fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
              bridge cannot derive its project's socket path. Refusing rather than guessing."
         )
     })?;
-    let legacy = std::env::var("MARION_STATE").ok();
-    let documented = std::env::var("MARION_STATE_DIR").ok();
-    let state = state_dir(
-        documented.as_deref().or(legacy.as_deref()),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-    .ok_or_else(|| {
+    let state = marion_core::paths::state_dir_from_env(None).ok_or_else(|| {
         "marion: this bridge cannot resolve a state directory (MARION_STATE_DIR, else \
          XDG_STATE_HOME, else HOME), so it can derive neither its project's socket path nor where \
          a child's contract would be written. Refusing rather than guessing."
@@ -2394,7 +2387,7 @@ mod tests {
     #[test]
     fn documented_state_precedence_is_resolved_beneath_the_project_hash() {
         let root = std::path::Path::new("/canonical/project");
-        let state = state_dir(Some("/explicit"), Some("/xdg"), Some("/home")).unwrap();
+        let state = marion_core::paths::state_dir(Some("/explicit"), Some("/xdg"), Some("/home")).unwrap();
         let project = ProjectDir::new(&state, root);
         assert_eq!(
             project.path().parent(),

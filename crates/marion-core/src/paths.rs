@@ -93,6 +93,30 @@ pub fn state_dir(
     set(home).map(|h| Path::new(h).join(".local").join("state").join("marion"))
 }
 
+/// **The one state-directory lookup every marion process makes**: `explicit` (a `--state-dir`)
+/// wins, then [`state_dir`]'s precedence over the variables `var` answers. `marion`'s verbs, the
+/// native facade, a node's bridge and the profile store all resolve through here, so one shell
+/// finds one supervisor whichever of them it runs.
+pub fn state_dir_from(
+    explicit: Option<&str>,
+    var: impl Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    let explicit = explicit
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| var("MARION_STATE_DIR"));
+    state_dir(
+        explicit.as_deref(),
+        var("XDG_STATE_HOME").as_deref(),
+        var("HOME").as_deref(),
+    )
+}
+
+/// [`state_dir_from`] over this process's environment.
+pub fn state_dir_from_env(explicit: Option<&str>) -> Option<PathBuf> {
+    state_dir_from(explicit, |k| std::env::var(k).ok())
+}
+
 /// `<state>/<project-hash>` and everything under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDir(PathBuf);
@@ -221,6 +245,41 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    /// **`--state-dir` wins over `$MARION_STATE_DIR`, and an empty value of either is unset.**
+    /// `marion claude` once read the variable while `run`, `tree` and `attach` passed `None`, so a
+    /// session started natively under a custom state dir was invisible to `marion tree` in the same
+    /// shell; every reader now resolves here.
+    #[test]
+    fn the_state_dir_is_the_flag_then_marion_state_dir_then_xdg_then_home() {
+        let vars = |m: &'static str| {
+            move |k: &str| {
+                match k {
+                    "MARION_STATE_DIR" => Some(m),
+                    "XDG_STATE_HOME" => Some("/x"),
+                    "HOME" => Some("/h"),
+                    _ => None,
+                }
+                .map(str::to_string)
+            }
+        };
+        assert_eq!(state_dir_from(Some("/f"), vars("/m")), Some(p("/f")));
+        assert_eq!(state_dir_from(None, vars("/m")), Some(p("/m")));
+        assert_eq!(
+            state_dir_from(Some(""), vars("/m")),
+            Some(p("/m")),
+            "an empty flag is no flag"
+        );
+        assert_eq!(
+            state_dir_from(None, vars("")),
+            Some(p("/x/marion")),
+            "an empty variable is unset"
+        );
+        assert_eq!(
+            state_dir_from(None, |k| (k == "HOME").then(|| "/h".to_string())),
+            Some(p("/h/.local/state/marion"))
+        );
     }
 
     #[test]

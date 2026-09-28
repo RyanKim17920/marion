@@ -89,11 +89,7 @@ impl ReleaseStores {
     /// The real machine: `$HOME`, and the state directory `marion` itself would use.
     pub fn from_env() -> Self {
         let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
-        let state = marion_core::paths::state_dir(
-            std::env::var("MARION_STATE_DIR").ok().as_deref(),
-            std::env::var("XDG_STATE_HOME").ok().as_deref(),
-            home.as_deref(),
-        )
+        let state = marion_core::paths::state_dir_from_env(None)
         .expect("a state directory resolves from MARION_STATE_DIR, XDG_STATE_HOME or HOME");
         Self {
             home: PathBuf::from(home.expect("HOME is set")),

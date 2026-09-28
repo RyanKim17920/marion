@@ -18,7 +18,7 @@ use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::{AgentTypes, builtin_names};
 use marion_core::contract::ExitStatus;
-use marion_core::paths::state_dir;
+use marion_core::paths::state_dir_from_env;
 use marion_core::production_native_facades;
 use marion_supervisor::detach;
 use marion_supervisor::duplex::StreamEvent;
@@ -908,12 +908,7 @@ fn resolve_project(
 /// facade (`socket::resolve_state_dir`) reads the same variable, so `marion claude` and `marion
 /// tree` in one shell find the same supervisor.
 fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
-    match state_dir_from(
-        explicit,
-        std::env::var("MARION_STATE_DIR").ok().as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) {
+    match state_dir_from_env(explicit) {
         Some(s) => Some(s),
         None => {
             eprintln!(
@@ -923,18 +918,6 @@ fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
             None
         }
     }
-}
-
-/// [`state_dir_or_report`]'s rule over explicit inputs: the flag wins over the variable, and an
-/// empty value of either counts as unset.
-fn state_dir_from(
-    flag: Option<&str>,
-    marion_state_dir: Option<&str>,
-    xdg_state_home: Option<&str>,
-    home: Option<&str>,
-) -> Option<std::path::PathBuf> {
-    let explicit = flag.filter(|s| !s.is_empty()).or(marion_state_dir);
-    state_dir(explicit, xdg_state_home, home)
 }
 
 /// Hand-rolled, because `run`'s whole surface is one subcommand and six flags.
@@ -3450,33 +3433,6 @@ mod tests {
         assert!(
             canned_endpoint_listening("not a url").is_err(),
             "an unreadable endpoint is refused, not probed as a guess"
-        );
-    }
-
-    /// **`$MARION_STATE_DIR` is honoured by every verb, and `--state-dir` still wins over it.**
-    ///
-    /// `marion claude` read it (through `socket::resolve_state_dir`) while `run`, `tree`, `list`,
-    /// `attach`, `resume`, `mcp` and the picker passed `None` in its place, so a session started
-    /// natively under a custom state dir was invisible to `marion tree` in the same shell.
-    #[test]
-    fn the_state_dir_is_the_flag_then_marion_state_dir_then_xdg_then_home() {
-        use std::path::PathBuf;
-        let all = |flag| state_dir_from(flag, Some("/m"), Some("/x"), Some("/h"));
-        assert_eq!(all(Some("/f")), Some(PathBuf::from("/f")));
-        assert_eq!(all(None), Some(PathBuf::from("/m")));
-        assert_eq!(
-            all(Some("")),
-            Some(PathBuf::from("/m")),
-            "an empty flag is no flag"
-        );
-        assert_eq!(
-            state_dir_from(None, Some(""), Some("/x"), Some("/h")),
-            Some(PathBuf::from("/x/marion")),
-            "an empty variable is unset"
-        );
-        assert_eq!(
-            state_dir_from(None, None, None, Some("/h")),
-            Some(PathBuf::from("/h/.local/state/marion"))
         );
     }
 

@@ -78,11 +78,7 @@ impl ProfilePaths {
         let data = set("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| under_home(".local/share"))?;
-        let state = marion_core::paths::state_dir(
-            set("MARION_STATE_DIR").as_deref(),
-            set("XDG_STATE_HOME").as_deref(),
-            home.as_deref(),
-        )?;
+        let state = marion_core::paths::state_dir_from(None, &var)?;
         Some(Self {
             config: config.join("marion").join(CONFIG_FILE),
             data: data.join("marion").join("profiles"),

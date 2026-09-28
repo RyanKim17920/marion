@@ -123,7 +123,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_core::paths::{ProjectDir, state_dir};
+use marion_core::paths::ProjectDir;
 
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
@@ -364,12 +364,7 @@ pub fn resolve(cwd: &Path) -> Result<SocketPaths, SocketError> {
 /// [`resolve`] performs that a caller who must also *start* a supervisor needs on its own, because
 /// [`crate::detach::Launch::state_dir`] carries it onto stage 3's argv.
 pub fn resolve_state_dir() -> Result<PathBuf, SocketError> {
-    state_dir(
-        std::env::var("MARION_STATE_DIR").ok().as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-    .ok_or(SocketError::NoStateDir)
+    marion_core::paths::state_dir_from_env(None).ok_or(SocketError::NoStateDir)
 }
 
 /// What [`acquire`] settled: this caller serves, or someone else already does.
