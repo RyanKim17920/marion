@@ -23,10 +23,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
-    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push,
-    ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries,
+    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
+    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -262,6 +262,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured. S12 measured 0.53.0 rewriting an explicit `-m`, and MILESTONES records
+    // `gemini -p` refused by the vendor on this machine, so no capability has been observed to
+    // work — including through ACP, where S20 found `session/new` refused outright.
+    advertised: Advertised::NONE,
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).

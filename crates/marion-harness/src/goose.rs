@@ -48,10 +48,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Readiness,
-    Remembers, Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
-    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly,
+    Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -259,6 +259,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured through the `run -t` surface. S26 drove it to a tool call and back and
+    // watched `isError`, a provider 500 and the three approval modes, none of which is one of
+    // the ten; `--resume` exists on 1.49.0's `--help` and no frame carries the id it takes, so
+    // nothing is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
+    advertised: Advertised::NONE,
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).

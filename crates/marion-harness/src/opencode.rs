@@ -22,6 +22,7 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
+use crate::caps::Capabilities;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, TitleLookup, ToolUnit, UsageFold, UsageRule, Verdict,
@@ -31,10 +32,10 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly, Readiness,
-    Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
+    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly,
+    Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -316,6 +317,23 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // consumers share, so it stays the hook's.
     model: ModelForm::Hook,
     readiness: Readiness::Ungated,
+    // S31 `p0b/opencode`: `opencode run --session <id>` continues the first run's session on
+    // 1.18.32, once `OPENCODE_DB` is a file (`:memory:` failed with `Session not found`) —
+    // the same claim codex's row makes of `codex exec resume`, and clipped the same way by
+    // the `run` surface's `LaunchOnly` ceiling. Nothing else is measured through this
+    // surface: S20's `sessionCapabilities {close, fork, list, resume}` is the *ACP* surface's
+    // handshake, not `opencode run`'s, and §3.3 keys on surfaces precisely so one cannot be
+    // read as the other (see `crate::acp` for where S20's answer is consumed).
+    advertised: Advertised {
+        always: Capabilities::NONE,
+        from_version: &[(
+            Capabilities {
+                resume: true,
+                ..Capabilities::NONE
+            },
+            (1, 18, 32),
+        )],
+    },
 };
 
 /// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).

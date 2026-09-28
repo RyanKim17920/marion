@@ -59,9 +59,9 @@ use crate::grammar::{
 };
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute,
-    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Spelling, Surfaces,
-    TokenCarriers, TurnDelivery, UpdatePolicy,
+    Advertised, Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Field, HarnessSpec,
+    McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Spelling,
+    Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -172,6 +172,41 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // canned recipe it is that config's own ([`AcpAdapter`]'s hook).
     model: ModelForm::Hook,
     readiness: Readiness::Ungated,
+    // **The one row where `advertised` describes a protocol rather than a program**, because
+    // §5.2's `acp` adapter serves many agents and the version here is not even readable until
+    // one of them has answered `initialize`. So `version` is deliberately unused: it keys the
+    // *agent*, and the agent is stage two's business.
+    //
+    // Five of the ten, and the five splits are three different arguments:
+    //
+    // * `token_deltas`, `usage` — **measured, S21.** A real `opencode acp` turn streamed
+    //   `agent_message_chunk` frames one token at a time (`"The"`, `" user"`, `" wants"`) and
+    //   emitted a `usage_update` with `used`/`size`/`cost`, and its `session/prompt` response
+    //   carried a `usage` object. Both are in `tests/fixtures/s21/`.
+    // * `fork`, `resume`, `view` — **the protocol has them and the handshake decides.** ACP v1
+    //   defines `session/load` and advertises `sessionCapabilities`, and §3.3 makes ACP the
+    //   worked example of a static set *refined* at session open. A `false` here would be
+    //   final: [`Capabilities::meet`] cannot widen, so `opencode acp`'s advertised `fork` could
+    //   never be published and M5's *"differing capabilities"* would have nothing to differ on.
+    //   That is the one place this table states a protocol's shape rather than a measurement,
+    //   and it is stated only because the very next stage narrows it per agent.
+    // * `steer`, `interrupt`, `permissions`, `elicitation`, `set_model` — **not measured.** ACP
+    //   defines all five (`session/prompt` mid-turn, `session/cancel`,
+    //   `session/request_permission`, `session/request_input`, the `model` `configOption` S21
+    //   saw in a `session/new` result), and marion has driven none of them against a live
+    //   agent. §3.3's *degrade visibly*: a `false` here is "marion has not measured it", and
+    //   the honest cost is an understated tool rather than a greyed-in action that then fails.
+    advertised: Advertised {
+        always: Capabilities {
+            fork: true,
+            resume: true,
+            view: true,
+            token_deltas: true,
+            usage: true,
+            ..Capabilities::NONE
+        },
+        from_version: &[],
+    },
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**
@@ -1787,7 +1822,7 @@ fn failed_words(u: &Value, id: &str) -> String {
 /// **useless as a limit here**, which is precisely why ACP is the one row where §3.3's stage two
 /// does the work: [`crate::advertised`] claims only what has been measured of the protocol, and
 /// [`crate::AgentHandshake::refine`] narrows that to the agent that actually answered. Nothing in
-/// this adapter publishes a capability; see `caps.rs`'s `Harness::Acp` arm for the five that are
+/// this adapter publishes a capability; see [`SPEC`]'s `advertised` for the five that are
 /// claimed and the five that are not.
 /// # Baseline and refinement, and why the struct has a field
 ///

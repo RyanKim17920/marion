@@ -127,6 +127,23 @@ impl Capabilities {
     /// table met with a surface ceiling, or a static set met with a handshake's answer. §3.3
     /// forbids widening in stage two, and a meet cannot widen — which is why refinement is spelled
     /// as a meet rather than as a replacement.
+    /// Every capability either side has.
+    #[must_use]
+    pub fn join(self, other: Self) -> Self {
+        Self {
+            steer: self.steer || other.steer,
+            interrupt: self.interrupt || other.interrupt,
+            fork: self.fork || other.fork,
+            resume: self.resume || other.resume,
+            view: self.view || other.view,
+            permissions: self.permissions || other.permissions,
+            elicitation: self.elicitation || other.elicitation,
+            set_model: self.set_model || other.set_model,
+            token_deltas: self.token_deltas || other.token_deltas,
+            usage: self.usage || other.usage,
+        }
+    }
+
     #[must_use]
     pub fn meet(self, other: Self) -> Self {
         Self {
@@ -234,101 +251,7 @@ impl Capabilities {
 /// 0.146.0"*; marion has measured nothing before it and so claims nothing before it. A caller
 /// passing an unparseable version gets the unmeasured answer rather than the optimistic one.
 pub fn advertised(harness: Harness, version: &str) -> Capabilities {
-    match harness {
-        // S9 measured a real `can_use_tool` round-trip: a permission request from a headless
-        // `claude -p` reaches marion and is answered (§9's M1 criterion-7 ledger, item 14).
-        // S1 and S11 measured the interrupt protocol, S11 byte-for-byte over a real pty.
-        Harness::ClaudeCode => Capabilities {
-            interrupt: true,
-            permissions: true,
-            ..Capabilities::NONE
-        },
-        // §9: "`codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is exactly
-        // `continue_()` + `prompt()`". That is a claim about the *binary*; the surface it is asked
-        // for on is what decides whether it is publishable, and on `codex exec --json` it is not.
-        Harness::Codex => Capabilities {
-            resume: at_least(version, (0, 146, 0)),
-            ..Capabilities::NONE
-        },
-        // Nothing measured. S12 measured 0.53.0 rewriting an explicit `-m`, and MILESTONES records
-        // `gemini -p` refused by the vendor on this machine, so no capability has been observed to
-        // work — including through ACP, where S20 found `session/new` refused outright.
-        Harness::Gemini => Capabilities::NONE,
-        // S31 `p0b/opencode`: `opencode run --session <id>` continues the first run's session on
-        // 1.18.32, once `OPENCODE_DB` is a file (`:memory:` failed with `Session not found`) —
-        // the same claim codex's row makes of `codex exec resume`, and clipped the same way by
-        // the `run` surface's `LaunchOnly` ceiling. Nothing else is measured through this
-        // surface: S20's `sessionCapabilities {close, fork, list, resume}` is the *ACP* surface's
-        // handshake, not `opencode run`'s, and §3.3 keys on surfaces precisely so one cannot be
-        // read as the other (see `crate::acp` for where S20's answer is consumed).
-        Harness::OpenCode => Capabilities {
-            resume: at_least(version, (1, 18, 32)),
-            ..Capabilities::NONE
-        },
-        // Nothing measured through the `-p` surface. s24 drove it to a tool call and back and
-        // watched `session.error` and a denied call, none of which is one of the ten; `--resume`,
-        // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
-        // is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
-        Harness::Copilot => Capabilities::NONE,
-        // Nothing measured through the `run -t` surface. S26 drove it to a tool call and back and
-        // watched `isError`, a provider 500 and the three approval modes, none of which is one of
-        // the ten; `--resume` exists on 1.49.0's `--help` and no frame carries the id it takes, so
-        // nothing is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
-        Harness::Goose => Capabilities::NONE,
-        // Nothing measured through the `--json` surface. S27 drove it to a tool call and back and
-        // watched `isError`, a provider 500 and `--auto-approve false`, none of which is one of the
-        // ten; `--id` exists and exits 1 headless, so `resume` is measured *absent* rather than
-        // unmeasured, and the answer is the same `false`.
-        Harness::Cline => Capabilities::NONE,
-        // Nothing measured through the `-p` surface beyond what the row compiles. S25 drove
-        // `--resume <session_id>` to a second turn that replayed the first — which is the row's
-        // `resume` grammar, not this table's `resume` capability, whose meaning §3.3 keys on a
-        // supervisor-driven surface no LaunchOnly row has. `false` here is "not measured".
-        Harness::Qwen => Capabilities::NONE,
-        // Nothing measured beyond what the row compiles: `--conversation` is the row's resume
-        // grammar (s32), not this table's supervisor-driven `resume`. `false` is "not measured".
-        Harness::Antigravity => Capabilities::NONE,
-        // S34 item 12 measured `--mode rpc`'s steer (folded into the running turn) and abort (the
-        // turn ends `aborted`, the process stays up). `--session <id>` is the row's `resume`
-        // grammar, not this table's capability.
-        Harness::Pi => Capabilities {
-            steer: true,
-            interrupt: true,
-            ..Capabilities::NONE
-        },
-        // **The one row where `advertised` describes a protocol rather than a program**, because
-        // §5.2's `acp` adapter serves many agents and the version here is not even readable until
-        // one of them has answered `initialize`. So `version` is deliberately unused: it keys the
-        // *agent*, and the agent is stage two's business.
-        //
-        // Five of the ten, and the five splits are three different arguments:
-        //
-        // * `token_deltas`, `usage` — **measured, S21.** A real `opencode acp` turn streamed
-        //   `agent_message_chunk` frames one token at a time (`"The"`, `" user"`, `" wants"`) and
-        //   emitted a `usage_update` with `used`/`size`/`cost`, and its `session/prompt` response
-        //   carried a `usage` object. Both are in `tests/fixtures/s21/`.
-        // * `fork`, `resume`, `view` — **the protocol has them and the handshake decides.** ACP v1
-        //   defines `session/load` and advertises `sessionCapabilities`, and §3.3 makes ACP the
-        //   worked example of a static set *refined* at session open. A `false` here would be
-        //   final: [`Capabilities::meet`] cannot widen, so `opencode acp`'s advertised `fork` could
-        //   never be published and M5's *"differing capabilities"* would have nothing to differ on.
-        //   That is the one place this table states a protocol's shape rather than a measurement,
-        //   and it is stated only because the very next stage narrows it per agent.
-        // * `steer`, `interrupt`, `permissions`, `elicitation`, `set_model` — **not measured.** ACP
-        //   defines all five (`session/prompt` mid-turn, `session/cancel`,
-        //   `session/request_permission`, `session/request_input`, the `model` `configOption` S21
-        //   saw in a `session/new` result), and marion has driven none of them against a live
-        //   agent. §3.3's *degrade visibly*: a `false` here is "marion has not measured it", and
-        //   the honest cost is an understated tool rather than a greyed-in action that then fails.
-        Harness::Acp => Capabilities {
-            fork: true,
-            resume: true,
-            view: true,
-            token_deltas: true,
-            usage: true,
-            ..Capabilities::NONE
-        },
-    }
+    crate::adapter::harness_spec(harness).advertised.at(version)
 }
 
 /// §3.3's stage one, with the section's own signature.
@@ -341,7 +264,7 @@ pub fn static_caps(harness: Harness, version: &str, s: &ExecutionSurfaces) -> Ca
 
 /// `major.minor.patch` at or after `floor`. Anything that does not parse is **not** at or after it:
 /// a version marion cannot read is a version marion has not measured.
-fn at_least(version: &str, floor: (u64, u64, u64)) -> bool {
+pub(crate) fn at_least(version: &str, floor: (u64, u64, u64)) -> bool {
     let mut parts = version.trim().split('.');
     let mut next = || parts.next().and_then(|p| p.trim().parse::<u64>().ok());
     match (next(), next(), next()) {

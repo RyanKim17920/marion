@@ -43,10 +43,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
-    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
-    ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, BootSignal, Constraint,
+    Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume,
+    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -326,6 +327,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     axes: AxesRule::Hook,
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured through the `-p` surface. s24 drove it to a tool call and back and
+    // watched `session.error` and a denied call, none of which is one of the ten; `--resume`,
+    // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
+    // is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
+    advertised: Advertised::NONE,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).

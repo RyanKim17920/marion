@@ -37,9 +37,9 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Field,
-    HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, McpServers, ModelForm, Modes,
-    Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
+    Field, HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, McpServers, ModelForm,
+    Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 
@@ -177,6 +177,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured beyond what the row compiles: `--conversation` is the row's resume
+    // grammar (s32), not this table's supervisor-driven `resume`. `false` is "not measured".
+    advertised: Advertised::NONE,
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).

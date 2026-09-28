@@ -52,10 +52,10 @@ use crate::auth::Auth;
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly,
-    Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push,
+    ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -285,6 +285,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured through the `-p` surface beyond what the row compiles. S25 drove
+    // `--resume <session_id>` to a second turn that replayed the first — which is the row's
+    // `resume` grammar, not this table's `resume` capability, whose meaning §3.3 keys on a
+    // supervisor-driven surface no LaunchOnly row has. `false` here is "not measured".
+    advertised: Advertised::NONE,
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,

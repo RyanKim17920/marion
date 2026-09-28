@@ -11,6 +11,7 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::Value;
 
 use crate::adapter::{HarnessAdapter, Row};
+use crate::caps::Capabilities;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, InFlight, ModelName, Name, OnRefusedReport,
     Pairing, RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule,
@@ -22,10 +23,10 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
-    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, MidTurn, ModelForm,
-    Push, ReadOnly, Readiness, Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries,
+    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
+    MidTurn, ModelForm, Push, ReadOnly, Readiness, Relocation, Remembers, Resume, Spelling,
+    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 
@@ -376,6 +377,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         marker: "a headless node's prompt is written after launch, so the bridge readiness marker \
                  is required: without it the first turn goes out with tools: [] and nothing \
                  anywhere reports an error",
+    },
+    // S9 measured a real `can_use_tool` round-trip: a permission request from a headless
+    // `claude -p` reaches marion and is answered (§9's M1 criterion-7 ledger, item 14).
+    // S1 and S11 measured the interrupt protocol, S11 byte-for-byte over a real pty.
+    advertised: Advertised {
+        always: Capabilities {
+            interrupt: true,
+            permissions: true,
+            ..Capabilities::NONE
+        },
+        from_version: &[],
     },
 };
 

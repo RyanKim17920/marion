@@ -33,6 +33,7 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
+use crate::caps::Capabilities;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -40,9 +41,9 @@ use crate::grammar::{
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need, Push,
-    ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries,
+    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need,
+    Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
     ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
 
@@ -228,6 +229,17 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     axes: AxesRule::OneList { refuse_empty: None },
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // S34 item 12 measured `--mode rpc`'s steer (folded into the running turn) and abort (the
+    // turn ends `aborted`, the process stays up). `--session <id>` is the row's `resume`
+    // grammar, not this table's capability.
+    advertised: Advertised {
+        always: Capabilities {
+            steer: true,
+            interrupt: true,
+            ..Capabilities::NONE
+        },
+        from_version: &[],
+    },
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).

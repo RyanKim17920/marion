@@ -14,7 +14,6 @@ crates/marion-core/src/agent_type.rs:acp_command  tracked: generalization wave B
 crates/marion-supervisor/src/doctor.rs:probe  tracked: generalization wave B1–B8 (doctor ACP special case)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
-crates/marion-harness/src/caps.rs:advertised  untracked: per-harness capability table outside the rows; move each arm onto its row
 crates/marion-harness/src/spec.rs:Push::argv  untracked: `Push::ClaudeChannel` strategy is named for one harness; rename it for its mechanism
 crates/marion-supervisor/src/bridge.rs:initialize_result  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename
 crates/marion-supervisor/src/bridge.rs:push_frame  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename

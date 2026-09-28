@@ -54,9 +54,9 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly,
-    Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push,
+    ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
     TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
@@ -247,6 +247,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     axes: AxesRule::Split,
     model: ModelForm::AsGiven,
     readiness: Readiness::Ungated,
+    // Nothing measured through the `--json` surface. S27 drove it to a tool call and back and
+    // watched `isError`, a provider 500 and `--auto-approve false`, none of which is one of the
+    // ten; `--id` exists and exits 1 headless, so `resume` is measured *absent* rather than
+    // unmeasured, and the answer is the same `false`.
+    advertised: Advertised::NONE,
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).

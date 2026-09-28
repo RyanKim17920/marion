@@ -18,6 +18,7 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
+use crate::caps::Capabilities;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -26,10 +27,10 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
-    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push,
-    ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Advertised, Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint,
+    Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
+    ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -304,6 +305,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // it was before `-m` was known to exist here.
     model: ModelForm::OmitUnderCanned,
     readiness: Readiness::Ungated,
+    // §9: "`codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is exactly
+    // `continue_()` + `prompt()`". That is a claim about the *binary*; the surface it is asked
+    // for on is what decides whether it is publishable, and on `codex exec --json` it is not.
+    advertised: Advertised {
+        always: Capabilities::NONE,
+        from_version: &[(
+            Capabilities {
+                resume: true,
+                ..Capabilities::NONE
+            },
+            (0, 146, 0),
+        )],
+    },
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).

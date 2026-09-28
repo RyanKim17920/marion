@@ -166,6 +166,33 @@ pub struct HarnessSpec {
     pub model: ModelForm,
     /// Whether the first turn waits on the bridge's readiness marker (§6.1 step 8).
     pub readiness: Readiness,
+    /// What the harness's software claims before any surface clips it
+    /// ([`crate::caps::advertised`]): every `true` names its measurement in the row.
+    pub advertised: Advertised,
+}
+
+/// **The capabilities a row's binary claims**, keyed by version: what every version measured
+/// has, and what arrived from a version on. Nothing is claimed before the first measured version,
+/// and an unreadable version gets only `always`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Advertised {
+    pub always: crate::caps::Capabilities,
+    pub from_version: &'static [(crate::caps::Capabilities, (u64, u64, u64))],
+}
+
+impl Advertised {
+    pub const NONE: Advertised = Advertised {
+        always: crate::caps::Capabilities::NONE,
+        from_version: &[],
+    };
+
+    /// The claim at `version`.
+    pub fn at(self, version: &str) -> crate::caps::Capabilities {
+        self.from_version
+            .iter()
+            .filter(|(_, since)| crate::caps::at_least(version, *since))
+            .fold(self.always, |caps, (more, _)| caps.join(*more))
+    }
 }
 
 /// **Whether a node's first turn is withheld until its bridge has answered `tools/list`.**
