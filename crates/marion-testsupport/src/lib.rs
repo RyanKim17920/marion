@@ -1692,6 +1692,32 @@ pub fn judge(contracts: &[PersistedContract]) -> Vec<(&Path, &Value)> {
         .collect()
 }
 
+/// **The one contract marion persisted for `task_id`**, walked, judged and parsed — the
+/// **uncapped** copy (`cap_for_return` applies to the returned one only), and so the only candidate
+/// for a durable record of work a reaped worktree no longer holds.
+///
+/// For a caller with nothing left to clean up, so the walk and the judgement happen together here
+/// rather than at a point the caller chooses (see [`persisted_contracts`] for when that matters).
+/// The walk's error is a panic for the same reason it is propagated there: a state dir that will
+/// not enumerate would otherwise report "no contract", and every claim a caller makes about what
+/// did or did not survive would be made against a file it simply failed to look at. Exactly one
+/// match is required, so a contract written twice fails rather than being read at random.
+pub fn persisted_contract(state: &Path, task_id: &str) -> marion_core::contract::TaskContract {
+    let walked = persisted_contracts(state)
+        .unwrap_or_else(|e| panic!("{} does not enumerate: {e}", state.display()));
+    let wanted = format!("{task_id}.json");
+    let found: Vec<(&Path, &Value)> = judge(&walked)
+        .into_iter()
+        .filter(|(p, _)| p.file_name().is_some_and(|f| f == wanted.as_str()))
+        .collect();
+    let [(path, value)] = found.as_slice() else {
+        let paths: Vec<&Path> = found.iter().map(|(p, _)| *p).collect();
+        panic!("expected exactly one persisted contract for {task_id}, found {paths:?}");
+    };
+    serde_json::from_value((*value).clone())
+        .unwrap_or_else(|e| panic!("{} does not parse as a contract: {e}", path.display()))
+}
+
 /// Does any string anywhere in `v` contain `needle`?
 ///
 /// The same whole-body scan the CannedServer uses to decide a request's role (`marion_provider`'s

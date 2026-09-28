@@ -32,8 +32,7 @@ use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::run::{Caller, Env, MAX_VERIFICATION_BYTES, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
-use marion_testsupport::{fixture_repo, harness_available, judge, persisted_contracts, scratch};
-use serde_json::Value;
+use marion_testsupport::{fixture_repo, harness_available, persisted_contract, scratch};
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the worktree and reported back without committing.";
@@ -110,23 +109,6 @@ fn spawn_one(fx: &Fixture, task_id: &str, verification: &[&str]) -> TaskContract
     );
     run_spawn(&fx.env, &req, &TaskId(task_id.into()), &caller)
         .unwrap_or_else(|e| panic!("the child runs: {e}"))
-}
-
-/// The contract marion wrote to disk — the uncapped copy.
-fn persisted_contract(state: &Path, task_id: &str) -> TaskContract {
-    let walked = persisted_contracts(state)
-        .unwrap_or_else(|e| panic!("{} does not enumerate: {e}", state.display()));
-    let wanted = format!("{task_id}.json");
-    let found: Vec<(&Path, &Value)> = judge(&walked)
-        .into_iter()
-        .filter(|(p, _)| p.file_name().is_some_and(|f| f == wanted.as_str()))
-        .collect();
-    let [(path, value)] = found.as_slice() else {
-        let paths: Vec<&Path> = found.iter().map(|(p, _)| *p).collect();
-        panic!("expected exactly one persisted contract for {task_id}, found {paths:?}");
-    };
-    serde_json::from_value((*value).clone())
-        .unwrap_or_else(|e| panic!("{} does not parse as a contract: {e}", path.display()))
 }
 
 fn worktree_of(c: &TaskContract) -> PathBuf {

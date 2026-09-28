@@ -47,8 +47,7 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
-use marion_testsupport::{fixture_repo, git, judge, on_path, persisted_contracts, scratch};
-use serde_json::Value;
+use marion_testsupport::{fixture_repo, git, on_path, persisted_contract, scratch};
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the worktree and reported back without committing.";
@@ -150,28 +149,6 @@ fn spawn_in(
         marion_core::agent_type::builtin("claude").expect("the root type resolves"),
     );
     run_spawn(&fx.env, &req, &TaskId(task_id.into()), &caller).map_err(|e| e.to_string())
-}
-
-/// The contract marion wrote to disk — the **uncapped** copy (`cap_for_return` applies to the
-/// returned one only), and so the only candidate for a durable record of work the worktree no
-/// longer holds.
-/// The `expect` on the walk is the shared helper's now, and it is the same decision: a state dir
-/// that will not enumerate would otherwise report "no contract", and every claim below about what
-/// did or did not survive would be made against a file this test simply failed to look at.
-fn persisted_contract(state: &Path, task_id: &str) -> TaskContract {
-    let walked = persisted_contracts(state)
-        .unwrap_or_else(|e| panic!("{} does not enumerate: {e}", state.display()));
-    let wanted = format!("{task_id}.json");
-    let found: Vec<(&Path, &Value)> = judge(&walked)
-        .into_iter()
-        .filter(|(p, _)| p.file_name().is_some_and(|f| f == wanted.as_str()))
-        .collect();
-    let [(path, value)] = found.as_slice() else {
-        let paths: Vec<&Path> = found.iter().map(|(p, _)| *p).collect();
-        panic!("expected exactly one persisted contract for {task_id}, found {paths:?}");
-    };
-    serde_json::from_value((*value).clone())
-        .unwrap_or_else(|e| panic!("{} does not parse as a contract: {e}", path.display()))
 }
 
 /// How long to keep looking for a record that is missing on the first read.
