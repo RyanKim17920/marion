@@ -1,0 +1,41 @@
+# Throwaway (dry-run branch only): exercise the publish jobs' missing-token path and run the
+# Linux binaries and shell installer built by the Release dry run.
+name: Release dry-run check
+on: pull_request
+permissions:
+  contents: read
+  actions: read
+jobs:
+  homebrew:
+    uses: ./.github/workflows/publish-homebrew.yml
+    with:
+      plan: '{"releases":[]}'
+    secrets: inherit
+  npm:
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      plan: '{"releases":[]}'
+    secrets: inherit
+  linux-binaries:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh run download 36381548167 -R "$GITHUB_REPOSITORY" -D art
+      - run: |
+          set -eux
+          mkdir -p srv
+          find art -name 'marion-supervisor-*' -type f -exec cp {} srv/ \;
+          ls -la srv
+          for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            tar -xJf "srv/marion-supervisor-$t.tar.xz"
+            "./marion-supervisor-$t/marion" --version
+            "./marion-supervisor-$t/marion-supervisor" --version
+            file "./marion-supervisor-$t/marion"
+          done
+          (cd srv && sha256sum -c marion-supervisor-x86_64-unknown-linux-gnu.tar.xz.sha256)
+          (cd srv && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 1
+          MARION_SUPERVISOR_DOWNLOAD_URL=http://127.0.0.1:8765 MARION_SUPERVISOR_INSTALL_DIR="$RUNNER_TEMP/prefix" MARION_SUPERVISOR_NO_MODIFY_PATH=1 sh srv/marion-supervisor-installer.sh
+          "$RUNNER_TEMP/prefix/bin/marion" --version
+          "$RUNNER_TEMP/prefix/bin/marion-supervisor" --version
