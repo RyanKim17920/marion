@@ -236,3 +236,15 @@ impl Client {
         r.outcome
     }
 }
+
+/// §9's *"contiguous across the detached window"*, as an assertion rather than a hope.
+///
+/// Legitimate here in a way §4.2 forbids generally — that section refuses inferred ordering across
+/// *sources* — because these are one file's own ordinals, assigned by that file's single writer and
+/// read by one cursor. A gap means an event was dropped between the file and the client; a repeat
+/// means the replay and the subscribe legs overlapped, which is the seam §7.3.3 is about.
+pub fn assert_contiguous_from(seqs: &[u64], first: u64, what: &str) {
+    assert!(!seqs.is_empty(), "{what}: nothing arrived");
+    let want: Vec<u64> = (first..first + seqs.len() as u64).collect();
+    assert_eq!(seqs, want.as_slice(), "{what}: not contiguous, or repeated");
+}
