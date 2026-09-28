@@ -92,11 +92,20 @@ impl crate::inbox::DeliveryPort for Wake {
     }
 }
 
-/// What the shutdown produced.
-pub(crate) struct Finish {
+/// What a driven session leaves behind, in the three fields every marion child path returns.
+#[derive(Debug)]
+pub struct RpcRun {
+    /// Every frame the server wrote, one per line, verbatim and in arrival order — including lines
+    /// that are not JSON, because the row's reader is given what the server wrote and decides for
+    /// itself. This is the string the adapter's reader consumes.
     pub stdout: String,
     pub stderr: String,
+    /// **Deliberately not the turn's verdict.** A stdio server is shut down by marion once the
+    /// session settles, so this describes marion's shutdown; what describes the turn is the frames
+    /// ([`turn_exit`] is the node's exit).
     pub exit: ChildExit,
+    /// A pipe was still open when the drain bound expired, so the capture is a prefix (§6.7:
+    /// recorded, never silent).
     pub capture_truncated: bool,
 }
 
@@ -311,7 +320,7 @@ impl<'a, P: Peer> Driver<'a, P> {
     ///
     /// `marion_cut_it_short` is the caller's own statement that the session did not finish — what
     /// §6.7 calls an attributed kill, not something read off a signal number.
-    pub fn finish(&mut self, marion_cut_it_short: bool) -> (Finish, usize) {
+    pub fn finish(&mut self, marion_cut_it_short: bool) -> (RpcRun, usize) {
         self.stdin.take();
         if matches!(self.child.try_wait(), Ok(None)) {
             unsafe { kill(self.pid, SIGINT) };
@@ -374,7 +383,7 @@ impl<'a, P: Peer> Driver<'a, P> {
             }
         };
         (
-            Finish {
+            RpcRun {
                 stdout: collected.join("\n"),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit,
@@ -386,7 +395,7 @@ impl<'a, P: Peer> Driver<'a, P> {
 
     /// Shut down and build a refusal out of what the server left behind. Its stderr is the only
     /// thing an operator can act on when the frames say nothing, so no error path may skip it.
-    pub fn refuse<E>(&mut self, make: impl FnOnce(Finish, usize) -> E) -> E {
+    pub fn refuse<E>(&mut self, make: impl FnOnce(RpcRun, usize) -> E) -> E {
         let (end, frames) = self.finish(true);
         make(end, frames)
     }

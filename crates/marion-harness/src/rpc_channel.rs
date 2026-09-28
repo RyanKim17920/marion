@@ -80,6 +80,8 @@ pub struct Turns {
     pub answered: &'static [&'static str],
     /// Frames that start a process for a turn — what marion kills itself after an interrupt.
     pub process: &'static [Cond],
+    /// Frames that end one, naming the same pid.
+    pub process_ended: &'static [Cond],
     /// The process's pid, in such a frame.
     pub pid: &'static str,
 }
@@ -262,6 +264,13 @@ impl RpcChannel {
     /// The pid of a process `frame` says a turn started.
     pub fn process_of(&self, frame: &Value) -> Option<i32> {
         frame_matches(frame, self.turns.process)
+            .then(|| text_at(frame, self.turns.pid)?.parse().ok())
+            .flatten()
+    }
+
+    /// The pid of a process `frame` says has ended.
+    pub fn process_ended(&self, frame: &Value) -> Option<i32> {
+        frame_matches(frame, self.turns.process_ended)
             .then(|| text_at(frame, self.turns.pid)?.parse().ok())
             .flatten()
     }

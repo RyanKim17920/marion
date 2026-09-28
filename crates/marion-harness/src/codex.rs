@@ -592,6 +592,10 @@ pub const APP: RpcChannel = RpcChannel {
             Cond::Eq("/method", "item/started"),
             Cond::Eq("/params/item/type", "commandExecution"),
         ],
+        process_ended: &[
+            Cond::Eq("/method", "item/completed"),
+            Cond::Eq("/params/item/type", "commandExecution"),
+        ],
         pid: "/params/item/processId",
     },
     answers: &[
@@ -1786,6 +1790,11 @@ mod tests {
         );
         let pids: Vec<i32> = frames.iter().filter_map(|f| APP.process_of(f)).collect();
         assert!(pids.contains(&23220), "{pids:?}");
+        let ended: Vec<i32> = frames.iter().filter_map(|f| APP.process_ended(f)).collect();
+        assert!(
+            ended.contains(&23220),
+            "the command's completion names it: {ended:?}"
+        );
         let ready = s36("p3-mcp-readiness.jsonl");
         assert!(
             ready

@@ -20,6 +20,7 @@ pub mod acp_child;
 /// A bounded peek at what a running node has done — its last tool calls and words — read from its
 /// `events.jsonl` through its row's stream grammar.
 pub mod activity;
+pub mod app_server;
 pub mod attach;
 pub mod background;
 pub mod bridge;
@@ -125,7 +126,7 @@ pub mod registry;
 pub mod restart;
 pub mod review;
 pub mod root;
-pub(crate) mod rpc;
+pub mod rpc;
 pub mod run;
 /// The serve loop over §2's socket: NDJSON framing, dispatch, and §7.3.1's rule that a dropped
 /// socket is not a quit.

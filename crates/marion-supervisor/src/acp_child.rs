@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use marion_harness::{AgentHandshake, ChildExit, Invocation, acp};
+use marion_harness::{AgentHandshake, Invocation, acp};
 
 use crate::rpc::{Peer, clip};
 
@@ -107,22 +107,8 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// write megabytes.
 const STDERR_EXCERPT: usize = 2000;
 
-/// What a driven ACP turn leaves behind, in the three fields every marion child path returns.
-#[derive(Debug)]
-pub struct AcpRun {
-    /// Every frame the agent wrote, one per line, verbatim and in arrival order — including lines
-    /// that are not JSON, because `acp::parse_stream` is given what the agent wrote and decides for
-    /// itself. This is the string the adapter's reader consumes.
-    pub stdout: String,
-    pub stderr: String,
-    /// **Deliberately not the turn's verdict.** `acp::parse_stream` ignores it, and this driver is
-    /// the reason it can: an ACP agent is a long-lived stdio server that marion kills, so this
-    /// describes marion's shutdown. What describes the turn is `stopReason` and the frames.
-    pub exit: ChildExit,
-    /// A pipe was still open when the drain bound expired, so the capture is a prefix (§6.7:
-    /// recorded, never silent).
-    pub capture_truncated: bool,
-}
+/// What a driven ACP turn leaves behind: the shared driver's run.
+pub use crate::rpc::RpcRun as AcpRun;
 
 /// One ACP turn, as plain data.
 pub struct AcpChildSpec<'a> {
@@ -368,13 +354,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         spec.turns.as_ref(),
     )?;
 
-    let (end, _) = agent.finish(!answered);
-    Ok(AcpRun {
-        stdout: end.stdout,
-        stderr: end.stderr,
-        exit: end.exit,
-        capture_truncated: end.capture_truncated,
-    })
+    Ok(agent.finish(!answered).0)
 }
 
 /// §3.3's stage two: `initialize`, and the narrowed capabilities it answers with.
