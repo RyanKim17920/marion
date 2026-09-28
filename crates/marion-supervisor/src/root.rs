@@ -832,7 +832,7 @@ pub fn prepare_watched(
         bridge_args: vec!["mcp".into()],
     };
     let written = crate::run::write_config_documents(adapter.config_files(&launch, &ctx)?)?;
-    let mut invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;
+    let invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;
 
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
     // of a file. Every branch here is a refusal except the two that positively found the
@@ -850,23 +850,6 @@ pub fn prepare_watched(
         .mcp_route(&launch)
         .verify(&written, &invocation, session.as_ref())
         .map_err(|route| RootError::NoMcpDeclaration { harness, route })?;
-    // **`Inherited` skips this too, and that is the whole of live mode on this path.** The adapter
-    // already withheld the three env vars it compiles; a push here would put two of them straight
-    // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
-    // that is supposed to be using it.
-    // Read off the launch, not the spec: an endpoint root's type or model named a provider, its
-    // key is already compiled, and the per-run token pushed here would replace it.
-    if path == RootPath::Duplex && launch.auth == Auth::Canned {
-        // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
-        // silently wins (§6.4), so it is set to empty rather than left inherited.
-        invocation
-            .env
-            .push(("ANTHROPIC_AUTH_TOKEN".into(), token.expose().to_string()));
-        invocation
-            .env
-            .push(("ANTHROPIC_API_KEY".into(), String::new()));
-    }
-
     // §6.1 step 7, first half, for a **root**: *"journal the spawn intent, start the process,
     // journal confirmation."* Written here, at the end of `prepare`, because this is the last
     // instant at which everything immutable about the node is known and **no process exists yet**:
@@ -1129,11 +1112,10 @@ fn root_launch_spec(
         // name, rather than starting fresh under the resumed session's id.
         resume: spec.resume.as_ref().map(|r| r.session.clone()),
         base_url: spec.base_url.clone(),
-        // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
-        // onto the invocation below. On the other three it is **not** an env var marion can push
-        // after the fact — gemini wants `GEMINI_API_KEY`, opencode wants it *inside* the generated
-        // config — so it goes through the neutral field and each adapter puts it where that harness
-        // reads it.
+        // The per-run token, through the neutral field on every path: it is **not** an env var
+        // marion can push after the fact — claude wants `ANTHROPIC_AUTH_TOKEN` beside a blanked
+        // `ANTHROPIC_API_KEY`, gemini `GEMINI_API_KEY`, opencode a key *inside* the generated
+        // config — so each row puts it where that harness reads it, and no caller knows which.
         //
         // Under `Inherited` there is no credential to place at all, on any path: the node is meant
         // to present the login the operator already has, and a placeholder beside it would be a
@@ -1141,11 +1123,10 @@ fn root_launch_spec(
         api_key: match (spec.auth, path) {
             // On ACP, under a canned provider the credential travels in the agent's own config
             // document (S23), never in this field.
-            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex | RootPath::Acp) => None,
-            // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
-            // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
-            // — so there is nothing for the post-`compile` push below to do.
-            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.clone()),
+            (Auth::Inherited, _) | (Auth::Canned, RootPath::Acp) => None,
+            (Auth::Canned, RootPath::Duplex | RootPath::LaunchOnly | RootPath::Terminal) => {
+                Some(token.clone())
+            }
             // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
             (Auth::Endpoint, _) => None,
         },
@@ -4553,11 +4534,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// §9: the root's credential never leaks past the harness that reads it. Claude Code takes it
-    /// as `ANTHROPIC_AUTH_TOKEN` pushed onto the invocation; the other three take it through the
-    /// adapter, which puts it where that harness looks — so pushing the Anthropic pair onto *them*
-    /// would present the root's token to a harness that ignores it and, worse, would be a second
-    /// place the same decision is made.
+    /// §9: the root's credential never leaks past the harness that reads it. Every harness takes
+    /// it through its row, which puts it where that harness looks — Claude Code's as
+    /// `ANTHROPIC_AUTH_TOKEN` — so the Anthropic pair on any other root would present the token to
+    /// a harness that ignores it.
     #[test]
     fn only_the_duplex_root_carries_the_anthropic_env_pair() {
         let dir = temp("token");
@@ -4585,11 +4565,10 @@ mod tests {
 
     /// **The other end of `--live`, asserted on a root marion actually prepared.**
     ///
-    /// The adapter withholds the three env vars it compiles; `prepare` must also skip the *post*-
-    /// `compile` push of `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, which is a second place the
-    /// same decision is made and therefore the one that drifts. Blanking `ANTHROPIC_API_KEY` on a
-    /// live node is the specific harm: it is set to `""` under `Canned` precisely so a real key
-    /// cannot silently win, which is exactly the wrong thing to do to a node meant to use it.
+    /// The row withholds the three env vars it compiles, and `prepare` hands it no token to place.
+    /// Blanking `ANTHROPIC_API_KEY` on a live node is the specific harm: it is set to `""` under
+    /// `Canned` precisely so a real key cannot silently win, which is exactly the wrong thing to do
+    /// to a node meant to use it.
     ///
     /// Only `claude` is swept: it is the only harness part 1 makes live, and the other three refuse
     /// under `Inherited` because their generated configs require a base URL there is none of.
@@ -4686,7 +4665,7 @@ mod tests {
     }
 
     /// **A prepared root never debug-prints its run token** — neither the field that holds it nor
-    /// the compiled environment it is pushed into as `ANTHROPIC_AUTH_TOKEN`. A `RootNode` is what a
+    /// the compiled environment it reaches as `ANTHROPIC_AUTH_TOKEN`. A `RootNode` is what a
     /// launch failure has in hand, so its `{:?}` is the one most likely to reach an error.
     #[test]
     fn a_prepared_roots_debug_form_carries_no_run_token() {
@@ -4698,7 +4677,7 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "ANTHROPIC_AUTH_TOKEN")
             .map(|(_, v)| v.clone())
-            .expect("the token is still pushed where the harness reads it");
+            .expect("the token still reaches the variable the harness reads");
         assert!(token.starts_with("marion-run-"), "{}", token.len());
         let printed = format!("{node:?} {node:#?}");
         assert!(!printed.contains(&token), "{printed}");
@@ -4706,8 +4685,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The canned root is untouched by the axis existing — the pair is still pushed, and it is still
-    /// only pushed on the duplex path.
+    /// The canned root is untouched by the axis existing — the pair is still compiled.
     #[test]
     fn a_canned_root_still_carries_the_pair_exactly_where_it_always_did() {
         let dir = temp("canned-auth");

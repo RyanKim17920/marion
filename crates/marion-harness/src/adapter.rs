@@ -202,9 +202,9 @@ pub struct LaunchSpec {
     ///
     /// Neutral because two harnesses need it in incompatible places and neither can be patched up
     /// afterwards: gemini takes it as `GEMINI_API_KEY` in the child's env, while opencode wants it
-    /// **inside the generated config** at `provider.<id>.options.apiKey` — so the root's
-    /// post-`compile` push of `ANTHROPIC_AUTH_TOKEN` (`marion-supervisor::root`) is not a pattern
-    /// that generalises. `None` on the canned-provider path, which authenticates nothing.
+    /// **inside the generated config** at `provider.<id>.options.apiKey` — so no caller pushes a
+    /// credential variable after `compile`; each row places this. `None` where the node presents
+    /// no marion-supplied credential.
     pub api_key: Option<marion_core::secret::Secret>,
     /// Whether this node presents a credential marion minted, or the operator's own login.
     ///

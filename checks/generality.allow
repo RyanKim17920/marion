@@ -26,7 +26,6 @@ crates/marion-core/src/agent_type.rs:FileRow::into_type  tracked: generalization
 crates/marion-core/src/agent_type.rs:acp_command  tracked: generalization wave B1–B8 (agent_type ACP checks: `acp:` prefix parse)
 crates/marion-supervisor/src/doctor.rs:probe  tracked: generalization wave B1–B8 (doctor ACP special case)
 crates/marion-supervisor/src/mcp.rs:tool_spawn  tracked: generalization wave B1–B8 ("codex-impl" default agent type)
-crates/marion-supervisor/src/root.rs:prepare_watched  tracked: generalization wave B1–B8 (root pushes ANTHROPIC_* env instead of asking the row)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
 crates/marion-harness/src/caps.rs:advertised  untracked: per-harness capability table outside the rows; move each arm onto its row
