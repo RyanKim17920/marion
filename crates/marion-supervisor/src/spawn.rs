@@ -1233,6 +1233,11 @@ pub struct ChildOutcome {
     pub signal: Option<i32>,
     pub timed_out: bool,
     pub stderr: String,
+    /// **The last turn's final words, when that turn did not report** — the model's last text
+    /// in it, read the row's way. `None` when the last turn reported (or wrote no text). The
+    /// contract states it as marion's synthesis, never as the child's report
+    /// (`narrative_synthesized`, §7.6 step 5).
+    pub unreported_tail: Option<String>,
 }
 
 impl ChildOutcome {
@@ -1247,9 +1252,13 @@ impl ChildOutcome {
             signal: exit.signal,
             timed_out: exit.timed_out,
             stderr,
+            unreported_tail: None,
         }
     }
 }
+
+/// How a synthesized narrative introduces a child's final words after its own earlier report.
+const LATER_UNREPORTED: &str = "marion: a later turn did not report; its final message was:";
 
 /// Assemble the contract at the child's terminal transition.
 #[allow(clippy::too_many_arguments)]
@@ -1364,14 +1373,26 @@ pub fn build_contract(
     } else {
         (status, description)
     };
+    // **The child's own report, or marion's words from its last turn, and the flag says which**
+    // (§7.6 step 5). A last turn that did not report is on the record either way — after an
+    // earlier report its final message follows it, and alone it is the narrative — but the
+    // status above never read it.
+    let (narrative, narrative_synthesized) = match (
+        outcome.narrative.as_deref(),
+        outcome.unreported_tail.as_deref(),
+    ) {
+        (Some(n), Some(tail)) => (Some(format!("{n}\n\n{LATER_UNREPORTED} {tail}")), true),
+        (None, Some(tail)) => (Some(tail.to_string()), true),
+        (n, None) => (n.map(str::to_string), false),
+    };
     let completion = Completion {
         status,
         died_before_gate: false,
         reported_early: false,
         held_to_timeout: false,
         live_descendants_at_report: vec![],
-        narrative: outcome.narrative.as_deref().map(Capped::whole),
-        narrative_synthesized: false,
+        narrative: narrative.as_deref().map(Capped::whole),
+        narrative_synthesized,
         // **The child's, not marion's.** §6.7 calls this the one field the child owns outright, and
         // it was hardcoded empty here — so a child that committed its work and reported the oids
         // had them dropped in transit, and the contract then asserted it had committed nothing.
@@ -2059,6 +2080,60 @@ mod tests {
                 .description
                 .ends_with("; stderr: why it stopped")
         );
+    }
+
+    /// **A narrative marion wrote says so** (`narrative_synthesized`). A child whose last turn did
+    /// not report gets its final words on the record, marked as marion's: after an earlier
+    /// report they follow it, and the status stays that report's; with no report at all they are
+    /// the whole narrative, and the status stays `Unreported` — a final message is never
+    /// promoted to an answer.
+    #[test]
+    fn a_last_turn_that_did_not_report_leaves_a_synthesized_narrative() {
+        let reported_then_quiet = verified_contract(
+            ChildOutcome {
+                narrative: Some("raised on empty input".into()),
+                unreported_tail: Some("Now returns 0.0 on empty input.".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        let comp = reported_then_quiet.completion.unwrap();
+        assert_eq!(comp.status, ExitStatus::Ok);
+        assert!(comp.narrative_synthesized);
+        let n = comp.narrative.unwrap().value;
+        assert!(
+            n.starts_with("raised on empty input")
+                && n.ends_with("Now returns 0.0 on empty input."),
+            "{n}"
+        );
+        assert!(n.contains("did not report"), "{n}");
+
+        let never = verified_contract(
+            ChildOutcome {
+                unreported_tail: Some("I think I am done.".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        let comp = never.completion.unwrap();
+        assert_eq!(comp.status, ExitStatus::Unreported, "never promoted");
+        assert!(comp.narrative_synthesized);
+        assert_eq!(comp.narrative.unwrap().value, "I think I am done.");
+
+        let own = verified_contract(
+            ChildOutcome {
+                narrative: Some("did it".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            vec![],
+        );
+        assert!(!own.completion.unwrap().narrative_synthesized);
     }
 
     /// `git` for a unit test's scratch repository, panicking with git's own words on failure.

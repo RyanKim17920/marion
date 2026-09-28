@@ -189,28 +189,22 @@ fn take_or_seal(turns: &Turns, deadline: Instant) -> Option<Message> {
 
 /// **The node's outcome after one more generation.** The last generation's process facts (exit,
 /// signal, timeout, the stream's failure claim) are the node's; the **report** is the last one any
-/// generation made, since a steered turn that says nothing more has not withdrawn it. Paths the
-/// harness announced accumulate, and each generation's stderr is kept in order.
+/// generation made, since a steered turn that says nothing more has not withdrawn it — and a
+/// last generation that said nothing more leaves its final words ([`ChildOutcome::
+/// unreported_tail`]) for the contract to state as marion's. The commits every generation reported
+/// accumulate, as do the paths the harness announced, and each generation's stderr is kept in
+/// order.
 pub(crate) fn fold(earlier: ChildOutcome, later: ChildOutcome) -> ChildOutcome {
     let reported = later.narrative.is_some();
-    let mut file_change_paths = earlier.file_change_paths;
-    for p in later.file_change_paths {
-        if !file_change_paths.contains(&p) {
-            file_change_paths.push(p);
-        }
-    }
     ChildOutcome {
         narrative: if reported {
             later.narrative
         } else {
             earlier.narrative
         },
-        result_commits: if reported {
-            later.result_commits
-        } else {
-            earlier.result_commits
-        },
-        file_change_paths,
+        result_commits: union(earlier.result_commits, later.result_commits),
+        file_change_paths: union(earlier.file_change_paths, later.file_change_paths),
+        unreported_tail: later.unreported_tail,
         failure: later.failure,
         exit_code: later.exit_code,
         signal: later.signal,
@@ -223,11 +217,21 @@ pub(crate) fn fold(earlier: ChildOutcome, later: ChildOutcome) -> ChildOutcome {
     }
 }
 
+/// `earlier`, then each of `later` it does not already hold, in order.
+fn union<T: PartialEq>(mut earlier: Vec<T>, later: Vec<T>) -> Vec<T> {
+    for x in later {
+        if !earlier.contains(&x) {
+            earlier.push(x);
+        }
+    }
+    earlier
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::inbox::{BoundInbox, Inboxes, Source};
-    use marion_core::contract::AgentId;
+    use marion_core::contract::{AgentId, Oid};
     use marion_core::journal::RecordKind;
     use marion_harness::spec::TurnDelivery;
     use std::sync::{Arc, Mutex};
@@ -560,5 +564,44 @@ mod tests {
             ..ChildOutcome::default()
         };
         assert_eq!(fold(first, again).narrative.as_deref(), Some("second"));
+    }
+
+    /// **Every generation's commits, and the last generation's silence.** A live codex child
+    /// reported and committed on its first generation, took a steer as its second, committed
+    /// again and did not report: its contract listed only the first commit and read as if the
+    /// steer never happened. The commits accumulate, and a last generation that did not report
+    /// leaves its final words for the contract to say so; one that did clears them.
+    #[test]
+    fn the_folded_outcome_keeps_every_generations_commits_and_the_last_ones_silence() {
+        let first = ChildOutcome {
+            narrative: Some("raised on empty input".into()),
+            result_commits: vec![Oid("aaeb4c9".into())],
+            ..ChildOutcome::default()
+        };
+        let steered = ChildOutcome {
+            result_commits: vec![],
+            unreported_tail: Some("Now returns 0.0 on empty input; committed.".into()),
+            ..ChildOutcome::default()
+        };
+        let f = fold(first, steered);
+        assert_eq!(f.narrative.as_deref(), Some("raised on empty input"));
+        assert_eq!(f.result_commits, vec![Oid("aaeb4c9".into())]);
+        assert_eq!(
+            f.unreported_tail.as_deref(),
+            Some("Now returns 0.0 on empty input; committed.")
+        );
+        let reported = ChildOutcome {
+            narrative: Some("returns 0.0 on empty input".into()),
+            result_commits: vec![Oid("e298c55".into()), Oid("aaeb4c9".into())],
+            ..ChildOutcome::default()
+        };
+        let f = fold(f, reported);
+        assert_eq!(f.narrative.as_deref(), Some("returns 0.0 on empty input"));
+        assert_eq!(
+            f.result_commits,
+            vec![Oid("aaeb4c9".into()), Oid("e298c55".into())],
+            "every generation's, each once, oldest first"
+        );
+        assert_eq!(f.unreported_tail, None, "the last generation reported");
     }
 }
