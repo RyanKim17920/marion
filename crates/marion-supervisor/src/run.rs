@@ -883,8 +883,22 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
 /// A timed-out, failed or refused probe is `"unknown"`, never an error: the version is a field in
 /// an audit record, and losing a whole node's contract because a version string did not arrive
 /// would trade a large truth for a small one.
+///
+/// **Read once per binary, not once per spawn** ([`VersionCache`]): a fan-out of twenty children
+/// of one harness used to fork twenty `--version` probes of the same unchanged file.
 pub(crate) fn harness_version(program: &str, harness: marion_core::harness::Harness) -> String {
-    probe_version(program, harness).unwrap_or_else(|| "unknown".into())
+    let identity = BinaryIdentity::of(program);
+    if let Some(version) = identity
+        .as_ref()
+        .and_then(|id| VERSION_CACHE.get(id, harness))
+    {
+        return version;
+    }
+    let version = probe_version(program, harness);
+    if let (Some(id), Some(v)) = (identity, &version) {
+        VERSION_CACHE.put(id, harness, v.clone());
+    }
+    version.unwrap_or_else(|| "unknown".into())
 }
 
 /// One bounded `--version` probe, uncached: the version line, or `None` for anything else.
@@ -907,6 +921,75 @@ pub(crate) fn version_probe(
     harness: marion_core::harness::Harness,
 ) -> Result<marion_harness::probe::VersionProbe, marion_harness::probe::ProbeError> {
     marion_harness::probe::version_probe(marion_harness::adapter::harness_spec(harness), program)
+}
+
+/// Which file a program names, and which *contents* of it: a binary replaced on disk is a
+/// different identity, so its version is read again.
+///
+/// The canonical path (symlinks resolved, so an installer's `current` link moving to a new release
+/// is a new path) plus the file's inode, size, mtime and ctime. mtime alone is not enough: npm
+/// extracts every package file with the same fixed mtime, so two releases' same-sized entry
+/// scripts would collide; a replaced file has a new inode, and any write moves ctime, which no
+/// installer can set back.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BinaryIdentity {
+    path: std::path::PathBuf,
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl BinaryIdentity {
+    /// Resolved the way the probe will resolve it — through this process's `PATH` for a bare
+    /// name. `None` where the program cannot be found; such a probe runs uncached.
+    fn of(program: &str) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let path = crate::doctor::which(program)?;
+        let m = std::fs::metadata(&path).ok()?;
+        Some(Self {
+            path,
+            dev: m.dev(),
+            ino: m.ino(),
+            size: m.size(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+/// The process-wide cache behind [`harness_version`]: one entry per `(path, harness)`, holding
+/// the identity it was read at. Keyed by path and harness rather than by the whole identity so a
+/// replaced binary **overwrites** its entry — the map is bounded by the distinct harness programs
+/// this process has run, never by how often they changed. The harness is in the key because the
+/// probe itself is the row's: the same file probed as two harnesses runs two different commands.
+///
+/// Only a version actually read is stored. A timeout or a failed exit is re-probed next time, so
+/// a binary that was slow once under load is not recorded as `"unknown"` for the process's life.
+/// The lock is never held across a probe; two concurrent first spawns may both probe, and agree.
+static VERSION_CACHE: VersionCache = VersionCache(std::sync::LazyLock::new(Default::default));
+
+type VersionKey = (std::path::PathBuf, marion_core::harness::Harness);
+
+struct VersionCache(
+    std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<VersionKey, (BinaryIdentity, String)>>,
+    >,
+);
+
+impl VersionCache {
+    fn get(&self, id: &BinaryIdentity, harness: marion_core::harness::Harness) -> Option<String> {
+        let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(&(id.path.clone(), harness))
+            .filter(|(seen, _)| seen == id)
+            .map(|(_, version)| version.clone())
+    }
+
+    fn put(&self, id: BinaryIdentity, harness: marion_core::harness::Harness, version: String) {
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert((id.path.clone(), harness), (id, version));
+    }
 }
 
 /// The line of a `--version` output that names the version: the first non-blank one, trimmed.
@@ -3364,6 +3447,77 @@ mod tests {
             version_fake::probes(&dir).is_empty(),
             "the binary never ran"
         );
+    }
+
+    /// **One probe per binary, until the binary changes.** Two spawns of the same unchanged file
+    /// fork `--version` once; touching it (mtime) or rewriting it (inode, ctime) probes again.
+    #[test]
+    fn the_version_is_read_once_per_binary_and_again_when_it_changes() {
+        let dir = scratch("vprobe-cache");
+        let fake = version_fake::write(&dir, "claude", "1.0.0", &[]);
+        let program = fake.to_str().unwrap();
+        let h = Harness::ClaudeCode;
+        assert_eq!(harness_version(program, h), "1.0.0");
+        assert_eq!(harness_version(program, h), "1.0.0");
+        assert_eq!(
+            version_fake::probes(&dir).len(),
+            1,
+            "the second spawn used the cache"
+        );
+
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&fake)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(harness_version(program, h), "1.0.0");
+        assert_eq!(
+            version_fake::probes(&dir).len(),
+            2,
+            "a touched binary is read again"
+        );
+
+        let tmp = version_fake::write(&dir, "claude.new", "2.0.0", &[]);
+        std::fs::rename(&tmp, &fake).unwrap();
+        assert_eq!(
+            harness_version(program, h),
+            "2.0.0",
+            "a replaced binary's new version"
+        );
+        assert_eq!(harness_version(program, h), "2.0.0");
+        assert_eq!(
+            version_fake::probes(&dir).len(),
+            3,
+            "read once after the replacement"
+        );
+
+        let other = Harness::Codex;
+        assert_eq!(harness_version(program, other), "2.0.0");
+        assert_eq!(
+            version_fake::probes(&dir).len(),
+            4,
+            "the same file probed as another harness runs that row's probe"
+        );
+    }
+
+    /// A probe that fails is not cached: the next spawn asks again.
+    #[test]
+    fn a_failed_probe_is_asked_again() {
+        let dir = scratch("vprobe-fail");
+        let fake = dir.join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho probe >> \"$(dirname \"$0\")/probes.log\"\nexit 3\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let program = fake.to_str().unwrap();
+        assert_eq!(harness_version(program, Harness::ClaudeCode), "unknown");
+        assert_eq!(harness_version(program, Harness::ClaudeCode), "unknown");
+        assert_eq!(version_fake::probes(&dir).len(), 2);
     }
 
     #[test]
