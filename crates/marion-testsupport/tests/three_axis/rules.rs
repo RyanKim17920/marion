@@ -331,6 +331,9 @@ fn a_type_named_for_how_a_secret_travels_is_not_a_secret() {
             .is_empty()
     );
     assert!(rules("#[derive(Debug)] struct NodeToken(String);").contains(&"secret-debug"));
+    // Exempt by exact name only: another `…Carrier` that holds its secret is still one.
+    assert!(rules("#[derive(Debug)] struct TokenCarrierBox(String);").contains(&"secret-debug"));
+    assert!(rules("#[derive(Debug)] struct KeyCarrier(String);").contains(&"secret-debug"));
 }
 
 #[test]

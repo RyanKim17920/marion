@@ -56,11 +56,13 @@ const SECRET_IDENTS: &[&str] = &[
 /// Methods that hand out a secret's plaintext: formatting their result is exposure by definition.
 const EXPOSING_METHODS: &[&str] = &["expose", "expose_secret", "reveal"];
 
-/// A type named `CredentialId`, `TokenKind` or `KeyError` names *about* a secret, not one; nor
-/// does `TokenCarrier`, which names how a secret travels.
-const NON_SECRET_TAIL_WORDS: &[&str] = &[
-    "Id", "Error", "Kind", "Name", "Label", "Ref", "Source", "Carrier", "Carriers",
-];
+/// A type named `CredentialId`, `TokenKind` or `KeyError` names *about* a secret, not one.
+const NON_SECRET_TAIL_WORDS: &[&str] = &["Id", "Error", "Kind", "Name", "Label", "Ref", "Source"];
+
+/// Types named for how a secret travels, exempt **by exact name**: `TokenCarrier` states which
+/// channel a row's node token rides and holds no token. A tail word would exempt any
+/// `…Carrier`, including one that holds the secret it carries.
+const NON_SECRET_TYPES: &[&str] = &["TokenCarrier", "TokenCarriers"];
 const SECRET_SUFFIXES: &[&str] = &["_api_key", "_apikey", "_token", "_secret", "_password"];
 
 /// A value read through one of these is not the secret itself.
@@ -156,6 +158,9 @@ fn camel_words(name: &str) -> Vec<String> {
 }
 
 fn is_secret_type_name(name: &str) -> bool {
+    if NON_SECRET_TYPES.contains(&name) {
+        return false;
+    }
     let words = camel_words(name);
     words
         .iter()
