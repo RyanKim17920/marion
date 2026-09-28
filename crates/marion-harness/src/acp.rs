@@ -49,7 +49,9 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
-use crate::grammar::{Cond, UsageFold, UsageRule, Where};
+use crate::grammar::{
+    ActivityRule, Cond, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
+};
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
     MidTurn, Push, Spelling, Surfaces, TurnDelivery, UpdatePolicy,
@@ -1224,6 +1226,67 @@ pub const USAGE: UsageRule = UsageRule {
     reasoning: None,
     input_includes_cache: false,
     fold: UsageFold::Sum,
+};
+
+/// Where an ACP session is named: the `session/new` **response**'s `result.sessionId` — the id
+/// `session/load` takes back (S21 captured it on `opencode acp`, `ses_…`). A `session/load`
+/// answer carries none, since the id was the request's, so a resumed node is never journaled a
+/// second, different session. Protocol-wide, like [`USAGE`]: no agent refines where its id sits.
+pub const SESSION: SessionId = SessionId {
+    at: Where {
+        frame: &[Cond::Has("/result/sessionId")],
+        each: None,
+        unit: &[],
+    },
+    path: "/result/sessionId",
+    // A resume is a `session/load` of the journaled id, whose answer names no session at all, so
+    // there is no first session unit to check against it.
+    resumes_in_place: false,
+};
+
+/// What an ACP node has been doing, read off the protocol's own `session/update` notifications:
+/// a `tool_call`, and the `tool_call_update`s after it, name the tool in `title` and its input in
+/// `rawInput` under one `toolCallId`; `agent_message_chunk` streams the model's words one delta at
+/// a time. opencode's first `tool_call` is `pending` with `rawInput: {}` and the `in_progress`
+/// update carries the input (s21), where codex-acp's first sighting already does (s22) — so both
+/// frame kinds are units, and the reader keeps a call's last non-empty arguments.
+pub const ACTIVITY: ActivityRule = ActivityRule {
+    calls: &[
+        ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/params/update/sessionUpdate", "tool_call")],
+                each: None,
+                unit: &[],
+            },
+            name: "/params/update/title",
+            args: "/params/update/rawInput",
+            id: Some("/params/update/toolCallId"),
+            shape: crate::grammar::CallShape::Tool,
+        },
+        ToolUnit {
+            at: Where {
+                frame: &[Cond::Eq("/params/update/sessionUpdate", "tool_call_update")],
+                each: None,
+                unit: &[],
+            },
+            name: "/params/update/title",
+            args: "/params/update/rawInput",
+            id: Some("/params/update/toolCallId"),
+            shape: crate::grammar::CallShape::Tool,
+        },
+    ],
+    text: &[TextUnit {
+        at: Where {
+            frame: &[Cond::Eq(
+                "/params/update/sessionUpdate",
+                "agent_message_chunk",
+            )],
+            each: None,
+            unit: &[],
+        },
+        path: "/params/update/content/text",
+        joins: true,
+    }],
 };
 
 /// `session/prompt`. One text block: §8's micro-contract asserts a *response shape*.

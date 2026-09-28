@@ -20,7 +20,10 @@
 //!    when the *original* bound runs out, so the node ends `TimedOut` inside its one bound.
 //!
 //! 5. **A `LaunchOnly` root is continued the same way**: a `marion run codex` root that
-//!    backgrounds a codex child is relaunched with the child's end as its second generation.
+//!    backgrounds a codex child is relaunched with the child's end as its second generation — and
+//!    so is a `marion run opencode` root, over `opencode run --session`.
+//! 6. **A steer into a running `opencode run` node** is taken at its first generation's stop and
+//!    carried by a second, `--session` over the store the first left in the node's directory.
 //!
 //! Cells 1 and 2 run per [`Row`], the child's harness as data, so a second `LaunchOnly` row with a
 //! resume grammar is a second `Row` value. pi had one until its row moved to `--mode rpc`, where a
@@ -34,7 +37,8 @@
 //! cargo test -p marion-supervisor --test continuation
 //! ```
 //!
-//! It needs a real `codex` on `PATH`. Every model call is the canned server's: no paid tokens.
+//! It needs a real `codex` and `opencode` on `PATH`. Every model call is the canned server's: no paid
+//! tokens.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -840,12 +844,38 @@ const ROOT_TOOK_THE_END: &str = "Took my child's end as my second turn.";
 /// second generation, and only then ends the run.
 #[test]
 fn a_codex_roots_background_childs_end_is_its_second_generation() {
-    assert!(
-        on_path("codex"),
-        "this test drives a REAL codex root; put `codex` ({}) on PATH",
-        pinned_version("codex")
+    a_launch_only_roots_background_childs_end_is_its_second_generation(
+        "codex",
+        "spawn",
+        "call_continuation_root",
     );
-    let dir = scratch("continuation-root");
+}
+
+/// **The same on an `opencode run` root** (s36): the root's second generation is `opencode run
+/// --session <ses_…>` over the store its first left in its own directory, carrying the codex
+/// child's end — an opencode parent that spawned codex, with the push arriving.
+#[test]
+fn an_opencode_roots_background_codex_childs_end_is_its_second_generation() {
+    a_launch_only_roots_background_childs_end_is_its_second_generation(
+        "opencode",
+        "marion_spawn",
+        "call_continuation_oc_root",
+    );
+}
+
+fn a_launch_only_roots_background_childs_end_is_its_second_generation(
+    root: &str,
+    spawn_tool: &str,
+    root_prefix: &str,
+) {
+    for program in [root, "codex"] {
+        assert!(
+            on_path(program),
+            "this test drives a REAL {program}; put `{program}` ({}) on PATH",
+            pinned_version(program)
+        );
+    }
+    let dir = scratch(&format!("continuation-root-{root}"));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -873,9 +903,9 @@ fn a_codex_roots_background_childs_end_is_its_second_generation() {
                 },
                 NodeScript {
                     marker: ROOT_PUSH_MARKER.into(),
-                    call_prefix: "call_continuation_root".into(),
+                    call_prefix: root_prefix.into(),
                     turns: vec![ScriptedCall::new(
-                        "spawn",
+                        spawn_tool,
                         json!({
                             "agent_type": "codex-impl",
                             "prompt": format!("{ROOT_CHILD_MARKER}: report at once"),
@@ -897,7 +927,7 @@ fn a_codex_roots_background_childs_end_is_its_second_generation() {
         std::process::Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "codex",
+                root,
                 "--prompt",
                 &format!("{ROOT_PUSH_MARKER}: background a child, then stop."),
                 "--repo",
@@ -930,7 +960,7 @@ fn a_codex_roots_background_childs_end_is_its_second_generation() {
     let thread = root
         .harness_session
         .clone()
-        .expect("codex named its thread");
+        .expect("the root's harness named its session");
     let pushed = requests_carrying(&reqlog, PUSH_MARKER);
     assert!(
         !pushed.is_empty(),
@@ -939,10 +969,146 @@ fn a_codex_roots_background_childs_end_is_its_second_generation() {
     assert!(
         pushed
             .iter()
-            .all(|r| r["body"].to_string().contains("call_continuation_root_00")),
+            .all(|r| r["body"].to_string().contains(&format!("{root_prefix}_00"))),
         "on thread {thread}, replaying the first generation's turn"
     );
     let delivered = deliveries(&journal, &root.agent_id);
     assert_eq!(delivered.len(), 1, "{delivered:#?}");
     assert_eq!(delivered[0].1, "continuation:gen2");
+}
+
+// ---- a steer into a running `opencode run` node (s36) -------------------------------------------
+
+const OC_MARKER: &str = "MARION-CONTINUATION-OC-NODE-6a1e";
+const OC_STEER_MARKER: &str = "MARION-CONTINUATION-OC-STEER-6a1e";
+const OC_CALL_PREFIX: &str = "call_continuation_oc_node";
+
+/// Holds the provider's answer to the opencode node's first turn until the test has steered it, so
+/// the steer is queued while the node's first generation is running.
+#[derive(Debug, Default)]
+struct FirstTurnHold {
+    parked: std::sync::atomic::AtomicBool,
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl marion_provider::Hold for FirstTurnHold {
+    fn wait_for(&self, wire: Option<&str>, body: &Value) {
+        let text = body.to_string();
+        if wire != Some("openai") || !text.contains(OC_MARKER) || text.contains(OC_CALL_PREFIX) {
+            return;
+        }
+        self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+    }
+}
+
+/// **A steer into a running `opencode run` node is its second generation.** `opencode run` takes
+/// one turn from argv and exits, like `codex exec`; its row's `TurnDelivery::Continuation` relaunches
+/// the same node as `opencode run --session <ses_…>` over the session store its first generation
+/// left in its own directory, with the rendered steer as the prompt. The steer is written while the
+/// first generation's first request is held, so it is queued mid-run and taken at the stop; the
+/// provider then sees the first generation's call replayed beside it, and the message is
+/// delivered once, `continuation:gen2`.
+#[test]
+fn a_steer_into_a_running_opencode_node_is_its_second_generation() {
+    assert!(
+        on_path("opencode"),
+        "this test drives a REAL opencode node; put `opencode` ({}) on PATH",
+        pinned_version("opencode")
+    );
+    let dir = scratch("continuation-oc-steer");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let reqlog = dir.join("provider-requests.jsonl");
+    let hold = std::sync::Arc::new(FirstTurnHold::default());
+    let server = CannedServer::start_held(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: reqlog.clone(),
+            script: Script {
+                nodes: vec![
+                    NodeScript {
+                        marker: OC_STEER_MARKER.into(),
+                        call_prefix: "call_continuation_oc_steer".into(),
+                        turns: vec![],
+                        final_text: "Took the steer as my second turn.".into(),
+                    },
+                    NodeScript {
+                        marker: OC_MARKER.into(),
+                        call_prefix: OC_CALL_PREFIX.into(),
+                        turns: vec![ScriptedCall::new("marion_list", json!({}))],
+                        final_text: "Listed the tree.".into(),
+                    },
+                ],
+                ..Script::default()
+            },
+        },
+        Some(std::sync::Arc::clone(&hold) as std::sync::Arc<dyn marion_provider::Hold>),
+    )
+    .expect("the canned provider binds");
+    let key = project_root(&repo);
+    let journal = ProjectDir::new(&state, &key).journal();
+    let mut sup = common::Supervisor::start(
+        &state,
+        &key,
+        &std::env::var("PATH").unwrap_or_default(),
+        &server.base_url(),
+        IDLE_GRACE,
+    );
+    let node = spawn_over_socket(
+        &sup,
+        &state,
+        None,
+        AgentSpawnParams {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..params(
+                "opencode",
+                format!("{OC_MARKER}: list the tree."),
+                Some(&repo),
+                CHILD_TIMEOUT_SECS,
+            )
+        },
+    );
+    let id = node.agent_id.clone();
+    let parked = Instant::now() + BOUND;
+    while !hold.parked.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            Instant::now() < parked,
+            "the node's first request was never held"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let text = format!("{OC_STEER_MARKER}: also say what you found");
+    let message_id = steer(&sup, &id, text);
+    *hold.released.lock().unwrap() = true;
+    hold.wake.notify_all();
+    wait_for(&journal, "the node's Exited", |j| is_exited(j, &id));
+
+    let replayed = tree(&journal).get(&id).cloned().expect("the node");
+    assert_eq!(replayed.spawn_generation, 2, "{replayed:#?}");
+    let session = replayed
+        .harness_session
+        .clone()
+        .expect("opencode named its session");
+    assert!(session.starts_with("ses_"), "{session}");
+    let steered = requests_carrying(&reqlog, OC_STEER_MARKER);
+    assert!(!steered.is_empty(), "generation two reached the provider");
+    assert!(
+        steered.iter().all(|r| r["body"]
+            .to_string()
+            .contains(&format!("{OC_CALL_PREFIX}_00"))),
+        "on session {session}, every generation-two request replays the first generation's call"
+    );
+    assert_eq!(
+        deliveries(&journal, &id),
+        vec![(message_id, "continuation:gen2".to_string())]
+    );
+    assert!(records_of(&journal, "MessageDropped", &id).is_empty());
+    sup.stop();
+    drop(server);
 }

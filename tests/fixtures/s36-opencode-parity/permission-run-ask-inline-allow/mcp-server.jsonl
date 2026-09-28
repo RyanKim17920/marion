@@ -1,0 +1,9 @@
+{"t": 1790539054.428139, "ev": "start"}
+{"t": 1790539054.458464, "ev": "recv", "method": "initialize"}
+{"t": 1790539062.475183, "ev": "sent", "method": "initialize"}
+{"t": 1790539062.516321, "ev": "recv", "method": "notifications/initialized"}
+{"t": 1790539062.516595, "ev": "recv", "method": "tools/list"}
+{"t": 1790539062.516758, "ev": "sent", "method": "tools/list"}
+{"t": 1790539065.4887428, "ev": "recv", "method": "tools/call"}
+{"t": 1790539065.4889789, "ev": "sent", "method": "tools/call"}
+{"t": 1790539065.584446, "ev": "recv", "method": "notifications/cancelled"}

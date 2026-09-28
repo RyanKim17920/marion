@@ -1,0 +1,3 @@
+config permission {"slow_report": "ask"}; opencode run, headless, calls slow_report
+tool_use slow_report status=error "The user rejected permission to use this specific tool call."; stderr "permission requested: slow_report (*); auto-rejecting"; exit 0
+FAIL: headless run auto-rejects an ask and still exits 0

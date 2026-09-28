@@ -557,6 +557,21 @@ pub trait HarnessAdapter {
         self.spec().stream?.usage.as_ref()
     }
 
+    /// The harness session `frame` names, if it is the frame that names one — read with the row's
+    /// [`grammar::StreamGrammar::session`] rule. `None` for every other frame and for a row with
+    /// no rule. The one question the supervisor's session watch asks, so no caller reads a row's
+    /// grammar for it directly.
+    fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
+        grammar::session_id(self.spec().stream?, frame)
+    }
+
+    /// The rule a running node's recent tool calls and words are read by — the row's
+    /// [`grammar::StreamGrammar::activity`] — or `None` where there is none, which a caller says
+    /// rather than showing an empty peek.
+    fn activity(&self) -> Option<&'static grammar::ActivityRule> {
+        self.spec().stream?.activity.as_ref()
+    }
+
     /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
     /// reading a **root** is judged by, since §9 gives a root no contract and §5.4 refuses its
     /// `report`. A row with no grammar reads as [`Self::parse_stream`] does.
@@ -1222,35 +1237,23 @@ const ENDPOINT_PROVIDER_BLOCK: &str = "marion";
 pub struct OpenCodeAdapter;
 
 impl OpenCodeAdapter {
-    /// The `provider/model` pair, which both argv and the generated config name. Parsed once so
-    /// they cannot disagree.
-    ///
-    /// `Ok(None)` only on a live node with no model: opencode then uses the operator's own default
-    /// model, as it uses their login. A canned node always needs one, because the provider block
-    /// marion generates names it.
+    /// The `provider/model` pair, which both argv and the generated config name — parsed once so
+    /// they cannot disagree — or, on a live node that names no model of its own, none: `-m` is
+    /// left off and opencode runs on the operator's configured default, as it uses their login
+    /// ([`opencode::requested_model`]). A canned or endpoint node always needs one, because the
+    /// provider block marion generates names it.
     fn model_ref(spec: &LaunchSpec) -> Result<Option<opencode::ModelRef>, HarnessError> {
-        if spec.model.is_none() && spec.auth == Auth::Inherited {
-            return Ok(None);
-        }
-        let m = spec.model.as_deref().ok_or(HarnessError::MissingInput {
-            harness: Harness::OpenCode,
-            what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
-                   so argv and the generated config are the only two channels",
-        })?;
-        // **The default is marion's own plumbing, and under `--live` that plumbing does not
-        // exist.** `marion/default` names the provider block `config_json` *generates*, pointed at
-        // marion's canned endpoint. A live node writes no provider block at all — deliberately, so
-        // as not to shadow the operator's real one — so `-m marion/default` would resolve nothing
-        // and S13 measured that as `Error: {"name":"UnknownError",…}` with exit 1. Refused by name
-        // instead: the operator has to say which of *their* providers a live node should use.
-        if spec.auth == Auth::Inherited && m == marion_core::agent_type::OPENCODE_DEFAULT_MODEL {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::OpenCode,
-                what: "the model `marion/default` is marion's canned test provider, which a run on \
-                       your own login does not use. Pass a provider/model from your opencode \
-                       config (-m provider/model), or pass none to use opencode's own default",
-            });
-        }
+        let Some(m) = opencode::requested_model(spec.auth, spec.model.as_deref()) else {
+            return match spec.auth {
+                Auth::Inherited => Ok(None),
+                Auth::Canned | Auth::Endpoint => Err(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "an explicit -m provider/model is mandatory: there is no \
+                           OPENCODE_MODEL env var, so argv and the generated provider block are \
+                           the only two channels",
+                }),
+            };
+        };
         // A real endpoint is asked for its model verbatim — OpenRouter's ids carry a slash of their
         // own — under a provider block of marion's name, which merges with none of opencode's
         // built-in providers.
@@ -1275,8 +1278,9 @@ impl HarnessAdapter for OpenCodeAdapter {
         Harness::OpenCode
     }
 
-    /// The `provider/model` pair (refused where it is not one, or is marion's own default on a
-    /// live node — [`Self::model_ref`]), the session title, and the live route's inline document.
+    /// The `provider/model` pair (refused where it is not one; none on a live node that names no
+    /// model of its own — [`Self::model_ref`]), the session title, and the live route's inline
+    /// document.
     ///
     /// **Under `Inherited` the declaration is compiled into the env, not written to a file.** S13:
     /// auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
@@ -2162,21 +2166,29 @@ impl HarnessAdapter for AcpAdapter {
         // it.
         f.resume = None;
         (f.extra_env, f.model) = match (spec.auth, binding.canned()) {
-            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
-            // `session/set_config_option` and refuses the run by name where the agent offers no
-            // such model, so recording it here names what ran.
-            (Auth::Inherited, _) => (Vec::new(), spec.model.clone()),
-            // opencode's own isolation rows, over the same binary: the relocations, the hygiene
-            // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
-            // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
-            (Auth::Canned | Auth::Endpoint, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+            // opencode's own rows, over the same binary, under **every** mode — they gate
+            // themselves on auth, exactly as they do for `opencode run`: canned and endpoint, the
+            // relocations, the hygiene and `PWD` (placement, not isolation — S13 measured a child
+            // re-entering `$PWD` whatever it was `chdir`'d to); live, the hygiene and `PWD` only, so the
+            // operator's own login and config stay where opencode finds them. The inline document
+            // is the ACP one ([`opencode::acp_session_document`]): the bridge rides `session/new`,
+            // and only its call timeout has to be carried beside it.
+            (_, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+                f.inline_config = Some(opencode::acp_session_document());
                 let mut env = spec::render_env(opencode::SPEC.env, &f);
                 // And opencode's no-self-update switch, which is that row's policy rather than one
                 // of its `Env` rows — the same binary, one subcommand over, updates itself the same
                 // way.
                 env.extend(opencode::SPEC.updates.env());
-                (env, spec.model.clone())
+                // And, live, no session model where only the type's plumbing default was given:
+                // the session keeps the operator's own.
+                let model = opencode::requested_model(spec.auth, spec.model.as_deref());
+                (env, model.map(str::to_string))
             }
+            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
+            // `session/set_config_option` and refuses the run by name where the agent offers no
+            // such model, so recording it here names what ran.
+            (Auth::Inherited, None) => (Vec::new(), spec.model.clone()),
             // **Refused by name, per agent — and this is the one thing the baseline cannot do.**
             // The protocol has no provider channel anywhere in its handshake, so a generic agent
             // has no canned recipe by construction, and most refinement rows have none measured
@@ -2403,6 +2415,18 @@ impl HarnessAdapter for AcpAdapter {
     /// whether or not one is bound: spend is a protocol fact, not an agent refinement.
     fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
         Some(&acp::USAGE)
+    }
+
+    /// The protocol's own `session/new` answer ([`acp::SESSION`]), whatever the agent: where a
+    /// session is named is a protocol fact, as spend is.
+    fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
+        grammar::session_in(&acp::SESSION, frame)
+    }
+
+    /// The protocol's `session/update` frames ([`acp::ACTIVITY`]), whatever the agent: every
+    /// agent names its calls and streams its words through the same updates.
+    fn activity(&self) -> Option<&'static grammar::ActivityRule> {
+        Some(&acp::ACTIVITY)
     }
 }
 
@@ -3234,7 +3258,9 @@ mod tests {
                 // the provider's `env_key` became `MARION_PROVIDER_KEY`.
                 "codex" => 1309,
                 "gemini" => 718,
-                "opencode" => 962,
+                // +27: `"timeout": 86400000` on marion's server; +47: the `permission` grant for
+                // marion's own tools (both s36).
+                "opencode" => 1036,
                 // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
                 "copilot" => 529,
                 _ => unreachable!(),
@@ -5710,45 +5736,12 @@ mod tests {
         );
     }
 
-    /// **A live opencode node with no model runs on the operator's own default.** marion passes no
-    /// `-m` rather than refusing, because the operator's opencode config already names one and
-    /// marion inherits the login and the choice together.
-    #[test]
-    fn a_live_opencode_node_with_no_model_passes_no_model_flag() {
-        let live = LaunchSpec {
-            model: None,
-            ..opencode_live_spec()
-        };
-        let inv = OpenCodeAdapter
-            .compile(&live, &ctx())
-            .expect("no model is the operator's default, not an error");
-        assert!(!inv.args.iter().any(|a| a == "-m"), "{:?}", inv.args);
-        // Canned still needs one: the generated provider block names it.
-        assert!(
-            OpenCodeAdapter
-                .compile(
-                    &LaunchSpec {
-                        model: None,
-                        ..opencode_spec()
-                    },
-                    &ctx()
-                )
-                .is_err()
-        );
-    }
-
     /// **The canned-default refusals speak to a person**: no spec sections, and no `--live` flag,
-    /// which no longer exists as a choice (real auth is the default).
+    /// which no longer exists as a choice (real auth is the default). opencode is not among them:
+    /// its plumbing default on a live node now runs the operator's own default model instead.
     #[test]
     fn the_live_canned_default_refusals_name_no_spec_section_and_no_live_flag() {
         let cases: Vec<(Box<dyn HarnessAdapter>, LaunchSpec)> = vec![
-            (
-                Box::new(OpenCodeAdapter),
-                LaunchSpec {
-                    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
-                    ..opencode_live_spec()
-                },
-            ),
             (
                 Box::new(CopilotAdapter),
                 LaunchSpec {
@@ -5802,48 +5795,97 @@ mod tests {
         }
     }
 
-    /// **`marion/default` names marion's own generated plumbing, and a live node generates none.**
-    /// It would resolve to no provider at all — S13 measured that as
-    /// `Error: {"name":"UnknownError",…}`, exit 1 — so it is refused by name at compile time
-    /// instead, with the refusal saying what to pass instead.
+    /// **A live node that names no model of its own runs on the operator's configured default**,
+    /// as a live claude or codex node does — `-m` is left off argv. `marion/default`, the type's
+    /// default, names marion's own generated plumbing, which a live node does not generate (S13
+    /// measured `-m marion/default` there as `Error: {"name":"UnknownError",…}`, exit 1), so it
+    /// counts as naming none. s36 measured `opencode run` with no `-m` taking the config's `model`
+    /// (`model-omitted/`). Canned is untouched: that default is what its provider block is for,
+    /// and a canned launch still names one.
     #[test]
-    fn the_canned_default_model_is_refused_under_live_rather_than_resolving_to_no_provider() {
-        let live = LaunchSpec {
-            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
-            ..opencode_live_spec()
-        };
-        let e = OpenCodeAdapter.compile(&live, &ctx()).unwrap_err();
-        assert!(
-            matches!(
-                &e,
-                HarnessError::MissingInput {
-                    harness: Harness::OpenCode,
-                    ..
-                }
-            ),
-            "{e}"
-        );
-        assert!(
-            e.to_string().contains("marion/default"),
-            "the refusal must name the problem: {e}"
-        );
-        // And it is a *live* refusal only — canned is what that default exists for.
+    fn a_live_node_that_names_no_model_of_its_own_runs_on_the_operators_default() {
+        for model in [
+            None,
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+        ] {
+            let live = LaunchSpec {
+                model: model.clone(),
+                ..opencode_live_spec()
+            };
+            let inv = OpenCodeAdapter
+                .compile(&live, &ctx())
+                .unwrap_or_else(|e| panic!("{model:?}: {e}"));
+            assert!(
+                !inv.args.iter().any(|a| a == "-m"),
+                "{model:?}: no -m, so the operator's own default model runs: {:?}",
+                inv.args
+            );
+            assert_eq!(
+                inv.model, None,
+                "{model:?}: the record names no model marion chose"
+            );
+        }
+        // A real provider/model is still passed, and still checked for its form.
+        let named = OpenCodeAdapter
+            .compile(&opencode_live_spec(), &ctx())
+            .unwrap();
+        assert!(named.args.windows(2).any(|w| w[0] == "-m"));
         assert!(
             OpenCodeAdapter
                 .compile(
                     &LaunchSpec {
-                        model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                        model: Some("no-slash".into()),
+                        ..opencode_live_spec()
+                    },
+                    &ctx()
+                )
+                .is_err()
+        );
+        // Canned: the default reaches argv and its provider block; no model at all is refused.
+        let canned = OpenCodeAdapter
+            .compile(
+                &LaunchSpec {
+                    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                    ..opencode_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        assert!(canned.args.iter().any(|a| a == "marion/default"));
+        assert!(
+            OpenCodeAdapter
+                .compile(
+                    &LaunchSpec {
+                        model: None,
                         ..opencode_spec()
                     },
                     &ctx()
                 )
-                .is_ok()
+                .is_err()
         );
-        // A real provider/model is accepted live.
-        assert!(
-            OpenCodeAdapter
-                .compile(&opencode_live_spec(), &ctx())
-                .is_ok()
+    }
+
+    /// The same for `opencode acp`: the type's plumbing default is not set on a live session, so
+    /// the session keeps the operator's own default rather than being refused as offering no
+    /// `marion/default`.
+    #[test]
+    fn a_live_opencode_acp_node_leaves_the_plumbing_default_off_its_session() {
+        let live = LaunchSpec {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..acp_spec()
+        };
+        assert_eq!(acp_adapter().compile(&live, &ctx()).unwrap().model, None);
+        let canned = LaunchSpec {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..canned_acp_spec()
+        };
+        assert_eq!(
+            acp_adapter()
+                .compile(&canned, &ctx())
+                .unwrap()
+                .model
+                .as_deref(),
+            Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL)
         );
     }
 
@@ -7538,6 +7580,66 @@ mod tests {
         }
     }
 
+    /// **An `opencode acp` node carries what an `opencode run` node carries, under both modes** —
+    /// the row's hygiene, its no-self-update switch and its placement, each gated by the row
+    /// itself, so a live node keeps the operator's `HOME` and `XDG_*` roots and loses only what
+    /// `--live` removes. And the MCP timeout: s36 measured `opencode acp` 1.18.32 abandoning a
+    /// `tools/call` to a `session/new`-declared server at 60 s, and completing a 75 s one once
+    /// `experimental.mcp_timeout` was set — the one channel that reaches a server the config does
+    /// not itself declare. It rides `OPENCODE_CONFIG_CONTENT`, which merges over whatever config
+    /// the node reads, and it shadows none of the operator's provider settings.
+    #[test]
+    fn an_opencode_acp_node_carries_the_run_rows_env_and_outlasts_the_sixty_second_call_limit() {
+        for (mode, spec) in [("live", acp_spec()), ("canned", canned_acp_spec())] {
+            let inv = acp_adapter().compile(&spec, &ctx()).unwrap();
+            let env: std::collections::BTreeMap<&str, &str> = inv
+                .env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            for (k, v) in [
+                ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+                ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+                ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
+                ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+                ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+                ("OPENCODE_DISABLE_SHARE", "1"),
+            ] {
+                assert_eq!(env.get(k).copied(), Some(v), "{mode}: {k} in {env:?}");
+            }
+            assert_eq!(
+                env.get("PWD").copied(),
+                Some(spec.cwd.to_string_lossy().as_ref()),
+                "{mode}: placement, not isolation"
+            );
+            let content: serde_json::Value = serde_json::from_str(
+                env.get(opencode::CONFIG_CONTENT_ENV)
+                    .unwrap_or_else(|| panic!("{mode}: no inline config in {env:?}")),
+            )
+            .unwrap();
+            assert_eq!(
+                content["experimental"]["mcp_timeout"],
+                serde_json::json!(opencode::MCP_TIMEOUT_MS),
+                "{mode}: a spawn or wait longer than 60 s would fail at opencode's side"
+            );
+            for shadowing in ["provider", "model", "small_model", "mcp"] {
+                assert!(content.get(shadowing).is_none(), "{mode}: {shadowing}");
+            }
+        }
+        let live = acp_adapter().compile(&acp_spec(), &ctx()).unwrap();
+        for relocation in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "OPENCODE_DISABLE_PROJECT_CONFIG",
+        ] {
+            assert!(
+                !live.env.iter().any(|(k, _)| k == relocation),
+                "live: {relocation} would hide the operator's login or config"
+            );
+        }
+    }
+
     /// The canned document's `model` key is **the only channel that reaches an ACP session**, so a
     /// canned launch without one is refused rather than run at whatever the agent defaults to.
     ///
@@ -7665,8 +7767,9 @@ mod tests {
              the run without), so the record names it while argv does not"
         );
         assert!(
-            inv.env.is_empty(),
-            "no credential and no overlay: {:?}",
+            !inv.env.iter().any(|(k, _)| is_credential_or_relocation(k)),
+            "no credential and no relocation — only the opencode row's hygiene, update switch, \
+             placement and call timeout: {:?}",
             inv.env
         );
         assert!(
@@ -9583,6 +9686,7 @@ mod tests {
 
     /// A resume is checked only where the row measured one naming its own session, and never on a
     /// fresh run: the same stream reads as a refusal only for the agy row asked to resume another id.
+    /// agy (s32) and opencode (S31 `p0b/opencode/db1`, `db2`) are the two rows that measured it.
     #[test]
     fn only_a_row_that_measured_an_in_place_resume_checks_one() {
         let fresh = r#"{"event":"init","conversation_id":"new-id","init":{}}"#;
@@ -9599,8 +9703,8 @@ mod tests {
                 .is_some_and(|s| s.resumes_in_place);
             assert_eq!(
                 checks,
-                h == Harness::Antigravity,
-                "{h}: measured on agy alone"
+                matches!(h, Harness::Antigravity | Harness::OpenCode),
+                "{h}: measured on agy and opencode alone"
             );
         }
     }
@@ -9719,7 +9823,7 @@ mod tests {
                 ("claude-code", "allowed-tools-arg"),
                 ("codex", "declaration-key"),
                 ("gemini", "declaration-key"),
-                ("opencode", "none"),
+                ("opencode", "declaration-key"),
                 ("copilot", "allowed-tools-arg"),
                 ("goose", "env-var"),
                 ("cline", "cli-flag"),

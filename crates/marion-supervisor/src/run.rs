@@ -1056,8 +1056,8 @@ fn launch_only_child(
     let mut cmd = inv.command();
     // **Recorded as it lands**, so a running child's `events.jsonl` already says what it has done
     // — `status`'s peek reads it — and a child killed on its wall clock has recorded everything it
-    // said before the kill. The capture this returns is still whole, and is not recorded again
-    // ([`record_capture_after_the_fact`] skips this path).
+    // said before the kill. The capture this returns is still whole, and is not recorded again:
+    // every child path records its lines live, so nothing is read back after the fact.
     // An endpoint node's key is scrubbed by the sink itself (`EventSink::scrub_key`), on this
     // live seam as on every other, before a line is kept.
     let stopped: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
@@ -1719,7 +1719,7 @@ pub fn run_spawn_watched(
     // `Option`, because a viewer may never fail a run: a node that cannot open its event file still
     // runs, and `EventReader::ever_written` is what later tells "nobody recorded this" from "it said
     // nothing" rather than presenting the first as the second.
-    let mut events = crate::events::EventSink::open(
+    let events = crate::events::EventSink::open(
         &agent_dir,
         &agent_id,
         adapter.harness(),
@@ -1930,19 +1930,29 @@ pub fn run_spawn_watched(
             //
             // The declaration is asked of the adapter here rather than rebuilt in the driver, so the
             // frame marion sends and the frame `McpRoute::Session` verified are the same object.
+            //
+            // **Recorded as it lands**, as the other two paths are: every line the agent writes
+            // reaches the child's `events.jsonl` while the turn runs (the sink scrubs an endpoint
+            // key), and the session watch reads the `sessionId` its `session/new` answered with —
+            // the id a resume's `session/load` hands back.
             LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
                 inv: &inv,
                 session_declaration: adapter.session_declaration(&launch, &ctx)?,
                 prompt: &req.prompt,
                 bound: attempt_bound,
                 on_started: &announce_started,
-                on_line: None,
+                on_line: Some(&|line: &str| {
+                    if let Some(es) = events.as_ref() {
+                        es.record_line(line);
+                    }
+                    session.observe_line(line);
+                }),
                 turns: feed(),
             })
             .map(|r| ChildRun {
                 stdout: r.stdout,
                 stderr: r.stderr,
-                exit: r.exit,
+                exit: crate::acp_child::turn_exit(r.exit),
                 capture_truncated: r.capture_truncated,
                 // ACP has a permission surface (`session/request_permission`) and marion answers it
                 // permissively in the driver, so nothing is denied on this path yet. An empty vector
@@ -2046,7 +2056,6 @@ pub fn run_spawn_watched(
     // marion end this on a kill?" can be asked and answered for good — see
     // [`SpawnObserver::process_ended`].
     let ended_by_kill = observer.process_ended(&agent_id);
-    record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
@@ -2191,7 +2200,6 @@ pub fn run_spawn_watched(
                 next.stdout = crate::endpoint::redact(&next.stdout, key.expose());
                 next.stderr = crate::endpoint::redact(&next.stderr, key.expose());
             }
-            record_capture_after_the_fact(path, events.as_mut(), &next.stdout);
             let mut later = ChildOutcome::from_stream(
                 adapter.parse_stream(&next.stdout, next.exit),
                 next.exit,
@@ -2729,29 +2737,6 @@ fn child_spawned_record(
         provider: endpoint.map(|e| e.provider.clone()),
         route: endpoint.map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
         credential: endpoint.map(|e| e.credential.to_string()),
-    }
-}
-
-/// **The after-the-fact half of §7.3.3's wiring: ACP, and only ACP.**
-///
-/// A `LaunchOnly` child has no channel *into* it, but its stdout is read line by line as it lands
-/// (`run_bounded_watched`'s `on_line`), and [`launch_only_child`] records each line there, live.
-/// The duplex path records live through its sink. Recording either again here would be the
-/// duplicate §7.3.3's seam is stated in ordinals to prevent.
-///
-/// ACP stays after the fact: the driver owns the frame loop for the whole turn and hands the
-/// transcript back at the end, so every event recovered from it is honestly
-/// `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact, which
-/// is why this branches on where the frames came from rather than on `has_typed_control_plane`.
-fn record_capture_after_the_fact(
-    path: LaunchPath,
-    events: Option<&mut crate::events::EventSink>,
-    stdout: &str,
-) {
-    if matches!(path, LaunchPath::Acp)
-        && let Some(es) = events
-    {
-        es.record_capture(stdout);
     }
 }
 

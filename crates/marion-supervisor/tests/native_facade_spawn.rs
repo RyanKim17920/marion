@@ -18,6 +18,9 @@
 //! harness exactly as it would for an operator who exported it in their shell. That is the
 //! operator's own channel, not a test-only production override: a native node is the operator's
 //! own login (§6.4) and marion places no provider on its argv or in its environment.
+//!
+//! The same hop runs from the shipped **`marion opencode`**: the operator's opencode config names
+//! the provider, and marion adds only its inline declaration.
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -29,8 +32,8 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::{AgentId, TaskContract};
 use marion_core::paths::ProjectDir;
-use marion_provider::script::ROOT_TOOL_USE_ID;
-use marion_provider::{CannedServer, Config, Script};
+use marion_provider::script::{ROOT_CALL_ID, ROOT_TOOL_USE_ID};
+use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::handler::RegistryHandle;
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
 use marion_supervisor::registry::{LiveRegistry, Registry};
@@ -43,7 +46,7 @@ use serde_json::{Value, json};
 mod common;
 use common::cast::cast_text;
 use common::client::Client;
-use common::mcp_result::{contract_json, tool_result_text};
+use common::mcp_result::{contract_json, mcp_blocks_text, tool_result_text};
 
 /// Every wait here is bounded by this and none is a verdict: a real claude turn, a real codex turn
 /// and a `git worktree add` all happen inside it.
@@ -418,4 +421,160 @@ fn a_native_root_delegates_a_child_through_marions_own_mcp_server() {
         "the native client was never reaped; journal: {:?}",
         bed.replayed_nodes()
     );
+}
+
+/// In the opencode root's prompt and nowhere else, so its requests are told from nothing else's:
+/// the child is codex, on the Responses wire.
+const OPENCODE_ROOT_MARKER: &str = "MARION-NATIVE-OPENCODE-ROOT-5d19";
+
+/// The text of the tool result an opencode root's `marion_spawn` came back as, off a Chat
+/// Completions request: the `tool` message quoting the root's call id, its content either the MCP
+/// envelope as a string or its blocks.
+fn openai_tool_result_text(request: &Value) -> Option<String> {
+    let content = &request
+        .pointer("/body/messages")?
+        .as_array()?
+        .iter()
+        .find(|m| m["role"] == "tool" && m["tool_call_id"] == ROOT_CALL_ID)?["content"];
+    match content {
+        Value::String(s) => match serde_json::from_str::<Value>(s) {
+            Ok(envelope) if envelope["content"].is_array() => mcp_blocks_text(&envelope["content"]),
+            _ => Some(s.clone()),
+        },
+        blocks @ Value::Array(_) => mcp_blocks_text(blocks),
+        _ => None,
+    }
+}
+
+/// **`marion opencode` delegates too** (s36): the operator's own opencode, started through the
+/// facade with nothing but marion's inline declaration added, calls `marion_spawn`, the supervisor
+/// authorizes it as the native root, and the codex child's contract comes back as the root's tool
+/// result. The operator's opencode config — the throwaway `HOME`/`XDG_*` this test hands the
+/// client, exactly where an operator's own lives — names the canned provider, so no tokens are
+/// spent; `run --format json` is the operator's own non-interactive tail, as `claude -p` is above.
+#[test]
+fn a_native_opencode_root_delegates_a_child_through_marions_own_mcp_server() {
+    for harness in ["opencode", "codex"] {
+        if !on_path(harness) {
+            eprintln!(
+                "SKIP: `{harness}` ({}) is not on PATH, so the native delegation hop did not run",
+                pinned_version(harness)
+            );
+            return;
+        }
+    }
+    let script = Script {
+        root: Some(RootScript {
+            marker: OPENCODE_ROOT_MARKER.into(),
+            turn: RootTurn {
+                tool: "marion_spawn".into(),
+                args: json!({
+                    "agent_type": "codex-impl",
+                    "prompt": "Add the marker file under src/ and report back.",
+                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
+                    "writable_scope": ["src/**"],
+                }),
+                final_text: "The child completed the task and reported back.".into(),
+            },
+        }),
+        ..Script::default()
+    };
+    let reqlog_dir = scratch("native-oc-spawn-provider");
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: reqlog_dir.join("provider-requests.jsonl"),
+        script,
+    })
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+    let bed = Bed::new("native-facade-oc-spawn", &base_url);
+
+    // The operator's own opencode home: a config that names the canned provider, where opencode
+    // reads its config from. Nothing marion writes; marion's declaration rides the environment.
+    let home = bed.state.join("operator-home");
+    let config_dir = home.join("config").join("opencode");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("opencode.json"),
+        json!({
+            "model": "canned/canned-1",
+            "small_model": "canned/canned-1",
+            "provider": {"canned": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "canned",
+                "options": {"baseURL": base_url, "apiKey": "canned"},
+                "models": {"canned-1": {"name": "canned-1", "tool_call": true}},
+            }},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let under = |d: &str| home.join(d).to_string_lossy().into_owned();
+    let (h, c, d, k, t) = (
+        home.to_string_lossy().into_owned(),
+        under("config"),
+        under("data"),
+        under("cache"),
+        under("state"),
+    );
+    let prompt = format!("{OPENCODE_ROOT_MARKER}: delegate the marker-file task to a child.");
+    let op = Operator::facade(
+        &bed,
+        "opencode",
+        &["run", "--format", "json", "--title", "t", &prompt],
+        &[
+            ("HOME", &h),
+            ("XDG_CONFIG_HOME", &c),
+            ("XDG_DATA_HOME", &d),
+            ("XDG_CACHE_HOME", &k),
+            ("XDG_STATE_HOME", &t),
+        ],
+    );
+    let root = bed.native_root();
+
+    let mut client = Client::dial(&bed.paths);
+    let mut child = None;
+    let delegated = until(|| {
+        child = client
+            .tree()
+            .into_iter()
+            .find(|n| n.parent_id.as_ref() == Some(&root));
+        child.is_some() || op.exited()
+    });
+    if child.is_none() {
+        let screen = cast_text(&op.cast, "o");
+        let nodes = bed.replayed_nodes();
+        let status = op.finish();
+        panic!(
+            "the native opencode root delegated nothing (delegated: {delegated}, exit: \
+             {status:?}). Its terminal:\n{screen}\njournal: {nodes:?}"
+        );
+    }
+    assert_eq!(child.expect("checked above").depth, 1);
+
+    assert!(
+        until(|| {
+            op.exited()
+                && server
+                    .requests()
+                    .is_ok_and(|rs| rs.iter().any(|r| openai_tool_result_text(r).is_some()))
+        }),
+        "the native opencode root's `marion_spawn` never came back as a tool result. journal: \
+         {:?}\noperator screen:\n{}",
+        bed.replayed_nodes(),
+        cast_text(&op.cast, "o")
+    );
+    let result_text = server
+        .requests()
+        .expect("the request log is readable")
+        .iter()
+        .find_map(openai_tool_result_text)
+        .expect("a request carries the spawn's tool result");
+    let contract: TaskContract =
+        serde_json::from_str(contract_json(&result_text)).unwrap_or_else(|e| {
+            panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+        });
+    assert_eq!(contract.requester, root, "the native root asked for it");
+    assert_eq!(contract.child.harness, marion_core::harness::Harness::Codex);
+    assert!(op.finish().is_some(), "the native client was reaped");
 }

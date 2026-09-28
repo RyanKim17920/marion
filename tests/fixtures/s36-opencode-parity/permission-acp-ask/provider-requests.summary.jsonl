@@ -1,0 +1,3 @@
+{"t": 1790542814.133785, "path": "/v1/chat/completions", "model": "canned-1", "tools": [], "stream_options": {"include_usage": true}, "roles": ["system", "user", "user"]}
+{"t": 1790542814.538452, "path": "/v1/chat/completions", "model": "canned-1", "tools": ["bash", "edit", "glob", "grep", "read", "skill", "slow_report", "task", "todowrite", "webfetch", "write"], "stream_options": {"include_usage": true}, "roles": ["system", "user"]}
+{"t": 1790542814.69841, "path": "/v1/chat/completions", "model": "canned-1", "tools": ["bash", "edit", "glob", "grep", "read", "skill", "slow_report", "task", "todowrite", "webfetch", "write"], "stream_options": {"include_usage": true}, "roles": ["system", "user", "assistant", "tool"]}

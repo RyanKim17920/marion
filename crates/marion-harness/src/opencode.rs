@@ -18,6 +18,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -227,11 +228,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
     push: Push::McpLog,
-    // opencode's default permission for an MCP tool is allow, measured; marion compiles nothing
-    // into `OPENCODE_PERMISSION`, which would narrow every node (S13).
-    approval: Approval::None {
-        note: "S13 on 1.17.3: with no `permission` entry for marion's tool the call runs; \
-               `ask` auto-rejects at exit 0, so marion states no permission at all",
+    // opencode's default permission for an MCP tool is allow (S13), but an operator's `"ask"`
+    // auto-rejects a headless call at exit 0 (s36), so marion's declaration grants its own tools —
+    // `marion_*` and nothing else, never `OPENCODE_PERMISSION`, which would narrow every tool.
+    approval: Approval::DeclarationKey {
+        key: APPROVAL_KEY,
+        note: "s36 on 1.18.32: config `permission: {\"slow_report\": \"ask\"}` auto-rejects the \
+               call headless at exit 0; an inline `permission: {\"slow_*\": \"allow\"}` merged \
+               over it lets it run",
     },
     client_name: None,
     delivery: Deliveries {
@@ -337,7 +341,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }],
     file_changes: None,
     // `sessionID` (`ses_` + 26 chars) is on **every** event (`s13/README.md`), so the first frame
-    // of any shape names the session `run --session` takes back.
+    // of any shape names the session `run --session` takes back — once the first response streams:
+    // nothing is printed while the first request is in flight (s36 `held-first/`). A resume keeps
+    // the id (S31 `p0b/opencode/db1`, `db2`: the same `sessionID` on every frame of both runs).
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Has("/sessionID")],
@@ -345,7 +351,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             unit: &[],
         },
         path: "/sessionID",
-        resumes_in_place: false,
+        resumes_in_place: true,
     }),
     // One `step_finish` per model step (`s13/README.md`), each that step's spend. **Measured
     // non-zero on 1.18.32** (`s36-opencode-parity/run-usage.stdout.jsonl`): a provider answer of
@@ -413,6 +419,19 @@ pub const PROVIDER_TIMEOUT_MS: u64 = 120_000;
 /// which is the knob a connection that never answers actually trips.
 pub const PROVIDER_HEADER_TIMEOUT_MS: u64 = 30_000;
 
+/// `mcp.<alias>.timeout`, ms: how long opencode waits on marion's server — for its `initialize`
+/// before the first model request, and for every `tools/call` after. One day.
+///
+/// Measured on 1.18.32 (`tests/fixtures/s36-opencode-parity/mcp-*`): unset, a `tools/call` is
+/// abandoned at **60 s** with `MCP error -32001: Request timed out`, and a server still starting at
+/// ~30 s is dropped — the first request goes out without its tools and nothing says so. marion's
+/// `spawn` (foreground) and `wait` block for a child's whole run, bounded by the child's own
+/// `timeout_secs` (default 900), so the default would fail every delegation longer than a minute.
+/// With the key set, a 45 s `initialize` and a 90 s call both completed, and a one-day value was
+/// honoured (JS timers wrap to immediate past `i32::MAX` ms, which this stays far below). The run
+/// itself is still bounded — by marion's own wall clock, not by this.
+pub const MCP_TIMEOUT_MS: u64 = 86_400_000;
+
 /// A `provider/model` pair, which is the only form `-m` accepts and the form the config `model`
 /// key repeats. Split once so the provider block and the argv can never name different providers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +458,19 @@ impl ModelRef {
     pub fn qualified(&self) -> String {
         format!("{}/{}", self.provider, self.model)
     }
+}
+
+/// The model a node asks opencode for — `run`'s `-m`, `acp`'s session model — or `None`, where it
+/// asks for none and opencode runs on its configured default (s36 `model-omitted/`: `run` with no
+/// `-m` sent the config's `model`).
+///
+/// The request, except that under [`Auth::Inherited`] **marion's own plumbing default names
+/// nothing**: [`agent_type::OPENCODE_DEFAULT_MODEL`] is the provider block marion generates for its
+/// canned endpoint, and a live node generates none (S13 measured `-m marion/default` there as
+/// `Error: {"name":"UnknownError",…}`, exit 1). So a live node given only its type's default runs
+/// on the operator's own default model — what a live claude or codex node does with no model.
+pub fn requested_model(auth: Auth, model: Option<&str>) -> Option<&str> {
+    model.filter(|m| !(auth == Auth::Inherited && *m == agent_type::OPENCODE_DEFAULT_MODEL))
 }
 
 /// `$XDG_CONFIG_HOME` — the only true config replacement (S13).
@@ -521,6 +553,7 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
 
     if let Some(b) = mcp {
         config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
+        config[APPROVAL_KEY] = approval_block();
     }
     config
 }
@@ -563,11 +596,27 @@ fn mcp_block(b: &BridgeEnv) -> Value {
         "command": command,
         "environment": b.env_json(),
         "enabled": true,
+        "timeout": MCP_TIMEOUT_MS,
     })
 }
 
+/// The `permission` key that approves marion's own tools — `marion_*`, opencode's spelling of
+/// them ([`SPEC`]'s `ServerUnderscoreTool`) — and nothing else ([`SPEC`]'s `approval`). Beside the
+/// `mcp` block on every route that declares it, so a headless node's calls are not auto-rejected
+/// by an operator's `"ask"`.
+pub const APPROVAL_KEY: &str = "permission";
+
+fn approval_block() -> Value {
+    let mut grant = serde_json::Map::new();
+    grant.insert(
+        ToolSpelling::ServerUnderscoreTool.spell("*"),
+        json!("allow"),
+    );
+    Value::Object(grant)
+}
+
 /// The document [`CONFIG_CONTENT_ENV`] carries on a live node: **marion's MCP declaration and
-/// nothing else**.
+/// the grant for its own tools, nothing else**.
 ///
 /// No `provider` block and no `small_model`, and both omissions are deliberate rather than
 /// minimalism. This text is *merged over* the operator's own config (S13), so a `provider` entry
@@ -579,8 +628,23 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
     let mut config = json!({});
     if let Some(b) = mcp {
         config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
+        config[APPROVAL_KEY] = approval_block();
     }
     config
+}
+
+/// The document [`CONFIG_CONTENT_ENV`] carries on an **`opencode acp`** node, under both modes:
+/// `experimental.mcp_timeout`, and nothing else.
+///
+/// Under ACP marion's server is declared in `session/new`, not in any `mcp.<name>` entry, so
+/// [`mcp_block`]'s per-server `timeout` cannot reach it; opencode falls back to
+/// `experimental.mcp_timeout` for such a server. s36 measured 1.18.32 abandoning a 75 s
+/// `tools/call` at 60 s without it and completing it with it (`mcp-acp-call-*`). The ~30 s
+/// `initialize` limit on a `session/new` server was **not** lifted by it. This is the one key
+/// marion sets over an operator's own config that reaches their other MCP servers too — as the
+/// fallback only, where they named no timeout of their own.
+pub fn acp_session_document() -> String {
+    json!({ "experimental": { "mcp_timeout": MCP_TIMEOUT_MS } }).to_string()
 }
 
 #[cfg(test)]
@@ -807,6 +871,55 @@ mod tests {
         assert_eq!(m["enabled"], json!(true));
     }
 
+    /// **marion's server is given a timeout that outlasts every blocking call marion makes.**
+    /// s36 measured opencode 1.18.32 abandoning a `tools/call` at 60 s (`MCP error -32001: Request
+    /// timed out`) — a foreground `spawn` or a `wait` blocks for the child's whole run — and
+    /// sending its first request **without** the server's tools once `initialize` had taken ~30 s.
+    /// The per-server `timeout` lifted both. Same block on every route: the canned document, the
+    /// live inline document, and so the native injection.
+    #[test]
+    fn marions_server_outlasts_the_sixty_second_call_and_thirty_second_startup_defaults() {
+        let live = live_config_json(Some(&bridge()));
+        for (route, v) in [
+            ("canned", config_json(&cfg(), Some(&bridge()))),
+            ("live", live),
+        ] {
+            assert_eq!(
+                v["mcp"]["marion"]["timeout"],
+                json!(MCP_TIMEOUT_MS),
+                "{route}: without it a spawn or wait longer than 60 s fails at opencode's side"
+            );
+        }
+        assert!(
+            MCP_TIMEOUT_MS >= 3600 * 1000 && MCP_TIMEOUT_MS < i32::MAX as u64,
+            "long enough for a child's whole bound, short of the JS timer's wrap to immediate"
+        );
+    }
+
+    /// **marion's own tools are approved by the declaration that names them**, as codex's
+    /// `default_tools_approval_mode` and gemini's `trust` are: an operator whose config says
+    /// `"ask"` would otherwise have every marion call of a headless node auto-rejected at exit 0
+    /// (s36 `permission-run-ask/`), and s36 measured an inline `permission` allow merged over the
+    /// config winning (`permission-run-ask-inline-allow/`). The grant names marion's tools by
+    /// opencode's own spelling and nothing else.
+    #[test]
+    fn the_declaration_approves_marions_own_tools_and_nothing_else() {
+        for (route, v) in [
+            ("canned", config_json(&cfg(), Some(&bridge()))),
+            ("live", live_config_json(Some(&bridge()))),
+        ] {
+            assert_eq!(
+                v["permission"],
+                json!({ "marion_*": "allow" }),
+                "{route}: without it an operator's `ask` refuses marion's verbs headless"
+            );
+        }
+        assert!(
+            config_json(&cfg(), None).get("permission").is_none(),
+            "no bridge, nothing to approve"
+        );
+    }
+
     #[test]
     fn the_bridge_declaration_carries_the_nodes_identity() {
         let mut b = bridge();
@@ -924,6 +1037,32 @@ mod tests {
         );
     }
 
+    /// **A resume continues the same session, so a stream naming another one is a fresh run.** S31
+    /// (`p0b/opencode/db1.jsonl`, `db2.jsonl`): the second `run --session <id>` printed the first
+    /// run's `sessionID` on every frame. So the row states `resumes_in_place`, and a resumed run
+    /// whose stream names a different session is refused as the fresh run it is.
+    #[test]
+    fn a_resumed_run_names_the_session_it_resumed_and_any_other_is_refused() {
+        let resumed = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s31-turn-delivery/p0b/opencode/db2.jsonl"
+        ));
+        let first = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s31-turn-delivery/p0b/opencode/db1.jsonl"
+        ));
+        let id = crate::json_frames(first)
+            .iter()
+            .find_map(|f| crate::grammar::session_id(&STREAM, f))
+            .expect("the first run named its session");
+        assert_eq!(crate::grammar::resume_refusal(&STREAM, resumed, &id), None);
+        assert!(
+            crate::grammar::resume_refusal(&STREAM, resumed, "ses_someotherid0000000000000")
+                .is_some(),
+            "a resume that came back under another session is refused"
+        );
+    }
+
     /// The hygiene set is **kept**, and the two contamination severs matter *more* live, not less:
     /// under `--live` the `HOME` an unsevered child reads `~/.claude/CLAUDE.md` and
     /// `~/.claude/skills/**` from is the operator's real one (`tests/fixtures/s13/`).
@@ -998,8 +1137,8 @@ mod tests {
         }
         assert_eq!(
             v.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["mcp"],
-            "marion's bridge and nothing else"
+            vec!["mcp", "permission"],
+            "marion's bridge and the grant for its own tools, nothing else"
         );
         assert!(live_config_json(None).as_object().unwrap().is_empty());
     }

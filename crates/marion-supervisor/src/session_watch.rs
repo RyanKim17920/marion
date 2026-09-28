@@ -7,9 +7,10 @@
 //! second sighting is the same session, and a stream that named two would be a harness marion has
 //! not measured.
 //!
-//! Where the id sits is the row's business ([`marion_harness::grammar::StreamGrammar::session`]),
-//! and reading it is [`marion_harness::grammar::session_id`]'s; this module owns only the *when*
-//! (first sighting) and the *where to* (the project's journal). No harness is named here.
+//! Where the id sits is the harness's business — a row's
+//! [`marion_harness::grammar::StreamGrammar::session`], or ACP's `session/new` answer — and reading
+//! it is the adapter's ([`marion_harness::HarnessAdapter::session_id`]); this module owns only the
+//! *when* (first sighting) and the *where to* (the project's journal). No harness is named here.
 //!
 //! The record goes through [`crate::journal::record`]'s never-fail-the-run policy: a node whose
 //! session could not be journaled is a node that cannot be resumed later, and that is a loss to
@@ -21,8 +22,8 @@ use marion_core::contract::{AgentId, Workspace};
 use marion_core::harness::Harness;
 use marion_core::journal::{RecordKind, SessionObserved};
 use marion_core::paths::ProjectDir;
-use marion_harness::adapter::harness_spec;
-use marion_harness::grammar::{StreamGrammar, session_id};
+use marion_harness::HarnessAdapter;
+use marion_harness::adapter::adapter_for;
 use serde_json::Value;
 
 use crate::duplex::StreamEvent;
@@ -42,9 +43,9 @@ pub(crate) struct SessionWatch<'a> {
     /// working tree of the project this supervisor is keyed on and is derivable from it, so only
     /// the child path fills this in.
     workspace: Option<Workspace>,
-    /// The row's grammar, or `None` for a harness whose stream is read as code (ACP) — nothing is
-    /// observed, honestly, and the node replays with `harness_session: None`.
-    grammar: Option<&'static StreamGrammar>,
+    /// The adapter that reads a session id off a frame, or `None` for a harness with none — nothing
+    /// is observed, honestly, and the node replays with `harness_session: None`.
+    reader: Option<Box<dyn HarnessAdapter + Send + Sync>>,
     /// The session journaled for this node, once a frame has named one.
     session: RefCell<Option<String>>,
     /// The node's profiles and which attempt is running: the profile's name rides the session
@@ -67,7 +68,7 @@ impl<'a> SessionWatch<'a> {
             harness,
             pane,
             workspace: None,
-            grammar: harness_spec(harness).stream,
+            reader: adapter_for(harness).ok(),
             session: RefCell::new(None),
             profiles: None,
             attempt: Cell::new(0),
@@ -124,8 +125,8 @@ impl<'a> SessionWatch<'a> {
         if self.session.borrow().is_some() {
             return;
         }
-        let Some(grammar) = self.grammar else { return };
-        if let Some(id) = session_id(grammar, frame) {
+        let Some(reader) = &self.reader else { return };
+        if let Some(id) = reader.session_id(frame) {
             *self.session.borrow_mut() = Some(id.clone());
             crate::journal::record(
                 self.project,
@@ -212,10 +213,10 @@ mod tests {
         );
     }
 
-    /// A duplex frame is observed through the same rule as a line, and a harness with no grammar
-    /// row observes nothing rather than guessing.
+    /// A duplex frame is observed through the same rule as a line, and an ACP node's session is the
+    /// one its `session/new` answered with — not the id a later `session/prompt` answer echoes.
     #[test]
-    fn a_duplex_frame_is_observed_and_a_rowless_harness_observes_nothing() {
+    fn a_duplex_frame_is_observed_and_an_acp_session_is_its_session_new_answer() {
         let (_dir, project) = scratch_project("duplex");
         let id = AgentId("n-2".into());
         let watch = SessionWatch::new(&project, &id, Harness::ClaudeCode, false);
@@ -227,9 +228,13 @@ mod tests {
         let (_dir, project) = scratch_project("acp");
         let id = AgentId("n-3".into());
         let watch = SessionWatch::new(&project, &id, Harness::Acp, false);
-        watch.observe_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1"}}"#);
-        assert!(!watch.seen());
-        assert_eq!(records(&project), 0);
+        watch.observe_line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}"#);
+        watch.observe_line(r#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#);
+        assert!(!watch.seen(), "nothing named a session yet");
+        watch.observe_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"ses_1"}}"#);
+        watch.observe_line(r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#);
+        assert_eq!(sessions(&project), vec!["ses_1".to_string()]);
+        assert_eq!(records(&project), 1);
     }
 
     /// **The workspace the launch chose reaches the record**, so a resume reads where the node ran

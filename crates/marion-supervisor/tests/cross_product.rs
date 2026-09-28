@@ -376,14 +376,14 @@ fn report_tool(node: &Node) -> String {
 /// fields the `harness_matrix` cells already use, retargeted at this child's own spelling of
 /// `report`. In a same-harness cell both halves live on one wire and the marker is what separates
 /// them — see the module docs.
-fn script(root: &Node, child: &Node) -> Script {
+fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
     // A **string**, on every harness, never a JSON `null`. §3.1 makes an omitted `model` mean "the
     // agent type's own default" (`marion-supervisor::main` reads it with `as_str()`), and a JSON
     // `null` is not the same thing to every harness: measured here, gemini 0.53.0 validates a tool
     // call against the declared schema *before* dispatching it and refuses `"model": null` with
     // `params/model must be string` — an `invalid_tool_params` tool_result, after which the root
     // happily finished its turn having spawned nothing.
-    let spawn_args = json!({
+    let mut spawn_args = json!({
         "agent_type": child.child_agent_type,
         "prompt": CHILD_PROMPT,
         "acceptance_criteria": ["a file exists under src/ containing the marker"],
@@ -391,6 +391,9 @@ fn script(root: &Node, child: &Node) -> Script {
         "timeout_secs": CHILD_TIMEOUT_SECS,
         "model": child.model,
     });
+    if !verification.is_empty() {
+        spawn_args["verification"] = json!(verification);
+    }
     let mut s = Script {
         root: Some(RootScript {
             marker: ROOT_MARKER.into(),
@@ -752,6 +755,11 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
 /// Stand up a canned provider, build a fixture repo, run the real `marion` binary on `root`, then
 /// clean up **unconditionally** and hand back what happened.
 fn drive(root: &Node, child: &Node) -> Evidence {
+    drive_with(root, child, &[])
+}
+
+/// [`drive`], with the root's `spawn` also carrying `verification` commands.
+fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
     let name = format!("{}-{}", root.agent_type, child.child_agent_type);
     let dir = scratch(&format!("xp-{name}"));
     let repo = fixture_repo(&dir);
@@ -761,7 +769,7 @@ fn drive(root: &Node, child: &Node) -> Evidence {
     let server = CannedServer::start(Config {
         addr: ([127, 0, 0, 1], 0).into(),
         reqlog: dir.join("provider-requests.jsonl"),
-        script: script(root, child),
+        script: script(root, child, verification),
     })
     .expect("the canned provider binds");
 
@@ -1295,6 +1303,57 @@ fn c_claude_root_spawns_a_gemini_child_and_receives_its_contract() {
 #[test]
 fn d_claude_root_spawns_an_opencode_child_and_receives_its_contract() {
     cell(&CLAUDE, &OPENCODE);
+}
+
+/// **An opencode child of a claude root, with every feature a child has** (s36's parity cell): the
+/// eleven assertions [`cell`] makes, and on top of them the three a plain cell does not — the
+/// spawn's `verification` ran in the child's worktree and passed, the child's write landed on its
+/// `marion/<task_id>` branch at a commit marion read back, and the child's own opencode session
+/// id (`ses_…`) is journaled for a resume to hand back.
+#[test]
+fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_journals_its_session()
+{
+    for n in [&CLAUDE, &OPENCODE] {
+        assert!(on_path(n.program), "this cell drives a REAL {}", n.program);
+    }
+    let verify = format!("grep -q 'cross-product marker' {CHILD_FILE}");
+    let ev = drive_with(&CLAUDE, &OPENCODE, &[&verify]);
+    assert_cell(&CLAUDE, &OPENCODE, &ev);
+
+    let contract: TaskContract = serde_json::from_value(ev.persisted[0].clone()).unwrap();
+    let comp = contract.completion.as_ref().unwrap();
+    assert_eq!(
+        contract.verification.len(),
+        1,
+        "the spawn's verification was recorded"
+    );
+    assert_eq!(comp.evidence.len(), 1, "and ran: {:?}", comp.evidence);
+    assert_eq!(
+        comp.evidence[0].exit_code,
+        Some(0),
+        "the child's file is there for the check to find: {:?}",
+        comp.evidence[0]
+    );
+    assert_eq!(
+        comp.branch.as_deref(),
+        Some(format!("marion/{}", contract.task_id.0).as_str()),
+        "the child's write landed on its own branch"
+    );
+    assert!(comp.commit.is_some(), "at a commit marion read back");
+    let journal = ev.journal.as_ref().expect("the journal replays");
+    let child = journal
+        .nodes()
+        .iter()
+        .find(|n| n.depth() == Some(1))
+        .expect("the child is journaled");
+    assert!(
+        child
+            .harness_session
+            .as_deref()
+            .is_some_and(|s| s.starts_with("ses_")),
+        "the child's opencode session is journaled for a resume: {:?}",
+        child.harness_session
+    );
 }
 
 #[test]

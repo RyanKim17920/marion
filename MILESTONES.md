@@ -664,11 +664,71 @@ composer holds observed through the injector's decisions, 2004-off drop, boot ho
 replaced pane gets it; a claude pane, whose row is its channel, is never typed into) and
 `native_facade_e2e::a_steer_and_a_background_childs_end_reach_every_native_paste_lane_as_user_turns`:
 on codex (pinned 0.147.0), opencode 1.18.32 and copilot 1.0.83 against the canned provider through
-the operator's own home, the steer arrives in the provider log as a user message, and on codex the
-pasted turn backgrounds a canned codex child whose end then arrives as the root's next user turn.
+the operator's own home, the steer arrives in the provider log as a user message, and on codex and
+opencode the pasted turn backgrounds a canned codex child whose end then arrives as the root's next
+user turn (opencode's lane added in s36).
 **Not covered:** interactive claude stays on its MCP channel (refused under API-key auth; no paste
 fallback yet), and a message held by an injector whose pane is replaced is dropped rather than
 handed to the new one.
+
+**opencode parity with claude and codex (s36, 2026-09-27, opencode 1.18.32,
+`tests/fixtures/s36-opencode-parity/`, $0.00: a local OpenAI-compatible stub and the canned
+provider, no login).** Each probe is a transcript and a PASS/FAIL `verdict.txt`, with the kit in
+`probes/`. **Usage:** `step_finish` splits a provider's completion tokens — 1000 prompt (300
+cached) and 50 completion (7 reasoning) became `input` 700, `cache.read` 300, `output` 43,
+`reasoning` 7 — so the row now adds `tokens.reasoning` into output through a new optional
+`UsageRule::reasoning` (every other row states none) and the counters sum to opencode's own `total`
+(`token_usage::opencodes_measured_step_finish_counts_reasoning_as_output_and_sums_to_its_own_total`,
+RED with `output: 43`); `opencode acp` reports the same split as `thoughtTokens`, while codex-acp
+counts thoughts inside `outputTokens`, so the one protocol-wide ACP rule still under-reports opencode
+acp's reasoning. **MCP readiness:** `opencode run` waits for its MCP servers before its first
+request (unlike codex's app-server), but only ~30 s, then sends without their tools and says
+nothing; and it abandons any `tools/call` at 60 s (`MCP error -32001: Request timed out`), which is
+every foreground `spawn` or `wait` longer than a minute. The row's MCP block now carries
+`"timeout": 86400000` (`opencode::MCP_TIMEOUT_MS`), measured lifting both on the canned document,
+the live inline document and so the native injection
+(`marions_server_outlasts_the_sixty_second_call_and_thirty_second_startup_defaults`, RED with
+`Null`). `opencode acp` behaves the same for a `session/new` server, whose `mcpServers` entry has no
+timeout field; `experimental.mcp_timeout` lifts its call limit (not its startup limit), and every
+`opencode acp` node now carries it inline. **Live ACP env:** a live `opencode acp` node compiled no
+environment at all — no update switch, no `OPENCODE_DISABLE_CLAUDE_CODE` — and now renders
+opencode's own rows under every mode, which gate themselves on auth
+(`an_opencode_acp_node_carries_the_run_rows_env_and_outlasts_the_sixty_second_call_limit`, RED with
+an empty env). **Model:** `opencode run` with no `-m` takes the config's `model`; a live node given
+only its type's plumbing default `marion/default` now runs on the operator's default instead of
+being refused, on `run` and on an ACP session alike (`opencode::requested_model`). **Approval:** an
+operator's `"ask"` on a tool makes headless `run` print `auto-rejecting` and exit 0 with the call
+`error`; an inline `permission` allow merged over the config wins; `opencode acp` sends
+`session/request_permission` (`allow_once`/`allow_always`/`reject_once`), which marion answers
+`allow_once` by kind. The row's approval is now `DeclarationKey { key: "permission" }`: marion's
+declaration grants `marion_*` and nothing else on every route that declares it, as codex's
+`default_tools_approval_mode` and gemini's `trust` do on theirs, native injection included
+(`the_declaration_approves_marions_own_tools_and_nothing_else`, RED with `Null`). **Sessions and resume:** `run` prints nothing — no `sessionID` — until its
+first response streams (`held-first/`), so a node whose supervisor dies during its first request
+has no session to resume; a resume keeps the session id (S31 `db1`/`db2`), so the row now states
+`resumes_in_place` and refuses a resume that came back under another session. An ACP node's session
+is its `session/new` answer's `sessionId`, now journaled through the adapter
+(`HarnessAdapter::session_id`, `acp::SESSION`) with the ACP child's frames recorded live, and an
+ACP child records its turn's exit rather than marion's SIGINT shutdown, which had made `marion
+resume` of a finished ACP child exit 1 (`restart_resume::a_lost_acp_opencode_child_loads_its_own_
+session_under_its_parent_and_takes_its_next_turn`, RED with `(None, Some(2))`). **Activity:** an ACP
+node's `status` peek reads the protocol's `session/update` frames (`acp::ACTIVITY`), keeping a
+call's last non-empty arguments per id because opencode acp fills them in only on `in_progress`.
+**Doctor:** opencode advertises `resume` from 1.18.32, clipped by the `run` surface like codex's.
+**Measured end to end against real binaries:** an opencode child of claude that verifies, lands its
+branch and journals its `ses_` session (`cross_product::d_claude_root_spawns_an_opencode_child_that_
+verifies_lands_its_branch_and_journals_its_session`); a steer folded into a running `opencode acp`
+root (`acp:mid-turn`) and a codex child's end as its next prompt (`acp:next-turn`)
+(`turn_delivery`); a steer into a running `opencode run` node and a codex child's end into an
+`opencode run` root, each as a `--session` second generation (`continuation`); a steer and a codex
+child's end pasted into `marion opencode` (`native_facade_e2e`); `marion opencode` delegating a
+codex child through `marion_spawn` (`native_facade_spawn`); `/mcp` in `marion opencode` reading
+`marion connected ✓ Enabled` (`native_facade_e2e`); a lost `opencode run` child and a lost `opencode
+acp` child resumed after a supervisor SIGKILL (`restart_resume`); and an expired `opencode run` and
+`opencode acp` child leaving no `bash` process alive (`timeout_kill`). **Still open:** the session-id
+gap before the first response (the id could be looked up by the `marion-<agent id>` title in the
+node's own `OPENCODE_DB`); ACP opencode's reasoning tokens; and the ~30 s startup limit on a
+`session/new` server, which no key lifts.
 
 **agy — Google's Antigravity CLI — is a row (s32, 2026-09-22, agy 1.2.8, `tests/fixtures/s32/`,
 the operator's own keychain login, `gemini-3.6-flash-low`).** Measured headless: `-p <prompt>

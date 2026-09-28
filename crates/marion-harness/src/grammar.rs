@@ -862,10 +862,26 @@ fn calls(g: &StreamGrammar, frames: &[Value], prefix: &str) -> Vec<Call> {
 /// running — a stream read whole after exit would name the session only of a node that has already
 /// gone. `None` on a row with no measured session unit, and on every frame that is not it.
 pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
-    let s = g.session.as_ref()?;
+    session_in(g.session.as_ref()?, frame)
+}
+
+/// [`session_id`] under one [`SessionId`] rule, for a reader whose stream is not a row's grammar —
+/// ACP's `session/new` answer (`crate::acp::SESSION`).
+pub fn session_in(s: &SessionId, frame: &Value) -> Option<String> {
     units(std::slice::from_ref(frame), &s.at)
         .into_iter()
         .find_map(|u| text(u, s.path).filter(|id| !id.trim().is_empty()))
+}
+
+/// No arguments at all, or an empty object or array — what a call's first sighting carries on a
+/// harness that fills its input in later.
+fn is_empty_args(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Object(o) => o.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
 }
 
 /// The last `max_calls` tool calls `frames` show, oldest first, and the last non-empty line of the
@@ -922,7 +938,10 @@ pub struct ActivityItem {
 /// between them.
 pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityItem> {
     let mut items: Vec<ActivityItem> = Vec::new();
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // A call's id, and the item it is: a later unit with the same id revises that call's
+    // arguments where it carries some (opencode's ACP `tool_call` is `pending` with `{}`, and the
+    // `in_progress` update carries the input — s21), and is otherwise not repeated.
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     // Whether the last thing read was a joining text unit, so the next one continues it.
     let mut joining = false;
     for (index, frame) in frames.iter().enumerate() {
@@ -960,16 +979,26 @@ pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityIte
                 else {
                     continue;
                 };
-                if let Some(id) = c.id.and_then(|p| text(unit, p))
-                    && !seen.insert(id)
-                {
-                    continue;
+                let args = unit.pointer(c.args).cloned().unwrap_or(Value::Null);
+                if let Some(id) = c.id.and_then(|p| text(unit, p)) {
+                    if let Some(&at) = seen.get(&id) {
+                        if !is_empty_args(&args)
+                            && let Some(ActivityItem {
+                                item: Activity::Call(call),
+                                ..
+                            }) = items.get_mut(at)
+                        {
+                            call.args = args;
+                        }
+                        continue;
+                    }
+                    seen.insert(id, items.len());
                 }
                 items.push(ActivityItem {
                     frame: index,
                     item: Activity::Call(ToolCall {
                         name: name.to_string(),
-                        args: unit.pointer(c.args).cloned().unwrap_or(Value::Null),
+                        args,
                         shape: c.shape,
                     }),
                 });

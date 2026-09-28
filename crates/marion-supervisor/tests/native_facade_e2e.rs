@@ -918,6 +918,52 @@ fn native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// opencode's own `/mcp`: marion is connected in the operator's TUI
+// ---------------------------------------------------------------------------------------------
+
+/// **`/mcp` in `marion opencode` lists marion as connected** (s36), beside whatever servers the
+/// operator's own config carries — the in-TUI proof that the facade's one injection,
+/// `OPENCODE_CONFIG_CONTENT`, reached the operator's opencode and that the bridge answered. Typed
+/// as an operator types it; nothing is submitted to a model.
+#[test]
+fn the_native_opencode_tui_lists_marion_connected_under_mcp() {
+    let bed = Bed::new("native-e2e-opencode-mcp");
+    let Some((op, agent)) = first_screen(&bed, "opencode") else {
+        return;
+    };
+    op.type_in(b"/mcp");
+    std::thread::sleep(Duration::from_millis(800));
+    op.type_in(b"\r");
+    let mut screen = String::new();
+    let listed = until(|| {
+        screen = op.screen();
+        let lower = screen.to_lowercase();
+        (lower.contains("marion") && lower.contains("connected")) || op.exited()
+    });
+    if op.exited() {
+        unexpected_client_exit(op, &bed, "[opencode] after `/mcp` was typed");
+    }
+    assert!(
+        listed,
+        "[opencode] `/mcp` did not show marion connected; the operator's screen:\n{screen}"
+    );
+    let line = screen
+        .lines()
+        .find(|l| l.to_lowercase().contains("marion"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(
+        line.to_lowercase().contains("connected"),
+        "[opencode] marion's own line in `/mcp` says it is connected: {line:?}"
+    );
+    eprintln!("[opencode] /mcp: {line}");
+    let node = bed.kill_and_await_exit(&agent);
+    assert!(node.state.is_exited(), "{:?}", node.state);
+    let _ = op.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Turn delivery by paste: every lane whose interactive row is `TerminalPaste`
 // ---------------------------------------------------------------------------------------------
 
@@ -1006,7 +1052,7 @@ fn canned_operator(
                     (s("XDG_CACHE_HOME"), under("cache")),
                     (s("XDG_STATE_HOME"), under("state")),
                 ],
-                spawn_tool: None,
+                spawn_tool: Some("marion_spawn"),
             })
         }
         Harness::Copilot => {

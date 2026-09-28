@@ -1,0 +1,2 @@
+{"t": 1790538949.822688, "path": "/v1/chat/completions", "model": "canned-1", "tools": ["bash", "edit", "glob", "grep", "read", "skill", "slow_report", "task", "todowrite", "webfetch", "write"], "stream_options": {"include_usage": true}, "roles": ["system", "user"]}
+{"t": 1790539010.06943, "path": "/v1/chat/completions", "model": "canned-1", "tools": ["bash", "edit", "glob", "grep", "read", "skill", "slow_report", "task", "todowrite", "webfetch", "write"], "stream_options": {"include_usage": true}, "roles": ["system", "user", "assistant", "tool"]}

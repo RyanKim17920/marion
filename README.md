@@ -95,7 +95,7 @@ marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
 - **A child's work** lands on its own branch, `marion/<task_id>`, and marion never merges it into yours. See [Where a child's work lands](#where-a-childs-work-lands).
 - **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion ls` shows a session only when it sees the same value the session started with.
 
-**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node on the home screen's Watch tab and types the message in the box (Enter sends, Esc cancels, the answer shows on the hint row), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's stream is not read by a row, and `status` says so). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
+**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node on the home screen's Watch tab and types the message in the box (Enter sends, Esc cancels, the answer shows on the hint row), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's through the protocol's own `session/update` frames). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
 
 `marion login <provider>` keeps a key you paste in the macOS Keychain (or, elsewhere or with `MARION_CREDENTIAL_STORE=file`, a `0600` file under `$XDG_CONFIG_HOME/marion/`); it never prints it and never runs a vendor's own login. `marion login custom <id> --base-url <url> --wire <wire>` adds your own OpenAI-, Anthropic- or Gemini-compatible endpoint to the user-level `providers.toml` (a repository's `.marion/` is never read for providers), and `marion logout <provider>` removes a key. Several keys for one provider are kept apart by label (`marion login openrouter --label work`, or `openrouter:work`); `providers.toml`'s `[credentials]` table states the order a launch tries them in. Subscription logins (Claude, ChatGPT, Copilot, Google accounts) stay with their own harness; marion never reuses them.
 
@@ -154,7 +154,7 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `claude` (Claude Code) | 2.1.220 | yes, with a pane shape | yes | `claude-acp` |
 | `codex` (Codex CLI) | 0.146.0 | yes, with a pane shape | yes | `codex-acp` |
 | `gemini` (Gemini CLI) | 0.53.0 | yes | yes | `gemini` |
-| `opencode` | 1.17.3 | yes | yes | `opencode` / `acp-opencode` |
+| `opencode` | 1.17.3 (measured through 1.18.32) | yes | yes | `opencode` / `acp-opencode` |
 | `copilot` (Copilot CLI) | 1.0.83 | yes | yes | `copilot` |
 | `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
 | `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
@@ -163,6 +163,23 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `acp:<command>` | n/a | — | — | the generic path |
 
 The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion`'s Start tab offers them per harness.
+
+**opencode, in all three of its shapes, against the two harnesses marion is most used with** —
+each `yes` is a test that drives the real binary against the canned provider, or for `status` and usage a reader held to a real capture (`MILESTONES.md`, s36):
+
+| | `claude` | `codex` | `opencode` (`run`) | `acp-opencode` | `marion opencode` |
+|---|---|---|---|---|---|
+| child: spawn, report, worktree, verification, landed branch | yes (verification and branch untested) | yes | yes | yes (verification on a fake agent) | — (a root) |
+| parent: `spawn` reaches marion, contract comes back | yes | yes | yes | yes | yes |
+| a steer reaches it | mid-turn fold | next generation | next generation (`--session`) | mid-turn fold | pasted |
+| a background child's end reaches it | next turn | next generation | next generation | next prompt | pasted |
+| resumed after the supervisor is killed | unit-tested only | yes | yes | yes (`session/load`) | — |
+| `status` shows its recent calls; usage read | yes | yes | yes (reasoning counted) | yes | — (no stream) |
+| an expired child leaves no tool process | — | yes | yes | yes | — |
+| marion's tools approved at launch | `--allowedTools` | declaration key | declaration key | answers the ask | declaration key |
+
+One gap is opencode's own: `opencode run` names its session only once its first response streams,
+so a node whose supervisor dies during its first request has nothing to resume.
 
 ### ACP agents
 

@@ -2305,12 +2305,10 @@ fn launch_acp(
     })?;
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     Ok(RootOutcome {
-        // **The turn's code, not the process's.** An ACP agent is a stdio server marion shuts down
-        // once the turn is answered — EOF, then SIGINT — so its process status describes marion's
-        // shutdown (`AcpRun::exit`): `None` on a signal, or whatever the agent's interrupt handler
-        // chose. A turn the agent answered is a finished run, and its stream is what can still fail
-        // it (`failure` below); an unanswered one is `timed_out`, which outranks every code.
-        exit_code: (!run.exit.timed_out).then_some(0),
+        // **The turn's code, not the process's** (`acp_child::turn_exit`): a turn the agent
+        // answered is a finished run, and its stream is what can still fail it (`failure` below);
+        // an unanswered one is `timed_out`, which outranks every code.
+        exit_code: crate::acp_child::turn_exit(run.exit).code,
         transcript: json_frames(&run.stdout),
         marion_calls: adapter.marion_calls(&run.stdout),
         failure: adapter.parse_stream(&run.stdout, run.exit).failure,

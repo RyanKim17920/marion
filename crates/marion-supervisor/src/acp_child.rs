@@ -308,6 +308,21 @@ pub enum AcpChildError {
     },
 }
 
+/// **The turn's end, not the process's**, as a node's recorded exit: code 0 for a turn the agent
+/// answered, and no code at all for one marion cut short on its bound. An ACP agent is a stdio
+/// server marion shuts down once the turn settles — EOF, then SIGINT ([`AcpRun::exit`]) — so the
+/// process status describes marion's shutdown, and recorded as the node's exit it would read as
+/// a node killed by a signal on every ordinary run (a resumed ACP child's `marion resume` failed
+/// on exactly that). What can still fail the turn is its stream, read separately. One rule for
+/// roots and children alike.
+pub fn turn_exit(exit: ChildExit) -> ChildExit {
+    ChildExit {
+        code: (!exit.timed_out).then_some(0),
+        signal: None,
+        timed_out: exit.timed_out,
+    }
+}
+
 /// Drive one ACP turn and hand back the transcript.
 ///
 /// The order is ACP's, and each step is bounded and refuses by name rather than falling through to

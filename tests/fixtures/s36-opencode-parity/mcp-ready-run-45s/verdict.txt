@@ -1,0 +1,4 @@
+no mcp timeout configured; initialize held 45 s
+mcp start +6.7s, initialize never answered inside the run (45 s hold)
+first model request +40.8s tools=['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch', 'write']
+FAIL: first request went before the MCP server was ready or without its tool
