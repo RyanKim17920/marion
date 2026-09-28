@@ -104,8 +104,12 @@ mod common;
 
 use common::socket_spawn::try_spawn_over_socket;
 
-/// The child's own bound. Short: a wedged cell must fail fast rather than wedge CI.
-const CHILD_TIMEOUT_SECS: u64 = 60;
+/// A node's own bound: its whole run, from its row ([`common::boot::run_secs`]), so a wedged cell
+/// still fails rather than wedging CI. A flat 60 s used to stand here, and an opencode node under
+/// load spent it all booting and never took the turn the cell is about.
+fn timeout_secs(agent_type: &str) -> u64 {
+    common::boot::run_secs(agent_type)
+}
 
 /// Present in the **child's** prompt and nowhere in the grandchild's — the provider's role
 /// discriminator, exactly as `cross_product` uses it, and shape dispatch rather than arrival order.
@@ -248,7 +252,7 @@ fn script(node: &Node) -> Script {
         "prompt": GRANDCHILD_PROMPT,
         "acceptance_criteria": ["a file exists under src/ containing the depth-gate marker"],
         "writable_scope": ["src/**"],
-        "timeout_secs": CHILD_TIMEOUT_SECS,
+        "timeout_secs": timeout_secs(node.agent_type),
     });
     if let Some(m) = node.model {
         grandchild["model"] = json!(m);
@@ -373,8 +377,9 @@ const CHAIN_TIMEOUT_SECS: u64 = 600;
 /// chain early cannot race a supervisor that had decided to leave.
 const IDLE_GRACE: Duration = Duration::from_secs(600);
 
-/// A bound that exists only to fail. Nothing here waits on work the test has not already caused.
-const BOUND: Duration = Duration::from_secs(180);
+/// A bound that exists only to fail: past the waited node's own wall clock by the minute a run
+/// takes to wind down after it. Nothing here waits on work the test has not already caused.
+const WIND_DOWN: Duration = Duration::from_secs(60);
 
 /// The shim: a `codex` that blocks until the gate exists, and `exec`s the real binary for the
 /// invocations that must be real — the node under test, and a codex grandchild it is allowed.
@@ -532,7 +537,7 @@ fn drive(node: &Node) -> Evidence {
             acceptance_criteria: vec!["the task is delegated".into()],
             verification: vec![],
             writable_scope: vec!["src/**".into()],
-            timeout_secs: Some(CHILD_TIMEOUT_SECS),
+            timeout_secs: Some(timeout_secs(node.agent_type)),
             model: node.model.map(str::to_string),
             ..chain_params(None, DEFAULT_MAX_DEPTH)
         },
@@ -549,7 +554,9 @@ fn drive(node: &Node) -> Evidence {
     // that holds. Asserted instead of polled, deliberately: a test that polls past a race it could
     // assert is a test that will not notice the race coming back.
     if let Ok(under_test) = &spawn_result {
-        let deadline = std::time::Instant::now() + BOUND;
+        let deadline = std::time::Instant::now()
+            + Duration::from_secs(timeout_secs(node.agent_type))
+            + WIND_DOWN;
         while !is_terminal(&project.journal(), &under_test.agent_id) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -871,6 +878,7 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
     chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM), 2..=2);
 
     let spawn = marion_tool(&CLAUDE, "spawn");
+    let delegator_secs = timeout_secs(CLAUDE.agent_type) + timeout_secs(CODEX.agent_type);
     let script = Script {
         root: Some(RootScript {
             marker: DELEGATOR_MARKER.into(),
@@ -881,7 +889,7 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
                     "prompt": format!("{GRANDCHILD_MARKER}: {GRANDCHILD_PROMPT}"),
                     "acceptance_criteria": ["a file exists under src/"],
                     "writable_scope": ["src/**"],
-                    "timeout_secs": CHILD_TIMEOUT_SECS,
+                    "timeout_secs": timeout_secs(CODEX.agent_type),
                 }),
                 final_text: "The codex grandchild finished; its contract is above.".into(),
             },
@@ -919,12 +927,13 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
             prompt: format!("{DELEGATOR_MARKER}: delegate this task to a codex child."),
             acceptance_criteria: vec!["the task is delegated".into()],
             writable_scope: vec!["src/**".into()],
-            timeout_secs: Some(CHILD_TIMEOUT_SECS),
+            // Its own run and, inside its `spawn`, the whole of its codex grandchild's.
+            timeout_secs: Some(delegator_secs),
             ..chain_params(None, 1)
         },
     )
     .expect("the claude child is served");
-    let deadline = std::time::Instant::now() + BOUND;
+    let deadline = std::time::Instant::now() + Duration::from_secs(delegator_secs) + WIND_DOWN;
     while !is_terminal(&project.journal(), &child.agent_id) {
         assert!(
             std::time::Instant::now() < deadline,
