@@ -376,6 +376,30 @@ impl SpawnError {
     }
 }
 
+/// **`git diff` in its plain dialect**, for a patch marion persists (a task contract, a root-change
+/// record). Each flag cancels one piece of operator configuration that would otherwise decide the
+/// bytes: `color.ui`, `diff.noprefix`/`diff.mnemonicPrefix`, `diff.external` and a `textconv`
+/// driver. The last two would also run an operator-chosen program over content an agent wrote.
+/// `--no-renames` matches the `--name-only` listings beside each patch: a rename rendered as a
+/// rename carries no content, and the path list and the patch must describe the same run.
+const PLAIN_PATCH: [&str; 7] = [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-renames",
+];
+
+fn plain_patch_args<'a>(revs: &[&'a str]) -> Vec<&'a str> {
+    PLAIN_PATCH
+        .iter()
+        .copied()
+        .chain(revs.iter().copied())
+        .collect()
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
     let mut command = SysCommand::new("git");
     command
@@ -705,9 +729,7 @@ pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
         args.extend(untracked.iter().map(String::as_str));
         git_indexed(wt, &index, &args)?;
     }
-    // `--no-renames`, matching `changed_paths`: a rename rendered as a rename carries no content,
-    // and these two must describe the same run.
-    git_indexed(wt, &index, &["diff", "--no-renames", &base.0])
+    git_indexed(wt, &index, &plain_patch_args(&[&base.0]))
 }
 
 /// The identity marion commits under when the operator has configured none.
@@ -1080,9 +1102,9 @@ impl TreeSnapshot {
     }
 
     /// The patch between two trees — the same two revisions [`Self::changed_paths`] is asked about,
-    /// so the two share one dialect by construction rather than by agreement.
+    /// so the two share one dialect by construction rather than by agreement. See [`PLAIN_PATCH`].
     pub fn diff(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<String, SpawnError> {
-        git_env(repo, &self.env(), &["diff", "--no-renames", &a.0, &b.0])
+        git_env(repo, &self.env(), &plain_patch_args(&[&a.0, &b.0]))
     }
 
     /// Drop the copied index once both snapshots are taken.
@@ -1464,6 +1486,66 @@ mod tests {
             codex_reads(s).file_change_paths,
             vec![PathBuf::from("/wt/a.rs")]
         );
+    }
+
+    /// **A persisted patch is git's plain dialect, whatever the operator configured.** Task
+    /// contracts and root-change records are machine-read audit data: colour, a prefix setting, an
+    /// external diff program or a textconv driver would each change their bytes, and the last two
+    /// run an operator-chosen program over content an agent wrote.
+    ///
+    /// The positive control proves the textconv driver is live, so a pass means marion bypassed it
+    /// rather than that git never consulted it. Mutation: drop any one flag from `PLAIN_PATCH` and
+    /// the matching case fails.
+    #[test]
+    fn persisted_patches_ignore_the_operators_diff_configuration() {
+        let root = marion_testsupport::scratch("plain-task-diffs");
+        let repo = marion_testsupport::fixture_repo(&root);
+        let base = Oid(marion_testsupport::git(&repo, &["rev-parse", "HEAD"])
+            .trim()
+            .into());
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let snapshot = TreeSnapshot::open(&repo, &agent_dir).expect("the root snapshot opens");
+        let pre = snapshot.take(&repo).expect("the pre-tree is measured");
+        std::fs::write(repo.join("src/keep.txt"), "changed\n").unwrap();
+        let post = snapshot.take(&repo).expect("the post-tree is measured");
+
+        let attributes = root.join("global-attributes");
+        std::fs::write(&attributes, "*.txt diff=marionreview\n").unwrap();
+        let config: [(&str, &str); 6] = [
+            ("color.ui", "always"),
+            ("diff.noprefix", "true"),
+            ("diff.external", "/usr/bin/false"),
+            ("core.attributesFile", attributes.to_str().unwrap()),
+            ("diff.marionreview.textconv", "/usr/bin/false"),
+            ("diff.marionreview.command", "/usr/bin/false"),
+        ];
+        for (key, value) in config {
+            marion_testsupport::git(&repo, &["config", key, value]);
+        }
+        assert!(
+            git(&repo, &["diff", "--no-ext-diff", &base.0]).is_err(),
+            "positive control: the configured textconv driver is consulted by a bare diff"
+        );
+
+        for (label, patch) in [
+            ("diff_text", diff_text(&repo, &base)),
+            ("TreeSnapshot::diff", snapshot.diff(&repo, &pre, &post)),
+        ] {
+            let patch = patch.unwrap_or_else(|e| panic!("{label} failed: {e}"));
+            assert!(
+                !patch.as_bytes().contains(&0x1b),
+                "{label} carried colour: {patch:?}"
+            );
+            assert!(
+                patch.contains("diff --git a/src/keep.txt b/src/keep.txt\n"),
+                "{label} lost git's default prefixes: {patch}"
+            );
+            assert!(
+                patch.lines().any(|l| l == "+changed"),
+                "{label} did not carry the file's own content: {patch}"
+            );
+        }
     }
 
     #[test]
