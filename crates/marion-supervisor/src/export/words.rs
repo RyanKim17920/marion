@@ -61,18 +61,20 @@ pub fn totals(r: &Report) -> String {
         1 => "1 node".to_string(),
         n => format!("{n} nodes"),
     }];
-    parts.push(if t.claimed == t.nodes {
-        format!("{} tokens", tokens(t.tokens))
-    } else {
-        format!(
-            "{} tokens ({} of {} nodes said)",
+    // No claim is not zero: a tree whose harnesses stated no usage says so rather than "0".
+    parts.push(match t.claimed {
+        0 => "tokens not reported".to_string(),
+        c if c == t.nodes => format!("{} tokens", tokens(t.tokens)),
+        c => format!(
+            "{} tokens ({c} of {} nodes said)",
             tokens(t.tokens),
-            t.claimed,
             t.nodes
-        )
+        ),
     });
-    if t.changed > 0 {
-        parts.push(format!("Σ {} files changed", t.changed));
+    match t.changed {
+        0 => {}
+        1 => parts.push("Σ 1 file changed".into()),
+        n => parts.push(format!("Σ {n} files changed")),
     }
     match (t.live, t.wall()) {
         (0, Some(w)) => parts.push(format!("{} wall", span(w.as_secs()))),
@@ -151,6 +153,39 @@ mod tests {
         assert_eq!(millis(412), "412ms");
         assert_eq!(millis(41_200), "41.2s");
         assert_eq!(millis(125_000), "2m05s");
+    }
+
+    /// The summary line never turns silence into a zero, and counts in words that agree.
+    #[test]
+    fn the_totals_line_says_what_was_claimed() {
+        let report = |claimed, nodes, changed, live| Report {
+            target: String::new(),
+            generated_at: marion_core::encoding::SystemTime::from_unix_millis(0),
+            version: String::new(),
+            project: String::new(),
+            tree: Vec::new(),
+            nodes: Vec::new(),
+            totals: crate::rollup::Totals {
+                tokens: 1200,
+                claimed,
+                changed,
+                nodes,
+                live,
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            totals(&report(0, 1, 1, 0)),
+            "1 node · tokens not reported · Σ 1 file changed"
+        );
+        assert_eq!(
+            totals(&report(1, 2, 0, 1)),
+            "2 nodes · 1.2k tokens (1 of 2 nodes said) · 1 still running"
+        );
+        assert_eq!(
+            totals(&report(2, 2, 3, 0)),
+            "2 nodes · 1.2k tokens · Σ 3 files changed"
+        );
     }
 
     #[test]
