@@ -44,6 +44,8 @@ fn node(
     state: NodeState,
 ) -> NodeSummary {
     NodeSummary {
+        review_of: None,
+        review: None,
         agent_id: AgentId(id.into()),
         parent_id: parent.map(|p| AgentId(p.into())),
         name: None,

@@ -4101,6 +4101,8 @@ mod tests {
         state: marion_core::node::NodeState,
     ) -> marion_core::proto::NodeSummary {
         marion_core::proto::NodeSummary {
+            review_of: None,
+            review: None,
             agent_id: AgentId(id.into()),
             parent_id: parent.map(|p| AgentId(p.into())),
             name: None,
@@ -4296,6 +4298,8 @@ mod tests {
             RequestId::Number(1),
             &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
+                    review_of: None,
+                    review: None,
                     agent_id: AgentId("native".into()),
                     parent_id: None,
                     name: None,

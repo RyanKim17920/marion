@@ -264,7 +264,14 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
         ended_at: clock(node).1,
         tokens: None,
         attention: attention(node),
+        review_of: intent.review_of.clone(),
+        review: tally(node),
     })
+}
+
+/// A reviewer's tally, off its latest contract record.
+fn tally(node: &ReplayedNode) -> Option<marion_core::review::ReviewTally> {
+    node.contracts.last().and_then(|c| c.review)
 }
 
 /// What the operator is asked to do about the node's current state, where its last `StateChanged`
@@ -310,6 +317,8 @@ struct Extra {
     tokens: Option<u64>,
     /// A hash of [`NodeSummary::attention`]: a new reason under the same `Blocked` state is news.
     attention: Option<u64>,
+    // A reviewer's tally lands after its exit, so it must be a change a subscriber is told of.
+    review: Option<marion_core::review::ReviewTally>,
 }
 
 impl Extra {
@@ -326,6 +335,7 @@ impl Extra {
                 a.hash(&mut h);
                 h.finish()
             }),
+            review: tally(n),
         }
     }
 }

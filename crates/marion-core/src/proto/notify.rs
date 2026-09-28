@@ -222,6 +222,8 @@ mod tests {
         vec![
             Event::NodeAdded {
                 node: NodeSummary {
+                    review_of: None,
+                    review: None,
                     agent_id: AgentId("a".into()),
                     parent_id: None,
                     name: None,

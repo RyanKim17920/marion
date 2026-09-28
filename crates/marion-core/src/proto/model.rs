@@ -98,6 +98,14 @@ pub struct NodeSummary {
     /// `None` otherwise, and from a supervisor that predates the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<String>,
+    /// **The node this one reviews**, when it is a reviewer (its intent's `review_of`, which is
+    /// also its parent): a view draws it as that node's review rather than as delegated work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_of: Option<AgentId>,
+    /// **A reviewer's tally** once its report is read — how many findings, how many block, and
+    /// marion's decision. Never the findings' text, which stays in its contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review::ReviewTally>,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -696,6 +704,8 @@ mod tests {
     #[test]
     fn a_node_summary_round_trips_and_encodes_its_bound_in_seconds() {
         let n = NodeSummary {
+            review_of: None,
+            review: None,
             agent_id: agent("0199c0ff-ee00-7000-8000-000000000001"),
             parent_id: None,
             name: Some("impl".into()),

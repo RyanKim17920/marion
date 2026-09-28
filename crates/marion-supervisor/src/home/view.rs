@@ -213,7 +213,11 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             id: n.agent_id.0.clone(),
             prefix: prefix.to_string(),
             harness: n.harness.cli_name().to_string(),
-            kind: n.name.clone().unwrap_or_else(|| kind_of(n)),
+            kind: n
+                .name
+                .clone()
+                .or_else(|| crate::tree::review_note(n))
+                .unwrap_or_else(|| kind_of(n)),
             short: short_id(&n.agent_id.0).to_string(),
             tone: tnode.tone,
             elapsed: row_time(n, now),

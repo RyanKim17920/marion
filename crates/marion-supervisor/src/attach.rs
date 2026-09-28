@@ -1817,6 +1817,8 @@ mod tests {
             id,
             &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
+                    review_of: None,
+                    review: None,
                     agent_id: AgentId("root".into()),
                     parent_id: None,
                     name: None,

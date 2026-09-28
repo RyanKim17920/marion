@@ -2317,6 +2317,8 @@ mod tests {
 
     fn a_node() -> NodeSummary {
         NodeSummary {
+            review_of: None,
+            review: None,
             agent_id: AgentId("a".into()),
             parent_id: None,
             name: None,

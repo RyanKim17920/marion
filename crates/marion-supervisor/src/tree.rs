@@ -134,9 +134,32 @@ pub fn row(node: &NodeSummary) -> tree::Node {
 /// agreement: two spellings of a node's name is how an operator ends up unsure whether the `8ea3`
 /// in the sidebar and the `01a091ba-8ea3-…` in the pane are the same agent.
 pub fn label_of(node: &NodeSummary) -> String {
-    node.name
+    let label = node
+        .name
         .clone()
-        .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(&node.agent_id.0)))
+        .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(&node.agent_id.0)));
+    match review_note(node) {
+        Some(note) => format!("{label} · {note}"),
+        None => label,
+    }
+}
+
+/// **What a reviewer row adds**: that it is a review, and once its report is read, how many
+/// findings it made and how many block. `None` for every node that is not a reviewer. The tree
+/// and Home Watch both say it through this, so the two cannot count differently.
+pub fn review_note(node: &NodeSummary) -> Option<String> {
+    node.review_of.as_ref()?;
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    Some(match node.review {
+        Some(t) if t.blocking > 0 => format!(
+            "review: {}, {} blocking",
+            plural(t.findings, "finding"),
+            t.blocking
+        ),
+        Some(t) => format!("review: {}", plural(t.findings, "finding")),
+        None if node.state.is_exited() => "review: no report read".to_string(),
+        None => "reviewing".to_string(),
+    })
 }
 
 /// The part of an id that tells one node from its siblings.
@@ -580,6 +603,8 @@ mod tests {
 
     fn summary(id: &str, harness: Harness, pane: bool, version: Option<&str>) -> NodeSummary {
         NodeSummary {
+            review_of: None,
+            review: None,
             agent_id: AgentId(id.into()),
             parent_id: None,
             name: None,
@@ -820,6 +845,36 @@ mod tests {
         assert_eq!(row(&n).label, "reviewer");
         assert_eq!(short_id("root-claude"), "root-claude");
         assert_eq!(short_id(uuid), "5b04");
+    }
+
+    /// **A reviewer is labelled as the review it is**, placed under the node it reviews, and says
+    /// its findings once they are read — in the tree and in Home Watch alike.
+    #[test]
+    fn a_reviewer_row_says_it_reviews_and_counts_its_findings() {
+        use marion_core::review::{Decision, ReviewTally};
+        let mut n = summary("rev", Harness::ClaudeCode, false, None);
+        n.parent_id = Some(AgentId("kid".into()));
+        assert_eq!(review_note(&n), None, "not a reviewer");
+        n.review_of = n.parent_id.clone();
+        n.state = NodeState::Running;
+        assert_eq!(row(&n).label, "codex-impl rev · reviewing");
+        n.state = NodeState::Exited(marion_core::contract::ExitStatus::Ok);
+        assert_eq!(review_note(&n).as_deref(), Some("review: no report read"));
+        n.review = Some(ReviewTally {
+            findings: 1,
+            blocking: 0,
+            decision: Decision::Allow,
+        });
+        assert_eq!(review_note(&n).as_deref(), Some("review: 1 finding"));
+        n.review = Some(ReviewTally {
+            findings: 3,
+            blocking: 2,
+            decision: Decision::Block,
+        });
+        assert_eq!(
+            row(&n).label,
+            "codex-impl rev · review: 3 findings, 2 blocking"
+        );
     }
 
     /// A node whose version was never read is greyed at the conservative key, and the strip says

@@ -303,6 +303,8 @@ mod tests {
 
     fn node() -> NodeSummary {
         NodeSummary {
+            review_of: None,
+            review: None,
             agent_id: agent("a"),
             parent_id: Some(agent("root")),
             name: None,

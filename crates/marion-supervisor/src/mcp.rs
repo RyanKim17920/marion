@@ -2195,6 +2195,8 @@ mod tests {
 
         fn node(id: &str, parent: Option<&str>) -> NodeSummary {
             NodeSummary {
+                review_of: None,
+                review: None,
                 agent_id: AgentId(id.into()),
                 parent_id: parent.map(|p| AgentId(p.into())),
                 name: None,
@@ -2255,6 +2257,9 @@ mod tests {
         use marion_core::proto::model::NodeSummary;
 
         let cyclic = |id: &str, parent: &str| NodeSummary {
+            review_of: None,
+
+            review: None,
             agent_id: AgentId(id.into()),
             parent_id: Some(AgentId(parent.into())),
             name: None,
