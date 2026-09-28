@@ -36,12 +36,24 @@ pub struct RequestLog {
 
 impl RequestLog {
     /// Open (creating, appending) the log at `path`.
+    ///
+    /// Owner-only, `0700` directories and a `0600` file: a request body is the node's prompt and
+    /// history, which no other local user should be able to read.
     pub fn create(path: impl Into<PathBuf>) -> io::Result<Self> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
         let path = path.into();
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             path,
             file: Mutex::new(file),
@@ -148,6 +160,19 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("marion-reqlog-{}-{name}.jsonl", std::process::id()))
+    }
+
+    /// Mutation: open without `mode` and the log reads `0644`.
+    #[test]
+    fn the_log_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = tmp("private");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        RequestLog::create(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
