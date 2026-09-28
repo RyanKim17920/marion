@@ -132,6 +132,8 @@ const USAGE_LIMIT_MARKERS: &[&str] = &[
     "hit your usage limit",
     "usage_limit_exceeded",
     "usage_limit_reached",
+    // app-server's `codexErrorInfo` spells the same tag in camel case (S36 schema `CodexErrorInfo`).
+    "usagelimitexceeded",
     "\"error\":\"rate_limit\"",
 ];
 
