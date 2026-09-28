@@ -30,16 +30,22 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::json;
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
     LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
+use std::path::PathBuf;
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
 pub const ROOT_DIR: &str = "agy-root";
@@ -311,6 +317,77 @@ pub fn is_edit_tool(native: &str) -> bool {
 /// The root `--add-dir` names under a node's config dir.
 pub fn root_dir(config_dir: &std::path::Path) -> std::path::PathBuf {
     config_dir.join(ROOT_DIR)
+}
+
+/// agy 1.2.8, headless `-p` (fixture `tests/fixtures/s32/`). See the module docs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AntigravityAdapter;
+
+impl HarnessAdapter for AntigravityAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Antigravity
+    }
+
+    /// A mode, not a list, like gemini's: `accept-edits` exactly when an edit tool is declared,
+    /// and agy's default otherwise — under which a headless edit is auto-denied (s32).
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| is_edit_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| ACCEPT_EDITS_MODE.to_string()),
+        })
+    }
+
+    /// The refusal this harness owes, the root, and the working-directory preamble.
+    ///
+    /// **Canned and endpoint are refused by name.** agy has no measured way to point it at another
+    /// provider (an API-key route would need the operator's profile relocated, which loses the
+    /// keychain login), so a "canned" node would spend the operator's real quota under a mode
+    /// that promises it spends nothing, and an endpoint node would bill the operator's login
+    /// instead of the provider it names.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if spec.auth.overlays() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Antigravity,
+                what: "agy has no canned or endpoint provider route: it runs only on the \
+                       operator's own login, so launch it without --canned or a provider",
+            });
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        if spec.mcp == McpDeclaration::Marion {
+            let root = root_dir(&spec.config_dir);
+            f.prompt = format!(
+                "{}{}",
+                working_directory_preamble(&spec.cwd, &root),
+                f.prompt
+            );
+            f.mcp_config = Some(root.to_string_lossy().into_owned());
+        }
+        Ok(f)
+    }
+
+    /// The root's one document, where a declaration was asked for — the row's live declaration,
+    /// byte for byte.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.mcp == McpDeclaration::None {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(
+            root_dir(&spec.config_dir).join(MCP_CONFIG_FILE),
+            mcp_config_document(&declared_bridge(self, spec, ctx)),
+        )])
+    }
 }
 
 #[cfg(test)]

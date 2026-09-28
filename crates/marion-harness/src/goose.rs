@@ -38,16 +38,23 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use std::path::PathBuf;
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
 const HOME_DIR: &str = "home";
@@ -460,6 +467,102 @@ pub fn unspellable(b: &BridgeEnv) -> Option<String> {
         .into_iter()
         .find(|(k, v)| has_space(k) || has_space(v))
         .map(|(k, v)| format!("{k}={v}"))
+}
+
+/// goose 1.49.0, headless `run -t` (fixture `tests/fixtures/s26/`).
+///
+/// The `LaunchOnly` shape gemini and copilot take, with gemini's kind of availability axis — a
+/// mode, not a list: the developer extension is loaded whole or not at all — and a declaration
+/// that is one argv token rather than a document. See the module docs for why the bridge's
+/// node token rides the process environment and not that token.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GooseAdapter;
+
+impl HarnessAdapter for GooseAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Goose
+    }
+
+    /// §3.1's availability axis, in the only form this harness has one: **a builtin, not a
+    /// list.** `mode` is `Some(developer)` exactly when the declaration names a developer-extension
+    /// tool, and `None` — no `--with-builtin`, nothing but marion — otherwise.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| is_developer_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| DEVELOPER_BUILTIN.to_string()),
+        })
+    }
+
+    /// The refusals this harness owes, the declaration token, and the environment the bridge
+    /// inherits.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned | Auth::Endpoint => {
+                // Without a host the `openai` provider posts to api.openai.com with marion's
+                // placeholder key — a real vendor call on a run premised on making none.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "a canned node needs a provider base URL: without OPENAI_HOST the \
+                               openai provider posts to the vendor's own endpoint",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "an explicit model is mandatory: GOOSE_MODEL is how the openai \
+                               provider is told what to name, it has no default, and marion will \
+                               not guess one",
+                    });
+                }
+            }
+            // The canned default names marion's own endpoint's plumbing; a live node has none.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::GOOSE_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        if spec.mcp == McpDeclaration::Marion {
+            let bridge = declared_bridge(self, spec, ctx);
+            // goose splits the token on whitespace; a path it would split is refused by name
+            // rather than declared as two arguments.
+            if let Some(token) = unspellable(&bridge) {
+                return Err(HarnessError::Unspellable {
+                    harness: Harness::Goose,
+                    what: format!(
+                        "`--with-extension` is split on whitespace, and {token:?} contains some"
+                    ),
+                });
+            }
+            f.mcp_config = Some(extension_declaration(&bridge));
+        }
+        Ok(f)
+    }
+
+    /// No file at all — see [`HarnessAdapter::mcp_route`], which is what keeps that from reading
+    /// as "this node got no bridge".
+    fn config_files(
+        &self,
+        _spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

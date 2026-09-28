@@ -45,7 +45,13 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
@@ -311,6 +317,111 @@ pub fn mcp_servers_json(b: &BridgeEnv) -> Value {
 /// (`qwen-mcp-config-argv.argv.json`).
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
     json!({ MCP_CONFIG_KEY: mcp_servers_json(b) }).to_string()
+}
+
+/// qwen 0.23.0, headless `-p` (fixture `tests/fixtures/s25/`).
+///
+/// Claude Code's shape over an OpenAI provider: both of §3.1's axes are one list — what
+/// `--core-tools` names is both what the model sees and what runs under `--yolo` — and the
+/// declaration is one argv token. See the module docs for the deferred-discovery switch and
+/// the twelve exempt survivors.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QwenAdapter;
+
+impl HarnessAdapter for QwenAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Qwen
+    }
+
+    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    /// built-ins, as `--core-tools` names them — and the audit record is that same list.
+    ///
+    /// **Never empty.** `--core-tools` with no names is silently no allowlist at all: the run
+    /// starts, nothing warns, and the model is offered every built-in but the twelve excluded
+    /// (`qwen-core-tools-empty.provider-request-1.json`). A launch with no marion verb and no
+    /// declaration is refused by name rather than compiled into that.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(self.native_tools(spec)?);
+        if tools.is_empty() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Qwen,
+                what: "a launch must name at least one tool: `--core-tools` with no names is \
+                       silently no allowlist, and the model would be offered every built-in \
+                       (s25 item 16)",
+            });
+        }
+        Ok(spec::Axes {
+            allowed: tools.clone(),
+            tools,
+            mode: None,
+        })
+    }
+
+    /// The refusals this harness owes, and the declaration token.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned | Auth::Endpoint => {
+                // Without a base URL the OpenAI provider posts to the vendor with marion's
+                // placeholder key; without a model it has nothing to name.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "a canned node needs a provider base URL: without OPENAI_BASE_URL \
+                               the provider posts to the vendor's own endpoint",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "an explicit model is mandatory: OPENAI_MODEL is how the provider is \
+                               told what to name, and marion will not guess one",
+                    });
+                }
+            }
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::QWEN_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use the harness's own default",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // **Under `Inherited` the declaration is compiled onto argv, not written to a file** —
+        // codex's arrangement, for codex's reason: a live node's settings document is the
+        // operator's own, and `--mcp-config` was measured carrying the same block inline.
+        f.mcp_config = (spec.auth == Auth::Inherited && spec.mcp == McpDeclaration::Marion)
+            .then(|| mcp_config_document(&declared_bridge(self, spec, ctx)));
+        Ok(f)
+    }
+
+    /// Under `Canned`, the settings document: the memory side turn switched off, and the
+    /// declaration where one was asked for. **Nothing at all under `Inherited`** — see
+    /// [`HarnessAdapter::mcp_route`], which is what keeps that from reading as "no bridge".
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.auth == Auth::Inherited {
+            return Ok(Vec::new());
+        }
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
+        Ok(vec![(
+            settings_path(&spec.config_dir),
+            serde_json::to_string_pretty(&settings_json(bridge.as_ref()))
+                .expect("a Value always serialises"),
+        )])
+    }
 }
 
 #[cfg(test)]

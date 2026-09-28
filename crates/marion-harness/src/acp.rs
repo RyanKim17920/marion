@@ -48,10 +48,17 @@ use serde_json::{Value, json};
 
 use marion_core::harness::Harness;
 
+use crate::adapter::SESSION_NEW_ID;
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::caps::Capabilities;
 use crate::grammar::{
     ActivityRule, Cond, Reasoning, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
     MidTurn, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery,
@@ -61,6 +68,7 @@ use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
 };
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
+use crate::{copilot, grammar, opencode};
 
 /// The ACP row: **one row, many agents.** It names no program and no flag of its own, because
 /// there is nothing per-protocol to compile — the agent's argv ([`Agent::argv`]) is spliced in
@@ -1742,6 +1750,461 @@ fn failed_words(u: &Value, id: &str) -> String {
         format!("the agent marked tool call {id} failed")
     } else {
         words
+    }
+}
+
+/// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
+///
+/// # What the surfaces are, and why
+///
+/// [`surfaces`] — `Typed(Acp)` control, `StructuredUi` display, `ProtocolEvents`
+/// observation — and each axis is a separate decision:
+///
+/// * **Control is `Typed(Acp)`.** ACP is a bidirectional JSON-RPC session with `session/prompt`,
+///   `session/cancel` and `session/load`, so marion can address a turn rather than merely write
+///   bytes at one. That is §3.4's own definition of `Typed`, and it is what separates this from
+///   opencode's `LaunchOnly` row: the same vendor's binary, one surface up, and the reason §3.3
+///   keys on surfaces at all. S21 exercised the plane in both directions on a live agent — marion
+///   sent three requests and *answered* the agent's own MCP traffic mid-turn.
+/// * **Display is `StructuredUi`, not `NativePty`.** marion owns no terminal for an ACP agent: the
+///   output arrives as `session/update` frames, which is something marion renders, not something a
+///   VT grid receives. `NativePty` would mint the node a [`crate::PtyWitness`] and put it one call
+///   from `spawn_pty` (§11 item 1), for a process that has no terminal at all. So
+///   [`Self::pane_surfaces`] is `None` too, and a pane request is refused by name.
+/// * **Observation is `ProtocolEvents` alone.** The frames are the record. There is no transcript
+///   file marion knows how to find — that is per-agent, and this adapter is per-protocol — and
+///   there are no terminal bytes.
+///
+/// # What the ceiling then permits, and what is actually claimed
+///
+/// Typed + `ProtocolEvents` is the most permissive point in §3.4's cross-product: its
+/// [`Capabilities::ceiling`](crate::Capabilities::ceiling) is all ten. That makes the ceiling
+/// **useless as a limit here**, which is precisely why ACP is the one row where §3.3's stage two
+/// does the work: [`crate::advertised`] claims only what has been measured of the protocol, and
+/// [`crate::AgentHandshake::refine`] narrows that to the agent that actually answered. Nothing in
+/// this adapter publishes a capability; see `caps.rs`'s `Harness::Acp` arm for the five that are
+/// claimed and the five that are not.
+/// # Baseline and refinement, and why the struct has a field
+///
+/// **Any agent that speaks ACP over stdio runs through this adapter with no row naming it.** The
+/// protocol supplies what a per-harness row supplies elsewhere: identity arrives in `initialize`,
+/// the bridge is declared in `session/new`'s `mcpServers`, and the agent's spelling of marion's
+/// verbs is read off its own `tool_call` frames ([`Reading::Generic`] — four agents have been
+/// watched spelling `report` four ways, and every one of them spelled the same `<server> <verb>`
+/// pair). An [`Agent`] row is a **refinement** over that path: a pinned spelling, a canned
+/// recipe, a measured quirk. [`Binding`] is the layering made a value, and it is what this
+/// adapter is bound to.
+///
+/// The binding rides the adapter rather than the spec because [`HarnessAdapter::marion_tool_name`]
+/// and the stream readers take no [`LaunchSpec`], and their answers are per agent. [`Self::unbound`]
+/// is the protocol-level adapter — what [`crate::adapter::adapter_for`] hands back from a [`Harness`] alone, enough
+/// for the surface questions (`surfaces`, `mcp_route`) that have no per-agent answer — and it
+/// **cannot be launched**: every method that would put marion's verbs in front of a model refuses it
+/// by name. [`crate::adapter::adapter_for_type`] is the seam that binds one.
+#[derive(Debug, Clone)]
+pub struct AcpAdapter {
+    /// `None` on the protocol-level adapter; see the type's doc comment.
+    pub(crate) binding: Option<Binding>,
+}
+
+impl AcpAdapter {
+    /// The adapter for the ACP **protocol**, bound to no agent. Unlaunchable by construction.
+    pub fn unbound() -> Self {
+        Self { binding: None }
+    }
+
+    /// The adapter for one refinement row.
+    pub fn for_agent(agent: Agent) -> Self {
+        Self::bound(Binding::refined(agent))
+    }
+
+    /// The adapter for one resolved binding — a row or a generic command.
+    pub fn bound(binding: Binding) -> Self {
+        Self {
+            binding: Some(binding),
+        }
+    }
+
+    /// Resolve an operator's selector — a row's id or a command line — into a bound adapter. The
+    /// one refusal is a selector with no program in it; see [`Binding::resolve`].
+    pub fn resolve(selector: &str) -> Result<Self, HarnessError> {
+        Binding::resolve(selector)
+            .map(Self::bound)
+            .map_err(|e| HarnessError::AcpAgent(e.to_string()))
+    }
+
+    /// The binding this launch names, or the refusal. **The one place the selector is resolved**,
+    /// so `compile` and `session_declaration` cannot disagree about which agent is being launched.
+    ///
+    /// The spec's `acp_agent` and the adapter's own binding must resolve to the **same** binding.
+    /// They are two routes to one answer — an agent type names a selector, and the supervisor binds
+    /// an adapter from it — and a launch in which they disagree is one where marion would compile
+    /// agent A's argv and read agent B's spelling out of the transcript. That is exactly the class
+    /// of bug the `HarnessAdapter` seam was introduced to end, so it is a refusal rather than a
+    /// precedence rule.
+    fn binding(&self, spec: &LaunchSpec) -> Result<&Binding, HarnessError> {
+        let selector = spec
+            .extra
+            .acp_agent
+            .as_deref()
+            .ok_or(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                what: "`acp` is a protocol, not a program: one adapter serves many agents and \
+                       marion may not choose one for the operator (§6.4). Name it in the agent \
+                       type's `acp_agent` — a refinement row's id, or the agent's command",
+            })?;
+        let named =
+            Binding::resolve(selector).map_err(|e| HarnessError::AcpAgent(e.to_string()))?;
+        match &self.binding {
+            None => Err(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                what: "this adapter was built from the harness name alone, so it carries no ACP \
+                       agent: no argv to launch and no reading for its transcript. Bind it with \
+                       `adapter_for_type`",
+            }),
+            Some(bound) if *bound != named => Err(HarnessError::AcpAgent(format!(
+                "this adapter is bound to `{}` and the launch names `{}`; marion will not compile \
+                 one agent's argv and read another's tool spelling",
+                bound.selector(),
+                named.selector()
+            ))),
+            Some(bound) => Ok(bound),
+        }
+    }
+
+    /// How this adapter reads a transcript: the bound agent's measured spelling, the baseline for
+    /// an unmeasured or unnamed one, and `None` only on the unbound adapter.
+    fn reading(&self) -> Option<Reading> {
+        self.binding.as_ref().map(Binding::reading)
+    }
+}
+
+impl HarnessAdapter for AcpAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Acp
+    }
+
+    /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into
+    /// it** — [`SPEC`]'s one row splices [`spec::Field::AgentArgs`] and names no program of
+    /// its own, because the program is the agent's.
+    ///
+    /// * *No prompt.* It rides `session/prompt` after the handshake, so `spec.prompt` reaches argv
+    ///   on no ACP agent — the claude-code situation, one protocol over.
+    /// * *No model on argv.* S21's `session/new` result carries a `configOptions` `model`
+    ///   **select**: the model is chosen inside the session, and marion has measured no argv that
+    ///   sets it. The compiled [`crate::invocation::Invocation::model`] is the requested one because the ACP driver
+    ///   applies it over the protocol (`session/set_config_option`, measured on `opencode acp`
+    ///   1.18.32) and refuses the run by name where the agent offers no model select or not that
+    ///   model, so the record never names a model that did not run. Under the canned recipe the
+    ///   config document's `model` key carries it too, and the session then already has it.
+    /// * *No credential.* Under [`Auth::Canned`] marion would have to point the agent at its own
+    ///   endpoint, and there is no ACP-level way to do that — it is per-agent config, and this
+    ///   adapter is per-protocol. Refused by name rather than launched at the operator's real
+    ///   provider while the contract records a canned one.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        let binding = self.binding(spec)?;
+        // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let (program, args) = binding
+            .argv()
+            .split_first()
+            .expect("a binding always names a program");
+        f.program = Some(program.to_string());
+        f.agent_args = args.to_vec();
+        // **The one refinement that touches argv.** A row measured to ignore the protocol's
+        // declaration channel (S25: copilot 1.0.83) gets the bridge on its own flag instead, as the
+        // same document marion's copilot adapter writes for `copilot -p` — and
+        // [`Self::session_declaration`] then leaves the session block empty, so a version that one
+        // day honours `mcpServers` does not start a second bridge. The generic path never reaches
+        // this arm: it has no row, so it has only the protocol's channel.
+        if let (Declaration::Argv { flag, .. }, McpDeclaration::Marion) =
+            (binding.declaration(), spec.mcp)
+        {
+            f.agent_args.push(flag.to_string());
+            f.agent_args
+                .push(copilot::mcp_config_json(&declared_bridge(self, spec, ctx)).to_string());
+        }
+        // A resume rides `session/load` ([`Self::session_declaration`]), never argv: the row has no
+        // `Arg::Resume` and the renderer would otherwise refuse the launch as one it cannot name a
+        // session on. The session *is* named — on the request, which is where this protocol puts
+        // it.
+        f.resume = None;
+        (f.extra_env, f.model) = match (spec.auth, binding.canned()) {
+            // opencode's own rows, over the same binary, under **every** mode — they gate
+            // themselves on auth, exactly as they do for `opencode run`: canned and endpoint, the
+            // relocations, the hygiene and `PWD` (placement, not isolation — S13 measured a child
+            // re-entering `$PWD` whatever it was `chdir`'d to); live, the hygiene and `PWD` only, so the
+            // operator's own login and config stay where opencode finds them. The inline document
+            // is the ACP one ([`opencode::acp_session_document`]): the bridge rides `session/new`,
+            // and only its call timeout has to be carried beside it.
+            (_, Some(CannedRecipe::OpencodeConfigDocument)) => {
+                f.inline_config = Some(opencode::acp_session_document());
+                let mut env = spec::render_env(opencode::SPEC.env, &f);
+                // And opencode's no-self-update switch, which is that row's policy rather than one
+                // of its `Env` rows — the same binary, one subcommand over, updates itself the same
+                // way.
+                env.extend(opencode::SPEC.updates.env());
+                // And, live, no session model where only the type's plumbing default was given:
+                // the session keeps the operator's own.
+                let model = opencode::requested_model(spec.auth, spec.model.as_deref());
+                (env, model.map(str::to_string))
+            }
+            // The requested model rides the session, not argv: `acp_child` sets it through ACP's
+            // `session/set_config_option` and refuses the run by name where the agent offers no
+            // such model, so recording it here names what ran.
+            (Auth::Inherited, None) => (Vec::new(), spec.model.clone()),
+            // **Refused by name, per agent — and this is the one thing the baseline cannot do.**
+            // The protocol has no provider channel anywhere in its handshake, so a generic agent
+            // has no canned recipe by construction, and most refinement rows have none measured
+            // either. Launching them anyway would point the operator's real credential at a vendor
+            // while the contract records a canned run — §6.7's audit record asserting something
+            // that never happened.
+            (Auth::Canned | Auth::Endpoint, None) => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::Acp,
+                    what: "ACP names no provider, base URL or credential at any point in its \
+                           handshake, and marion has never measured a way to point this \
+                           particular agent at one. Run it without --canned, on your own login, \
+                           or pick an agent whose canned recipe is measured",
+                });
+            }
+        };
+        // The agent type's approval mode rides the session too, set by the driver after the model.
+        f.session_mode = spec.extra.approval_mode.clone();
+        Ok(f)
+    }
+
+    /// The row's constraint, plus the session mode where the launch sets one: the driver refuses a
+    /// run whose agent does not offer it, so the record names a mode the session really ran in.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        self.binding(spec)?;
+        // The refusal owed to a `tools:` declaration, as the default runs it.
+        self.axes(spec)?;
+        let mut out = vec![NO_TOOL_AVAILABILITY_SURFACE.to_string()];
+        out.extend(
+            spec.extra
+                .approval_mode
+                .as_ref()
+                .map(|m| format!("{}{m}", SESSION_MODE_PREFIX)),
+        );
+        Ok(out)
+    }
+
+    /// **No declaration document, on any ACP agent** — and, under a canned provider, one document
+    /// that declares nothing.
+    ///
+    /// Where the other four write marion's *bridge* into a config file under `spec.config_dir`,
+    /// ACP's only declaration channel is `session/new` ([`Self::session_declaration`]), and an
+    /// empty `mcp` block here is what [`McpRoute::Session`] exists to keep from reading as *"this
+    /// node got no bridge"*. That is still true of every byte below: the document this writes
+    /// under [`CannedRecipe::OpencodeConfigDocument`] carries a **provider**, and no `mcp`
+    /// key at all, because the bridge rides the session and the endpoint cannot.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let binding = self.binding(spec)?;
+        if !spec.auth.overlays() {
+            return Ok(Vec::new());
+        }
+        match binding.canned() {
+            None => Ok(Vec::new()),
+            Some(CannedRecipe::OpencodeConfigDocument) => {
+                let model = spec
+                    .model
+                    .as_deref()
+                    .and_then(opencode::ModelRef::parse)
+                    .ok_or(HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        what: "this agent's canned recipe is opencode's config document, whose \
+                               `model` key is the only channel that reaches an ACP session — ACP \
+                               chooses the model inside the session and marion has measured no \
+                               argv that sets it. Name a `provider/model` pair",
+                    })?;
+                let base_url = spec.base_url.clone().ok_or(HarnessError::MissingInput {
+                    harness: Harness::Acp,
+                    what: "a canned run points the agent at marion's own endpoint, and no base \
+                           URL was given",
+                })?;
+                Ok(vec![(
+                    opencode::config_path(&spec.config_dir),
+                    format!(
+                        "{:#}\n",
+                        opencode::config_json(
+                            &opencode::ConfigSpec {
+                                model,
+                                base_url,
+                                api_key: spec.api_key.clone(),
+                                key_header: Default::default(),
+                            },
+                            // **No `mcp` block.** marion's bridge is declared in `session/new`, and
+                            // declaring it here as well would start a second copy of it.
+                            None,
+                        )
+                    ),
+                )])
+            }
+        }
+    }
+
+    /// The `session/new` request, with marion's bridge declared as a stdio MCP server.
+    ///
+    /// The env block is [`crate::mcp_bridge::BridgeEnv::pairs`] — the same derivation every other declaration
+    /// serialises — because the process on the other end is the same `marion-supervisor mcp`
+    /// bridge reading the same variables. A second spelling here would be a second thing to keep
+    /// true.
+    fn session_declaration(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<serde_json::Value>, HarnessError> {
+        self.binding(spec)?;
+        // No spelling gate here any more. This method *is* marion putting its verbs in front of
+        // the agent, and it used to refuse an agent nobody had watched call a tool (s14: an
+        // unknown tool name is silently ignored). That gate guarded a *compiled* spelling — and
+        // on this row nothing is compiled: ACP has no availability axis, the prompt rides
+        // `session/prompt` verbatim, and the agent presents the bridge's tools to its model under
+        // whatever name it likes. What marion has to get right is the *reading*, and
+        // `Reading::Generic` reads the `<server> <verb>` pair in any spelling.
+        //
+        // The bridge's contract, verbatim — the same pairs every document-shaped declaration
+        // carries — because the process on the other end is the same `marion-supervisor mcp`.
+        let servers = match (spec.mcp, self.binding(spec)?.declaration()) {
+            (McpDeclaration::None, _) => Vec::new(),
+            // Declared on argv by `fields`; an entry here too would be the second bridge the
+            // `Declaration::Argv` doc names.
+            (McpDeclaration::Marion, Declaration::Argv { .. }) => Vec::new(),
+            (McpDeclaration::Marion, Declaration::Session) => vec![McpServerDecl {
+                name: MCP_SERVER_NAME.into(),
+                command: ctx.bridge.clone(),
+                args: ctx.bridge_args.clone(),
+                env: declared_bridge(self, spec, ctx).pairs(),
+            }],
+        };
+        match &spec.resume {
+            // **A resume is `session/load`, not a flag** — the row's `resume` grammar is `None`
+            // for exactly this reason. The same declaration rides it, because the agent's MCP
+            // processes did not survive the agent. Built even under `McpDeclaration::None`, since
+            // the session to continue is something only this request can say.
+            Some(session) => Ok(Some(session_load_request(
+                SESSION_NEW_ID,
+                session,
+                &spec.cwd,
+                &servers,
+            ))),
+            None if servers.is_empty() => Ok(None),
+            None => Ok(Some(session_new_request(
+                SESSION_NEW_ID,
+                &spec.cwd,
+                &servers,
+            ))),
+        }
+    }
+
+    /// The protocol row's carrier — the token rides `session/new` beside the node's identity —
+    /// except on a binding whose refinement declares the bridge on argv, whose own carrier then
+    /// withholds it. An unresolvable binding answers for the protocol; `compile` refuses it anyway.
+    fn token_carrier(&self, spec: &LaunchSpec) -> spec::TokenCarrier {
+        match self.binding(spec).map(Binding::declaration) {
+            Ok(Declaration::Argv { token, .. }) => token,
+            Ok(Declaration::Session) | Err(_) => self.spec().token.for_auth(spec.auth),
+        }
+    }
+
+    /// The row's route — `session/new`'s block — except on a binding whose refinement measured the
+    /// bridge reaching the agent on argv, where it is that flag, verified against the compiled argv
+    /// exactly as codex's `-c` overrides are. The unbound adapter answers for the protocol.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        let declaration = self
+            .binding
+            .as_ref()
+            .map(Binding::declaration)
+            .unwrap_or(Declaration::Session);
+        match (spec.mcp, declaration) {
+            (McpDeclaration::None, _) => McpRoute::None,
+            (McpDeclaration::Marion, Declaration::Argv { flag, .. }) => McpRoute::Argv(flag),
+            (McpDeclaration::Marion, Declaration::Session) => McpRoute::Session(MCP_SERVERS_KEY),
+        }
+    }
+
+    fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
+        match self.reading() {
+            Some(r) => parse_stream(stdout, exit, r),
+            None => StreamOutcome::default(),
+        }
+    }
+
+    /// **This agent's** spelling where one was measured, and the baseline where none was.
+    ///
+    /// | agent | this returns |
+    /// |---|---|
+    /// | `opencode acp` 1.17.3 | `marion_report` |
+    /// | `claude-agent-acp` 0.66.0 | `mcp__marion__report` |
+    /// | `codex-acp` 1.1.14 | `mcp.marion.report` |
+    /// | `copilot --acp` 1.0.83 | `marion-report` |
+    /// | any other agent | [`GENERIC_SPELLING`] |
+    ///
+    /// On this row the answer reaches no model: ACP has no availability axis
+    /// ([`NO_TOOL_AVAILABILITY_SURFACE`]) and the prompt rides `session/prompt`, so the string
+    /// is a record and never a compiled constraint. The transcript is read with the whole
+    /// [`Reading`], not with this string, which is what makes a generic agent readable.
+    ///
+    /// The unbound adapter gets [`UNBOUND_TOOL_NAME`] — a string that is not a tool name in
+    /// any spelling and matches nothing in any transcript. It is unreachable from a launch:
+    /// `compile` refuses an unbound adapter by name before anything is put in front of a model.
+    /// The row's typed turn, with the bound agent's measured [`spec::MidTurn`] where a refinement
+    /// row carries one: opencode and claude-agent-acp fold, codex-acp and copilot queue, and an
+    /// unmeasured agent keeps the row's queue.
+    fn turn_delivery(&self, shape: spec::NodeShape) -> spec::TurnDelivery {
+        match spec::delivery_for(self.spec(), shape) {
+            spec::TurnDelivery::TypedTurn { mid_turn, note } => spec::TurnDelivery::TypedTurn {
+                mid_turn: self
+                    .binding
+                    .as_ref()
+                    .and_then(Binding::mid_turn)
+                    .unwrap_or(mid_turn),
+                note,
+            },
+            other => other,
+        }
+    }
+
+    fn marion_tool_name(&self, tool: &str) -> String {
+        match self.reading() {
+            Some(r) => r.spell(tool),
+            None => format!("{}{tool}", UNBOUND_TOOL_NAME),
+        }
+    }
+
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        self.reading()
+            .map(|r| marion_calls(stdout, r))
+            .unwrap_or_default()
+    }
+
+    /// The protocol's own `session/prompt` response shape ([`USAGE`]), bound or not: spend is
+    /// a protocol fact. How a bound agent's counters split its reasoning is the one refinement
+    /// ([`Binding::usage`]).
+    fn usage_rule(&self) -> Option<&'static grammar::UsageRule> {
+        Some(self.binding.as_ref().map_or(&USAGE, Binding::usage))
+    }
+
+    /// The protocol's own `session/new` answer ([`SESSION`]), whatever the agent: where a
+    /// session is named is a protocol fact, as spend is.
+    fn session_id(&self, frame: &serde_json::Value) -> Option<String> {
+        grammar::session_in(&SESSION, frame)
+    }
+
+    /// The protocol's `session/update` frames ([`ACTIVITY`]), whatever the agent: every
+    /// agent names its calls and streams its words through the same updates.
+    fn activity(&self) -> Option<&'static grammar::ActivityRule> {
+        Some(&ACTIVITY)
     }
 }
 

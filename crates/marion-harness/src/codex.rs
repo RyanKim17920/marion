@@ -14,18 +14,25 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, Reasoning,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
     Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
     When, WireRecipe,
 };
+use std::path::PathBuf;
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
 /// one binary over one isolation.
@@ -674,6 +681,93 @@ omit_tools_from = ["deferred"]
 env = {{ {env_table} }}
 "#
     )
+}
+
+/// Codex 0.146.0, `exec` surface (§9). marion's M1 child.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CodexAdapter;
+
+impl CodexAdapter {
+    fn config_path(spec: &LaunchSpec) -> PathBuf {
+        spec.config_dir.join("config.toml")
+    }
+}
+
+impl HarnessAdapter for CodexAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Codex
+    }
+
+    /// **Under `Inherited` the declaration is compiled into argv, not written to a file** — and
+    /// `CODEX_HOME` is dropped, which is what makes the login visible in the first place. The two go
+    /// together: unsetting the variable points codex at the operator's `~/.codex/auth.json` *and* at
+    /// the operator's `~/.codex/config.toml`, and marion is forbidden to write the second (§6.4), so
+    /// the `-c` overlay is the only channel left. The row's `Each("-c", Pairs)` carries it, and the
+    /// `Canned`-gated `CODEX_HOME` row drops the variable.
+    ///
+    /// The same fields serve both shapes: `SPEC`'s pane row simply names no `--output-schema`
+    /// or `--output-last-message`, so the two `exec`-only outputs are ignored there structurally
+    /// rather than by a second branch that sets them `None`.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration on every
+        // harness; nothing in the row reads the result — see `Self::tool_name` for why a codex
+        // declaration compiles no flag. Discarding the names is the honest outcome.
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // Canned compiles none, so every existing contract still records `None` and the canned argv
+        // is byte-identical to what it was before `-m` was known to exist here.
+        f.model = match spec.auth {
+            Auth::Canned => None,
+            // A real endpoint serves the model it is asked for, so it must be asked.
+            Auth::Inherited | Auth::Endpoint => spec.model.clone(),
+        };
+        // A live node reads no marion-written config, so the sandbox the contract records rides
+        // `-c` first, bridge or no bridge (`live_sandbox_override`).
+        f.pairs = match (spec.auth, spec.mcp) {
+            (Auth::Canned | Auth::Endpoint, _) => Vec::new(),
+            (Auth::Inherited, McpDeclaration::None) => vec![live_sandbox_override()],
+            (Auth::Inherited, McpDeclaration::Marion) => std::iter::once(live_sandbox_override())
+                .chain(live_config_overrides(&declared_bridge(self, spec, ctx)))
+                .collect(),
+        };
+        Ok(f)
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        // **No file at all under `Inherited`, and that is the MUST rather than a convenience.**
+        // With `CODEX_HOME` unset the only `config.toml` codex reads is `~/.codex/config.toml` —
+        // the operator's own — and §6.4 forbids marion mutating it. Writing marion's document
+        // *anywhere else* would simply not be read, and writing it there would clobber a login
+        // marion is not even running. So the declaration moves to argv (see `compile` /
+        // `mcp_route`) and this route emits nothing.
+        if spec.auth == Auth::Inherited {
+            // No `base_url` is demanded either: the refusal below exists because a *generated*
+            // `model_providers` block pointing nowhere is an unbounded hang, and a live node
+            // generates none — it uses codex's own default provider and the operator's credential.
+            return Ok(Vec::new());
+        }
+        let base_url = spec.base_url.as_deref().ok_or(HarnessError::MissingInput {
+            harness: Harness::Codex,
+            what: "a model_providers entry needs a base_url; a config pointing nowhere fails as \
+                   a hang, which is the worst failure to diagnose",
+        })?;
+        // The bridge's identity reaches a codex node's `[mcp_servers.marion]` `env` — a codex
+        // **root** without it answered `spawn` with `marion: MARION_REPO is not set`. Written on
+        // every canned node, declaration or not: the document is the whole of the node's config.
+        let bridge = declared_bridge(self, spec, ctx);
+        Ok(vec![(
+            Self::config_path(spec),
+            config_toml(&bridge, base_url),
+        )])
+    }
 }
 
 #[cfg(test)]

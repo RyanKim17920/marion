@@ -29,12 +29,18 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
     LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Remembers, Resume, Spelling,
@@ -483,6 +489,116 @@ pub fn extension_source(b: &BridgeEnv) -> String {
             "__MARION_PREFIX__",
             &Value::String(ToolSpelling::McpDoubleUnderscore.spell("")).to_string(),
         )
+}
+
+/// pi 0.80.2, headless `-p --mode json` (fixture `tests/fixtures/s34-pi/`).
+///
+/// qwen's arrangement of the axes — `--tools` is both what the model is offered and all it may run,
+/// since pi has no approval surface — with a declaration that is marion's own extension file. See
+/// the module docs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PiAdapter;
+
+impl HarnessAdapter for PiAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Pi
+    }
+
+    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    /// built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
+    /// (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(self.native_tools(spec)?);
+        Ok(spec::Axes {
+            allowed: tools.clone(),
+            tools,
+            mode: None,
+        })
+    }
+
+    /// The refusals this harness owes, and the extension path.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                if spec.base_url.is_none() || spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Pi,
+                        what: "a canned node needs a provider base URL and an explicit model: \
+                               both are fields of the models.json marion writes, and marion will \
+                               not write a provider that points nowhere or names no model",
+                    });
+                }
+            }
+            Auth::Endpoint => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::Pi,
+                    what: "pi has no measured endpoint recipe: launch it canned or on your own \
+                           login",
+                });
+            }
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::PI_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Pi,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real model instead \
+                               (marion run --live -m …), or none to keep pi's own default",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
+            extension_path(&spec.config_dir)
+                .to_string_lossy()
+                .into_owned()
+        });
+        Ok(f)
+    }
+
+    /// The extension first, where a declaration was asked for — it is what
+    /// [`McpRoute::Document`] checks — then, under `Canned`, the `models.json` the relocated agent
+    /// dir reads. Both are marion's own files under marion's own directory, so live mode writes the
+    /// extension too and nothing of the operator's.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let mut files = Vec::new();
+        if spec.mcp == McpDeclaration::Marion {
+            files.push((
+                extension_path(&spec.config_dir),
+                extension_source(&declared_bridge(self, spec, ctx)),
+            ));
+        }
+        if spec.auth == Auth::Canned {
+            let missing = HarnessError::MissingInput {
+                harness: Harness::Pi,
+                what: "a canned models.json needs a base URL, a key and a model",
+            };
+            let (Some(url), Some(model)) = (spec.base_url.as_deref(), spec.model.as_deref()) else {
+                return Err(missing);
+            };
+            // pi lists a model only when its provider has a key; the canned endpoint ignores it.
+            let key = spec
+                .api_key
+                .as_ref()
+                .map_or("marion-canned", |k| k.expose());
+            files.push((
+                models_path(&spec.config_dir),
+                serde_json::to_string_pretty(&models_json(url, key, model))
+                    .expect("a Value always serialises"),
+            ));
+        }
+        Ok(files)
+    }
 }
 
 #[cfg(test)]

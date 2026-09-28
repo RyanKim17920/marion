@@ -12,17 +12,24 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use std::path::PathBuf;
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
 /// which is what `GeminiAdapter::config_files` writes for an [`Auth::Inherited`] launch.
@@ -587,6 +594,112 @@ fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: Option<&str>)
         });
     }
     settings
+}
+
+/// Gemini CLI 0.53.0, headless `-p` (§6.4, fixture `tests/fixtures/s12/`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeminiAdapter;
+
+impl GeminiAdapter {
+    /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names — [`SETTINGS_FILE`]
+    /// under the config dir, which is exactly what [`SPEC`]'s env row renders, so `compile`
+    /// and `config_files` cannot disagree about where it is.
+    ///
+    /// It sits *beside* `$GEMINI_CLI_HOME`, not inside `<home>/.gemini/`: the whole point of the
+    /// system-settings override is that marion writes nothing under the sandbox home the CLI owns.
+    fn settings_path(spec: &LaunchSpec) -> PathBuf {
+        spec.config_dir.join(SETTINGS_FILE)
+    }
+}
+
+impl HarnessAdapter for GeminiAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Gemini
+    }
+
+    /// §3.1's availability axis, in the only form this harness has one: **a mode, not a list.**
+    /// `mode` is `Some(auto_edit)` exactly when the declaration names an edit tool, and `None` —
+    /// the default mode, which [`SPEC`] then compiles no flag for — otherwise. The marion →
+    /// gemini mapping is [`Self::tool_name`]'s, and which *gemini* names need the mode is
+    /// [`is_edit_tool`]'s, so neither half is restated here.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| is_edit_tool(t));
+        // The shell is past what `auto_edit` approves, so it is granted by name.
+        let allowed = tools
+            .iter()
+            .filter(|t| is_allowed_by_name(t))
+            .cloned()
+            .collect();
+        Ok(spec::Axes {
+            tools,
+            allowed,
+            mode: relaxed.then(|| AUTO_EDIT_APPROVAL_MODE.to_string()),
+        })
+    }
+
+    /// The two refusals this harness owes, and the one derivation.
+    ///
+    /// **The model is refused rather than defaulted.** A pinned id would be a guess marion has no
+    /// basis for, and S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to
+    /// `gemini-3.5-flash` in the request path — so a "safe" default is not even reliably the model
+    /// that runs. The failure it prevents is the expensive one: with model `auto` the CLI issues a
+    /// classifier call to gemini-3.1-flash-lite over non-streaming `:generateContent` and hung on
+    /// retry 5.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if spec.model.is_none() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Gemini,
+                what: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
+                       a classifier call that retried 5x and hung, and marion will not guess a model",
+            });
+        }
+        if let Some(u) = &spec.base_url
+            && !base_url_is_acceptable(u)
+        {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Gemini,
+                what: "GOOGLE_GEMINI_BASE_URL must be https unless the host is loopback; a \
+                       non-loopback plain-http endpoint is refused by the CLI",
+            });
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // The google-genai SDK appends its own `/v1beta/...`, so the `/v1` marion stores would be
+        // doubled; the derivation is this harness's ([`google_base_url`]).
+        f.base_url = f.base_url.as_deref().map(google_base_url);
+        Ok(f)
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        // Unlike Claude Code, the file is written even with no MCP server: it also carries the
+        // auth selection, without which the run dies with `Invalid auth method selected.`
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
+        // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
+        // `GEMINI_API_KEY` and so selects `gemini-api-key`; under `Inherited` it supplies no
+        // credential at all, and this document is the *system settings* layer, which outranks the
+        // operator's own — so any selection here would pin every operator to one route. The live
+        // document selects nothing and leaves gemini's own `user || env` resolution to run.
+        let document = match (spec.auth, bridge.as_ref()) {
+            (Auth::Canned | Auth::Endpoint, bridge) => {
+                serde_json::to_string_pretty(&settings_json(bridge))
+                    .expect("a Value always serialises")
+            }
+            // The row's live declaration, byte for byte: a native root gets exactly this file.
+            (Auth::Inherited, Some(bridge)) => live_settings_document(bridge),
+            (Auth::Inherited, None) => serde_json::to_string_pretty(&live_settings_json(None))
+                .expect("a Value always serialises"),
+        };
+        Ok(vec![(Self::settings_path(spec), document)])
+    }
 }
 
 #[cfg(test)]

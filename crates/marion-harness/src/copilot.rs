@@ -35,11 +35,17 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
     Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
@@ -563,6 +569,147 @@ pub fn mcp_config_json(b: &BridgeEnv) -> Value {
             }
         }
     })
+}
+
+/// GitHub Copilot CLI 1.0.83, headless `-p` (fixture `tests/fixtures/s24/`).
+///
+/// The second harness after Claude Code where **both** of §3.1's axes are marion's to set
+/// (`PromptSpec::available` and `::allow`), and the first where the two axes spell the
+/// same tool differently — see the module docs. Everything else is the `LaunchOnly`
+/// shape gemini and opencode take: the prompt rides argv, the declaration is a document, and the
+/// stream is read after the fact.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CopilotAdapter;
+
+impl CopilotAdapter {
+    /// Marion's verbs out of [`LaunchSpec::allowed_tools`], which arrive in **this harness's**
+    /// model-facing spelling (`marion-report`) because `run_spawn` compiles them through
+    /// [`HarnessAdapter::marion_tool_name`].
+    ///
+    /// **Refused by name when they do not**, rather than passed through: copilot is the one
+    /// `LaunchOnly` harness that compiles this list into a flag, and a list in another harness's
+    /// spelling would compile to `--available-tools=mcp__marion__spawn`, which names no copilot
+    /// tool and leaves the node with none of marion's verbs, at exit 0. That is the shape a root
+    /// would take today — `root::ROOT_VERBS` is spelled for Claude Code — and a refusal
+    /// here is what keeps it from being a silent one.
+    fn marion_verbs(spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        let prefix = model_tool_name(MCP_ALIAS, "");
+        spec.allowed_tools
+            .iter()
+            .map(|t| {
+                t.strip_prefix(prefix.as_str())
+                    .filter(|verb| !verb.is_empty())
+                    .map(str::to_string)
+                    .ok_or(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "allowed_tools must carry marion's verbs in this harness's own \
+                               spelling (`marion-<verb>`, from `marion_tool_name`); a list in \
+                               another harness's spelling would compile into --available-tools \
+                               and grant the node none of marion's tools, silently",
+                    })
+            })
+            .collect()
+    }
+}
+
+impl HarnessAdapter for CopilotAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Copilot
+    }
+
+    /// Both of §3.1's axes, in copilot's two spellings (the module docs).
+    ///
+    /// `tools` is `--available-tools`: what the model **sees** — marion's verbs plus the declared
+    /// built-ins. `allowed` is `--allow-tool`: what runs **without a prompt** — `<alias>(<verb>)`
+    /// for each of marion's verbs, plus the kind `write` when the declaration reaches a
+    /// file-writing built-in. §3.1's *"the same list, plus marion's own"*, in the pattern grammar
+    /// rather than the tool grammar. **`view` adds nothing here, and that is measured**: with only
+    /// `marion(report)` granted, a `view` call ran (`tests/fixtures/s24/README.md`, item 4).
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let native = self.native_tools(spec)?;
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(native.iter().cloned());
+        let mut allowed: Vec<String> = Self::marion_verbs(spec)?
+            .iter()
+            .map(|verb| permission_pattern(MCP_ALIAS, verb))
+            .collect();
+        if native.iter().any(|t| is_write_tool(t)) {
+            allowed.push(WRITE_PERMISSION.into());
+        }
+        if native.iter().any(|t| is_shell_tool(t)) {
+            allowed.push(SHELL_PERMISSION.into());
+        }
+        Ok(spec::Axes {
+            tools,
+            allowed,
+            mode: None,
+        })
+    }
+
+    /// The three refusals this harness owes, and where argv names the declaration document.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned | Auth::Endpoint => {
+                // Both measured as hard refusals by the CLI itself, so marion refuses first and
+                // says why. Without a base URL there is no BYOK at all and the CLI goes looking
+                // for a GitHub login; without a model BYOK exits 1 before any request.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "a canned node needs a provider base URL: COPILOT_PROVIDER_BASE_URL \
+                               is what selects BYOK at all, and without it the CLI requires a \
+                               GitHub login",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "an explicit model is mandatory under BYOK: 1.0.83 exits 1 with \
+                               `BYOK providers require an explicit model` before any request, \
+                               and marion will not guess one",
+                    });
+                }
+            }
+            // The canned default names marion's own endpoint's plumbing, and a live node has no
+            // such endpoint — the string would go to GitHub's model routing and name nothing. The
+            // same refusal opencode makes for `marion/default`, for the same reason.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::COPILOT_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real Copilot model \
+                               (-m <model>), or none to use Copilot's own default",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // `--additional-mcp-config @<file>`: the `@` is how the flag reads a file, and the path is
+        // the one `config_files` writes.
+        f.mcp_config = (spec.mcp == McpDeclaration::Marion)
+            .then(|| format!("@{}", mcp_config_path(&spec.config_dir).to_string_lossy()));
+        Ok(f)
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.mcp != McpDeclaration::Marion {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(
+            mcp_config_path(&spec.config_dir),
+            mcp_config_document(&declared_bridge(self, spec, ctx)),
+        )])
+    }
 }
 
 #[cfg(test)]

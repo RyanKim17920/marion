@@ -45,11 +45,17 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
+use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
@@ -440,6 +446,106 @@ pub fn mcp_settings_json(b: &BridgeEnv) -> Value {
             }
         }
     })
+}
+
+/// cline 3.0.61, headless `--json <prompt>` (fixture `tests/fixtures/s27/`).
+///
+/// opencode's shape: the provider is a document marion writes, the tool set is the harness's own
+/// and unconstrained, and the declaration is a document too. See the module docs for why
+/// the provider document may sit in exactly one place and why the isolation is flags and
+/// variables together.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClineAdapter;
+
+impl ClineAdapter {
+    /// The `providers.json` values, or the refusal each missing one is owed.
+    fn provider(spec: &LaunchSpec) -> Result<ProviderSpec, HarnessError> {
+        // A document with no base URL would select the vendor's own endpoint through cline's
+        // default — s27 item 14 measured a missing provider file as exactly that fallback.
+        let base_url = spec.base_url.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "a canned node needs a provider base URL: providers.json is the only provider \
+                   selection cline reads, and without one it falls back to its own vendor with no \
+                   credential (s27 item 14)",
+        })?;
+        let model = spec.model.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "an explicit model is mandatory: providers.json names one, and marion will not \
+                   guess it",
+        })?;
+        let api_key = spec.api_key.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "a canned node needs a credential: providers.json carries apiKey as a string and \
+                   an absent one is not a spelling the document has",
+        })?;
+        Ok(ProviderSpec {
+            model,
+            base_url,
+            api_key,
+        })
+    }
+}
+
+impl HarnessAdapter for ClineAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Cline
+    }
+
+    /// The refusals this harness owes. Nothing else: the row's argv reads the launch verbatim, the
+    /// provider is a document, and the declaration rides an env-named document.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned | Auth::Endpoint => {
+                Self::provider(spec)?;
+            }
+            // The canned default names marion's own endpoint's plumbing; a live node has none. Any
+            // other model rides `-m`, measured to win over the operator's `providers.json` (s27
+            // item 15); none at all leaves the operator's own.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::CLINE_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Cline,
+                        what: "that model name belongs to marion's canned test provider, which a \
+                               run on your own login does not use. Pass a real model (-m <model>), \
+                               or none to use providers.json's own",
+                    });
+                }
+            }
+        }
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
+        // the row reads the result — see `Self::tool_name`'s row entry for why a declaration
+        // compiles nothing.
+        Ok(neutral_fields(spec, self.axes(spec)?))
+    }
+
+    /// The MCP document **first** — [`McpRoute::Document`] reads the first file as the
+    /// declaration — then, under `Canned`, the provider document at the one path cline reads it.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let mut files = Vec::new();
+        if spec.mcp == McpDeclaration::Marion {
+            files.push((
+                mcp_settings_path(&spec.config_dir),
+                mcp_settings_document(&declared_bridge(self, spec, ctx)),
+            ));
+        }
+        if spec.auth.overlays() {
+            files.push((
+                providers_path(&spec.config_dir),
+                serde_json::to_string_pretty(&providers_json(&Self::provider(spec)?))
+                    .expect("a Value always serialises"),
+            ));
+        }
+        Ok(files)
+    }
 }
 
 #[cfg(test)]

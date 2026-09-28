@@ -18,6 +18,10 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, SpawnCtx, declared_bridge,
+    neutral_fields,
+};
 use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, Reasoning,
@@ -26,6 +30,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
+use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
     LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces,
@@ -683,6 +688,137 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
 /// fallback only, where they named no timeout of their own.
 pub fn acp_session_document() -> String {
     json!({ "experimental": { "mcp_timeout": MCP_TIMEOUT_MS } }).to_string()
+}
+
+/// The provider-block id an opencode endpoint node's generated config uses.
+const ENDPOINT_PROVIDER_BLOCK: &str = "marion";
+
+/// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenCodeAdapter;
+
+impl OpenCodeAdapter {
+    /// The `provider/model` pair, which both argv and the generated config name — parsed once so
+    /// they cannot disagree — or, on a live node that names no model of its own, none: `-m` is
+    /// left off and opencode runs on the operator's configured default, as it uses their login
+    /// ([`requested_model`]). A canned or endpoint node always needs one, because the
+    /// provider block marion generates names it.
+    fn model_ref(spec: &LaunchSpec) -> Result<Option<ModelRef>, HarnessError> {
+        let Some(m) = requested_model(spec.auth, spec.model.as_deref()) else {
+            return match spec.auth {
+                Auth::Inherited => Ok(None),
+                Auth::Canned | Auth::Endpoint => Err(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "an explicit -m provider/model is mandatory: there is no \
+                           OPENCODE_MODEL env var, so argv and the generated provider block are \
+                           the only two channels",
+                }),
+            };
+        };
+        // A real endpoint is asked for its model verbatim — OpenRouter's ids carry a slash of their
+        // own — under a provider block of marion's name, which merges with none of opencode's
+        // built-in providers.
+        if spec.auth == Auth::Endpoint {
+            return Ok(Some(ModelRef {
+                provider: ENDPOINT_PROVIDER_BLOCK.to_string(),
+                model: m.to_string(),
+            }));
+        }
+        ModelRef::parse(m)
+            .map(Some)
+            .ok_or(HarnessError::MissingInput {
+                harness: Harness::OpenCode,
+                what: "the model must be in `provider/model` form, which is the only spelling `-m` \
+                       accepts and the one the generated provider block has to repeat",
+            })
+    }
+}
+
+impl HarnessAdapter for OpenCodeAdapter {
+    fn harness(&self) -> Harness {
+        Harness::OpenCode
+    }
+
+    /// The `provider/model` pair (refused where it is not one; none on a live node that names no
+    /// model of its own — [`Self::model_ref`]), the session title, and the live route's inline
+    /// document.
+    ///
+    /// **Under `Inherited` the declaration is compiled into the env, not written to a file.** S13:
+    /// auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
+    /// variables — so marion cannot relocate the config without also having to relocate, and
+    /// therefore hide, the login. `OPENCODE_CONFIG_CONTENT` is last in the merge order and merges
+    /// *over* the operator's own config, which is exactly the wrong property for isolation and
+    /// exactly the right one here.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
+        // the row reads the result — see `Self::tool_name` for why a declaration here compiles
+        // nothing.
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        f.model = Self::model_ref(spec)?.map(|m| m.qualified());
+        // Any stable string suppresses the title-generation call; the node's own id makes the
+        // session identifiable in `opencode session list` without leaking the prompt — which is
+        // how a node whose stream never named its session is found ([`grammar::TitleLookup`]).
+        f.title = Some(crate::grammar::session_title(&ctx.agent_id));
+        f.inline_config = match spec.auth {
+            Auth::Canned | Auth::Endpoint => None,
+            Auth::Inherited => (spec.mcp == McpDeclaration::Marion)
+                .then(|| live_config_document(&declared_bridge(self, spec, ctx))),
+        };
+        Ok(f)
+    }
+
+    /// `marion/<model>` back to `<model>`: [`Self::model_ref`] put the provider's id under marion's
+    /// own block.
+    fn endpoint_model(&self, compiled: &str) -> String {
+        compiled
+            .strip_prefix(ENDPOINT_PROVIDER_BLOCK)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(compiled)
+            .to_string()
+    }
+
+    /// **No file at all under `Inherited`** — see [`HarnessAdapter::mcp_route`], which is what keeps
+    /// that from reading as "this node got no bridge".
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.auth == Auth::Inherited {
+            // And no `base_url` is demanded either: the refusal below exists because a *generated*
+            // provider block pointing nowhere is an unbounded hang, and a live node generates none.
+            return Ok(Vec::new());
+        }
+        let base_url = spec.base_url.as_deref().ok_or(HarnessError::MissingInput {
+            harness: Harness::OpenCode,
+            what: "the provider block needs a baseURL; without one the child resolves no provider \
+                   at all, and a provider that answers nothing is an unbounded hang (S13)",
+        })?;
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| declared_bridge(self, spec, ctx));
+        let json = config_json(
+            &ConfigSpec {
+                // Canned always resolves one: `model_ref` answers `None` only under `Inherited`,
+                // which returned above.
+                model: Self::model_ref(spec)?.ok_or(HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    what: "a canned node needs a provider/model for the generated provider block",
+                })?,
+                base_url: base_url.to_string(),
+                api_key: spec.api_key.clone(),
+                key_header: spec.extra.key_header.unwrap_or_default(),
+            },
+            bridge.as_ref(),
+        );
+        Ok(vec![(
+            config_path(&spec.config_dir),
+            serde_json::to_string_pretty(&json).expect("a Value always serialises"),
+        )])
+    }
 }
 
 #[cfg(test)]

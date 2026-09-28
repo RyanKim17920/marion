@@ -33,19 +33,26 @@ pub mod spec;
 pub mod stream;
 pub mod surfaces;
 
+pub use acp::AcpAdapter;
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    AcpAdapter, AntigravityAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, CopilotAdapter,
-    Extras, GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
-    McpRoute, OpenCodeAdapter, PiAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
+    Extras, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
+    adapter_for, adapter_for_type,
 };
+pub use antigravity::AntigravityAdapter;
 pub use auth::{
     Auth, Billing, auth_failure_line, failure_cause, limit_window, reported_failure_cause,
     resets_phrase,
 };
 pub use caps::{Capabilities, advertised, static_caps};
+pub use claude_code::ClaudeCodeAdapter;
 pub use claude_code::{anthropic_base_url, mcp_config_json};
+pub use cline::ClineAdapter;
+pub use codex::CodexAdapter;
 pub use codex::config_toml;
+pub use copilot::CopilotAdapter;
+pub use gemini::GeminiAdapter;
+pub use goose::GooseAdapter;
 pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, BridgeEnv, DEPTH_ENV, READY_FILE_ENV};
 pub use native::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
@@ -53,6 +60,9 @@ pub use native::{
     NativeTerminalGeometry, PreparedNativeLaunch, SpecNativeAdapter, assemble_native,
     native_adapter, validate_native_process_values,
 };
+pub use opencode::OpenCodeAdapter;
+pub use pi::PiAdapter;
+pub use qwen::QwenAdapter;
 // `gemini` and `opencode` are addressed by module path rather than flattened here. Both define an
 // `MCP_ALIAS` and both spell marion's tool names differently — a flattened emitter would make the
 // harness a caller is configuring invisible at the use site, which is the exact confusion §3.1's
