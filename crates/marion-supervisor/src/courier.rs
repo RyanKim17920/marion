@@ -378,9 +378,10 @@ pub struct Steered {
 impl Steered {
     /// **The one sentence every steer surface prints on acceptance**: the message's id and when the
     /// node takes it. "Queued", never "delivered", while the supervisor says `queued` — a queued
-    /// message reaches the model only at a boundary: its next tool round on a harness that folds a
-    /// message into work in progress, its next turn otherwise. Which one is the node's row, which
-    /// this sentence does not read, so it names both.
+    /// message reaches the model only at a boundary, and which one is the node's row: the
+    /// supervisor words it (`DeliveryResult::arrives`), and this sentence carries it verbatim. A
+    /// supervisor that predates the field names no row, so the sentence promises no more than a
+    /// turn boundary.
     pub fn sentence(&self) -> String {
         let short = crate::tree::short_id(&self.agent_id.0);
         let who = match &self.agent_type {
@@ -393,7 +394,12 @@ impl Steered {
             .as_deref()
             .map_or_else(String::new, |m| format!(" as {m}"));
         if self.result.queued {
-            format!("queued{id}; reaches {who} at its next tool round or turn")
+            let when = self
+                .result
+                .arrives
+                .as_deref()
+                .unwrap_or("at its next turn boundary");
+            format!("queued{id}; reaches {who} {when}")
         } else {
             format!("delivered{id} to {who}")
         }
@@ -737,15 +743,19 @@ mod tests {
 
     /// **What every steer surface prints on acceptance**: the message's id, and who takes it when.
     /// Worded once here so the CLI, the MCP tool and the tree cannot describe one queueing three
-    /// ways; an unread type falls back to the id rather than inventing one.
+    /// ways; an unread type falls back to the id rather than inventing one. **When is the
+    /// supervisor's, read off the node's row**: a live run was promised "its next tool round or
+    /// turn" for a node that took messages only between runs, and it arrived a generation late.
     #[test]
     fn an_accepted_steer_names_its_message_the_node_and_when_it_arrives() {
+        let relaunch = marion_harness::spec::TurnDelivery::Continuation { note: "" };
         let result = marion_core::proto::result::DeliveryResult {
             delivered_as: marion_core::proto::Delivery::Steer,
             state: marion_core::node::NodeState::Running,
             resumed: false,
             message_id: Some("m-7".into()),
             queued: true,
+            arrives: Some(relaunch.arrival().into()),
         };
         let id = AgentId("01a091ba-8ea3-7000-8000-000000000000".into());
         let typed = Steered {
@@ -755,16 +765,40 @@ mod tests {
         };
         assert_eq!(
             typed.sentence(),
-            "queued as m-7; reaches codex-impl 8ea3 at its next tool round or turn"
+            format!(
+                "queued as m-7; reaches codex-impl 8ea3 {}",
+                relaunch.arrival()
+            )
+        );
+        assert!(
+            !typed.sentence().contains("tool round"),
+            "{}",
+            typed.sentence()
         );
         let untyped = Steered {
-            agent_id: id,
+            agent_id: id.clone(),
             agent_type: None,
-            result,
+            result: result.clone(),
+        };
+        assert!(
+            untyped
+                .sentence()
+                .starts_with("queued as m-7; reaches 8ea3 when its current run ends"),
+            "{}",
+            untyped.sentence()
+        );
+        // A supervisor that predates `arrives` names no row, so the sentence names both boundaries.
+        let older = Steered {
+            agent_id: id,
+            agent_type: Some("codex-impl".into()),
+            result: marion_core::proto::result::DeliveryResult {
+                arrives: None,
+                ..result
+            },
         };
         assert_eq!(
-            untyped.sentence(),
-            "queued as m-7; reaches 8ea3 at its next tool round or turn"
+            older.sentence(),
+            "queued as m-7; reaches codex-impl 8ea3 at its next turn boundary"
         );
     }
 }

@@ -2134,7 +2134,7 @@ fn marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one() {
     assert!(out.contains("queued as m-"), "{out}");
     assert!(
         out.contains("reaches codex")
-            && out.contains(&format!(" {root_short} at its next tool round or turn")),
+            && out.contains(&format!(" {root_short} {}", codex_arrival())),
         "{out}"
     );
     assert!(
@@ -2172,6 +2172,16 @@ fn marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one() {
     assert!(bridge.close().success());
 }
 
+/// What a steer's answer promises a headless codex node: its row's own strategy, never a
+/// constant, so the promise moves with the row.
+fn codex_arrival() -> &'static str {
+    marion_harness::spec::delivery_for(
+        marion_harness::adapter::harness_spec(marion_core::Harness::Codex),
+        marion_harness::spec::NodeShape::Headless,
+    )
+    .arrival()
+}
+
 /// **A parent steers its child through the `steer` tool, by handle or by the id `list` shows**,
 /// and the answer says the message was queued — never read — and who takes it when.
 #[test]
@@ -2195,9 +2205,7 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
     assert!(text.starts_with("marion: queued as m-"), "{text}");
     let short = marion_supervisor::tree::short_id(&child.0);
     assert!(
-        text.contains(&format!(
-            "reaches codex {short} at its next tool round or turn"
-        )),
+        text.contains(&format!("reaches codex {short} {}", codex_arrival())),
         "{text}"
     );
 

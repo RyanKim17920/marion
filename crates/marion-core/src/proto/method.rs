@@ -389,6 +389,7 @@ mod tests {
                     resumed: false,
                     message_id: None,
                     queued: false,
+                    arrives: None,
                 }),
             ),
             (
@@ -403,6 +404,7 @@ mod tests {
                     resumed: false,
                     message_id: None,
                     queued: false,
+                    arrives: None,
                 }),
             ),
             (
@@ -684,6 +686,7 @@ mod tests {
             resumed: false,
             message_id: None,
             queued: false,
+            arrives: None,
         });
         let back = Method::NodePrompt.decode_result(&steer.to_body()).unwrap();
         assert_ne!(back, steer, "the method, not the payload, is the identity");

@@ -358,7 +358,7 @@ node's `events.jsonl` as it lands.
 **Steer surfaces (2026-09-22).** The operator steers from the CLI: `marion steer <id|short-id>
 <text…|->` resolves a short id against one `tree/subscribe` snapshot (an ambiguous one is refused
 naming every candidate), sends `node/steer` with `caller: None` through `courier::steer`, and exits
-0 printing `queued as m-…; reaches <type> <short> at its next tool round or turn`, or 1 with the
+0 printing `queued as m-…; reaches <type> <short> <when its row takes it>`, or 1 with the
 supervisor's sentence verbatim. It starts no supervisor. Witnesses:
 `background_spawn::marion_steer_queues_for_a_live_node_and_refuses_an_ended_or_unknown_one` (real
 detached supervisor, shim codex root: queued, ended, unknown), the `marion` bin's parse tests,

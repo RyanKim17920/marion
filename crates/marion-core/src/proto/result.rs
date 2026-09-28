@@ -274,6 +274,13 @@ pub struct DeliveryResult {
     /// (and absent from the wire) is the immediate delivery every earlier build performed.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub queued: bool,
+    /// When a queued message reaches the node's model, in the supervisor's words and read off the
+    /// node's row ("when its current run ends: …"), so an acknowledgement promises only what the
+    /// row measured. `None` where nothing was queued, or from a supervisor that predates it.
+    ///
+    /// **Additive**, like `message_id`: absent from the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrives: Option<String>,
 }
 
 /// `node/cancel`. §6.7 requires a cancel to reach a process that exists; where it does, the node's
@@ -471,14 +478,16 @@ mod tests {
             state: NodeState::Running,
             resumed: false,
             message_id: None,
-            queued: false
+            queued: false,
+            arrives: None
         });
         rt!(DeliveryResult {
             delivered_as: Delivery::Prompt,
             state: NodeState::Running,
             resumed: true,
             message_id: None,
-            queued: false
+            queued: false,
+            arrives: None
         });
         rt!(NodeCancelResult {
             state: NodeState::Exited(ExitStatus::Cancelled)
@@ -634,7 +643,8 @@ mod tests {
                 state: NodeState::Running,
                 resumed: true,
                 message_id: None,
-                queued: false
+                queued: false,
+                arrives: None
             })
             .unwrap(),
             r#"{"delivered_as":"Prompt","state":"Running","resumed":true}"#
@@ -658,7 +668,7 @@ mod tests {
         );
     }
 
-    /// **`message_id` and `queued` are additive in both directions.** A result from a supervisor
+    /// **`message_id`, `queued` and `arrives` are additive in both directions.** A result from a supervisor
     /// that predates them decodes as an immediate, unnamed delivery, and a result that has neither
     /// writes the line earlier builds wrote; a queued one carries both, and round-trips.
     #[test]
@@ -671,15 +681,17 @@ mod tests {
         let older = r#"{"delivered_as":"Steer","state":"Running"}"#;
         assert_eq!(serde_json::from_str::<DeliveryResult>(older).unwrap(), r);
 
+        assert_eq!(r.arrives, None);
         let queued = DeliveryResult {
             message_id: Some("m-1".into()),
             queued: true,
+            arrives: Some("when its current turn ends".into()),
             ..r
         };
         let line = serde_json::to_string(&queued).unwrap();
         assert_eq!(
             line,
-            r#"{"delivered_as":"Steer","state":"Running","resumed":false,"message_id":"m-1","queued":true}"#
+            r#"{"delivered_as":"Steer","state":"Running","resumed":false,"message_id":"m-1","queued":true,"arrives":"when its current turn ends"}"#
         );
         assert_eq!(
             serde_json::from_str::<DeliveryResult>(&line).unwrap(),
@@ -697,6 +709,7 @@ mod tests {
             resumed: false,
             message_id: None,
             queued: false,
+            arrives: None,
         };
         let resumed = DeliveryResult {
             resumed: true,

@@ -25,7 +25,7 @@
 
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::harness::Harness;
-use marion_core::node::{NodeState, ReapState};
+use marion_core::node::{BlockReason, NodeState, ReapState};
 use marion_core::proto::params::NodeSteerParams;
 use marion_core::proto::result::DeliveryResult;
 use marion_core::proto::{Delivery, RpcError, SpawnCaller};
@@ -109,6 +109,7 @@ impl RegistryHandle {
             resumed: false,
             message_id: Some(message_id),
             queued: true,
+            arrives: Some(arrival(delivery, node.state).to_string()),
         })
     }
 
@@ -258,6 +259,19 @@ pub(crate) fn announcement_route(delivery: TurnDelivery) -> AnnouncementRoute {
         | TurnDelivery::TerminalPaste { .. } => AnnouncementRoute::Inbox,
         TurnDelivery::McpChannel { .. } => AnnouncementRoute::Pushed,
         TurnDelivery::None { .. } => AnnouncementRoute::Nowhere,
+    }
+}
+
+/// **When a message queued now reaches a node in `state` taking turns by `delivery`** — the row's
+/// promise ([`TurnDelivery::arrival`]), except for a node marion holds for its descendants: that
+/// hold is its turn boundary, so the message ends it and is taken at once, whatever the row.
+fn arrival(delivery: TurnDelivery, state: NodeState) -> &'static str {
+    match state {
+        NodeState::Blocked(BlockReason::Descendants) => {
+            "at once: it is held between turns for its descendants, and this message is its next \
+             turn"
+        }
+        _ => delivery.arrival(),
     }
 }
 
