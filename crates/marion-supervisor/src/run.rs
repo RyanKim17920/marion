@@ -2328,7 +2328,7 @@ pub fn run_spawn_watched(
         loop {
             let mut gate =
             |o: &ChildOutcome,
-             wait: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+             wait: &mut crate::descendant_gate::Pause<'_, crate::inbox::Message>| {
                 crate::descendant_gate::gate_or_woken(
                     observer,
                     &agent_id,

@@ -22,8 +22,8 @@
 //!   recorded in `live_descendants_at_report`. A report is a deliberate conclusion; the node has
 //!   chosen (§7.6 step 1), and the flag is what keeps its exit legal under L1.
 //! * **an orderly stop with no report** ([`Stop::Voluntary`]) → **hold**. The node is journaled
-//!   `Blocked(Descendants)` and the gate polls the registry until every descendant is terminal or
-//!   the node's own bound expires (step 3). Released → the ordinary `Unreported` follows; expired →
+//!   `Blocked(Descendants)` and the gate waits on the registry's change signal until every
+//!   descendant is terminal or the node's own bound expires (step 3). Released → the ordinary `Unreported` follows; expired →
 //!   `held_to_timeout: true`, `Unreported`, and the still-running descendants **outlive** it
 //!   (§7.5: killing them would destroy work to tidy up bookkeeping).
 //! * **a death** ([`Stop::Involuntary`]) → admit, `died_before_gate: true`. The node never got the
@@ -44,6 +44,7 @@
 //! supervisor is the only owner of a child since §11 item 28, so that path is fixtures and
 //! `marion run`'s own root, which `root.rs` gates on its own terms.
 
+use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::{AgentId, ExitStatus, TaskContract};
@@ -55,13 +56,19 @@ use marion_core::registry::Replay;
 use crate::run::SpawnObserver;
 use crate::spawn::ChildOutcome;
 
-/// How often the hold pauses to be woken. Each pause is the node's turn boundary — a message for
-/// its next turn ends the hold (step 2) — and ends in a re-read of the subtree **only if the
-/// registry changed** since the last one (see [`hold_until`]): a grandchild's `Exited` lands as a
-/// journal append, which the registry's change signal reports, so an unchanged generation is an
-/// unchanged subtree. Where no follower is reading the journal the subtree is re-read every pause,
-/// as it always was. A latency floor on release, not a correctness parameter.
-const HOLD_POLL: Duration = Duration::from_millis(100);
+/// **A hold's pause**: block until `until`, or until the registry changes or a wake arrives, and
+/// return what woke it if that ends the hold (a message for the node's next turn). The descriptor
+/// is the registry's change signal made pollable — a grandchild's `Exited` lands as a journal
+/// append, which is exactly what it reports — and a pause includes it in its `poll`. `None` is a
+/// registry with no follower (or no descriptor): the pause then re-checks at
+/// [`crate::wake::DEGRADED_RECHECK`], which [`crate::wake::wait_until`] does given that `None`.
+pub type Pause<'a, T> = dyn FnMut(Instant, Option<BorrowedFd<'_>>) -> Option<T> + 'a;
+
+/// The pause of a hold nothing but the tree can end: the registry's changes and the clock.
+fn unwakeable(until: Instant, changes: Option<BorrowedFd<'_>>) -> Option<std::convert::Infallible> {
+    crate::wake::wait_until(&[changes], Some(until));
+    None
+}
 
 /// §7.6's gating set, stated totally: a descendant is **live** iff it is not `Exited(_)`, its
 /// reap state is not one marion will observe no further transition of (`Orphaned`, `ReapedIdle`),
@@ -149,37 +156,42 @@ pub enum Held {
     Expired(Vec<AgentId>),
 }
 
-/// Poll `live` until it is empty or `deadline` passes. The set is re-read on every pass and the
-/// **final** reading is what an expiry reports, so the contract names what was live at the
-/// moment the flag was set (§7.6: "records the set at whichever moment set the flag").
-pub fn hold(live: impl FnMut() -> Vec<AgentId>, deadline: Instant, poll: Duration) -> Held {
-    let slept = hold_until::<std::convert::Infallible>(live, deadline, poll, None, &mut |d| {
-        std::thread::sleep(d);
-        None
-    });
-    match slept {
+/// Read `live` until it is empty or `deadline` passes, with no registry to wake it: the set is
+/// re-read every [`crate::wake::DEGRADED_RECHECK`], and the **final** reading is what an expiry
+/// reports, so the contract names what was live at the moment the flag was set (§7.6: "records the
+/// set at whichever moment set the flag").
+pub fn hold(live: impl FnMut() -> Vec<AgentId>, deadline: Instant) -> Held {
+    match hold_until(live, deadline, None, &mut unwakeable) {
         Ok(held) => held,
         Err(never) => match never {},
     }
 }
 
-/// [`hold`], with each pause spent in `wait` rather than asleep: `wait(d)` blocks up to `d` and
-/// returns what woke it, which ends the hold as `Err`. `Ok` is the hold's own ending.
+/// [`hold`], with each pause spent in `wait` (a [`Pause`]): it returns what woke it, which ends
+/// the hold as `Err`. `Ok` is the hold's own ending.
 ///
-/// With `changes`, the subtree is re-read only when the registry's generation has moved since the
-/// last read. The generation is taken **before** the read, so a change that lands during it is a
-/// newer generation than the one recorded and is read on the next pass.
+/// With `changes`, the pause is handed the signal as a descriptor — a pipe attached to it, drained
+/// before each look — and the subtree is re-read only when the registry's generation has moved
+/// since the last read. The generation is taken **before** the read, so a change that lands during
+/// it is a newer generation than the one recorded and is read on the next pass.
 fn hold_until<T>(
     mut live: impl FnMut() -> Vec<AgentId>,
     deadline: Instant,
-    poll: Duration,
     changes: Option<&crate::wake::Signal>,
-    wait: &mut dyn FnMut(Duration) -> Option<T>,
+    wait: &mut Pause<'_, T>,
 ) -> Result<Held, T> {
+    let pipe = changes.and_then(|signal| {
+        let pipe = std::sync::Arc::new(crate::wake::Pipe::new().ok()?);
+        signal.attach(&pipe);
+        Some(pipe)
+    });
     let mut read_at: Option<u64> = None;
     let mut now = Vec::new();
     loop {
-        let generation = changes.map(|c| c.generation());
+        if let Some(pipe) = &pipe {
+            pipe.drain();
+        }
+        let generation = pipe.as_ref().and(changes).map(|c| c.generation());
         if generation.is_none() || generation != read_at {
             now = live();
             read_at = generation;
@@ -187,11 +199,10 @@ fn hold_until<T>(
         if now.is_empty() {
             return Ok(Held::Released);
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        if Instant::now() >= deadline {
             return Ok(Held::Expired(now));
         }
-        if let Some(woke) = wait(poll.min(remaining)) {
+        if let Some(woke) = wait(deadline, pipe.as_ref().map(|p| p.fd())) {
             return Err(woke);
         }
     }
@@ -254,17 +265,14 @@ pub fn gate(
     spawned: std::time::SystemTime,
     bound: Duration,
 ) -> Gated {
-    let slept = gate_or_woken::<std::convert::Infallible>(
+    let slept = gate_or_woken(
         observer,
         agent_id,
         project,
         outcome,
         spawned,
         bound,
-        &mut |d| {
-            std::thread::sleep(d);
-            None
-        },
+        &mut unwakeable,
     );
     match slept {
         Waited::Settled(gated) => gated,
@@ -282,9 +290,9 @@ pub enum Waited<T> {
     Woken(T),
 }
 
-/// **[`gate`], with the hold's pauses spent waiting for the node's next turn.** `wait(d)` blocks
-/// up to one poll and returns the message that arrived, if one did; that ends the hold as
-/// [`Waited::Woken`] with the node journaled `Blocked(Descendants)` and nothing terminal written,
+/// **[`gate`], with the hold's pauses spent waiting for the node's next turn.** `wait` (a
+/// [`Pause`]) blocks until the registry changes, a wake arrives or its deadline, and returns the
+/// message that arrived, if one did; that ends the hold as [`Waited::Woken`] with the node journaled `Blocked(Descendants)` and nothing terminal written,
 /// so the caller can relaunch it and gate again at the next stop. Only a hold waits, so only a
 /// held node can be woken.
 pub fn gate_or_woken<T>(
@@ -294,7 +302,7 @@ pub fn gate_or_woken<T>(
     outcome: &ChildOutcome,
     spawned: std::time::SystemTime,
     bound: Duration,
-    wait: &mut dyn FnMut(Duration) -> Option<T>,
+    wait: &mut Pause<'_, T>,
 ) -> Waited<T> {
     let stop = Stop::of(outcome);
     let mut gated = Gated {
@@ -340,7 +348,6 @@ pub fn gate_or_woken<T>(
             let held = hold_until(
                 || observer.live_descendants(agent_id).unwrap_or_default(),
                 Instant::now() + remaining,
-                HOLD_POLL,
                 changes.as_deref(),
                 wait,
             );
@@ -566,7 +573,6 @@ mod tests {
         let released = hold(
             || readings.pop().unwrap_or_default(),
             Instant::now() + Duration::from_secs(30),
-            Duration::from_millis(1),
         );
         assert_eq!(released, Held::Released);
         assert!(
@@ -574,11 +580,7 @@ mod tests {
             "every reading was consumed before release"
         );
 
-        let expired = hold(
-            || vec![id("g")],
-            Instant::now() + Duration::from_millis(30),
-            Duration::from_millis(5),
-        );
+        let expired = hold(|| vec![id("g")], Instant::now() + Duration::from_millis(30));
         assert_eq!(expired, Held::Expired(vec![id("g")]));
     }
 
@@ -696,8 +698,11 @@ mod tests {
             &stopped,
             std::time::SystemTime::now(),
             Duration::from_secs(60),
-            &mut |d: Duration| {
-                assert!(d <= HOLD_POLL, "each wait is one poll at most: {d:?}");
+            &mut |until: Instant, _changes: Option<BorrowedFd<'_>>| {
+                assert!(
+                    until > Instant::now(),
+                    "each wait is to the node's own bound"
+                );
                 waits += 1;
                 (waits == 3).then_some("the steer")
             },
@@ -720,8 +725,8 @@ mod tests {
             &stopped,
             std::time::SystemTime::now(),
             Duration::from_millis(50),
-            &mut |d: Duration| {
-                std::thread::sleep(d);
+            &mut |until: Instant, changes: Option<BorrowedFd<'_>>| {
+                crate::wake::wait_until(&[changes], Some(until));
                 None
             },
         );

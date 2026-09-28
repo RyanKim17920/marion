@@ -159,13 +159,26 @@ impl std::fmt::Debug for TurnFeed {
 
 /// A [`DeliveryPort`] that **latches**: a wake with nobody waiting is kept until it is taken, so a
 /// driver that checks between its own steps never misses one that landed in between.
+///
+/// A [`Self::ringing`] latch also rings a [`crate::wake::Pipe`] on every wake, for a driver that
+/// waits in `poll(2)` on the pipe beside its other sources and then [`Self::take`]s. A close is a
+/// wake too: a driver holding for an owed message must look again when the inbox seals.
 #[derive(Default)]
 pub struct Latch {
     set: Mutex<bool>,
     cv: Condvar,
+    ring: Option<Arc<crate::wake::Pipe>>,
 }
 
 impl Latch {
+    /// A latch that also rings `ring` on every wake.
+    pub fn ringing(ring: Arc<crate::wake::Pipe>) -> Latch {
+        Latch {
+            ring: Some(ring),
+            ..Latch::default()
+        }
+    }
+
     /// Whether a wake landed since the last take, clearing it.
     pub fn take(&self) -> bool {
         std::mem::take(&mut *self.set.lock().unwrap_or_else(|e| e.into_inner()))
@@ -199,6 +212,13 @@ impl DeliveryPort for Latch {
     fn wake(&self) {
         *self.set.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.cv.notify_all();
+        if let Some(ring) = &self.ring {
+            ring.wake();
+        }
+    }
+
+    fn closed(&self) {
+        self.wake();
     }
 }
 

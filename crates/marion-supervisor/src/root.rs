@@ -2261,7 +2261,7 @@ fn launch_only(
         };
         let mut gate =
             |_: &crate::spawn::ChildOutcome,
-             _: &mut dyn FnMut(StdDuration) -> Option<crate::inbox::Message>| {
+             _: &mut crate::descendant_gate::Pause<'_, crate::inbox::Message>| {
                 crate::descendant_gate::Waited::Settled(crate::descendant_gate::Gated::default())
             };
         let (message, resume) = match crate::continuation::boundary(

@@ -24,31 +24,52 @@
 //! A message that cannot be a turn — the node's stream never named a session, or its clock is
 //! spent — is dropped with that reason and the boundary is taken again.
 
-use std::time::{Duration, Instant};
+use std::os::fd::BorrowedFd;
+use std::sync::Arc;
+use std::time::Instant;
 
-use crate::descendant_gate::{Gated, Stop, Waited};
+use crate::descendant_gate::{Gated, Pause, Stop, Waited};
 use crate::inbox::{Latch, Message, TurnSource};
 use crate::spawn::ChildOutcome;
 
-/// How long one wait for an owed message lasts before the driver looks again.
-const OWED_POLL: Duration = Duration::from_millis(100);
-
 /// A node's inbox with the port its driver blocks on attached.
+///
+/// The port is a [`Latch::ringing`] one, so a wait can sit in `poll(2)` on its pipe beside the
+/// registry's change signal (the descendant gate's hold) with no timer: every message, every
+/// settled debt and the inbox's close ring it.
 pub(crate) struct Turns {
-    source: std::sync::Arc<dyn TurnSource>,
-    latch: std::sync::Arc<Latch>,
+    source: Arc<dyn TurnSource>,
+    latch: Arc<Latch>,
+    ring: Option<Arc<crate::wake::Pipe>>,
 }
 
 impl Turns {
-    pub(crate) fn attach(source: std::sync::Arc<dyn TurnSource>) -> Self {
-        let latch = std::sync::Arc::new(Latch::default());
+    pub(crate) fn attach(source: Arc<dyn TurnSource>) -> Self {
+        let ring = crate::wake::Pipe::new().ok().map(Arc::new);
+        let latch = Arc::new(match &ring {
+            Some(ring) => Latch::ringing(Arc::clone(ring)),
+            None => Latch::default(),
+        });
         source.attach_port(latch.clone());
-        Turns { source, latch }
+        Turns {
+            source,
+            latch,
+            ring,
+        }
     }
 
-    /// Wait up to `bound` for a message and take it.
-    fn wait_take(&self, bound: Duration) -> Option<Message> {
-        if self.latch.wait_until(Some(Instant::now() + bound)) {
+    /// Wait until `until` for a message and take it, returning early — with nothing — when one of
+    /// `also` is readable. A source that has no descriptor (`None` in `also`, or no ring) makes the
+    /// wait re-check at [`crate::wake::DEGRADED_RECHECK`].
+    fn wait_take(&self, until: Instant, also: &[Option<BorrowedFd<'_>>]) -> Option<Message> {
+        let mut fds = vec![self.ring.as_ref().map(|r| r.fd())];
+        fds.extend_from_slice(also);
+        crate::wake::wait_until(&fds, Some(until));
+        // Drain, then take: a wake after the drain leaves the pipe readable for the next wait.
+        if let Some(ring) = &self.ring {
+            ring.drain();
+        }
+        if self.latch.take() {
             self.source.take_next()
         } else {
             None
@@ -76,7 +97,7 @@ pub(crate) enum Turn {
 /// The gate as the boundary calls it: over the node's outcome so far, spending the hold's pauses in
 /// the wait it is handed.
 pub(crate) type Gate<'a> =
-    dyn FnMut(&ChildOutcome, &mut dyn FnMut(Duration) -> Option<Message>) -> Waited<Message> + 'a;
+    dyn FnMut(&ChildOutcome, &mut Pause<'_, Message>) -> Waited<Message> + 'a;
 
 /// **One stop of the node's process, decided.** See the module docs for the order.
 ///
@@ -91,16 +112,18 @@ pub(crate) fn boundary(
     gate: &mut Gate<'_>,
 ) -> Turn {
     let Some(turns) = turns.filter(|_| Stop::of(outcome) != Stop::Involuntary) else {
-        let mut slept = |d: Duration| {
-            std::thread::sleep(d);
+        let mut unwoken = |until: Instant, changes: Option<BorrowedFd<'_>>| {
+            crate::wake::wait_until(&[changes], Some(until));
             None
         };
-        return Turn::Last(settled(gate(outcome, &mut slept)));
+        return Turn::Last(settled(gate(outcome, &mut unwoken)));
     };
     loop {
         let message = match turns.source.take_next() {
             Some(m) => m,
-            None => match gate(outcome, &mut |d| turns.wait_take(d)) {
+            None => match gate(outcome, &mut |until, changes| {
+                turns.wait_take(until, &[changes])
+            }) {
                 Waited::Woken(m) => m,
                 Waited::Settled(gated) => {
                     let next = if gated.reported_early {
@@ -145,7 +168,8 @@ fn settled(w: Waited<Message>) -> Gated {
 }
 
 /// Take the next message or seal the inbox; while a message is still owed, wait for it on the
-/// node's clock instead of sealing.
+/// node's clock instead of sealing. The wait ends on the inbox's ring — a message, a settled debt,
+/// the close — or the deadline, never on a timer.
 fn take_or_seal(turns: &Turns, deadline: Instant) -> Option<Message> {
     loop {
         if let Some(m) = turns.source.take_or_seal() {
@@ -154,11 +178,10 @@ fn take_or_seal(turns: &Turns, deadline: Instant) -> Option<Message> {
         if !turns.source.held() {
             return None;
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
+        if Instant::now() >= deadline {
             return None;
         }
-        if let Some(m) = turns.wait_take(left.min(OWED_POLL)) {
+        if let Some(m) = turns.wait_take(deadline, &[]) {
             return Some(m);
         }
     }
@@ -208,6 +231,7 @@ mod tests {
     use marion_core::journal::RecordKind;
     use marion_harness::spec::TurnDelivery;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const CONT: TurnDelivery = TurnDelivery::Continuation { note: "t" };
 
@@ -272,8 +296,7 @@ mod tests {
     /// A gate that admits at once, counting how often it ran.
     fn admitting(
         runs: &mut usize,
-    ) -> impl FnMut(&ChildOutcome, &mut dyn FnMut(Duration) -> Option<Message>) -> Waited<Message> + '_
-    {
+    ) -> impl FnMut(&ChildOutcome, &mut Pause<'_, Message>) -> Waited<Message> + '_ {
         move |_, _| {
             *runs += 1;
             Waited::Settled(Gated::default())
@@ -387,16 +410,22 @@ mod tests {
         let turns = fx.turns();
         let inboxes = Arc::clone(&fx.inboxes);
         let agent = fx.agent.clone();
-        let mut gate = |_: &ChildOutcome, wait: &mut dyn FnMut(Duration) -> Option<Message>| {
+        let mut gate = |_: &ChildOutcome, wait: &mut Pause<'_, Message>| {
             let (inboxes, agent) = (Arc::clone(&inboxes), agent.clone());
             let sender = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(20));
                 inboxes.enqueue(&agent, CONT, Source::Operator, "during the hold".into())
             });
+            // One wait to the bound, as the hold's pause is: only the steer can end it early.
             let deadline = Instant::now() + Duration::from_secs(10);
+            let started = Instant::now();
             while Instant::now() < deadline {
-                if let Some(m) = wait(Duration::from_millis(100)) {
+                if let Some(m) = wait(deadline, None) {
                     sender.join().unwrap().unwrap();
+                    assert!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "woken, not timed out"
+                    );
                     return Waited::Woken(m);
                 }
             }
@@ -466,7 +495,7 @@ mod tests {
         let fx = fx();
         fx.inboxes.owe(&fx.agent);
         let turns = fx.turns();
-        let mut early = |_: &ChildOutcome, _: &mut dyn FnMut(Duration) -> Option<Message>| {
+        let mut early = |_: &ChildOutcome, _: &mut Pause<'_, Message>| {
             Waited::Settled(Gated {
                 reported_early: true,
                 ..Gated::default()
