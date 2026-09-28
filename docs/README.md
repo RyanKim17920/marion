@@ -1,6 +1,6 @@
 # docs/
 
-Four kinds of document live here, and the difference matters when you read one:
+Three kinds of document live here, and the difference matters when you read one:
 
 - **design** — states current intent. Trust it, and fix it when the code disagrees.
 - **record** — a dated measurement or snapshot. True on its date, and never updated
@@ -15,6 +15,7 @@ Two documents outrank everything here: `MILESTONES.md` at the repository root ow
 
 | Document | Date | Status | What it is |
 |---|---|---|---|
+| [`guide.md`](guide.md) | current | design | The usage reference behind the README: verbs, the home screen, logins and profiles, where work lands, per-harness detail. |
 | [`specs/2026-07-31-marion-design.md`](specs/2026-07-31-marion-design.md) | 2026-07-31 | design | The design, rev 3 — a clean rewrite of rev 2. 5.8k lines, sectioned; §12 holds every correction and retraction. The operational companion to `MILESTONES.md`. |
 | [`specs/2026-08-09-native-harness-facade-design.md`](specs/2026-08-09-native-harness-facade-design.md) | 2026-08-09 | superseded | First design for `marion <harness> <its own flags>`. Header still reads "review pending"; the runtime design below replaced it. |
 | [`specs/2026-08-09-native-facade-foundation.md`](specs/2026-08-09-native-facade-foundation.md) | 2026-08-09 | superseded | The task-by-task implementation plan for that first slice, landed at `27fe62f`. A worklist, not a contract. |
