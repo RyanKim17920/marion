@@ -45,11 +45,15 @@ pub mod doctor;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;
+/// Endpoint mode's one decision: which provider, wire, route, key and model a node runs on.
 pub mod endpoint;
 /// `events.jsonl`, writer and reader side: one node's stream on disk, and §7.3.3's one cursor.
 pub mod events;
 /// First-token native-facade routing, kept ahead of the legacy UTF-8 command parser.
 pub mod facade_cli;
+/// The translating gateway endpoint mode routes through where a harness and its provider share no
+/// wire: one per node, on 127.0.0.1, behind a per-run bearer.
+pub mod gateway;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
