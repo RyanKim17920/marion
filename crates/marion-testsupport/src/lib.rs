@@ -1107,6 +1107,25 @@ pub fn on_path(program: &str) -> bool {
     }
 }
 
+/// **Where `program` really lives on `PATH`**, so a test's wrapping shim can hand its one real
+/// invocation on.
+///
+/// Panics rather than returning an `Option`: every caller is a test that drives the REAL program
+/// and has already passed [`on_path`] or [`harness_available`], so an absent binary here is a
+/// broken bed, not a skip. Resolved through `which` rather than by walking `PATH` here, so the
+/// answer is the one a shell spawned with this process's environment would reach.
+pub fn which(program: &str) -> PathBuf {
+    let out = Command::new("which")
+        .arg(program)
+        .output()
+        .expect("`which` runs");
+    assert!(
+        out.status.success(),
+        "this test drives a REAL {program}; put it on PATH"
+    );
+    PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+}
+
 /// The variable that chooses what [`on_path`] does with an unadmitted harness version.
 ///
 /// Unset, empty or `strict`: fail (the default everywhere; see [`on_path`] for why). `warn`: run

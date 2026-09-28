@@ -56,6 +56,7 @@ use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     fixture_repo, kill_hard, on_path, persisted_contracts, pinned_version, scratch, survivors,
+    which,
 };
 use serde_json::{Value, json};
 
@@ -234,18 +235,6 @@ exit 0
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
         .expect("the shim is executable");
     bin
-}
-
-fn which(program: &str) -> PathBuf {
-    let out = std::process::Command::new("which")
-        .arg(program)
-        .output()
-        .expect("`which` runs");
-    assert!(
-        out.status.success(),
-        "this test drives a REAL {program}; put it on PATH"
-    );
-    PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
 }
 
 struct Owned {
