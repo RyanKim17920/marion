@@ -949,21 +949,8 @@ pub fn spawn_text_of(
         Ok(contract) => {
             let json = serde_json::to_string(contract)
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-            let (line, is_error) = failure_line(contract).unwrap_or_else(|| {
-                let description = contract
-                    .completion
-                    .as_ref()
-                    .map_or("", |comp| comp.exit.description.as_str());
-                (
-                    bounded(&format!(
-                        "marion: the {} child finished Ok — {description}",
-                        contract.child.harness
-                    )),
-                    false,
-                )
-            });
-            let facts = bounded(&summary_facts(agent_type, contract));
-            (format!("{} | {facts}\n\n{json}", one_line(&line)), is_error)
+            let (head, is_error) = headline(agent_type, contract);
+            (format!("{head}\n\n{json}"), is_error)
         }
         // **The verb comes from the error, not from this line.** Every refusal that predates §11
         // item 28 step 5 is a launch that did not happen, and "could not be launched" is exactly
@@ -978,6 +965,50 @@ pub fn spawn_text_of(
             )),
             true,
         ),
+    }
+}
+
+/// A contract's one summary line and its verdict: [`failure_line`]'s account, or "finished Ok",
+/// then `| ` and [`summary_facts`].
+fn headline(agent_type: &str, contract: &TaskContract) -> (String, bool) {
+    let (line, is_error) = failure_line(contract).unwrap_or_else(|| {
+        let description = contract
+            .completion
+            .as_ref()
+            .map_or("", |comp| comp.exit.description.as_str());
+        (
+            bounded(&format!(
+                "marion: the {} child finished Ok — {description}",
+                contract.child.harness
+            )),
+            false,
+        )
+    });
+    let facts = bounded(&summary_facts(agent_type, contract));
+    (format!("{} | {facts}", one_line(&line)), is_error)
+}
+
+/// **What a backgrounded child's end is announced as** — to its parent's next turn, or on the
+/// parent's MCP push: [`headline`] and the narrative, never the contract. The parent acts on
+/// status, narrative, verification, branch and merge command, and `wait` on the handle still
+/// returns the whole document ([`spawn_text_of`]). A spawn that never ran has only its line.
+pub fn announcement_of(agent_type: &str, outcome: &Result<TaskContract, SpawnError>) -> String {
+    let Ok(contract) = outcome else {
+        return spawn_text_of(agent_type, outcome).0;
+    };
+    let (head, _) = headline(agent_type, contract);
+    let narrative = contract.completion.as_ref().and_then(|comp| {
+        let text = comp.narrative.as_ref()?;
+        let whose = if comp.narrative_synthesized {
+            "narrative (marion's, from its final message; it did not report)"
+        } else {
+            "narrative"
+        };
+        Some(bounded(&format!("{whose}: {}", one_line(&text.value))))
+    });
+    match narrative {
+        Some(n) => format!("{head}\n{n}"),
+        None => head,
     }
 }
 
@@ -1398,6 +1429,54 @@ pub(crate) fn contract_that_ran(outcome: crate::spawn::ChildOutcome) -> TaskCont
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A child's end is announced in a few lines, not as its contract**: the status line, the
+    /// narrative, and nothing a clean run's stderr said. Its parent acts on status, narrative,
+    /// verification, branch and merge command; a live run's announcement carried the whole
+    /// contract and "stderr: Reading additional input from stdin..." instead. The contract stays
+    /// the `wait` answer.
+    #[test]
+    fn a_childs_end_is_announced_in_a_few_lines_and_its_contract_stays_with_wait() {
+        let mut contract = contract_that_ran(crate::spawn::ChildOutcome {
+            narrative: Some("Added average(nums), 0.0 on empty input, with tests.".into()),
+            exit_code: Some(0),
+            stderr: "harness chatter".into(),
+            ..Default::default()
+        });
+        let comp = contract.completion.as_mut().unwrap();
+        comp.branch = Some("marion/t1".into());
+        comp.commit = Some(marion_core::contract::Oid("e298c5534650b39a".into()));
+        let outcome = Ok(contract);
+        let text = announcement_of("codex-impl", &outcome);
+        assert!(
+            !text.contains('{'),
+            "no document in an announcement: {text}"
+        );
+        assert!(!text.contains("stderr"), "{text}");
+        assert!(text.lines().count() <= 3, "{text}");
+        for fact in [
+            "finished Ok",
+            "codex-impl · Ok · no verification declared",
+            "Added average(nums), 0.0 on empty input, with tests.",
+            "merge with: git merge marion/t1",
+        ] {
+            assert!(text.contains(fact), "{fact:?} missing from {text}");
+        }
+        let (wait, _) = spawn_text_of("codex-impl", &outcome);
+        assert!(
+            wait.contains("\"completion\""),
+            "`wait` still returns the contract"
+        );
+        // A spawn that never ran has no contract to leave out: its one line is the announcement.
+        let refused = Err(crate::spawn::SpawnError::NoContract {
+            path: "/nowhere".into(),
+            why: "none".into(),
+        });
+        assert_eq!(
+            announcement_of("codex-impl", &refused),
+            spawn_text_of("codex-impl", &refused).0
+        );
+    }
 
     /// **A root's answer is an error exactly when the root did not finish — never because it has no
     /// contract.**

@@ -156,8 +156,8 @@ impl RegistryHandle {
         }
     }
 
-    /// **A backgrounded child ended: queue its end for its parent's next turn** — the text the
-    /// parent's `wait` on that task returns, from [`Source::ChildEnded`] — and settle the debt the
+    /// **A backgrounded child ended: queue its end for its parent's next turn** — its announcement
+    /// ([`crate::bridge::announcement_of`]), from [`Source::ChildEnded`] — and settle the debt the
     /// parent's inbox was held open by ([`crate::inbox::Inboxes::announce`]).
     ///
     /// Exactly one path announces it ([`announcement_route`]): a parent on Claude Code's channel
@@ -177,7 +177,7 @@ impl RegistryHandle {
                 return;
             }
         }
-        let (body, _) = crate::bridge::spawn_text_of(end.agent_type, end.outcome);
+        let body = crate::bridge::announcement_of(end.agent_type, end.outcome);
         let status = match end.outcome {
             Ok(c) => c.completion.as_ref().map_or_else(
                 || "failed".to_string(),
@@ -622,10 +622,10 @@ mod tests {
         assert_eq!(dropped, vec![m]);
     }
 
-    /// **A backgrounded child's end, queued for its parent's next turn** — worded exactly as the
-    /// parent's `wait` on that task would answer, with the journal naming who it is from.
+    /// **A backgrounded child's end, queued for its parent's next turn** — its few-line
+    /// announcement, with the journal naming who it is from.
     #[test]
-    fn a_background_childs_end_is_queued_for_its_parent_as_its_wait_text() {
+    fn a_background_childs_end_is_queued_for_its_parent_as_its_announcement() {
         let (fx, _) = family("announce-queued");
         assert!(fx.handle.inboxes.owe(&id("root")));
         let outcome = Err(crate::spawn::SpawnError::NoContract {
@@ -643,10 +643,10 @@ mod tests {
             },
         );
         let m = fx.handle.inboxes.take_next(&id("root")).expect("queued");
-        let (wait_text, _) = crate::bridge::spawn_text_of("type-child", &outcome);
+        let announced = crate::bridge::announcement_of("type-child", &outcome);
         assert_eq!(
             crate::inbox::render(&m),
-            crate::inbox::child_ended_text("type-child", false, "t-1", &wait_text)
+            crate::inbox::child_ended_text("type-child", false, "t-1", &announced)
         );
         assert_eq!(
             fx.queued_records()[0].source,

@@ -1310,8 +1310,10 @@ fn start_watchers(who: &Principal, bg: &background::Background, push: Push) {
 /// be tested without a supervisor.
 ///
 /// The push **announces and does not deliver**: the handle stays uncollected, so the parent's
-/// `wait` returns this same document rather than "you already have this" about a document it was
-/// only told about. The text says so, and its body is [`outcome_text`]'s, byte for byte.
+/// `wait` returns the whole document rather than "you already have this" about a document it was
+/// only told about. The text says so; its body is a child's few-line announcement
+/// ([`bridge::announcement_of`]), or a root's or a refusal's [`outcome_text`], which has no
+/// document to leave out.
 fn watch(
     push: Push,
     target: &background::WatchTarget,
@@ -1331,7 +1333,10 @@ fn watch(
         Err(SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }) => "failed".to_string(),
         Ok(courier::Delivered::StillRunning) | Err(_) => return None,
     };
-    let (body, _) = outcome_text(&target.agent_type, project, &target.agent_id, delivered)?;
+    let body = match delivered {
+        Ok(courier::Delivered::Contract(c)) => bridge::announcement_of(&target.agent_type, &Ok(*c)),
+        other => outcome_text(&target.agent_type, project, &target.agent_id, other)?.0,
+    };
     // A root has no contract (§9), and its handle says so; the body underneath is `root_text`'s.
     // The wording is the inbox's own, so this push and a queued child-ended message read alike.
     let text = crate::inbox::child_ended_text(
@@ -2520,6 +2525,7 @@ mod tests {
             ..Default::default()
         });
         let (wait_text, _) = bridge::spawn_text("codex-impl", Ok(contract.clone()));
+        let announced = bridge::announcement_of("codex-impl", &Ok(contract.clone()));
         let frame = watch(Push::ClaudeChannel, &target("t-1"), &project(), || {
             Ok(courier::Delivered::Contract(Box::new(contract)))
         })
@@ -2543,12 +2549,12 @@ mod tests {
         let content = frame["params"]["content"].as_str().unwrap();
         assert_eq!(
             content,
-            crate::inbox::child_ended_text("codex-impl", false, "t-1", &wait_text),
+            crate::inbox::child_ended_text("codex-impl", false, "t-1", &announced),
             "the push is worded by the inbox's one renderer, as a queued child-ended message is"
         );
         assert!(
-            content.ends_with(&wait_text),
-            "the pushed document is the one `wait` returns"
+            !content.contains(&wait_text) && content.contains("did the work"),
+            "the push announces in a few lines and leaves the document to `wait`"
         );
         assert!(
             content.contains("\"t-1\"") && content.contains("`wait`"),

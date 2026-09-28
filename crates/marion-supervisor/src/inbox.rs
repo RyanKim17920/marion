@@ -332,15 +332,15 @@ pub fn render(msg: &Message) -> String {
 
 /// **The announcement that a backgrounded node ended** — what the per-child bridge pushes over
 /// MCP today (`mcp.rs`'s `watch`) and what [`render`] makes of a [`Source::ChildEnded`], one text
-/// for both. `body` is what the node's `wait` returns.
+/// for both. `body` is its few-line summary (`bridge::announcement_of`).
 ///
 /// The push **announces and does not deliver**: the handle stays uncollected, so the parent's
-/// `wait` returns this same document rather than "you already have this".
+/// `wait` returns the whole result rather than "you already have this".
 pub fn child_ended_text(agent_type: &str, root: bool, task_id: &str, body: &str) -> String {
     let node = if root { "root" } else { "child" };
     format!(
-        "The {agent_type} {node} you backgrounded as task_id {task_id:?} has ended. This is what \
-         its `wait` returns; a `wait` on that task_id still returns it.\n\n{body}"
+        "The {agent_type} {node} you backgrounded as task_id {task_id:?} has ended; a `wait` on \
+         that task_id returns its whole result.\n\n{body}"
     )
 }
 
@@ -1105,7 +1105,7 @@ pub(crate) mod tests {
         );
         assert!(
             ended
-                .starts_with("The codex-impl child you backgrounded as task_id \"t-1\" has ended.")
+                .starts_with("The codex-impl child you backgrounded as task_id \"t-1\" has ended;")
         );
         assert!(ended.ends_with("\n\nuse the v2 API"));
     }

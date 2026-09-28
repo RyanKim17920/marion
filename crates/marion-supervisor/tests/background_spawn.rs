@@ -2030,8 +2030,8 @@ fn push_after_background(
 /// Claude Code parent (2.1.268, interactive, dev-channels flag) injects as a new user turn.
 ///
 /// The ordering is the claim: the handle's reply was read first, nothing else was sent, and the
-/// next line on the pipe is a notification (no `id`) naming that handle. The `wait` afterwards
-/// still returns the contract, because the push announced it and did not deliver it.
+/// next line on the pipe is a notification (no `id`) naming that handle, in a few lines. The
+/// `wait` afterwards returns the contract, because the push announced it and did not deliver it.
 #[test]
 fn a_backgrounded_childs_end_reaches_the_parent_as_a_push_before_any_wait() {
     let fx = fixture("bg-push-channel");
@@ -2046,8 +2046,12 @@ fn a_backgrounded_childs_end_reaches_the_parent_as_a_push_before_any_wait() {
     assert_eq!(push["params"]["meta"]["agent_type"], "codex-impl");
     let content = push["params"]["content"].as_str().unwrap();
     assert!(
-        content.contains("\"completion\"") && content.contains(&task_id),
-        "the push carries the child's contract: {content}"
+        content.contains("codex-impl · ") && content.contains(&task_id),
+        "the push announces the child's end by its summary line: {content}"
+    );
+    assert!(
+        !content.contains("\"completion\""),
+        "and leaves the contract to `wait`: {content}"
     );
 
     let collected = bridge.tool("wait", json!({"task_id": &task_id}));
