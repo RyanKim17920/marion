@@ -774,23 +774,32 @@ impl Inboxes {
 
     /// **Cancel beats a queued steer**: mark the inbox cancelled and drop every waiting message
     /// (`cancelled before delivery`) in one step under the lock, so no driver can take one after
-    /// the cancel was decided, then ask the driver to abort its running turn. From here on nothing
-    /// is taken or accepted ([`Refusal::Cancelled`]) and the driver's next boundary seals.
-    ///
-    /// `true` when a driver took the abort — it will end the turn by the row's verb; `false` for a
-    /// node with no inbox, no driver, or a lane with no verb, which the canceller kills.
-    pub fn cancel(&self, agent: &AgentId) -> bool {
-        let (port, stranded): (Option<Arc<dyn DeliveryPort>>, Vec<Message>) = {
+    /// the cancel was decided. From here on nothing is taken or accepted ([`Refusal::Cancelled`])
+    /// and the driver's next boundary seals. The running turn is ended separately, by
+    /// [`Self::abort`]: a cancel freezes a whole tree top-down first and aborts it bottom-up.
+    pub fn cancel(&self, agent: &AgentId) {
+        let stranded: Vec<Message> = {
             let mut boxes = self.lock();
             let Some(inbox) = boxes.get_mut(agent) else {
-                return false;
+                return;
             };
             inbox.cancelled = true;
-            (inbox.port.clone(), inbox.queue.drain(..).collect())
+            inbox.queue.drain(..).collect()
         };
         for m in stranded {
             self.dropped(agent, &m.id, CANCELLED_BEFORE_DELIVERY);
         }
+    }
+
+    /// Ask a cancelled node's driver to end its running turn by the row's abort verb, outside the
+    /// lock. `true` when the driver took it; `false` for a node with no cancelled inbox, no driver,
+    /// or a lane with no verb — which the canceller kills.
+    pub fn abort(&self, agent: &AgentId) -> bool {
+        let port = self
+            .lock()
+            .get(agent)
+            .filter(|b| b.cancelled)
+            .and_then(|b| b.port.clone());
         port.is_some_and(|p| p.abort())
     }
 
@@ -1181,7 +1190,14 @@ pub(crate) mod tests {
             takes: true,
         });
         assert!(inboxes.attach_port(&a, port.clone()));
-        assert!(inboxes.cancel(&a), "the driver took the abort");
+        assert!(!inboxes.abort(&a), "nothing to abort before the cancel");
+        inboxes.cancel(&a);
+        assert_eq!(
+            port.asked.load(Ordering::SeqCst),
+            0,
+            "a freeze aborts nothing"
+        );
+        assert!(inboxes.abort(&a), "the driver took the abort");
         assert_eq!(port.asked.load(Ordering::SeqCst), 1);
         assert_eq!(inboxes.take_next(&a), None, "the steer was never delivered");
         assert_eq!(
@@ -1217,7 +1233,8 @@ pub(crate) mod tests {
         let a = id("a");
         inboxes.open(&a);
         assert!(inboxes.owe(&a));
-        assert!(!inboxes.cancel(&a), "no driver attached, nothing to abort");
+        inboxes.cancel(&a);
+        assert!(!inboxes.abort(&a), "no driver attached, nothing to abort");
         assert!(!inboxes.held(&a), "a cancelled node is not held open");
         assert_eq!(inboxes.take_or_seal(&a), None);
         assert_eq!(
@@ -1229,8 +1246,10 @@ pub(crate) mod tests {
         let b = id("b");
         inboxes.open(&b);
         assert!(inboxes.attach_port(&b, Arc::new(Counting(AtomicUsize::new(0)))));
-        assert!(!inboxes.cancel(&b), "the default port has no verb");
-        assert!(!inboxes.cancel(&id("nobody")), "no inbox, nothing to abort");
+        inboxes.cancel(&b);
+        assert!(!inboxes.abort(&b), "the default port has no verb");
+        inboxes.cancel(&id("nobody"));
+        assert!(!inboxes.abort(&id("nobody")), "no inbox, nothing to abort");
     }
 
     /// A reopened node (a resume under the same id) starts unsealed and empty.

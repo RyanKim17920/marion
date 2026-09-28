@@ -204,6 +204,42 @@ pub(crate) fn kill_descendants(root: i32) {
     }
 }
 
+/// **Kill whatever is left in `pgid` after its leader ended on its own** — a cancelled node that
+/// closed its turn within its grace can leave its MCP bridge, or a tool call, in its group.
+/// Addressed by the group marion recorded at launch, never by the leader's pid, which may already
+/// be reaped: a group with no members left is signalled nothing, and one only [`signal_targets`]
+/// allows is signalled at all. The members found are recorded as the last sweep.
+pub(crate) fn sweep_group(pgid: i32) {
+    let rows = ps_rows();
+    let members: Vec<i32> = rows
+        .iter()
+        .filter(|r| r.pgid == pgid)
+        .map(|r| r.pid)
+        .collect();
+    if members.is_empty() {
+        return;
+    }
+    let pids: Vec<i32> = members
+        .iter()
+        .flat_map(|m| descendant_pids(&rows, *m))
+        .fold(Vec::new(), |mut all, p| {
+            if !all.contains(&p) {
+                all.push(p);
+            }
+            all
+        });
+    if let Ok(mut last) = LAST_SWEEP.lock() {
+        last.clone_from(&pids);
+    }
+    let mut pgids = pgids_of(&rows, &pids);
+    if !pgids.contains(&pgid) {
+        pgids.push(pgid);
+    }
+    for g in signal_targets(&pgids, unsafe { getpgrp() }) {
+        let _ = unsafe { kill(-g, SIGKILL) };
+    }
+}
+
 /// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
 ///
 /// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is

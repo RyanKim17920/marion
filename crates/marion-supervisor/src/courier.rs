@@ -52,10 +52,12 @@ use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::{
-    AgentSpawnParams, NodeGetParams, NodeKillParams, NodeSteerParams, TreeSubscribeParams,
+    AgentSpawnParams, NodeCancelParams, NodeGetParams, NodeKillParams, NodeSteerParams,
+    TreeSubscribeParams,
 };
 use marion_core::proto::result::{
-    AgentSpawnResult, DeliveryResult, NodeGetResult, NodeKillResult, TreeSubscribeResult,
+    AgentSpawnResult, DeliveryResult, NodeCancelResult, NodeGetResult, NodeKillResult,
+    TreeSubscribeResult,
 };
 use marion_core::proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
@@ -394,6 +396,37 @@ pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnEr
         )),
     }
 }
+
+/// **Cancel one node and everything below it, as the operator** — §2's `node/cancel`: each running
+/// turn is ended by its row's abort, bottom-up, and whatever outlives its grace is killed. The
+/// answer names every node ended and whether it had to be killed. A refusal is the supervisor's
+/// sentence, carried verbatim.
+pub fn cancel(socket: &Path, agent_id: &AgentId) -> Result<NodeCancelResult, SpawnError> {
+    match Conn::dial(socket)?.ask(
+        Call::NodeCancel(NodeCancelParams {
+            agent_id: agent_id.clone(),
+            caller: None,
+        }),
+        CANCEL_ANSWER_BOUND,
+        &format!(
+            "it did not answer `node/cancel` within {} s, so marion cannot say whether the node \
+             was ended; `marion list` shows its state",
+            CANCEL_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NodeCancel(r) => Ok(r),
+        _ => Err(unreachable(
+            socket,
+            "it answered `node/cancel` with a result marion cannot read",
+        )),
+    }
+}
+
+/// How long a `node/cancel` may take to answer: it waits out one grace per depth level of the
+/// subtree (each at most [`marion_harness::spec::MAX_CANCEL_GRACE_MS`]) plus the time each level's
+/// nodes take to commit their partial work. Minutes rather than [`READ_ANSWER_BOUND`]'s seconds,
+/// and still a bound: a supervisor that never answers is reported, not waited on for ever.
+const CANCEL_ANSWER_BOUND: Duration = Duration::from_secs(300);
 
 /// An accepted steer: the supervisor's answer and the node it is for.
 #[derive(Debug, Clone)]

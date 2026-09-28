@@ -305,6 +305,18 @@ pub struct NodeCollectedResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCancelResult {
     pub state: NodeState,
+    /// **Every node the cancel ended**, the named one and each descendant, deepest first — and
+    /// whether marion had to kill it (`forced`: it ignored its abort, or its row has none).
+    /// Additive, and absent from the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<CancelledNode>,
+}
+
+/// One node a `node/cancel` ended. See [`NodeCancelResult::nodes`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelledNode {
+    pub agent_id: AgentId,
+    pub forced: bool,
 }
 
 /// `node/kill`. Same shape as cancel and a different type, because §6.7 gives them different
@@ -534,7 +546,21 @@ mod tests {
             arrives: None
         });
         rt!(NodeCancelResult {
-            state: NodeState::Exited(ExitStatus::Cancelled)
+            state: NodeState::Exited(ExitStatus::Cancelled),
+            nodes: vec![],
+        });
+        rt!(NodeCancelResult {
+            state: NodeState::Exited(ExitStatus::Cancelled),
+            nodes: vec![
+                CancelledNode {
+                    agent_id: AgentId("child".into()),
+                    forced: true,
+                },
+                CancelledNode {
+                    agent_id: AgentId("a".into()),
+                    forced: false,
+                },
+            ],
         });
         rt!(NodeKillResult {
             state: NodeState::Exited(ExitStatus::Cancelled)

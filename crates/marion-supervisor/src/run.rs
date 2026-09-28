@@ -1543,11 +1543,12 @@ pub trait SpawnObserver: Sync {
     fn process_ended(&self, _agent_id: &AgentId) -> bool {
         false
     }
-    /// Whether an operator's kill of the node has been asked for, **without** settling anything:
-    /// the check between one launch attempt and the next (a key rotation), where
-    /// [`Self::process_ended`]'s answer would make the next attempt unkillable.
-    fn kill_requested(&self, _agent_id: &AgentId) -> bool {
-        false
+    /// **Who marion ended the node for** — an operator's kill, or a cancel and who asked for it —
+    /// **without** settling anything: the check between one launch attempt and the next (a key
+    /// rotation), where [`Self::process_ended`]'s answer would make the next attempt unkillable,
+    /// and what the cancelled contract names. `None` for a node nobody ended.
+    fn ended_by(&self, _agent_id: &AgentId) -> Option<marion_core::journal::CancelBy> {
+        None
     }
     /// **Where a node's sink publishes its live spend** ([`crate::spending`]), or `None` for an
     /// owner that shows no live figures — its node's figure still reaches the contract and the
@@ -2445,7 +2446,7 @@ pub fn run_spawn_watched(
         }
         // An attempt the operator killed is the node's end, never a reason to rotate to the next
         // key: asked without settling the race, which `process_ended` does once, after the loop.
-        let killed = observer.kill_requested(&agent_id);
+        let killed = observer.ended_by(&agent_id).is_some();
         // A driver that failed because the kill landed before its first turn (the node died before
         // `initialize`, say) is a node marion *did* decide the fate of: the kill's `KillConfirmed`
         // is its terminal record, so the abort guard must not add a `SpawnAborted` beside it. The
@@ -2819,7 +2820,7 @@ pub fn run_spawn_watched(
     gated.apply(&mut contract);
     landed.apply(&mut contract);
     if ended_by_kill {
-        record_cancelled(&mut contract);
+        record_cancelled(&mut contract, observer.ended_by(&agent_id).as_ref());
     }
     // **What the node spent, from the stream as it was recorded** — every generation's, added —
     // into the contract, and into the journal's one record of it, before the terminal records.
@@ -2910,11 +2911,13 @@ fn record_review(
     }
 }
 
-fn record_cancelled(contract: &mut TaskContract) {
+fn record_cancelled(contract: &mut TaskContract, by: Option<&marion_core::journal::CancelBy>) {
     if let Some(completion) = contract.completion.as_mut() {
         completion.status = ExitStatus::Cancelled;
+        let who = by.map_or_else(|| "the operator".to_string(), |b| b.describe());
         completion.exit.description = format!(
-            "marion ended this node on the operator's kill (node/kill or session/quit KillTree); {}",
+            "marion ended this node on a cancel by {who} (node/cancel, node/kill or session/quit \
+             KillTree); {}",
             completion.exit.description
         );
     }

@@ -49,7 +49,7 @@ impl RegistryHandle {
                 root_spawn_authorized(peer)?;
                 Source::Operator
             }
-            Some(c) => self.steering_ancestor(c, &p.agent_id)?,
+            Some(c) => self.authorize_descendant(c, &p.agent_id)?,
         };
         let node = self
             .live
@@ -273,7 +273,11 @@ impl RegistryHandle {
 
     /// The caller, if it proved to be a node this supervisor minted a token for **and** a strict
     /// ancestor of `target`; the one §5.4 refusal otherwise.
-    fn steering_ancestor(&self, c: &SpawnCaller, target: &AgentId) -> Result<Source, RpcError> {
+    pub(super) fn authorize_descendant(
+        &self,
+        c: &SpawnCaller,
+        target: &AgentId,
+    ) -> Result<Source, RpcError> {
         let authentic = self.authenticate(c).is_some();
         let agent_type = self.live.read(|r| {
             (authentic && is_strict_ancestor(r.tree(), &c.agent_id, target))
@@ -288,7 +292,8 @@ impl RegistryHandle {
             }),
             None => Err(RpcError::refused(
                 "caller",
-                "a node may steer only a node below it in the tree (§5.4), and marion could not \
+                "a node may steer or cancel only a node below it in the tree (§5.4), and marion \
+                 could not \
                  establish that of this caller: either its token is not one this supervisor minted \
                  for the node it names, or the target is not its descendant. One refusal for every \
                  case, so it says nothing about which.",

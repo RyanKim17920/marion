@@ -384,6 +384,7 @@ mod tests {
             RequestId::Number(1),
             &MethodResult::NodeCancel(NodeCancelResult {
                 state: NodeState::Exited(ExitStatus::Cancelled),
+                nodes: vec![],
             }),
         )
     }
@@ -595,6 +596,7 @@ mod tests {
                 id.clone(),
                 &MethodResult::NodeCancel(NodeCancelResult {
                     state: NodeState::Idle,
+                    nodes: vec![],
                 }),
             ));
             let Frame::Response(r) = Frame::from_line(&f.to_line()).unwrap() else {
@@ -780,6 +782,7 @@ mod tests {
         // answer with it. The seam the envelope deliberately leaves untyped.
         let call = Call::NodeCancel(NodeCancelParams {
             agent_id: AgentId("a".into()),
+            caller: None,
         });
         let pending = (RequestId::Number(1), call.method());
         let sent = Frame::Request(Request::new(pending.0.clone(), call)).to_line();
@@ -789,6 +792,7 @@ mod tests {
             pending.0.clone(),
             &MethodResult::NodeCancel(NodeCancelResult {
                 state: NodeState::Exited(ExitStatus::Cancelled),
+                nodes: vec![],
             }),
         ))
         .to_line();
@@ -802,7 +806,8 @@ mod tests {
         assert_eq!(
             pending.1.decode_result(&body).unwrap(),
             MethodResult::NodeCancel(NodeCancelResult {
-                state: NodeState::Exited(ExitStatus::Cancelled)
+                state: NodeState::Exited(ExitStatus::Cancelled),
+                nodes: vec![],
             })
         );
         assert_eq!(pending.1, Method::NodeCancel);

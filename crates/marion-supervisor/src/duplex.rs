@@ -2644,7 +2644,8 @@ exit 0"#,
             });
             wait_for_file(&held);
             let (steer, _) = fx.steer("do more");
-            assert!(fx.inboxes.cancel(&fx.agent), "the driver takes the abort");
+            fx.inboxes.cancel(&fx.agent);
+            assert!(fx.inboxes.abort(&fx.agent), "the driver takes the abort");
             let out = run.join().unwrap().expect("the run returns");
             let dropped: Vec<_> = crate::inbox::tests::records(&fx.log)
                 .into_iter()
@@ -2703,7 +2704,8 @@ exit 0"#,
                 )
             });
             wait_for_file(&held);
-            assert!(!fx.inboxes.cancel(&fx.agent), "no abort to send");
+            fx.inboxes.cancel(&fx.agent);
+            assert!(!fx.inboxes.abort(&fx.agent), "no abort to send");
             run.join().unwrap().expect("the run returns")
         });
         assert_eq!(

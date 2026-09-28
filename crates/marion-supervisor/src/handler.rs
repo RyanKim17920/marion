@@ -913,6 +913,12 @@ pub struct NodeHandle {
     outcome: Option<NodeOutcome>,
     /// Who records how this node's process ended — see [`Ending`].
     ending: Ending,
+    /// The node's thread has seen its process end ([`RegistryHandle::process_ended`]). What a
+    /// cancel waits on before it moves up a level, and why it never signals a reaped pid.
+    process_gone: bool,
+    /// A `node/kill` asked for this node while it was being cancelled: the cancel stops waiting
+    /// out its grace and kills what is left.
+    escalated: bool,
 }
 
 /// **Who writes a node's terminal record**, decided once, under [`RegistryHandle::nodes`]'s lock.
@@ -924,13 +930,17 @@ pub struct NodeHandle {
 /// would rewrite a deliberate cancellation as a failure. The thread already has this answer for its
 /// own timeout kill (`timed_out`); this is the same attribution for a kill marion made from outside
 /// the thread, and whichever side gets here first settles it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum Ending {
     /// Neither has happened yet.
     #[default]
     Running,
     /// A kill claimed the node first: its thread records the cancellation and no `Exited`.
     KillRequested,
+    /// A graceful cancel claimed the node first, on behalf of `by`: its running turn is being
+    /// ended by the row's abort. Its thread records the cancellation and no `Exited`, as for a
+    /// kill; the cancel writes the `KillConfirmed` once the process is gone.
+    CancelRequested(marion_core::journal::CancelBy),
     /// The thread saw its process end first and records the exit it observed.
     ProcessEnded,
 }
@@ -1292,8 +1302,8 @@ impl crate::run::SpawnObserver for NodeOwner {
         self.handle.process_ended(agent_id)
     }
 
-    fn kill_requested(&self, agent_id: &AgentId) -> bool {
-        self.handle.kill_requested(agent_id)
+    fn ended_by(&self, agent_id: &AgentId) -> Option<marion_core::journal::CancelBy> {
+        self.handle.ended_by(agent_id)
     }
 }
 
@@ -1642,6 +1652,9 @@ fn await_identified(
 
 trait QuitRuntime: Send + Sync {
     fn kill_process_tree_and_wait(&self, pid: i32) -> bool;
+    /// Kill whatever is left in a group whose leader ended on its own. A no-op by default, for a
+    /// runtime that signals nothing.
+    fn sweep_group(&self, _pgid: i32) {}
 }
 
 struct SystemQuitRuntime;
@@ -1650,10 +1663,17 @@ impl QuitRuntime for SystemQuitRuntime {
     fn kill_process_tree_and_wait(&self, pid: i32) -> bool {
         crate::kill::kill_process_tree_and_wait(pid)
     }
+
+    fn sweep_group(&self, pgid: i32) {
+        crate::kill::sweep_group(pgid);
+    }
 }
 
 /// `node/steer`: authority, the node's delivery strategy, and the inbox. See its module docs.
 mod steer;
+
+/// `node/cancel`: freeze a subtree, abort it bottom-up, kill what outlives its grace.
+mod cancel;
 
 /// A [`Handle`](crate::serve::Handle) backed by a running registry.
 ///
@@ -1680,6 +1700,9 @@ pub struct RegistryHandle {
     /// launch. Folding them together would put a spawning node's `getpgid` inside the lock a
     /// client's `tree/subscribe` waits on.
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
+    /// Notified whenever a node's process ends or its thread finishes — what a cancel waits on
+    /// between levels, beside [`Self::nodes`] whose lock it is used with.
+    ended: std::sync::Condvar,
     /// **Turn delivery's queue, one inbox per node this supervisor owns** — beside [`Self::nodes`]
     /// and with the same lifetime: opened at [`Self::claim`], closed at [`Self::mark_finished`].
     /// `node/steer` enqueues here (`handler/steer.rs`); no delivery port is attached yet, so a
@@ -1930,6 +1953,7 @@ impl RegistryHandle {
             shared: Mutex::new(Shared::default()),
             runtime,
             nodes: Mutex::new(HashMap::new()),
+            ended: std::sync::Condvar::new(),
             spawn_env,
             panes: Mutex::new(Panes::default()),
             pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),
@@ -3144,6 +3168,8 @@ impl RegistryHandle {
                 join: None,
                 outcome: None,
                 ending: Ending::Running,
+                process_gone: false,
+                escalated: false,
             },
         );
         self.inboxes.open(agent_id);
@@ -3162,16 +3188,125 @@ impl RegistryHandle {
         if node.ending == Ending::ProcessEnded || !node.running() {
             return false;
         }
-        node.ending = Ending::KillRequested;
+        // A kill of a node already cancelling is the cancel's escalation: the cancel keeps its
+        // attribution, and the kill signals now rather than after the grace.
+        if !matches!(node.ending, Ending::CancelRequested(_)) {
+            node.ending = Ending::KillRequested;
+        }
         true
     }
 
-    /// Whether a kill of `agent_id` has been asked for, settling nothing: see
-    /// [`crate::run::SpawnObserver::kill_requested`].
-    pub(crate) fn kill_requested(&self, agent_id: &AgentId) -> bool {
+    /// **A cancel's half of [`Ending`]**, the graceful sibling of [`Self::claim_kill`]: claim the
+    /// node's end for `by` before anything is written to it. `false` for a node whose thread
+    /// already saw its process end, one a kill or an earlier cancel already claimed, and one this
+    /// supervisor does not own — which has no driver to abort, and is the kill's.
+    fn claim_cancel(&self, agent_id: &AgentId, by: &marion_core::journal::CancelBy) -> bool {
+        let mut nodes = lock(&self.nodes);
+        match nodes.get_mut(agent_id) {
+            Some(node) if node.running() && node.ending == Ending::Running => {
+                node.ending = Ending::CancelRequested(by.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A journal failure after [`Self::claim_cancel`]: hand the node's end back, so its thread
+    /// records its own exit rather than wait for a cancel that will never confirm it.
+    fn unclaim_cancel(&self, agent_id: &AgentId) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id)
+            && matches!(node.ending, Ending::CancelRequested(_))
+        {
+            node.ending = Ending::Running;
+        }
+    }
+
+    /// The node's thread has seen its process end.
+    fn process_gone(&self, agent_id: &AgentId) -> bool {
         lock(&self.nodes)
             .get(agent_id)
-            .is_some_and(|n| matches!(n.ending, Ending::KillRequested))
+            .is_some_and(|n| n.process_gone)
+    }
+
+    /// **`node/kill` on a node being cancelled**: tell the cancel to stop waiting out the grace.
+    fn escalate(&self, agent_id: &AgentId) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+            node.escalated = true;
+        }
+        self.ended.notify_all();
+    }
+
+    /// Wait until every node in `ids` has finished its thread, or `deadline`.
+    fn wait_finished(&self, ids: &[AgentId], deadline: std::time::Instant) {
+        let mut nodes = lock(&self.nodes);
+        loop {
+            let pending = ids
+                .iter()
+                .any(|id| nodes.get(id).is_some_and(NodeHandle::running));
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            if !pending || wait.is_zero() {
+                return;
+            }
+            nodes = self
+                .ended
+                .wait_timeout(nodes, wait)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Whether the node is being cancelled — what `agent/spawn` and `node/steer` refuse a
+    /// cancelling node for.
+    pub(crate) fn cancelling(&self, agent_id: &AgentId) -> bool {
+        lock(&self.nodes)
+            .get(agent_id)
+            .is_some_and(|n| matches!(n.ending, Ending::CancelRequested(_)))
+    }
+
+    /// **Who ended the node, if marion did**, settling nothing: see
+    /// [`crate::run::SpawnObserver::ended_by`]. A kill is always the operator's — only an operator
+    /// may call `node/kill` or confirm a KillTree.
+    pub(crate) fn ended_by(&self, agent_id: &AgentId) -> Option<marion_core::journal::CancelBy> {
+        match &lock(&self.nodes).get(agent_id)?.ending {
+            Ending::KillRequested => Some(marion_core::journal::CancelBy::Operator),
+            Ending::CancelRequested(by) => Some(by.clone()),
+            Ending::Running | Ending::ProcessEnded => None,
+        }
+    }
+
+    /// Wait until every node in `ids` this supervisor owns has seen its process end, or
+    /// `deadline`, or any node in `watch` was escalated — on [`Self::ended`], never on a timer.
+    /// Answers the ones still running.
+    fn wait_processes_gone(
+        &self,
+        ids: &[AgentId],
+        deadline: std::time::Instant,
+        watch: &[AgentId],
+    ) -> Vec<AgentId> {
+        let mut nodes = lock(&self.nodes);
+        loop {
+            let left: Vec<AgentId> = ids
+                .iter()
+                .filter(|id| {
+                    nodes
+                        .get(*id)
+                        .is_some_and(|n| !n.process_gone && n.running())
+                })
+                .cloned()
+                .collect();
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            let escalated = watch
+                .iter()
+                .any(|id| nodes.get(id).is_some_and(|n| n.escalated));
+            if left.is_empty() || wait.is_zero() || escalated {
+                return left;
+            }
+            nodes = self
+                .ended
+                .wait_timeout(nodes, wait)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
     }
 
     /// **A node thread's half of [`Ending`]**, asked the instant its process has ended and before
@@ -3184,8 +3319,10 @@ impl RegistryHandle {
         let Some(node) = nodes.get_mut(agent_id) else {
             return false;
         };
+        node.process_gone = true;
+        self.ended.notify_all();
         match node.ending {
-            Ending::KillRequested => true,
+            Ending::KillRequested | Ending::CancelRequested(_) => true,
             Ending::Running | Ending::ProcessEnded => {
                 node.ending = Ending::ProcessEnded;
                 false
@@ -3229,6 +3366,7 @@ impl RegistryHandle {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.outcome = Some(outcome);
         }
+        self.ended.notify_all();
         // §5.7's second guard just moved; nothing else would wake the accept loop to re-read it.
         self.live.changes().notify();
         // Sealed with the node, and every message still waiting is dropped by name: no later turn
@@ -3706,6 +3844,16 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let caller = self.resolve_caller(caller_id)?;
+        // A node being cancelled spawns nothing: its subtree was frozen under this same lock, and
+        // a child started now would outlive the cancel that was meant to end it.
+        if self.cancelling(&caller_id.agent_id) {
+            return Err(RpcError::refused(
+                "caller",
+                "the calling node is being cancelled, so it may not spawn: its turn is being ended \
+                 and everything below it with it.",
+                "§6.7",
+            ));
+        }
         let repo = self.caller_repo(caller_id)?;
         // §6.1 step 2, before every side effect — the same pure function `run_spawn` calls, run
         // here as well so the refusal arrives in the frame that asked for it rather than as a node
@@ -4538,7 +4686,7 @@ impl RegistryHandle {
                 let ended_by_kill = || observer.process_ended(&node.agent_id);
                 // And the ask between a failed attempt and a key rotation's next, which settles
                 // nothing: a kill asked for then ends the root rather than its next credential.
-                let kill_requested = || observer.kill_requested(&node.agent_id);
+                let kill_requested = || observer.ended_by(&node.agent_id).is_some();
                 crate::root::launch_owned(
                     &node,
                     bound,
@@ -5572,6 +5720,21 @@ impl RegistryHandle {
                 "§6.7",
             ));
         }
+        // **A kill of a node being cancelled is the cancel's escalation**: the cancel kills what is
+        // left now rather than after its grace, and keeps the attribution and the confirmation.
+        if self.cancelling(&p.agent_id) {
+            self.escalate(&p.agent_id);
+            drop(_decision);
+            self.wait_processes_gone(
+                std::slice::from_ref(&p.agent_id),
+                std::time::Instant::now() + cancel::ESCALATE_WAIT,
+                &[],
+            );
+            self.live.refresh();
+            return Ok(marion_core::proto::result::NodeKillResult {
+                state: self.spawned_state(&p.agent_id),
+            });
+        }
         // A `ReapedIdle` node is retired, not signalled, so there is no process end to race for:
         // §7.2's reap already ended it, and its thread's own reading of that is long settled.
         if node.reap_state != ReapState::ReapedIdle && !self.claim_kill(&p.agent_id) {
@@ -5847,6 +6010,9 @@ impl Handle for RegistryHandle {
             Call::NodeSteer(p) => self.node_steer(p, out.peer()).map(MethodResult::NodeSteer),
             Call::NodeCollected(p) => self.node_collected(p).map(MethodResult::NodeCollected),
             Call::NodeKill(p) => self.node_kill(p, out.peer()).map(MethodResult::NodeKill),
+            Call::NodeCancel(p) => self
+                .node_cancel(p, out.peer())
+                .map(MethodResult::NodeCancel),
             Call::NodePrompt(_) => Err(RpcError::unimplemented(
                 "node/prompt",
                 "`node/prompt` is not built. A message for a node's next turn is `node/steer`, which \
@@ -5863,8 +6029,8 @@ impl Handle for RegistryHandle {
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
                      `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit`, \
-                     `node/resume`, `node/steer`, `node/collected` and `node/kill`; the remaining \
-                     methods land with the milestone that needs them.",
+                     `node/resume`, `node/steer`, `node/collected`, `node/cancel` and `node/kill`; \
+                     the remaining methods land with the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -8826,8 +8992,9 @@ mod tests {
         let mut r = std::io::BufReader::new(c.try_clone().unwrap());
         call(
             &mut c,
-            Call::NodeCancel(marion_core::proto::params::NodeCancelParams {
+            Call::NodeRename(marion_core::proto::params::NodeRenameParams {
                 agent_id: id("root"),
+                name: "impl".into(),
             }),
             1,
         );
@@ -8838,7 +9005,7 @@ mod tests {
             panic!("expected a refusal")
         };
         assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
-        assert!(e.message.contains("node/cancel"), "{e}");
+        assert!(e.message.contains("node/rename"), "{e}");
     }
 
     /// **NC — a subscriber is told about a change exactly once, and a subscription that starts late

@@ -427,6 +427,22 @@ widgets exist; no harness reports the rate or the window to marion), diff line c
 type form, and a logins view (Setup points at `marion login`, which stores API keys; subscription
 logins stay with each harness's own CLI).
 
+**Graceful cancel (2026-09-28).** `node/cancel` is built (`handler/cancel.rs`): it ends a node and
+its whole live subtree without losing committed work. Freeze top-down under `quit` and
+`spawn_decision` (claim each end as `Ending::CancelRequested`, journal the barrier
+`CancelRequested{by, verb, grace}` before any byte reaches the node, cancel its inbox so a queued
+steer is dropped and none is accepted, refuse the node's `agent/spawn`); then abort bottom-up by
+depth: each driver gets its row's `AbortVerb` (`spec.rs`, per shape: pi's JSONL `abort` and ACP's
+`session/cancel` are `Channel`, stream-json and every TUI `None` until probed), the level waits on
+the handler's `ended` condvar up to its longest grace, stragglers are killed, and each node gets a
+`KillConfirmed` with no signal if it closed in its grace or `SIGKILL` if not (replay's
+`cancel.forced`). `node/kill` of a cancelling node escalates. `marion cancel <id>` now sends
+`node/cancel`; `--force` is the old `node/kill`. Witnesses: `handler::cancel::tests` (graceful,
+no-verb kill, cascade order, escalation, steer dropped, §5.4 principal, refusals first),
+`inbox::tests` and `duplex::tests` (a cancel beats a queued steer; a JSONL node is aborted, not
+killed). Not yet: the ACP and app-server drivers' abort (they land with the shared JSON-RPC
+driver), the TUI and MCP surfaces, and the per-row cancel matrix.
+
 **Every child may delegate, bounded by the depth gate (2026-09-27).** A child's marion verbs on the
 permission axis are one rule, `agent_type::child_verbs`: `report`, plus `spawn`/`status`/`wait`/
 `list`/`steer` while the child's depth is below its type's `max_depth` (`may_delegate`, the same

@@ -215,11 +215,20 @@ where
     Ok(text)
 }
 
-/// `node/cancel` — interrupt the running turn. `caps.interrupt`.
+/// `node/cancel` — **end the node gracefully, with everything below it**: freeze the subtree (no
+/// queued steer is delivered and no new child is spawned), end each running turn by its row's
+/// abort verb, bottom-up, and kill whatever is still running when its grace ends. The work each
+/// node committed is kept, and every one ends `Cancelled`. `node/kill` is the immediate form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeCancelParams {
     pub agent_id: AgentId,
+    /// `None` is a client cancelling for the operator; `Some` is a node cancelling one of its
+    /// descendants, proved exactly as [`NodeSteerParams::caller`] is.
+    ///
+    /// **Additive**, and absent from the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<SpawnCaller>,
 }
 
 /// `node/kill` — end the node. §6.7 classifies the result as `Cancelled`; §7.3.2's disposition (a)
@@ -626,7 +635,17 @@ mod tests {
                 node_token: "tok".into(),
             }),
         });
-        rt!(NodeCancelParams { agent_id: agent() });
+        rt!(NodeCancelParams {
+            agent_id: agent(),
+            caller: None,
+        });
+        rt!(NodeCancelParams {
+            agent_id: agent(),
+            caller: Some(SpawnCaller {
+                agent_id: AgentId("parent".into()),
+                node_token: "tok".into(),
+            }),
+        });
         rt!(NodeKillParams { agent_id: agent() });
         rt!(NodeRenameParams {
             agent_id: agent(),

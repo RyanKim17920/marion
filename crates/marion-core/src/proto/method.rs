@@ -438,9 +438,11 @@ mod tests {
             (
                 Call::NodeCancel(NodeCancelParams {
                     agent_id: agent("a"),
+                    caller: None,
                 }),
                 MethodResult::NodeCancel(NodeCancelResult {
                     state: NodeState::Exited(ExitStatus::Cancelled),
+                    nodes: vec![],
                 }),
             ),
             (

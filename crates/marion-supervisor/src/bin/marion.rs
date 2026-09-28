@@ -747,34 +747,55 @@ fn steer_main(argv: &[String]) -> Result<ExitCode, Exit> {
     })
 }
 
-/// **The whole of `marion cancel`**: resolve the target against one snapshot, send `node/kill` as
-/// the operator, and print what happened.
+/// **The whole of `marion cancel`**: resolve the target against one snapshot, send `node/cancel`
+/// as the operator — or `node/kill` with `--force` — and print what happened.
 ///
-/// Exit 0 with the node's new state; exit 1 with the supervisor's own sentence when it refused —
-/// a node already ended, one still spawning with nothing to signal. Like `steer` it starts no
-/// supervisor, for `steer`'s reason. It does not ask for confirmation: a command typed at a shell
-/// is the confirmation, and the home screen asks before it runs this.
+/// Exit 0 with the node's new state and how many nodes ended; exit 1 with the supervisor's own
+/// sentence when it refused — a node already ended, one still spawning with nothing to signal.
+/// Like `steer` it starts no supervisor, for `steer`'s reason. It does not ask for confirmation: a
+/// command typed at a shell is the confirmation, and the home screen asks before it runs this.
 fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
-    let args = parse_attach(argv)?;
+    let force = argv.iter().skip(1).any(|a| a == "--force");
+    let argv: Vec<String> = argv.iter().filter(|a| *a != "--force").cloned().collect();
+    let args = parse_attach(&argv)?;
     let Some((repo, state)) = resolve_project(&args.place) else {
         return Ok(ExitCode::FAILURE);
     };
-    let killed = find_node(&args.agent_id, &repo, &state).and_then(|agent_id| {
+    let ended = find_node(&args.agent_id, &repo, &state).and_then(|agent_id| {
         let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
-        marion_supervisor::courier::kill(sock.socket(), &agent_id)
-            .map(|r| (agent_id, r))
+        let answered = if force {
+            marion_supervisor::courier::kill(sock.socket(), &agent_id).map(|r| (r.state, Vec::new()))
+        } else {
+            marion_supervisor::courier::cancel(sock.socket(), &agent_id).map(|r| (r.state, r.nodes))
+        };
+        answered
+            .map(|(state, nodes)| (agent_id, state, nodes))
             .map_err(|e| e.to_string())
     });
-    Ok(match killed {
-        Ok((id, r)) => {
-            let state = match r.state {
+    Ok(match ended {
+        Ok((id, state, nodes)) => {
+            let state = match state {
                 marion_core::node::NodeState::Exited(s) => s.word().to_string(),
                 other => format!("{other:?}").to_lowercase(),
             };
-            println!(
+            let forced = nodes.iter().filter(|n| n.forced).count();
+            let below = nodes.len().saturating_sub(1);
+            let mut line = format!(
                 "marion: {} ended: {state}",
                 marion_supervisor::tree::short_id(&id.0)
             );
+            if below > 0 {
+                line.push_str(&format!(
+                    ", with {below} node{} below it",
+                    if below == 1 { "" } else { "s" }
+                ));
+            }
+            if forced > 0 {
+                line.push_str(&format!(
+                    "; {forced} ignored the abort or had none and were killed"
+                ));
+            }
+            println!("{line}");
             ExitCode::SUCCESS
         }
         Err(e) => {

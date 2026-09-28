@@ -27,7 +27,7 @@ marion ls <id>                            # one node's detail
 marion ls --attention                     # only the nodes that need you
 marion attach <id>                        # a pane node's terminal; ^] d comes back
 marion resume <id> [--prompt <text>]
-marion cancel <id>                        # recorded as cancelled; its children keep running
+marion cancel <id> [--force]              # end it and its subtree gracefully; --force kills
 marion steer <id> <text…>                 # `-` reads the message from stdin
 ```
 

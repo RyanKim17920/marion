@@ -456,10 +456,13 @@ fn steer_help() -> String {
 
 fn cancel_help() -> String {
     format!(
-        "usage: marion cancel <id> [--repo <path>] [--state-dir <path>]\n\
+        "usage: marion cancel <id> [--force] [--repo <path>] [--state-dir <path>]\n\
          \n\
-         Stop a running agent. It is recorded as cancelled, and its children keep running. It\n\
-         does not ask first: typing the command is the confirmation.\n\
+         Stop a running agent and everything below it. Each running turn is stopped the way its\n\
+         harness allows, deepest first, and whatever is still running when its grace ends is\n\
+         killed. Work each agent committed is kept, and every one is recorded as cancelled.\n\
+         --force kills the agent at once instead. It does not ask first: typing the command is\n\
+         the confirmation.\n\
          \n\
          {PLACE_HELP}\n\
          \n\
