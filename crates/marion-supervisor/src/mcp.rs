@@ -18,11 +18,11 @@ use std::time::Duration;
 
 use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::paths::ProjectDir;
-use marion_harness::AGENT_TYPE_ENV;
-use marion_harness::claude_code::NODE_TOKEN_ENV;
+use marion_harness::mcp_bridge::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV, REPO_ENV,
+};
 use marion_harness::spec::Push;
 
-use crate::root::{AGENT_ID_ENV, DEPTH_ENV, READY_FILE_ENV};
 use crate::socket::SocketPaths;
 use crate::spawn::SpawnError;
 use crate::{background, bridge, courier, run, socket, spawn};
@@ -1080,7 +1080,7 @@ fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError
 /// tree (§2, as [`supervisor_paths`] reads it); a missing key or an unusable file is returned as
 /// the sentence the schema then carries.
 fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
-    let repo = std::env::var_os("MARION_REPO").ok_or_else(|| {
+    let repo = std::env::var_os(REPO_ENV).ok_or_else(|| {
         format!(
             "marion: MARION_REPO is not set, so this bridge cannot read its tree's {}.",
             crate::run::AGENT_TYPES_FILE
@@ -1090,7 +1090,7 @@ fn tree_agent_types() -> Result<marion_core::agent_type::AgentTypes, String> {
 }
 
 fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
-    let repo = std::env::var("MARION_REPO").map_err(|_| {
+    let repo = std::env::var(REPO_ENV).map_err(|_| {
         "marion: MARION_REPO is not set, so this bridge cannot work out which project's supervisor \
          to ask for a child (a supervisor is keyed on the tree's git common directory). Refusing \
          rather than guessing: a spawn sent to another project's supervisor would run, and would be \

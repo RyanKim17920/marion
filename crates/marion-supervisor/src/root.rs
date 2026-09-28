@@ -92,13 +92,10 @@ pub use crate::duplex::{
     can_use_tool_request, deny_response, initialize_request, is_control_response_to, user_message,
 };
 
-// The declaration's env-var names and the document that carries them are the Claude Code adapter's
-// business (§3.1: config emission is part of the adapter contract), so they live in
-// `marion-harness` and are re-exported here — `marion-supervisor mcp`, the other end of the
-// handshake, reads them from this module.
-pub use marion_harness::claude_code::{
+// The bridge's contract — the variables every harness's declaration carries — lives once, in
+// `marion_harness::mcp_bridge`, and is re-exported here for the tests that drive a root.
+pub use marion_harness::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, READY_FILE_ENV,
-    anthropic_base_url, mcp_config_json,
 };
 
 /// The permission axis for an M1 root (§9), in **marion's** vocabulary.
@@ -2889,6 +2886,7 @@ fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
 mod tests {
     use super::*;
     use marion_core::agent_type::builtin;
+    use marion_harness::claude_code::{anthropic_base_url, mcp_config_json};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 

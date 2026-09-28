@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 
 use crate::auth::Auth;
 
+pub const REPO_ENV: &str = "MARION_REPO";
+pub const STATE_DIR_ENV: &str = "MARION_STATE_DIR";
 pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
 pub const AGENT_TYPE_ENV: &str = "MARION_AGENT_TYPE";
 pub const AUTH_ENV: &str = "MARION_AUTH";
@@ -64,11 +66,11 @@ impl BridgeEnv {
     pub fn pairs(&self) -> Vec<(String, String)> {
         let mut pairs = vec![
             (
-                "MARION_REPO".to_string(),
+                REPO_ENV.to_string(),
                 self.repo.to_string_lossy().into_owned(),
             ),
             (
-                "MARION_STATE_DIR".to_string(),
+                STATE_DIR_ENV.to_string(),
                 self.state.to_string_lossy().into_owned(),
             ),
             (AUTH_ENV.to_string(), self.auth.as_wire().to_string()),
