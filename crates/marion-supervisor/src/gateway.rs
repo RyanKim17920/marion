@@ -41,9 +41,6 @@ use translate::{Collected, Event, StreamTranslator};
 /// Connections served at once. A harness opens a handful (a turn plus a background title call);
 /// the bound is what keeps a local process that is not the node from pinning threads.
 const MAX_CONNS: usize = 16;
-/// How long a connection may take to send its request. Per read, which is enough: a harness sends
-/// its request at once.
-const REQUEST_READ: Duration = Duration::from_secs(60);
 /// How long a stopping gateway waits for its connection threads to see their sockets closed.
 const DRAIN: Duration = Duration::from_secs(5);
 /// How much of a provider's error body is read, for its message.
@@ -181,12 +178,12 @@ impl Gateway {
         })
     }
 
-    /// The base URL the harness is handed, in the spelling its wire's clients take: the root for
-    /// Anthropic Messages and Gemini, `…/v1` for the OpenAI wires.
+    /// The base URL the harness is handed, in the spelling its wire's clients take: `…/v1` for the
+    /// two OpenAI wires, the root for the others (their SDKs add the version themselves).
     pub fn base_url(&self) -> String {
         match self.harness_wire {
-            Wire::AnthropicMessages | Wire::Gemini => format!("http://{}", self.addr),
             Wire::OpenAiChat | Wire::OpenAiResponses => format!("http://{}/v1", self.addr),
+            _ => format!("http://{}", self.addr),
         }
     }
 
@@ -317,7 +314,8 @@ fn error_response(mut w: &TcpStream, status: u16, message: &str) {
 }
 
 fn serve(shared: &Shared, conn: &Conn, stream: &TcpStream) {
-    let _ = stream.set_read_timeout(Some(REQUEST_READ));
+    // No read timeout: a connection that never sends holds one of `MAX_CONNS` permits until the
+    // gateway stops, which shuts it — and a timer would be a wakeup an idle node does not need.
     let w = stream;
     let req = match http::read_request(&mut BufReader::new(stream)) {
         Ok(r) => r,
