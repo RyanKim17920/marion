@@ -33,10 +33,11 @@ use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
+use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
+    McpRoute, McpRoutes, MidTurn, Push, Resume, Spelling, Surfaces, ToolSpelling, TurnDelivery,
     UpdatePolicy, Val, When,
 };
 
@@ -58,15 +59,19 @@ pub const EXTENSION: &str = include_str!("pi_extension.js");
 ///
 /// **Live mode is a removal.** The agent-dir relocation, `--no-extensions` and `--provider marion`
 /// go together. What survives is the extension, `--tools`, and a `--model` where the launch names one.
+///
+/// **Headless is `--mode rpc`, a JSONL command channel ([`RPC`], item 12).** The prompt is the
+/// channel's first command rather than argv, a message for a running node is folded as pi's steer,
+/// and a node past its wall clock is aborted before it is killed. The one-shot `-p --mode json`
+/// launch is kept as [`LAUNCH_ONLY`], the same row with the channel removed.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Pi,
-    surfaces: Surfaces::LaunchOnly,
+    surfaces: Surfaces::JsonlRpc(&RPC),
     program: Some("pi"),
     argv: &[
-        Arg::Lit("-p"),
         Arg::Lit("--mode"),
-        Arg::Lit("json"),
-        // `--session <id>`, the id off the `session` header frame (item 8).
+        Arg::Lit("rpc"),
+        // `--session <id>`, the id the `get_state` reply names (item 8).
         Arg::Resume,
         // The operator's own extensions stay out of a canned node; explicit `-e` still loads
         // (item 1). A live node keeps them, since an extension can be where a provider lives.
@@ -78,8 +83,6 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // Emitted even when empty: `--tools ""` offers nothing (`pi-empty-tools.*`).
         Arg::Joined("--tools", Field::Tools),
         Arg::Flag("-e", Field::McpConfig),
-        // Positional and last, as every capture ran it.
-        Arg::Pos(Field::Prompt),
     ],
     pane: None,
     env: &[Env {
@@ -87,7 +90,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         val: Val::Under(AGENT_DIR),
         when: When::Overlay,
     }],
-    stream: Some(&STREAM),
+    stream: Some(&RPC_STREAM),
     // `read`, and both built-ins that change a file: `write` creates, `edit` replaces text in an
     // existing file, and each is offered only when named (`pi-report.provider-request-1.json`).
     tool_names: &[
@@ -155,8 +158,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     }),
     client_name: None,
     delivery: Deliveries {
-        headless: TurnDelivery::Continuation {
-            note: "S34 pi-resume-turn-2 (0.80.2): `--session <id> -p …` continues the session",
+        headless: TurnDelivery::TypedTurn {
+            mid_turn: MidTurn::Fold,
+            note: "S34 pi-rpc-steer-mid-tool (0.80.2): a steer written during a tool call is a \
+                   user message after the tool result in the same turn's next request; marion \
+                   writes it as `prompt` with streamingBehavior `steer`, which pi queues the same \
+                   way while streaming and runs as a new turn when idle",
         },
         interactive: TurnDelivery::bracketed_paste(
             "S34 spikes/s34/pi_tui.py (0.80.2): DECSET 2004 on; a bracketed multi-line paste then \
@@ -164,10 +171,103 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              repaints at <= 88 ms gaps; Enter while busy folds as a steer after the tool result",
         ),
     },
-    note: "S34 on pi 0.80.2: -p --mode json over a canned models.json provider, marion's own MCP \
+    note: "S34 on pi 0.80.2: --mode rpc over a canned models.json provider, marion's own MCP \
            client extension loaded with -e as the declaration in both modes, --tools as the one \
            list on both axes, provider faults read from the final agent_end, --session <id>; \
-           harness_matrix's pi cell runs this row end to end",
+           harness_matrix's pi cell and tests/pi_rpc.rs run this row end to end",
+};
+
+/// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).
+///
+/// - Every command carries its kind in `type`; a reply is `type: "response"` echoing `id`.
+/// - `get_state` is the handshake: its reply proves the command loop runs, which it does only once
+///   the extensions — marion's among them — have loaded, and it names the session.
+/// - A turn is one agent run: `agent_start` opens it and the `agent_end` pi will not retry closes
+///   it (a retried provider fault ends a run with `willRetry: true` and starts another).
+/// - `prompt` starts a turn on an idle node. A bare `prompt` mid-turn is refused ("Agent is
+///   already processing"), so the fold is `prompt` with `streamingBehavior: "steer"`: pi's
+///   `AgentSession.prompt` queues it exactly as the `steer` command does while streaming, and
+///   runs it as a new turn when idle, so a write racing the turn's end is never stranded in the
+///   queue (0.80.2 `dist/core/agent-session.js`).
+/// - `abort` ends the running turn: the in-flight call completes and the next model request ends
+///   `stopReason: "aborted"`. The process stays up until stdin closes, then exits 0.
+/// - `follow_up` (measured: its own turn after the last answer, inside the same agent run) is not
+///   used: marion queues on its own side, so each message it delivers has a turn of its own.
+pub const RPC: JsonlChannel = JsonlChannel {
+    id: "id",
+    reply: &[Cond::Eq("/type", "response")],
+    handshake: Command {
+        fields: &[("type", "get_state")],
+        text: None,
+    },
+    prompt: Command {
+        fields: &[("type", "prompt")],
+        text: Some("message"),
+    },
+    steer: Command {
+        fields: &[("type", "prompt"), ("streamingBehavior", "steer")],
+        text: Some("message"),
+    },
+    abort: Command {
+        fields: &[("type", "abort")],
+        text: None,
+    },
+    turn_started: &[Cond::Eq("/type", "agent_start")],
+    turn_ended: &[
+        Cond::Eq("/type", "agent_end"),
+        Cond::Eq("/willRetry", "false"),
+    ],
+    note: "S34 pi-rpc-steer-mid-tool and pi-rpc-abort-mid-tool on 0.80.2 (spikes/s34/pi_rpc.py)",
+};
+
+/// The one-shot `-p --mode json` launch pi's row measured first (items 1–11): the prompt rides
+/// argv and a later turn is a `--session` relaunch. **The row with its channel removed**, kept so
+/// that falling back is one edit of row data, and so the json-mode fixtures keep a row to be read
+/// against.
+pub const LAUNCH_ONLY: HarnessSpec = HarnessSpec {
+    surfaces: Surfaces::LaunchOnly,
+    argv: &[
+        Arg::Lit("-p"),
+        Arg::Lit("--mode"),
+        Arg::Lit("json"),
+        Arg::Resume,
+        Arg::CannedLit("--no-extensions"),
+        Arg::CannedLit("--provider"),
+        Arg::CannedLit(PROVIDER),
+        Arg::Flag("--model", Field::Model),
+        Arg::Joined("--tools", Field::Tools),
+        Arg::Flag("-e", Field::McpConfig),
+        // Positional and last, as every capture ran it.
+        Arg::Pos(Field::Prompt),
+    ],
+    stream: Some(&STREAM),
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S34 pi-resume-turn-2 (0.80.2): `--session <id> -p …` continues the session",
+        },
+        ..SPEC.delivery
+    },
+    ..SPEC
+};
+
+/// [`STREAM`] as `--mode rpc` prints it: the same event frames, except that no `session` header is
+/// written, so the session id is read off the handshake's `get_state` reply (`data.sessionId`, the
+/// id `--session` takes; measured 2026-09-27 on 0.80.2).
+pub const RPC_STREAM: StreamGrammar = StreamGrammar {
+    session: Some(SessionId {
+        at: Where {
+            frame: &[
+                Cond::Eq("/type", "response"),
+                Cond::Eq("/command", "get_state"),
+            ],
+            each: None,
+            unit: &[],
+        },
+        path: "/data/sessionId",
+        // As on [`STREAM`]: a resumed rpc launch naming its own session was not measured.
+        resumes_in_place: false,
+    }),
+    ..STREAM
 };
 
 /// pi's stream (item 5). A tool call is a `tool_execution_start` frame and its verdict is the
@@ -457,10 +557,36 @@ mod tests {
         crate::grammar::marion_calls(&STREAM, s, &prefix())
     }
 
+    /// The headless launch opens pi's command channel: no `-p`, no prompt on argv.
     #[test]
-    fn a_canned_launch_is_the_measured_argv_and_relocates_the_agent_dir() {
+    fn a_canned_launch_opens_the_rpc_channel_and_carries_no_prompt() {
         let inv = compile(&spec());
         assert_eq!(inv.program, "pi");
+        assert_eq!(
+            inv.args,
+            [
+                "--mode",
+                "rpc",
+                "--no-extensions",
+                "--provider",
+                "marion",
+                "--model",
+                "canned-1",
+                "--tools",
+                "mcp__marion__report",
+                "-e",
+                "/tmp/cfg/marion-pi.js",
+            ]
+        );
+        assert_eq!(SPEC.surfaces.channel(), Some(&RPC));
+    }
+
+    /// The fallback row still renders the one-shot launch every json-mode capture ran.
+    #[test]
+    fn a_canned_launch_only_launch_is_the_measured_argv_and_relocates_the_agent_dir() {
+        let inv = render(&LAUNCH_ONLY, Shape::Headless, &spec()).unwrap();
+        assert_eq!(inv.program, "pi");
+        assert_eq!(LAUNCH_ONLY.surfaces.channel(), None);
         assert_eq!(
             inv.args,
             [
@@ -527,6 +653,8 @@ mod tests {
         let mut f = spec();
         f.resume = Some("<UUID-1>".into());
         let inv = compile(&f);
+        assert_eq!(&inv.args[2..4], ["--session", "<UUID-1>"]);
+        let inv = render(&LAUNCH_ONLY, Shape::Headless, &f).unwrap();
         assert_eq!(&inv.args[3..5], ["--session", "<UUID-1>"]);
     }
 
@@ -645,5 +773,54 @@ mod tests {
         assert_eq!(a.calls.len(), 1);
         assert_eq!(a.calls[0].name, "mcp__marion__report");
         assert_eq!(a.text.as_deref(), Some("reported."));
+    }
+
+    const RPC_STEER: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s34-pi/pi-rpc-steer-mid-tool.stdout.jsonl"
+    ));
+    const RPC_ABORT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s34-pi/pi-rpc-abort-mid-tool.stdout.jsonl"
+    ));
+
+    /// **The channel reads S34's rpc captures as they happened**: one turn per agent run (the steer
+    /// folded into the first, the follow-up inside it, the second prompt its own), each closed by
+    /// its `agent_end`; the abort capture's one turn closed by the aborted run's end.
+    #[test]
+    fn the_rpc_channel_reads_the_measured_turns_off_the_captures() {
+        let frames = |s: &str| -> Vec<Value> {
+            s.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v.get("_sent").is_none())
+                .collect()
+        };
+        for (capture, turns) in [(RPC_STEER, 2), (RPC_ABORT, 1)] {
+            let f = frames(capture);
+            assert_eq!(f.iter().filter(|v| RPC.opens_turn(v)).count(), turns);
+            assert_eq!(f.iter().filter(|v| RPC.closes_turn(v)).count(), turns);
+        }
+        // The steer capture's refusal of a bare mid-turn prompt is a reply by shape and id.
+        let refused = frames(RPC_STEER)
+            .into_iter()
+            .find(|v| v["success"] == json!(false))
+            .unwrap();
+        assert!(RPC.is_reply_to(&refused, "2"));
+    }
+
+    /// Usage and the call still read off the rpc stream, and the session off the handshake's reply.
+    #[test]
+    fn the_rpc_stream_reads_usage_calls_and_the_session_off_get_state() {
+        let calls = crate::grammar::marion_calls(&RPC_STREAM, RPC_STEER, &prefix());
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].verb, "report");
+        let out = crate::grammar::parse_stream(&RPC_STREAM, RPC_STEER, &prefix());
+        assert_eq!(out.narrative.as_deref(), Some("rpc report"), "{out:?}");
+        let reply = json!({"id": "h", "type": "response", "command": "get_state", "success": true,
+                           "data": {"sessionId": "01a0e4a7-93fd"}});
+        assert_eq!(
+            crate::grammar::session_id(&RPC_STREAM, &reply).as_deref(),
+            Some("01a0e4a7-93fd")
+        );
     }
 }

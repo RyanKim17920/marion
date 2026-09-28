@@ -159,7 +159,7 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 | `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
 | `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
 | `qwen` (Qwen Code) | 0.23.0 | yes | no — interactive shape unmeasured | — |
-| `pi` | 0.80.2 | yes — MCP through marion's own `-e` extension | yes | — |
+| `pi` | 0.80.2 | yes, over `--mode rpc` (steer folds into the running turn) — MCP through marion's own `-e` extension | yes | — |
 | `acp:<command>` | n/a | — | — | the generic path |
 
 The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion`'s Start tab offers them per harness.

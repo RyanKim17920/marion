@@ -978,10 +978,15 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
             profile: None,
         },
         &TaskId("denial-1".into()),
-        &Caller::root(
-            "root",
-            marion_core::agent_type::builtin("claude").expect("the root type resolves"),
-        ),
+        // One level above the bound, so the child lands at its type's `max_depth`: the one depth
+        // at which a child is granted `report` alone (`agent_type::child_verbs`).
+        &Caller {
+            depth: marion_core::agent_type::DEFAULT_MAX_DEPTH - 1,
+            ..Caller::root(
+                "root",
+                marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+            )
+        },
     );
     drop(server);
     // The run itself is not the assertion — a refused call leaves the child with nothing to report
@@ -1023,8 +1028,8 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     assert!(node.spawn_confirmed, "the child's process really ran");
 }
 
-/// A verb marion's bridge really serves and a **child** is never allowed to call: `run_spawn`
-/// compiles a child's `--allowedTools` as exactly `[report]`.
+/// A verb marion's bridge really serves and a child **at its type's `max_depth`** is never allowed
+/// to call: `run_spawn` compiles that child's `--allowedTools` as exactly `[report]`.
 const DENIED_VERB: &str = "mcp__marion__spawn";
 
 // --- the pairings ---------------------------------------------------------------------------------

@@ -9237,7 +9237,8 @@ mod tests {
             (Harness::Qwen, "continuation", "none"),
             // s32: `--conversation <id>`, and a bracketed paste on the (dark) native lane.
             (Harness::Antigravity, "continuation", "paste"),
-            (Harness::Pi, "continuation", "paste"),
+            // S34 item 12: `--mode rpc` folds a steer into the running turn.
+            (Harness::Pi, "typed", "paste"),
             (Harness::Acp, "typed", "none"),
         ];
         assert_eq!(
@@ -9294,7 +9295,8 @@ mod tests {
     /// exactly one precondition on the rest of the row, so a row cannot claim a channel it has no
     /// way to take:
     ///
-    /// * `TypedTurn` needs a typed control channel (`Surfaces::Headless(_)`), and is headless only.
+    /// * `TypedTurn` needs a typed control channel (`Surfaces::Headless(_)` or a row's JSONL
+    ///   channel), and is headless only.
     /// * `Continuation` needs a launch-only row with a resume grammar in its headless argv — the
     ///   next turn is a relaunch of the same session.
     /// * `McpChannel` needs the row to push over Claude Code's channel, and is interactive only
@@ -9316,7 +9318,11 @@ mod tests {
                 let headless = shape == NodeShape::Headless;
                 match d {
                     TurnDelivery::TypedTurn { .. } => assert!(
-                        headless && matches!(row.surfaces, Surfaces::Headless(_)),
+                        headless
+                            && matches!(
+                                row.surfaces,
+                                Surfaces::Headless(_) | Surfaces::JsonlRpc(_)
+                            ),
                         "{h} {shape:?}: a typed turn needs a typed control channel"
                     ),
                     TurnDelivery::Continuation { .. } => assert!(
@@ -9383,6 +9389,46 @@ mod tests {
                     "{h}: an answered dialog needs a held, marker-free needle after it"
                 );
             }
+        }
+    }
+
+    /// **A JSONL command channel is selected only with its vocabulary.** `TypedKind::JsonlRpc` is
+    /// reachable from a row only through `Surfaces::JsonlRpc(&channel)`; a bare
+    /// `Surfaces::Headless(TypedKind::JsonlRpc)` would route a node to a driver with nothing to
+    /// write. A row that drives a channel delivers its headless turns on it, states a note, and
+    /// takes its prompt as a command rather than argv.
+    #[test]
+    fn a_row_drives_a_jsonl_channel_only_through_its_stated_vocabulary() {
+        use crate::spec::{Arg, Field, NodeShape, Surfaces, TurnDelivery, delivery_for};
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            assert_ne!(
+                row.surfaces,
+                Surfaces::Headless(TypedKind::JsonlRpc),
+                "{h}: a JSONL channel with no vocabulary"
+            );
+            let Some(channel) = row.surfaces.channel() else {
+                continue;
+            };
+            assert!(
+                !channel.note.trim().is_empty(),
+                "{h}: a channel with no measurement"
+            );
+            assert!(
+                matches!(
+                    delivery_for(row, NodeShape::Headless),
+                    TurnDelivery::TypedTurn { .. }
+                ),
+                "{h}: a node with a channel takes its later turns on it"
+            );
+            assert!(
+                !row.argv.contains(&Arg::Pos(Field::Prompt)),
+                "{h}: the prompt is the channel's first command, never argv"
+            );
+            assert!(
+                channel.prompt.text.is_some() && channel.steer.text.is_some(),
+                "{h}"
+            );
         }
     }
 

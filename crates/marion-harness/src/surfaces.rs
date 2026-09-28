@@ -34,6 +34,9 @@ pub enum TypedKind {
     AppServer,
     /// Agent Client Protocol (M5).
     Acp,
+    /// A JSONL command channel whose vocabulary is row data ([`crate::jsonl_channel`]): pi's
+    /// `--mode rpc` (S34).
+    JsonlRpc,
 }
 
 /// Where the node's output is *rendered*. Not where marion reads it from — that is

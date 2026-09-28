@@ -81,9 +81,9 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
     exploratory run, two bare `prompt`s written 50 ms apart **before** the first `agent_start`
     both answered `success: true`, and the second was never delivered. A driver must wait for
     `agent_start` (or use `steer`/`follow_up`) before writing again. Startup to the first response
-    took ~3 s with the extension loading. marion does not drive this surface yet; the row stays
-    `LaunchOnly` with `Continuation` delivery. rpc is what a typed row would use (see
-    `marion_harness::pi`).
+    took ~3 s with the extension loading. marion's driver waits for the `get_state` handshake's
+    reply before its first `prompt`, and folds with `prompt` + `streamingBehavior: "steer"`. The
+    row drives this surface (`marion_harness::pi::RPC`, `tests/pi_rpc.rs`).
 13. **The TUI takes a paste the way S31's four do.** Bracketed paste plus `\r` submits, and output
     goes quiet when pi is idle, so the row's interactive delivery is
     `TurnDelivery::bracketed_paste` (`OutputQuiet{1500}`). The native lane `marion pi` is enabled,

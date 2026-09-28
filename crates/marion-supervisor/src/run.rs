@@ -1152,6 +1152,8 @@ struct ChildDuplex<'a> {
     turns: Option<crate::inbox::TurnFeed>,
     /// The frames that end the run now ([`DuplexSpec::stop_on`]).
     stop_on: &'a dyn Fn(&serde_json::Value) -> Option<String>,
+    /// What the child's pipes speak ([`DuplexSpec::dialect`]).
+    dialect: duplex::Dialect,
 }
 
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
@@ -1166,6 +1168,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         session,
         turns,
         stop_on,
+        dialect,
     } = child;
     let mut cmd = inv.command();
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
@@ -1203,6 +1206,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             on_started: Some(on_started),
             turns,
             stop_on: Some(stop_on),
+            dialect,
         },
     )?;
     Ok(ChildRun {
@@ -1860,7 +1864,16 @@ pub fn run_spawn_watched(
         if let (Some(es), Some(key)) = (&events, endpoint.as_ref().and_then(|e| e.key.as_ref())) {
             es.scrub_key(key.expose());
         }
-        let mut launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
+        let mut launch = child_launch_spec(
+            env,
+            req,
+            &agent_type,
+            adapter.as_ref(),
+            path,
+            caller.depth + 1,
+            &wt,
+            &ch,
+        );
         if let Some(ep) = &endpoint {
             crate::endpoint::apply(&mut launch, ep);
         }
@@ -1957,6 +1970,7 @@ pub fn run_spawn_watched(
                     session: &session,
                     turns: feed(),
                     stop_on: &|frame| adapter.auth_refusal(frame),
+                    dialect: duplex::Dialect::of(adapter.spec()),
                 },
             ),
         };
@@ -2513,16 +2527,19 @@ fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
 }
 
 /// The child's launch, in the neutral vocabulary the adapter compiles from. Every field is either
-/// read off the resolved agent type or decided by the launch path — never by a harness name.
+/// read off the resolved agent type, decided by the launch path, or decided by the child's `depth`
+/// — never by a harness name.
 ///
 /// Public for its second reader, the conformance battery (`tests/conformance`), which must drive
 /// each harness under exactly the launch a spawn compiles rather than a copy that could drift.
+#[allow(clippy::too_many_arguments)]
 pub fn child_launch_spec(
     env: &Env,
     req: &SpawnRequest,
     agent_type: &AgentType,
     adapter: &dyn marion_harness::HarnessAdapter,
     path: LaunchPath,
+    depth: u32,
     wt: &Path,
     ch: &Path,
 ) -> LaunchSpec {
@@ -2561,12 +2578,23 @@ pub fn child_launch_spec(
         // reported nothing, with no error anywhere. The three harnesses whose adapters read no
         // permission list are unaffected: they ignore it, exactly as they did when it was empty.
         //
+        // **Which of marion's verbs: one rule for every harness** (`agent_type::child_verbs`).
+        // `report` always, and the delegation verbs while this child may still spawn — so an
+        // allowlist harness (claude's `--allowedTools`, copilot's `--allow-tool`, qwen's
+        // `--core-tools`) grants a grandchild exactly where codex, gemini and opencode, which
+        // compile no allowlist, already reach the depth gate. It was `[report]` alone, which made a
+        // claude child unable to delegate while a codex child could. At the bound it is `[report]`
+        // again, and the gate still refuses a `spawn` that arrives anyway.
+        //
         // **marion's own verbs only, and the declared tools are unioned in by the adapter.** §3.1's
         // table compiles this axis from *"the same list, plus marion's own `mcp__marion__*`"*, and
         // doing the union at the one place both axes are compiled is what makes them unable to
         // disagree. Appending here instead would grant permission without availability — the mirror
         // of item 24's dead end, and just as silent.
-        allowed_tools: vec![adapter.marion_tool_name("report")],
+        allowed_tools: marion_core::agent_type::child_verbs(agent_type, depth)
+            .into_iter()
+            .map(|verb| adapter.marion_tool_name(verb))
+            .collect(),
         mcp: McpDeclaration::Marion,
         base_url: env.base_url.clone(),
         // **Present, and deliberately a placeholder.** The endpoint is marion's own, so this
@@ -4118,11 +4146,11 @@ mod tests {
 
     /// **The child's two axes, composed the way `run_spawn` composes them.**
     ///
-    /// `run_spawn` sets `tools` from the resolved agent type and `allowed_tools` to marion's
-    /// `report` alone, and leaves the union to the adapter. This drives that exact pair through
-    /// the exact adapter the dispatch above selects, so the composition is checked without a
-    /// process: a `claude-impl` child gets `Write` on **both** flags and marion's own verb is not
-    /// lost from the permission axis in the process.
+    /// `run_spawn` sets `tools` from the resolved agent type and `allowed_tools` to marion's verbs
+    /// for the child's depth (`agent_type::child_verbs`), and leaves the union to the adapter.
+    /// This drives that exact pair through the exact adapter the dispatch above selects, so the
+    /// composition is checked without a process: a `claude-impl` child gets `Write` on **both**
+    /// flags and marion's own verbs are not lost from the permission axis in the process.
     ///
     /// **It restates two lines of `run_spawn` rather than calling them, and that is stated rather
     /// than hidden.** `run_spawn` needs a repo, a worktree and a process, so the wiring itself is
@@ -4135,9 +4163,12 @@ mod tests {
         let t = builtin("claude-impl").expect("the implementer type resolves");
         let adapter = adapter_for(t.harness).unwrap();
         let spec = LaunchSpec {
-            // Verbatim from `run_spawn`.
+            // Verbatim from `run_spawn`, for a child at depth 1.
             tools: t.tools.clone(),
-            allowed_tools: vec![adapter.marion_tool_name("report")],
+            allowed_tools: marion_core::agent_type::child_verbs(&t, 1)
+                .into_iter()
+                .map(|verb| adapter.marion_tool_name(verb))
+                .collect(),
             // A duplex child's prompt is a frame written after launch, so argv carries none.
             prompt: String::new(),
             ..launch_spec(None)
@@ -4150,8 +4181,9 @@ mod tests {
         assert_eq!(after("--tools"), "Read,Write", "availability");
         assert_eq!(
             after("--allowedTools"),
-            "mcp__marion__report,Read,Write",
-            "permission carries marion's verb AND the whole declaration; either alone is a dead \
+            "mcp__marion__report,mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,\
+             mcp__marion__list,mcp__marion__steer,Read,Write",
+            "permission carries marion's verbs AND the whole declaration; either alone is a dead \
              end, and a verb that reached availability and not permission is item 22's"
         );
         // The orchestrator type through the same path: unchanged, which is what keeps this

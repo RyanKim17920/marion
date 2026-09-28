@@ -1720,7 +1720,8 @@ fn probe_spec(
 }
 
 /// A probe shaped like a child: marion's `report` verb in **this harness's** spelling on the
-/// permission axis, as `run_spawn` gives every child. A launch with no marion verb at all is one no
+/// permission axis, as `run_spawn` gives a child at its type's `max_depth` — the narrowest grant a
+/// real spawn builds (`agent_type::child_verbs`). A launch with no marion verb at all is one no
 /// real spawn builds — and one qwen refuses by name, because an empty `--core-tools` is silently no
 /// allowlist at all (s25 item 16), so a probe that carried none would print marion's own omission
 /// as a finding about the operator's binary.

@@ -21,6 +21,7 @@ pub mod gemini;
 pub mod goose;
 pub mod grammar;
 pub mod invocation;
+pub mod jsonl_channel;
 pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;

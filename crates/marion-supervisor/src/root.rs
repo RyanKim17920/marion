@@ -116,7 +116,10 @@ pub use marion_harness::claude_code::{
 /// into `--available-tools`, where `mcp__marion__spawn` names no tool and the root would launch
 /// with none of marion's verbs, at exit 0. So the root does what `run_spawn` does for a child:
 /// name the verb, and let the adapter spell it (`HarnessAdapter::marion_tool_name`, §3.1).
-pub const ROOT_VERBS: [&str; 5] = ["spawn", "status", "wait", "list", "steer"];
+///
+/// The same five a child below its bound is granted (`agent_type::child_verbs`), so the root's
+/// delegation grant and a child's are one list.
+pub const ROOT_VERBS: [&str; 5] = marion_core::agent_type::DELEGATION_VERBS;
 
 /// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
 /// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**
@@ -2754,6 +2757,7 @@ fn launch_duplex(
             on_started: Some(on_started),
             turns: node.turns.clone(),
             stop_on: Some(&stop_on),
+            dialect: duplex::Dialect::of(marion_harness::adapter::harness_spec(node.harness)),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

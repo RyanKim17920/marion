@@ -10,8 +10,8 @@
 //! # Why the hazard was live rather than theoretical
 //!
 //! The only thing that ever stopped a grandchild was **accidental**, and it covered exactly one of
-//! the four harnesses. `run_spawn` compiles a child with `allowed_tools = [report]`, and only the
-//! Claude Code adapter reads `allowed_tools` at all. The other three ignore it, and codex's
+//! the four harnesses. `run_spawn` compiled every child with `allowed_tools = [report]`, and only
+//! the Claude Code adapter read `allowed_tools` at all. The other three ignore it, and codex's
 //! generated `config.toml` additionally sets `default_tools_approval_mode = "approve"` — the key
 //! whose *absence* the codex adapter's own test calls out as silently cancelling every marion call.
 //! A codex child that called `spawn` was therefore **served**, and its grandchild ran to completion.
@@ -34,8 +34,9 @@
 //!
 //! Three of the four harnesses reach the gate and are refused by it, in marion's own words, on the
 //! wire. **claude-code does not, and that is a measured fact about the harness rather than a hole in
-//! the gate.** `run_spawn` compiles every child with `allowed_tools = [report]`; Claude Code is the
-//! one harness that reads that list, so its `spawn` never leaves the CLI as an MCP call at all — it
+//! the gate.** `run_spawn` compiles a child at its type's `max_depth` with `allowed_tools =
+//! [report]` (`agent_type::child_verbs`: the delegation verbs are granted only below the bound);
+//! Claude Code reads that list, so its `spawn` never leaves the CLI as an MCP call at all — it
 //! surfaces as a `can_use_tool` control request, which `duplex` denies (there is no permission
 //! answerer, §11 item 22) before marion's supervisor is ever asked for a child.
 //!
@@ -146,7 +147,7 @@ enum RefusedBy {
     /// comes back as the `spawn` call's own tool result, so marion's sentence is on the wire.
     DepthGate,
     /// The call never left the CLI as an MCP call. Claude Code is the one harness that reads
-    /// `allowed_tools`, which `run_spawn` sets to `[report]`, so `spawn` surfaces as a
+    /// `allowed_tools`, which `run_spawn` sets to `[report]` at the bound, so `spawn` surfaces as a
     /// `can_use_tool` control request instead — and `duplex` denies it, there being no permission
     /// answerer in M1 (§11 item 22). marion's supervisor is never asked for a child at all.
     PermissionDenial,
@@ -373,8 +374,8 @@ const IDLE_GRACE: Duration = Duration::from_secs(600);
 /// A bound that exists only to fail. Nothing here waits on work the test has not already caused.
 const BOUND: Duration = Duration::from_secs(180);
 
-/// The shim: a `codex` that blocks until the gate exists, and `exec`s the real binary for the one
-/// invocation that must be real.
+/// The shim: a `codex` that blocks until the gate exists, and `exec`s the real binary for the
+/// invocations that must be real — the node under test, and a codex grandchild it is allowed.
 fn chain_shim(dir: &Path, gate: &Path, real: &Path) -> PathBuf {
     let bin = dir.join(CHAIN_PROGRAM);
     let script = format!(
@@ -385,7 +386,7 @@ esac
 case "$*" in
   # The node under test. Its argv is the adapter's own, so this hands the real harness exactly what
   # marion compiled — the shim is a router, never a translator.
-  *{marker}*) exec {real} "$@" ;;
+  *{marker}*|*{grandchild}*) exec {real} "$@" ;;
 esac
 # A chain node: hold this depth open until the fixture releases it. Mortal by construction, because
 # a shim that could only ever wait for a gate would outlive a panicking test.
@@ -398,6 +399,7 @@ done
 exit 0
 "#,
         marker = DELEGATOR_MARKER,
+        grandchild = GRANDCHILD_MARKER,
         real = common::shell_quote(real),
         gate = common::shell_quote(gate),
     );
@@ -726,7 +728,8 @@ fn assert_refused(node: &Node, ev: &Evidence) {
             let spawn = marion_tool(node, "spawn");
             assert!(
                 ev.denied_permissions.contains(&spawn),
-                "{h}: this harness reads `allowed_tools`, which run_spawn sets to [report], so its \
+                "{h}: this harness reads `allowed_tools`, which run_spawn sets to [report] at the \
+                 bound, so its \
                  `spawn` must surface as a denied `can_use_tool` for {spawn:?} — marion's outer \
                  defence, refusing the call before the supervisor is asked for a child. Denied: \
                  {:?}. If this list is empty because the call went out as an MCP request instead, \
@@ -834,4 +837,143 @@ fn a_gemini_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one()
 #[test]
 fn an_opencode_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one() {
     refuses_a_grandchild(&OPENCODE);
+}
+
+// --- below the bound: a child delegates ----------------------------------------------------------
+//
+// The other half of the same rule. A child whose depth is below its type's `max_depth` is given
+// marion's delegation verbs on every harness's permission axis, so a claude child — the harness
+// whose allowlist used to hold only `report` — really spawns a grandchild of another harness and
+// reads its contract back as the `spawn` call's result.
+
+/// Present only in the codex grandchild's prompt, so the chain shim routes that one invocation to
+/// the real binary and the Responses wire's child script answers it.
+const GRANDCHILD_MARKER: &str = "MARION-DEPTH-GATE-GRANDCHILD-5e07";
+
+/// What the codex grandchild reports. Seen again inside the claude child's own next request, it is
+/// the grandchild's contract coming back to the node that delegated.
+const DELEGATED_NARRATIVE: &str = "The codex grandchild wrote its marker and reported back.";
+
+#[test]
+fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contract() {
+    assert!(on_path("claude"), "this test drives a REAL claude child");
+    assert!(
+        on_path(CHAIN_PROGRAM),
+        "this test drives a REAL codex grandchild"
+    );
+    let dir = scratch("depth-delegates");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    let shim_dir = dir.join("bin");
+    let gate = dir.join("chain-gate");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM));
+
+    let spawn = marion_tool(&CLAUDE, "spawn");
+    let script = Script {
+        root: Some(RootScript {
+            marker: DELEGATOR_MARKER.into(),
+            turn: RootTurn {
+                tool: spawn.clone(),
+                args: json!({
+                    "agent_type": CODEX.agent_type,
+                    "prompt": format!("{GRANDCHILD_MARKER}: {GRANDCHILD_PROMPT}"),
+                    "acceptance_criteria": ["a file exists under src/"],
+                    "writable_scope": ["src/**"],
+                    "timeout_secs": CHILD_TIMEOUT_SECS,
+                }),
+                final_text: "The codex grandchild finished; its contract is above.".into(),
+            },
+        }),
+        child_narrative: DELEGATED_NARRATIVE.into(),
+        ..Script::default()
+    };
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: dir.join("provider-requests.jsonl"),
+        script,
+    })
+    .expect("the canned provider binds");
+    let path_env = format!(
+        "{}:{}",
+        shim_dir.to_string_lossy(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let key = project_root(&repo);
+    let project = ProjectDir::new(&state, &key);
+    let mut sup =
+        common::Supervisor::start(&state, &key, &path_env, &server.base_url(), IDLE_GRACE);
+
+    // A root at depth 0 (a shim holding its depth open) and the claude child at depth 1, two below
+    // the built-in bound of 3.
+    let root = spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
+        .expect("the chain's root is created over the socket");
+    let child = spawn_over_socket(
+        &sup,
+        &state,
+        Some(&root),
+        AgentSpawnParams {
+            agent_type: CLAUDE.agent_type.into(),
+            prompt: format!("{DELEGATOR_MARKER}: delegate this task to a codex child."),
+            acceptance_criteria: vec!["the task is delegated".into()],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: Some(CHILD_TIMEOUT_SECS),
+            ..chain_params(None, 1)
+        },
+    )
+    .expect("the claude child is served");
+    let deadline = std::time::Instant::now() + BOUND;
+    while !is_terminal(&project.journal(), &child.agent_id) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the claude child never reached a terminal record"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let denied: Vec<String> = read_path(&project.journal())
+        .map(|replay| {
+            replay
+                .nodes()
+                .iter()
+                .flat_map(|n| n.denied_permissions.iter().map(|d| d.tool.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let requests = server.requests().unwrap_or_default();
+    let contracts = persisted_contracts(&state);
+
+    std::fs::write(&gate, b"go").expect("the chain is released");
+    let settle = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < settle && !survivors(&dir.to_string_lossy()).is_empty() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    sup.stop();
+    drop(server);
+    let leaked = survivors(&dir.to_string_lossy());
+    for (pid, _) in &leaked {
+        kill_hard(*pid);
+    }
+    drop(dir);
+
+    assert!(
+        !denied.contains(&spawn),
+        "a claude child below max_depth must be allowed {spawn:?}; it was denied as a \
+         `can_use_tool`, so its permission axis still holds only `report`. Denied: {denied:?}"
+    );
+    let contracts = contracts.expect("the state tree walks");
+    assert_eq!(
+        contracts.len(),
+        2,
+        "the claude child and its codex grandchild each wrote a contract (the root is still \
+         held open): {contracts:?}"
+    );
+    assert!(
+        requests.iter().any(|r| r["wire"] == "anthropic"
+            && carries(&r["body"], DELEGATOR_MARKER)
+            && carries(&r["body"], DELEGATED_NARRATIVE)),
+        "the grandchild's contract, carrying its report, must come back to the claude child as \
+         the `spawn` result in its next request"
+    );
+    assert!(leaked.is_empty(), "processes outlived the run: {leaked:?}");
 }

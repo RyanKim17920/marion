@@ -1617,6 +1617,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     on_started: None,
                     turns: None,
                     stop_on: None,
+                    dialect: crate::duplex::Dialect::StreamJson,
                 },
             )
             .expect("the run returns");

@@ -22,10 +22,9 @@
 //! 5. **A `LaunchOnly` root is continued the same way**: a `marion run codex` root that
 //!    backgrounds a codex child is relaunched with the child's end as its second generation.
 //!
-//! Cells 1 and 2 run once per [`Row`], the child's harness as data, so the lane is shown to be the
-//! row's and not codex's: a pi child is relaunched as `pi … --session <id> … <message>` and its Chat
-//! Completions request replays turn one. The one difference in the bed is who backgrounds the
-//! grandchild ([`Grandchild`]), since pi offers a child's model no `spawn`.
+//! Cells 1 and 2 run per [`Row`], the child's harness as data, so a second `LaunchOnly` row with a
+//! resume grammar is a second `Row` value. pi had one until its row moved to `--mode rpc`, where a
+//! steer and a child's end reach it in the same process (`tests/pi_rpc.rs`).
 //!
 //! The bed is `descendant_gate.rs`'s: a detached supervisor, a `codex` shim ahead of the real
 //! binary on its `PATH`, the root and grandchild blocked on gate files, and every wait a fact in
@@ -35,7 +34,7 @@
 //! cargo test -p marion-supervisor --test continuation
 //! ```
 //!
-//! It needs a real `codex` and a real `pi` on `PATH`. Every model call is the canned server's: no paid tokens.
+//! It needs a real `codex` on `PATH`. Every model call is the canned server's: no paid tokens.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -108,24 +107,6 @@ struct Row {
     resume: fn(&str) -> String,
     /// What the shim answers `--version` with; `None` asks the real binary.
     version: Option<&'static str>,
-    /// Who backgrounds the grandchild that holds the child under §7.6.
-    grandchild: Grandchild,
-}
-
-/// **Who backgrounds the grandchild.** Either way the child's first turn ends unreported over a
-/// live, owed grandchild, which is the hold both cells start from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Grandchild {
-    /// The child's model calls `spawn` with `background: true`. A child is granted only `report`
-    /// (`run_spawn`'s `allowed_tools`), and codex reads no permission list, so its `spawn` is
-    /// served.
-    SpawnedByTheChild,
-    /// pi's `--tools` is an allowlist over extension tools too (s34-pi item 3), so a child's model
-    /// is offered only `report` and its `spawn` is `Tool mcp__marion__spawn not found`. The bed
-    /// holds the child's first launch, backgrounds the grandchild over the socket with the child's
-    /// own credentials, which is the call the bridge would have made, and then lets it run. Turn
-    /// one calls `read` so a later generation has a turn to replay.
-    SpawnedForTheChild,
 }
 
 /// codex speaks the Responses wire, whose dispatch form is the bare verb (`responses.rs`), and
@@ -136,34 +117,14 @@ const CODEX: Row = Row {
     verb: bare_verb,
     resume: codex_resume,
     version: Some("codex-cli 0.146.0-marion-continuation-shim"),
-    grandchild: Grandchild::SpawnedByTheChild,
-};
-
-/// pi speaks Chat Completions under the name marion's `-e` extension registers,
-/// `mcp__marion__<verb>`, and resumes with `--session <id>` (s34-pi item 8).
-const PI: Row = Row {
-    program: "pi",
-    agent_type: "pi",
-    verb: mcp_verb,
-    resume: pi_resume,
-    version: None,
-    grandchild: Grandchild::SpawnedForTheChild,
 };
 
 fn bare_verb(verb: &str) -> String {
     verb.to_string()
 }
 
-fn mcp_verb(verb: &str) -> String {
-    format!("mcp__marion__{verb}")
-}
-
 fn codex_resume(id: &str) -> String {
     format!("resume {id}")
-}
-
-fn pi_resume(id: &str) -> String {
-    format!("--session {id}")
 }
 
 /// The child's first turn backgrounds a grandchild and stops without reporting; a turn that
@@ -195,22 +156,17 @@ fn script(row: &Row) -> Script {
             NodeScript {
                 marker: DELEGATOR_MARKER.into(),
                 call_prefix: CHILD_CALL_PREFIX.into(),
-                turns: vec![match row.grandchild {
-                    Grandchild::SpawnedByTheChild => ScriptedCall::new(
-                        (row.verb)("spawn"),
-                        json!({
-                            "agent_type": CODEX.agent_type,
-                            "prompt": GRANDCHILD_PROMPT,
-                            "acceptance_criteria": ["the grandchild was released"],
-                            "writable_scope": ["src/**"],
-                            "timeout_secs": SHIM_TIMEOUT_SECS,
-                            "background": true,
-                        }),
-                    ),
-                    Grandchild::SpawnedForTheChild => {
-                        ScriptedCall::new("read", json!({"path": "README.md"}))
-                    }
-                }],
+                turns: vec![ScriptedCall::new(
+                    (row.verb)("spawn"),
+                    json!({
+                        "agent_type": CODEX.agent_type,
+                        "prompt": GRANDCHILD_PROMPT,
+                        "acceptance_criteria": ["the grandchild was released"],
+                        "writable_scope": ["src/**"],
+                        "timeout_secs": SHIM_TIMEOUT_SECS,
+                        "background": true,
+                    }),
+                )],
                 final_text: "Backgrounded a grandchild; ending my turn.".into(),
             },
         ],
@@ -481,9 +437,7 @@ impl Bed {
         };
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&shim_dir).unwrap();
-        if row.grandchild == Grandchild::SpawnedByTheChild {
-            std::fs::write(&gates.child, b"go").unwrap();
-        }
+        std::fs::write(&gates.child, b"go").unwrap();
         // The child's shim, and the gated root's and grandchild's (the same one on the codex row).
         shim(&shim_dir, &gates, row.program, row.version);
         if row.program != CODEX.program {
@@ -525,26 +479,6 @@ impl Bed {
             params(row.agent_type, child_prompt, None, child_timeout_secs),
         );
         let journal = project.journal();
-        if row.grandchild == Grandchild::SpawnedForTheChild {
-            wait_for(&journal, "the child's Running", |j| {
-                state_of(j, &child.agent_id) == Some(NodeState::Running)
-            });
-            spawn_over_socket(
-                &sup,
-                &state,
-                Some(&child),
-                AgentSpawnParams {
-                    notify_parent: true,
-                    ..params(
-                        CODEX.agent_type,
-                        GRANDCHILD_PROMPT.into(),
-                        None,
-                        SHIM_TIMEOUT_SECS,
-                    )
-                },
-            );
-            std::fs::write(&gates.child, b"go").unwrap();
-        }
         Bed {
             journal,
             events: project.agent(&child.agent_id).events(),
@@ -641,14 +575,6 @@ fn requests_carrying(reqlog: &Path, needle: &str) -> Vec<Value> {
 #[test]
 fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_generation() {
     steer_during_a_hold_is_the_second_generation(&CODEX);
-}
-
-/// **The same steer, into a held pi child**: the lane is the row's, so pi is relaunched under the
-/// session its `session` frame named, as `--session <id>` beside the rendered steer, and its Chat
-/// Completions request replays the first turn.
-#[test]
-fn a_steer_during_a_descendant_hold_resumes_the_pi_child_as_its_second_generation() {
-    steer_during_a_hold_is_the_second_generation(&PI);
 }
 
 fn steer_during_a_hold_is_the_second_generation(row: &Row) {
@@ -777,13 +703,6 @@ fn steer_during_a_hold_is_the_second_generation(row: &Row) {
 #[test]
 fn a_childs_end_during_a_descendant_hold_resumes_the_codex_parent() {
     childs_end_during_a_hold_resumes_the_parent(&CODEX);
-}
-
-/// **The same end, reaching a held pi parent**: pi is continued with the rendered end as its next
-/// generation, under the session it named, and reports.
-#[test]
-fn a_childs_end_during_a_descendant_hold_resumes_the_pi_parent() {
-    childs_end_during_a_hold_resumes_the_parent(&PI);
 }
 
 fn childs_end_during_a_hold_resumes_the_parent(row: &Row) {
