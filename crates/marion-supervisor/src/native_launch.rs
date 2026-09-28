@@ -32,6 +32,8 @@ use crate::native_exec::{
 
 pub(crate) struct PreparedNativeCommand {
     pub(crate) invocation: NativeInvocation,
+    /// The node's own `TMPDIR` ([`crate::node_tmp`]), removed once its process is reaped.
+    pub(crate) tmp: crate::node_tmp::NodeTmp,
     pub(crate) cast_path: PathBuf,
     pub(crate) terminal_profile: OsString,
     /// What the resolved executable answered to `--version`, or `"unknown"` — the same probe,
@@ -270,8 +272,10 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
         .map_err(native_command_error)?;
         materialize_documents(agent_dir.path(), &prepared.documents)
             .map_err(native_command_error)?;
+        let tmp = crate::node_tmp::NodeTmp::create(&agent_dir).map_err(native_command_error)?;
         Ok(PreparedNativeCommand {
             invocation: prepared.invocation,
+            tmp,
             cast_path: agent_dir.pty_cast(),
             terminal_profile: context.terminal_profile().to_owned(),
             harness_version,
@@ -626,6 +630,7 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
             NativeCommandSpec {
                 agent_id: agent_id.clone(),
                 invocation: prepared.invocation,
+                tmp: prepared.tmp,
                 cast_path: prepared.cast_path,
                 terminal_profile: prepared.terminal_profile,
             },
@@ -1332,6 +1337,7 @@ mod tests {
             NativeCommandSpec {
                 agent_id: agent_id.clone(),
                 invocation: invocation(&work),
+                tmp: crate::node_tmp::NodeTmp::at(work.join("tmp")).unwrap(),
                 cast_path: work.join("pty.cast"),
                 terminal_profile: OsString::from("xterm-256color"),
             },
