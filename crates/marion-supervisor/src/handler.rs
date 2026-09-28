@@ -1206,6 +1206,14 @@ impl crate::run::SpawnObserver for NodeOwner {
 ///
 /// *An unreadable peer is a refusal.* [`Peer::Unknown`] means `getpeereid` failed, and a check that
 /// cannot be made is not a check that passed.
+/// What [`RegistryHandle::reviewed`] read about the node a review names.
+struct Reviewed {
+    review: crate::review::Target,
+    contract: marion_core::contract::TaskContract,
+    intent: SpawnIntent,
+    model: Option<String>,
+}
+
 /// **§2's one-socket-one-project rule for a spawn that names its own `repo`** — a root, or an
 /// operator's review: the tree named must key to the project this supervisor serves.
 fn check_project(env: &crate::run::Env, repo: &Path) -> Result<(), RpcError> {
@@ -3479,44 +3487,11 @@ impl RegistryHandle {
         })
     }
 
-    /// **`agent/spawn` with `review_of`: a read-only reviewer of an ended node** ([`crate::review`]).
-    ///
-    /// One spawn path for both client forms: `marion review` sends this with no `caller` (the
-    /// operator, authorized as a root spawn is, naming the `repo`), and a parent model sends it
-    /// through its bridge's `spawn` with its own token. Either way the reviewer is placed **under
-    /// the node it reviews** — the reviewed node stands as the caller for §6.1's gates, the tree
-    /// and the contract's `requester` — so the tree shows the review where the work is.
-    ///
-    /// Refused, in plain words and before anything is written, when the node is unknown, is a
-    /// root, has not ended, or changed nothing.
-    fn spawn_review(
-        &self,
-        me: Arc<RegistryHandle>,
-        env: crate::run::Env,
-        p: &marion_core::proto::params::AgentSpawnParams,
-        target: &AgentId,
-        peer: Peer,
-    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
-        let repo = match p.caller.as_ref() {
-            Some(c) => self.authenticate(c).ok_or_else(|| {
-                RpcError::refused(
-                    &c.agent_id.0,
-                    "this supervisor did not mint that node token, so it will not start a review \
-                     on its word.",
-                    "§5.4",
-                )
-            })?,
-            None => {
-                root_spawn_authorized(peer)?;
-                let repo = p.repo.clone().ok_or_else(|| {
-                    RpcError::internal("a review with no caller reached the launcher with no repo")
-                })?;
-                check_project(&env, &repo)?;
-                repo
-            }
-        };
-        let decision = lock(&self.spawn_decision);
-        self.live.refresh();
+    /// **The node a review names, read and checked**: known, ended, a child with a contract that
+    /// changed something. Every refusal is [`crate::review::refusal`]'s plain sentence. Shared by a
+    /// fresh review and by the resume of a reviewer, so a resumed reviewer is as read-only and as
+    /// grounded as the one it continues.
+    fn reviewed(&self, env: &crate::run::Env, target: &AgentId) -> Result<Reviewed, RpcError> {
         let refuse = |why: String| RpcError::refused(&target.0, why, "review");
         let (intent, state, model) = self
             .live
@@ -3563,6 +3538,58 @@ impl RegistryHandle {
                 ))
             })?;
         let review = crate::review::target(target, &contract).map_err(refuse)?;
+        Ok(Reviewed {
+            review,
+            contract,
+            intent,
+            model,
+        })
+    }
+
+    /// **`agent/spawn` with `review_of`: a read-only reviewer of an ended node** ([`crate::review`]).
+    ///
+    /// One spawn path for both client forms: `marion review` sends this with no `caller` (the
+    /// operator, authorized as a root spawn is, naming the `repo`), and a parent model sends it
+    /// through its bridge's `spawn` with its own token. Either way the reviewer is placed **under
+    /// the node it reviews** — the reviewed node stands as the caller for §6.1's gates, the tree
+    /// and the contract's `requester` — so the tree shows the review where the work is.
+    ///
+    /// Refused, in plain words and before anything is written, when the node is unknown, is a
+    /// root, has not ended, or changed nothing.
+    fn spawn_review(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        p: &marion_core::proto::params::AgentSpawnParams,
+        target: &AgentId,
+        peer: Peer,
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
+        let repo = match p.caller.as_ref() {
+            Some(c) => self.authenticate(c).ok_or_else(|| {
+                RpcError::refused(
+                    &c.agent_id.0,
+                    "this supervisor did not mint that node token, so it will not start a review \
+                     on its word.",
+                    "§5.4",
+                )
+            })?,
+            None => {
+                root_spawn_authorized(peer)?;
+                let repo = p.repo.clone().ok_or_else(|| {
+                    RpcError::internal("a review with no caller reached the launcher with no repo")
+                })?;
+                check_project(&env, &repo)?;
+                repo
+            }
+        };
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let Reviewed {
+            review,
+            contract,
+            intent,
+            model,
+        } = self.reviewed(&env, target)?;
         let agent_type = tree_types(&repo)?
             .resolve(&intent.agent_type)
             .ok_or_else(|| {
@@ -4398,8 +4425,15 @@ impl RegistryHandle {
             depth: parent.depth().unwrap_or(0),
             live_children: self.live_children_of(&parent_id),
         };
+        // A reviewer's second life is a reviewer's: read-only, against the same reviewed work.
+        let review = node
+            .intent
+            .as_ref()
+            .and_then(|i| i.review_of.as_ref())
+            .map(|target| self.reviewed(env, target).map(|r| r.review))
+            .transpose()?;
         let req = crate::run::SpawnRequest {
-            review: None,
+            review,
             agent_type: agent_type.name.clone(),
             prompt: prompt.to_string(),
             repo: repo.clone(),
