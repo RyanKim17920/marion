@@ -985,7 +985,7 @@ mod tests {
         const SIGUSR2: i32 = 31;
         type SigSet = [u64; 16];
         unsafe extern "C" {
-            fn pthread_sigmask(how: i32, set: *const SigSet, old: *mut SigSet) -> i32;
+            fn sigprocmask(how: i32, set: *const SigSet, old: *mut SigSet) -> i32;
         }
         #[cfg(target_os = "linux")]
         const SIG_BLOCK: i32 = 0;
@@ -1001,15 +1001,16 @@ mod tests {
                     "--test-threads=1",
                 ])
                 .env(PROBE, "1");
-            // SAFETY: `pthread_sigmask` is async-signal-safe; `set` is a live, large enough
-            // `sigset_t`.
+            // SAFETY: `sigprocmask` is async-signal-safe, and the forked child is single-threaded
+            // until `exec`; `set` is a live buffer at least as large as the platform `sigset_t`.
             unsafe {
                 probe.pre_exec(move || {
                     let mut set: SigSet = [0; 16];
                     set[0] = bit;
-                    match pthread_sigmask(SIG_BLOCK, &set, std::ptr::null_mut()) {
-                        0 => Ok(()),
-                        e => Err(std::io::Error::from_raw_os_error(e)),
+                    if sigprocmask(SIG_BLOCK, &set, std::ptr::null_mut()) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
                     }
                 });
             }
