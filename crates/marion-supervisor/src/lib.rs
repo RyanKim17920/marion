@@ -142,6 +142,8 @@ pub mod spending;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;
+/// Consent for the commands a repository's `.marion/agents.toml` names: `marion trust`.
+pub mod trust;
 /// Event-driven waiting: self-pipes, change signals and file watches that long-lived loops block
 /// on instead of sleeping.
 pub mod wake;
