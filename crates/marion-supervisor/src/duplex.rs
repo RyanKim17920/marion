@@ -610,7 +610,7 @@ pub fn run_duplex(
     // queued mid-turn is seen while the node is still speaking, not after its next line.
     let (events, rx) = std::sync::mpsc::channel();
     let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
-    let stdout = Drain::start_with_lines(stdout, Some(lines_tx));
+    let stdout = Drain::start_with_lines(stdout, Some(lines_tx), None);
     let forward = events.clone();
     std::thread::spawn(move || {
         for line in lines_rx {

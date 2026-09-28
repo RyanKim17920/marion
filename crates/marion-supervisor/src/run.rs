@@ -18,7 +18,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command as SysCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -343,10 +343,6 @@ pub struct CommandOutput {
     pub capture_truncated: bool,
 }
 
-unsafe extern "C" {
-    fn poll(fds: *mut PollFd, nfds: NfdsT, timeout_ms: i32) -> i32;
-}
-
 /// The credential a spawned child presents to marion's own endpoint.
 ///
 /// Not a secret and not checked by anything: the endpoint is marion's canned provider or its proxy,
@@ -356,41 +352,25 @@ unsafe extern "C" {
 /// "MARION_PROVIDER_KEY"`, compiled from this field by codex's row).
 pub const PLACEHOLDER_API_KEY: &str = "dummy";
 
-/// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
-#[cfg(target_os = "linux")]
-type NfdsT = u64;
-#[cfg(not(target_os = "linux"))]
-type NfdsT = u32;
-
-#[repr(C)]
-struct PollFd {
-    fd: i32,
-    events: i16,
-    revents: i16,
-}
-
-const POLLIN: i16 = 0x0001;
-
-/// How often an idle drain thread wakes to notice it has been told to stop. Also the worst-case
-/// delay between `Drain::stop` and the thread exiting, which is what makes the join bounded.
-const DRAIN_POLL_MS: i32 = 20;
-
 /// A pipe drain that can be stopped while the pipe is still open.
 ///
-/// The thread never blocks in `read` for longer than `DRAIN_POLL_MS`: it waits for readiness with
-/// `poll`, which takes a timeout, and only then reads bytes it knows are there. So a stop request
-/// is honoured promptly and the thread *exits* — it is not detached and left wedged. That matters
-/// because `spawn` is called repeatedly by a long-lived supervisor: one leaked thread (and one
-/// leaked fd, and its buffer) per timed-out spawn would be its own unbounded leak, traded for the
-/// hang it fixed.
+/// The thread never blocks in `read`: it waits in `poll(2)` on the pipe **and on its stop flag's
+/// descriptor**, with no timeout, and reads only bytes it knows are there. So an idle drain costs
+/// no wakeups, a stop request is honoured the moment it is made, and the thread *exits* — it is not
+/// detached and left wedged. That matters because `spawn` is called repeatedly by a long-lived
+/// supervisor: one leaked thread (and one leaked fd, and its buffer) per timed-out spawn would be
+/// its own unbounded leak, traded for the hang it fixed.
 pub(crate) struct Drain {
     handle: thread::JoinHandle<(Vec<u8>, bool)>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<crate::wake::Flag>,
+    /// Closed by the thread as it returns, so [`Self::finish`] waits for it on a channel with the
+    /// deadline as its only timeout.
+    done: std::sync::mpsc::Receiver<()>,
 }
 
 impl Drain {
     pub(crate) fn start<R: Read + AsRawFd + Send + 'static>(pipe: R) -> Self {
-        Self::start_with_lines(pipe, None)
+        Self::start_with_lines(pipe, None, None)
     }
 
     /// [`Self::start`], and every **complete line** forwarded on `lines` as it lands — the live
@@ -399,27 +379,39 @@ impl Drain {
     /// Bytes after the last newline are forwarded at EOF, so a stream whose final frame has no
     /// trailing newline is not read one frame short. The whole capture is still returned by
     /// [`Self::finish`]: the lines are a copy, not a diversion.
+    ///
+    /// `wake`, when given, is rung after every forward (and at the end), so a caller waiting in its
+    /// own `poll` for lines learns of them at once.
     pub(crate) fn start_with_lines<R: Read + AsRawFd + Send + 'static>(
         mut pipe: R,
         lines: Option<std::sync::mpsc::Sender<String>>,
+        wake: Option<Arc<crate::wake::Pipe>>,
     ) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(crate::wake::Flag::new());
         let flag = Arc::clone(&stop);
+        let (done_tx, done) = std::sync::mpsc::channel::<()>();
         let handle = thread::spawn(move || {
-            let fd = pipe.as_raw_fd();
+            // Dropped on every return, which is what `finish` waits for.
+            let _done = done_tx;
+            let ring = || {
+                if let Some(wake) = &wake {
+                    wake.wake();
+                }
+            };
+            // SAFETY: `pipe` owns the descriptor for the whole of this thread.
+            let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe.as_raw_fd()) };
             let mut bytes = Vec::new();
             let mut buf = [0u8; 8192];
             // The start of the first byte not yet forwarded as part of a line.
             let mut forwarded = 0usize;
             loop {
-                if flag.load(Ordering::Relaxed) {
+                if flag.load(Ordering::SeqCst) {
                     // Abandoned with the pipe still open: what we have is a prefix.
                     return (bytes, false);
                 }
-                let Ok(readable) = poll_readable(fd) else {
-                    return (bytes, false);
-                };
-                if !readable {
+                // Readable, hung up, errored, or the stop was raised. An interrupted wait reports
+                // nothing ready and comes round again.
+                if !crate::wake::wait_until(&[Some(fd), flag.fd()], None)[0] {
                     continue;
                 }
                 // Readable, hung up, or errored. Only `read` can tell the three apart, and with a
@@ -428,65 +420,50 @@ impl Drain {
                     Ok(0) => {
                         // EOF: every write end is closed.
                         forward_lines(lines.as_ref(), &bytes, &mut forwarded, true);
+                        ring();
                         return (bytes, true);
                     }
                     Ok(n) => {
                         bytes.extend_from_slice(&buf[..n]);
-                        forward_lines(lines.as_ref(), &bytes, &mut forwarded, false);
+                        if forward_lines(lines.as_ref(), &bytes, &mut forwarded, false) {
+                            ring();
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => return (bytes, false),
                 }
             }
         });
-        Self { handle, stop }
+        Self { handle, stop, done }
     }
 
     /// Collect the drained bytes, waiting no later than `deadline` for a natural EOF.
     ///
     /// Returns `(bytes, complete)`; `complete` is false exactly when the pipe was still open at the
-    /// deadline, i.e. when the capture is a prefix.
+    /// deadline, i.e. when the capture is a prefix. The wait is one receive on the thread's
+    /// completion channel, bounded by what is left of the deadline; a stop raised past it wakes the
+    /// thread's `poll`, so the join is immediate.
     pub(crate) fn finish(self, deadline: Instant) -> (Vec<u8>, bool) {
-        while !self.handle.is_finished() && Instant::now() < deadline {
-            thread::sleep(StdDuration::from_millis(5));
-        }
-        self.stop.store(true, Ordering::Relaxed);
-        // Bounded by one `poll` interval: the thread checks `stop` every `DRAIN_POLL_MS`.
+        let _ = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        self.stop.store(true, Ordering::SeqCst);
         self.handle.join().unwrap_or((Vec::new(), false))
     }
 }
 
-/// Wait at most [`DRAIN_POLL_MS`] for `fd` to become readable, hung up or errored.
-///
-/// `Ok(true)` is any of those three — only `read` can tell them apart. `Ok(false)` is a poll that
-/// timed out or was interrupted, which the caller treats alike: check `stop`, then ask again. `Err`
-/// is a `poll` that failed for any other reason, on which the drain gives up with what it has.
-fn poll_readable(fd: std::os::fd::RawFd) -> Result<bool, ()> {
-    let mut pfd = PollFd {
-        fd,
-        events: POLLIN,
-        revents: 0,
-    };
-    let ready = unsafe { poll(&mut pfd, 1, DRAIN_POLL_MS) };
-    if ready < 0 {
-        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            return Ok(false);
-        }
-        return Err(());
-    }
-    Ok(ready > 0)
-}
-
 /// Forward every complete line in `bytes[*forwarded..]` on `lines`, advancing `forwarded` past
 /// them. At EOF the bytes after the last newline are forwarded too, so a stream whose final frame
-/// has no trailing newline is not read one frame short. A `None` sender forwards nothing.
+/// has no trailing newline is not read one frame short. A `None` sender forwards nothing. Whether
+/// anything was forwarded.
 fn forward_lines(
     lines: Option<&std::sync::mpsc::Sender<String>>,
     bytes: &[u8],
     forwarded: &mut usize,
     at_eof: bool,
-) {
-    let Some(tx) = lines else { return };
+) -> bool {
+    let Some(tx) = lines else { return false };
+    let from = *forwarded;
     while let Some(nl) = bytes[*forwarded..].iter().position(|b| *b == b'\n') {
         let line = &bytes[*forwarded..*forwarded + nl];
         let _ = tx.send(String::from_utf8_lossy(line).into_owned());
@@ -496,6 +473,7 @@ fn forward_lines(
         let _ = tx.send(String::from_utf8_lossy(&bytes[*forwarded..]).into_owned());
         *forwarded = bytes.len();
     }
+    *forwarded > from
 }
 
 /// Run `command` to completion or to `timeout`, whichever comes first, killing its whole
@@ -658,7 +636,12 @@ fn run_bounded_with(
         }
         None => (None, None),
     };
-    let stdout_drain = Drain::start_with_lines(stdout, lines_tx);
+    // Rung by the stdout drain after it forwards lines, so the wait below wakes for them. Only
+    // when someone listens; `None` inside if no descriptor could be had (lines are then looked at
+    // on the degraded re-check).
+    let lines_wake = on_line.map(|_| crate::wake::Pipe::new().ok().map(Arc::new));
+    let stdout_drain =
+        Drain::start_with_lines(stdout, lines_tx, lines_wake.clone().flatten());
     let stderr_drain = Drain::start(stderr);
     // `Break` from the hook: the caller read a line that ends the run now. Every line is still
     // delivered, so the live view misses nothing said before the kill.
@@ -687,19 +670,34 @@ fn run_bounded_with(
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(MAX_TIMEOUT_SECS));
+    // Event-driven: the wait between looks ends on the child's exit, a forwarded line, or the
+    // deadline — never on a timer.
+    let exit = crate::wake::ProcExit::new(child.id() as i32);
+    let mut exited = None;
     let (status, timed_out) = loop {
+        if let Some(Some(wake)) = &lines_wake {
+            wake.drain();
+        }
         if deliver_lines() {
             kill_tree(child.id() as i32);
             break (child.wait()?, false);
         }
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = exited {
             break (status, false);
         }
         if Instant::now() >= deadline {
             kill_tree(child.id() as i32);
             break (child.wait()?, true);
         }
-        thread::sleep(StdDuration::from_millis(10));
+        let lines = lines_wake
+            .as_ref()
+            .map(|wake| wake.as_ref().map(|w| w.fd()));
+        exited = crate::wake::step_child(
+            &mut child,
+            &exit,
+            lines.as_slice(),
+            Some(deadline),
+        )?;
     };
     // The child is reaped; anything still holding a write end is an escapee. One deadline for both
     // drains, so the total wait is `DRAIN_GRACE`, not twice it.

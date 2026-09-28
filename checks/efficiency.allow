@@ -14,9 +14,6 @@ crates/marion-supervisor/src/detach.rs:watch_entitlement  waits on the lock file
 crates/marion-supervisor/src/detach.rs:DIAL_POLL  tracked: efficiency waves (5 ms dial retry period)
 crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  tracked: efficiency waves (dial-retry sleep loop until a deadline)
 crates/marion-supervisor/src/registry.rs:LiveRegistry::follow  waits on the journal write pipe and file watch; sleeps its interval only where neither exists (perf-wave1 05e8272)
-crates/marion-supervisor/src/run.rs:DRAIN_POLL_MS  tracked: efficiency waves (20 ms drain poll)
-crates/marion-supervisor/src/run.rs:Drain::finish  tracked: efficiency waves (DRAIN_POLL_MS sleep loop)
-crates/marion-supervisor/src/run.rs:run_bounded_with  tracked: efficiency waves (try_wait + sleep loop on the child)
 crates/marion-supervisor/src/duplex.rs:watchdog  tracked: efficiency waves (duplex watchdog sleep loop)
 crates/marion-supervisor/src/duplex.rs:run_duplex  tracked: efficiency waves (recv_timeout on a fixed period)
 crates/marion-supervisor/src/descendant_gate.rs:HOLD_POLL  partial: a held node re-reads its subtree only when the registry changed (perf-wave1 95ec1bf); the 100 ms pause remains where no follower reads the journal

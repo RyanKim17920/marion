@@ -537,6 +537,25 @@ mod signal_imp {
     }
 }
 
+/// **One step of waiting for a child**: its status if it has exited; otherwise block until it
+/// exits (`exit`), one of `also` is readable, or `deadline` passes, and look once more. Reaps, as
+/// `Child::try_wait` does. A caller loops on it and re-examines its own state between steps — the
+/// step never sleeps on a timer, so the loop is exactly as busy as the child and `also` are.
+pub fn step_child(
+    child: &mut std::process::Child,
+    exit: &ProcExit,
+    also: &[Option<BorrowedFd<'_>>],
+    deadline: Option<Instant>,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(Some(status));
+    }
+    let mut fds = vec![exit.fd()];
+    fds.extend_from_slice(also);
+    wait_until(&fds, deadline);
+    child.try_wait()
+}
+
 /// How often a wait re-checks when one of its sources has no descriptor: a platform with neither
 /// kqueue nor inotify/pidfd, a Linux older than pidfd (5.3), or a descriptor limit. **Degraded
 /// latency, never the normal path** — on macOS and on any current Linux every source marion waits
