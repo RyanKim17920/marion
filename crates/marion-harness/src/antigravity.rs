@@ -38,7 +38,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, BootSignal,
     Constraint, Deliveries, Field, HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes,
     McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume,
     Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
@@ -147,6 +147,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         value: "true",
         note: "1.2.8 binary strings: `AGY_CLI_DISABLE_AUTO_UPDATE` is the only update switch; no \
                settings key or flag disables it",
+    },
+    boot: Boot::Unmeasured {
+        note: "no canned route reaches `agy`, so no boot was ever timed here; the floor applies.",
     },
     push: Push::None,
     approval: Approval::OperatorAllowlist {

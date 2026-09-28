@@ -24,7 +24,7 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialog, BootDialogs,
     ChannelPush, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers,
     Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
@@ -272,6 +272,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // (one full-screen warning dialog at startup; default accepts). `-p` never enqueues it, so
     // the headless row above carries no flag. The name is what 2.1.268 sends in `initialize`'s
     // `clientInfo.name`. See [`CHANNEL`].
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(900),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 13 nodes: 0.82 s.",
+    },
     push: Push::Channel(&CHANNEL),
     // `--allowedTools` is the list 2.1.220 checks a call against; marion's verbs are on it, and a
     // call to anything off it asks over `--permission-prompt-tool stdio` (S9).

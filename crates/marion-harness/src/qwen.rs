@@ -53,7 +53,7 @@ use crate::env_filter::{EnvGrant, LoginEnv};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, Constraint,
     Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
     ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
     Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
@@ -222,6 +222,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                \"true\"` at every launch",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(900),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 7 nodes: 0.07 s in `node qwen` plus 0.79 s in the `node --expose-gc` it relaunches itself under.",
+    },
     push: Push::McpLog,
     // `--yolo`: without it every call costs a classifier request and is declined at exit 0 (s25).
     approval: Approval::CliFlag {

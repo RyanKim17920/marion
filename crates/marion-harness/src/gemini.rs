@@ -24,7 +24,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialog, BootDialogs,
     Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
     McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
@@ -185,6 +185,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `general.enableAutoUpdateNotification`; no `GEMINI_CLI_*` update variable exists",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(1600),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 11 nodes: 0.47 s in `node gemini` plus 1.07 s in the `node --max-old-space-size` it relaunches itself under.",
+    },
     push: Push::McpLog,
     // On marion's own `mcpServers.marion` entry: without it the tool is dropped from the request
     // body at exit 0 (S12). `--yolo` is the only other route, and an admin can veto it.

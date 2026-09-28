@@ -42,7 +42,7 @@ use crate::grammar::{
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, BootSignal,
     Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn,
     ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
@@ -60,6 +60,14 @@ pub const PROVIDER: &str = "marion";
 
 /// marion's pi extension, before a node's server and spelling are filled in.
 pub const EXTENSION: &str = include_str!("pi_extension.js");
+
+/// pi's boot, shared by [`SPEC`] and [`LAUNCH_ONLY`] (one binary) and by the `pi-acp` refinement.
+pub const BOOT: Boot = Boot::Measured {
+    cpu: std::time::Duration::from_millis(900),
+    note: "flake-hunt, 2026-09-28, 0.80.2: the most CPU (user + system, `ps` sampled every 0.3 s) \
+           a canned `pi --mode rpc` node under `pi_rpc` spent over its whole short life, over 6 \
+           nodes: 0.86 s — its first request is inside that.",
+};
 
 /// pi's row. Measured against 0.80.2 on 2026-09-27 (`tests/fixtures/s34-pi/`), every probe against
 /// a canned local OpenAI Chat Completions endpoint at $0.00.
@@ -150,6 +158,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // Nothing reaches the model: marion's extension reads only responses and drops every
     // notification the bridge sends.
+    boot: BOOT,
     push: Push::None,
     // pi has no approval surface: `--tools` is both what the model is offered and all it may run.
     approval: Approval::None {

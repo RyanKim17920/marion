@@ -44,7 +44,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialog, BootDialogs,
     BootSignal, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers,
     Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
@@ -214,6 +214,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `false`",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(900),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 7 nodes: 0.76 s in `copilot -p` plus 0.06 s in its `node` launcher.",
+    },
     push: Push::McpLog,
     // `--allow-tool=marion(report)`, the pattern `-p` checks a call against (s24).
     approval: Approval::AllowedToolsArg {

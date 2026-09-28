@@ -31,11 +31,11 @@ use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::rpc_channel::{Answer, ReadyGate, RpcChannel, Turns};
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal,
-    Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling,
-    Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Boot, BootDialog, BootDialogs,
+    BootSignal, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume,
+    Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -209,6 +209,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                key; no `CODEX_*` update variable exists",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(200),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 9 nodes: 0.19 s.",
+    },
     push: Push::McpLog,
     // On marion's own `[mcp_servers.marion]` block, in the document and on the live `-c` pairs
     // alike: without it every marion call is cancelled silently (S6).

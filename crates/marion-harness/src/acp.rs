@@ -60,9 +60,9 @@ use crate::grammar::{
 };
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries,
-    Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Readiness,
-    Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Boot, BootDialogs, Constraint,
+    Deliveries, Field, HarnessSpec, McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly,
+    Readiness, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -135,6 +135,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                canned recipe carries one (opencode's row)",
     },
     // No stdio pipe of marion's to push on: the declaration is a `session/new` request.
+    boot: Boot::Unmeasured {
+        note: "a protocol, not one program: the agent behind it is whichever binary the selector names, so a measured refinement row (`acp::Agent::boot`) carries the number where there is one.",
+    },
     push: Push::None,
     // The protocol's own permission surface: the ACP driver answers `session/request_permission`
     // itself, selecting an offered allow option (S21); an agent type's `approval_mode` is set on
@@ -631,6 +634,11 @@ fn spelled_pair(title: &str) -> Option<&str> {
     tokens.next().is_none().then_some(verb)
 }
 
+/// The boot of a refinement row nobody has timed: the floor, as for the generic path.
+pub const UNMEASURED_AGENT: Boot = Boot::Unmeasured {
+    note: "no boot of this agent was timed; its budget is the floor the generic path waits",
+};
+
 /// One ACP agent marion has **measured** — a refinement over the generic path, never a
 /// prerequisite for it. §5.2's `acp` row is one adapter over many of these and over every agent
 /// that is not one of these.
@@ -671,6 +679,9 @@ pub struct Agent {
     pub reach: Reach,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
+    /// What starting this agent costs ([`crate::spec::Boot`]) — the budget its `initialize` and
+    /// `session/new` are waited on for. The same binary's harness row where there is one.
+    pub boot: Boot,
 }
 
 /// How far an agent's `session/new` got when it was measured — without an account marion made,
@@ -753,6 +764,7 @@ pub enum CannedRecipe {
 
 /// `opencode acp` — the one agent measured all the way to a tool call (S21).
 pub const OPENCODE: Agent = Agent {
+    boot: crate::opencode::BOOT,
     id: "opencode",
     argv: &["opencode", "acp"],
     tools: Some(ToolSpelling::ServerUnderscoreTool),
@@ -783,6 +795,7 @@ pub const OPENCODE: Agent = Agent {
 /// `session/new` answers `-32000`, *"This client is no longer supported for Gemini Code Assist for
 /// individuals"*, reproduced with no marion involved.
 pub const GEMINI: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "gemini",
     argv: &["gemini", "--acp"],
     tools: None,
@@ -805,6 +818,7 @@ pub const GEMINI: Agent = Agent {
 /// command S22 launched, **version-pinned**, because an unpinned `npx -y` resolves to whatever the
 /// registry holds today and this row's `tools` is a measurement of 0.66.0 and of nothing else.
 pub const CLAUDE_ACP: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "claude-acp",
     argv: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
     tools: Some(ToolSpelling::McpDoubleUnderscore),
@@ -837,6 +851,7 @@ pub const CLAUDE_ACP: Agent = Agent {
 /// property of the agent, and compiling one into a launch would make every first run look like a
 /// hang.
 pub const CODEX_ACP: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "codex-acp",
     argv: &["codex-acp"],
     tools: Some(ToolSpelling::McpDotted),
@@ -873,6 +888,7 @@ pub const CODEX_ACP: Agent = Agent {
 /// because a generic `acp:copilot --acp` launch would open a session, take the turn, and report
 /// nothing.
 pub const COPILOT: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "copilot",
     argv: &["copilot", "--acp"],
     tools: Some(ToolSpelling::ServerHyphenTool),
@@ -906,6 +922,7 @@ pub const COPILOT: Agent = Agent {
 /// `kilo acp` — Kilo Code's CLI, an opencode fork, and the one S33 agent that opened a session
 /// with no account and no configuration at all.
 pub const KILO: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "kilo",
     argv: &["kilo", "acp"],
     tools: None,
@@ -928,6 +945,7 @@ pub const KILO: Agent = Agent {
 
 /// `qwen --acp` — refused by S28 with no provider, opened by S33 with one.
 pub const QWEN: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "qwen",
     argv: &["qwen", "--acp"],
     tools: None,
@@ -950,6 +968,7 @@ pub const QWEN: Agent = Agent {
 
 /// `goose acp` — Block's goose, opened on the provider its own config names.
 pub const GOOSE: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "goose",
     argv: &["goose", "acp"],
     tools: None,
@@ -972,6 +991,7 @@ pub const GOOSE: Agent = Agent {
 
 /// `fast-agent-acp` — fast-agent's ACP entrypoint, measured to a real call on marion's bridge.
 pub const FAST_AGENT: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "fast-agent",
     argv: &["fast-agent-acp", "-x"],
     // S33 watched a real `tools/call` reach the bridge, titled `marion/report` — which the generic
@@ -996,6 +1016,7 @@ pub const FAST_AGENT: Agent = Agent {
 
 /// `vibe-acp` — Mistral Vibe's ACP entrypoint.
 pub const VIBE: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "vibe",
     argv: &["vibe-acp"],
     tools: None,
@@ -1016,6 +1037,7 @@ pub const VIBE: Agent = Agent {
 
 /// `vtcode acp` — VT Code, whose ACP server is off until the operator turns it on.
 pub const VTCODE: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "vtcode",
     argv: &["vtcode", "acp"],
     tools: None,
@@ -1038,6 +1060,7 @@ pub const VTCODE: Agent = Agent {
 
 /// `auggie --acp` — Augment's CLI, stopped at its account wall.
 pub const AUGGIE: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "auggie",
     argv: &["auggie", "--acp"],
     tools: None,
@@ -1054,6 +1077,7 @@ pub const AUGGIE: Agent = Agent {
 
 /// `qodercli --acp` — Qoder's CLI, stopped at its account wall.
 pub const QODER: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "qoder",
     argv: &["qodercli", "--acp"],
     tools: None,
@@ -1070,6 +1094,7 @@ pub const QODER: Agent = Agent {
 
 /// `cline --acp` — the Cline CLI's ACP mode, which wants the protocol's `authenticate` first.
 pub const CLINE: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "cline",
     argv: &["cline", "--acp"],
     tools: None,
@@ -1087,6 +1112,7 @@ pub const CLINE: Agent = Agent {
 
 /// `pi-acp` — the community shim over the `pi` coding agent, refused by a version skew.
 pub const PI_ACP: Agent = Agent {
+    boot: UNMEASURED_AGENT,
     id: "pi-acp",
     argv: &["pi-acp"],
     tools: None,
@@ -1973,6 +1999,15 @@ impl AcpAdapter {
 impl HarnessAdapter for AcpAdapter {
     fn harness(&self) -> Harness {
         Harness::Acp
+    }
+
+    /// The bound agent's own boot where a refinement row measured one; the protocol row's floor
+    /// for any other command, because the program is the agent's and not the protocol's.
+    fn boot(&self) -> Boot {
+        self.binding
+            .as_ref()
+            .and_then(Binding::refinement)
+            .map_or(self.spec().boot, |agent| agent.boot)
     }
 
     /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into

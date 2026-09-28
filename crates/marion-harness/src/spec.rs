@@ -29,6 +29,7 @@
 //! replaced compiled.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
@@ -133,6 +134,11 @@ pub struct HarnessSpec {
     /// codex 0.147.0's `Update available` prompt, which an Enter installs; claude's background
     /// updater) changes the program under a running node and interrupts a facade session.
     pub updates: UpdatePolicy,
+    /// **What starting this harness costs**, as measured CPU time — the one number every bound
+    /// that contains a boot is derived from ([`Boot::budget`]), in the supervisor's readiness
+    /// waits and in the tests alike, so no wall clock that includes a boot is a constant typed at
+    /// its use.
+    pub boot: Boot,
     /// How the bridge tells this harness's model that a **backgrounded child has finished,
     /// without a `wait`** — a notification pushed on the MCP pipe after the handle's own reply.
     /// Rendered by the one renderer into the pane shape and the native prefix only ([`Push`]
@@ -830,6 +836,53 @@ pub fn abort_for(row: &HarnessSpec, shape: NodeShape) -> AbortVerb {
     match shape {
         NodeShape::Headless => row.abort.headless,
         NodeShape::Interactive => row.abort.interactive,
+    }
+}
+
+/// **The shortest wall clock marion gives any harness to boot** — the 30 s the readiness waits
+/// held before boot cost was row data, kept as the floor so a row whose measured boot is small
+/// waits exactly as long as before.
+pub const BOOT_FLOOR: Duration = Duration::from_secs(30);
+
+/// **How many times over its cores a machine may be committed while a boot still fits its
+/// budget.** A boot is CPU-bound — a starved harness sits runnable, not blocked — so its wall time
+/// grows with the load: ~3 CPU-seconds of opencode took ~45 s at a load average of 150 on 12
+/// cores. 25 covers the worst ambient load measured on the development machine (274 on 12 cores,
+/// 2026-09-28) with a little to spare.
+pub const TOLERATED_OVERSUBSCRIPTION: u32 = 25;
+
+/// **What booting a harness costs**: CPU time, user plus system, from `exec` until it sends its
+/// first model request — over every process it re-execs into (gemini and qwen relaunch
+/// themselves under a second `node`; the relaunch is part of the boot).
+///
+/// CPU time and not wall time because only CPU time is a property of the harness: the wall time
+/// of the same boot moves with whatever else the machine is doing, and a wall clock copied from a
+/// quiet machine is the bound that fails on a busy one. [`Self::budget`] turns it back into the
+/// wall clock a wait needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boot {
+    /// The most CPU a boot was measured to take, and how it was measured.
+    Measured { cpu: Duration, note: &'static str },
+    /// Never measured here — no canned route reaches the harness, or the row is a protocol rather
+    /// than one program. The budget is [`BOOT_FLOOR`]; `note` says why there is no number.
+    Unmeasured { note: &'static str },
+}
+
+impl Boot {
+    /// The wall clock a boot is given: its CPU cost on a machine committed
+    /// [`TOLERATED_OVERSUBSCRIPTION`] times over, never less than [`BOOT_FLOOR`].
+    pub fn budget(self) -> Duration {
+        match self {
+            Boot::Measured { cpu, .. } => (cpu * TOLERATED_OVERSUBSCRIPTION).max(BOOT_FLOOR),
+            Boot::Unmeasured { .. } => BOOT_FLOOR,
+        }
+    }
+
+    /// Where the row's figure came from.
+    pub fn note(self) -> &'static str {
+        match self {
+            Boot::Measured { note, .. } | Boot::Unmeasured { note } => note,
+        }
     }
 }
 

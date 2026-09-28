@@ -33,7 +33,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, BootSignal,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, BootSignal,
     Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
     ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
@@ -52,6 +52,17 @@ const XDG_CONFIG_DIR: &str = "config";
 /// The session store's file under the node's config dir — [`SPEC`]'s `OPENCODE_DB`. A file, because
 /// a resume is a second process that must find the first one's session (S31).
 const SESSION_DB: &str = "opencode.db";
+
+/// opencode's boot, shared by [`SPEC`] and the `opencode acp` refinement (one binary). The largest
+/// of any row: ~3 CPU-seconds of its own JavaScript before marion's MCP server is even connected,
+/// which at a load average of 150 on 12 cores was ~45 s of wall clock between opencode's `loop`
+/// and its MCP `initialized` log lines, the process runnable throughout.
+pub const BOOT: Boot = Boot::Measured {
+    cpu: std::time::Duration::from_millis(4200),
+    note: "flake-hunt, 2026-09-28, 1.18.32: the most CPU (user + system, `ps` sampled every 0.5 s) \
+           a canned `cross_product` node of this harness had spent when its first provider request \
+           was logged, over 18 nodes: 4.11 s (mean 3.0 s).",
+};
 
 /// opencode's row. Measured against 1.17.3 (`tests/fixtures/s13/`). `LaunchOnly`: `run --pure
 /// --format json` is a full agent turn as NDJSON over pipes, binding no port.
@@ -257,6 +268,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                (`\"1\"`/`\"true\"`) before any fetch",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: BOOT,
     push: Push::McpLog,
     // opencode's default permission for an MCP tool is allow (S13), but an operator's `"ask"`
     // auto-rejects a headless call at exit 0 (s36), so marion's declaration grants its own tools —

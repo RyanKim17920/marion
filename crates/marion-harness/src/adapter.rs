@@ -358,6 +358,12 @@ pub trait HarnessAdapter {
         harness_spec(self.harness())
     }
 
+    /// What starting this adapter's program costs — the row's [`spec::Boot`], or on the ACP
+    /// adapter the bound agent's. Every wait that contains a boot takes its bound from here.
+    fn boot(&self) -> spec::Boot {
+        self.spec().boot
+    }
+
     /// The surfaces this adapter drives (§3.4) — the row's point in the cross-product.
     fn surfaces(&self) -> ExecutionSurfaces {
         self.spec().surfaces.execution()
@@ -8577,6 +8583,52 @@ mod tests {
             }
         }
         assert!(rows > 0, "no row lists its sessions by title");
+    }
+
+    /// **Every row and every ACP refinement states what its boot costs**, with the measurement
+    /// behind it, and the budget derived from it never undercuts the floor the readiness waits
+    /// held before the number was data.
+    #[test]
+    fn every_row_states_its_boot_cost_and_its_budget_holds_the_floor() {
+        use crate::spec::{BOOT_FLOOR, Boot, TOLERATED_OVERSUBSCRIPTION};
+
+        let rows = Harness::ALL
+            .iter()
+            .map(|h| (h.to_string(), harness_spec(*h).boot))
+            .chain(
+                acp::AGENTS
+                    .iter()
+                    .map(|a| (format!("acp:{}", a.id), a.boot)),
+            );
+        for (who, boot) in rows {
+            assert!(
+                !boot.note().trim().is_empty(),
+                "{who}: a boot cost without the measurement behind it"
+            );
+            assert!(boot.budget() >= BOOT_FLOOR, "{who}: under the floor");
+            if let Boot::Measured { cpu, .. } = boot {
+                assert!(!cpu.is_zero(), "{who}: a measured boot of no CPU at all");
+                assert_eq!(
+                    boot.budget(),
+                    (cpu * TOLERATED_OVERSUBSCRIPTION).max(BOOT_FLOOR),
+                    "{who}"
+                );
+            }
+        }
+        // The one row measured over the floor, so the derivation is exercised and not just the
+        // floor: opencode's ~4 CPU-seconds is ~100 s of a machine committed 25 times over.
+        assert!(opencode::BOOT.budget() > BOOT_FLOOR);
+    }
+
+    /// The ACP adapter answers with the **bound agent's** boot where a refinement measured one,
+    /// and with the protocol row's floor for a command no row names.
+    #[test]
+    fn the_acp_adapter_boots_on_the_bound_agents_budget() {
+        let refined = AcpAdapter::resolve("opencode").expect("the opencode refinement binds");
+        assert_eq!(refined.boot(), opencode::BOOT);
+        let generic = AcpAdapter::resolve("some-agent --acp").expect("any command binds");
+        assert_eq!(generic.boot(), acp::SPEC.boot);
+        assert_eq!(generic.boot().budget(), crate::spec::BOOT_FLOOR);
     }
 
     #[test]

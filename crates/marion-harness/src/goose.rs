@@ -49,7 +49,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, Constraint,
     Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
     Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
@@ -211,6 +211,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                strings, no `GOOSE_*` update variable; `goose update` is explicit only",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(200),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 5 nodes: 0.12 s.",
+    },
     push: Push::McpLog,
     // `approve` aborts a headless run and `chat` withholds every call, so `auto` is stated (S26).
     approval: Approval::EnvVar {

@@ -55,7 +55,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialogs, Constraint,
+    AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, Boot, BootDialogs, Constraint,
     Deliveries, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
     ModelForm, Modes, Need, Push, ReadOnly, Readiness, Remembers, Requirement, Spelling, Surfaces,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
@@ -186,6 +186,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                no banner headless",
     },
     // Unmeasured: MCP's own logging notification, which this harness may show or drop.
+    boot: Boot::Measured {
+        cpu: std::time::Duration::from_millis(1600),
+        note: "flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 13 nodes: 1.51 s in `.cline --json` plus 0.07 s in its `node` launcher.",
+    },
     push: Push::McpLog,
     // `--auto-approve true`, because `false` declines every call inside cline at exit 0 (S27).
     approval: Approval::CliFlag {
