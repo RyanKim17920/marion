@@ -839,6 +839,40 @@ kills the gate** with every other hook (`results/f/`), so no gate can ride the h
 **Verdict:** the native Stop-hook gate is viable as a single merged overlay; a disabled-hooks
 session must record the review as Skipped, not Allowed. Measurement only; nothing uses it yet.
 
+**Each harness's read-only switch, measured with the write scripted anyway (S38, 2026-09-27,
+`tests/fixtures/s38-read-only/`, canned provider, no login, $0).** A switch is credited only where
+the harness *refuses* a scripted write, not where the model merely is not offered the tool: claude
+2.1.283 `--tools Read` (`No such tool available: Write`); codex 0.155.1 `sandbox_mode =
+"read-only"` (`apply_patch` rejected, seatbelt refuses the shell's `printf > file`); opencode
+1.18.32 `OPENCODE_PERMISSION={"edit":"deny","bash":"deny"}` (`{"write":"deny"}` and `edit` alone
+both let a file land); gemini 0.53.0 default mode (`tool_not_registered`, no shell headless); qwen
+0.23.0 `--core-tools` without `write_file`, under `--yolo`; pi 0.80.2 `--tools read`; goose 1.52.0
+no `--with-builtin developer` (`GOOSE_MODE=chat` would withhold `report` too); copilot 1.0.83
+`--available-tools` without the edit tools. **Unmeasured:** cline (not installed; no way to narrow
+its tools, s27), agy (no canned route; s32's live default mode auto-denies), and generic ACP, where
+rejecting `session/request_permission` holds only on an agent that asks (opencode acp's default
+allows, and the file landed).
+
+**Review phase 1: any harness reviews another node's ended work, read-only (2026-09-28, branch
+`review-p1`).** `agent/spawn` takes `review_of`; the operator's request (no caller,
+`review::request`, which the `marion review <node>` verb calls once the command table lands) and a
+parent model's `spawn` with `review_of` (its token) reach the same handler, so there is one spawn
+path. The reviewer is placed under the reviewed node (which stands as caller for the gates),
+journaled with `SpawnIntent.review_of`, cut at the reviewed node's landed commit, shown its task,
+report, verification and diff, and launched read-only: `write` dropped from its tools, its row's
+`ReadOnly` switch rendered (every row states one — tools-axis, pair, env-var or scope-only — held
+by `every_row_states_how_a_read_only_node_is_kept_from_writing`), an **empty** writable scope so
+any change is a recorded scope violation, `report` as its only marion verb, nothing landed. Its
+report is parsed and decided by `marion_core::review` into `Completion::findings`, the journal's
+`ContractPersisted.review` carries marion's tally (count, blocking, decision — never reviewer
+text), and the tree and Home Watch label the reviewer `review: N findings, M blocking`. With no
+type named, the reviewer is the first of codex, claude, gemini from another model family.
+Refused in plain words: unknown node, running node, root, unchanged node, forged token.
+`tests/review.rs` drives canned claude reviewing a canned codex child's branch, with a scripted
+`Write` refused and on the recorded stream. **Phase 2 hooks, not built:** a child gate would run
+one reviewer per round from `review::verdict` and fold each round's verdict into the *reviewed*
+node's `Completion::review`, re-prompting on a block up to `ReviewSpec::max_rounds`.
+
 **Every ACP agent that installs without an account, probed to `session/new` (S33, 2026-09-27,
 `tests/fixtures/s33-acp-agents/`, $0.13 metered).** The ACP registry lists ~50 agents; twelve were
 installed user-level (npm -g, uv tool, brew) and probed with marion's own `initialize` and a
