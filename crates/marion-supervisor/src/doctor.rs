@@ -68,6 +68,8 @@ use marion_harness::{
     LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, adapter_for_type, static_caps,
 };
 
+use crate::node_tmp::NodeTmp;
+
 /// The micro-contract's prompt. Short, deterministic to check, and cheap: the assertion §8 asks for
 /// is a *response shape*, so the content only has to be something a model will answer at all.
 const MICRO_PROMPT: &str = "Reply with exactly the word: marion. Do not use any tools.";
@@ -846,6 +848,11 @@ fn live_turn(
         program.display(),
         inv.args.join(" ")
     ));
+    // Held to the end of the function, past `terminate` and the leak check.
+    let tmp = match probe_tmp() {
+        Ok(t) => t,
+        Err(e) => return not_spawned(&e),
+    };
     let mut cmd = Command::new(program);
     cmd.args(&inv.args)
         .current_dir(&inv.cwd)
@@ -855,6 +862,7 @@ fn live_turn(
     for (k, v) in &inv.env {
         cmd.env(k, v);
     }
+    cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
     let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return not_spawned(&e),
@@ -1065,13 +1073,25 @@ struct AcpChild {
     /// startup says why (S33: `vtcode acp` "integration is disabled", `fast-agent-acp` "No model
     /// configured").
     stderr: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    /// The probe's own `TMPDIR`, removed after [`Drop`] has killed the agent.
+    _tmp: NodeTmp,
 }
 
 /// How many trailing stderr lines an ACP probe keeps.
 const STDERR_TAIL: usize = 8;
 
+/// A fresh private temp dir for one probe's process, for [`crate::node_tmp`]'s reason: a probe of
+/// a Bun-built harness unpacks its native libraries into `$TMPDIR` exactly as a node does. Unique
+/// per probe, since one `doctor` run may probe several harnesses.
+fn probe_tmp() -> std::io::Result<NodeTmp> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    NodeTmp::at(std::env::temp_dir().join(format!("marion-doctor-tmp-{}-{n}", std::process::id())))
+}
+
 impl AcpChild {
     fn spawn(program: &Path, inv: &Invocation) -> std::io::Result<Self> {
+        let tmp = probe_tmp()?;
         let mut cmd = Command::new(program);
         cmd.args(&inv.args)
             .current_dir(&inv.cwd)
@@ -1081,6 +1101,7 @@ impl AcpChild {
         for (k, v) in &inv.env {
             cmd.env(k, v);
         }
+        cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
         let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
         let pid = child.id() as i32;
         let stdin = child.stdin.take();
@@ -1120,6 +1141,7 @@ impl AcpChild {
             frames,
             closed,
             stderr,
+            _tmp: tmp,
         })
     }
 
@@ -2058,6 +2080,49 @@ mod tests {
             .position(|n| n.starts_with("response shape:"))
             .expect("the shape line is still reported");
         assert!(auth < shape, "the cause comes first: {notes:#?}");
+    }
+
+    /// A probe's process gets a private `TMPDIR`, which is gone once the probe returns — a probe
+    /// of a Bun-built harness unpacks its native libraries there exactly as a node does.
+    #[test]
+    fn a_live_turn_runs_in_a_private_temp_dir_that_goes_with_it() {
+        let dir = marion_testsupport::scratch("doctor-probe-tmp");
+        let seen = dir.join("tmpdir");
+        let inv = Invocation {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "printf %s \"$TMPDIR\" > '{}'; : > \"$TMPDIR/.unpacked.dylib\"",
+                    seen.display()
+                ),
+            ],
+            env: vec![],
+            env_remove: vec![],
+            cwd: dir.to_path_buf(),
+            model: None,
+            session_mode: None,
+        };
+        let turn = live_turn(
+            &marion_harness::GeminiAdapter,
+            Path::new("/bin/sh"),
+            &inv,
+            &mut Vec::new(),
+        );
+
+        assert!(turn.spawned);
+        let tmp = PathBuf::from(std::fs::read_to_string(&seen).unwrap());
+        assert!(
+            tmp.starts_with(std::env::temp_dir())
+                && tmp
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("marion-doctor-tmp-"),
+            "{}",
+            tmp.display()
+        );
+        assert!(!tmp.exists(), "the probe's temp dir goes with the probe");
     }
 
     /// Both modes parse, and with neither `doctor` runs the free one: `--capabilities` reads
