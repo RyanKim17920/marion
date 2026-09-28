@@ -1337,7 +1337,7 @@ fn launch_inner(
     // the launch, where the version of the process about to run can still be asked of the same
     // resolved program, and at the cost `run.rs` states: [`crate::run::harness_version`]'s bound
     // sits on the pre-launch path, inside `handler.rs`'s `LAUNCH_BOUND`.
-    let harness_version = crate::run::harness_version(&node.invocation.program);
+    let harness_version = crate::run::harness_version(&node.invocation.program, node.harness);
     let started = |pid: i32| {
         confirm_root_started(
             node,

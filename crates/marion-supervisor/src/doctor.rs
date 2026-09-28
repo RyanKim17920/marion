@@ -1584,20 +1584,13 @@ fn wait_bounded(
     }
 }
 
-/// `<program> --version`, and the version token out of it.
-/// `<program> --version`, carrying the harness row's no-self-update variable. Without it copilot
-/// 1.0.83 downloads a newer build and answers with *that* version, which is neither the build
-/// marion's nodes run (they carry the variable) nor one it should have fetched.
+/// [`crate::run::version_probe`], piped for reading.
 fn version_command(program: &Path, harness: Harness) -> Command {
-    let mut command = Command::new(program);
+    let mut command = crate::run::version_probe(program, harness);
     command
-        .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some((key, value)) = marion_harness::adapter::harness_spec(harness).updates.env() {
-        command.env(key, value);
-    }
     command
 }
 

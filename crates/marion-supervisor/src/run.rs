@@ -883,14 +883,28 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
 /// A timed-out or failed probe is `"unknown"`, never an error: the version is a field in an audit
 /// record, and losing a whole node's contract because a version string did not arrive would trade a
 /// large truth for a small one.
-pub(crate) fn harness_version(program: &str) -> String {
-    let mut cmd = SysCommand::new(program);
-    cmd.arg("--version");
-    run_bounded(&mut cmd, HARNESS_VERSION_TIMEOUT)
+pub(crate) fn harness_version(program: &str, harness: marion_core::harness::Harness) -> String {
+    run_bounded(&mut version_probe(program, harness), HARNESS_VERSION_TIMEOUT)
         .ok()
         .filter(|o| !o.timed_out && o.code == Some(0))
         .and_then(|o| version_line(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_else(|| "unknown".into())
+}
+
+/// `<program> --version` as every marion probe runs it: carrying the harness row's no-self-update
+/// variable. Without it copilot 1.0.83 downloads a newer build and answers with *that* version,
+/// which is neither the build marion's nodes run (they carry the variable) nor one it should have
+/// fetched. The doctor and every spawn's audit probe build their command here.
+pub(crate) fn version_probe(
+    program: impl AsRef<std::ffi::OsStr>,
+    harness: marion_core::harness::Harness,
+) -> SysCommand {
+    let mut cmd = SysCommand::new(program);
+    cmd.arg("--version");
+    if let Some((key, value)) = marion_harness::adapter::harness_spec(harness).updates.env() {
+        cmd.env(key, value);
+    }
+    cmd
 }
 
 /// The line of a `--version` output that names the version: the first non-blank one, trimmed.
@@ -1917,7 +1931,7 @@ pub fn run_spawn_watched(
         // deadlines to hang on, and two chances for the journal and the contract to disagree about the
         // version of a single node's harness.
         let version = probed_version
-            .get_or_insert_with(|| harness_version(&inv.program))
+            .get_or_insert_with(|| harness_version(&inv.program, agent_type.harness))
             .clone();
         let announce_started =
             |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());

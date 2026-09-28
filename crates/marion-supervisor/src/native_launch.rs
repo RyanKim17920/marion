@@ -231,8 +231,9 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
         // version on the node's `Spawned` is the version of the process about to run and not of
         // whatever this detached supervisor's PATH would have found. Bounded and never a refusal,
         // exactly as for a child: `"unknown"` is what a silent or hanging binary records.
-        let harness_version = crate::run::harness_version(&program.to_string_lossy());
         let agent_type = lane.agent_type();
+        let harness_version =
+            crate::run::harness_version(&program.to_string_lossy(), agent_type.harness);
         let adapter = (self.adapter_for)(agent_type.harness).ok_or_else(|| {
             native_command_error(format!(
                 "no native injection adapter is registered for harness {:?}",
