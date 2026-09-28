@@ -22,8 +22,8 @@ use crate::adapter::{
 use crate::auth::Auth;
 use crate::caps::Capabilities;
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList, Reasoning,
-    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallEnd, CallShape, Cond, ErrorRule, Name, OnRefusedReport, Pairing, PathList,
+    Reasoning, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -503,7 +503,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
     // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`
-    // under one `id`, so the id keeps it one call. The model's words are the `agent_message` item.
+    // under one `id`, so the id keeps it one call, and the completed item's `status` (and a
+    // command's `exit_code`) is its end. The model's words are the `agent_message` item.
     // No frame measured carrying the account's usage window.
     rate_limit: None,
     activity: Some(ActivityRule {
@@ -518,6 +519,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 args: "/item/arguments",
                 id: Some("/item/id"),
                 shape: CallShape::Tool,
+                end: Some(ITEM_END),
             },
             ToolUnit {
                 at: Where {
@@ -529,6 +531,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 args: "/item/command",
                 id: Some("/item/id"),
                 shape: CallShape::Command,
+                end: Some(COMMAND_END),
             },
             ToolUnit {
                 at: Where {
@@ -540,6 +543,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 args: "/item/changes",
                 id: Some("/item/id"),
                 shape: CallShape::Files,
+                end: Some(ITEM_END),
             },
         ],
         text: &[TextUnit {
@@ -552,6 +556,22 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             joins: false,
         }],
     }),
+};
+
+/// How a codex item ends: its `status` once `item.completed` carries it (`s6`, and the dry run's
+/// `command_execution` items, which finish `completed` or `failed`; `declined` is a command the
+/// sandbox refused).
+const ITEM_END: CallEnd = CallEnd {
+    status: "/item/status",
+    ok: &["completed"],
+    failed: &["failed", "declined"],
+    exit: None,
+};
+
+/// [`ITEM_END`] for a `command_execution` item, which also states its `exit_code`.
+const COMMAND_END: CallEnd = CallEnd {
+    exit: Some("/item/exit_code"),
+    ..ITEM_END
 };
 
 /// **`codex app-server`'s vocabulary** (S36, `tests/fixtures/app-server-0.155.1/`, 0.155.1).
@@ -766,6 +786,7 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
                 args: "/params/item/arguments",
                 id: Some("/params/item/id"),
                 shape: CallShape::Tool,
+                end: Some(APP_ITEM_END),
             },
             ToolUnit {
                 at: Where {
@@ -777,6 +798,7 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
                 args: "/params/item/command",
                 id: Some("/params/item/id"),
                 shape: CallShape::Command,
+                end: Some(APP_COMMAND_END),
             },
             ToolUnit {
                 at: Where {
@@ -788,6 +810,7 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
                 args: "/params/item/changes",
                 id: Some("/params/item/id"),
                 shape: CallShape::Files,
+                end: Some(APP_ITEM_END),
             },
         ],
         text: &[TextUnit {
@@ -803,6 +826,21 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
             joins: false,
         }],
     }),
+};
+
+/// How an app-server item ends: its `status` on `item/completed` (S36 P4/P5: `completed`, `failed`,
+/// and `declined` for a command marion's answer declined).
+const APP_ITEM_END: CallEnd = CallEnd {
+    status: "/params/item/status",
+    ok: &["completed"],
+    failed: &["failed", "declined"],
+    exit: None,
+};
+
+/// [`APP_ITEM_END`] for a `commandExecution` item, which also states its `exitCode`.
+const APP_COMMAND_END: CallEnd = CallEnd {
+    exit: Some("/params/item/exitCode"),
+    ..APP_ITEM_END
 };
 
 /// The sandbox every codex node marion generates a config for runs in — and **this harness's whole

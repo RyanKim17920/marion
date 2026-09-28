@@ -116,19 +116,27 @@ pub struct ActivityPage {
     pub unread: Option<String>,
 }
 
-/// One thing a node did: a tool call or a message, one line, bounded.
+/// One thing a node did: a tool call, a call's end or a message, one line, bounded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionLine {
     /// When marion recorded it (RFC3339).
     pub at: String,
     pub kind: ActionKind,
     pub text: String,
+    /// The harness's id for the call this line is, or ends, where its stream gives one: a reader
+    /// paging the stream matches a call seen again on a later page, and an end to its call, by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     Call,
+    /// A call that changed files: the text is `~ ` and the paths, whose ends say most.
+    Files,
+    /// A call finished: the text is its outcome (`✓`, `exit 1`, `failed`), not the call again.
+    Ended,
     Said,
 }
 
@@ -433,7 +441,8 @@ mod tests {
                     lines: vec![ActionLine {
                         at: "2026-09-27T14:30:01.000Z".into(),
                         kind: ActionKind::Call,
-                        text: "command_execution(cargo test)".into(),
+                        text: "$ cargo test".into(),
+                        id: Some("item_1".into()),
                     }],
                     unread: None,
                 }),

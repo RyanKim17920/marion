@@ -68,16 +68,20 @@ pub fn read(
         serde_json::from_slice::<TaskContract>(&bytes).ok()
     });
     let spent = crate::spending::shown(i.exited, &i.recorded, live);
+    let workspace = contract
+        .as_ref()
+        .map(|c| c.workspace.clone())
+        .or_else(|| i.launch_workspace.clone());
     NodeDetail {
         // A child's task is its contract's; a root has none (§9), so its kept prompt.
         task: contract.as_ref().map(task_sent).or_else(|| root_task(&dir)),
         messages: messages(&project.journal(), id),
-        stream: cursor.map(|c| crate::activity::page(&events, i.harness, c)),
+        stream: cursor.map(|c| {
+            let root = workspace.as_ref().map(|w| w.path().as_path());
+            crate::activity::page(&events, i.harness, c, root)
+        }),
         usage: spent.usage,
-        workspace: contract
-            .as_ref()
-            .map(|c| c.workspace.clone())
-            .or_else(|| i.launch_workspace.clone()),
+        workspace,
         completion: contract.and_then(|contract| {
             let diff = landed_diff(&contract);
             contract.completion.map(|c| CompletionSummary {

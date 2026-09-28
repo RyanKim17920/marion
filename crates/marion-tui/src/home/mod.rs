@@ -34,7 +34,8 @@ pub use setup::{AgentTypeRow, FormField, FormView, LoginRow, ProfileRow, SetupVi
 pub use start::{HarnessRow, RecentRow, StartView};
 pub use theme::{Ready, Theme};
 pub use watch::{
-    Expanded, FeedRow, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView, WatchView,
+    Expanded, FeedRow, LineKind, MessageView, NodeRow, ResultView, StreamLine, TaskView, TokenView,
+    WatchView,
 };
 
 use ratatui::buffer::Buffer;

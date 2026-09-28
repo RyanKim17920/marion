@@ -455,6 +455,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             args: "/part/state/input",
             id: None,
             shape: CallShape::Tool,
+            end: None,
         }],
         text: &[TextUnit {
             at: Where {

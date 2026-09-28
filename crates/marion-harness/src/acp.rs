@@ -1376,6 +1376,16 @@ pub const SESSION: SessionId = SessionId {
     by_title: None,
 };
 
+/// How an ACP tool call ends: the protocol's own `status` on its `tool_call` or a later
+/// `tool_call_update` — `completed` or `failed`, where `pending` and `in_progress` are a call still
+/// running.
+const TOOL_CALL_END: crate::grammar::CallEnd = crate::grammar::CallEnd {
+    status: "/params/update/status",
+    ok: &["completed"],
+    failed: &["failed"],
+    exit: None,
+};
+
 /// What an ACP node has been doing, read off the protocol's own `session/update` notifications:
 /// a `tool_call`, and the `tool_call_update`s after it, name the tool in `title` and its input in
 /// `rawInput` under one `toolCallId`; `agent_message_chunk` streams the model's words one delta at
@@ -1394,6 +1404,7 @@ pub const ACTIVITY: ActivityRule = ActivityRule {
             args: "/params/update/rawInput",
             id: Some("/params/update/toolCallId"),
             shape: crate::grammar::CallShape::Tool,
+            end: Some(TOOL_CALL_END),
         },
         ToolUnit {
             at: Where {
@@ -1405,6 +1416,7 @@ pub const ACTIVITY: ActivityRule = ActivityRule {
             args: "/params/update/rawInput",
             id: Some("/params/update/toolCallId"),
             shape: crate::grammar::CallShape::Tool,
+            end: Some(TOOL_CALL_END),
         },
     ],
     text: &[TextUnit {

@@ -3,7 +3,7 @@
 //! it landed and the `git merge` that takes it).
 
 use super::GUTTER;
-use super::text::{clip, fit, pad, rpad, spans_width, tokens, width, wrap};
+use super::text::{clip, clip_left, fit, pad, rpad, spans_width, tokens, width, wrap};
 use super::theme::{CARET, Theme, bad, bold, dim, good, spinner, warn};
 use super::widgets::{centred, code_spans, context_bar, expansion, rule, section, span, sparkline};
 use crate::tree::Tone;
@@ -85,9 +85,25 @@ pub struct MessageView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamLine {
     pub clock: String,
-    /// Text it wrote, rather than a tool call: drawn dim.
-    pub said: bool,
+    pub kind: LineKind,
     pub text: String,
+}
+
+/// What a stream line is, which says how it is drawn when it does not fit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LineKind {
+    /// A tool call: clipped at its end.
+    #[default]
+    Call,
+    /// A call that changed files (`~ src/a.rs`): clipped from the left of its paths, so the file
+    /// name stays in view.
+    Files,
+    /// A call that finished well (`✓ 3.2s`).
+    Done,
+    /// A call that did not (`exit 1 · 40ms`).
+    Failed,
+    /// Text it wrote, rather than a tool call: drawn dim.
+    Said,
 }
 
 /// Token usage for one node. Counts only, never a price.
@@ -447,7 +463,11 @@ fn expanded_rows<'a>(
 
     let running = if e.live { "Running" } else { "Ran" };
     if stream_h > 0 {
-        push_block(&mut rows, running, stream_block(e, stream_h, theme));
+        push_block(
+            &mut rows,
+            running,
+            stream_block(e, stream_h, value_w, theme),
+        );
     } else {
         // Measuring the rest of the block: the section's label row still counts.
         push_block(&mut rows, running, vec![vec![]]);
@@ -546,7 +566,7 @@ fn expanded_rows<'a>(
 
 /// The Running section: a window of `h` stream lines, the newest at the bottom unless scrolled,
 /// and a dim line saying what is above and below it when anything is.
-fn stream_block<'a>(e: &Expanded, h: usize, theme: Theme) -> Vec<Vec<Span<'a>>> {
+fn stream_block<'a>(e: &Expanded, h: usize, w: usize, theme: Theme) -> Vec<Vec<Span<'a>>> {
     if let Some(why) = &e.stream_unread {
         return vec![vec![span(why.clone(), dim())]];
     }
@@ -567,12 +587,18 @@ fn stream_block<'a>(e: &Expanded, h: usize, theme: Theme) -> Vec<Vec<Span<'a>>> 
     let mut block: Vec<Vec<Span>> = e.stream[start..end]
         .iter()
         .map(|l| {
-            let text = if l.said {
-                span(format!("“{}”", l.text), dim())
-            } else {
-                span(l.text.clone(), Style::default())
+            let clock = format!("{}  ", l.clock);
+            let text = match l.kind {
+                LineKind::Said => span(format!("“{}”", l.text), dim()),
+                LineKind::Files => span(
+                    keep_end(&l.text, w.saturating_sub(width(&clock))),
+                    Style::default(),
+                ),
+                LineKind::Done => span(l.text.clone(), good()),
+                LineKind::Failed => span(l.text.clone(), bad()),
+                LineKind::Call => span(l.text.clone(), Style::default()),
             };
-            vec![span(format!("{}  ", l.clock), dim()), text]
+            vec![span(clock, dim()), text]
         })
         .collect();
     if overflow {
@@ -588,6 +614,17 @@ fn stream_block<'a>(e: &Expanded, h: usize, theme: Theme) -> Vec<Vec<Span<'a>>> 
         block.push(pos);
     }
     block
+}
+
+/// `text` in `w` columns with its first word kept and the rest clipped from the left: `~ ` and
+/// then the end of a path, which names the file.
+fn keep_end(text: &str, w: usize) -> String {
+    match text.split_once(' ') {
+        Some((head, rest)) if width(head) + 2 < w => {
+            format!("{head} {}", clip_left(rest, w - width(head) - 1))
+        }
+        _ => clip(text, w),
+    }
 }
 
 /// Label the first line of `block`, continue the rest under it.
@@ -607,6 +644,22 @@ fn push_block<'a>(rows: &mut Vec<(String, Vec<Span<'a>>)>, name: &str, block: Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A changed file keeps its name in view however deep its path: the path is clipped from the
+    /// left, after the `~` that says what the line is.
+    #[test]
+    fn a_changed_file_keeps_its_name_when_its_path_is_clipped() {
+        let deep = "~ crates/marion-supervisor/src/home/view.rs";
+        assert_eq!(keep_end(deep, 60), deep);
+        assert_eq!(keep_end(deep, 20), "~ …/src/home/view.rs");
+        assert_eq!(
+            keep_end("~ a/very/deep/lib.rs +2 more", 18),
+            "~ …/lib.rs +2 more"
+        );
+        assert_eq!(width(&keep_end(deep, 20)), 20);
+        // Too narrow for the head and any of the path: the whole line clipped as any other.
+        assert_eq!(keep_end(deep, 3), "~ …");
+    }
 
     #[test]
     fn connectors_widen_and_continue() {

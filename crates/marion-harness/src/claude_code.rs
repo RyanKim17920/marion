@@ -633,6 +633,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             args: "/input",
             id: Some("/id"),
             shape: CallShape::Tool,
+            end: None,
         }],
         text: &[TextUnit {
             at: Where {

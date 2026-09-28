@@ -10,8 +10,8 @@ use marion_tui::home::help::KeyRow;
 use marion_tui::home::text::shell_line;
 use marion_tui::home::{
     AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint, Input,
-    LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView, StartView,
-    StreamLine, Tab, TaskView, TokenView, WatchView,
+    LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView, SetupView,
+    StartView, StreamLine, Tab, TaskView, TokenView, WatchView,
 };
 use marion_tui::tree::Tone;
 
@@ -317,7 +317,8 @@ fn doing(n: &NodeSummary, detail: Option<&NodeDetail>, stream: Option<&[ActionLi
     {
         return format!("landed {b}");
     }
-    if let Some(last) = stream.and_then(|s| s.last()) {
+    // The last thing it started, not an end: `✓ 3.2s` alone says nothing about what ran.
+    if let Some(last) = stream.and_then(|s| s.iter().rev().find(|l| l.kind != ActionKind::Ended)) {
         return last.text.clone();
     }
     crate::tree::row(n).state
@@ -461,7 +462,13 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
             .iter()
             .map(|l| StreamLine {
                 clock: clock(&l.at, true),
-                said: l.kind == ActionKind::Said,
+                kind: match l.kind {
+                    ActionKind::Call => LineKind::Call,
+                    ActionKind::Files => LineKind::Files,
+                    ActionKind::Ended if crate::activity::succeeded(l) => LineKind::Done,
+                    ActionKind::Ended => LineKind::Failed,
+                    ActionKind::Said => LineKind::Said,
+                },
                 text: l.text.clone(),
             })
             .collect(),

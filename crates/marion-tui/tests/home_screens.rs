@@ -16,8 +16,8 @@
 
 use marion_tui::home::{
     self, AgentTypeRow, Body, Expanded, FeedRow, FormField, FormView, HarnessRow, HelpView, Hint,
-    Input, KeyRow, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow, ResultView,
-    Screen, SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
+    Input, KeyRow, LineKind, LoginRow, MessageView, NodeRow, ProfileRow, Ready, RecentRow,
+    ResultView, Screen, SetupView, StartView, StreamLine, TaskView, Theme, TokenView, WatchView,
 };
 use marion_tui::tree::{self, Tone};
 use ratatui::Terminal;
@@ -331,24 +331,25 @@ fn task_view(prompt: &str) -> TaskView {
 
 /// `n` lines of a child working, oldest first: calls in the default colour, words dim.
 fn stream(n: usize) -> Vec<StreamLine> {
+    use LineKind::{Call, Files, Said};
     let all = [
-        (false, "read_file src/limits/mod.rs"),
-        (false, "read_file Cargo.toml"),
-        (true, "I'll add a token bucket keyed by API key."),
-        (false, "~ src/limits/bucket.rs"),
-        (false, "~ src/routes/orders.rs +1 more"),
-        (false, "$ cargo build -q"),
-        (false, "$ cargo test -q limits"),
-        (true, "142 passed; committing."),
-        (false, "$ git commit -am limiter"),
-        (false, "report \"limiter in, tests green\""),
+        (Call, "read_file src/limits/mod.rs"),
+        (Call, "read_file Cargo.toml"),
+        (Said, "I'll add a token bucket keyed by API key."),
+        (Files, "~ src/limits/bucket.rs"),
+        (Files, "~ src/routes/orders.rs +1 more"),
+        (Call, "$ cargo build -q"),
+        (Call, "$ cargo test -q limits"),
+        (Said, "142 passed; committing."),
+        (Call, "$ git commit -am limiter"),
+        (Call, "report \"limiter in, tests green\""),
     ];
     (0..n)
         .map(|i| {
-            let (said, text) = all[i % all.len()];
+            let (kind, text) = all[i % all.len()];
             StreamLine {
                 clock: format!("14:{:02}:{:02}", 24 + i / 6, (i * 7) % 60),
-                said,
+                kind,
                 text: s(text),
             }
         })
@@ -923,6 +924,61 @@ fn watch_task_block_shows_what_marion_sent() {
     assert!(task_rows[6].contains("$ cargo test -q limits"), "{text}");
 }
 
+/// **The stream as the dry run drew it, fixed**: a command's end is one line saying how it went
+/// and how long it took — never the command again — and a changed file deep in the worktree keeps
+/// its name in view at the demo's 92 columns.
+#[test]
+fn watch_stream_shows_each_end_once_and_every_changed_file_name() {
+    let line = |clock: &str, kind: LineKind, text: &str| StreamLine {
+        clock: s(clock),
+        kind,
+        text: s(text),
+    };
+    let e = Expanded {
+        live: true,
+        task: Some(task_view("Add a --top N option to wordfreq.py")),
+        stream: vec![
+            line(
+                "23:38:14",
+                LineKind::Call,
+                "$ cat AGENTS.md tests/test_wordfreq.py; git branch --show-current",
+            ),
+            line("23:38:14", LineKind::Done, "✓ 22ms"),
+            line(
+                "23:38:24",
+                LineKind::Files,
+                "~ src/wordfreq/cli/options/parsing/arguments/limits/top_n_argument.py",
+            ),
+            line("23:38:24", LineKind::Done, "✓ 52ms"),
+            line(
+                "23:38:25",
+                LineKind::Call,
+                "$ python3 -m unittest -q; git diff --check; git diff --stat",
+            ),
+            line("23:38:27", LineKind::Failed, "exit 1 · 2.1s"),
+        ],
+        ..Default::default()
+    };
+    let v = watch_view(1, Some(e));
+    let screen = screen(
+        Body::Watch(&v),
+        command("marion attach 01a0e64e-433f", "enter"),
+        "watch",
+    );
+    let text = rows_of(&draw(&screen, 92, 36)).join("\n");
+    assert!(
+        text.lines()
+            .any(|l| l.contains("~ …/") && l.trim_end().ends_with("/top_n_argument.py")),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("python3 -m unittest").count(),
+        1,
+        "the command once; its end does not repeat it: {text}"
+    );
+    insta::assert_snapshot!(report(&screen, 92, 36));
+}
+
 /// One token sample is no trend: TOKENS keeps its totals and draws no sparkline until a second
 /// sample arrives.
 #[test]
@@ -1032,7 +1088,7 @@ fn a_following_stream_shows_the_newest_line() {
     let before = draw_text(&e);
     e.stream.push(StreamLine {
         clock: s("14:59:59"),
-        said: false,
+        kind: LineKind::Call,
         text: s("command_execution(echo newest)"),
     });
     let after = draw_text(&e);

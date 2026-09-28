@@ -22,7 +22,9 @@ use marion_core::harness::Harness;
 use marion_core::proto::params::ActivityCursor;
 use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage};
 use marion_harness::adapter::adapter_for;
-use marion_harness::grammar::{Activity, RecentActivity, activity_stream, recent_activity};
+use marion_harness::grammar::{
+    Activity, CallShape, RecentActivity, activity_stream, recent_activity,
+};
 use serde_json::Value;
 
 /// The most tool calls a peek shows.
@@ -73,12 +75,19 @@ pub fn render(a: &RecentActivity) -> String {
 /// later poll only what was appended since.
 pub const PAGE_BYTES: u64 = TAIL_BYTES;
 
-/// A page of what the node whose stream is `events` has been doing, from `cursor`: every call and
-/// message in that stretch of the file, one bounded line each, and the byte the next page starts
-/// at. Only whole lines are consumed, so a record being written as this reads is left for the next
-/// poll rather than read torn. A cursor past the end of the file (a file that was replaced) reads
-/// from the start again.
-pub fn page(events: &Path, harness: Harness, cursor: ActivityCursor) -> ActivityPage {
+/// A page of what the node whose stream is `events` has been doing, from `cursor`: every call,
+/// call's end and message in that stretch of the file, one bounded line each, and the byte the next
+/// page starts at. Only whole lines are consumed, so a record being written as this reads is left
+/// for the next poll rather than read torn. A cursor past the end of the file (a file that was
+/// replaced) reads from the start again. Paths under `workspace`, the node's own tree, are shown
+/// relative to it. A call that started on an earlier page is seen again on this one where it ends
+/// here: [`fold`] is how a reader keeps it one line.
+pub fn page(
+    events: &Path,
+    harness: Harness,
+    cursor: ActivityCursor,
+    workspace: Option<&Path>,
+) -> ActivityPage {
     // The adapter's reading, as the peek asks it: a row's grammar, or ACP's protocol frames.
     let Some(rule) = adapter_for(harness).ok().and_then(|a| a.activity()) else {
         return ActivityPage {
@@ -138,14 +147,23 @@ pub fn page(events: &Path, harness: Harness, cursor: ActivityCursor) -> Activity
     let lines = activity_stream(rule, &frames)
         .into_iter()
         .map(|i| {
-            let (kind, text) = match i.item {
-                Activity::Call(c) => (ActionKind::Call, brief(&c)),
-                Activity::Said(t) => (ActionKind::Said, capped(&one_line(&t))),
+            let (kind, text, id) = match i.item {
+                Activity::Call(c) => {
+                    let kind = match c.shape {
+                        CallShape::Files => ActionKind::Files,
+                        CallShape::Command | CallShape::Tool => ActionKind::Call,
+                    };
+                    let text = brief(&c, workspace);
+                    (kind, text, c.id)
+                }
+                Activity::Ended(e) => (ActionKind::Ended, outcome(e.ok, e.exit), Some(e.id)),
+                Activity::Said(t) => (ActionKind::Said, capped(&one_line(&t)), None),
             };
             ActionLine {
                 at: times[i.frame].clone(),
                 kind,
                 text,
+                id,
             }
         })
         .collect();
@@ -155,6 +173,70 @@ pub fn page(events: &Path, harness: Harness, cursor: ActivityCursor) -> Activity
         lines,
         unread: None,
     }
+}
+
+/// A call's end as a person reads it: `✓` for a success, `exit N` for a command that exited
+/// non-zero, `failed` for any other failure.
+fn outcome(ok: bool, exit: Option<i64>) -> String {
+    match (ok, exit) {
+        (_, Some(code)) if code != 0 => format!("exit {code}"),
+        (true, _) => "✓".to_string(),
+        (false, _) => "failed".to_string(),
+    }
+}
+
+/// Whether an [`ActionKind::Ended`] line is a call that succeeded: [`outcome`]'s `✓`.
+pub fn succeeded(line: &ActionLine) -> bool {
+    line.kind == ActionKind::Ended && line.text.starts_with('✓')
+}
+
+/// **`page` appended to the lines a reader already holds**, one line per call however the pages
+/// fell: a call seen again (its end on a later page, or its arguments filled in) revises the line
+/// it already has instead of adding one, and an end says how long its call took where the call's
+/// line is held — `✓ 1.2s`, `exit 1 · 40ms`. An end whose call is not held (scrolled out of a
+/// tail) is its outcome alone.
+pub fn fold(held: &mut Vec<ActionLine>, page: Vec<ActionLine>) {
+    for mut line in page {
+        let Some(id) = line.id.clone() else {
+            held.push(line);
+            continue;
+        };
+        let ended = line.kind == ActionKind::Ended;
+        let same =
+            |l: &ActionLine| l.id.as_deref() == Some(&id) && (l.kind == ActionKind::Ended) == ended;
+        if let Some(earlier) = held.iter_mut().rev().find(|l| same(l)) {
+            if !ended {
+                earlier.text = line.text;
+            }
+            continue;
+        }
+        if ended
+            && let Some(took) = held
+                .iter()
+                .rev()
+                .find(|l| l.id.as_deref() == Some(&id) && l.kind != ActionKind::Ended)
+                .and_then(|call| between(&call.at, &line.at))
+        {
+            let sep = if line.text == "✓" { " " } else { " · " };
+            line.text = format!("{}{sep}{}", line.text, took);
+        }
+        held.push(line);
+    }
+}
+
+/// How long from `from` to `to`, two recorded timestamps, worded for a stream line: `40ms`,
+/// `3.2s`, `1m05s`.
+fn between(from: &str, to: &str) -> Option<String> {
+    let at = |s: &str| {
+        serde_json::from_value::<marion_core::encoding::SystemTime>(Value::String(s.to_string()))
+            .ok()
+    };
+    let d = at(to)?.0.duration_since(at(from)?.0).ok()?;
+    Some(match d.as_millis() {
+        ms @ 0..=999 => format!("{ms}ms"),
+        1_000..=59_999 => format!("{:.1}s", d.as_secs_f64()),
+        _ => marion_tui::home::text::elapsed(d.as_secs()),
+    })
 }
 
 /// One call as one bounded line: `name(args)`.
@@ -195,11 +277,11 @@ const MESSAGE_KEYS: &[&str] = &[
 ];
 
 /// One call as a person reads it, one bounded line: `$ cargo test` for a command, `~ src/a.rs`
-/// for a file change, and otherwise the tool's verb and its most telling argument —
-/// `report "tests pass"`, `Read src/lib.rs`, `Grep fn main`. Worded from the row's
-/// [`CallShape`] and the argument's key, so no harness is named here.
-pub fn brief(c: &marion_harness::grammar::ToolCall) -> String {
-    use marion_harness::grammar::CallShape;
+/// for a file change — relative to `workspace`, the node's own tree, where it is under it — and
+/// otherwise the tool's verb and its most telling argument — `report "tests pass"`,
+/// `Read src/lib.rs`, `Grep fn main`. Worded from the row's [`CallShape`] and the argument's key,
+/// so no harness is named here.
+pub fn brief(c: &marion_harness::grammar::ToolCall, workspace: Option<&Path>) -> String {
     // Some harnesses deliver the argument object as a JSON string.
     let parsed;
     let args = match &c.args {
@@ -211,7 +293,7 @@ pub fn brief(c: &marion_harness::grammar::ToolCall) -> String {
     };
     let line = match c.shape {
         CallShape::Command => format!("$ {}", command_text(args)),
-        CallShape::Files => files_text(args),
+        CallShape::Files => files_text(args, workspace),
         CallShape::Tool => tool_text(verb(&c.name), args),
     };
     capped(&one_line(&line))
@@ -305,7 +387,7 @@ fn is_dash_c(flag: &str) -> bool {
 }
 
 /// The files a `Files`-shaped call changed: the first, and how many more.
-fn files_text(args: &Value) -> String {
+fn files_text(args: &Value, workspace: Option<&Path>) -> String {
     let paths: Vec<String> = match args {
         Value::Array(items) => items
             .iter()
@@ -319,11 +401,31 @@ fn files_text(args: &Value) -> String {
         Value::String(s) => vec![s.clone()],
         _ => Vec::new(),
     };
+    let paths: Vec<String> = paths.iter().map(|p| relative(p, workspace)).collect();
     match paths.as_slice() {
         [] => "~ files".to_string(),
         [one] => format!("~ {one}"),
         [first, rest @ ..] => format!("~ {first} +{} more", rest.len()),
     }
+}
+
+/// `path` relative to `workspace` where it lies under it — as the harness spelled the tree, or as
+/// the tree resolves (`/tmp` is `/private/tmp` on macOS, and a harness may report either) — and
+/// `path` itself otherwise.
+fn relative(path: &str, workspace: Option<&Path>) -> String {
+    let Some(root) = workspace else {
+        return path.to_string();
+    };
+    let p = Path::new(path);
+    let resolved = std::fs::canonicalize(root).ok();
+    std::iter::once(root)
+        .chain(resolved.as_deref())
+        .find_map(|r| p.strip_prefix(r).ok())
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .map_or_else(
+            || path.to_string(),
+            |rel| rel.to_string_lossy().into_owned(),
+        )
 }
 
 /// A journal or event timestamp as the RFC3339 text it serializes to.
@@ -407,13 +509,14 @@ fn cap_bytes(s: String, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_harness::grammar::{CallShape, ToolCall};
+    use marion_harness::grammar::ToolCall;
 
     fn call(name: &str, args: Value) -> ToolCall {
         ToolCall {
             name: name.into(),
             args,
             shape: CallShape::Tool,
+            id: None,
         }
     }
 
@@ -496,9 +599,9 @@ mod tests {
             ),
         ];
         for (c, want) in cases {
-            assert_eq!(brief(&c), want, "{c:?}");
+            assert_eq!(brief(&c, None), want, "{c:?}");
         }
-        let long = brief(&call("say", json!({"message": "x".repeat(500)})));
+        let long = brief(&call("say", json!({"message": "x".repeat(500)})), None);
         assert!(
             long.chars().count() <= LINE_CAP && long.ends_with('…'),
             "{long}"
@@ -599,20 +702,29 @@ mod tests {
         for line in &lines[..half] {
             sink.record_line(line);
         }
-        let first = page(&path, Harness::Codex, ActivityCursor::Tail);
+        let first = page(&path, Harness::Codex, ActivityCursor::Tail, None);
         assert_eq!(first.from, 0);
         let len = std::fs::metadata(&path).unwrap().len();
         assert_eq!(first.next, len, "a whole file is consumed whole");
         for line in &lines[half..] {
             sink.record_line(line);
         }
-        let second = page(&path, Harness::Codex, ActivityCursor::From(first.next));
+        let second = page(
+            &path,
+            Harness::Codex,
+            ActivityCursor::From(first.next),
+            None,
+        );
         assert_eq!(second.from, first.next);
-        let everything = page(&path, Harness::Codex, ActivityCursor::From(0));
+        let everything = page(&path, Harness::Codex, ActivityCursor::From(0), None);
+        let mut paged = Vec::new();
+        fold(&mut paged, first.lines.clone());
+        fold(&mut paged, second.lines.clone());
+        let mut whole = Vec::new();
+        fold(&mut whole, everything.lines.clone());
         assert_eq!(
-            first.lines.len() + second.lines.len(),
-            everything.lines.len(),
-            "two pages are the whole, with nothing read twice: {first:?} {second:?}"
+            paged, whole,
+            "two pages fold to the whole, with nothing read twice: {first:?} {second:?}"
         );
         assert!(
             everything
@@ -630,11 +742,124 @@ mod tests {
             .unwrap()
             .write_all(b"{\"agent_id\":")
             .unwrap();
-        let torn = page(&path, Harness::Codex, ActivityCursor::From(end));
+        let torn = page(&path, Harness::Codex, ActivityCursor::From(end), None);
         assert_eq!((torn.next, torn.lines.len()), (end, 0), "{torn:?}");
 
-        let replaced = page(&path, Harness::Codex, ActivityCursor::From(u64::MAX));
+        let replaced = page(&path, Harness::Codex, ActivityCursor::From(u64::MAX), None);
         assert_eq!(replaced.from, 0);
+    }
+
+    /// A codex node's items in app-server's shapes (S36 P4): each `item/started` then
+    /// `item/completed` under one id, with a patch to a file in its own worktree.
+    fn codex_items(worktree: &Path) -> Vec<String> {
+        let command = |id: &str, status: &str, exit: Value| {
+            serde_json::json!({"method": if status == "inProgress" { "item/started" } else { "item/completed" },
+                "params": {"item": {"id": id, "type": "commandExecution", "status": status, "exitCode": exit,
+                         "aggregatedOutput": "", "command": "/bin/zsh -lc 'python3 -m unittest -q'"}}})
+            .to_string()
+        };
+        let patch = |status: &str| {
+            serde_json::json!({"method": if status == "inProgress" { "item/started" } else { "item/completed" },
+                "params": {"item": {"id": "item_3", "type": "fileChange",
+                "status": status, "changes": [{"kind": "update",
+                "path": worktree.join("wordfreq.py").to_string_lossy()}]}}})
+            .to_string()
+        };
+        vec![
+            command("item_1", "inProgress", Value::Null),
+            command("item_1", "completed", serde_json::json!(0)),
+            patch("inProgress"),
+            patch("completed"),
+            command("item_4", "inProgress", Value::Null),
+            command("item_4", "failed", serde_json::json!(1)),
+        ]
+    }
+
+    /// **One line per call, then one per end, however the pages fell.** A command's end is its
+    /// outcome and how long it took — never the command again — even when the poll split the call
+    /// from its end; and a file the node changed in its worktree reads relative to it.
+    #[test]
+    fn a_call_and_its_end_are_one_line_each_across_pages() {
+        use crate::events::{EventSink, EventWriter};
+        let dir = marion_testsupport::scratch("activity-ends");
+        let path = dir.join("events.jsonl");
+        let worktree = dir.join("agents/a/worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let agent = marion_core::contract::AgentId("019f-ends".into());
+        let sink = EventSink::new(
+            EventWriter::open_path(&path, &agent).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        let items = codex_items(&worktree);
+        let mut held = Vec::new();
+        let mut next = ActivityCursor::Tail;
+        // A poll after every record: each started call's end arrives on the page after it.
+        for item in &items {
+            sink.record_line(item);
+            let p = page(&path, Harness::Codex, next, Some(&worktree));
+            next = ActivityCursor::From(p.next);
+            fold(&mut held, p.lines);
+        }
+        let got: Vec<(ActionKind, String)> =
+            held.iter().map(|l| (l.kind, l.text.clone())).collect();
+        let kinds: Vec<ActionKind> = got.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            kinds,
+            [
+                ActionKind::Call,
+                ActionKind::Ended,
+                ActionKind::Files,
+                ActionKind::Ended,
+                ActionKind::Call,
+                ActionKind::Ended,
+            ],
+            "{got:?}"
+        );
+        assert_eq!(got[0].1, "$ python3 -m unittest -q");
+        assert_eq!(got[2].1, "~ wordfreq.py", "relative to the worktree");
+        assert!(
+            got[1].1.starts_with("✓ ") && got[1].1.ends_with("ms"),
+            "{got:?}"
+        );
+        assert!(
+            got[5].1.starts_with("exit 1 · ") && got[5].1.ends_with("ms"),
+            "{got:?}"
+        );
+        assert!(succeeded(&held[1]) && !succeeded(&held[5]) && !succeeded(&held[0]));
+
+        // Read whole, the same lines.
+        let mut whole = Vec::new();
+        fold(
+            &mut whole,
+            page(
+                &path,
+                Harness::Codex,
+                ActivityCursor::From(0),
+                Some(&worktree),
+            )
+            .lines,
+        );
+        assert_eq!(whole, held);
+    }
+
+    /// A path is shown relative to the node's tree only when it lies under it, and the tree is
+    /// matched as spelled and as it resolves (`/tmp` is `/private/tmp` on macOS).
+    #[test]
+    fn a_changed_path_is_relative_to_the_workspace_it_lies_under() {
+        let dir = marion_testsupport::scratch("activity-relative");
+        let wt = dir.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let inside = wt.join("src/a.rs");
+        assert_eq!(relative(&inside.to_string_lossy(), Some(&wt)), "src/a.rs");
+        let resolved = std::fs::canonicalize(&wt).unwrap().join("b.rs");
+        assert_eq!(relative(&resolved.to_string_lossy(), Some(&wt)), "b.rs");
+        assert_eq!(relative("/elsewhere/c.rs", Some(&wt)), "/elsewhere/c.rs");
+        assert_eq!(
+            relative(&wt.to_string_lossy(), Some(&wt)),
+            wt.to_string_lossy()
+        );
+        assert_eq!(relative("src/d.rs", None), "src/d.rs");
     }
 
     /// **An ACP node is read by the protocol's `session/update` frames**, recorded live since the
@@ -674,7 +899,7 @@ mod tests {
             let out = peek(&missing, h);
             assert!(out.contains("nothing recorded yet"), "{h:?}: {out}");
             assert_eq!(
-                page(&missing, h, ActivityCursor::Tail),
+                page(&missing, h, ActivityCursor::Tail, None),
                 ActivityPage::default(),
                 "{h:?}"
             );

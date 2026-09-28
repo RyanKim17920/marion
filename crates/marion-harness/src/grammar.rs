@@ -135,6 +135,51 @@ pub struct ToolUnit {
     pub id: Option<&'static str>,
     /// What the unit's arguments are, so a reader can word the call without knowing the harness.
     pub shape: CallShape,
+    /// Where a unit of this call says it finished, and how. `None` where no frame was measured
+    /// carrying a call's end, and the call is shown only as started.
+    pub end: Option<CallEnd>,
+}
+
+/// Where a call's unit states that the call finished: the word at `status`, one of `ok` for a
+/// call that succeeded or `failed` for one that did not — any other word (`in_progress`,
+/// `pending`) is a call still running — and, for a command, its exit code at `exit`.
+#[derive(Debug)]
+pub struct CallEnd {
+    pub status: &'static str,
+    pub ok: &'static [&'static str],
+    pub failed: &'static [&'static str],
+    pub exit: Option<&'static str>,
+}
+
+impl CallEnd {
+    /// How the call `unit` shows ended, or `None` where the unit says it is still running.
+    fn read(&self, unit: &Value, id: &str) -> Option<CallEnded> {
+        let status = text(unit, self.status)?;
+        let ok = if self.ok.contains(&status.as_str()) {
+            true
+        } else if self.failed.contains(&status.as_str()) {
+            false
+        } else {
+            return None;
+        };
+        Some(CallEnded {
+            id: id.to_string(),
+            ok,
+            exit: self
+                .exit
+                .and_then(|p| unit.pointer(p))
+                .and_then(Value::as_i64),
+        })
+    }
+}
+
+/// A call's end as a stream stated it: which call, whether it succeeded, and its exit code where
+/// it was a command that stated one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallEnded {
+    pub id: String,
+    pub ok: bool,
+    pub exit: Option<i64>,
 }
 
 /// What a call unit's arguments hold. Most harnesses spell every kind of work as a named tool with
@@ -168,6 +213,8 @@ pub struct ToolCall {
     pub args: Value,
     /// Its unit's [`CallShape`].
     pub shape: CallShape,
+    /// The id the harness gave the call, where its unit carries one: what its end names.
+    pub id: Option<String>,
 }
 
 /// What a stream shows a node doing most recently: its last calls, oldest first, and the last line
@@ -1042,13 +1089,13 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
     let items = activity_stream(rule, frames);
     let said = items.iter().rev().find_map(|i| match &i.item {
         Activity::Said(t) => Some(t.clone()),
-        Activity::Call(_) => None,
+        Activity::Call(_) | Activity::Ended(_) => None,
     });
     let mut calls: Vec<ToolCall> = items
         .into_iter()
         .filter_map(|i| match i.item {
             Activity::Call(c) => Some(c),
-            Activity::Said(_) => None,
+            Activity::Said(_) | Activity::Ended(_) => None,
         })
         .collect();
     let keep = calls.len().saturating_sub(max_calls);
@@ -1077,7 +1124,7 @@ pub fn last_said(rule: &ActivityRule, stdout: &str) -> Option<String> {
         .rev()
         .find_map(|i| match i.item {
             Activity::Said(t) => Some(t.trim().to_string()),
-            Activity::Call(_) => None,
+            Activity::Call(_) | Activity::Ended(_) => None,
         })
         .filter(|t| !t.is_empty())
 }
@@ -1089,6 +1136,9 @@ pub enum Activity {
     Call(ToolCall),
     /// Text it wrote: consecutive joining units (deltas) are one item.
     Said(String),
+    /// A call finished: read off the unit that ends it, where the row measured one
+    /// ([`ToolUnit::end`]). Once per call, after the call itself.
+    Ended(CallEnded),
 }
 
 /// An [`Activity`] and the index of the frame it was read from, so a caller can time it.
@@ -1100,14 +1150,17 @@ pub struct ActivityItem {
 
 /// **Everything** a stream shows a node doing under `rule`, oldest first — the whole sequence that
 /// [`recent_activity`] keeps only the end of. A call whose id was already seen in `frames` is not
-/// repeated; a text unit that joins (a delta) extends the text item before it, unless a call came
-/// between them.
+/// repeated; the unit that ends it, where the row reads ends, is an [`Activity::Ended`] of its own
+/// (a unit that both first names a call and ends it is the call, then its end). A text unit that
+/// joins (a delta) extends the text item before it, unless a call came between them.
 pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityItem> {
     let mut items: Vec<ActivityItem> = Vec::new();
     // A call's id, and the item it is: a later unit with the same id revises that call's
     // arguments where it carries some (opencode's ACP `tool_call` is `pending` with `{}`, and the
     // `in_progress` update carries the input — s21), and is otherwise not repeated.
     let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    // The calls whose end was already read, so a harness repeating a final update ends it once.
+    let mut ended: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Whether the last thing read was a joining text unit, so the next one continues it.
     let mut joining = false;
     for (index, frame) in frames.iter().enumerate() {
@@ -1146,8 +1199,13 @@ pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityIte
                     continue;
                 };
                 let args = unit.pointer(c.args).cloned().unwrap_or(Value::Null);
-                if let Some(id) = c.id.and_then(|p| text(unit, p)) {
-                    if let Some(&at) = seen.get(&id) {
+                let id = c.id.and_then(|p| text(unit, p));
+                let end = id
+                    .as_deref()
+                    .and_then(|id| c.end.as_ref()?.read(unit, id))
+                    .filter(|e| ended.insert(e.id.clone()));
+                match id.as_ref().and_then(|id| seen.get(id)) {
+                    Some(&at) => {
                         if !is_empty_args(&args)
                             && let Some(ActivityItem {
                                 item: Activity::Call(call),
@@ -1156,18 +1214,28 @@ pub fn activity_stream(rule: &ActivityRule, frames: &[Value]) -> Vec<ActivityIte
                         {
                             call.args = args;
                         }
-                        continue;
                     }
-                    seen.insert(id, items.len());
+                    None => {
+                        if let Some(id) = &id {
+                            seen.insert(id.clone(), items.len());
+                        }
+                        items.push(ActivityItem {
+                            frame: index,
+                            item: Activity::Call(ToolCall {
+                                name: name.to_string(),
+                                args,
+                                shape: c.shape,
+                                id,
+                            }),
+                        });
+                    }
                 }
-                items.push(ActivityItem {
-                    frame: index,
-                    item: Activity::Call(ToolCall {
-                        name: name.to_string(),
-                        args,
-                        shape: c.shape,
-                    }),
-                });
+                if let Some(end) = end {
+                    items.push(ActivityItem {
+                        frame: index,
+                        item: Activity::Ended(end),
+                    });
+                }
                 joining = false;
             }
         }
@@ -1731,6 +1799,12 @@ mod tests {
             args: "/args",
             id: Some("/id"),
             shape: CallShape::Tool,
+            end: Some(CallEnd {
+                status: "/status",
+                ok: &["done"],
+                failed: &["failed"],
+                exit: Some("/exit"),
+            }),
         }],
         text: &[
             TextUnit {
@@ -1792,6 +1866,45 @@ mod tests {
         assert_eq!(a.text.as_deref(), Some("kept"));
     }
 
+    /// **A call's end is its own item, once.** The unit that finishes a call is not the call again
+    /// but its end, with the exit code the unit states; a unit that is both a call's first sighting
+    /// and its end (a stream read from mid-call) is the call and then its end; a repeated end, and
+    /// a unit whose status is not one the rule names, add nothing.
+    #[test]
+    fn a_call_ends_once_after_the_call_itself() {
+        let unit = |id: &str, name: &str, status: &str, exit: Option<i64>| {
+            serde_json::json!({"type": "call", "id": id, "name": name, "args": {"n": id},
+                               "status": status, "exit": exit})
+        };
+        let frames = [
+            unit("1", "test", "running", None),
+            unit("1", "test", "still", None),
+            unit("1", "test", "done", Some(0)),
+            unit("2", "build", "failed", Some(3)),
+            unit("2", "build", "failed", Some(3)),
+        ];
+        let got: Vec<(usize, String)> = activity_stream(&ACTIVITY, &frames)
+            .into_iter()
+            .map(|i| match i.item {
+                Activity::Call(c) => (i.frame, format!("call {} {:?}", c.name, c.id)),
+                Activity::Said(t) => (i.frame, format!("said {t}")),
+                Activity::Ended(e) => (i.frame, format!("ended {} {} {:?}", e.id, e.ok, e.exit)),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, "call test Some(\"1\")".to_string()),
+                (2, "ended 1 true Some(0)".to_string()),
+                (3, "call build Some(\"2\")".to_string()),
+                (3, "ended 2 false Some(3)".to_string()),
+            ]
+        );
+        // The peek counts calls, never ends.
+        let a = recent_activity(&ACTIVITY, &frames, 5);
+        assert_eq!(a.calls.len(), 2);
+    }
+
     /// The whole stream, in order, each item with the frame it came from: every call once, and
     /// deltas joined into one message until a call comes between them.
     #[test]
@@ -1813,6 +1926,7 @@ mod tests {
             .map(|i| match i.item {
                 Activity::Call(c) => (i.frame, format!("call {}", c.name)),
                 Activity::Said(t) => (i.frame, format!("said {t}")),
+                Activity::Ended(e) => (i.frame, format!("ended {e:?}")),
             })
             .collect();
         assert_eq!(

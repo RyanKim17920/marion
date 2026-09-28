@@ -381,6 +381,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             args: "/event/input",
             id: Some("/event/toolCallId"),
             shape: CallShape::Tool,
+            end: None,
         }],
         text: &[TextUnit {
             at: Where {

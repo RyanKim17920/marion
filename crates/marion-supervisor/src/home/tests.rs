@@ -304,6 +304,7 @@ fn stream_pages_append_only_where_the_last_one_ended() {
         at: "t".into(),
         kind: ActionKind::Call,
         text: t.into(),
+        id: None,
     };
     let page = |from, next, t: &str| NodeDetail {
         stream: Some(ActivityPage {
@@ -325,6 +326,62 @@ fn stream_pages_append_only_where_the_last_one_ended() {
     assert_eq!(h.watch.stream.len(), 1);
 }
 
+/// **A call's end is drawn as its outcome, and the row still names the call.** Paged in two, a
+/// command and its end fold to one line each; the row's one line is the command, not `✓ 3.0s`,
+/// and the end is drawn as a success.
+#[test]
+fn an_ended_call_shows_its_outcome_and_the_row_keeps_the_call() {
+    let mut h = home();
+    h.set_nodes(vec![node("root", None, NodeState::Running)]);
+    let line = |at: &str, kind, text: &str| ActionLine {
+        at: at.into(),
+        kind,
+        text: text.into(),
+        id: Some("item_4".into()),
+    };
+    let page = |from, next, lines| NodeDetail {
+        stream: Some(ActivityPage {
+            from,
+            next,
+            lines,
+            unread: None,
+        }),
+        ..Default::default()
+    };
+    let id = AgentId("root".into());
+    let started = line("2026-09-28T04:38:25.000Z", ActionKind::Call, "$ make test");
+    h.absorb_detail(id.clone(), page(0, 10, vec![started.clone()]));
+    h.absorb_detail(
+        id,
+        page(
+            10,
+            20,
+            vec![
+                started,
+                line("2026-09-28T04:38:28.000Z", ActionKind::Ended, "✓"),
+            ],
+        ),
+    );
+    let f = view::frame(&h, &view::Places::default());
+    let texts: Vec<(&str, marion_tui::home::LineKind)> = f
+        .watch
+        .expanded
+        .as_ref()
+        .unwrap()
+        .stream
+        .iter()
+        .map(|l| (l.text.as_str(), l.kind))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            ("$ make test", marion_tui::home::LineKind::Call),
+            ("✓ 3.0s", marion_tui::home::LineKind::Done),
+        ]
+    );
+    assert_eq!(f.watch.rows[0].doing, "$ make test");
+}
+
 #[test]
 fn stream_scrolls_back_and_follows_again() {
     let mut h = home();
@@ -334,6 +391,7 @@ fn stream_scrolls_back_and_follows_again() {
             at: "t".into(),
             kind: ActionKind::Call,
             text: i.to_string(),
+            id: None,
         })
         .collect();
     h.key(Key::PageUp);

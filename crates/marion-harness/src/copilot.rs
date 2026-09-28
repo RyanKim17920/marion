@@ -463,6 +463,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             args: "/data/arguments",
             id: Some("/data/toolCallId"),
             shape: CallShape::Tool,
+            end: None,
         }],
         text: &[TextUnit {
             at: Where {

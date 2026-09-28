@@ -527,7 +527,7 @@ impl Home {
         }
         if let Some(page) = detail.stream.take() {
             if Some(page.from) == self.watch.next || self.watch.next.is_none() {
-                self.watch.stream.extend(page.lines);
+                crate::activity::fold(&mut self.watch.stream, page.lines);
                 self.watch.next = Some(page.next);
             }
             if let Some(why) = page.unread {

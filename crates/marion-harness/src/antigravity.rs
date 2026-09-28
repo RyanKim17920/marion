@@ -288,6 +288,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             args: "/step_update/tool_info/parameters",
             id: Some("/step_update/step_index"),
             shape: CallShape::Tool,
+            end: None,
         }],
         text: &[TextUnit {
             at: Where {
