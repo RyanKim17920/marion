@@ -75,7 +75,7 @@
 //! the timing; the judgement, and everything it refuses to decide, is argued in `restart.rs`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use marion_core::paths::ProjectDir;
@@ -414,18 +414,23 @@ fn unparsable_reason(path: &Path, offset: u64) -> String {
 /// **Woken, not ticking.** The follower blocks until the journal can have changed: this process's
 /// own appends wake it through [`crate::journal::append_at`], another process's through the file's
 /// change notification ([`crate::wake::Watch`]) — which sees every writer, and a replaced or
-/// removed journal re-arms it — and [`Self::halt`] through the same pipe. With both descriptors it
-/// waits with no timeout at all; only when one could not be had does it re-check at
-/// [`crate::wake::DEGRADED_RECHECK`]. It used to poll every 10 ms, which on an idle supervisor was
+/// removed journal re-arms it — and [`Self::halt`] through its stop flag's own descriptor. With
+/// every descriptor it waits with no timeout at all; only when one could not be had does it
+/// re-check at [`crate::wake::DEGRADED_RECHECK`]. It used to poll every 10 ms, which on an idle supervisor was
 /// a hundred `open`s and a hundred wakeups a second of pure cost. Every decision point
 /// (`session/quit`, the idle-exit predicate) still calls [`Self::refresh`] synchronously, so no
 /// correctness claim rests on the follower's timing.
 pub struct LiveRegistry {
     inner: Arc<Mutex<Registry>>,
-    stop: Arc<AtomicBool>,
-    /// Wakes the follower: this process's appends and [`Self::halt`]. `None` only when no
-    /// descriptor could be had, in which case the follower re-checks at the degraded bound.
-    wake: Option<Arc<crate::wake::Pipe>>,
+    /// Raised by [`Self::halt`]. A [`crate::wake::Flag`], whose descriptor stays readable once
+    /// raised and is never drained, so the halt reaches the follower whatever the append pipe's
+    /// drain is doing at that moment.
+    stop: Arc<crate::wake::Flag>,
+    /// Wakes the follower on this process's appends. Held here, never read: the journal keeps
+    /// only a weak reference to its listeners, so this is what keeps the pipe registered for as
+    /// long as the follower runs. `None` only when no descriptor could be had, in which case the
+    /// follower re-checks at the degraded bound.
+    _append_wake: Option<Arc<crate::wake::Pipe>>,
     changes: Arc<crate::wake::Signal>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -438,12 +443,14 @@ impl LiveRegistry {
     /// written in the last moments before a shutdown are exactly the ones a run cares about, and a
     /// loop that returned on the flag before polling would drop them and end the reading on a lie.
     ///
-    /// **Drain, re-arm, then read**, every pass: a write that lands after the read leaves a wake
-    /// pending for the next wait, so no append can fall between a poll and the wait after it.
+    /// **Drain, then look, re-arm, then read**, every pass: a write that lands after the read
+    /// leaves a wake pending for the next wait, so no append can fall between a poll and the wait
+    /// after it. The stop flag is waited on through its own descriptor, never through the append
+    /// pipe, so a halt cannot be lost to a drain.
     pub fn follow(registry: Registry) -> Self {
         let path = registry.path().to_path_buf();
         let inner = Arc::new(Mutex::new(registry));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(crate::wake::Flag::new());
         let changes = crate::wake::Signal::new();
         register_changes(&path, &changes);
         let wake = crate::wake::Pipe::new().ok().map(Arc::new);
@@ -458,23 +465,28 @@ impl LiveRegistry {
             std::thread::spawn(move || {
                 let mut watch = crate::wake::Watch::new(&path);
                 loop {
-                    let done = stop.load(Ordering::SeqCst);
+                    // Drain, then look. The stop flag has a descriptor of its own in the wait
+                    // below, so a halt is never a wake this drain could swallow.
                     if let Some(wake) = &wake {
                         wake.drain();
                     }
+                    let done = stop.load(Ordering::SeqCst);
                     watch.rearm();
                     fold(&inner, &changes);
                     if done {
                         return;
                     }
-                    crate::wake::wait_until(&[wake.as_ref().map(|w| w.fd()), watch.fd()], None);
+                    crate::wake::wait_until(
+                        &[wake.as_ref().map(|w| w.fd()), watch.fd(), stop.fd()],
+                        None,
+                    );
                 }
             })
         };
         Self {
             inner,
             stop,
-            wake,
+            _append_wake: wake,
             changes,
             thread: Some(thread),
         }
@@ -522,9 +534,6 @@ impl LiveRegistry {
 
     fn halt(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(wake) = &self.wake {
-            wake.wake();
-        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
