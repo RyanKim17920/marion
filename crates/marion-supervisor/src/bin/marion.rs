@@ -2042,10 +2042,8 @@ impl SupervisorSession {
 fn supervisor_unreachable(socket: &Path, why: &str) -> String {
     format!(
         "marion: this project's supervisor is what runs the root, and marion could not use it: \
-         {why} ({}). Nothing was started and nothing was journaled. `marion run` sends \
-         `agent/spawn` over this socket and watches through it (§11 item 28 step 6); there is no \
-         in-process fallback, because a run that quietly drove the root itself would leave a live \
-         node no supervisor owned, could kill, or could hand to a re-attaching client.",
+         {why} ({}). Nothing was started. There is no in-process fallback: a root marion drove \
+         itself would be one no supervisor could watch, stop or hand to `marion attach`.",
         socket.display()
     )
 }
@@ -2721,8 +2719,8 @@ fn report_watched(
         // The reason the *node* was given is in the transcript printed above, which is where a
         // reader who needs the specific rule should look.
         eprintln!(
-            "marion: denied {tool}: M1 has no permission answerer, and marion does not grant what \
-             it cannot ask about"
+            "marion: denied {tool}: marion has nobody to ask for permission, and does not grant \
+             what it cannot ask about"
         );
     }
     Ok(run_verdict(watched.terminal, blocked_bound))
@@ -3214,12 +3212,10 @@ mod tests {
     /// word that is no command is not guessed at.
     #[test]
     fn every_command_is_a_row_and_its_old_spellings_reach_it() {
-        for name in [
-            "run", "ls", "list", "attach", "steer", "cancel", "resume", "mcp", "login", "logout",
-            "profile", "trust", "doctor",
-        ] {
-            assert_eq!(cli::verb(name).map(|v| v.name), Some(name));
+        for v in cli::VERBS {
+            assert_eq!(cli::verb(v.name).map(|found| found.name), Some(v.name));
         }
+        assert_eq!(cli::VERBS.len(), 13, "a command was added or dropped");
         assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
         assert!(cli::verb("bogus").is_none());
         let top = cli::top_help();
