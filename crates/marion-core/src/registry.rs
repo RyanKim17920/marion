@@ -184,6 +184,9 @@ pub struct ReplayedNode {
 pub struct CancelView {
     pub by: crate::journal::CancelBy,
     pub forced: bool,
+    /// The abort verb the row gave, by its stable name — so a forced end is read as "the abort
+    /// was ignored" only where there was an abort to ignore.
+    pub verb: String,
 }
 
 impl ReplayedNode {
@@ -374,6 +377,7 @@ impl ReplayedNode {
                     self.cancel = Some(CancelView {
                         by: c.by,
                         forced: false,
+                        verb: c.verb,
                     });
                 }
             }
@@ -1515,7 +1519,8 @@ mod tests {
             c.cancel,
             Some(CancelView {
                 by: CancelBy::Operator,
-                forced: false
+                forced: false,
+                verb: "channel".into()
             })
         );
         assert!(c.is_unresolved(), "a cancel intent is not a decided fate");
@@ -1530,7 +1535,8 @@ mod tests {
             c.cancel,
             Some(CancelView {
                 by: CancelBy::Operator,
-                forced: false
+                forced: false,
+                verb: "channel".into()
             }),
             "the first cancel decided it, and it closed in its grace"
         );

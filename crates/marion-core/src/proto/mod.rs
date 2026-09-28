@@ -82,7 +82,7 @@ pub use input::{Input, NodePaneReadyV1, NodePaneWriteV1};
 pub use method::{Call, Method, MethodResult};
 pub use model::{
     AttachMode, ClientGone, Delivery, DetachGuidance, ElicitationRequestId, ElicitationResponse,
-    HarnessReport, KilledNode, NodeEndpoint, NodeSummary, PermissionDecision, PermissionRequestId,
+    HarnessReport, KilledNode, NodeCancel, NodeEndpoint, NodeSummary, PermissionDecision, PermissionRequestId,
     ProbeMode, QuitDisposition, QuitOutcome, ReplayPoint, ReplyOutcome, ResidentReason,
     SupervisorDisposition,
 };

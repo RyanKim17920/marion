@@ -2298,6 +2298,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         }
     }
 

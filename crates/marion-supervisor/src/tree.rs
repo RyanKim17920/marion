@@ -382,13 +382,25 @@ fn tone_of(state: NodeState, reap: ReapState) -> Tone {
 ///   no field of its own;
 /// * **orphaned** — §7.2's *no record of deciding*: marion cannot say what became of it.
 ///
-/// Not a clean exit, not a cancel (a decision somebody already made), not a reap, not a live
-/// state. The precedence is [`state_label`]'s: an exit outranks a reap state, which outranks the
-/// live state. Decided from the summary's two state fields only — never from a pane's screen —
-/// with the supervisor's [`NodeSummary::attention`] after the word where it says what to do.
+/// Not a clean exit, not a cancel (a decision somebody already made) — **except a cancel whose
+/// abort was ignored**, `abort ignored`: the node's row had an abort, and marion still had to kill
+/// it — not a reap, not a live state. The precedence is [`state_label`]'s: an exit outranks a reap
+/// state, which outranks the live state. Decided from the summary's state fields and its cancel
+/// only — never from a pane's screen — with the supervisor's [`NodeSummary::attention`] after the
+/// word where it says what to do.
 pub fn attention_of(node: &NodeSummary) -> Option<String> {
     use marion_core::contract::ExitStatus;
     let (state, reap) = (node.state, node.reap_state);
+    // A cancel is a decision, but a node that had an abort and ignored it — marion had to kill
+    // it — is worth a look: its harness did not stop when asked.
+    if matches!(state, NodeState::Exited(ExitStatus::Cancelled))
+        && node
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.forced && c.had_abort)
+    {
+        return Some("abort ignored".into());
+    }
     let needs = match (state, reap) {
         (NodeState::Exited(ExitStatus::Ok | ExitStatus::Cancelled), _) => false,
         (NodeState::Exited(_), _) => true,
@@ -904,6 +916,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         }
     }
 
@@ -1710,6 +1723,37 @@ mod tests {
         assert!(
             JournalView::open(&repo, &state).unwrap().is_none(),
             "the journal answered for a project a supervisor serves"
+        );
+    }
+
+    /// **A cancel needs no one — unless its abort was ignored**: a node whose row had an abort and
+    /// still had to be killed is `abort ignored`; one killed because its row had none, or one that
+    /// closed in its grace, is a decision somebody already made.
+    #[test]
+    fn a_cancel_needs_attention_only_when_its_abort_was_ignored() {
+        use marion_core::contract::ExitStatus::Cancelled;
+        let cancelled = |forced, had_abort| NodeSummary {
+            state: NodeState::Exited(Cancelled),
+            cancel: Some(marion_core::proto::NodeCancel {
+                by: marion_core::journal::CancelBy::Operator,
+                forced,
+                had_abort,
+            }),
+            ..summary("x", Harness::Pi, false, None)
+        };
+        assert_eq!(
+            attention_of(&cancelled(true, true)).as_deref(),
+            Some("abort ignored")
+        );
+        assert_eq!(
+            attention_of(&cancelled(true, false)),
+            None,
+            "no abort to ignore"
+        );
+        assert_eq!(
+            attention_of(&cancelled(false, true)),
+            None,
+            "closed in its grace"
         );
     }
 }

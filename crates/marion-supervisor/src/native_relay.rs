@@ -4230,6 +4230,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         }
     }
 
@@ -4430,6 +4431,7 @@ mod tests {
                     attention: None,
                     endpoint: None,
                     race: None,
+                    cancel: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 0,

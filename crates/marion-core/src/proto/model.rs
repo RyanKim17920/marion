@@ -120,6 +120,11 @@ pub struct NodeSummary {
     /// node in no race, so every other summary is byte-identical to what an older build sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub race: Option<RaceBadge>,
+    /// **This node's cancel**, once one reached it: who asked, and — once it ended — whether marion
+    /// had to kill it. A node with a cancel and no exit is being cancelled. `None` for a node never
+    /// cancelled, and from an older supervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<NodeCancel>,
 }
 
 /// An endpoint node's provider, model and route, for a client to show beside the node.
@@ -153,6 +158,17 @@ pub struct RaceBadge {
     /// `None` while the race is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<crate::race::SeatVerdict>,
+}
+
+/// [`NodeSummary::cancel`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCancel {
+    pub by: crate::journal::CancelBy,
+    /// marion killed it after its grace: it ignored its abort, or its row had none.
+    pub forced: bool,
+    /// Its row had an abort verb on the node's shape, so a forced end means the abort was
+    /// ignored rather than that there was none to send.
+    pub had_abort: bool,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -772,6 +788,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

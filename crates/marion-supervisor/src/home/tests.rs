@@ -30,6 +30,7 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         attention: None,
         endpoint: None,
         race: None,
+        cancel: None,
     }
 }
 

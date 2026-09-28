@@ -2373,6 +2373,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         };
         let done = text(&status_result(
             &json!(1),

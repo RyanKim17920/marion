@@ -65,6 +65,7 @@ fn node(
         attention: None,
         endpoint: None,
         race: None,
+        cancel: None,
     }
 }
 

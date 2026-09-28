@@ -777,6 +777,9 @@ pub enum AbortVerb {
 }
 
 impl AbortVerb {
+    /// [`Self::kind`] of [`AbortVerb::None`], for a reader of the journal's `verb` string.
+    pub const NONE_KIND: &'static str = "none";
+
     /// The measurement behind the row's verb.
     pub const fn note(self) -> &'static str {
         match self {
@@ -791,7 +794,7 @@ impl AbortVerb {
         match self {
             AbortVerb::Channel { .. } => "channel",
             AbortVerb::Keys { .. } => "keys",
-            AbortVerb::None { .. } => "none",
+            AbortVerb::None { .. } => Self::NONE_KIND,
         }
     }
 

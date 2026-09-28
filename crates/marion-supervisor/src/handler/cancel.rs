@@ -618,7 +618,8 @@ mod tests {
             node.cancel,
             Some(marion_core::registry::CancelView {
                 by: CancelBy::Operator,
-                forced: false
+                forced: false,
+                verb: "channel".into(),
             })
         );
     }

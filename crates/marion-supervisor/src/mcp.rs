@@ -1860,6 +1860,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: badge,
+            cancel: None,
         };
         let badge = |seat, verdict| RaceBadge {
             race_id: race.clone(),
@@ -2740,6 +2741,7 @@ mod tests {
                 attention: None,
                 endpoint: None,
                 race: None,
+                cancel: None,
             }
         }
         let fleet = vec![
@@ -2806,6 +2808,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
         };
         // a -> b -> a, with the caller pointing into it.
         let nodes = vec![cyclic("a", "b"), cyclic("b", "a"), cyclic("a", "me")];

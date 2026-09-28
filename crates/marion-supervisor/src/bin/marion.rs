@@ -5306,6 +5306,7 @@ mod tests {
             attention: None,
             endpoint: None,
             race: None,
+            cancel: None,
             review_of: None,
             review: None,
         };

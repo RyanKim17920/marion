@@ -281,6 +281,14 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
                 route: node.route.clone(),
             }),
         race: race_badge(intent, node),
+        cancel: node
+            .cancel
+            .as_ref()
+            .map(|c| marion_core::proto::NodeCancel {
+                by: c.by.clone(),
+                forced: c.forced,
+                had_abort: c.verb != marion_harness::spec::AbortVerb::NONE_KIND,
+            }),
     })
 }
 
@@ -352,6 +360,9 @@ struct Extra {
     race_verdict: Option<marion_core::race::SeatVerdict>,
     // Journaled just after the intent, so it can land after the node was first told.
     widened: bool,
+    /// Whether a cancel reached the node, and whether it was forced — so a cancel starting, or
+    /// ending in a kill, re-sends the summary.
+    cancel: Option<bool>,
 }
 
 impl Extra {
@@ -371,6 +382,7 @@ impl Extra {
             review: tally(n),
             race_verdict: n.race_verdict,
             widened: !n.widened.is_empty(),
+            cancel: n.cancel.as_ref().map(|c| c.forced),
         }
     }
 }
