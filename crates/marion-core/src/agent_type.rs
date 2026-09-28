@@ -772,6 +772,12 @@ pub const ACP_COMMAND_PREFIX: &str = "acp:";
 ///
 /// The tail is not tokenised here: `marion_harness::acp` owns the split, so the one place that
 /// turns the selector into argv is the one that also resolves a refinement row by id.
+/// Whether `name` is a whole-command type selector, which is a command line rather than a name
+/// and may itself contain colons, so a reader splitting `type:model` must take it whole.
+pub fn is_command_type(name: &str) -> bool {
+    acp_command(name).is_some()
+}
+
 fn acp_command(name: &str) -> Option<AgentType> {
     let command = name.strip_prefix(ACP_COMMAND_PREFIX)?.trim();
     if command.is_empty() {
@@ -817,6 +823,9 @@ const BUILTIN_NAMES: [&str; BUILTINS.len()] = {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentTypes {
     user: Vec<AgentType>,
+    /// The file's `[race]` table as written, already checked to make a valid policy on its own.
+    /// Kept raw so a spawn's `race` object can override it key by key.
+    race: crate::race::RawRacePolicy,
 }
 
 /// Why `.marion/agents.toml` was refused. **Every one is a load error and never a default** (§3.1):
@@ -875,6 +884,8 @@ pub enum AgentTypesError {
          ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$"
     )]
     InvalidProfileName { name: String, profile: String },
+    #[error("[race]: {0}")]
+    Race(crate::race::RaceError),
 }
 
 /// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: each harness by the
@@ -921,6 +932,8 @@ enum ProfileKey {
 struct File {
     #[serde(default)]
     agent: Vec<FileRow>,
+    #[serde(default)]
+    race: crate::race::RawRacePolicy,
 }
 
 impl AgentTypes {
@@ -941,7 +954,16 @@ impl AgentTypes {
             }
             user.push(ty);
         }
-        Ok(Self { user })
+        crate::race::RacePolicy::try_from(file.race.clone()).map_err(AgentTypesError::Race)?;
+        Ok(Self {
+            user,
+            race: file.race,
+        })
+    }
+
+    /// The file's `[race]` table, empty where it has none; see [`crate::race::RawRacePolicy::over`].
+    pub fn race(&self) -> &crate::race::RawRacePolicy {
+        &self.race
     }
 
     /// A type by name: the file's row, else a built-in, else the `acp:<command>` family.
@@ -1946,5 +1968,26 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
                 profile: "../up".into()
             })
         );
+    }
+
+    /// **`[race]` is the tree's race policy**: checked whole at load, so a bad stage list refuses
+    /// the file like any other key, and absent where the file has no table.
+    #[test]
+    fn the_race_table_is_read_and_checked_at_load() {
+        use crate::race::{Losers, RaceError, RawRacePolicy};
+        assert_eq!(
+            AgentTypes::parse("").unwrap().race(),
+            &RawRacePolicy::default()
+        );
+        let t = AgentTypes::parse("[race]\nlosers = \"prune\"\n").unwrap();
+        assert_eq!(t.race().losers, Some(Losers::Prune));
+        assert_eq!(
+            AgentTypes::parse("[race]\nstages = [\"time\"]\n"),
+            Err(AgentTypesError::Race(RaceError::VerifyFirst))
+        );
+        assert!(matches!(
+            AgentTypes::parse("[race]\nwinner = 2\n"),
+            Err(AgentTypesError::Syntax(_))
+        ));
     }
 }
