@@ -555,7 +555,7 @@ pub struct MessageQueued {
 }
 
 /// Who a queued message is from. Externally tagged, as [`RecordKind`] is: `"Operator"`,
-/// `{"Ancestor":"<agent id>"}`, `{"ChildEnded":{…}}`.
+/// `{"Ancestor":"<agent id>"}`, `{"ChildEnded":{…}}`, `"ReportRequested"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageSource {
     /// A client speaking for the operator.
@@ -569,6 +569,9 @@ pub enum MessageSource {
         task_id: TaskId,
         status: String,
     },
+    /// Marion itself, asking a child that ended a turn without calling `report` to report — at
+    /// most once per node (§7.6's grace turn).
+    ReportRequested,
 }
 
 /// See [`RecordKind::MessageDelivered`].

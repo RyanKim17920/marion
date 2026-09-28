@@ -255,6 +255,7 @@ fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
                     MessageSource::ChildEnded { child, status, .. } => {
                         format!("child {} ended {status}", child.0)
                     }
+                    MessageSource::ReportRequested => "marion, asking for its report".to_string(),
                 };
                 out.push((
                     q.message_id,

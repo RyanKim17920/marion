@@ -2001,12 +2001,7 @@ pub fn run_spawn_watched(
     };
     // Each attempt's driver takes its own handle on the one inbox: a typed driver consumes the
     // feed it is given, and a rotated attempt is a fresh process with the same inbox behind it.
-    let feed = || {
-        turns.as_ref().map(|f| crate::inbox::TurnFeed {
-            source: Arc::clone(&f.source),
-            mid_turn: f.mid_turn,
-        })
-    };
+    let feed = || turns.clone();
     // **One attempt loop, two failovers, one policy** (`next_attempt` below the launch): an
     // endpoint node rotates to its next API key, and a node on the operator's own login fails over
     // to the next profile its type listed — each only for a finished process that reported

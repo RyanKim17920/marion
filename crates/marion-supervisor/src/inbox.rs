@@ -85,6 +85,11 @@ pub trait TurnSource: Send + Sync {
     fn delivered(&self, id: &str, via: &str);
     /// A taken message will never reach the node.
     fn dropped(&self, id: &str, reason: &str);
+    /// Queue marion's one request that the node report ([`Inboxes::request_report`]). `false`
+    /// where nothing was queued: asked already, sealed, or a source that never asks.
+    fn request_report(&self) -> bool {
+        false
+    }
     /// Wake `port` for every message queued from now on (and once now if one waits).
     fn attach_port(&self, port: Arc<dyn DeliveryPort>);
     /// The inbox is still open after a `take_or_seal` found it empty: something is owed to it, so
@@ -120,6 +125,9 @@ impl TurnSource for BoundInbox {
     fn dropped(&self, id: &str, reason: &str) {
         self.inboxes.dropped(&self.agent, id, reason);
     }
+    fn request_report(&self) -> bool {
+        self.inboxes.request_report(&self.agent)
+    }
     fn attach_port(&self, port: Arc<dyn DeliveryPort>) {
         self.inboxes.attach_port(&self.agent, port);
     }
@@ -128,6 +136,10 @@ impl TurnSource for BoundInbox {
     }
 }
 
+/// Whether a stretch of a node's stdout holds its `report` call, read the row's way (its adapter's
+/// `parse_stream`). What a feed asks with before it lets a child end unreported.
+pub type ReportReader = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// **Everything a typed-turn driver needs to take more than the turn it was launched with**: the
 /// node's inbox, and what its row does with a message that arrives while a turn is running
 /// ([`MidTurn`], measured per harness and per ACP agent in S31).
@@ -135,6 +147,9 @@ impl TurnSource for BoundInbox {
 pub struct TurnFeed {
     pub source: Arc<dyn TurnSource>,
     pub mid_turn: MidTurn,
+    /// How to tell a turn that reported from one that did not — a child's feed only, since a root
+    /// never reports. `None` asks for nothing ([`Self::ask_for_report`]).
+    pub reports: Option<ReportReader>,
 }
 
 impl TurnFeed {
@@ -145,7 +160,31 @@ impl TurnFeed {
             TurnDelivery::TypedTurn { mid_turn, .. } => mid_turn,
             _ => MidTurn::Queue,
         };
-        TurnFeed { source, mid_turn }
+        TurnFeed {
+            source,
+            mid_turn,
+            reports: None,
+        }
+    }
+
+    /// The same feed, able to tell a reported turn from an unreported one.
+    pub fn reading_reports(self, reports: ReportReader) -> Self {
+        TurnFeed {
+            reports: Some(reports),
+            ..self
+        }
+    }
+
+    /// **At the node's last boundary, one re-prompt for a report it never made** (§7.6's grace
+    /// turn): `since` is what the node wrote since its last turn was delivered, and `time_left`
+    /// whether its clock can carry one more. Queues marion's request when that stretch holds no
+    /// report and the node has not been asked before; the driver's `take_or_seal` then takes it
+    /// as the next turn, the way it takes a steer. `true` iff a request was queued.
+    pub fn ask_for_report(&self, since: &str, time_left: bool) -> bool {
+        match &self.reports {
+            Some(reported) if time_left && !reported(since) => self.source.request_report(),
+            _ => false,
+        }
     }
 
     /// A message that arrives mid-turn is written at once rather than held for the boundary.
@@ -158,6 +197,7 @@ impl std::fmt::Debug for TurnFeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TurnFeed")
             .field("mid_turn", &self.mid_turn)
+            .field("reads_reports", &self.reports.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -248,6 +288,8 @@ pub enum Source {
         /// Whether the ended node is a root, which has no contract (§9) and is named as one.
         root: bool,
     },
+    /// Marion itself, asking a child whose turn ended without a `report` to make one.
+    ReportRequested,
 }
 
 impl Source {
@@ -266,6 +308,7 @@ impl Source {
                 task_id: task_id.clone(),
                 status: status.clone(),
             },
+            Source::ReportRequested => MessageSource::ReportRequested,
         }
     }
 }
@@ -332,8 +375,16 @@ pub fn render(msg: &Message) -> String {
             root,
             ..
         } => child_ended_text(agent_type, *root, &task_id.0, &msg.text),
+        Source::ReportRequested => msg.text.clone(),
     }
 }
+
+/// **marion's one request for a missing report** ([`Inboxes::request_report`]): a best-effort
+/// account of the work done, not a request to do more (§7.6's grace turn).
+pub const REPORT_REQUEST: &str = "marion: your turn ended without a call to marion's `report` \
+    tool, so whoever delegated this task has not heard what you did. Call `report` now, exactly \
+    once, with a one-sentence `narrative` of all the work you did on this task (including any \
+    since an earlier report) and the `result_commits` you made. Do not start new work.";
 
 /// **The announcement that a backgrounded node ended** — what the per-child bridge pushes over
 /// MCP today (`mcp.rs`'s `watch`) and what [`render`] makes of a [`Source::ChildEnded`], one text
@@ -364,6 +415,9 @@ struct Inbox {
     /// Children whose end this node read for itself (`wait`) before marion announced it: their
     /// announcement is resolved as it arrives rather than queued ([`Inboxes::received`]).
     received: std::collections::HashSet<AgentId>,
+    /// marion has asked this node for its report ([`Inboxes::request_report`]), which it does
+    /// once in the node's life — continuation generations share one inbox, so once per node.
+    asked_for_report: bool,
 }
 
 /// Every node's inbox, keyed by the node. Held by the supervisor beside its node table.
@@ -507,6 +561,45 @@ impl Inboxes {
             port.wake();
         }
         withdrawn.is_some()
+    }
+
+    /// **Queue marion's request that `agent` report** ([`REPORT_REQUEST`]), journaled like any
+    /// message and taken at the node's boundary like one. **At most once per node**: `false`,
+    /// and nothing queued, when it was asked before, or its inbox is sealed or absent.
+    pub fn request_report(&self, agent: &AgentId) -> bool {
+        let port = {
+            let mut boxes = self.lock();
+            let Some(inbox) = boxes
+                .get_mut(agent)
+                .filter(|b| !b.sealed && !b.asked_for_report)
+            else {
+                return false;
+            };
+            let id = mint_message_id();
+            let recorded = (self.sink)(RecordKind::MessageQueued(MessageQueued {
+                agent_id: agent.clone(),
+                message_id: id.clone(),
+                source: MessageSource::ReportRequested,
+                len: u32::try_from(REPORT_REQUEST.len()).unwrap_or(u32::MAX),
+                sha256: sha256_hex(REPORT_REQUEST.as_bytes()),
+            }));
+            if let Err(e) = recorded {
+                eprintln!("marion: `{}` was not asked for its report: {e}", agent.0);
+                return false;
+            }
+            inbox.asked_for_report = true;
+            inbox.queue.push_back(Message {
+                id,
+                source: Source::ReportRequested,
+                text: REPORT_REQUEST.to_string(),
+                queued_at: SystemTime::now(),
+            });
+            inbox.port.clone()
+        };
+        if let Some(port) = port {
+            port.wake();
+        }
+        true
     }
 
     /// The inbox exists and is not sealed — after a `take_or_seal` found it empty, that means an
@@ -1093,6 +1186,73 @@ pub(crate) mod tests {
             .announce(&p, TYPED, ended("other"), "the other end".into())
             .unwrap();
         assert_eq!(inboxes.queued(&p), 1);
+    }
+
+    /// **A node that ended a turn without reporting is asked once, never twice.** The request is
+    /// an ordinary queued message — journaled as marion's, taken at the boundary like any other —
+    /// so every lane carries it the way it carries a steer; a second ask in the same node's life
+    /// is refused, which is what bounds the re-prompt.
+    #[test]
+    fn a_report_is_requested_once_as_a_queued_message_from_marion() {
+        let (inboxes, log) = recording();
+        let a = id("a");
+        assert!(
+            !inboxes.request_report(&a),
+            "no inbox, nothing to ask through"
+        );
+        inboxes.open(&a);
+        assert!(inboxes.request_report(&a));
+        assert!(!inboxes.request_report(&a), "one re-prompt per node");
+        let m = inboxes
+            .take_or_seal(&a)
+            .expect("the request is the next turn");
+        assert_eq!(m.source, Source::ReportRequested);
+        let words = render(&m);
+        assert!(
+            words.starts_with("marion: ") && words.contains("`report`"),
+            "{words}"
+        );
+        assert!(matches!(
+            records(&log).as_slice(),
+            [RecordKind::MessageQueued(MessageQueued {
+                source: MessageSource::ReportRequested,
+                ..
+            })]
+        ));
+        assert_eq!(inboxes.take_or_seal(&a), None);
+        assert!(!inboxes.request_report(&a), "sealed: nothing more is asked");
+    }
+
+    /// **The feed asks only where it can and should**: a node whose last turn holds no report,
+    /// with time left, on a feed that knows how to read a report (a child's). A root's feed has
+    /// no reader, since a root never reports.
+    #[test]
+    fn a_feed_asks_for_a_report_only_for_an_unreported_turn_with_time_left() {
+        let (inboxes, _) = recording();
+        let inboxes = Arc::new(inboxes);
+        let feed = |agent: &str, reads: bool| {
+            let a = id(agent);
+            inboxes.open(&a);
+            let feed = TurnFeed::new(Arc::new(BoundInbox::new(Arc::clone(&inboxes), a)), TYPED);
+            if reads {
+                feed.reading_reports(Arc::new(|since: &str| since.contains("REPORTED")))
+            } else {
+                feed
+            }
+        };
+        assert!(!feed("reported", true).ask_for_report("… REPORTED …", true));
+        assert!(
+            !feed("late", true).ask_for_report("nothing", false),
+            "no time left"
+        );
+        assert!(
+            !feed("root", false).ask_for_report("nothing", true),
+            "a root is never asked"
+        );
+        let child = feed("child", true);
+        assert!(child.ask_for_report("nothing", true));
+        assert!(!child.ask_for_report("nothing", true), "once");
+        assert_eq!(inboxes.queued(&id("child")), 1);
     }
 
     /// An announcement that will not be delivered by the inbox — the parent's lane pushes it
