@@ -40,6 +40,9 @@
 //! directory, and it is parked one request later than codex's, because opencode names its session
 //! only on a frame of its first response. And once more on an **`opencode acp`** child, whose
 //! session is its `session/new` answer's and whose second life reopens it with `session/load`.
+//! And on an opencode child killed **during its first request**, before any frame named its
+//! session: the resume finds the session by the title marion launched it under, in the harness's
+//! own listing, along with the tree it was created in.
 //!
 //! It needs a real `codex` and `opencode` on `PATH`. Every model call is the CannedServer's: no
 //! paid tokens.
@@ -204,6 +207,9 @@ struct Tree {
     /// names its session before it asks anything; the child's **second** for opencode, which names
     /// its session only on a frame of the first response (s36 `held-first/`).
     hold_from: u64,
+    /// The child has named its session on the journal by the time it is parked — every tree but
+    /// the one parked on opencode's first request, which prints no frame until it is answered.
+    named_before_kill: bool,
     script: fn() -> Script,
 }
 
@@ -212,6 +218,7 @@ const CODEX_TREE: Tree = Tree {
     root_type: "codex-impl",
     wire: WIRE,
     hold_from: 2,
+    named_before_kill: true,
     script: codex_script,
 };
 
@@ -220,7 +227,17 @@ const OPENCODE_TREE: Tree = Tree {
     root_type: "opencode",
     wire: "openai",
     hold_from: 3,
+    named_before_kill: true,
     script: opencode_script,
+};
+
+/// The opencode tree parked on the child's **first** request (the root's is the first on the
+/// wire): opencode prints nothing, so no `sessionID`, while that request is in flight (s36
+/// `held-first/`), and the supervisor dies with the child's session unjournaled.
+const OPENCODE_FIRST_REQUEST_TREE: Tree = Tree {
+    hold_from: 2,
+    named_before_kill: false,
+    ..OPENCODE_TREE
 };
 
 /// An `opencode acp` child names its session in the `session/new` answer, before any request, so
@@ -231,6 +248,7 @@ const ACP_OPENCODE_TREE: Tree = Tree {
     root_type: "opencode",
     wire: "openai",
     hold_from: 3,
+    named_before_kill: true,
     script: acp_opencode_script,
 };
 
@@ -616,6 +634,19 @@ fn a_lost_acp_opencode_child_loads_its_own_session_under_its_parent_and_takes_it
     a_lost_child_resumes(&ACP_OPENCODE_TREE, "restart-resume-acp-oc-child-e2e");
 }
 
+/// **And on an opencode child whose supervisor was SIGKILLed during its first request**, before
+/// its stream named a session: nothing on the journal names the session or the tree, so the resume
+/// finds both in `opencode session list` under the `marion-<agent id>` title the launch gave it,
+/// and the second life continues that session from that tree.
+#[test]
+#[ignore = "drives a real opencode binary and a detached supervisor; run deliberately"]
+fn an_opencode_child_lost_during_its_first_request_resumes_the_session_its_title_names() {
+    a_lost_child_resumes(
+        &OPENCODE_FIRST_REQUEST_TREE,
+        "restart-resume-oc-first-request-e2e",
+    );
+}
+
 fn a_lost_child_resumes(tree: &Tree, tag: &str) {
     let dir = scratch(tag);
     let repo = fixture_repo(&dir);
@@ -630,28 +661,48 @@ fn a_lost_child_resumes(tree: &Tree, tag: &str) {
 
     // ---- the child has everything a resume of it needs, before the kill -----------------------
     // Its session and the workspace it was created in land on one record, so waiting for the
-    // session is waiting for both.
-    assert!(
-        until(
-            || child_of(&journal_nodes(&state, &repo)).is_some_and(|c| c.harness_session.is_some())
-        ),
-        "the child must name its {} session before the kill: {:?}",
-        tree.program,
-        journal_nodes(&state, &repo)
-    );
+    // session is waiting for both. A child parked on its first request has neither: its harness
+    // has named nothing yet, which is the case the title lookup exists for.
+    if tree.named_before_kill {
+        assert!(
+            until(|| child_of(&journal_nodes(&state, &repo))
+                .is_some_and(|c| c.harness_session.is_some())),
+            "the child must name its {} session before the kill: {:?}",
+            tree.program,
+            journal_nodes(&state, &repo)
+        );
+    } else {
+        assert!(
+            until(|| child_of(&journal_nodes(&state, &repo)).is_some_and(|c| c.pid.is_some())),
+            "the child must be running before the kill: {:?}",
+            journal_nodes(&state, &repo)
+        );
+    }
     let before = journal_nodes(&state, &repo);
     let root_id = root_of(&before).expect("exactly one root");
     let child_before = child_of(&before).expect("exactly one child");
     let child_id = child_before.agent_id.clone();
     assert_eq!(child_before.spawn_generation, 1, "one life so far");
-    let recorded_tree = child_before
-        .launch_workspace
-        .clone()
-        .expect("the child's launch recorded the tree it ran in");
+    if !tree.named_before_kill {
+        assert_eq!(
+            (
+                &child_before.harness_session,
+                &child_before.launch_workspace
+            ),
+            (&None, &None),
+            "a child killed during its first request has journaled no session and no tree"
+        );
+    }
+    // The tree it ran in: journaled with its session, or — before one was named — the worktree
+    // marion cut for it, which the resume has to find by itself.
+    let recorded_tree = child_before.launch_workspace.clone().map_or_else(
+        || project(&state, &repo).agent(&child_id).worktree(),
+        |w| w.path().to_path_buf(),
+    );
     assert!(
-        recorded_tree.path().is_dir(),
+        recorded_tree.is_dir(),
         "and that tree is on disk: {}",
-        recorded_tree.path().display()
+        recorded_tree.display()
     );
     let old_pid = child_before
         .pid
@@ -745,18 +796,10 @@ fn a_lost_child_resumes(tree: &Tree, tag: &str) {
     );
 
     // ---- it ran in the tree it left, and cut no second one ------------------------------------
-    assert_eq!(
-        journal_nodes(&state, &repo)
-            .iter()
-            .find(|n| n.agent_id == child_id)
-            .and_then(|n| n.launch_workspace.clone()),
-        Some(recorded_tree.clone()),
-        "the relaunch did not re-record a different tree"
-    );
     assert!(
-        recorded_tree.path().is_dir(),
+        recorded_tree.is_dir(),
         "the first life's worktree is still the one on disk: {}",
-        recorded_tree.path().display()
+        recorded_tree.display()
     );
 
     // ---- and the parent was not relaunched with it --------------------------------------------
@@ -810,6 +853,17 @@ fn a_lost_child_resumes(tree: &Tree, tag: &str) {
         (Some(0), None),
         "the resumed {} child must finish its turn and exit clean: {exit:?}",
         tree.program
+    );
+    // The second life named its session, and it ran in the tree the first life left: the one the
+    // journal recorded, or the one the harness's listing said its session was created in.
+    assert_eq!(
+        journal_nodes(&state, &repo)
+            .iter()
+            .find(|n| n.agent_id == child_id)
+            .and_then(|n| n.launch_workspace.clone())
+            .map(|w| w.path().to_path_buf()),
+        Some(recorded_tree.clone()),
+        "the relaunch did not run in, or record, a different tree"
     );
 
     // ---- and it re-ran the verification its spawn asked for ----------------------------------

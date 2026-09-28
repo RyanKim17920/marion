@@ -2470,7 +2470,7 @@ fn select_workspace(
             }
             let wt = agent_dir.worktree();
             std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
-            let branch = format!("marion/{}", task_id.0);
+            let branch = worktree_branch(task_id);
             let base = make_worktree(&req.repo, &wt, &branch)?;
             Ok((
                 Workspace::Worktree { path: wt, branch },
@@ -2649,6 +2649,11 @@ pub fn child_launch_spec(
             ..Extras::default()
         },
     }
+}
+
+/// The branch a child's worktree is cut on: one per task.
+pub(crate) fn worktree_branch(task_id: &TaskId) -> String {
+    format!("marion/{}", task_id.0)
 }
 
 /// **One launch of a node, declared and compiled**: the adapter's configuration documents written,

@@ -706,7 +706,10 @@ declaration grants `marion_*` and nothing else on every route that declares it, 
 `default_tools_approval_mode` and gemini's `trust` do on theirs, native injection included
 (`the_declaration_approves_marions_own_tools_and_nothing_else`, RED with `Null`). **Sessions and resume:** `run` prints nothing — no `sessionID` — until its
 first response streams (`held-first/`), so a node whose supervisor dies during its first request
-has no session to resume; a resume keeps the session id (S31 `db1`/`db2`), so the row now states
+journaled no session — which a resume now finds in `opencode session list` under the
+`marion-<agent id>` title the launch gave it, with the tree it was created in (the row's
+`SessionId::by_title`; `restart_resume::an_opencode_child_lost_during_its_first_request_resumes_the_session_its_title_names`,
+RED as a refused resume); a resume keeps the session id (S31 `db1`/`db2`), so the row now states
 `resumes_in_place` and refuses a resume that came back under another session. An ACP node's session
 is its `session/new` answer's `sessionId`, now journaled through the adapter
 (`HarnessAdapter::session_id`, `acp::SESSION`) with the ACP child's frames recorded live, and an

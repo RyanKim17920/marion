@@ -101,8 +101,13 @@ whose supervisor dies while its first request is in flight has journaled no sess
 `marion resume` has nothing to hand back and refuses. `restart_resume`'s opencode arc therefore
 parks the child on its second request, after the first response named the session, and from there
 the resume is measured working (`a_lost_opencode_child_resumes_its_own_session_under_its_parent_
-and_takes_its_next_turn`). A way past the gap, not yet taken: marion titles every opencode session
-`marion-<agent id>`, so the id could be looked up by title in the node's own `OPENCODE_DB`.
+and_takes_its_next_turn`). The gap itself is now closed: marion titles every opencode session
+`marion-<agent id>`, and `opencode session list --format json` run with the node's own
+`OPENCODE_DB` already lists that session while its first request is in flight, with the directory
+it was created in (`held-first/session-list.json`, captured from a child parked on its first
+request; ids and paths replaced). A resume of a node that named no session looks it up there (the
+row's `SessionId::by_title`), and `restart_resume` kills a supervisor during an opencode child's
+first request and resumes it.
 
 ## `permission-*` — an operator's `"ask"` on a tool marion's node calls
 

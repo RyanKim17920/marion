@@ -1513,6 +1513,37 @@ pub struct RegistryHandle {
 /// recording. Every root a person starts with `marion run` in a plain checkout is, which is M2's
 /// slice. A `node/resume` of a worktree root reaches the harness with the wrong cwd and the harness
 /// refuses or starts fresh; until the cwd is journaled, that is the honest boundary.
+/// How long a harness's session listing may take before the resume it serves is refused.
+const SESSION_LISTING_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// **The workspace a child ran in, from the directory its harness says its session was created in**,
+/// for a child whose stream never named a session and so never journaled one. A directory that is
+/// the worktree marion cuts for this node is that worktree, on the branch marion cuts for its task;
+/// any other is the caller's own directory it shared. `None` for a child with no task.
+fn listed_workspace(
+    node: &ReplayedNode,
+    env: &crate::run::Env,
+    dir: &Path,
+) -> Option<marion_core::contract::Workspace> {
+    use marion_core::contract::Workspace;
+    let task = node.intent.as_ref()?.task_id.as_ref()?;
+    let worktree = env.project_dir.agent(&node.agent_id).worktree();
+    let same = |a: &Path, b: &Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    Some(if same(dir, &worktree) {
+        Workspace::Worktree {
+            path: worktree,
+            branch: crate::run::worktree_branch(task),
+        }
+    } else {
+        Workspace::SharedCwd {
+            path: dir.to_path_buf(),
+        }
+    })
+}
+
 fn resumable_root_cwd(project_root: &std::path::Path) -> PathBuf {
     match project_root.file_name() {
         Some(name) if name == ".git" => project_root
@@ -3717,7 +3748,9 @@ impl RegistryHandle {
     /// 1. the node exists, and its intent says what it was — a node with no `SpawnIntent` has no
     ///    type, no harness and no depth, and a launch rebuilt from that would be a guess;
     /// 2. its process is finished — an `Orphaned`/`ReapedIdle`/exited node — never a live one;
-    /// 3. its stream named a session, else there is nothing to resume and the refusal says so;
+    /// 3. its stream named a session — or, where its row lists sessions by title, the harness's own
+    ///    listing names one under the node's title ([`Self::session_by_title`]) — else there is
+    ///    nothing to resume and the refusal says so;
     /// 4. its recorded process is provably not still running: `AliveAndOurs` is killed first (the
     ///    same confirmed group kill `session/quit` uses), `CannotTell` refuses rather than risk a
     ///    second live process against one transcript, `Gone` proceeds.
@@ -3795,18 +3828,37 @@ impl RegistryHandle {
                 "§8, §7.2",
             ));
         }
-        let Some(session) = node.harness_session.clone() else {
-            return Err(RpcError::refused(
-                "agent_id",
-                format!(
-                    "`{}` named no harness session — its stream never carried one, or it ran on a \
-                     harness marion reads no session from — so marion cannot hand a resume back to \
-                     the harness. Refused by name rather than started fresh under a resumed \
-                     session's id, which would misdescribe the run.",
-                    p.agent_id.0
-                ),
-                "§8",
-            ));
+        // **A session the stream never named** is looked for under the title marion gave it: a node
+        // whose supervisor died during its first request may have a session its harness names only
+        // once a response streams. Where the harness says so, that listing also says where the
+        // session was created — the tree a child's resume must run in, which only a named session
+        // would otherwise have journaled.
+        let mut node = node;
+        let session = match node.harness_session.clone() {
+            Some(session) => session,
+            None => {
+                let found = self.session_by_title(&node, &env).ok_or_else(|| {
+                    RpcError::refused(
+                        "agent_id",
+                        format!(
+                            "`{}` named no harness session — its stream never carried one, or it \
+                             ran on a harness marion reads no session from, and no listing of its \
+                             harness's sessions names one under its title — so marion cannot hand \
+                             a resume back to the harness. Refused by name rather than started \
+                             fresh under a resumed session's id, which would misdescribe the run.",
+                            p.agent_id.0
+                        ),
+                        "§8",
+                    )
+                })?;
+                if node.launch_workspace.is_none() && depth > 0 {
+                    node.launch_workspace = found
+                        .directory
+                        .as_deref()
+                        .and_then(|dir| listed_workspace(&node, &env, dir));
+                }
+                found.id
+            }
         };
         // **The recorded process must be provably not still running before a second one is started
         // against the same single-writer transcript** (principle 8). A node with no recorded pid
@@ -3870,6 +3922,49 @@ impl RegistryHandle {
             // so the count the caller reads is the recorded one plus this launch.
             spawn_generation: node.spawn_generation + 1,
         })
+    }
+
+    /// **The session a node's stream never named, found under the title marion launched it with**
+    /// — the row's [`marion_harness::grammar::TitleLookup`]: the harness's own read-only listing,
+    /// run with the node's own environment (where the harness keeps its session store) and the
+    /// row's update switch, from the project's tree, bounded. `None` where the row lists no
+    /// sessions by title, the listing could not run, or it names none — or more than one — by this
+    /// node's title.
+    fn session_by_title(
+        &self,
+        node: &ReplayedNode,
+        env: &crate::run::Env,
+    ) -> Option<marion_harness::grammar::TitledSession> {
+        let harness = node.intent.as_ref()?.harness;
+        let lookup = marion_harness::adapter::adapter_for(harness)
+            .ok()?
+            .session_lookup()?;
+        let spec = marion_harness::adapter::harness_spec(harness);
+        let (vars, args) = spec.updates.probe(spec.argv).ok()?;
+        let cwd = resumable_root_cwd(&env.project_root);
+        let fields = marion_harness::spec::Fields {
+            cwd: cwd.clone(),
+            config_dir: env.project_dir.agent(&node.agent_id).config_dir(),
+            auth: env.auth,
+            ..Default::default()
+        };
+        let mut listing = std::process::Command::new(spec.program?);
+        listing
+            .args(args)
+            .args(lookup.argv)
+            .envs(marion_harness::spec::render_env(spec.env, &fields))
+            .envs(vars)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null());
+        let out = crate::run::run_bounded(&mut listing, SESSION_LISTING_BOUND).ok()?;
+        if out.timed_out || out.code != Some(0) {
+            return None;
+        }
+        marion_harness::grammar::session_by_title(
+            lookup,
+            &String::from_utf8_lossy(&out.stdout),
+            &marion_harness::grammar::session_title(&node.agent_id),
+        )
     }
 
     /// [`Self::node_resume`]'s root arm: [`crate::root::RootSpec`] rebuilt from the node's journal,
