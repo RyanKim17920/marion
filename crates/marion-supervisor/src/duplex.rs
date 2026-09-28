@@ -39,6 +39,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration as StdDuration, Instant};
 
 use marion_harness::jsonl_channel::JsonlChannel;
+use marion_harness::spec::AbortVerb;
 use marion_harness::{ControlTransport, ExecutionSurfaces, surfaces::TypedKind};
 use serde_json::{Value, json};
 
@@ -494,6 +495,9 @@ pub struct DuplexSpec<'a> {
     pub stop_on: Option<StopOn<'a>>,
     /// What the pipes speak ([`Dialect::of`] the node's row).
     pub dialect: Dialect,
+    /// The row's headless [`AbortVerb`]: whether a turn past its wall clock, or cancelled, is sent
+    /// the dialect's abort before the kill, and how long it is given to close.
+    pub abort: AbortVerb,
 }
 
 /// [`DuplexSpec::stop_on`]'s shape: a frame in, the reason to end the run now out.
@@ -515,6 +519,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("turns", &self.turns)
             .field("stop_on", &self.stop_on.map(|_| "<stop_on>"))
             .field("dialect", &self.dialect)
+            .field("abort", &self.abort.kind())
             .finish()
     }
 }
@@ -633,15 +638,16 @@ pub fn run_duplex(
         }
         let _ = forward.send(Event::Eof);
     });
-    // A dialect that can abort a turn is given the chance to end on its own when the wall clock
-    // expires: the driver writes the abort at the bound, and the watchdog's kill waits
-    // [`ABORT_GRACE`] longer as the backstop.
+    // A row whose verb aborts a turn is given the chance to end on its own when the wall clock
+    // expires: the driver writes the abort at the bound, and the watchdog's kill waits the row's
+    // grace longer as the backstop.
+    let aborts = abort_frame(spec);
     let abort_at = spec
         .wall_clock
-        .filter(|_| spec.dialect.abort().is_some())
+        .filter(|_| aborts.is_some())
         .map(|bound| Instant::now() + bound);
-    let backstop = match abort_at {
-        Some(_) => spec.wall_clock.map(|bound| bound + ABORT_GRACE),
+    let backstop = match &aborts {
+        Some((_, grace)) => spec.wall_clock.map(|bound| bound + *grace),
         None => spec.wall_clock,
     };
     let guard = RunGuard::start(pid, backstop, stderr, stdout);
@@ -837,10 +843,18 @@ pub const VIA_NEXT_TURN: &str = "stream-json:next-turn";
 pub const VIA_JSONL_MID_TURN: &str = "jsonl-rpc:mid-turn";
 pub const VIA_JSONL_NEXT_TURN: &str = "jsonl-rpc:next-turn";
 
-/// How long a node whose turn marion aborted at its wall clock has to end that turn before the
-/// watchdog kills it. pi 0.80.2 ended an aborted turn at once (`pi-rpc-abort-mid-tool`: the
-/// in-flight call completed and the next model request ended `aborted`).
-const ABORT_GRACE: StdDuration = StdDuration::from_secs(5);
+/// The frame that ends this node's running turn early and the grace it gets to close — only where
+/// the row's headless verb is [`AbortVerb::Channel`] **and** the dialect has the frame. A row whose
+/// verb is `None` is killed at its bound, however its dialect could have been asked.
+fn abort_frame(spec: &DuplexSpec<'_>) -> Option<(String, StdDuration)> {
+    match spec.abort {
+        AbortVerb::Channel { grace_ms, .. } => spec
+            .dialect
+            .abort()
+            .map(|frame| (frame, StdDuration::from_millis(u64::from(grace_ms)))),
+        AbortVerb::Keys { .. } | AbortVerb::None { .. } => None,
+    }
+}
 
 /// **How long after a `result` the driver watches for a turn the node queued itself.** S31
 /// (`p0a/b`, `p0a/b2`): a frame written mid-turn while the turn's *last* request is in flight is not
@@ -1073,17 +1087,17 @@ fn next_before(rx: &Receiver<Event>, abort_at: Option<Instant>) -> Option<Event>
     }
 }
 
-/// **The wall clock expired mid-turn on a dialect that can abort**: write the abort, then read
-/// until the node closes the turn or [`ABORT_GRACE`] passes. The caller then closes stdin, which
-/// ends the session; the watchdog's kill, [`ABORT_GRACE`] after the bound, is the backstop for a
-/// node that ignores both.
+/// **The wall clock expired mid-turn on a row that aborts**: write the abort, then read until the
+/// node closes the turn or the row's grace passes. The caller then closes stdin, which ends the
+/// session; the watchdog's kill, one grace after the bound, is the backstop for a node that
+/// ignores both.
 fn abort_turn(
     rx: &Receiver<Event>,
     stdin: &mut std::process::ChildStdin,
     spec: &DuplexSpec<'_>,
     outcome: &mut DuplexOutcome,
 ) -> std::io::Result<()> {
-    let Some(abort) = spec.dialect.abort() else {
+    let Some((abort, grace)) = abort_frame(spec) else {
         return Ok(());
     };
     if writeln!(stdin, "{abort}")
@@ -1092,7 +1106,7 @@ fn abort_turn(
     {
         return Ok(());
     }
-    let until = Instant::now() + ABORT_GRACE;
+    let until = Instant::now() + grace;
     loop {
         match next_before(rx, Some(until)) {
             Some(Event::Line(line)) => {
@@ -1340,6 +1354,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 turns: None,
                 stop_on: None,
                 dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
             },
         )
         .expect("the run returns");
@@ -1445,6 +1460,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 turns: None,
                 stop_on: None,
                 dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
             },
         )
         .expect("the run returns");
@@ -1504,6 +1520,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 turns: None,
                 stop_on: None,
                 dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
             },
         )
         .expect("the run returns");
@@ -1565,6 +1582,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 turns: None,
                 stop_on: None,
                 dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
             },
         )
         .expect("the run returns")
@@ -1797,6 +1815,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 turns: None,
                 stop_on: None,
                 dialect: Dialect::StreamJson,
+                abort: AbortVerb::None { note: "test" },
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -1837,6 +1856,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     turns: None,
                     stop_on: None,
                     dialect: Dialect::StreamJson,
+                    abort: AbortVerb::None { note: "test" },
                 },
             )
             .expect("the bounded run returns");
@@ -1886,6 +1906,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     turns: None,
                     stop_on: Some(&stop_on),
                     dialect: Dialect::StreamJson,
+                    abort: AbortVerb::None { note: "test" },
                 },
             )
             .expect("the run returns");
@@ -2009,6 +2030,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
             turns: Some(feed.clone()),
             stop_on: None,
             dialect: Dialect::StreamJson,
+            abort: AbortVerb::None { note: "test" },
         }
     }
 
@@ -2368,6 +2390,10 @@ exit 0"#
     ) -> DuplexSpec<'a> {
         DuplexSpec {
             dialect: Dialect::Jsonl(&TEST_CHANNEL),
+            abort: AbortVerb::Channel {
+                grace_ms: 5_000,
+                note: "test",
+            },
             ..fed_spec(marker, feed, wall_clock)
         }
     }
@@ -2558,5 +2584,45 @@ exit 0"#,
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(ends(&out), ["aborted"]);
         assert!(started.elapsed() < StdDuration::from_secs(10));
+    }
+
+    /// **The row's verb decides, not the dialect**: a JSONL node whose row states no abort is
+    /// killed at its bound and never sent the channel's `abort`, however the dialect could spell
+    /// one — a verb that was never measured is never written.
+    #[test]
+    fn a_jsonl_node_whose_row_states_no_abort_is_killed_at_its_wall_clock() {
+        let dir = scratch("duplex-jsonl-no-abort");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let aborted = dir.join("aborted");
+        let fx = fed(MidTurn::Fold);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs
+printf '%s\n' '{JSONL_REPLY}'
+read -r first
+printf '%s\n' '{AGENT_START}'
+read -r abort; printf '%s\n' "$abort" > '{aborted}'
+printf '%s\n' '{end}'
+while read -r rest; do :; done
+exit 0"#,
+            aborted = aborted.display(),
+            end = agent_end("aborted"),
+        );
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &DuplexSpec {
+                abort: AbortVerb::None { note: "test" },
+                ..jsonl_spec(&marker, &fx.feed, StdDuration::from_millis(1500))
+            },
+        )
+        .expect("the run returns");
+        assert!(out.timed_out, "the bound expired");
+        assert_eq!(out.signal, Some(9), "killed, not aborted");
+        assert!(ends(&out).is_empty());
+        assert!(
+            matches!(std::fs::read(&aborted), Err(e) if e.kind() == std::io::ErrorKind::NotFound),
+            "an unmeasured abort was written"
+        );
     }
 }

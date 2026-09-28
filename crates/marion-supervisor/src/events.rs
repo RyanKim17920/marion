@@ -1688,6 +1688,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     turns: None,
                     stop_on: None,
                     dialect: crate::duplex::Dialect::StreamJson,
+                    abort: marion_harness::spec::AbortVerb::None { note: "test" },
                 },
             )
             .expect("the run returns");

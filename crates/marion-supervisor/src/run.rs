@@ -1336,6 +1336,8 @@ struct ChildDuplex<'a> {
     stop_on: &'a dyn Fn(&serde_json::Value) -> Option<String>,
     /// What the child's pipes speak ([`DuplexSpec::dialect`]).
     dialect: duplex::Dialect,
+    /// The row's headless abort verb ([`DuplexSpec::abort`]).
+    abort: marion_harness::spec::AbortVerb,
 }
 
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
@@ -1352,6 +1354,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         turns,
         stop_on,
         dialect,
+        abort,
     } = child;
     let mut cmd = inv.command(tmpdir);
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
@@ -1389,6 +1392,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             turns,
             stop_on: Some(stop_on),
             dialect,
+            abort,
         },
     )?;
     Ok(ChildRun {
@@ -2421,6 +2425,7 @@ pub fn run_spawn_watched(
                     turns: feed(),
                     stop_on: &|frame| adapter.auth_refusal(frame),
                     dialect: duplex::Dialect::of(adapter.spec()),
+                    abort: adapter.spec().abort.headless,
                 },
             ),
         };

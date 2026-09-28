@@ -3174,6 +3174,9 @@ fn launch_duplex(
             turns: node.turns.clone(),
             stop_on: Some(&stop_on),
             dialect: duplex::Dialect::of(marion_harness::adapter::harness_spec(node.harness)),
+            abort: marion_harness::adapter::harness_spec(node.harness)
+                .abort
+                .headless,
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;
