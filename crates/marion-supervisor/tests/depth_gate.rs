@@ -308,7 +308,8 @@ struct Evidence {
     spawn_result: Result<(), String>,
     contracts: usize,
     agent_dirs: Vec<String>,
-    /// `marion/*` branches left in the fixture repo — one per node that got as far as a worktree.
+    /// `marion/*` branches observed after the terminal node's cleanup — one per live ancestor with
+    /// a worktree, and none for the completed node, whose unchanged branch is reaped with it.
     branches: Vec<String>,
     requests: Vec<Value>,
     leaked: Vec<String>,
@@ -426,6 +427,7 @@ fn which(program: &str) -> PathBuf {
 /// A node the supervisor owns, and the capability its own bridge would present.
 struct Owned {
     agent_id: marion_core::contract::AgentId,
+    task_id: Option<marion_core::contract::TaskId>,
     token: String,
 }
 
@@ -461,6 +463,7 @@ fn spawn_over_socket(
         .expect("declaration_of asserts the token is there");
     Ok(Owned {
         agent_id: r.agent_id,
+        task_id: r.task_id,
         token,
     })
 }
@@ -501,6 +504,25 @@ fn is_terminal(journal: &Path, id: &marion_core::contract::AgentId) -> bool {
                 .any(|n| &n.agent_id == id && n.state.is_exited())
         })
         .unwrap_or(false)
+}
+
+/// Whether the exact task ref still exists. Exit 1 is git's documented "no such ref" answer; any
+/// other failure is an inability to observe, never absence.
+fn task_ref_exists(repo: &Path, task_id: &str) -> bool {
+    let task_ref = format!("refs/heads/marion/{task_id}");
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["show-ref", "--verify", "--quiet", &task_ref])
+        .output()
+        .expect("git show-ref runs");
+    match out.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        code => panic!(
+            "cannot observe {task_ref} (exit {code:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    }
 }
 
 /// Drive one real child of `node`'s harness at `max_depth`, whose script calls `spawn`.
@@ -589,6 +611,24 @@ fn drive(node: &Node) -> Evidence {
              on it",
             node.harness
         );
+
+        // Cleanup runs after the terminal record: the worktree is removed, then the unchanged task
+        // ref is compare-and-deleted. Wait on that second, exact fact before the branches are
+        // counted below, rather than sampling the interval between the journal and git.
+        let completed_task = under_test
+            .task_id
+            .as_ref()
+            .expect("the node at max_depth is a child and has a task id");
+        while task_ref_exists(&repo, &completed_task.0) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}: the terminal node's unchanged task ref survived its cleanup: \
+                 refs/heads/marion/{}",
+                node.harness,
+                completed_task.0
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let spawn_result = spawn_result.map(|_| ()).map_err(|e| e.to_string());
 
@@ -773,12 +813,15 @@ fn assert_refused(node: &Node, ev: &Evidence) {
         "{h}: a refused spawn writes no contract, and the chain is still running, so the only \
          contract on disk is the node under test's"
     );
+    // Only the chain's non-root children still hold a `marion/<task>` ref: a root runs in the
+    // operator's own checkout (§9), and the completed node's unchanged branch was reaped with its
+    // worktree.
+    let live_ancestor_branches = chain - 1;
     assert_eq!(
         ev.branches.len(),
-        chain,
-        "{h}: one `marion/<task>` worktree branch per node marion made a worktree for — every node \
-         but the root — and a further one would mean the gate ran after `make_worktree` rather \
-         than before it: {:?}",
+        live_ancestor_branches,
+        "{h}: one `marion/<task>` branch per live non-root ancestor; another would be the completed \
+         node's unchanged residue or a grandchild made before the depth gate: {:?}",
         ev.branches
     );
 

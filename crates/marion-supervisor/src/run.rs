@@ -2394,10 +2394,10 @@ pub fn run_spawn_watched(
     // directory, and git refuses `worktree remove` only on the *main* working tree — so a caller in
     // a linked worktree would have its checkout deleted by the cleanup of a child it lent it to.
     // And not while it holds the only copy of work marion failed to commit.
-    if let Workspace::Worktree { path, .. } = &contract.workspace
+    if let Workspace::Worktree { path, branch } = &contract.workspace
         && landed.may_reap()
     {
-        cleanup(&req.repo, path);
+        cleanup(&req.repo, path, branch, contract.base_commit.as_ref());
     }
     Ok(returned)
 }
@@ -2814,18 +2814,40 @@ fn persist_contract_and_close_stream(
 /// `worktree add` racing it fails with `index.lock: File exists`. The failure lands on the
 /// *sibling's* spawn — a child refused because an unrelated child happened to be finishing — which
 /// is exactly the kind of scheduling-dependent flake the guard exists to make impossible.
-fn cleanup(repo: &Path, wt: &Path) {
+///
+/// **The task branch goes too, but only while it is still at `base`.** A branch that never moved
+/// holds no work, and leaving it made the task id single-use: `git worktree add -b` cannot recreate
+/// it. `update-ref -d <ref> <base>` is git's compare-and-delete, so a branch that moved — marion's
+/// commit of the child's work, or the child's own — fails the compare and survives. Both steps run
+/// under the one guard so a sibling cannot recreate the branch between them, and a worktree that
+/// could not be removed keeps its branch. Best-effort, as the removal always was.
+fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
     let _serialized = crate::spawn::repo_write_guard();
-    let mut command = SysCommand::new("git");
-    command
-        .current_dir(repo)
-        .args(["worktree", "remove", "--force", &wt.to_string_lossy()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let _ = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
-        .spawn(&mut command)
-        .and_then(std::process::Child::wait_with_output);
+    let git = |args: &[&str]| {
+        let mut command = SysCommand::new("git");
+        command
+            .current_dir(repo)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+            .spawn(&mut command)
+            .and_then(std::process::Child::wait_with_output)
+            .is_ok_and(|out| out.status.success())
+    };
+    let removed = git(&["worktree", "remove", "--force", &wt.to_string_lossy()]);
+    if let (true, Some(task_ref), Some(base)) = (removed, task_branch_ref(branch), base) {
+        git(&["update-ref", "-d", &task_ref, &base.0]);
+    }
+}
+
+/// The ref of a branch marion made for a task — exactly one segment under `marion/`, as
+/// [`select_workspace`] names it — or `None`, so cleanup can never be pointed at another branch.
+fn task_branch_ref(branch: &str) -> Option<String> {
+    let task = branch.strip_prefix("marion/")?;
+    let one_segment = !task.is_empty() && !task.contains('/') && !task.contains("..");
+    one_segment.then(|| format!("refs/heads/{branch}"))
 }
 
 #[cfg(test)]
@@ -3835,6 +3857,81 @@ mod tests {
         assert!(agents.is_empty(), "no agent directory: {agents:?}");
         let branches = marion_testsupport::git(&repo, &["branch", "--list", "marion/*"]);
         assert!(branches.trim().is_empty(), "no task branch: {branches}");
+    }
+
+    /// **A finished child's task branch is removed only while it still points at the base marion
+    /// created it at.** An unchanged branch is residue that would make the task id single-use
+    /// (`git worktree add -b` cannot recreate it); a branch that moved holds work and survives.
+    /// The deletion is git's compare-and-delete, so the check and the delete are one step.
+    ///
+    /// Mutation: drop the `update-ref -d` and the unchanged branch survives; drop its old-value
+    /// argument and the advanced branch (and the only name for its commit) is deleted.
+    #[test]
+    fn cleanup_deletes_an_unchanged_task_branch_and_keeps_an_advanced_one() {
+        let root = scratch("run-cleanup-branch");
+        let repo = fixture_repo(&root);
+        let git = |dir: &Path, args: &[&str]| marion_testsupport::git(dir, args);
+        let exists = |branch: &str| {
+            SysCommand::new("git")
+                .current_dir(&repo)
+                .args([
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+
+        let unchanged = root.join("wt-unchanged");
+        let base = crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged").unwrap();
+        cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
+        assert!(!unchanged.exists(), "the worktree is removed");
+        assert!(
+            !exists("marion/unchanged"),
+            "and its unchanged branch with it"
+        );
+        crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged")
+            .expect("so the task id can be used again");
+
+        let advanced = root.join("wt-advanced");
+        let base = crate::spawn::make_worktree(&repo, &advanced, "marion/advanced").unwrap();
+        git(
+            &advanced,
+            &[
+                "-c",
+                "user.email=m@example.invalid",
+                "-c",
+                "user.name=m",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "work",
+            ],
+        );
+        cleanup(&repo, &advanced, "marion/advanced", Some(&base));
+        assert!(!advanced.exists(), "the worktree is removed");
+        assert!(
+            exists("marion/advanced"),
+            "but a branch holding work is kept"
+        );
+
+        assert_eq!(
+            task_branch_ref("marion/0197f3aa-1c2d"),
+            Some("refs/heads/marion/0197f3aa-1c2d".into())
+        );
+        for branch in [
+            "main",
+            "marion/",
+            "marion/a/b",
+            "marion/..",
+            "refs/heads/main",
+        ] {
+            assert_eq!(task_branch_ref(branch), None, "{branch:?}");
+        }
     }
 
     /// A short capture that reads as a whole one is the invisible failure design §6.7 exists to

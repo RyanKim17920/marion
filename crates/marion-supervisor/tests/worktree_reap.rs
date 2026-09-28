@@ -16,8 +16,9 @@
 //! 2. **The child's work is committed onto its branch before the reap.** `marion/<task_id>` gets
 //!    one commit holding exactly the contract's `changed_paths` — out-of-scope paths included and
 //!    still flagged — the worktree directory is removed, the branch is kept, and the contract
-//!    records `branch` and `commit`. A child that changed nothing leaves the branch at
-//!    `base_commit`. The operator's own branch never moves. Until this landed the reap deleted the
+//!    records `branch` and `commit`. A child that changed nothing has nothing to keep: its branch,
+//!    still at `base_commit`, is compare-and-deleted with the worktree, so its task id is reusable.
+//!    The operator's own branch never moves. Until this landed the reap deleted the
 //!    uncommitted work and left the branch empty, so the diff text in the contract was the only copy.
 //! 3. **The persisted contract's `diff` still carries the work too**, for a created file or a
 //!    modified one, so the audit record is self-sufficient without the branch.
@@ -558,10 +559,11 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
     );
 }
 
-/// **A child that changed nothing keeps the old shape**: no commit, the branch left at the base
-/// commit, and no branch or commit on the contract — there is nothing to merge.
+/// **A child that changed nothing leaves nothing**: no commit, no branch or commit on the contract —
+/// there is nothing to merge — and its task branch, still at the base commit, is reaped with its
+/// worktree.
 #[test]
-fn a_child_that_changed_nothing_leaves_its_branch_at_the_base_commit() {
+fn a_child_that_changed_nothing_leaves_no_branch_behind() {
     require_codex();
     let _root = scratch("reap-noop");
     let fx = fixture(&_root, NOOP);
@@ -574,10 +576,13 @@ fn a_child_that_changed_nothing_leaves_its_branch_at_the_base_commit() {
 
     assert!(comp.changed_paths.is_empty(), "{:?}", comp.changed_paths);
     assert!(!wt.exists(), "the worktree is reaped");
-    assert_eq!(
-        git(&fx.repo, &["rev-parse", &branch]).trim(),
-        base_of(&contract),
-        "no commit was made for a child with no changes"
+    assert!(
+        git_try(
+            &fx.repo,
+            &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
+        )
+        .is_err(),
+        "no commit was made for a child with no changes, so its branch was residue and is gone"
     );
     assert_eq!((&comp.branch, &comp.commit), (&None, &None));
     assert_eq!(comp.landed_line(), None);
@@ -611,31 +616,53 @@ fn an_out_of_scope_write_is_committed_and_flagged() {
     );
 }
 
-/// The residue is not inert: a second spawn under the same `task_id` collides with the first one's
-/// leftover branch. Pinned so a fix is told which behaviour it changed.
+/// **A task id whose first run changed nothing can be used again**: that run's branch was still
+/// at its base, so cleanup deleted it, and the second `git worktree add -b marion/<task_id>` has
+/// nothing to collide with. It used to: the residue made every task id single-use.
 #[test]
-fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_branch() {
+fn a_second_spawn_can_reuse_a_task_id_whose_first_run_changed_nothing() {
+    require_codex();
+    let _root = scratch("reap-twice-noop");
+    let fx = fixture(&_root, NOOP);
+    spawn_one(&fx, "reap-twice-noop").expect("the first child runs");
+    spawn_one(&fx, "reap-twice-noop")
+        .expect("the first run's unchanged branch was reaped, so the task id is free");
+    let branches = git(&fx.repo, &["branch", "--list", "marion/*"]);
+    assert!(
+        branches.trim().is_empty(),
+        "the second run reaps its own unchanged branch too: {branches:?}"
+    );
+}
+
+/// **A branch that holds work is never reaped**, so a second spawn under the same `task_id` is
+/// refused by it rather than handed it. Cleanup's delete is a compare against the recorded base,
+/// and marion's commit of the first child's work moved the branch past it.
+#[test]
+fn a_second_spawn_of_the_same_task_id_is_refused_by_a_branch_holding_the_first_ones_work() {
     require_codex();
     let _root = scratch("reap-twice");
     let fx = fixture(&_root, CREATE);
-    spawn_one(&fx, "reap-twice").expect("the first child runs");
+    let first = spawn_one(&fx, "reap-twice").expect("the first child runs");
     let branches = git(&fx.repo, &["branch", "--list", "marion/*"]);
     assert!(
         branches.contains("marion/reap-twice"),
-        "the first spawn's branch is still there when the second starts: {branches:?}"
+        "the first spawn's branch holds its work and survives the reap: {branches:?}"
+    );
+    assert_ne!(
+        git(&fx.repo, &["rev-parse", "marion/reap-twice"]).trim(),
+        base_of(&first),
+        "because it moved past the base"
     );
 
-    let second = spawn_one(&fx, "reap-twice");
-    let e = second.expect_err(
+    let e = spawn_one(&fx, "reap-twice").expect_err(
         "`git worktree add -b marion/reap-twice` cannot create a branch that already exists, and \
-         that branch now holds the first child's work, so the second spawn must be refused rather \
+         that branch holds the first child's work, so the second spawn must be refused rather \
          than handed it",
     );
     assert!(
         e.contains("a branch named 'marion/reap-twice' already exists"),
-        "and it is the branch collision that refused it, not some other failure of the second run \
-         — the message is git's own, surfaced verbatim through `SpawnError`, and it is the only \
-         thing making this diagnosable from a parent's tool result: {e}"
+        "and it is the branch collision that refused it — git's own message, surfaced verbatim \
+         through `SpawnError`: {e}"
     );
 }
 
