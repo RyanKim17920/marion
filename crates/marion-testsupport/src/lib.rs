@@ -1613,6 +1613,187 @@ pub fn fixture_repo(root: &Path) -> PathBuf {
     repo
 }
 
+// --- a finished project ----------------------------------------------------------------------
+
+/// What [`finished_project`] wrote: the two nodes' ids, and the branch the child landed.
+#[derive(Debug, Clone)]
+pub struct FinishedProject {
+    pub root: marion_core::contract::AgentId,
+    pub child: marion_core::contract::AgentId,
+    pub branch: String,
+}
+
+/// A project whose run is over, written the way a supervisor leaves one — **a journal and a
+/// contract, and no supervisor**: a root, and a child it delegated to that reported, landed a
+/// branch and exited, with the spend its run recorded.
+///
+/// Written straight to the files, not through a supervisor, because the readers under test are the
+/// ones that must work once every supervisor is gone; starting one to produce the fixture would
+/// leave a lock and a socket behind for exactly the property those tests check. The harness is the
+/// registry's first row and the agent type is not a built-in, so nothing here names a harness and
+/// the recorded bound is what makes each node describable.
+pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedProject {
+    use marion_core::contract::{AgentId, ExitStatus, ProcessExit, TaskId, TokenUsage};
+    use marion_core::journal::{
+        ContractPersisted, Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, StateChanged,
+        UsageRecorded, WriterId, encode,
+    };
+    use marion_core::node::NodeState;
+
+    let harness = marion_core::harness::Harness::ALL[0];
+    let root = AgentId("01a0e64e-1df0-7424-9ced-c33bec562fad".into());
+    let child = AgentId("01a0e64e-433f-7ed8-aa38-c369b4e5918c".into());
+    let task = TaskId("01a0e64e-433c-7375-a613-f205ee674759".into());
+    let branch = format!("marion/{}", task.0);
+    let intent = |id: &AgentId, parent: Option<&AgentId>, task: Option<&TaskId>| {
+        RecordKind::SpawnIntent(SpawnIntent {
+            agent_id: id.clone(),
+            parent_id: parent.cloned(),
+            agent_type: "fixture-worker".into(),
+            harness,
+            depth: u32::from(parent.is_some()),
+            task_id: task.cloned(),
+            timeout_secs: Some(300),
+            verification: vec![],
+            review_of: None,
+        })
+    };
+    let spawned = |id: &AgentId| {
+        RecordKind::Spawned(Spawned {
+            agent_id: id.clone(),
+            harness_version: "1.0.0".into(),
+            model: None,
+            pid: None,
+            start_id: None,
+            provider: None,
+            route: None,
+            credential: None,
+        })
+    };
+    let running = |id: &AgentId| {
+        RecordKind::StateChanged(StateChanged {
+            agent_id: id.clone(),
+            state: NodeState::Running,
+            reason: None,
+        })
+    };
+    let exited = |id: &AgentId| {
+        RecordKind::Exited(Exited {
+            agent_id: id.clone(),
+            status: ExitStatus::Ok,
+            exit: ProcessExit {
+                code: Some(0),
+                signal: None,
+                description: "child exited with code 0".into(),
+            },
+        })
+    };
+    let kinds = vec![
+        intent(&root, None, None),
+        spawned(&root),
+        running(&root),
+        intent(&child, Some(&root), Some(&task)),
+        spawned(&child),
+        running(&child),
+        RecordKind::UsageRecorded(UsageRecorded {
+            agent_id: child.clone(),
+            usage: TokenUsage {
+                input: 1200,
+                output: 340,
+                cache_read: 5000,
+                cache_write: 0,
+                reasoning: None,
+            },
+            turns: vec![],
+        }),
+        RecordKind::ContractPersisted(ContractPersisted {
+            agent_id: child.clone(),
+            task_id: task.clone(),
+            requester: root.clone(),
+            status: Some(ExitStatus::Ok),
+            review: None,
+        }),
+        exited(&child),
+        exited(&root),
+    ];
+    std::fs::create_dir_all(project.path()).unwrap();
+    let mut journal = Vec::new();
+    for (seq, kind) in kinds.into_iter().enumerate() {
+        journal.extend(
+            encode(&JournalRecord {
+                writer: WriterId("fixture-writer".into()),
+                seq: seq as u64,
+                ts: marion_core::encoding::SystemTime::from_unix_millis(
+                    1_790_000_000_000 + seq as u64,
+                ),
+                mono_ns: seq as u64,
+                provenance: marion_core::ir::Provenance::marion(),
+                src_seq: None,
+                kind,
+            })
+            .unwrap(),
+        );
+    }
+    std::fs::write(project.journal(), journal).unwrap();
+
+    let at = "2026-09-28T04:38:03.839Z";
+    let capped =
+        |v: &str| serde_json::json!({"value": v, "truncated": false, "original_bytes": v.len()});
+    let contract = serde_json::json!({
+        "task_id": task.0,
+        "requester": root.0,
+        "child": {"harness": harness, "version": "1.0.0", "model": null},
+        "repo": {"git_common_dir": null, "head_branch": null},
+        "base_commit": null,
+        "workspace": {"Worktree": {
+            "path": project.agent(&child).worktree(),
+            "branch": branch,
+        }},
+        "instructions": capped("Add a --top N option to wordfreq.py."),
+        "acceptance_criteria": [capped("the tests pass")],
+        "allowed_tools": [],
+        "scope_ceiling": ["**"],
+        "scope_requested": [],
+        "timeout": 300,
+        "verification": [],
+        "timestamps": {"spawned": at, "first_output": null, "reported": at, "exited": at},
+        "completion": {
+            "status": "Ok",
+            "died_before_gate": false,
+            "reported_early": false,
+            "held_to_timeout": false,
+            "live_descendants_at_report": [],
+            "narrative": capped("Added --top N and the tests pass."),
+            "narrative_synthesized": false,
+            "result_commits": [],
+            "changed_paths": ["wordfreq.py"],
+            "acceptance_criteria_omitted": 0,
+            "changed_paths_omitted": 0,
+            "result_commits_omitted": 0,
+            "scope_violations_omitted": 0,
+            "scope_enforced": true,
+            "scope_violations": [],
+            "diff": null,
+            "evidence": [],
+            "evidence_omitted": 0,
+            "exit": {"code": 0, "signal": null, "description": "child exited with code 0"},
+            "branch": branch,
+        },
+    });
+    let contracts = project.agent(&child).contracts_dir();
+    std::fs::create_dir_all(&contracts).unwrap();
+    std::fs::write(
+        project.agent(&child).contract(&task),
+        serde_json::to_vec_pretty(&contract).unwrap(),
+    )
+    .unwrap();
+    FinishedProject {
+        root,
+        child,
+        branch,
+    }
+}
+
 // --- persisted contracts ---------------------------------------------------------------------------
 
 /// One `contracts/<task_id>.json` marion persisted, and what reading it back produced.

@@ -360,12 +360,7 @@ fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), R
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
         // One line. Why marion will not start a supervisor here is `run`'s doc comment.
-        return Err(format!(
-            "no supervisor is serving `{}` under state dir `{}`; start a session here first \
-             (`marion <harness>` or `marion run`) with the same --state-dir / $MARION_STATE_DIR",
-            key.display(),
-            state_dir.display()
-        ));
+        return Err(nobody_serving(&key, state_dir));
     }
     // No read bound: the subscribe's own reads block until the answer, and a screen that follows
     // the forest waits on [`Subscription::fd`] in its own `poll(2)` with the socket non-blocking.
@@ -382,6 +377,100 @@ fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), R
         shown.display().to_string(),
         paths.socket().to_path_buf(),
     ))
+}
+
+/// The refusal for a project no supervisor serves: one line naming the project key and the state
+/// dir, and how to start a session there. [`dial`]'s, and [`JournalView::open`]'s for a project
+/// whose journal records nothing, so the two cannot drift into two wordings of one fact.
+fn nobody_serving(key: &Path, state_dir: &Path) -> Refusal {
+    format!(
+        "no supervisor is serving `{}` under state dir `{}`; start a session here first \
+         (`marion <harness>` or `marion run`) with the same --state-dir / $MARION_STATE_DIR",
+        key.display(),
+        state_dir.display()
+    )
+}
+
+/// **The forest as the journal left it**, for a line-oriented verb asked about a project nobody
+/// serves any more — every node finished and the supervisor gone.
+///
+/// The journal is the record the supervisor itself folds (§4.3), so reading it here is the same
+/// fold ([`crate::journal::read`]), projected by the same [`crate::handler::summarize`] and detailed
+/// by the same [`crate::node_detail::read`] a `tree/subscribe` and a `node/get` answer from. What
+/// only a live supervisor knows is absent rather than guessed: no node has a pane, and a spend is
+/// the journal's record with no run in progress on top.
+///
+/// **Strictly a reader.** It starts no supervisor, takes no lock beyond the instant's probe
+/// [`crate::socket::nobody_is_serving`] already makes, appends nothing and creates no directory: a
+/// look at a finished project must leave it exactly as it was, or looking would change what the
+/// next supervisor replays.
+pub struct JournalView {
+    project: marion_core::paths::ProjectDir,
+    replay: marion_core::registry::Replay,
+}
+
+impl JournalView {
+    /// The journal of the project `repo` names under `state_dir` — **only when nobody is serving
+    /// it**. `Ok(None)` is a supervisor serving: its answer is the live one, and the caller dials
+    /// it. A project whose journal records no node refuses as [`dial`] does, because an empty
+    /// listing would read as "nothing ran here" when the likelier fact is a different
+    /// `--state-dir`.
+    pub fn open(repo: &Path, state_dir: &Path) -> Result<Option<JournalView>, Refusal> {
+        let key = crate::socket::project_root(repo);
+        let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
+        if !crate::socket::nobody_is_serving(&paths) {
+            return Ok(None);
+        }
+        let project = marion_core::paths::ProjectDir::new(state_dir, &key);
+        let replay = crate::journal::read(&project).map_err(|e| {
+            format!(
+                "reading the journal at `{}`: {e}",
+                project.journal().display()
+            )
+        })?;
+        if replay.nodes().is_empty() {
+            return Err(nobody_serving(&key, state_dir));
+        }
+        Ok(Some(JournalView { project, replay }))
+    }
+
+    /// Every node the journal describes, in journal order — what `tree/subscribe`'s snapshot would
+    /// have said. A node the supervisor could not project is left out here as it is there.
+    pub fn nodes(&self) -> Vec<NodeSummary> {
+        let nothing_live = crate::spending::Spending::default();
+        self.replay
+            .nodes()
+            .iter()
+            .filter_map(|n| crate::handler::summarize_spent(n, false, &nothing_live).ok())
+            .collect()
+    }
+
+    /// One node and its detail, by whole or short id ([`resolve_target`]) — what `node/get` with
+    /// the activity's tail would have answered.
+    pub fn node(
+        &self,
+        target: &str,
+    ) -> Result<(NodeSummary, marion_core::proto::result::NodeDetail), Refusal> {
+        let id = resolve_target(target, &self.nodes())?;
+        let replayed = self
+            .replay
+            .get(&id)
+            .ok_or_else(|| format!("no node `{target}` in this project's journal"))?;
+        let mut node =
+            crate::handler::summarize(replayed, false).map_err(|e| e.as_error(&id).message)?;
+        let detail = match crate::node_detail::inputs(replayed) {
+            Some(i) => crate::node_detail::read(
+                &self.project,
+                &id,
+                &i,
+                Some(marion_core::proto::params::ActivityCursor::Tail),
+                None,
+            ),
+            None => Default::default(),
+        };
+        node.tokens = detail.usage.map(|u| u.total());
+        Ok((node, detail))
+    }
 }
 
 /// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
@@ -1266,5 +1355,150 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A finished project under a scratch dir: its repo (no git, so the key is the directory),
+    /// its state dir, and what the fixture wrote there.
+    fn finished(
+        tag: &str,
+    ) -> (
+        marion_testsupport::Scratch,
+        PathBuf,
+        PathBuf,
+        marion_testsupport::FinishedProject,
+    ) {
+        let dir = marion_testsupport::scratch(tag);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let state = dir.join("state");
+        let project =
+            marion_core::paths::ProjectDir::new(&state, &crate::socket::project_root(&repo));
+        let fx = marion_testsupport::finished_project(&project);
+        (dir, repo, state, fx)
+    }
+
+    /// Every path under `root` and its bytes, so "reading changed nothing" is a comparison.
+    fn contents(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut todo = vec![root.to_path_buf()];
+        while let Some(dir) = todo.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    out.push((path.clone(), Vec::new()));
+                    todo.push(path);
+                } else {
+                    out.push((path.clone(), std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// **The journal's listing is the live listing's lines**: the same [`list_line`] over the same
+    /// projection, so a finished node reads exactly as it did while a supervisor served it — and
+    /// reading it leaves every file under the state dir as it was.
+    #[test]
+    fn a_finished_project_lists_from_its_journal_and_is_left_untouched() {
+        let (_dir, repo, state, fx) = finished("tree-journal-list");
+        let before = contents(&state);
+        let view = JournalView::open(&repo, &state)
+            .expect("the journal reads")
+            .expect("nobody is serving, so the journal answers");
+        let lines: Vec<String> = view.nodes().iter().map(list_line).collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains(&fx.root.0), "{lines:?}");
+        assert!(!lines[0].contains("parent"), "the root has none: {lines:?}");
+        assert!(lines[1].contains(&fx.child.0), "{lines:?}");
+        assert!(
+            lines[1].ends_with(&format!("parent {}", short_id(&fx.root.0))),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| l.contains(" exited:ok ")),
+            "both ended ok: {lines:?}"
+        );
+        drop(view.node(&fx.child.0).expect("the child resolves"));
+        assert_eq!(
+            contents(&state),
+            before,
+            "a look at a finished project wrote, created or removed something under its state dir"
+        );
+    }
+
+    /// `ls <id>` from the journal: the node by its short id, with what its contract says — the
+    /// task, the workspace and branch, how it ended — and the spend its run recorded.
+    #[test]
+    fn a_node_from_the_journal_carries_its_contract_and_its_recorded_spend() {
+        let (_dir, repo, state, fx) = finished("tree-journal-node");
+        let view = JournalView::open(&repo, &state).unwrap().unwrap();
+        let (node, detail) = view
+            .node(short_id(&fx.child.0))
+            .expect("the short id resolves");
+        assert_eq!(node.agent_id, fx.child);
+        assert_eq!(node.tokens, Some(1200 + 340 + 5000), "{node:?}");
+        let task = detail.task.expect("the contract's task");
+        assert!(task.prompt.contains("--top N"), "{task:?}");
+        let done = detail.completion.expect("the contract's completion");
+        assert_eq!(done.status, marion_core::contract::ExitStatus::Ok);
+        assert_eq!(done.branch.as_deref(), Some(fx.branch.as_str()));
+        assert!(
+            matches!(
+                detail.workspace,
+                Some(marion_core::contract::Workspace::Worktree { ref branch, .. })
+                    if *branch == fx.branch
+            ),
+            "{:?}",
+            detail.workspace
+        );
+        assert!(detail.stream.is_some(), "the activity's tail was asked for");
+    }
+
+    /// A target the journal does not record is refused by name, not answered with an empty node.
+    #[test]
+    fn a_target_the_journal_does_not_record_is_refused_by_name() {
+        let (_dir, repo, state, _fx) = finished("tree-journal-unknown");
+        let view = JournalView::open(&repo, &state).unwrap().unwrap();
+        let refusal = view.node("nobody").expect_err("no such node");
+        assert!(refusal.contains("`nobody`"), "{refusal}");
+    }
+
+    /// A project that never ran here refuses as the live path does — naming the state dir, since a
+    /// different `--state-dir` is the likelier explanation than an empty forest — and looking does
+    /// not create the state dir it looked in.
+    #[test]
+    fn a_project_with_no_journal_refuses_like_the_live_path_and_creates_nothing() {
+        let dir = marion_testsupport::scratch("tree-journal-none");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let state = dir.join("state");
+        let refusal = match JournalView::open(&repo, &state) {
+            Err(e) => e,
+            Ok(v) => panic!("an empty project answered: {:?}", v.map(|v| v.nodes())),
+        };
+        assert!(refusal.contains("no supervisor is serving"), "{refusal}");
+        assert!(refusal.contains(&state.display().to_string()), "{refusal}");
+        assert!(!state.exists(), "reading created the state dir");
+    }
+
+    /// **While a supervisor serves, the journal is not the answer**: `open` steps aside so the
+    /// caller dials the live one, whose view includes what only it knows (panes, runs in progress).
+    #[test]
+    fn a_served_project_is_left_to_the_live_path() {
+        let (_dir, repo, state, _fx) = finished("tree-journal-served");
+        let paths = crate::socket::socket_paths(
+            &state,
+            &crate::socket::project_root(&repo),
+            crate::socket::own_uid(),
+        );
+        let crate::socket::Acquired::Serving(_serving) = crate::socket::acquire(&paths).unwrap()
+        else {
+            panic!("nobody else can be serving a scratch project")
+        };
+        assert!(
+            JournalView::open(&repo, &state).unwrap().is_none(),
+            "the journal answered for a project a supervisor serves"
+        );
     }
 }

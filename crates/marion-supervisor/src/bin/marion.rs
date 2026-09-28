@@ -454,9 +454,50 @@ fn home_on(tab: marion_tui::home::Tab, repo: PathBuf, state: PathBuf) -> ExitCod
 }
 
 /// `marion ls <id>`: one node's detail, as text.
+///
+/// When nobody is serving the project, the node as the journal and its contract left it
+/// ([`marion_supervisor::tree::JournalView`]), printed by the same [`detail_text`].
 fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
     use marion_supervisor::tree;
-    let found = tree::snapshot(repo, state).and_then(|nodes| {
+    let offline = tree::JournalView::open(repo, state);
+    let found = offline.and_then(|view| match view {
+        Some(view) => {
+            eprintln!("{FROM_JOURNAL}");
+            view.node(target)
+        }
+        None => live_node(target, repo, state),
+    });
+    match found {
+        Ok((node, detail)) => {
+            print!("{}", detail_text(&node, &detail));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// What `marion list` and `marion ls <id>` say on stderr when they answer from the journal, so an
+/// operator knows the listing is a record rather than a live view; stdout keeps its one shape.
+const FROM_JOURNAL: &str = "marion: no supervisor is serving; this is the journal's record";
+
+/// `ls_one`'s answer from the serving supervisor: its `tree/subscribe` snapshot to resolve the
+/// target, then `node/get` with the activity's tail.
+fn live_node(
+    target: &str,
+    repo: &Path,
+    state: &Path,
+) -> Result<
+    (
+        marion_core::proto::NodeSummary,
+        marion_core::proto::result::NodeDetail,
+    ),
+    String,
+> {
+    use marion_supervisor::tree;
+    tree::snapshot(repo, state).and_then(|nodes| {
         let id = tree::resolve_target(target, &nodes)?;
         let node = nodes
             .iter()
@@ -471,17 +512,7 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
         )
         .map_err(|e| e.to_string())?;
         Ok((node, got.detail))
-    });
-    match found {
-        Ok((node, detail)) => {
-            print!("{}", detail_text(&node, &detail));
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("marion: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    })
 }
 
 /// A node and its detail as the lines `marion ls <id>` prints. Tokens only, never a price.
@@ -564,7 +595,15 @@ fn detail_text(
 /// need the operator under `attention`: `marion list`, and `marion ls` without a terminal.
 fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
     use marion_supervisor::tree;
-    let nodes = match tree::snapshot(repo, state) {
+    // The live snapshot while a supervisor serves; the journal's record once nobody does.
+    let nodes = tree::JournalView::open(repo, state).and_then(|view| match view {
+        Some(view) => {
+            eprintln!("{FROM_JOURNAL}");
+            Ok(view.nodes())
+        }
+        None => tree::snapshot(repo, state),
+    });
+    let nodes = match nodes {
         Ok(nodes) => nodes,
         Err(e) => {
             eprintln!("marion: {e}");

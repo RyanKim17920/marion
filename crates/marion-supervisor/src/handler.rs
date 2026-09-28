@@ -5616,7 +5616,7 @@ fn collect(
 
 /// [`summarize`], with the node's spend so far ([`crate::spending::Spending::shown_total`]) — read
 /// from memory, no file.
-fn summarize_spent(
+pub(crate) fn summarize_spent(
     n: &ReplayedNode,
     pane: bool,
     spending: &crate::spending::Spending,
