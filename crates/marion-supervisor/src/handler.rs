@@ -5833,6 +5833,46 @@ mod tests {
         assert_eq!(running.ended_at, None, "a node still running has not ended");
     }
 
+    /// **An endpoint node's summary names its provider, model and route** off its latest
+    /// `Spawned`, with the harness's spelling of the model undone (opencode's `marion/` prefix), and
+    /// a node with no provider carries none.
+    #[test]
+    fn a_summary_carries_an_endpoint_nodes_provider_model_and_route() {
+        let spawned = |provider: Option<&str>| {
+            line(
+                1,
+                2,
+                RecordKind::Spawned(Spawned {
+                    agent_id: id("c"),
+                    harness_version: "1.17.3".into(),
+                    model: Some("marion/qwen/qwen3-coder".into()),
+                    pid: Some(3),
+                    start_id: None,
+                    provider: provider.map(str::to_string),
+                    route: provider.map(|_| "translated".to_string()),
+                    credential: provider.map(str::to_string),
+                }),
+            )
+        };
+        let intent_at = line(0, 1, intent("c", None, "opencode", 0));
+        let s = summarize(
+            &node_of(&[intent_at.clone(), spawned(Some("openrouter"))], "c"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            s.endpoint,
+            Some(marion_core::proto::NodeEndpoint {
+                provider: "openrouter".into(),
+                model: Some("qwen/qwen3-coder".into()),
+                route: Some("translated".into()),
+            })
+        );
+        assert_eq!(s.endpoint.unwrap().label(), "openrouter:qwen/qwen3-coder");
+        let s = summarize(&node_of(&[intent_at, spawned(None)], "c"), false).unwrap();
+        assert_eq!(s.endpoint, None);
+    }
+
     /// **A recorded bound outranks the agent type's, because it is the one the node is under.**
     ///
     /// The sibling above is the fallback; this is the normal case. `marion run --timeout 300` and
