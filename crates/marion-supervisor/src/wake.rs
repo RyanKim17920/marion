@@ -1218,13 +1218,22 @@ mod tests {
         let mut watch = Watch::new(&path);
         assert!(!readable(watch.fd(), Duration::ZERO));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        assert!(readable(watch.fd(), BOUND), "the first directory's creation shows");
+        assert!(
+            readable(watch.fd(), BOUND),
+            "the first directory's creation shows"
+        );
         watch.rearm();
         marion_testsupport::append(&path, b"a\n");
-        assert!(readable(watch.fd(), BOUND), "and so, a level down, does the file's");
+        assert!(
+            readable(watch.fd(), BOUND),
+            "and so, a level down, does the file's"
+        );
         watch.rearm();
         marion_testsupport::append(&path, b"b\n");
-        assert!(readable(watch.fd(), BOUND), "after which the file itself is watched");
+        assert!(
+            readable(watch.fd(), BOUND),
+            "after which the file itself is watched"
+        );
     }
 
     #[test]

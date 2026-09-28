@@ -1957,8 +1957,7 @@ impl RegistryHandle {
             }
             let figures_only = g.collected_at.is_some_and(|(seen, _)| seen == generation);
             if figures_only
-                && g
-                    .collected_when
+                && g.collected_when
                     .is_some_and(|at| at.elapsed() < TOKEN_PUSH_DELAY)
             {
                 return Vec::new();

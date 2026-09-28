@@ -933,15 +933,7 @@ impl Server {
             let conns = Arc::clone(&conns);
             let wake = wake.clone();
             std::thread::spawn(move || {
-                accept_loop(
-                    serving,
-                    handle,
-                    native,
-                    stop,
-                    conns,
-                    idle_grace,
-                    wake,
-                )
+                accept_loop(serving, handle, native, stop, conns, idle_grace, wake)
             })
         };
         Server {
