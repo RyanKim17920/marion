@@ -62,7 +62,7 @@ impl Bed {
         let native_program = bin.join("native-program");
         write_executable(
             &native_program,
-            &format!(
+            format!(
                 "#!/bin/sh\n\
                  : > {started}\n\
                  ticks=0\n\
@@ -81,7 +81,7 @@ impl Bed {
         );
         write_executable(
             &bin.join("claude"),
-            &format!(
+            format!(
                 "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.222'; exit 0; fi\n\
                  : > {started}\n\
                  ticks=0\n\
