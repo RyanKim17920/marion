@@ -1646,7 +1646,7 @@ pub fn run_spawn_watched(
     crate::private_fs::create_dir_all(&ch)?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
-    let (workspace, base, cwd_claim) =
+    let (workspace, base, cwd_claim, mut prelaunch) =
         select_workspace(req, &agent_type, &agent_dir, task_id, &agent_id)?;
     // Held for the child's whole run. Named rather than `_`, because `let _ = ..` drops immediately
     // and would release §6.6's claim before the child it is protecting had started — the guard would
@@ -1910,16 +1910,22 @@ pub fn run_spawn_watched(
             .clone();
         let announce_started =
             |pid: i32| announce(pid, &version, inv.model.as_deref(), endpoint.as_ref());
+        // **A contracted child does not get a pane, and the refusal is the design rather than a
+        // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
+        // `report`, under the wall clock its contract records. A pane node is a TUI, which takes
+        // no turn at all until a human presses return — so a contracted child in a pane is a task
+        // that can only ever time out, and the contract would record that as the child's failure.
+        // A pane belongs to a **root**: a node an operator started and is watching. Refused here,
+        // still before the seam below, so the worktree it never used is taken back.
+        if path == LaunchPath::Terminal {
+            return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
+        }
+        // **The first-execution seam.** Every prelaunch refusal is behind this line; the child
+        // process starts in the match below and may write the only copy of its work into the
+        // worktree before a contract is durable, so from here the success tail decides the reap.
+        prelaunch.disarm();
         let run = match path {
-            // **A contracted child does not get a pane, and the refusal is the design rather than a
-            // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
-            // `report`, under the wall clock its contract records. A pane node is a TUI, which takes
-            // no turn at all until a human presses return — so a contracted child in a pane is a task
-            // that can only ever time out, and the contract would record that as the child's failure.
-            // A pane belongs to a **root**: a node an operator started and is watching.
-            LaunchPath::Terminal => {
-                return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
-            }
+            LaunchPath::Terminal => unreachable!("a terminal child is refused above"),
             LaunchPath::LaunchOnly => launch_only_child(
                 &inv,
                 attempt_bound,
@@ -2446,7 +2452,15 @@ fn select_workspace(
     agent_dir: &AgentDir,
     task_id: &TaskId,
     agent_id: &AgentId,
-) -> Result<(Workspace, Option<Oid>, crate::spawn::CwdClaim), SpawnError> {
+) -> Result<
+    (
+        Workspace,
+        Option<Oid>,
+        crate::spawn::CwdClaim,
+        PrelaunchWorktree,
+    ),
+    SpawnError,
+> {
     // **A resume takes the tree it left, and this arm is why the workspace is journaled at all.**
     // Neither branch below is right for a second life: `make_worktree` on a tree that already
     // exists fails, and a *fresh* worktree would be a directory the resumed session has never seen
@@ -2463,7 +2477,7 @@ fn select_workspace(
             }
             _ => crate::spawn::CwdClaim::none(),
         };
-        return Ok((r.workspace.clone(), base, claim));
+        return Ok((r.workspace.clone(), base, claim, PrelaunchWorktree::none()));
     }
     match req.isolation {
         Isolation::Worktree => {
@@ -2479,10 +2493,15 @@ fn select_workspace(
             crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
             let branch = worktree_branch(task_id);
             let base = make_worktree(&req.repo, &wt, &branch)?;
+            let prelaunch = PrelaunchWorktree {
+                repo: req.repo.clone(),
+                target: Some((wt.clone(), branch.clone(), base.clone())),
+            };
             Ok((
                 Workspace::Worktree { path: wt, branch },
                 Some(base),
                 crate::spawn::CwdClaim::none(),
+                prelaunch,
             ))
         }
         Isolation::SharedCwd => {
@@ -2508,6 +2527,7 @@ fn select_workspace(
                 },
                 base,
                 claim,
+                PrelaunchWorktree::none(),
             ))
         }
     }
@@ -2842,6 +2862,38 @@ fn cleanup(repo: &Path, wt: &Path, branch: &str, base: Option<&Oid>) {
     }
 }
 
+/// **A worktree this spawn created and no process has run in yet**: [`cleanup`] on drop, so a
+/// refusal anywhere between [`select_workspace`] and the launch takes back the directory, its
+/// `.git/worktrees/` registration and the unchanged task branch rather than stranding them in the
+/// operator's repository. Minted only by the arm that calls `make_worktree`: a resumed worktree or
+/// a `shared-cwd` directory is not this spawn's to remove, and gets [`Self::none`].
+struct PrelaunchWorktree {
+    repo: PathBuf,
+    target: Option<(PathBuf, String, Oid)>,
+}
+
+impl PrelaunchWorktree {
+    fn none() -> Self {
+        PrelaunchWorktree {
+            repo: PathBuf::new(),
+            target: None,
+        }
+    }
+
+    /// At the first-execution seam: from here the worktree may hold child work.
+    fn disarm(&mut self) {
+        self.target = None;
+    }
+}
+
+impl Drop for PrelaunchWorktree {
+    fn drop(&mut self) {
+        if let Some((path, branch, base)) = self.target.take() {
+            cleanup(&self.repo, &path, &branch, Some(&base));
+        }
+    }
+}
+
 /// The ref of a branch marion made for a task — exactly one segment under `marion/`, as
 /// [`select_workspace`] names it — or `None`, so cleanup can never be pointed at another branch.
 fn task_branch_ref(branch: &str) -> Option<String> {
@@ -2960,7 +3012,7 @@ mod tests {
             workspace: recorded.clone(),
             usage: None,
         });
-        let (workspace, _base, _claim) =
+        let (workspace, _base, _claim, _prelaunch) =
             select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id)
                 .expect("the recorded tree needs no repository question asked of it");
         assert_eq!(
@@ -3932,6 +3984,85 @@ mod tests {
         ] {
             assert_eq!(task_branch_ref(branch), None, "{branch:?}");
         }
+    }
+
+    /// **A spawn refused after its worktree exists takes the worktree back.** The worktree is the
+    /// first irreversible thing a spawn does, and several refusals can still follow it before any
+    /// process runs — here the protocol row with no agent bound, which has no child surface to
+    /// launch. Each one used to return with the directory, its `.git/worktrees/` registration and
+    /// the unchanged `marion/<task>` branch left in the operator's repository.
+    ///
+    /// Mutation: drop the prelaunch guard (or disarm it before the refusal) and all three remain.
+    #[test]
+    fn a_spawn_refused_after_its_worktree_exists_leaves_no_worktree_or_branch() {
+        let root = scratch("run-prelaunch-worktree");
+        let repo = fixture_repo(&root);
+        let types = repo.join(AGENT_TYPES_FILE);
+        std::fs::create_dir_all(types.parent().unwrap()).unwrap();
+        std::fs::write(
+            &types,
+            "[[agent]]\nname = \"bare-acp\"\nharness = \"acp\"\ndescription = \"No agent.\"\n",
+        )
+        .unwrap();
+        let state = root.join("state");
+        let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+        let env = Env {
+            project_dir: project.clone(),
+            state: state.clone(),
+            project_root: repo.clone(),
+            bridge: PathBuf::from("/bin/marion-supervisor"),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
+        };
+        let req = SpawnRequest {
+            agent_type: "bare-acp".into(),
+            prompt: "do the task".into(),
+            repo: repo.clone(),
+            acceptance_criteria: vec![],
+            verification: vec![],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: 1,
+            model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
+            resume: None,
+            profile: None,
+        };
+        let e = run_spawn_watched(
+            &env,
+            &req,
+            &TaskId("prelaunch".into()),
+            &Caller::root("root", builtin("codex").unwrap()),
+            &Unwatched,
+        )
+        .expect_err("the protocol row with no agent cannot be launched");
+        assert!(
+            matches!(e, SpawnError::Harness(_)),
+            "refused by the adapter, after the worktree: {e}"
+        );
+        let branches = marion_testsupport::git(&repo, &["branch", "--list", "marion/*"]);
+        assert!(branches.trim().is_empty(), "no task branch: {branches}");
+        let worktrees = marion_testsupport::git(&repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|l| l.starts_with("worktree "))
+                .count(),
+            1,
+            "only the operator's own checkout is registered: {worktrees}"
+        );
+        let node = crate::registry::Registry::boot(&project)
+            .unwrap()
+            .tree()
+            .nodes()
+            .iter()
+            .map(|n| n.agent_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(node.len(), 1, "one node was intended: {node:?}");
+        assert!(
+            !project.agent(&node[0]).worktree().exists(),
+            "no worktree directory"
+        );
     }
 
     /// A short capture that reads as a whole one is the invisible failure design §6.7 exists to
