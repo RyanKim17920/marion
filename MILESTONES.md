@@ -828,8 +828,8 @@ claude 2.1.283, operator's claude.ai login, haiku, $0.171 notional).** Interacti
 `--settings '{"hooks":{"Stop":[…]}}'` **fires** and a printed `{"decision":"block","reason":…}`
 **continues the turn with the reason in the model's context** (the model answered the reason's
 nonce; the second Stop call carries `stop_hook_active:true`) — `results/a/`. It **coexists** with
-the operator's hooks ("Ran 5 stop hooks": the overlay's plus the user-settings Stop hook and the
-codex, ralph-wiggum and warp plugin Stop hooks), and a hooks-only overlay **merges** with user
+the operator's hooks ("Ran 5 stop hooks": the overlay's plus the user-settings Stop hook and three
+plugin Stop hooks), and a hooks-only overlay **merges** with user
 settings (statusLine, user `UserPromptSubmit`/`SessionStart` hooks intact). **The last `--settings`
 wins**: with two flags only the later one's Stop hook ran (`results/e/`), so marion must merge an
 operator's own `--settings` into its overlay rather than append a second flag. **`disableAllHooks`
@@ -1336,8 +1336,8 @@ sent with the config's key. `OPENCODE_CONFIG_CONTENT='{"plugin":[]}'`: **both ma
 inherit-auth change made canned-only: an opencode plugin is one object carrying both its hooks and
 its `auth` provider, so dropping the user's plugin list drops any plugin that logs in, and the
 binary has no per-plugin or hooks-only disable (`OPENCODE_DISABLE_DEFAULT_PLUGINS` skips the
-built-in ones only). The row is left as it is; on this machine the operator's one plugin is
-`superpowers`, which supplies no auth.
+built-in ones only). The row is left as it is; on this machine the operator's one plugin
+supplies no auth.
 
 **`codex exec` resends the conversation: the Responses `input` grows with prior turns** — measured
 `ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
@@ -3198,7 +3198,7 @@ acceptance evidence, so every marker remains unchanged.
     marker moves.** Their rows had said the declaration channel was measured only on the headless
     surface. Measured now on the interactive shape, through the shipped facade and the matrix
     fixture on darwin 25.5.0: **opencode 1.17.3** (`OPENCODE_CONFIG_CONTENT`) — its `/mcp` dialog
-    lists `marion connected ✓ Enabled` beside the operator's own `pencil` and `semble` servers, so
+    lists `marion connected ✓ Enabled` beside the operator's own two servers, so
     the inline document merges with the user's config rather than replacing it, and the status bar
     counts marion in `⊙ 2 MCP`; **copilot 1.0.83** (`--additional-mcp-config @<path>`) — its `/mcp`
     view lists `marion · User · mcp:marion · 646 tokens` beside the built-in `github-mcp-server`,

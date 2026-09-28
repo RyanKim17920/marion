@@ -29,8 +29,8 @@ generic path's refusal-by-name exists to surface rather than hide.
 
 `copilot-acp-session-new-mcp-ignored.jsonl` — `session/new` declared the `marion` server in
 `mcpServers` (stdio: `name`, `command`, `args`, `env` as `[{name, value}]`, the shape S21 measured
-`opencode acp` starting). The session opened, the turn ran to `end_turn`, the model loaded its
-`mcp2cli` skill and then said, in as many words, *"I can't call the `marion` MCP server because its
+`opencode acp` starting). The session opened, the turn ran to `end_turn`, the model loaded one of the
+operator's own skills and then said, in as many words, *"I can't call the `marion` MCP server because its
 `report` tool is not available in this session."* The MCP server's log is **empty**: it was never
 started. Repeated with `"type": "stdio"` on the declaration and `--allow-all-tools` on argv: same
 result, zero frames.
