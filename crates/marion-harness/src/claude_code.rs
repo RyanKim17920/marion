@@ -207,6 +207,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // s38 (2.1.283): `--tools Read` without `Write`, the write scripted anyway, is refused by the
     // harness: `No such tool available: Write`, and no file lands.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 2.1.283: under `--tools Read` a scripted `Write` is refused (`No such tool \
                available: Write. Write is disabled for this session`), exit 0, no file",
     },

@@ -722,7 +722,9 @@ pub enum ReadOnly {
     /// The availability axis is the whole switch: a launch declared without `write` offers no tool
     /// that changes a file, and a scripted call to one is refused by the harness itself — claude's
     /// `--tools`, gemini's default approval mode, qwen's `--core-tools`, pi's `--tools`.
-    ToolsAxis { note: &'static str },
+    /// `verified` is whether that refusal was measured against a scripted write; a row that only
+    /// believes it (agy, which has no canned route) does not count as blocking writes.
+    ToolsAxis { verified: bool, note: &'static str },
     /// A pair on the row's own override channel ([`Field::Pairs`]), rendered after the launch's
     /// own pairs so it wins over them — codex's `sandbox_mode="read-only"`.
     Pair {
@@ -745,10 +747,22 @@ impl ReadOnly {
     /// The measurement behind the row's switch.
     pub const fn note(self) -> &'static str {
         match self {
-            ReadOnly::ToolsAxis { note }
+            ReadOnly::ToolsAxis { note, .. }
             | ReadOnly::Pair { note, .. }
             | ReadOnly::EnvVar { note, .. }
             | ReadOnly::ScopeOnly { note } => note,
+        }
+    }
+
+    /// **Whether a write is refused, not merely recorded**: a measured switch. `false` for
+    /// [`Self::ScopeOnly`] and for an unverified tools axis, where the empty writable scope is the
+    /// only guard and a write lands in the reviewer's worktree before it is recorded. A reviewer is
+    /// never chosen by default from a row that answers `false`, and one chosen explicitly says so.
+    pub const fn blocks_writes(self) -> bool {
+        match self {
+            ReadOnly::ToolsAxis { verified, .. } => verified,
+            ReadOnly::Pair { .. } | ReadOnly::EnvVar { .. } => true,
+            ReadOnly::ScopeOnly { .. } => false,
         }
     }
 

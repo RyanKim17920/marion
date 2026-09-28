@@ -199,6 +199,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // s38 (1.0.83): `--available-tools` is a filter the harness enforces.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 1.0.83: `--available-tools` without `create`/`edit`/`apply_patch` refuses a \
                scripted `create` (`Tool 'create' does not exist.`), no file",
     },

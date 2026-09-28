@@ -10798,6 +10798,22 @@ mod tests {
             ],
             "each row's measured switch, named one at a time so a new row cannot copy a neighbour"
         );
+        // Which rows can guarantee read-only: derived from the strategy, pinned by name only here.
+        let unguarded: Vec<&str> = Harness::ALL
+            .iter()
+            .filter(|h| !harness_spec(**h).read_only.blocks_writes())
+            .map(|h| h.as_str())
+            .collect();
+        assert_eq!(
+            unguarded,
+            ["cline", "agy", "acp"],
+            "a scope-only or unverified row records a write rather than refusing it"
+        );
+        for h in Harness::ALL {
+            if let ReadOnly::ScopeOnly { .. } = harness_spec(h).read_only {
+                assert!(!harness_spec(h).read_only.blocks_writes(), "{h}");
+            }
+        }
     }
 
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to

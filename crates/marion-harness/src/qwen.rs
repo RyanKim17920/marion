@@ -198,6 +198,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // s38 (0.23.0): `--core-tools` is an allowlist the harness enforces, `--yolo` notwithstanding.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 0.23.0: `--core-tools` without `write_file` refuses a scripted `write_file` \
                and `run_shell_command` (`not listed in the active core tools allowlist`), under \
                `--yolo`; no file",

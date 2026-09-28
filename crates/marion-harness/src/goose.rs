@@ -183,6 +183,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // extension carries every tool that writes. `GOOSE_MODE=chat` would withhold marion's
     // `report` too, so it is not the switch.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 1.52.0: without `--with-builtin developer` a scripted `write` is refused \
                (`Tool 'write' was not advertised for this model turn`), no file",
     },

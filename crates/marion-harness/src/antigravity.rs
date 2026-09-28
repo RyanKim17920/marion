@@ -133,6 +133,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // No `write` declared compiles no `--mode accept-edits`, and the default mode auto-denies a
     // prompting tool headless (s32). Not re-measured for s38: agy has no canned route.
     read_only: ReadOnly::ToolsAxis {
+        verified: false,
         note: "s32 on 1.2.8 (the operator's login): the default `request-review` mode auto-denies \
                a headless write (`denied_actions`); s38 could not re-measure it without a canned \
                route",

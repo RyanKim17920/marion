@@ -137,6 +137,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // s38 (0.80.2): each built-in is offered only when named.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 0.80.2: `--tools read` refuses a scripted `write` (`Tool write not found`), \
                no file",
     },

@@ -158,6 +158,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // s38 (0.53.0): without `auto_edit` there is no `write_file` and, headless, no shell.
     read_only: ReadOnly::ToolsAxis {
+        verified: true,
         note: "s38 on 0.53.0: the default approval mode registers neither `write_file` nor \
                `run_shell_command` headless; a scripted call is `tool_not_registered`, no file \
                (the `generalist` subagent's tools exclude `write_file` too)",
