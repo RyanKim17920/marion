@@ -39,4 +39,4 @@ targets = [
 install-path = "CARGO_HOME"
 # Pull requests get `dist plan` only: it checks this file and the workflow agree without spending
 # four release builds on every push.
-pr-run-mode = "plan"
+pr-run-mode = "upload"
