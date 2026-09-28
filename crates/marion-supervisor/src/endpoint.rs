@@ -9,7 +9,16 @@
 //!
 //! Every refusal names what to do: an unknown provider names `marion login --list`, a missing key
 //! names `marion login <id>`, and a provider serving no wire the harness can be pointed at lists
-//! both sides. Translating between wires (a gateway) is a later phase; today a route is `native`.
+//! both sides.
+//!
+//! # Routes
+//!
+//! A node's **route** is how its requests reach the provider. `native` where the provider serves a
+//! wire of the harness row's recipes: the harness is pointed at the provider with the key. Else
+//! `translated`, where marion's gateway bridges a harness wire to a provider wire
+//! (`marion_core::provider::TRANSLATIONS`): the harness is pointed at a gateway started for the node
+//! ([`open`]) with the gateway's own bearer, and the key stays in marion. A native route always
+//! wins, so the gateway runs only where the two wires genuinely differ.
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
@@ -18,15 +27,35 @@ use marion_harness::{Auth, LaunchSpec};
 
 use crate::credentials::{CredentialStore, Secret};
 
-/// The only route this phase resolves: the provider serves the harness's wire itself.
-pub const ROUTE_NATIVE: &str = "native";
+/// How a node's requests reach its provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The provider serves the harness's wire itself.
+    Native,
+    /// marion's gateway translates the harness's wire, `harness`, to the provider's
+    /// ([`Endpoint::wire`]).
+    Translated { harness: Wire },
+}
+
+impl Route {
+    /// The spelling a record carries (`Spawned.route`, `contract.child.route`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Route::Native => "native",
+            Route::Translated { .. } => "translated",
+        }
+    }
+}
 
 /// A resolved endpoint. `Debug` shows the key as `***` ([`Secret`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub provider: String,
+    /// The wire the provider is spoken to in, at [`Self::base_url`].
     pub wire: Wire,
     pub base_url: String,
+    /// Directly, or through marion's gateway.
+    pub route: Route,
     /// `None` for a provider that authenticates nothing (a local server).
     pub key: Option<Secret>,
     /// Which of the provider's credentials [`Self::key`] is — recorded, never the key itself.
@@ -59,7 +88,7 @@ pub enum EndpointError {
     LoggedOut { provider: String, tried: String },
     #[error(
         "{harness} speaks {harness_wires} and provider `{provider}` serves {provider_wires}; no \
-         wire is shared, and translating between them is not built yet"
+         wire is shared and marion's gateway translates none of those pairs"
     )]
     NoSharedWire {
         harness: Harness,
@@ -93,6 +122,21 @@ pub fn shared_wire<'p>(
     harness_wires
         .iter()
         .find_map(|w| provider.base_for(*w).map(|b| (*w, b)))
+}
+
+/// **The route when no wire is shared**: the first harness wire, in the row's order, that marion's
+/// gateway translates to a wire the provider serves — with that provider wire and its base.
+pub fn translated_wire<'p>(
+    harness_wires: &[Wire],
+    provider: &'p marion_core::provider::ProviderDef,
+) -> Option<(Wire, Wire, &'p str)> {
+    harness_wires.iter().find_map(|h| {
+        provider
+            .wires
+            .iter()
+            .find(|(p, _)| marion_core::provider::translates(*h, *p))
+            .map(|(p, b)| (*h, *p, b.as_str()))
+    })
 }
 
 /// The provider a launch names, and the model with any prefix removed — or `None` where it names
@@ -189,8 +233,12 @@ pub fn resolve_endpoint_with(
     let model = model
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| EndpointError::NoModel(id.clone()))?;
-    let (wire, base_url) = shared_wire(harness_wires, provider)
-        .map(|(w, b)| (w, b.to_string()))
+    let (wire, base_url, route) = shared_wire(harness_wires, provider)
+        .map(|(w, b)| (w, b.to_string(), Route::Native))
+        .or_else(|| {
+            translated_wire(harness_wires, provider)
+                .map(|(h, p, b)| (p, b.to_string(), Route::Translated { harness: h }))
+        })
         .ok_or_else(|| EndpointError::NoSharedWire {
             harness: agent_type.harness,
             provider: id.clone(),
@@ -224,6 +272,7 @@ pub fn resolve_endpoint_with(
         provider: id,
         wire,
         base_url,
+        route,
         key,
         credential,
         fallbacks,
@@ -293,23 +342,58 @@ pub fn resolve_for_launch(
     )
 }
 
+/// **The gateway a translated route needs**, started for one attempt of one node: `None` on a native
+/// route. The handle is the gateway's whole lifetime — the launch holds it while the node runs, and
+/// dropping it stops the gateway.
+pub fn open(ep: &Endpoint) -> Result<Option<crate::gateway::Gateway>, EndpointError> {
+    let Route::Translated { harness } = ep.route else {
+        return Ok(None);
+    };
+    crate::gateway::Gateway::start(
+        harness,
+        crate::gateway::Upstream {
+            provider: ep.provider.clone(),
+            wire: ep.wire,
+            base_url: ep.base_url.clone(),
+            model: ep.model.clone(),
+            key: ep.key.clone(),
+            key_header: ep.key_header,
+        },
+    )
+    .map(Some)
+    .map_err(|e| EndpointError::Config(format!("cannot start marion's gateway: {e}")))
+}
+
 /// Point a launch at `ep`: endpoint auth, the provider's base and key, the bare model — with the
-/// supervisor's own mode and endpoint kept for the bridge the node starts.
-pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint) {
+/// supervisor's own mode and endpoint kept for the bridge the node starts. On a translated route
+/// the harness is pointed at `gateway` instead, in its own wire, with the gateway's bearer: the key
+/// stays with the gateway.
+pub fn apply(launch: &mut LaunchSpec, ep: &Endpoint, gateway: Option<&crate::gateway::Gateway>) {
     launch.extra.tree_auth = Some(launch.auth);
     launch.extra.tree_base_url = launch.base_url.take();
     launch.auth = Auth::Endpoint;
-    launch.base_url = Some(ep.base_url.clone());
-    // A key-less local server still gets the placeholder canned mode uses: several harnesses
-    // refuse to start over an empty credential slot, and the server authenticates nothing.
-    launch.api_key = Some(match &ep.key {
-        Some(k) => k.clone(),
-        None => crate::run::PLACEHOLDER_API_KEY.into(),
-    });
     launch.model = Some(ep.model.clone());
-    launch.wire = Some(ep.wire);
     launch.provider = Some(ep.provider.clone());
-    launch.extra.key_header = Some(ep.key_header);
+    match (ep.route, gateway) {
+        (Route::Translated { harness }, Some(gw)) => {
+            launch.base_url = Some(gw.base_url());
+            launch.api_key = Some(gw.bearer().clone());
+            launch.wire = Some(harness);
+            launch.extra.key_header = Some(KeyHeader::Bearer);
+        }
+        _ => {
+            launch.base_url = Some(ep.base_url.clone());
+            // A key-less local server still gets the placeholder canned mode uses: several
+            // harnesses refuse to start over an empty credential slot, and the server
+            // authenticates nothing.
+            launch.api_key = Some(match &ep.key {
+                Some(k) => k.clone(),
+                None => crate::run::PLACEHOLDER_API_KEY.into(),
+            });
+            launch.wire = Some(ep.wire);
+            launch.extra.key_header = Some(ep.key_header);
+        }
+    }
 }
 
 /// The model a resumed node asks for: its journaled provider back in front of the provider's model
@@ -545,8 +629,9 @@ mod tests {
             fallbacks: vec![],
             model: "llama".into(),
             key_header: KeyHeader::XApiKey,
+            route: Route::Native,
         };
-        apply(&mut launch, &ep);
+        apply(&mut launch, &ep, None);
         assert_eq!(launch.auth, Auth::Endpoint);
         assert_eq!(
             launch.base_url.as_deref(),
@@ -565,6 +650,114 @@ mod tests {
             launch.extra.tree_base_url.as_deref(),
             Some("http://127.0.0.1:9/v1")
         );
+    }
+
+    /// **A translated route only where no wire is shared, and only for a pair the gateway
+    /// translates**: Claude Code (Anthropic Messages alone) on groq (Chat Completions alone) runs
+    /// through the gateway; on OpenRouter, which serves Anthropic Messages itself, it runs native;
+    /// codex (Responses alone) on groq is still refused, naming both sides.
+    #[test]
+    fn a_translated_route_is_taken_only_where_no_wire_is_shared_and_the_gateway_bridges_the_pair() {
+        let reg = Registry::seed();
+        let claude = ty(Harness::ClaudeCode, None, None);
+        let store = MemStore::with("groq", "gsk-test-key-1");
+        let ep = resolve_endpoint(Some("groq:llama-3.3-70b"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ep.route,
+            Route::Translated {
+                harness: Wire::AnthropicMessages
+            }
+        );
+        assert_eq!(ep.route.as_str(), "translated");
+        assert_eq!(
+            ep.wire,
+            Wire::OpenAiChat,
+            "the provider is spoken to in its own wire"
+        );
+        assert_eq!(ep.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(ep.key.as_ref().unwrap().expose(), "gsk-test-key-1");
+        let store = MemStore::with("openrouter", "sk-or-test-key");
+        let ep = resolve_endpoint(Some("openrouter:m"), &claude, ANTHROPIC, &reg, &store)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ep.route, Route::Native, "a native wire always wins");
+        assert_eq!(ep.wire, Wire::AnthropicMessages);
+        let e = resolve_endpoint(
+            Some("groq:llama"),
+            &ty(Harness::Codex, None, None),
+            &[Wire::OpenAiResponses],
+            &reg,
+            &MemStore::with("groq", "gsk-test-key-1"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("translates none"), "{e}");
+    }
+
+    /// **On a translated route the harness holds the gateway's bearer, never the key**: its base is
+    /// the gateway's, in the harness's own wire, read as a Bearer credential.
+    #[test]
+    fn apply_on_a_translated_route_points_the_harness_at_the_gateway_with_its_bearer() {
+        let mut launch = LaunchSpec {
+            cwd: "/wt".into(),
+            model: Some("groq:llama".into()),
+            prompt: String::new(),
+            tools: vec![],
+            allowed_tools: vec![],
+            mcp: marion_harness::McpDeclaration::Marion,
+            base_url: None,
+            api_key: None,
+            auth: Auth::Canned,
+            config_dir: "/c".into(),
+            resume: None,
+            wire: None,
+            provider: None,
+            extra: Default::default(),
+        };
+        let ep = Endpoint {
+            provider: "groq".into(),
+            wire: Wire::OpenAiChat,
+            base_url: "http://127.0.0.1:9/v1".into(),
+            route: Route::Translated {
+                harness: Wire::AnthropicMessages,
+            },
+            key: Some(parse_key("gsk-test-key-1").unwrap()),
+            credential: CredentialId::default_for("groq"),
+            fallbacks: vec![],
+            model: "llama".into(),
+            key_header: KeyHeader::XApiKey,
+        };
+        let gw = open(&ep)
+            .unwrap()
+            .expect("a translated route opens a gateway");
+        apply(&mut launch, &ep, Some(&gw));
+        assert_eq!(launch.base_url.as_deref(), Some(gw.base_url().as_str()));
+        assert!(
+            launch
+                .base_url
+                .as_deref()
+                .unwrap()
+                .starts_with("http://127.0.0.1:")
+        );
+        let handed = launch.api_key.as_ref().unwrap();
+        assert_eq!(handed, gw.bearer());
+        assert_ne!(
+            handed.expose(),
+            "gsk-test-key-1",
+            "the key stays with the gateway"
+        );
+        assert_eq!(launch.wire, Some(Wire::AnthropicMessages));
+        assert_eq!(launch.extra.key_header, Some(KeyHeader::Bearer));
+        assert_eq!(launch.model.as_deref(), Some("llama"));
+        assert_eq!(launch.provider.as_deref(), Some("groq"));
+        // A native route opens nothing.
+        let native = Endpoint {
+            route: Route::Native,
+            ..ep
+        };
+        assert!(open(&native).unwrap().is_none());
     }
 
     /// **A resumed endpoint node re-resolves its provider**: the model it re-requests carries the

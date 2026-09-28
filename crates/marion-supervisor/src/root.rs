@@ -384,6 +384,9 @@ pub struct RootNode {
     /// An endpoint root's resolution: its provider for the journal, its key so what the root
     /// writes is redacted before it is kept. `None` on a canned or live root.
     pub endpoint: Option<crate::endpoint::Endpoint>,
+    /// The gateway a translated route runs through (`crate::endpoint::open`), shared by every clone
+    /// of the node and stopped when the last one drops — which is when the root is done.
+    pub gateway: Option<std::sync::Arc<crate::gateway::Gateway>>,
     /// §9's change record, half-built: what the root's directory looked like when it started.
     pub change_base: RootChangeBase,
     /// The scope the root's writes are judged against (§5.4).
@@ -423,6 +426,20 @@ pub struct RootNode {
     /// prompt (`crate::continuation`). `None` on every other path, and on a `LaunchOnly` row with
     /// no measured continuation (`TurnDelivery::Continuation`).
     pub relaunch: Option<RootRelaunch>,
+}
+
+impl RootNode {
+    /// **Every credential this root's process or its provider holds**, for scrubbing what the root
+    /// writes: the provider's key, and on a translated route the gateway's bearer the harness was
+    /// handed instead.
+    fn held_keys(&self) -> impl Iterator<Item = &str> {
+        self.endpoint
+            .as_ref()
+            .and_then(|e| e.key.as_ref())
+            .map(|k| k.expose())
+            .into_iter()
+            .chain(self.gateway.as_ref().map(|g| g.bearer().expose()))
+    }
 }
 
 /// The inputs of a `LaunchOnly` root's compile, kept for its continuations. See
@@ -800,8 +817,12 @@ pub fn prepare_watched(
             ..Extras::default()
         },
     );
+    let gateway = match &endpoint {
+        Some(ep) => crate::endpoint::open(ep)?.map(std::sync::Arc::new),
+        None => None,
+    };
     if let Some(ep) = &endpoint {
-        crate::endpoint::apply(&mut launch, ep);
+        crate::endpoint::apply(&mut launch, ep, gateway.as_deref());
     }
     profiles.used(0);
     let ctx = SpawnCtx {
@@ -940,6 +961,7 @@ pub fn prepare_watched(
         path,
         prompt: spec.prompt.clone(),
         endpoint,
+        gateway,
         change_base,
         scope: RootScope::CeilingOnly {
             ceiling: agent_type.scope_ceiling.clone(),
@@ -1347,13 +1369,10 @@ fn launch_inner(
         crate::run::init_request_id(&node.agent_id),
     )
     .map(|es| {
-        es.scrubbing(
-            node.endpoint
-                .as_ref()
-                .and_then(|e| e.key.as_ref())
-                .map(|k| k.expose()),
-        )
-        .publishing_to(&node.agent_id, node.spending.clone())
+        for key in node.held_keys() {
+            es.scrub_key(key);
+        }
+        es.publishing_to(&node.agent_id, node.spending.clone())
     });
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
@@ -2033,10 +2052,7 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         }),
         provider: node.endpoint.as_ref().map(|e| e.provider.clone()),
-        route: node
-            .endpoint
-            .as_ref()
-            .map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        route: node.endpoint.as_ref().map(|e| e.route.as_str().to_string()),
         credential: node.endpoint.as_ref().map(|e| e.credential.to_string()),
     }
 }
@@ -2238,14 +2254,9 @@ fn launch_only_generation(
     adapter: &dyn HarnessAdapter,
 ) -> Result<RootOutcome, RootError> {
     let mut cmd = inv.command(tmpdir);
-    let secret = node
-        .endpoint
-        .as_ref()
-        .and_then(|e| e.key.as_ref())
-        .map(|k| k.expose());
-    let redact = |text: &str| match secret {
-        Some(key) => crate::endpoint::redact(text, key),
-        None => text.to_string(),
+    let redact = |text: &str| {
+        node.held_keys()
+            .fold(text.to_string(), |t, k| crate::endpoint::redact(&t, k))
     };
     // The one live seam this path has, with two readers: the session watch reads the session off
     // the first frame, and `events` keeps every line **as it lands**, so a running root's

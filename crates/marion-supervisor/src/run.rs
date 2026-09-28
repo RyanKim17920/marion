@@ -1041,6 +1041,23 @@ pub(crate) fn stopped_words(why: String) -> String {
     format!("marion ended the run: the harness was retrying a refused credential ({why})")
 }
 
+/// **Every credential an endpoint node held, removed from what it wrote**: the provider's key, and on
+/// a translated route the gateway's bearer the harness was handed instead.
+fn redact_run(
+    run: &mut ChildRun,
+    endpoint: Option<&crate::endpoint::Endpoint>,
+    gateway: Option<&crate::gateway::Gateway>,
+) {
+    let held = endpoint
+        .and_then(|e| e.key.as_ref())
+        .into_iter()
+        .chain(gateway.map(|g| g.bearer()));
+    for key in held {
+        run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
+        run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
+    }
+}
+
 /// What a failed attempt relaunches on, where it relaunches at all.
 enum Next {
     /// The endpoint's next stated API key.
@@ -1997,6 +2014,10 @@ pub fn run_spawn_watched(
     // recorded on its contract. Only a finished process is rotated, so never mid-turn; each
     // credential is tried once; and every attempt shares the node's one wall clock.
     let mut endpoint = endpoint;
+    // The attempt's gateway, where its route is translated: replaced with each attempt (a rotated
+    // key is the next gateway's), and held to the end of this function — the node's whole life,
+    // continuations included — so it stops when the node does.
+    let mut gateway: Option<crate::gateway::Gateway> = None;
     let mut failovers: Vec<marion_core::contract::CredentialFailover> = Vec::new();
     let mut probed_version: Option<String> = None;
     // The node's own `TMPDIR`, for every attempt below and removed when this function returns —
@@ -2011,6 +2032,15 @@ pub fn run_spawn_watched(
         if let (Some(es), Some(key)) = (&events, endpoint.as_ref().and_then(|e| e.key.as_ref())) {
             es.scrub_key(key.expose());
         }
+        drop(gateway.take());
+        gateway = match &endpoint {
+            Some(ep) => crate::endpoint::open(ep)?,
+            None => None,
+        };
+        // And of the gateway's bearer, which is what the harness itself holds on that route.
+        if let (Some(es), Some(gw)) = (&events, &gateway) {
+            es.scrub_key(gw.bearer().expose());
+        }
         let mut launch = child_launch_spec(
             env,
             req,
@@ -2022,7 +2052,7 @@ pub fn run_spawn_watched(
             &ch,
         );
         if let Some(ep) = &endpoint {
-            crate::endpoint::apply(&mut launch, ep);
+            crate::endpoint::apply(&mut launch, ep, gateway.as_ref());
         }
         launch.extra.profile_dir = profiles.dir(at);
         // The adapter's refusal — a tool this harness has none of, a pane it cannot draw — is the
@@ -2200,10 +2230,7 @@ pub fn run_spawn_watched(
         let mut run = run?;
         // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
         // its credential in an error would otherwise put it in the contract and the event log.
-        if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
-            run.stdout = crate::endpoint::redact(&run.stdout, key.expose());
-            run.stderr = crate::endpoint::redact(&run.stderr, key.expose());
-        }
+        redact_run(&mut run, endpoint.as_ref(), gateway.as_ref());
         // A kill never becomes a failover: an attempt the operator ended is the node's end.
         if killed {
             break (launch, inv, run, version);
@@ -2386,10 +2413,7 @@ pub fn run_spawn_watched(
                 Err(e) => return Err(e),
             };
             // Redacted like the first generation's capture, and for the same reason.
-            if let Some(key) = endpoint.as_ref().and_then(|e| e.key.as_ref()) {
-                next.stdout = crate::endpoint::redact(&next.stdout, key.expose());
-                next.stderr = crate::endpoint::redact(&next.stderr, key.expose());
-            }
+            redact_run(&mut next, endpoint.as_ref(), gateway.as_ref());
             let mut later = ChildOutcome::from_stream(
                 adapter.parse_stream(&next.stdout, next.exit),
                 next.exit,
@@ -2519,9 +2543,7 @@ pub fn run_spawn_watched(
         .or_else(|| inv.model.clone());
     // Where an endpoint node's requests went, beside the model that went there.
     contract.child.provider = endpoint.as_ref().map(|e| e.provider.clone());
-    contract.child.route = endpoint
-        .as_ref()
-        .map(|_| crate::endpoint::ROUTE_NATIVE.to_string());
+    contract.child.route = endpoint.as_ref().map(|e| e.route.as_str().to_string());
     contract.child.credential = endpoint.as_ref().map(|e| e.credential.to_string());
     contract.child.credential_failover = failovers;
     // **The third field sourced from what ran rather than from what was asked for**, joining
@@ -3078,7 +3100,7 @@ fn child_spawned_record(
             crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
         },
         provider: endpoint.map(|e| e.provider.clone()),
-        route: endpoint.map(|_| crate::endpoint::ROUTE_NATIVE.to_string()),
+        route: endpoint.map(|e| e.route.as_str().to_string()),
         credential: endpoint.map(|e| e.credential.to_string()),
     }
 }
