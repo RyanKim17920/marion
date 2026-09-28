@@ -319,7 +319,15 @@ fn tools_describing(agent_type_description: &str) -> Value {
                     "isolation": {"type": "string", "enum": ["worktree", "shared-cwd", "remote"]},
                     "timeout_secs": {"type": "integer"},
                     "allow_concurrent_writes": {"type": "boolean"},
-                    "background": {"type": "boolean"}
+                    "background": {"type": "boolean"},
+                    "review_of": {
+                        "type": "string",
+                        "description": "An ended child's agent id: the spawn becomes a read-only \
+                                        review of that child's work, placed under it, and \
+                                        returns the reviewer's findings. marion writes the \
+                                        reviewer's task itself, so pass an empty `prompt` and \
+                                        `acceptance_criteria`."
+                    }
                 },
                 "required": ["agent_type", "prompt", "acceptance_criteria"]
             }

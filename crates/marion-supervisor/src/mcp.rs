@@ -429,7 +429,10 @@ fn spawn_params(
     repo: Option<std::path::PathBuf>,
 ) -> marion_core::proto::params::AgentSpawnParams {
     marion_core::proto::params::AgentSpawnParams {
-        review_of: None,
+        // A parent asking for its child's review: the same spawn, the supervisor decides the rest.
+        review_of: args["review_of"]
+            .as_str()
+            .map(|id| marion_core::contract::AgentId(id.to_string())),
         // A node that backgrounds a child is owed its end as a message (turn delivery); read
         // before `caller` moves into its field below.
         notify_parent: caller.is_some() && args["background"].as_bool() == Some(true),
@@ -2083,6 +2086,17 @@ mod tests {
             None,
         );
         assert!(absent.verification.is_empty(), "absent asks for nothing");
+    }
+
+    /// **A parent's review of its child is the same spawn**, carrying the child's id to the
+    /// supervisor, which decides everything else; a spawn that names none reviews nothing.
+    #[test]
+    fn review_of_is_forwarded_to_the_spawn_params() {
+        let args = serde_json::json!({"prompt": "", "review_of": "019f-child"});
+        let p = spawn_params("claude", &args, None, Some("/r".into()));
+        assert_eq!(p.review_of, Some(AgentId("019f-child".into())));
+        let plain = spawn_params("claude", &serde_json::json!({"prompt": "go"}), None, None);
+        assert_eq!(plain.review_of, None);
     }
 
     /// **A node's background spawn asks the supervisor to announce the child's end to it**; a
