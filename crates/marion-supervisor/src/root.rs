@@ -1390,7 +1390,7 @@ fn launch_inner(
                 let tee = |ev: duplex::StreamEvent<'_>| {
                     tee_root_frame(events.as_ref(), &session, watcher, ev)
                 };
-                launch_app_server(node, tmpdir, bound, &tee, &started)
+                launch_app_server(node, tmpdir, bound, mcp_ready_timeout, &tee, &started)
             }
             // The root's frames go to **two** places now, and they are different kinds of destination:
             // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
@@ -2359,6 +2359,7 @@ fn launch_app_server(
     node: &RootNode,
     tmpdir: &Path,
     bound: StdDuration,
+    mcp_ready: StdDuration,
     tee: duplex::StreamSink<'_>,
     on_started: &dyn Fn(i32),
 ) -> Result<RootOutcome, RootError> {
@@ -2373,6 +2374,7 @@ fn launch_app_server(
         .clone()
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let on_line = |line: &str| tee_line(tee, line);
+    let stop_on = |frame: &Value| adapter.auth_refusal(frame);
     let run = crate::app_server::run_app_server(crate::app_server::AppServerSpec {
         inv: &node.invocation,
         tmpdir,
@@ -2380,11 +2382,13 @@ fn launch_app_server(
         opening,
         // A root always declares marion's server (`root_launch_spec`'s `McpDeclaration::Marion`).
         gate: Some(marion_harness::spec::MCP_ALIAS),
+        mcp_ready,
         prompt: &node.prompt,
         bound,
         on_started,
         on_line: Some(&on_line),
         turns: node.turns.clone(),
+        stop_on: Some(&stop_on),
     })?;
     let exit = crate::rpc::turn_exit(run.exit);
     Ok(RootOutcome {
@@ -2395,7 +2399,8 @@ fn launch_app_server(
         // the server answered with another thread is the more specific claim.
         failure: adapter
             .resume_refusal(&run.stdout, node.resumed.as_deref())
-            .or_else(|| adapter.stream_failure(&run.stdout)),
+            .or_else(|| adapter.stream_failure(&run.stdout))
+            .or_else(|| run.stopped.map(crate::run::stopped_words)),
         stderr: run.stderr,
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,

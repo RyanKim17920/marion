@@ -2138,6 +2138,7 @@ pub fn run_spawn_watched(
                     session.observe_line(line);
                 },
                 feed(),
+                &|frame| adapter.auth_refusal(frame),
             )?)
             .map(|r| ChildRun {
                 stdout: r.stdout,
@@ -2147,7 +2148,7 @@ pub fn run_spawn_watched(
                 // The row's answers decline every approval; a decline is the model's to read, not a
                 // permission marion withheld from an operator, so nothing is recorded here.
                 denied_permissions: vec![],
-                stopped: None,
+                stopped: r.stopped,
             })
             .map_err(SpawnError::from),
             LaunchPath::Duplex => duplex_child(
@@ -2815,6 +2816,7 @@ pub(crate) fn app_server_spec<'a>(
     on_started: &'a dyn Fn(i32),
     on_line: &'a dyn Fn(&str),
     turns: Option<crate::inbox::TurnFeed>,
+    stop_on: duplex::StopOn<'a>,
 ) -> Result<crate::app_server::AppServerSpec<'a>, SpawnError> {
     let channel = adapter
         .spec()
@@ -2831,11 +2833,13 @@ pub(crate) fn app_server_spec<'a>(
         opening,
         gate: (launch.mcp == marion_harness::McpDeclaration::Marion)
             .then_some(marion_harness::spec::MCP_ALIAS),
+        mcp_ready: CHILD_MCP_READY_TIMEOUT,
         prompt,
         bound,
         on_started,
         on_line: Some(on_line),
         turns,
+        stop_on: Some(stop_on),
     })
 }
 

@@ -45,8 +45,10 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 const DEATH_GRACE: Duration = Duration::from_millis(250);
 
 /// The longest a wait sleeps without a line, a wake or its deadline: the one check that is not an
-/// event — whether the server died while a process it started still holds its stdout open.
-const LIVENESS_TICK: Duration = Duration::from_millis(250);
+/// event — whether the server died while a process it started still holds its stdout open. A dead
+/// server almost always ends its stdout too (its children lose their stdin and exit), so this is a
+/// safety bound, in seconds, and never the path an ordinary session takes.
+const LIVENESS_TICK: Duration = Duration::from_secs(2);
 
 /// How often the bounded shutdown wait re-reads the server's exit status.
 const REAP_POLL: Duration = Duration::from_millis(20);
@@ -107,6 +109,9 @@ pub struct RpcRun {
     /// A pipe was still open when the drain bound expired, so the capture is a prefix (§6.7:
     /// recorded, never silent).
     pub capture_truncated: bool,
+    /// marion ended the session on a frame the row reads as final — a refused credential no retry
+    /// heals — for this reason. `None` on every session that ended any other way.
+    pub stopped: Option<String>,
 }
 
 /// A spawned server with its stdout read line by line and its stderr drained, so a server request
@@ -388,6 +393,7 @@ impl<'a, P: Peer> Driver<'a, P> {
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit,
                 capture_truncated: !(stdout_complete && stderr_complete),
+                stopped: None,
             },
             collected.len(),
         )

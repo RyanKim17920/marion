@@ -49,9 +49,6 @@ const FIRST_TURN_ID: u64 = 2;
 const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 /// `thread/start` answered in ~20 ms (P3); `thread/resume` reads a rollout from disk.
 const THREAD_BUDGET: Duration = Duration::from_secs(60);
-/// How long marion's MCP server is given to report ready. A bridge that has not started in a minute
-/// is not starting.
-const MCP_READY_BUDGET: Duration = Duration::from_secs(60);
 /// How long an interrupted turn is given to say so before the next interrupt, and how many are
 /// sent. P7 measured `turn/completed` `interrupted` at once; the repeat is for a server that missed
 /// one, and none of them is awaited.
@@ -72,6 +69,8 @@ pub struct AppServerSpec<'a> {
     pub opening: Value,
     /// The MCP server the first turn waits for, or `None` where the launch declares none.
     pub gate: Option<&'a str>,
+    /// How long that server may take to report ready before the run is refused.
+    pub mcp_ready: Duration,
     pub prompt: &'a str,
     /// The wall clock for the whole session.
     pub bound: Duration,
@@ -81,6 +80,9 @@ pub struct AppServerSpec<'a> {
     pub on_line: Option<&'a dyn Fn(&str)>,
     /// The node's inbox, for every turn after the first, or `None` for a one-turn session.
     pub turns: Option<TurnFeed>,
+    /// **A frame that ends the session now**, with why — the row's refused-credential reading
+    /// (`HarnessAdapter::auth_refusal`), which no retry heals, as on the duplex path.
+    pub stop_on: Option<crate::duplex::StopOn<'a>>,
 }
 
 /// Why marion has no transcript: each names what marion asked for and did not get, in the server's
@@ -137,7 +139,7 @@ pub enum AppServerError {
 }
 
 /// What the server told marion about its thread, off its notifications.
-struct AppPeer {
+struct AppPeer<'a> {
     channel: &'static RpcChannel,
     gate: Option<String>,
     startup: Option<Startup>,
@@ -145,14 +147,20 @@ struct AppPeer {
     closed: Vec<String>,
     /// Processes the server started for a turn and has not reported ended.
     running: Vec<i32>,
+    stop_on: Option<crate::duplex::StopOn<'a>>,
+    /// Why the session must end now, once a frame said so.
+    stopped: Option<String>,
 }
 
-impl Peer for AppPeer {
+impl Peer for AppPeer<'_> {
     fn answer(&mut self, request: &Value) -> Value {
         self.channel.answer(request)
     }
 
     fn notified(&mut self, frame: &Value) {
+        if let (None, Some(stop)) = (&self.stopped, self.stop_on) {
+            self.stopped = stop(frame);
+        }
         let c = self.channel;
         if let Some(turn) = c.closes_turn(frame) {
             self.closed.push(turn);
@@ -168,7 +176,7 @@ impl Peer for AppPeer {
     }
 }
 
-type Driver<'a> = crate::rpc::Driver<'a, AppPeer>;
+type Driver<'a> = crate::rpc::Driver<'a, AppPeer<'a>>;
 
 /// Drive one node over its thread server and hand back the transcript.
 pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError> {
@@ -197,6 +205,8 @@ pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError>
         startup: None,
         closed: Vec::new(),
         running: Vec::new(),
+        stop_on: spec.stop_on,
+        stopped: None,
     };
     let mut node = Driver::spawn(spec.inv, spec.tmpdir, spec.on_line, peer).map_err(|source| {
         AppServerError::Spawn {
@@ -206,24 +216,33 @@ pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError>
     })?;
     (spec.on_started)(node.pid);
 
+    // **The node's wall clock bounds its setup too**, and running out there is a timeout, not a
+    // refusal: marion's clock ended a node that was still coming up.
+    let out_of_time = |node: &mut Driver<'_>| Ok(node.finish(true).0);
     let version = env!("CARGO_PKG_VERSION");
-    request(
+    let Some(_) = request(
         &mut node,
         &c.initialize_request(INITIALIZE_ID, version),
         INITIALIZE_ID,
         c.initialize,
-        clip(deadline, HANDSHAKE_BUDGET),
-    )?;
+        (deadline, HANDSHAKE_BUDGET),
+    )?
+    else {
+        return out_of_time(&mut node);
+    };
     if let Some(n) = c.initialized_notification() {
         send(&mut node, &n, "initialized")?;
     }
-    let opened = request(
+    let Some(opened) = request(
         &mut node,
         &spec.opening,
         opening_id,
         step,
-        clip(deadline, THREAD_BUDGET),
-    )?;
+        (deadline, THREAD_BUDGET),
+    )?
+    else {
+        return out_of_time(&mut node);
+    };
     let Some(thread) = c.thread_of(&opened) else {
         let _ = node.finish(true);
         return Err(AppServerError::Refused {
@@ -231,8 +250,10 @@ pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError>
             answer: opened.to_string(),
         });
     };
-    if let Some(server) = spec.gate {
-        gate(&mut node, server, clip(deadline, MCP_READY_BUDGET))?;
+    if let Some(server) = spec.gate
+        && gate(&mut node, server, (deadline, spec.mcp_ready))?.is_none()
+    {
+        return out_of_time(&mut node);
     }
 
     let mut session = Session {
@@ -242,8 +263,11 @@ pub fn run_app_server(spec: AppServerSpec<'_>) -> Result<RpcRun, AppServerError>
         deadline,
         turns: spec.turns.as_ref(),
     };
-    let finished = session.run(&mut node, spec.prompt)?;
-    Ok(node.finish(!finished).0)
+    let end = session.run(&mut node, spec.prompt)?;
+    let stopped = node.peer.stopped.take();
+    let mut run = node.finish(end == End::TimedOut).0;
+    run.stopped = stopped;
+    Ok(run)
 }
 
 /// Write one frame, the failure named after its step.
@@ -254,17 +278,31 @@ fn send(node: &mut Driver<'_>, frame: &Value, step: &'static str) -> Result<(), 
     })
 }
 
-/// Send `frame` and wait for its answer, refusing on silence or on a JSON-RPC error.
+/// A setup step's bound: the node's wall clock, and the step's own budget inside it.
+type Bound = (Instant, Duration);
+
+/// Whether a wait that came back empty ran into the node's wall clock — a timeout — rather than
+/// the step's own budget or a server that died, which are refusals.
+fn out_of_time(node: &mut Driver<'_>, deadline: Instant) -> bool {
+    Instant::now() >= deadline && !exited(node)
+}
+
+/// Send `frame` and wait for its answer, refusing on silence or on a JSON-RPC error. `None` when
+/// the node's wall clock ran out first.
 fn request(
     node: &mut Driver<'_>,
     frame: &Value,
     id: u64,
     step: &'static str,
-    until: Instant,
-) -> Result<Value, AppServerError> {
+    (deadline, budget): Bound,
+) -> Result<Option<Value>, AppServerError> {
     send(node, frame, step)?;
+    let until = clip(deadline, budget);
     let waited = until.saturating_duration_since(Instant::now());
     let Some(line) = node.settle(id, until) else {
+        if out_of_time(node, deadline) {
+            return Ok(None);
+        }
         return Err(node.refuse(|end, frames| AppServerError::Silent {
             step,
             waited,
@@ -277,14 +315,20 @@ fn request(
         let _ = node.finish(true);
         return Err(AppServerError::Refused { step, answer: line });
     }
-    Ok(answer)
+    Ok(Some(answer))
 }
 
-/// §6.1 step 8 on this surface: wait for the server to report marion's MCP server ready.
-fn gate(node: &mut Driver<'_>, server: &str, until: Instant) -> Result<(), AppServerError> {
+/// §6.1 step 8 on this surface: wait for the server to report marion's MCP server ready. `None`
+/// when the node's wall clock ran out first.
+fn gate(
+    node: &mut Driver<'_>,
+    server: &str,
+    (deadline, budget): Bound,
+) -> Result<Option<()>, AppServerError> {
+    let until = clip(deadline, budget);
     let waited = until.saturating_duration_since(Instant::now());
     match node.settle_until(until, |d| d.peer.startup.take()) {
-        Some(Startup::Ready) => Ok(()),
+        Some(Startup::Ready) => Ok(Some(())),
         Some(Startup::Failed(why)) => {
             let _ = node.finish(true);
             Err(AppServerError::McpFailed {
@@ -292,6 +336,7 @@ fn gate(node: &mut Driver<'_>, server: &str, until: Instant) -> Result<(), AppSe
                 why,
             })
         }
+        None if out_of_time(node, deadline) => Ok(None),
         None => Err(node.refuse(|end, _| AppServerError::McpNeverReady {
             server: server.to_string(),
             waited,
@@ -309,6 +354,18 @@ struct Session<'s> {
     turns: Option<&'s TurnFeed>,
 }
 
+/// How a session's turn loop ended.
+#[derive(Debug, PartialEq, Eq)]
+enum End {
+    /// The last turn settled and the inbox sealed, or the server went away.
+    Finished,
+    /// marion's wall clock expired: the running turn was interrupted and its processes killed.
+    TimedOut,
+    /// A frame said the session cannot succeed (a refused credential): what the turn started is
+    /// killed, and the server is shut down.
+    Stopped,
+}
+
 /// A turn request marion is waiting on the answer to, and the message it carries, if any.
 struct Pending {
     id: u64,
@@ -323,9 +380,9 @@ impl Session<'_> {
         id
     }
 
-    /// Every turn from the prompt to the inbox's seal. `false` when marion cut the session short on
-    /// its wall clock.
-    fn run(&mut self, node: &mut Driver<'_>, prompt: &str) -> Result<bool, AppServerError> {
+    /// Every turn from the prompt to the inbox's seal, or to the wall clock, or to a frame that ends
+    /// the session.
+    fn run(&mut self, node: &mut Driver<'_>, prompt: &str) -> Result<End, AppServerError> {
         let first = self.id();
         send(
             node,
@@ -348,6 +405,9 @@ impl Session<'_> {
         loop {
             let mut woken = false;
             let settled = node.settle_until(self.deadline, |d| {
+                if d.peer.stopped.is_some() {
+                    return Some(());
+                }
                 woken |= d.take_wake();
                 // Answers to what marion sent: a start names its turn, a steer the turn it joined.
                 for p in std::mem::take(&mut pending) {
@@ -407,12 +467,22 @@ impl Session<'_> {
                 (pending.is_empty() && running.is_none()).then_some(())
             });
             if settled.is_none() {
+                // A server that died answers nothing more; its stream says what became of the turn.
+                if exited(node) {
+                    return Ok(End::Finished);
+                }
                 self.interrupt(node, current.as_deref());
-                return Ok(false);
+                return Ok(End::TimedOut);
+            }
+            if node.peer.stopped.is_some() {
+                // The turn is still retrying what cannot succeed: end what it started, then let the
+                // server go on stdin EOF.
+                crate::kill::kill_descendants(node.pid);
+                return Ok(End::Stopped);
             }
             // The boundary: a carried message, else the inbox's next, else a hold or the end.
             let Some(feed) = self.turns else {
-                return Ok(true);
+                return Ok(End::Finished);
             };
             let msg = match carried.pop_front() {
                 Some(m) => m,
@@ -424,12 +494,16 @@ impl Session<'_> {
                             .settle_until(self.deadline, |d| d.take_wake().then_some(()))
                             .is_none()
                         {
-                            return Ok(false);
+                            return Ok(if exited(node) {
+                                End::Finished
+                            } else {
+                                End::TimedOut
+                            });
                         }
                         // Round again with nothing in flight: the boundary takes the message.
                         continue;
                     }
-                    None => return Ok(true),
+                    None => return Ok(End::Finished),
                 },
             };
             let id = self.id();
@@ -443,7 +517,7 @@ impl Session<'_> {
                 Err(e) => {
                     feed.source
                         .dropped(&msg.id, &format!("the server's stdin closed: {e}"));
-                    return Ok(true);
+                    return Ok(End::Finished);
                 }
             }
         }
@@ -480,6 +554,11 @@ impl Session<'_> {
     }
 }
 
+/// Whether the server's process has exited.
+fn exited(node: &mut Driver<'_>) -> bool {
+    matches!(node.child.try_wait(), Ok(Some(_)))
+}
+
 /// The answer to `id`, taken out of the driver's index so a later request never sees it.
 fn answer_to(node: &mut Driver<'_>, id: u64) -> Option<String> {
     let at = node.responses.iter().position(|(k, _)| *k == id)?;
@@ -508,6 +587,7 @@ mod tests {
     ///   interrupt is answered once and closes the turn, **leaving the sleep running** (P7);
     /// - `deaf`: as `sleep`, and an interrupt is never answered;
     /// - `late`: as `hold`, but the steer is refused as arriving after the turn (P6's error);
+    /// - `auth`: the turn reports a provider 401 it is retrying, and never completes;
     /// - `never` / `failed`: marion's MCP server never reports ready / reports failed;
     /// - `refuse`: a `thread/resume` is refused as a missing rollout (P8).
     const FAKE: &str = r#"
@@ -543,6 +623,9 @@ for line in sys.stdin:
         out({"method": "turn/started", "params": {"turn": {"id": u}}})
         if mode == "simple" or (mode in ("hold", "late") and turn > 1):
             out({"id": 100 + turn, "method": "item/commandExecution/requestApproval", "params": {"turnId": u}})
+        elif mode == "auth":
+            for n in range(3):
+                out({"method": "error", "params": {"error": {"message": "Reconnecting... %d/5" % (n + 1), "additionalDetails": "unexpected status 401 Unauthorized"}, "threadId": "t-1", "turnId": u, "willRetry": True}})
         elif mode in ("sleep", "deaf"):
             child = subprocess.Popen(["sleep", "60"]); note("pid", pid=child.pid)
             out({"method": "item/started", "params": {"turnId": u, "item": {"type": "commandExecution", "id": "c1", "processId": str(child.pid), "status": "inProgress"}}})
@@ -595,11 +678,13 @@ for line in sys.stdin:
                 channel: &APP,
                 opening: APP.opening(1, "/wt", None),
                 gate: Some("marion"),
+                mcp_ready: Duration::from_secs(20),
                 prompt: "go",
                 bound,
                 on_started: &|_| {},
                 on_line: None,
                 turns,
+                stop_on: None,
             }
         }
 
@@ -695,8 +780,19 @@ for line in sys.stdin:
         assert!(bed.read("turn/start").is_none());
 
         let bed = Bed::new("as-never", "never");
-        let e = run_app_server(bed.spec(Duration::from_secs(2), None)).unwrap_err();
+        let e = run_app_server(AppServerSpec {
+            mcp_ready: Duration::from_secs(1),
+            ..bed.spec(Duration::from_secs(20), None)
+        })
+        .unwrap_err();
         assert!(matches!(e, AppServerError::McpNeverReady { .. }), "{e}");
+        assert!(bed.read("turn/start").is_none());
+
+        // The node's own wall clock running out first is a timeout, not a refusal: marion's clock
+        // ended a node still coming up.
+        let bed = Bed::new("as-never-bound", "never");
+        let run = run_app_server(bed.spec(Duration::from_secs(1), None)).expect("a timed-out run");
+        assert!(run.exit.timed_out, "{run:?}");
         assert!(bed.read("turn/start").is_none());
     }
 
@@ -862,6 +958,27 @@ for line in sys.stdin:
             serde_json::json!({"threadId": "t-1", "turnId": "u-1"})
         );
         assert_eq!(bed.count("turn/interrupt"), 1, "answered, so not repeated");
+    }
+
+    /// **A refused credential ends the session at once** — no retry heals it — with the reason,
+    /// not as a timeout.
+    #[test]
+    fn a_refused_credential_ends_the_session_at_once() {
+        let bed = Bed::new("as-auth", "auth");
+        let stop = |f: &Value| f.to_string().contains("401").then(|| "401".to_string());
+        let started = Instant::now();
+        let run = run_app_server(AppServerSpec {
+            stop_on: Some(&stop),
+            ..bed.spec(Duration::from_secs(30), None)
+        })
+        .expect("a session");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!run.exit.timed_out, "{run:?}");
+        assert_eq!(run.stopped.as_deref(), Some("401"));
     }
 
     /// **An interrupt nobody answers is repeated, never awaited**, and the command is killed all
