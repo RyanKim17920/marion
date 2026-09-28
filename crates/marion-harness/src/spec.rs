@@ -503,6 +503,33 @@ impl TurnDelivery {
         }
     }
 
+    /// **When a message queued for a node taking turns this way reaches its model**: the clause a
+    /// steer's acknowledgement ends with ("reaches codex-impl 8ea3 …"). Read off the strategy
+    /// alone, so a row that changes strategy changes what marion promises, and no harness is named.
+    pub const fn arrival(self) -> &'static str {
+        match self {
+            TurnDelivery::TypedTurn {
+                mid_turn: MidTurn::Fold,
+                ..
+            } => "at its next tool round, or as its next turn if none is running",
+            TurnDelivery::TypedTurn {
+                mid_turn: MidTurn::Queue,
+                ..
+            } => "when its current turn ends, as its next turn",
+            TurnDelivery::Continuation { .. } => {
+                "when its current run ends: it takes messages only between runs, each as a \
+                 relaunch of its session"
+            }
+            TurnDelivery::McpChannel { .. } => {
+                "at its next tool round or turn, pushed on its MCP channel"
+            }
+            TurnDelivery::TerminalPaste { .. } => {
+                "once its terminal goes quiet, typed in as its next turn"
+            }
+            TurnDelivery::None { .. } => "never: its harness has no measured way to take a turn",
+        }
+    }
+
     /// The paste S31 measured on codex, opencode, copilot and claude's TUIs: bracketed, then `\r`
     /// 50 ms later (0 ms submitted on all four; 50 is margin), once the terminal has been quiet
     /// for 1500 ms (busy spinners repaint at ≤ 454 ms, idle output is ~0). One constructor so the
@@ -2103,6 +2130,52 @@ pub enum Constraint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **What a steer's acknowledgement promises is the row's own strategy.** A live run was told
+    /// its message "reaches codex at its next tool round or turn" while its `exec` row took one
+    /// only between runs, and it arrived a whole generation later. Only a folding typed row may
+    /// promise a tool round; a relaunch row says the message waits for the run to end.
+    #[test]
+    fn a_delivery_promises_only_the_arrival_its_strategy_measured() {
+        let fold = TurnDelivery::TypedTurn {
+            mid_turn: MidTurn::Fold,
+            note: "",
+        };
+        let queue = TurnDelivery::TypedTurn {
+            mid_turn: MidTurn::Queue,
+            note: "",
+        };
+        let relaunch = TurnDelivery::Continuation { note: "" };
+        assert!(fold.arrival().contains("next tool round"));
+        for d in [
+            queue,
+            relaunch,
+            TurnDelivery::bracketed_paste(BootSignal::FirstDraw, ""),
+        ] {
+            assert!(
+                !d.arrival().contains("tool round"),
+                "{d:?}: {}",
+                d.arrival()
+            );
+        }
+        assert!(queue.arrival().starts_with("when its current turn ends"));
+        assert!(
+            relaunch.arrival().starts_with("when its current run ends")
+                && relaunch.arrival().contains("only between runs"),
+            "{}",
+            relaunch.arrival()
+        );
+        // Every row's headless and interactive strategy says something, and none names a harness.
+        for h in marion_core::Harness::ALL {
+            for shape in [NodeShape::Headless, NodeShape::Interactive] {
+                let words = delivery_for(crate::adapter::harness_spec(h), shape).arrival();
+                assert!(!words.is_empty());
+                for name in ["codex", "claude", "opencode", "gemini", "pi", "copilot"] {
+                    assert!(!words.contains(name), "{words}");
+                }
+            }
+        }
+    }
 
     /// A row reads the key through [`Field::ApiKey`] to place it where its harness looks; a
     /// `{:?}` of the fields it reads from must not show it.
