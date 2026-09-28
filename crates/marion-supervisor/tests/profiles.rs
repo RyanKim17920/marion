@@ -111,21 +111,34 @@ esac
     write_executable(&bin.join("claude"), &script);
 }
 
-/// A `codex` that holds when it is the root and otherwise records itself — `codex|<CODEX_HOME>|
-/// <argv>` — answers `login status` from `.fake-login`, and ends as `.fake-mode` says.
+/// A `codex` (the app-server shim, `common::app_server`) that holds when its turn is the root's and
+/// otherwise records itself — `codex|<CODEX_HOME>|<argv>` — answers `login status` from
+/// `.fake-login`, and ends its turn as `.fake-mode` says.
 fn fake_codex(bin: &Path, log: &Path, gate: &Path, root_argv: &Path) {
     let script = format!(
         r#"#!/bin/sh
 case "$1" in --version) echo "codex-cli 0.155.1"; exit 0 ;; esac
-case "$*" in
-  *{root}*)
-    printf '%s TOKEN_FROM_ENV="%s"\n' "$*" "${{MARION_NODE_TOKEN-}}" > {root_argv}
-    waited=0
-    while [ ! -e {gate} ]; do
-      sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 2400 ] && exit 0
-    done
-    exit 0 ;;
-esac
+if [ -n "$MARION_SHIM_TURN" ]; then
+  case "$1" in
+    *{root}*)
+      printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "${{MARION_NODE_TOKEN-}}" > {root_argv}
+      waited=0
+      while [ ! -e {gate} ]; do
+        sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 2400 ] && exit 0
+      done
+      exit 0 ;;
+  esac
+  printf 'codex|%s|%s\n' "${{CODEX_HOME-<unset>}}" "$MARION_SHIM_ARGV" >> {log}
+  mode=ok
+  [ -f "${{CODEX_HOME:-/nonexistent}}/.fake-mode" ] && mode=$(cat "$CODEX_HOME/.fake-mode")
+  case "$mode" in
+    limit)
+      # app-server's `error` notification (conformance P-errors' shape), in codex's words.
+      printf '%s\n' '{{"method":"error","params":{{"error":{{"message":"You'"'"'ve hit your usage limit.","codexErrorInfo":"usageLimitExceeded"}},"willRetry":false}}}}'
+      exit 1 ;;
+    *) exit 0 ;;
+  esac
+fi
 printf 'codex|%s|%s\n' "${{CODEX_HOME-<unset>}}" "$*" >> {log}
 # The status probe carries the row's update switch ahead of its own argv, as codex takes it.
 [ "$1" = -c ] && shift 2
@@ -133,21 +146,14 @@ if [ "$1" = login ] && [ "$2" = status ]; then
   if [ -e "$CODEX_HOME/.fake-login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
   echo "Not logged in"; exit 1
 fi
-mode=ok
-[ -f "${{CODEX_HOME:-/nonexistent}}/.fake-mode" ] && mode=$(cat "$CODEX_HOME/.fake-mode")
-case "$mode" in
-  limit)
-    printf '%s\n' '{{"type":"error","message":"You'"'"'ve hit your usage limit.","codex_error_info":"usage_limit_exceeded","resets_at":1790541600}}'
-    exit 1 ;;
-  *) exit 0 ;;
-esac
+exit 0
 "#,
         root = ROOT_MARKER,
         gate = shell_quote(gate),
         log = shell_quote(log),
         root_argv = shell_quote(root_argv),
     );
-    write_executable(&bin.join("codex"), &script);
+    common::app_server::fake_codex(bin, &script);
 }
 
 struct Bed {
@@ -641,17 +647,16 @@ fn a_codex_child_gets_its_home_and_a_usage_limit_is_only_a_notice() {
     assert_eq!(runs.len(), 1, "no relaunch on a limit: {runs:?}");
     assert_eq!(runs[0].0, bed.dir("codex", "cwork"));
     assert!(failovers(&bed.journal()).is_empty());
+    // app-server's `error` notification carries no reset instant (S36's schema: `TurnError` is
+    // `{message, codexErrorInfo, additionalDetails}`), so none is claimed.
     assert!(
-        description(&contract).starts_with("profile `cwork` (codex) hit its usage limit; resets "),
+        description(&contract).starts_with("profile `cwork` (codex) hit its usage limit"),
         "{}",
         description(&contract)
     );
     assert!(matches!(
         cause(&contract),
-        Some(FailureCause::UsageLimit {
-            resets_at: Some(1_790_541_600),
-            ..
-        })
+        Some(FailureCause::UsageLimit { .. })
     ));
 }
 

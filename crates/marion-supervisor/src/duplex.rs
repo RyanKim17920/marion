@@ -1171,7 +1171,7 @@ mod tests {
                 ("acp-vtcode", Some(LaunchPath::Acp)),
                 ("claude", Some(LaunchPath::Duplex)),
                 ("claude-orchestrator", Some(LaunchPath::Duplex)),
-                ("codex", Some(LaunchPath::LaunchOnly)),
+                ("codex", Some(LaunchPath::AppServer)),
                 ("gemini", Some(LaunchPath::LaunchOnly)),
                 ("gemini-orchestrator", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),

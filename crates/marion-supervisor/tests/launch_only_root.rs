@@ -1,7 +1,9 @@
 //! `marion run` on a **`LaunchOnly` root** (design §3.4, §6.1 step 8, §9), end to end through the
-//! real `marion` binary, for **all three `LaunchOnly` harnesses**.
+//! real `marion` binary, for the **`LaunchOnly` harnesses gemini and opencode**. codex was the third
+//! until its headless row moved to `codex app-server` (S36), a typed surface whose readiness is
+//! gated before the turn; `tests/codex_app_server.rs` drives it.
 //!
-//! Three properties, and each one is asserted for codex, gemini and opencode separately:
+//! Three properties, and each one is asserted for gemini and opencode separately:
 //!
 //! 1. a root whose turn never reached marion's bridge **and produced no answer** (no frame, a
 //!    non-zero exit, or a failure in its stream) **fails loudly, naming the cause** — it does
@@ -14,25 +16,25 @@
 //!    connection-refused still hung at 180 s, no backoff ceiling), so without a bound
 //!    `marion run opencode` is an unbounded hang.
 //!
-//! # Three roots, nine tests, and never a loop
+//! # Two roots, one test per property each, and never a loop
 //!
 //! `claude-code` is deliberately absent: it is the **duplex** root path (`root_path` dispatches on
 //! `surfaces().control`), where the prompt is a frame written after launch and readiness is gated
 //! *before* the turn instead of asserted after it. It has no post-hoc bridge assertion to test here
-//! at all. The other three are `launch_only_with_protocol_events()` and take this path.
+//! at all, and neither has codex's app-server. The two here are
+//! `launch_only_with_protocol_events()` and take this path.
 //!
 //! None of the three properties is harness-specific — every one of them is `root::launch_only`
-//! behaviour, and that function is the same code for all three — but **the evidence each property
+//! behaviour, and that function is the same code for both — but **the evidence each property
 //! rests on is not**. Each harness spells its stream, its argv and its configuration channel its
 //! own way:
 //!
 //! | | argv | one marion call, in-stream | where marion's declaration lands |
 //! |---|---|---|---|
-//! | codex | `exec --json … <prompt>` | `item.completed` → `mcp_tool_call`, `server: "marion"` | `$CODEX_HOME/config.toml` |
 //! | gemini | `-m <model> --output-format stream-json -p <prompt>` | `tool_use` → `tool_name: "mcp_marion_spawn"` | `$GEMINI_CLI_SYSTEM_SETTINGS_PATH` |
 //! | opencode | `run --pure --format json --title … -m <model> <prompt>` | `tool_use` → `part.tool: "marion_spawn"` | `$XDG_CONFIG_HOME/opencode/opencode.json` |
 //!
-//! That is exactly the shape that breaks for one harness while two keep passing, so each is its own
+//! That is exactly the shape that breaks for one harness while the other keeps passing, so each is its own
 //! `#[test]`, named for its harness. A loop would report the first failure and hide the other two —
 //! the line `cross_product.rs` and `depth_gate.rs` take, for the same reason, and the [`Node`] table
 //! below is theirs.
@@ -45,13 +47,13 @@
 //! streams no real CLI will produce on demand (one that reaches nothing, and one that never exits).
 //!
 //! **The stub does not hide the per-harness argv differences; it is how they are measured.** Each
-//! stub is named for its own harness (`codex`, `gemini`, `opencode`) and reached through `PATH`, so
+//! stub is named for its own harness (`gemini`, `opencode`) and reached through `PATH`, so
 //! the argv and env marion compiled are exercised verbatim rather than restated here: the stub
 //! records what it was given and the test reads it back, against that harness's own launch shape.
 //!
 //! What a stub cannot witness is the other half — whether the real CLI *accepts* that argv and that
-//! configuration document. `cross_product.rs` covers that for all three of these harnesses as
-//! roots, against real binaries, and `m1_hop.rs` for codex end to end.
+//! configuration document. `cross_product.rs` covers that for both of these harnesses as roots,
+//! against real binaries.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,10 +78,10 @@ const RUN_BOUND: Duration = Duration::from_secs(60);
 /// several cargo builds, seconds.
 ///
 /// Reproduced rather than inferred: delaying the stub's first line past a 2 s bound fails
-/// `a_codex_root_that_never_exits…` with an empty pid set, in a run of **entirely normal
+/// `a_…_root_that_never_exits…` with an empty pid set, in a run of **entirely normal
 /// duration** — no clock is overrun, so the timing assertions all pass and only the witness is
-/// missing. That is the signature of the failures this file saw under load, on codex and on
-/// opencode, and all three harnesses run the identical stub and launch path.
+/// missing. That is the signature of the failures this file saw under load (then on codex's exec
+/// row and on opencode), and every harness here runs the identical stub and launch path.
 ///
 /// **The bound is the second lever, not the first.** The primary fix is ordering: the pid is
 /// recorded in `stub_harness`'s prologue, ahead of the argv write and ahead of the `env`
@@ -120,7 +122,7 @@ const HANG_BOUND: Duration = Duration::from_secs(6);
 /// than the narrow class it catches.
 const STARVATION_CEILING: Duration = Duration::from_secs(45);
 
-// --- the three LaunchOnly harnesses, as data ----------------------------------------------------
+// --- the LaunchOnly harnesses, as data ---------------------------------------------------------
 
 /// One `LaunchOnly` harness, in the only role this file gives it: **root**.
 ///
@@ -129,24 +131,14 @@ const STARVATION_CEILING: Duration = Duration::from_secs(45);
 /// test. See the module docs.
 #[derive(Debug, Clone, Copy)]
 struct Node {
-    /// What `marion run <this>` is given. `codex` and `codex-impl` are one built-in; the shorter
-    /// spelling is the one the design's prose uses.
+    /// What `marion run <this>` is given.
     agent_type: &'static str,
     harness: Harness,
     /// The program marion will exec — and therefore the name the stub must take on `PATH`.
     program: &'static str,
-    /// `--model`, and what the **compiled** argv must then carry. `None` on codex twice over: its
-    /// canned launch compiles no `-m` however loudly one is asked for (`codex::compile_exec`), so
-    /// there is nothing to pass and nothing to find.
+    /// `--model`, and what the **compiled** argv must then carry.
     model: Option<&'static str>,
 }
-
-const CODEX: Node = Node {
-    agent_type: "codex",
-    harness: Harness::Codex,
-    program: "codex",
-    model: None,
-};
 
 const GEMINI: Node = Node {
     agent_type: "gemini-orchestrator",
@@ -166,9 +158,8 @@ const OPENCODE: Node = Node {
 
 /// One marion tool call in **this harness's own stream shape**, made and **answered**.
 ///
-/// The three shapes are not interchangeable and nothing translates between them: codex names the
-/// server and the verb as two fields of an `mcp_tool_call` item, gemini puts the harness-native
-/// spelling in `tool_name`, opencode in `part.tool`. The two harness-native spellings are taken
+/// The two shapes are not interchangeable and nothing translates between them: gemini puts the
+/// harness-native spelling in `tool_name`, opencode in `part.tool`. The two spellings are taken
 /// from the adapter's own `marion_tool_name` rather than restated, because that mapping *is* the
 /// §3.1 contract under test — a frame written by hand here would keep passing if the adapter's
 /// spelling changed underneath it.
@@ -177,12 +168,11 @@ const OPENCODE: Node = Node {
 /// whether a verb was *answered*, and gemini answers a call in a separate `tool_result` frame
 /// paired back by `tool_id` (S12's event set, `tests/fixtures/s12/README.md`). A lone `tool_use`
 /// was never a complete recording of a working gemini turn; it merely satisfied a gate that asked
-/// the weaker question. codex revises its own item in place and opencode emits only terminal
-/// states, so those two already carried their verdict in the frame they had.
+/// the weaker question. opencode emits only terminal states, so it already carried its verdict in
+/// the frame it had.
 fn reached_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
-        Harness::Codex => r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}"#.to_string(),
         Harness::Gemini => format!(
             "{}\n{}",
             format_args!(
@@ -198,10 +188,16 @@ fn reached_the_bridge(node: &Node) -> String {
         // Unreachable by construction — the table has three entries and claude-code is not one of
         // them — and a `panic!` rather than a fabricated frame, because a duplex harness arriving
         // here would mean this file had grown a root path it does not test.
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen | Harness::Antigravity | Harness::Pi => {
+        Harness::Copilot
+        | Harness::Goose
+        | Harness::Cline
+        | Harness::Qwen
+        | Harness::Antigravity
+        | Harness::Pi => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
+        Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
         ),
@@ -289,29 +285,13 @@ fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 }
 
 /// **The launch shape, per harness.** §6.1 step 8's defining property of this surface is that the
-/// prompt is an argv element, and each of the three puts it somewhere different — positionally at
-/// the end for codex and opencode, as the argument to `-p` for gemini. The surrounding flags are
-/// asserted with it because a prompt that arrived without `--json` / `stream-json` / `--format json`
+/// prompt is an argv element, and each puts it somewhere different — positionally at the end for
+/// opencode, as the argument to `-p` for gemini. The surrounding flags are asserted with it because
+/// a prompt that arrived without `stream-json` / `--format json`
 /// would produce no machine-readable stream for the bridge assertion to read.
 fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String], prompt: &str) {
     let h = node.harness;
     match h {
-        Harness::Codex => {
-            assert_eq!(
-                args.first().map(String::as_str),
-                Some("exec"),
-                "{h}: the non-interactive surface is `codex exec`: {args:?}"
-            );
-            assert!(
-                args.iter().any(|a| a == "--json"),
-                "{h}: without --json there is no stream to assert readiness from: {args:?}"
-            );
-            assert_eq!(
-                args.last().map(String::as_str),
-                Some(prompt),
-                "{h}: the prompt is the trailing positional argument (§6.1 step 8): {args:?}"
-            );
-        }
         Harness::Gemini => {
             assert_eq!(
                 value_of(args, "--output-format"),
@@ -356,10 +336,10 @@ fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String]
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
+        Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
     }
-    // The **compiled** model, not the requested one. codex's canned launch compiles no `-m` at all,
-    // and asserting its absence is what keeps this from being a check only two harnesses make.
+    // The **compiled** model, not the requested one.
     assert_eq!(
         value_of(args, "-m"),
         node.model,
@@ -377,7 +357,6 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
     // a **directory** whose layout beneath is the harness's own — which is why marion creates the
     // parents rather than writing straight into `config_dir`.
     let (var, beneath): (&str, &[&str]) = match h {
-        Harness::Codex => ("CODEX_HOME", &["config.toml"]),
         Harness::Gemini => ("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &[]),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
         Harness::Copilot
@@ -389,6 +368,7 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
+        Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
     };
     let value = recorded_env(dir, var).unwrap_or_else(|| {
@@ -531,28 +511,13 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
     // configured rather than merely started.
     assert_launched_the_way_this_harness_is_launched(node, &recorded_argv(&dir), prompt);
     assert_the_bridge_declaration_was_written(node, &dir);
-    // codex's generated config names `MARION_PROVIDER_KEY` as its provider `env_key`, and a
-    // provider whose key is unset refuses to start. The row compiles it from the launch's own
-    // credential (the per-run token here); no other harness reads it, so none is handed it.
-    let key = recorded_env(&dir, "MARION_PROVIDER_KEY");
-    if node.harness == marion_core::harness::Harness::Codex {
-        assert!(
-            key.is_some_and(|v| !v.is_empty()),
-            "codex: the canned LaunchOnly root carries the key its provider names"
-        );
-    } else {
-        assert!(
-            key.is_none(),
-            "{}: only codex reads MARION_PROVIDER_KEY",
-            node.harness
-        );
-    }
+    // Only codex's generated config names `MARION_PROVIDER_KEY`, so no root here is handed it.
+    assert!(
+        recorded_env(&dir, "MARION_PROVIDER_KEY").is_none(),
+        "{}: only codex reads MARION_PROVIDER_KEY",
+        node.harness
+    );
     assert!(recorded_env(&dir, "MARION_DUMMY_KEY").is_none());
-}
-
-#[test]
-fn a_codex_root_that_never_reached_the_bridge_fails_loudly_instead_of_exiting_zero() {
-    a_silent_root_is_refused(&CODEX, "silent-codex");
 }
 
 #[test]
@@ -567,8 +532,9 @@ fn an_opencode_root_that_never_reached_the_bridge_fails_loudly_instead_of_exitin
 
 /// **A root that answered in-stream and exited 0 without calling marion is a normal run.** The
 /// stub emits one JSON frame — an answer, in the stream the harness writes — so there is a
-/// transcript, a clean exit and no failure claim. Measured live: `marion run codex --prompt "say
-/// hello"` printed "Hello!" and exited 1. Now it exits 0 and says nothing was delegated.
+/// transcript, a clean exit and no failure claim. Measured live (then on codex's `exec` row):
+/// `marion run codex --prompt "say hello"` printed "Hello!" and exited 1. Now it exits 0 and says
+/// nothing was delegated.
 fn a_root_that_answered_plainly_exits_zero_with_a_note(node: &Node, name: &str) {
     let dir = scratch(&format!("lo-{name}"));
     let bin = stub_harness(
@@ -600,8 +566,8 @@ fn a_root_that_answered_plainly_exits_zero_with_a_note(node: &Node, name: &str) 
 }
 
 #[test]
-fn a_codex_root_that_answered_plainly_exits_zero_with_a_note() {
-    a_root_that_answered_plainly_exits_zero_with_a_note(&CODEX, "plain-codex");
+fn an_opencode_root_that_answered_plainly_exits_zero_with_a_note() {
+    a_root_that_answered_plainly_exits_zero_with_a_note(&OPENCODE, "plain-opencode");
 }
 
 // --- property 2: one marion call is enough ------------------------------------------------------
@@ -651,11 +617,6 @@ fn a_root_that_called_marion_succeeds(node: &Node, name: &str) {
         node.harness,
         run.stdout
     );
-}
-
-#[test]
-fn a_codex_root_succeeds_once_one_marion_call_appears_in_its_stream() {
-    a_root_that_called_marion_succeeds(&CODEX, "reached-codex");
 }
 
 #[test]
@@ -717,16 +678,12 @@ fn a_root_runs_in_its_own_temp_dir_and_leaves_nothing_in_it() {
 
 /// The same one marion call as [`reached_the_bridge`], in the same harness-native shape, **refused**.
 ///
-/// One of the three is a recorded shape and two are constructed, and the difference is stated
-/// rather than smoothed over:
+/// One of the two is a recorded shape and one is constructed, and the difference is stated rather
+/// than smoothed over:
 ///
 /// * **opencode is measured.** S13 recorded `{"status":"error","error":"The user rejected
 ///   permission to use this specific tool call."}` on the tool part, with the run continuing and
 ///   exiting 0 — `opencode::parse_stream` has read that shape since S13.
-/// * **codex is constructed.** `tests/fixtures/s6/` records the `mcp_tool_call` item carrying
-///   `result`, `error` and `status`, but only ever with `status: "completed"`, `error: null`. The
-///   failed spelling here is the obvious complement of the recorded success and is **not** a
-///   capture of a real refusal.
 /// * **gemini is constructed.** S12 records the `tool_result` frame and its `status`, but captured
 ///   only `"success"`; it also redacted the `tool_id` on the `tool_use` and on the `tool_result`
 ///   differently, so even the pairing of a result to its call is an assumption about that stream,
@@ -734,7 +691,6 @@ fn a_root_runs_in_its_own_temp_dir_and_leaves_nothing_in_it() {
 fn refused_at_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
-        Harness::Codex => r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"result":null,"error":"spawn is not permitted here","status":"failed"}}"#.to_string(),
         Harness::Gemini => format!(
             "{}\n{}",
             format_args!(
@@ -747,10 +703,16 @@ fn refused_at_the_bridge(node: &Node) -> String {
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")
         ),
-        Harness::Copilot | Harness::Goose | Harness::Cline | Harness::Qwen | Harness::Antigravity | Harness::Pi => {
+        Harness::Copilot
+        | Harness::Goose
+        | Harness::Cline
+        | Harness::Qwen
+        | Harness::Antigravity
+        | Harness::Pi => {
             unreachable!("a LaunchOnly root this file does not drive yet")
         }
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
+        Harness::Codex => unreachable!("not a LaunchOnly root — codex is Typed(AppServer) (S36)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
         ),
@@ -841,11 +803,6 @@ fn assert_the_refused_root_exited(node: &Node, dir: &Path, run: &Run) {
         "{}: nothing outlives the run, the supervisor included: {survivors:?}",
         node.harness
     );
-}
-
-#[test]
-fn a_codex_root_whose_only_marion_call_was_refused_is_not_a_success() {
-    a_root_whose_only_call_was_refused_is_not_a_success(&CODEX, "refused-codex");
 }
 
 #[test]
@@ -1179,11 +1136,6 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
 }
 
 #[test]
-fn a_codex_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it_dead() {
-    a_hanging_root_is_killed_with_its_group(&CODEX, "bound-codex");
-}
-
-#[test]
 fn a_gemini_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it_dead() {
     a_hanging_root_is_killed_with_its_group(&GEMINI, "bound-gemini");
 }
@@ -1216,9 +1168,9 @@ fn events_file(state: &Path) -> Option<PathBuf> {
 }
 
 #[test]
-fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
-    let node = &CODEX;
-    let dir = scratch("lo-live-codex");
+fn an_opencode_roots_stream_is_recorded_while_it_is_still_running() {
+    let node = &OPENCODE;
+    let dir = scratch("lo-live-opencode");
     let gate = dir.join("gate");
     let frame = reached_the_bridge(node);
     let bin = stub_harness(
@@ -1262,7 +1214,7 @@ fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
         recorded = events_file(&state)
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_default();
-        if recorded.contains("mcp_tool_call") {
+        if recorded.contains("marion_spawn") {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -1273,7 +1225,7 @@ fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
     // `observed_live: false`: only a line recorded as it landed passes this.
     let live = recorded
         .lines()
-        .any(|l| l.contains("mcp_tool_call") && l.contains(r#""observed_live":true"#));
+        .any(|l| l.contains("marion_spawn") && l.contains(r#""observed_live":true"#));
     assert!(
         live,
         "a running LaunchOnly root's events.jsonl did not hold the frame it printed, recorded \
@@ -1285,7 +1237,7 @@ fn a_codex_roots_stream_is_recorded_while_it_is_still_running() {
     assert!(prompt.contains("Delegate the task."), "{prompt}");
     let final_record = std::fs::read_to_string(&events).unwrap();
     assert_eq!(
-        final_record.matches("mcp_tool_call").count(),
+        final_record.matches("marion_spawn").count(),
         1,
         "a frame recorded live must not be recorded again from the capture:\n{final_record}"
     );

@@ -39,7 +39,6 @@ use marion_supervisor::events::EventReader;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     Liveness, Scratch, fixture_repo, liveness, persisted_contracts, scratch, survivors, sweep,
-    write_executable,
 };
 
 mod common;
@@ -56,7 +55,8 @@ const SURVIVOR_ROOT: &str = "NODE-KILL-SURVIVOR-ROOT-7c2e";
 const VICTIM_CHILD: &str = "NODE-KILL-VICTIM-CHILD-7c2e";
 
 /// A `codex` that blocks on `gate`, with one descendant in its own process group, and records both
-/// pids under `pids/<marker>`.
+/// pids under `pids/<marker>` — the app-server shim (`common::app_server`), whose turn runs this
+/// hook with the prompt as `$1`; the leader is the server marion spawned, the hook's parent.
 fn shim(dir: &Path, gate: &Path, pids: &Path) {
     let bin = dir.join("codex");
     let ticks = SHIM_LIFE.as_millis() / 50;
@@ -75,7 +75,7 @@ esac
 ( waited=0
   while [ ! -e {gate} ] && [ "$waited" -le {ticks} ]; do sleep 0.05; waited=$((waited + 1)); done ) &
 mkdir -p {pids}
-echo "$$ $!" > {pids}/$name.tmp && mv {pids}/$name.tmp {pids}/$name
+echo "$PPID $!" > {pids}/$name.tmp && mv {pids}/$name.tmp {pids}/$name
 waited=0
 while [ ! -e {gate} ] && [ "$waited" -le {ticks} ]; do
   sleep 0.05
@@ -89,7 +89,7 @@ exit 0
         gate = common::shell_quote(gate),
         pids = common::shell_quote(pids),
     );
-    write_executable(&bin, script);
+    assert_eq!(common::app_server::fake_codex(dir, &script), bin);
 }
 
 struct Bed {

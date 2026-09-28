@@ -55,7 +55,9 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
 use marion_core::root_change::{RootChange, RootDelta};
 use marion_supervisor::socket::project_root;
-use marion_testsupport::{fixture_repo, write_executable};
+use marion_testsupport::fixture_repo;
+
+mod common;
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -76,7 +78,7 @@ const FLEET_BOUND: Duration = Duration::from_secs(180);
 /// `BridgeNeverReached`. Copied deliberately rather than shared with `root_change_record.rs`: that
 /// file's constant is part of *its* fixture, and a shared one would make either file's stream shape
 /// changeable from the other.
-const REACHED_THE_BRIDGE: &str = r#"echo '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}'"#;
+const REACHED_THE_BRIDGE: &str = r#"echo '{"method":"item/completed","params":{"item":{"id":"item_0","type":"mcpToolCall","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}}'"#;
 
 /// A **short** state directory, shared by every project in one test.
 ///
@@ -211,12 +213,12 @@ impl Drop for Fleet {
 /// root launch's `--version` probe ahead of `body`, so the probe neither announces a start nor
 /// parks on the barrier.
 fn stub(dir: &Path, body: &str) -> PathBuf {
+    // codex's headless row is app-server (S36): the shim serves the protocol and runs `body` as
+    // the turn.
     let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).expect("stub bin dir");
-    let program = bin.join("codex");
-    write_executable(
-        &program,
-        format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
+    common::app_server::fake_codex(
+        &bin,
+        &format!("if [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
     );
     bin
 }

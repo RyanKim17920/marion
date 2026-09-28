@@ -1,16 +1,16 @@
 //! **Turn delivery by continuation, end to end: a message for a `LaunchOnly` node relaunches the
 //! same node under its own session, with the message as the prompt.**
 //!
-//! A `codex exec` child takes one turn from argv and exits; it has no channel for a second one. Its
-//! row's `TurnDelivery::Continuation` says how the next turn reaches it instead: the row's resume
-//! spelling (`exec resume <thread>`) with the message rendered as the prompt, as a new generation
-//! of the same node. These runs drive a **real** codex through marion's canned provider, so the
-//! relaunch is a real harness resuming its own thread:
+//! An `opencode run` child takes one turn from argv and exits; it has no channel for a second one.
+//! Its row's `TurnDelivery::Continuation` says how the next turn reaches it instead: the row's
+//! resume spelling (`run --session <ses_…>`) with the message rendered as the prompt, as a new
+//! generation of the same node. These runs drive a **real** opencode through marion's canned
+//! provider, so the relaunch is a real harness resuming its own session:
 //!
 //! 1. **A steer during a §7.6 hold resumes the node.** The child backgrounds a grandchild and
 //!    stops unreported, so marion holds it in `Blocked(Descendants)`. The hold is the node's turn
 //!    boundary: an operator's `node/steer` there ends it, and the child comes back as generation
-//!    two — a second `Spawned`, `exec resume <thread>` carrying the rendered message on argv, and a
+//!    two — a second `Spawned`, `run --session <ses_…>` carrying the rendered message on argv, and a
 //!    provider request that replays the first turn's calls beside the message, delivered
 //!    `continuation:gen2`. Generation two reports over the still-live grandchild, and the
 //!    contract carries that report, `reported_early`.
@@ -18,20 +18,19 @@
 //! 3. **No observed session, no continuation**: the message is dropped, naming why.
 //! 4. **The wall clock is the node's, not the generation's.** A wedged generation two is killed
 //!    when the *original* bound runs out, so the node ends `TimedOut` inside its one bound.
-//!
-//! 5. **A `LaunchOnly` root is continued the same way**: a `marion run codex` root that
-//!    backgrounds a codex child is relaunched with the child's end as its second generation — and
-//!    so is a `marion run opencode` root, over `opencode run --session`.
+//! 5. **A `LaunchOnly` root is continued the same way**: a `marion run opencode` root that
+//!    backgrounds a codex child is relaunched with the child's end as its second generation.
 //! 6. **A steer into a running `opencode run` node** is taken at its first generation's stop and
 //!    carried by a second, `--session` over the store the first left in the node's directory.
 //!
-//! Cells 1 and 2 run per [`Row`], the child's harness as data, so a second `LaunchOnly` row with a
-//! resume grammar is a second `Row` value. pi had one until its row moved to `--mode rpc`, where a
-//! steer and a child's end reach it in the same process (`tests/pi_rpc.rs`).
+//! Cells 1–4 run per [`Row`], the child's harness as data, so a second `LaunchOnly` row with a
+//! resume grammar is a second `Row` value. codex had one until its row moved to `codex
+//! app-server` (S36), and pi until `--mode rpc` (S34): on both a steer and a child's end reach
+//! the node in the same process (`tests/codex_app_server.rs`, `tests/pi_rpc.rs`).
 //!
-//! The bed is `descendant_gate.rs`'s: a detached supervisor, a `codex` shim ahead of the real
-//! binary on its `PATH`, the root and grandchild blocked on gate files, and every wait a fact in
-//! the journal.
+//! The bed is `descendant_gate.rs`'s: a detached supervisor, the root and grandchild codex
+//! app-server shims blocked on gate files (`common::app_server`), the child's program shimmed ahead
+//! of the real binary on its `PATH`, and every wait a fact in the journal.
 //!
 //! ```sh
 //! cargo test -p marion-supervisor --test continuation
@@ -99,8 +98,8 @@ const BOUND: Duration = Duration::from_secs(180);
 /// **The child under test's harness, as data.** The cells are one scenario each, run once per
 /// row: what varies between harnesses is only what a row already states — the program, the agent
 /// type, the name marion's verbs carry on its wire, and how its resume spelling names the session
-/// on argv. The root and the grandchild are always gated `codex` shims, since neither ever reaches
-/// a model.
+/// on argv. The root and the grandchild are always gated codex app-server shims, since neither ever
+/// reaches a model.
 struct Row {
     /// The program on `PATH`, and the name the child's shim takes.
     program: &'static str,
@@ -112,25 +111,31 @@ struct Row {
     resume: fn(&str) -> String,
     /// What the shim answers `--version` with; `None` asks the real binary.
     version: Option<&'static str>,
+    /// The model the child is spawned with, where its row needs one named.
+    model: Option<&'static str>,
 }
 
-/// codex speaks the Responses wire, whose dispatch form is the bare verb (`responses.rs`), and
-/// resumes with `exec resume <thread>`.
-const CODEX: Row = Row {
-    program: "codex",
-    agent_type: "codex-impl",
-    verb: bare_verb,
-    resume: codex_resume,
-    version: Some("codex-cli 0.146.0-marion-continuation-shim"),
+/// opencode speaks the Chat Completions wire, where marion's verbs are `marion_<verb>`, and
+/// resumes with `run --session <ses_…>` over the store its first generation left (S31, s36).
+const OPENCODE: Row = Row {
+    program: "opencode",
+    agent_type: "opencode",
+    verb: opencode_verb,
+    resume: opencode_resume,
+    version: None,
+    model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL),
 };
 
-fn bare_verb(verb: &str) -> String {
-    verb.to_string()
+fn opencode_verb(verb: &str) -> String {
+    format!("marion_{verb}")
 }
 
-fn codex_resume(id: &str) -> String {
-    format!("resume {id}")
+fn opencode_resume(id: &str) -> String {
+    format!("--session {id}")
 }
+
+/// The root's and the grandchild's agent type: codex, whose app-server shim holds them on gates.
+const HOLDER_TYPE: &str = "codex-impl";
 
 /// The child's first turn backgrounds a grandchild and stops without reporting; a turn that
 /// carries the steer reports, and so does one that carries the grandchild's end. First match wins,
@@ -164,7 +169,7 @@ fn script(row: &Row) -> Script {
                 turns: vec![ScriptedCall::new(
                     (row.verb)("spawn"),
                     json!({
-                        "agent_type": CODEX.agent_type,
+                        "agent_type": HOLDER_TYPE,
                         "prompt": GRANDCHILD_PROMPT,
                         "acceptance_criteria": ["the grandchild was released"],
                         "writable_scope": ["src/**"],
@@ -181,8 +186,8 @@ fn script(row: &Row) -> Script {
 
 /// A `program` that runs the real binary for the child under test — its first launch and every
 /// continuation of it — logging each such argv (record-separated, since a rendered message spans
-/// lines), sleeps on the wedge marker, and blocks every other
-/// invocation on its gate file. `version` is its `--version` line, or the real binary's.
+/// lines), sleeps on the wedge marker, and blocks every other invocation on its gate file.
+/// `version` is its `--version` line, or the real binary's.
 fn shim(dir: &Path, bed: &Gates, program: &str, version: Option<&str>) -> PathBuf {
     let bin = dir.join(program);
     let real = which(program);
@@ -232,6 +237,31 @@ exit 0
     );
     write_executable(&bin, script);
     bin
+}
+
+/// The root's and the grandchild's `codex`: the app-server shim, each turn held on its gate.
+fn holder_shim(dir: &Path, bed: &Gates) -> PathBuf {
+    common::app_server::fake_codex(
+        dir,
+        &format!(
+            r#"case "$1" in --version) echo "codex-cli 0.155.1-marion-continuation-shim"; exit 0 ;; esac
+case "$1" in
+  *{root}*) gate={root_gate} ;;
+  *) gate={grandchild_gate} ;;
+esac
+waited=0
+while [ ! -e "$gate" ]; do
+  sleep 0.05
+  waited=$((waited + 1))
+  if [ "$waited" -gt 4000 ]; then exit 0; fi
+done
+exit 0
+"#,
+            root = ROOT_MARKER,
+            root_gate = common::shell_quote(&bed.root),
+            grandchild_gate = common::shell_quote(&bed.grandchild),
+        ),
+    )
 }
 
 /// An operator's steer, answered: the message id its journal records carry.
@@ -302,7 +332,7 @@ impl Bed {
     }
 
     fn start_with(row: &Row, tag: &str, child_timeout_secs: u64, child_prompt: String) -> Bed {
-        for program in [row.program, CODEX.program] {
+        for program in [row.program, "codex"] {
             assert!(
                 on_path(program),
                 "this test drives a REAL {program}; put `{program}` ({}) on PATH",
@@ -323,11 +353,9 @@ impl Bed {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&shim_dir).unwrap();
         std::fs::write(&gates.child, b"go").unwrap();
-        // The child's shim, and the gated root's and grandchild's (the same one on the codex row).
+        // The child's shim, and the gated root's and grandchild's.
         shim(&shim_dir, &gates, row.program, row.version);
-        if row.program != CODEX.program {
-            shim(&shim_dir, &gates, CODEX.program, CODEX.version);
-        }
+        holder_shim(&shim_dir, &gates);
 
         let reqlog = dir.join("provider-requests.jsonl");
         let server = CannedServer::start(Config {
@@ -351,7 +379,7 @@ impl Bed {
             &state,
             None,
             params(
-                CODEX.agent_type,
+                HOLDER_TYPE,
                 format!("{ROOT_MARKER}: hold the tree open"),
                 Some(&repo),
                 SHIM_TIMEOUT_SECS,
@@ -361,7 +389,10 @@ impl Bed {
             &sup,
             &state,
             Some(&root),
-            params(row.agent_type, child_prompt, None, child_timeout_secs),
+            AgentSpawnParams {
+                model: row.model.map(str::to_string),
+                ..params(row.agent_type, child_prompt, None, child_timeout_secs)
+            },
         );
         let journal = project.journal();
         Bed {
@@ -454,12 +485,12 @@ fn requests_carrying(reqlog: &Path, needle: &str) -> Vec<Value> {
         .collect()
 }
 
-/// **An operator's steer during a §7.6 hold is the held codex child's next turn**: a relaunch
-/// under the thread codex named, resolving the message `continuation:gen2`. Generation two reports
-/// with the grandchild still live, so §7.6 accepts it at once as reported early.
+/// **An operator's steer during a §7.6 hold is the held opencode child's next turn**: a relaunch
+/// under the session opencode named, resolving the message `continuation:gen2`. Generation two
+/// reports with the grandchild still live, so §7.6 accepts it at once as reported early.
 #[test]
-fn a_steer_during_a_descendant_hold_resumes_the_codex_child_as_its_second_generation() {
-    steer_during_a_hold_is_the_second_generation(&CODEX);
+fn a_steer_during_a_descendant_hold_resumes_the_opencode_child_as_its_second_generation() {
+    steer_during_a_hold_is_the_second_generation(&OPENCODE);
 }
 
 fn steer_during_a_hold_is_the_second_generation(row: &Row) {
@@ -485,8 +516,7 @@ fn steer_during_a_hold_is_the_second_generation(row: &Row) {
     let thread = thread_of(&bed.journal, &child);
 
     // The relaunch is the row's resume spelling with the rendered message as the prompt. (The
-    // canned run declares marion in the codex config document both generations read; a live
-    // resume's `-c` redeclaration is pinned in `marion-harness`.)
+    // canned run declares marion in the config document both generations read.)
     let argvs = bed.child_argvs();
     assert_eq!(
         argvs.len(),
@@ -582,12 +612,12 @@ fn steer_during_a_hold_is_the_second_generation(row: &Row) {
     );
 }
 
-/// **A child's end resumes its held codex parent**: the parent stopped unreported with a
+/// **A child's end resumes its held opencode parent**: the parent stopped unreported with a
 /// background child live, so §7.6 holds it; the child's end, queued into the parent's inbox, ends
 /// the hold as the parent's second generation, which reads it and reports.
 #[test]
-fn a_childs_end_during_a_descendant_hold_resumes_the_codex_parent() {
-    childs_end_during_a_hold_resumes_the_parent(&CODEX);
+fn a_childs_end_during_a_descendant_hold_resumes_the_opencode_parent() {
+    childs_end_during_a_hold_resumes_the_parent(&OPENCODE);
 }
 
 fn childs_end_during_a_hold_resumes_the_parent(row: &Row) {
@@ -646,13 +676,13 @@ fn childs_end_during_a_hold_resumes_the_parent(row: &Row) {
     assert_eq!(completion["reported_early"], json!(false), "{completion}");
 }
 
-/// **No observed session, no continuation**: a steer queued while a codex child runs whose stream
-/// never names its thread is dropped at the child's stop, with that reason, and the node ends on
-/// its one generation.
+/// **No observed session, no continuation**: a steer queued while an opencode child runs whose
+/// stream never names its session is dropped at the child's stop, with that reason, and the node
+/// ends on its one generation.
 #[test]
 fn a_message_for_a_node_whose_stream_named_no_session_is_dropped_with_the_reason() {
     let bed = Bed::start_with(
-        &CODEX,
+        &OPENCODE,
         "sessionless",
         CHILD_TIMEOUT_SECS,
         format!("{SESSIONLESS_MARKER}: run without naming a thread"),
@@ -682,7 +712,7 @@ fn a_message_for_a_node_whose_stream_named_no_session_is_dropped_with_the_reason
 /// first generation's bound runs out, not a fresh bound after its own launch.
 #[test]
 fn a_continuation_runs_on_what_is_left_of_the_nodes_own_wall_clock() {
-    let bed = Bed::start(&CODEX, "shared-clock", SHORT_CHILD_TIMEOUT_SECS);
+    let bed = Bed::start(&OPENCODE, "shared-clock", SHORT_CHILD_TIMEOUT_SECS);
     let child = bed.child.agent_id.clone();
     bed.wait_for_hold();
 
@@ -719,22 +749,11 @@ const ROOT_PUSH_MARKER: &str = "MARION-CONTINUATION-ROOT-PUSH-81c3";
 const ROOT_CHILD_MARKER: &str = "MARION-CONTINUATION-ROOT-CHILD-81c3";
 const ROOT_TOOK_THE_END: &str = "Took my child's end as my second turn.";
 
-/// **A `LaunchOnly` root is continued the same way**: a codex root under `marion run` backgrounds
-/// a codex child and ends its turn; marion holds the root while the child's end is owed, relaunches
-/// it under its thread with the rendered end as the prompt, journals the message delivered by that
-/// second generation, and only then ends the run.
-#[test]
-fn a_codex_roots_background_childs_end_is_its_second_generation() {
-    a_launch_only_roots_background_childs_end_is_its_second_generation(
-        "codex",
-        "spawn",
-        "call_continuation_root",
-    );
-}
-
-/// **The same on an `opencode run` root** (s36): the root's second generation is `opencode run
-/// --session <ses_…>` over the store its first left in its own directory, carrying the codex
-/// child's end — an opencode parent that spawned codex, with the push arriving.
+/// **A `LaunchOnly` root is continued the same way** (s36): an `opencode run` root under `marion
+/// run` backgrounds a codex child and ends its turn; marion holds the root while the child's end is
+/// owed, relaunches it as `opencode run --session <ses_…>` over the store its first generation left
+/// with the rendered end as the prompt, journals the message delivered by that second generation,
+/// and only then ends the run.
 #[test]
 fn an_opencode_roots_background_codex_childs_end_is_its_second_generation() {
     a_launch_only_roots_background_childs_end_is_its_second_generation(
@@ -888,7 +907,7 @@ impl marion_provider::Hold for FirstTurnHold {
 }
 
 /// **A steer into a running `opencode run` node is its second generation.** `opencode run` takes
-/// one turn from argv and exits, like `codex exec`; its row's `TurnDelivery::Continuation` relaunches
+/// one turn from argv and exits; its row's `TurnDelivery::Continuation` relaunches
 /// the same node as `opencode run --session <ses_…>` over the session store its first generation
 /// left in its own directory, with the rendered steer as the prompt. The steer is written while the
 /// first generation's first request is held, so it is queued mid-run and taken at the stop; the

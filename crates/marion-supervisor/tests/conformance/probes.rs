@@ -423,7 +423,9 @@ fn p_tools(c: &mut Ctx<'_>) -> Outcome {
         Ok(v) => v,
         Err(Refused::Compile(e) | Refused::Run(e)) => (false, format!("no request: {e}")),
     };
-    let marion_gates = matches!(c.t.path, LaunchPath::Duplex);
+    // The duplex path waits for the bridge's ready file; the app-server path for the server's own
+    // startup notification (S36 P3).
+    let marion_gates = matches!(c.t.path, LaunchPath::Duplex | LaunchPath::AppServer);
     let waits = slow_tools;
     let observed = format!(
         "first request lists `{}`: {normal_tools}; with the bridge {SLOW_BRIDGE_SECS} s slow and \
@@ -431,7 +433,7 @@ fn p_tools(c: &mut Ctx<'_>) -> Outcome {
         c.t.report_name(),
         if slow_tools { "listed" } else { "did NOT list" },
         if marion_gates && !waits {
-            " (marion's duplex path gates the first prompt on the bridge's ready file)"
+            " (marion gates the first prompt on marion's server being ready)"
         } else {
             ""
         }
@@ -981,8 +983,10 @@ fn p_midturn(c: &mut Ctx<'_>) -> Outcome {
     } else {
         format!("folded into the running turn ({ends} turn end; requests {carried:?})")
     };
+    // An ACP prompt's answer is its turn's end; on the other typed surfaces it is not.
     let lost: Vec<String> = answers
         .iter()
+        .filter(|_| c.t.path == LaunchPath::Acp)
         .filter(|(_, f)| f.get("error").is_some() || f["result"]["stopReason"] != "end_turn")
         .map(|(id, f)| format!("prompt {id}: {}", f.get("error").unwrap_or(&f["result"])))
         .collect();
@@ -1118,10 +1122,13 @@ fn settle(p: &Proc) -> Vec<(i32, String)> {
 // --- P-resume -----------------------------------------------------------------------------------
 
 /// Kill a node after its first turn, relaunch it through the row's resume spelling (ACP:
-/// `session/load`), and check the second life carries the first life's history.
+/// `session/load`; a thread channel: `thread/resume`), and check the second life carries the first
+/// life's history.
 fn p_resume(c: &mut Ctx<'_>) -> Outcome {
     const P: &str = "P-resume";
-    if c.t.path != LaunchPath::Acp && c.t.spec.resume.is_none() {
+    // ACP and a thread channel resume over the protocol (`session/load`, `thread/resume`).
+    if c.t.path != LaunchPath::Acp && c.t.spec.resume.is_none() && c.t.spec.surfaces.rpc().is_none()
+    {
         return Outcome::unsupported(P, "the row states no resume spelling (`resume: None`)");
     }
     let s = c.session(P, "");
@@ -1376,9 +1383,11 @@ fn p_errors(c: &mut Ctx<'_>) -> Outcome {
         let refusal = marion_harness::json_frames(&stdout)
             .iter()
             .find_map(|f| c.t.adapter.auth_refusal(f));
+        // An ACP prompt's answer is its turn's end, and a refusal can be there; not so elsewhere.
         let acp_error = node
             .prompt_answers()
             .first()
+            .filter(|_| c.t.path == LaunchPath::Acp)
             .map(|(_, f)| f.get("error").unwrap_or(&f["result"]).to_string());
         let exit = node.proc.with(|io| io.exit);
         let classified = matches!(

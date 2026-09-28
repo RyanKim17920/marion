@@ -1486,13 +1486,38 @@ mod tests {
     #[test]
     fn an_unauthorized_word_without_a_provider_status_is_no_refused_credential() {
         let codex = adapter_for(Harness::Codex).unwrap();
-        let mcp = serde_json::json!({"type": "error", "message": "MCP client for `github` failed to start: unauthorized"});
+        // app-server's `error` notification (the conformance P-errors capture): the retry count in
+        // `message`, the provider's own words in `additionalDetails`.
+        let error = |message: &str, details: Option<&str>| {
+            serde_json::json!({"method": "error", "params": {
+                "error": {"message": message, "additionalDetails": details},
+                "threadId": "t", "turnId": "u", "willRetry": true}})
+        };
+        let mcp = error(
+            "MCP client for `github` failed to start: unauthorized",
+            None,
+        );
         assert_eq!(codex.auth_refusal(&mcp), None);
-        let provider = serde_json::json!({"type": "error", "message": "Reconnecting... 1/5 (unexpected status 401 Unauthorized: bad key)"});
+        let provider = error(
+            "Reconnecting... 1/5",
+            Some("unexpected status 401 Unauthorized: bad key"),
+        );
         assert!(codex.auth_refusal(&provider).is_some());
-        let forbidden =
-            serde_json::json!({"type": "error", "message": "unexpected status 403 Forbidden"});
+        let forbidden = error(
+            "Reconnecting... 1/5",
+            Some("unexpected status 403 Forbidden"),
+        );
         assert!(codex.auth_refusal(&forbidden).is_some());
+        // The exec fallback row reads its own `type: error` frame the same way.
+        let exec = crate::codex::EXEC.stream.unwrap();
+        let exec_401 = serde_json::json!({"type": "error", "message": "Reconnecting... 1/5 (unexpected status 401 Unauthorized: bad key)"});
+        assert!(
+            crate::auth::refused_credential(&grammar::frame_error_reports(
+                exec,
+                std::slice::from_ref(&exec_401)
+            ))
+            .is_some()
+        );
     }
 
     /// **Which frames end a run early is row data, and only an auth failure does**: on every row
@@ -1856,15 +1881,60 @@ mod tests {
         "/../../tests/fixtures/s21/opencode-acp-session.jsonl"
     ));
 
+    /// `codex::EXEC` rendered over the codex adapter's own fields — the exec fallback row, which
+    /// the registry no longer selects but which must keep compiling exactly what S6 measured.
+    fn compile_codex_exec(spec: &LaunchSpec) -> Invocation {
+        let f = CodexAdapter
+            .fields(spec, &ctx(), spec::Shape::Headless)
+            .unwrap();
+        render_row(&codex::EXEC, spec::Shape::Headless, &f).unwrap()
+    }
+
+    /// **The codex child now runs `codex app-server`** (S36): the prompt is a turn, never argv;
+    /// the update switch rides `-c` as on every codex command; the thread opens with the row's
+    /// `thread/start`, carrying the sandbox the contract records.
+    #[test]
+    fn the_codex_adapter_compiles_an_app_server_child_that_opens_a_thread() {
+        let inv = CodexAdapter.compile(&codex_spec(), &ctx()).unwrap();
+        assert_eq!(
+            inv.args,
+            ["app-server", "-c", "check_for_update_on_startup=false"]
+        );
+        assert_eq!(
+            inv.env,
+            vec![("CODEX_HOME".to_string(), "/state/x/config".to_string())]
+        );
+        let open = CodexAdapter
+            .session_declaration(&codex_spec(), &ctx())
+            .unwrap()
+            .expect("a thread channel opens with a request");
+        assert_eq!(open["method"], "thread/start");
+        assert_eq!(open["id"], SESSION_NEW_ID);
+        assert_eq!(open["params"]["cwd"], "/wt");
+        assert_eq!(open["params"]["sandbox"], codex::SANDBOX_MODE);
+        let resumed = CodexAdapter
+            .session_declaration(
+                &LaunchSpec {
+                    resume: Some("t-1".into()),
+                    ..codex_spec()
+                },
+                &ctx(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed["method"], "thread/resume");
+        assert_eq!(resumed["params"]["threadId"], "t-1");
+    }
+
     /// M1's child, pinned token for token: the `codex exec --json` launch S6 measured on 0.146.0,
-    /// which `codex::SPEC` renders, with `-C` moved ahead of the flags because that is the one
+    /// which `codex::EXEC` renders, with `-C` moved ahead of the flags because that is the one
     /// position a resume can share (s29: `exec resume` does not take `-C`, and a fresh `exec` reads
     /// its flags in any order). A canned launch compiles no `-m` however loudly one is asked for,
     /// and records `None`.
     #[test]
-    fn the_codex_adapter_compiles_the_measured_m1_child() {
+    fn the_codex_exec_row_compiles_the_measured_m1_child() {
         assert_eq!(
-            CodexAdapter.compile(&codex_spec(), &ctx()).unwrap(),
+            compile_codex_exec(&codex_spec()),
             Invocation {
                 program: "codex".into(),
                 args: [
@@ -1962,18 +2032,10 @@ mod tests {
                     "haiku",
                 ],
             ),
+            // `codex app-server` since S36: the prompt is a turn, and the axis still adds nothing.
             (
                 "codex",
-                vec![
-                    "exec",
-                    "-C",
-                    "/wt",
-                    "--json",
-                    "--skip-git-repo-check",
-                    "-c",
-                    "check_for_update_on_startup=false",
-                    "do the task",
-                ],
+                vec!["app-server", "-c", "check_for_update_on_startup=false"],
             ),
             (
                 "gemini",
@@ -3331,8 +3393,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(inv.model.as_deref(), Some("gpt-5.1-codex"));
+        // app-server has no `-m`: the model is the configuration key `-m` sets.
         assert!(
-            inv.args.windows(2).any(|w| w == ["-m", "gpt-5.1-codex"]),
+            inv.args
+                .windows(2)
+                .any(|w| w == ["-c", r#"model="gpt-5.1-codex""#]),
             "{:?}",
             inv.args
         );
@@ -4923,9 +4988,12 @@ mod tests {
                 &ctx(),
             )
             .unwrap();
-        assert_eq!(
-            inv.args.windows(2).find(|w| w[0] == "-m").map(|w| &w[1]),
-            Some(&"gpt-5-codex".to_string())
+        assert!(
+            inv.args
+                .windows(2)
+                .any(|w| w == ["-c", r#"model="gpt-5-codex""#]),
+            "{:?}",
+            inv.args
         );
         assert_eq!(inv.model.as_deref(), Some("gpt-5-codex"));
     }
@@ -5583,8 +5651,11 @@ mod tests {
         let codex = CodexAdapter.surfaces();
         assert_ne!(claude, codex);
         assert!(claude.has_typed_control_plane(), "stream-json is typed");
-        assert_eq!(codex.control, ControlTransport::LaunchOnly);
-        assert_eq!(codex.display, DisplaySurface::None);
+        assert_eq!(
+            codex.control,
+            ControlTransport::Typed(crate::surfaces::TypedKind::AppServer)
+        );
+        assert_eq!(codex.display, DisplaySurface::StructuredUi);
         assert!(!claude.has_display_plane(), "headless runs over pipes");
     }
 
@@ -5929,8 +6000,9 @@ mod tests {
                 Harness::ClaudeCode => format!(
                     r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{tool}","input":{args}}}]}}}}"#
                 ),
+                // S36's `item/completed` notification over app-server.
                 Harness::Codex => format!(
-                    r#"{{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{args}}}}}"#
+                    r#"{{"method":"item/completed","params":{{"item":{{"type":"mcpToolCall","id":"c1","server":"marion","tool":"report","status":"completed","arguments":{args}}}}}}}"#
                 ),
                 Harness::Gemini => {
                     format!(r#"{{"type":"tool_use","tool_name":"{tool}","parameters":{args}}}"#)
@@ -6003,7 +6075,7 @@ mod tests {
             r#"{"narrative":"did the work","result_commits":[]}"#,
         ] {
             let stream = format!(
-                r#"{{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{args}}}}}"#
+                r#"{{"method":"item/completed","params":{{"item":{{"type":"mcpToolCall","id":"c1","server":"marion","tool":"report","status":"completed","arguments":{args}}}}}}}"#
             );
             let out = CodexAdapter.parse_stream(&stream, ChildExit::default());
             assert_eq!(out.narrative.as_deref(), Some("did the work"), "{args}");
@@ -6016,7 +6088,7 @@ mod tests {
     /// invisible and the contract said `Unreported` about a run that had reported.
     #[test]
     fn no_adapter_can_read_another_harnesss_stream() {
-        let codex = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{"narrative":"did the work"}}}"#;
+        let codex = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"c1","server":"marion","tool":"report","status":"completed","arguments":{"narrative":"did the work"}}}}"#;
         let streams = [
             (Harness::Codex, codex),
             (Harness::Gemini, GEMINI_STREAM),
@@ -6116,7 +6188,7 @@ mod tests {
     /// stream never contains the string `mcp__marion__` at all.
     #[test]
     fn each_adapter_recognises_a_marion_call_in_its_own_stream_and_no_others() {
-        let codex_spawn = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{}}}"#;
+        let codex_spawn = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"c1","server":"marion","tool":"spawn","status":"completed","arguments":{}}}}"#;
         let claude_spawn = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#;
         let gemini_spawn = r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","parameters":{}}"#;
         let opencode_spawn = r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"completed"}}}"#;
@@ -6234,13 +6306,13 @@ mod tests {
             (
                 Harness::Codex,
                 "answered",
-                r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":{},"error":null,"status":"completed"}}"#,
+                r#"{"method":"item/completed","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"spawn","result":{},"error":null,"status":"completed"}}}"#,
                 answered("spawn"),
             ),
             (
                 Harness::Codex,
                 "refused",
-                r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":null,"error":"bad arguments","status":"failed"}}"#,
+                r#"{"method":"item/completed","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"spawn","result":null,"error":{"message":"bad arguments"},"status":"failed"}}}"#,
                 MarionCall {
                     verb: "spawn".into(),
                     outcome: CallOutcome::Refused("failed: bad arguments".into()),
@@ -6340,10 +6412,10 @@ mod tests {
                 Harness::Copilot,
                 r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#,
             ),
-            // codex's `item.started`, which s6 records ahead of every completion.
+            // codex's `item/started`, which S36 P4 records ahead of every completion.
             (
                 Harness::Codex,
-                r#"{"type":"item.started","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":null,"error":null,"status":"in_progress"}}"#,
+                r#"{"method":"item/started","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"spawn","result":null,"error":null,"status":"inProgress"}}}"#,
             ),
             (
                 Harness::Gemini,
@@ -6370,16 +6442,17 @@ mod tests {
     /// **One codex call is two frames, and it used to count as two calls.**
     ///
     /// `tests/fixtures/s6/exec-mcp-report.stream.jsonl` carries `item.started` then
-    /// `item.completed` for the same `id`. The reader this replaced filtered on the item's `type`
+    /// `item.completed` for the same `id`, and app-server's `item/started` / `item/completed` do
+    /// the same (S36 P4). The reader this replaced filtered on the item's `type`
     /// and `server` alone, so a codex node that called `report` once appeared to have called it
     /// twice — invisible to an is-empty check, wrong for anything that counts, and fixed by keying
     /// on the id and letting the later frame revise the earlier.
     #[test]
     fn a_codex_call_revised_by_a_later_frame_is_one_call_and_not_two() {
         let s = concat!(
-            r#"{"type":"item.started","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"report","status":"in_progress"}}"#,
+            r#"{"method":"item/started","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"report","status":"inProgress"}}}"#,
             "\n",
-            r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"report","status":"completed"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"id":"i0","type":"mcpToolCall","server":"marion","tool":"report","status":"completed"}}}"#,
         );
         assert_eq!(
             CodexAdapter.marion_calls(s),
@@ -7388,9 +7461,11 @@ mod tests {
             failure: failure.map(str::to_string),
             ..StreamOutcome::default()
         };
-        let cases: Vec<(Harness, &str, &str, StreamOutcome, Vec<MarionCall>)> = vec![
+        // codex's exec captures are read by the exec fallback row's own grammar, which the registry
+        // no longer selects (`codex::EXEC`); its app-server captures by `codex::APP_STREAM`, in
+        // `codex::tests`.
+        let exec_cases: Vec<(&str, &str, StreamOutcome, Vec<MarionCall>)> = vec![
             (
-                Harness::Codex,
                 "s6/exec-codemode-apply-patch.stream.jsonl",
                 fixture!("s6/exec-codemode-apply-patch.stream.jsonl"),
                 StreamOutcome {
@@ -7403,12 +7478,26 @@ mod tests {
                 vec![],
             ),
             (
-                Harness::Codex,
                 "s6/exec-mcp-report.stream.jsonl",
                 fixture!("s6/exec-mcp-report.stream.jsonl"),
                 outcome(Some("s6 probe: reporting via MCP"), None),
                 answered("report"),
             ),
+        ];
+        let exec_grammar = codex::EXEC.stream.expect("the exec row reads its JSONL");
+        for (name, stdout, expected_outcome, expected_calls) in exec_cases {
+            assert_eq!(
+                grammar::parse_stream(exec_grammar, stdout, ""),
+                expected_outcome,
+                "codex exec {name}"
+            );
+            assert_eq!(
+                grammar::marion_calls(exec_grammar, stdout, ""),
+                expected_calls,
+                "codex exec {name}"
+            );
+        }
+        let cases: Vec<(Harness, &str, &str, StreamOutcome, Vec<MarionCall>)> = vec![
             (
                 Harness::ClaudeCode,
                 "s9/can-use-tool-allow.stdout.jsonl",
@@ -8795,7 +8884,8 @@ mod tests {
         use crate::spec::{BootSignal, IdleSignal, NodeShape, TurnDelivery, delivery_for};
         let table = [
             (Harness::ClaudeCode, "typed", "channel"),
-            (Harness::Codex, "continuation", "paste"),
+            // S36 P6: app-server folds a steer into the running turn.
+            (Harness::Codex, "typed", "paste"),
             (Harness::Gemini, "none", "none"),
             (Harness::OpenCode, "continuation", "paste"),
             (Harness::Copilot, "continuation", "paste"),
@@ -8904,7 +8994,9 @@ mod tests {
                         headless
                             && matches!(
                                 row.surfaces,
-                                Surfaces::Headless(_) | Surfaces::JsonlRpc(_)
+                                Surfaces::Headless(_)
+                                    | Surfaces::JsonlRpc(_)
+                                    | Surfaces::AppServer(_)
                             ),
                         "{h} {shape:?}: a typed turn needs a typed control channel"
                     ),
@@ -9400,7 +9492,8 @@ mod tests {
 
     /// A resume is checked only where the row measured one naming its own session, and never on a
     /// fresh run: the same stream reads as a refusal only for the agy row asked to resume another id.
-    /// agy (s32) and opencode (S31 `p0b/opencode/db1`, `db2`) are the two rows that measured it.
+    /// agy (s32), opencode (S31 `p0b/opencode/db1`, `db2`) and codex's app-server (S36 P8:
+    /// `thread/resume` answers with the thread it reopened) are the rows that measured it.
     #[test]
     fn only_a_row_that_measured_an_in_place_resume_checks_one() {
         let fresh = r#"{"event":"init","conversation_id":"new-id","init":{}}"#;
@@ -9417,8 +9510,8 @@ mod tests {
                 .is_some_and(|s| s.resumes_in_place);
             assert_eq!(
                 checks,
-                matches!(h, Harness::Antigravity | Harness::OpenCode),
-                "{h}: measured on agy and opencode alone"
+                matches!(h, Harness::Antigravity | Harness::OpenCode | Harness::Codex),
+                "{h}: measured on agy, opencode and codex's app-server alone"
             );
         }
     }
@@ -9889,7 +9982,15 @@ mod tests {
                 "{args:?}"
             );
         }
+        // codex's app-server resumes over its own `thread/resume`, so its argv carries no id.
         let args = resumed(Harness::Codex, Shape::Headless);
+        assert!(!args.iter().any(|a| a.contains("SID")), "{args:?}");
+        // Its exec fallback row still renders the measured subcommand.
+        let mut f = CodexAdapter
+            .fields(&spec_for(Harness::Codex), &ctx(), Shape::Headless)
+            .unwrap();
+        f.resume = Some("SID".into());
+        let args = render(&codex::EXEC, Shape::Headless, &f).unwrap().args;
         assert_eq!(
             &args[..5],
             ["exec", "-C", "/wt", "resume", "SID"],
@@ -10007,9 +10108,18 @@ mod tests {
                 "claude (pane: {pane}): {got:?}"
             );
         }
+        // codex's app-server: the same field reaches `thread/resume`, never argv.
+        assert!(
+            !args(Harness::Codex, false)
+                .iter()
+                .any(|a| a.contains("SID"))
+        );
         assert_eq!(
-            &args(Harness::Codex, false)[..5],
-            ["exec", "-C", "/wt", "resume", "SID"]
+            CodexAdapter
+                .session_declaration(&resuming(Harness::Codex), &ctx())
+                .unwrap()
+                .unwrap()["params"]["threadId"],
+            "SID"
         );
         assert_eq!(
             &args(Harness::OpenCode, false)[..3],
@@ -10023,7 +10133,8 @@ mod tests {
     /// [`crate::grammar::session_id`] reads it from a frame. Frames are the measured shapes:
     ///
     /// claude 2.1.220 (`s10/stream-*.jsonl`): `{"type":"system","subtype":"init","session_id"}`.
-    /// codex 0.146.0 (`s7/exec-spawn-child.stream.jsonl`): `{"type":"thread.started","thread_id"}`.
+    /// codex 0.155.1 app-server (S36 P8): the answer to `thread/start` or `thread/resume`,
+    /// `{"id":…,"result":{"thread":{"id"}}}`.
     /// gemini 0.53.0 (`s12/README.md`): `{"type":"init","session_id"}`.
     /// opencode 1.17.3 (`s13/README.md`): `sessionID` on **every** frame.
     /// copilot 1.0.83 (`s24/*.stdout.jsonl`): only the terminal `result` frame carries `sessionId`;
@@ -10041,7 +10152,7 @@ mod tests {
             ),
             (
                 Harness::Codex,
-                r#"{"type":"thread.started","thread_id":"t-1"}"#,
+                r#"{"id":1,"result":{"thread":{"id":"t-1","turns":[]}}}"#,
                 "t-1",
             ),
             (

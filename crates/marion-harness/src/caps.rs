@@ -317,12 +317,15 @@ mod tests {
             "§9: `codex exec resume` exists on 0.146.0 and is `continue_()` + `prompt()`"
         );
 
-        let shipped = adapter_for(Harness::Codex).unwrap().surfaces();
+        let exec = crate::codex::EXEC.surfaces.execution();
         assert!(
-            !static_caps(Harness::Codex, v, &shipped).resume,
+            !static_caps(Harness::Codex, v, &exec).resume,
             "on `codex exec --json` the ceiling clips it: `marion doctor` publishes \"codex on \
              this surface cannot\", never \"codex cannot\""
         );
+        // The row the registry ships is app-server's since S36, so it publishes `resume`.
+        let shipped = adapter_for(Harness::Codex).unwrap().surfaces();
+        assert!(static_caps(Harness::Codex, v, &shipped).resume);
 
         // And the other half of the same sentence — "choosing the app-server surface lifts the
         // ceiling" — so this cannot pass by clipping `resume` everywhere.

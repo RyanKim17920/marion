@@ -842,6 +842,46 @@ per turn preserved; never answer an approval with `cancel` unless ending the tur
 interrupt must be followed by killing the turn's processes and must not await a second interrupt's
 response; a reader must accept items for a turn that has already completed.
 
+**codex headless is `codex app-server`, driven (2026-09-27).** The row selects
+`Surfaces::AppServer(&codex::APP)`: `TypedKind::AppServer`, whose vocabulary is row data
+(`marion_harness::rpc_channel::RpcChannel`: handshake, `thread/start`/`thread/resume`, the MCP
+readiness gate, `turn/start`/`turn/steer`/`turn/interrupt`, turn boundaries, approval answers) and
+which `app_server::run_app_server` speaks over the id-correlated driver it now shares with ACP
+(`rpc::Driver`, event-driven: the reader and the inbox signal one condvar, with a 250 ms liveness
+check instead of ACP's old 20 ms poll). No supervisor code names codex. The thread is opened by the
+adapter's `session_declaration` (the trait default builds a channel's opening), persisted
+(`ephemeral: false`) with the recorded sandbox on the request, so a resume is `thread/resume` and
+not argv; the first turn waits for `mcpServer/startupStatus/updated` `ready` for marion's server
+(a `failed` or silent start refuses the run by name); a message queued mid-turn is `turn/steer`
+into the running turn and one that loses the race is the next turn; approvals are declined; at the
+wall clock the turn is interrupted (repeated unanswered, up to three), then marion kills every
+process below the server while the tree is intact (`kill::kill_descendants`: a code-mode command
+that yielded is still running after its item completed) and leaves the server to exit on EOF. Usage
+is `thread/tokenUsage/updated`'s thread total (`UsageFold::Session`); the session is the opening
+answer's `thread.id`, checked in place on a resume. The model rides `-c model="…"` (app-server has
+no `-m`) and the no-self-update pair rides `-c` as before. Headless delivery is `TypedTurn { Fold }`,
+journaled `app-server:mid-turn` / `app-server:next-turn`. `codex exec` is kept whole as
+`codex::EXEC`, the data fallback row, with its captures read through it. Witnesses:
+`tests/codex_app_server.rs` against the real 0.155.1 and the canned provider (a steer lands in the
+next request of the same turn; a timed-out child is interrupted and no process of its turn
+survives; a background child's end reaches its held codex parent as the next turn of one process;
+a root resumes its thread after a supervisor SIGKILL, the second life's request carrying the
+first's task) — all four RED on the exec row — plus `app_server::tests`' fake-server cells and
+`codex::tests`' readings of the S36 captures. The conformance row went from P-tools **FAIL** and
+P-midturn n/a to every probe PASS (P-resume now through `thread/resume`; P-errors re-captured on
+app-server, where the provider's words ride the `error` notification's `additionalDetails`).
+A refused credential ends the session at once (the row's `auth_refusal` as `stop_on`, as on the
+duplex path), and a wall clock that runs out during setup is a timeout, not a refusal. Tests that
+used codex as the stand-in `LaunchOnly` harness moved: `continuation.rs`, `descendant_gate.rs` and
+`launch_only_root.rs` run their `LaunchOnly` scenarios on opencode, and the beds that shimmed
+`codex` use `tests/common/app_server.rs`, an app-server shim that runs each turn through the bed's
+own shell hook (and routes chosen depths to the real binary, read off the canned `config.toml`).
+**Behaviour to know:** a typed node owed a background child's end is held open in its driver until
+the end arrives or its wall clock runs out, as claude and pi already were — so a codex child that
+reports and leaves a background grandchild running now waits for it, where `exec` exited at once
+and §7.6 accepted it as reported early. Applying §7.6's reported-early exemption to typed drivers
+is a cross-driver follow-up, not done here.
+
 **A marion-owned Stop hook can gate native claude (S35, 2026-09-27, `tests/fixtures/s35-stop-gate/`,
 claude 2.1.283, operator's claude.ai login, haiku, $0.171 notional).** Interactive in a pty with
 `--dangerously-load-development-channels server:<key>` (channel registered), an overlay

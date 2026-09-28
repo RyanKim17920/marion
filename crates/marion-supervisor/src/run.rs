@@ -1102,7 +1102,9 @@ fn next_attempt(
         return None;
     }
     let stream = adapter.parse_stream(&run.stdout, run.exit);
-    let failed = run.exit.code != Some(0) || stream.failure.is_some();
+    // A run marion stopped on a refused credential failed, whatever exit its driver reports (a
+    // typed driver's turn exit is the session's, code 0).
+    let failed = run.exit.code != Some(0) || stream.failure.is_some() || run.stopped.is_some();
     if !failed || stream.narrative.is_some() {
         return None;
     }
@@ -4000,7 +4002,8 @@ mod tests {
     }
 
     /// A `LaunchOnly` child that writes `frame` every 100 ms and never ends on its own, run under a
-    /// 30 s bound through the codex row's reader.
+    /// 30 s bound through the codex row's reader — its frames app-server's `error` notification
+    /// (the conformance P-errors capture), whose error rules are what these cells exercise.
     fn retrying_child(tag: &str, frame: &str) -> (ChildRun, StdDuration) {
         let dir = scratch(tag);
         let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
@@ -4041,7 +4044,7 @@ mod tests {
     fn an_auth_refusal_the_harness_retries_ends_the_run_at_once() {
         let (run, took) = retrying_child(
             "run-auth-stop",
-            r#"{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided)"}"#,
+            r#"{"method":"error","params":{"error":{"message":"Reconnecting... 1/5","additionalDetails":"unexpected status 401 Unauthorized: Incorrect API key provided"},"willRetry":true}}"#,
         );
         assert!(took < StdDuration::from_secs(10), "took {took:?}");
         assert!(!run.exit.timed_out);
@@ -4066,7 +4069,7 @@ mod tests {
             program: "sh".into(),
             args: vec![
                 "-c".into(),
-                r#"while :; do echo '{"type":"error","message":"Reconnecting... 1/5 (exceeded retry limit, last status: 429 Too Many Requests)"}'; sleep 0.1; done"#.into(),
+                r#"while :; do echo '{"method":"error","params":{"error":{"message":"Reconnecting... 1/5","additionalDetails":"exceeded retry limit, last status: 429 Too Many Requests"},"willRetry":true}}'; sleep 0.1; done"#.into(),
             ],
             env: vec![],
             cwd: dir.to_path_buf(),
@@ -4113,7 +4116,9 @@ mod tests {
             paths: None,
         };
         let failed = |message: &str| ChildRun {
-            stdout: format!(r#"{{"type":"error","message":"{message}"}}"#),
+            stdout: format!(
+                r#"{{"method":"error","params":{{"error":{{"message":"{message}"}}}}}}"#
+            ),
             stderr: String::new(),
             exit: ChildExit {
                 code: Some(1),
@@ -5796,7 +5801,10 @@ mod tests {
     /// record names what marion did, and what marion did was hand the node the prefixed text.
     #[test]
     fn the_contract_records_the_prefixed_prompt() {
-        if !marion_testsupport::harness_available("codex") {
+        // opencode, a `LaunchOnly` row: its prompt rides argv, so a dead endpoint and a bridge that
+        // does not exist still end in a contract. (A codex child over app-server is refused by name
+        // before its first turn when marion's MCP server cannot start.)
+        if !marion_testsupport::harness_available("opencode") {
             return;
         }
         let (_root, _state, repo, env) = spawn_env("prefixed-prompt");
@@ -5804,8 +5812,8 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(
             &file,
-            "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
-             prompt_prefix = \"Review only.\\n\\n\"\n",
+            "[[agent]]\nname = \"reviewer\"\nharness = \"opencode\"\ndescription = \"r\"\n\
+             model = \"marion/default\"\nprompt_prefix = \"Review only.\\n\\n\"\n",
         )
         .unwrap();
         let mut req = request("reviewer", None);
@@ -5817,7 +5825,7 @@ mod tests {
             &TaskId("prefixed".into()),
             &Caller::root("root", builtin("claude").unwrap()),
         )
-        .expect("a codex child against a dead endpoint still ends in a contract");
+        .expect("an opencode child against a dead endpoint still ends in a contract");
         assert_eq!(
             contract.instructions.value,
             format!(

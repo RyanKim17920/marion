@@ -22,11 +22,11 @@
 //!   its exit exactly as `marion run` watches a root, never handed to `marion attach`, which has
 //!   no pane to attach to on a headless node and refused (exit 1, node still running).
 //! * **The resumed child takes its next turn and exits clean** — a Responses request that arrives
-//!   *after* the relaunch carries the resume prompt **and** the first life's marker, because codex
-//!   `exec resume` sends the session's earlier transcript back: the proof the resume was a *real*
+//!   *after* the relaunch carries the resume prompt **and** the first life's marker, because codex's
+//!   `thread/resume` (app-server, S36 P8) sends the thread's earlier transcript back: the proof the resume was a *real*
 //!   resume of the harness's own session and not a fresh run wearing the same id. Then the second
 //!   life's `ProcessExit` is code 0. Without the second clause this test was green while the demo's
-//!   relaunch died at exit 2 on an argv `exec resume` rejects (`tests/fixtures/s29/`): the relaunch
+//!   relaunch died at exit 2 on an argv `exec resume` rejected (`tests/fixtures/s29/`): the relaunch
 //!   and the journal were asserted, the resumed child's success was not.
 //!
 //! # Running it
@@ -80,7 +80,7 @@ const RESUME_PROMPT: &str = "Continue: confirm the marker and report.";
 /// The child's one verification line. The spawn journals it on the child's intent, so a resumed
 /// child re-runs it and its second life's contract carries the outcome as evidence.
 const VERIFICATION: &str = "touch VERIFIED";
-/// The root's wall clock (codex is a LaunchOnly surface, so `--timeout` is a wall-clock bound).
+/// The root's wall clock.
 const ROOT_TIMEOUT: &str = "150";
 const BOUND: Duration = Duration::from_secs(120);
 
@@ -492,7 +492,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
     // The gate parks every Responses request from the second on, the second life's included; it
     // has done its job (both lives were caught with live processes), so let the turn through.
     gate.release();
-    // codex `exec resume` sends the session's earlier transcript back, so the second life's first
+    // codex's `thread/resume` sends the thread's earlier transcript back, so the second life's first
     // request — one that arrived after the relaunch — carries the resume prompt, the first life's
     // marker, and more than a single user turn. A relaunch that dies at the argv parser makes no
     // request at all; its exit is on the journal instead, so the wait ends on whichever comes
@@ -579,7 +579,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         "a headless resume must neither try to attach nor detach from a running node:\n{stderr}"
     );
     assert!(
-        stderr.contains("frame     turn.completed"),
+        stderr.contains("frame     turn/completed"),
         "the resume rendered the second life's stream as `run` would:\n{stderr}"
     );
 

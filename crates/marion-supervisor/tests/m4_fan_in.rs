@@ -330,20 +330,37 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         root_intent.get("task_id").is_none_or(Value::is_null),
         "§9: a root has no contract, so its intent carries no task id"
     );
-    // **Three `Spawned`, and the first is the launch.** A codex root's turn ends with its process,
-    // so each background child's end — queued for it as a message even though its own `wait`
-    // already collected the contract — is a later turn, a relaunch of the same node under its
-    // thread (turn delivery by continuation). Two children, so two continuations.
+    // **One `Spawned`, and it is the launch.** A codex root runs over app-server (S36), so each
+    // background child's end — queued for it as a message even though its own `wait` already
+    // collected the contract — reaches the same process: folded into the running turn, or its
+    // next turn. Two children, two deliveries, and no relaunch.
     let root_spawns: Vec<&Value> = records
         .iter()
         .filter(|r| {
             r.pointer("/kind/Spawned/agent_id").and_then(Value::as_str) == Some(root_id.as_str())
         })
         .collect();
+    assert_eq!(root_spawns.len(), 1, "one process for the root's whole run");
+    let delivered: Vec<&str> = records
+        .iter()
+        .filter(|r| {
+            r.pointer("/kind/MessageDelivered/agent_id")
+                .and_then(Value::as_str)
+                == Some(root_id.as_str())
+        })
+        .filter_map(|r| {
+            r.pointer("/kind/MessageDelivered/via")
+                .and_then(Value::as_str)
+        })
+        .collect();
     assert_eq!(
-        root_spawns.len(),
-        3,
-        "the root's launch, then one continuation per background child's end"
+        delivered.len(),
+        2,
+        "each background child's end reached the root once: {delivered:?}"
+    );
+    assert!(
+        delivered.iter().all(|v| v.starts_with("app-server:")),
+        "over the root's own channel, not by relaunch: {delivered:?}"
     );
     let root_spawned = root_spawns[0]["kind"]["Spawned"].clone();
     assert!(

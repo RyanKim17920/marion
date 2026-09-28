@@ -1519,15 +1519,14 @@ mod tests {
         ]
     }
 
-    /// The move's whole claim, stated as a test: routing codex's stream through the adapter changes
-    /// nothing about what marion reads out of it.
+    /// The move's whole claim, stated as a test: routing codex's exec stream through its row
+    /// changes nothing about what marion reads out of it. The row is `codex::EXEC` since the
+    /// registry moved codex to app-server (S36); its reading of these shapes is unchanged.
     #[test]
-    fn the_codex_adapter_parses_exactly_what_the_pre_move_function_did() {
+    fn the_codex_exec_row_parses_exactly_what_the_pre_move_function_did() {
         for s in codex_corpus() {
             let before = parse_child_stream_before_the_move(&s);
-            let after = adapter_for(Harness::Codex)
-                .unwrap()
-                .parse_stream(&s, ChildExit::default());
+            let after = codex_reads(&s);
             assert_eq!(
                 (after.narrative.clone(), after.file_change_paths.clone()),
                 before,
@@ -1540,11 +1539,16 @@ mod tests {
         }
     }
 
-    /// What marion reads out of a codex stream: the codex row's grammar, through the adapter.
+    /// What marion reads out of a codex exec stream: the exec row's grammar, in codex's spelling.
     fn codex_reads(s: &str) -> marion_harness::StreamOutcome {
-        adapter_for(Harness::Codex)
-            .unwrap()
-            .parse_stream(s, ChildExit::default())
+        let prefix = adapter_for(Harness::Codex).unwrap().marion_tool_name("");
+        marion_harness::grammar::parse_stream(
+            marion_harness::codex::EXEC
+                .stream
+                .expect("the exec row reads its JSONL"),
+            s,
+            &prefix,
+        )
     }
 
     #[test]

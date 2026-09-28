@@ -305,8 +305,8 @@ mod tests {
             "unused".into(),
         );
         s.lifecycle(marion_core::event::Lifecycle::Opened);
-        for line in include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl").lines()
-        {
+        // codex's own stream since S36: app-server's frames, as its driver records them.
+        for line in marion_testsupport::app_server_capture("p4-items.jsonl").lines() {
             s.record_line(line);
         }
     }

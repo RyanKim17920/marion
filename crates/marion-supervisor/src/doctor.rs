@@ -2785,22 +2785,23 @@ mod tests {
             );
         }
 
-        // The general assertion above passes vacuously if nothing ever over-claims, so pin the one
-        // row where `advertised` genuinely sits above the ceiling and the meet is what clips it.
-        // §9's M1: `codex exec resume` exists on 0.146.0, and `codex exec --json` is `LaunchOnly`.
-        let v = "0.147.0";
+        // The general assertion above passes vacuously if nothing ever over-claims, so pin a row
+        // where `advertised` genuinely sits above the ceiling and the meet is what clips it. S31:
+        // `opencode run --session` continues a session on 1.18.32, and `opencode run` is
+        // `LaunchOnly`. (codex was this row until its node moved to app-server, which carries it.)
+        let v = "1.18.32";
         assert!(
-            marion_harness::advertised(Harness::Codex, v).resume,
+            marion_harness::advertised(Harness::OpenCode, v).resume,
             "the software can; this is the half that must stay true for the clip to mean anything"
         );
-        let node = caps_rows(Some(Harness::Codex))
+        let node = caps_rows(Some(Harness::OpenCode))
             .into_iter()
             .find(|r| r.role == SurfaceRole::Node)
             .expect("a node row");
         assert!(
             !node.capabilities.resume,
-            "and the surface is what says it cannot — doctor publishes \"codex on this surface \
-             cannot\", never \"codex cannot\""
+            "and the surface is what says it cannot — doctor publishes \"opencode on this \
+             surface cannot\", never \"opencode cannot\""
         );
     }
 

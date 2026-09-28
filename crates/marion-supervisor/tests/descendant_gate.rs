@@ -1,5 +1,10 @@
-//! **§7.6's descendant gating, end to end: a real `codex` child stops while a grandchild it
+//! **§7.6's descendant gating, end to end: a real `opencode` child stops while a grandchild it
 //! backgrounded is still running.**
+//!
+//! The gate under test is the one §7.6 applies **at process exit**, so the child is a `LaunchOnly`
+//! harness whose turn ends with its process: `opencode run`. codex was this file's child until its
+//! headless row moved to `codex app-server` (S36), where a node owed a child's end is held open in
+//! its driver and takes the end as its next turn (`tests/codex_app_server.rs`).
 //!
 //! Design §7.6 states the rule and its two exemptions, and principle 11 of `MILESTONES.md` calls it
 //! non-negotiable:
@@ -19,27 +24,26 @@
 //!    is what this test waits on — and writes its `Exited` only after the grandchild's own. The
 //!    grandchild's end is queued for the held child and is its next turn (§7.6 step 2's re-prompt,
 //!    delivered by continuation: `tests/continuation.rs`), so the child ends on its second
-//!    generation, whose relaunch the shim answers with a silent exit. The contract is `Unreported`,
-//!    neither flag set.
+//!    generation, an `opencode run --session` relaunch the canned provider answers in words. The
+//!    contract is `Unreported`, neither flag set.
 //! 3. **Held to the bound.** As 2, with a short `timeout_secs`. The bound expires first, so the
 //!    node terminates `held_to_timeout: true` with the grandchild listed — and the grandchild
 //!    **outlives** it (§7.5: killing it would destroy work to tidy up bookkeeping).
 //!
 //! # The bed
 //!
-//! `depth_gate.rs`'s, reused: a detached supervisor with a `codex` shim ahead of the real binary on
-//! its `PATH`. The root and the grandchild are shims blocked on gate files the test holds, so they
-//! are real processes marion really owns and cost no model call; the one invocation that must be
-//! real — the child under test — is told apart by [`DELEGATOR_MARKER`] in its argv, and the shim
-//! `exec`s the real `codex` for it. Every condition waited on below is a **fact in the journal**,
+//! `depth_gate.rs`'s, reused: a detached supervisor with a `codex` shim on its `PATH`. The root and
+//! the grandchild are codex app-server shims (`common::app_server`) blocked on gate files the test
+//! holds, so they are real processes marion really owns and cost no model call; the child under
+//! test is the real `opencode`, whose turns the provider knows by [`DELEGATOR_MARKER`]. Every condition waited on below is a **fact in the journal**,
 //! never an elapsed time.
 //!
 //! ```sh
 //! cargo test -p marion-supervisor --test descendant_gate
 //! ```
 //!
-//! It needs a real `codex` on `PATH` and, like every end-to-end file here, does not skip when it is
-//! missing.
+//! It needs a real `opencode` on `PATH` and, like every end-to-end file here, does not skip when it
+//! is missing.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -47,12 +51,11 @@ use std::time::{Duration, Instant};
 use marion_core::contract::AgentId;
 use marion_core::node::{BlockReason, NodeState};
 use marion_core::paths::ProjectDir;
+use marion_core::proto::params::AgentSpawnParams;
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
-use marion_testsupport::{
-    fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors, which, write_executable,
-};
+use marion_testsupport::{fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors};
 use serde_json::{Value, json};
 
 mod common;
@@ -60,8 +63,8 @@ mod common;
 use common::journal::{is_exited, journal_lines, state_of, tree, wait_for};
 use common::socket_spawn::{Owned, contract_of, params, spawn_over_socket};
 
-/// Present in the **child under test's** prompt and nowhere else: the shim routes on it to the real
-/// binary, and the provider dispatches on it to the child's script.
+/// Present in the **child under test's** prompt and nowhere else: the provider dispatches on it to
+/// the child's script.
 const DELEGATOR_MARKER: &str = "MARION-DESCENDANT-GATE-DELEGATOR-4e7b";
 
 /// Present in the **root's** prompt and nowhere else, so the shim can tell the one invocation that
@@ -93,10 +96,11 @@ const IDLE_GRACE: Duration = Duration::from_secs(600);
 
 const CHILD_CALL_PREFIX: &str = "call_descendant_gate_child";
 
-/// The child's script: background one grandchild, then either report or simply stop.
+/// The child's script: background one grandchild, then either report or simply stop — in
+/// opencode's spelling of marion's verbs, on the Chat Completions wire.
 fn child_script(reports: bool) -> Script {
     let mut turns = vec![ScriptedCall::new(
-        "spawn",
+        "marion_spawn",
         json!({
             "agent_type": "codex-impl",
             "prompt": GRANDCHILD_PROMPT,
@@ -108,7 +112,7 @@ fn child_script(reports: bool) -> Script {
     )];
     if reports {
         turns.push(ScriptedCall::new(
-            "report",
+            "marion_report",
             json!({"narrative": CHILD_NARRATIVE}),
         ));
     }
@@ -123,17 +127,14 @@ fn child_script(reports: bool) -> Script {
     }
 }
 
-/// The shim: a `codex` that `exec`s the real binary for the child under test and blocks every other
-/// invocation on the gate its marker selects. Mortal by construction.
-fn shim(dir: &Path, root_gate: &Path, grandchild_gate: &Path, real: &Path) -> PathBuf {
-    let bin = dir.join("codex");
-    let script = format!(
-        r#"#!/bin/sh
+/// The shim: a `codex` for the root and the grandchild, each turn blocked on its gate
+/// (`common::app_server`). The child under test is the real `opencode`, found on `PATH` as ever.
+fn shim(dir: &Path, root_gate: &Path, grandchild_gate: &Path) -> PathBuf {
+    common::app_server::fake_codex(
+        dir,
+        &format!(
+            r#"case "$1" in --version) echo "codex-cli 0.146.0-marion-descendant-shim"; exit 0 ;; esac
 case "$1" in
-  --version) echo "codex-cli 0.146.0-marion-descendant-shim"; exit 0 ;;
-esac
-case "$*" in
-  *{delegator}*) exec {real} "$@" ;;
   *{root}*) gate={root_gate} ;;
   *) gate={grandchild_gate} ;;
 esac
@@ -145,14 +146,11 @@ while [ ! -e "$gate" ]; do
 done
 exit 0
 "#,
-        delegator = DELEGATOR_MARKER,
-        root = ROOT_MARKER,
-        real = common::shell_quote(real),
-        root_gate = common::shell_quote(root_gate),
-        grandchild_gate = common::shell_quote(grandchild_gate),
-    );
-    write_executable(&bin, script);
-    bin
+            root = ROOT_MARKER,
+            root_gate = common::shell_quote(root_gate),
+            grandchild_gate = common::shell_quote(grandchild_gate),
+        ),
+    )
 }
 
 // ---- reading the journal back -------------------------------------------------------------------
@@ -223,9 +221,9 @@ struct Bed {
 impl Bed {
     fn start(tag: &str, reports: bool, child_timeout_secs: u64) -> Bed {
         assert!(
-            on_path("codex"),
-            "this test drives a REAL codex child; put `codex` ({}) on PATH",
-            pinned_version("codex")
+            on_path("opencode"),
+            "this test drives a REAL opencode child; put `opencode` ({}) on PATH",
+            pinned_version("opencode")
         );
         let dir = scratch(&format!("descendant-gate-{tag}"));
         let repo = fixture_repo(&dir);
@@ -235,7 +233,7 @@ impl Bed {
         let grandchild_gate = dir.join("grandchild-gate");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&shim_dir).unwrap();
-        shim(&shim_dir, &root_gate, &grandchild_gate, &which("codex"));
+        shim(&shim_dir, &root_gate, &grandchild_gate);
 
         let server = CannedServer::start(Config {
             addr: ([127, 0, 0, 1], 0).into(),
@@ -269,12 +267,15 @@ impl Bed {
             &sup,
             &state,
             Some(&root),
-            params(
-                "codex-impl",
-                format!("{DELEGATOR_MARKER}: background a grandchild, then stop."),
-                None,
-                child_timeout_secs,
-            ),
+            AgentSpawnParams {
+                model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                ..params(
+                    "opencode",
+                    format!("{DELEGATOR_MARKER}: background a grandchild, then stop."),
+                    None,
+                    child_timeout_secs,
+                )
+            },
         );
         Bed {
             journal: project.journal(),
@@ -324,7 +325,7 @@ impl Drop for Bed {
 // ---- the three branches ---------------------------------------------------------------------------
 
 #[test]
-fn a_codex_child_that_reports_with_a_live_grandchild_exits_reported_early_naming_it() {
+fn an_opencode_child_that_reports_with_a_live_grandchild_exits_reported_early_naming_it() {
     let bed = Bed::start("reported-early", true, CHILD_TIMEOUT_SECS);
     let child = bed.child.agent_id.clone();
     let grandchild = bed.grandchild();
@@ -355,7 +356,7 @@ fn a_codex_child_that_reports_with_a_live_grandchild_exits_reported_early_naming
 }
 
 #[test]
-fn a_codex_child_that_stops_unreported_with_a_live_grandchild_is_held_until_it_is_terminal() {
+fn an_opencode_child_that_stops_unreported_with_a_live_grandchild_is_held_until_it_is_terminal() {
     let bed = Bed::start("held-released", false, CHILD_TIMEOUT_SECS);
     let child = bed.child.agent_id.clone();
     let grandchild = bed.grandchild();
@@ -399,7 +400,7 @@ fn a_codex_child_that_stops_unreported_with_a_live_grandchild_is_held_until_it_i
 }
 
 #[test]
-fn a_codex_child_held_to_its_bound_exits_held_to_timeout_and_its_grandchild_outlives_it() {
+fn an_opencode_child_held_to_its_bound_exits_held_to_timeout_and_its_grandchild_outlives_it() {
     let bed = Bed::start("held-to-timeout", false, SHORT_CHILD_TIMEOUT_SECS);
     let child = bed.child.agent_id.clone();
     let grandchild = bed.grandchild();

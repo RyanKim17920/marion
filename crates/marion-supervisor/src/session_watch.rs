@@ -192,17 +192,19 @@ mod tests {
     fn the_first_sighting_is_journaled_once_and_nothing_else_is() {
         let (_dir, project) = scratch_project("once");
         let id = AgentId("n-1".into());
+        // codex over app-server (S36): the answer to `thread/start` names the thread.
         let watch = SessionWatch::new(&project, &id, Harness::Codex, false);
         watch.observe_line("Reading additional input from stdin...");
-        watch.observe_line(r#"{"type":"turn.started"}"#);
+        watch.observe_line(r#"{"id":0,"result":{"userAgent":"codex"}}"#);
+        watch.observe_line(r#"{"method":"turn/started","params":{"turn":{"id":"u-1"}}}"#);
         assert!(!watch.seen());
         assert_eq!(watch.session(), None);
         assert_eq!(records(&project), 0, "nothing named a session yet");
-        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-first"}"#);
+        watch.observe_line(r#"{"id":1,"result":{"thread":{"id":"t-first"}}}"#);
         assert!(watch.seen());
-        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-second"}"#);
+        watch.observe_line(r#"{"id":1,"result":{"thread":{"id":"t-second"}}}"#);
         watch.observe_event(StreamEvent::Frame(
-            &serde_json::json!({"type":"thread.started","thread_id":"t-third"}),
+            &serde_json::json!({"id":1,"result":{"thread":{"id":"t-third"}}}),
         ));
         assert_eq!(records(&project), 1, "one record, on first sighting");
         assert_eq!(sessions(&project), vec!["t-first".to_string()]);
@@ -250,7 +252,7 @@ mod tests {
         };
         let watch =
             SessionWatch::new(&project, &id, Harness::Codex, false).in_workspace(Some(ws.clone()));
-        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-1"}"#);
+        watch.observe_line(r#"{"id":1,"result":{"thread":{"id":"t-1"}}}"#);
         let bytes = std::fs::read(project.journal()).unwrap_or_default();
         let node = replay(&bytes).get(&id).cloned().expect("the node replays");
         assert_eq!(node.harness_session.as_deref(), Some("t-1"));
@@ -263,7 +265,7 @@ mod tests {
         // A watch nobody told where it was running says `None` rather than naming a directory.
         let (_dir, project) = scratch_project("workspace-absent");
         let watch = SessionWatch::new(&project, &id, Harness::Codex, false);
-        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-2"}"#);
+        watch.observe_line(r#"{"id":1,"result":{"thread":{"id":"t-2"}}}"#);
         let bytes = std::fs::read(project.journal()).unwrap_or_default();
         assert_eq!(replay(&bytes).get(&id).unwrap().launch_workspace, None);
     }

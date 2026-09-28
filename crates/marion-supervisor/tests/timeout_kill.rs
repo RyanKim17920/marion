@@ -116,14 +116,15 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         "M1's sixth acceptance criterion is about a REAL codex child; put `codex` ({}) on PATH",
         pinned_version("codex")
     );
-    // `model: None`, exactly as before this field existed: `codex exec` takes no model argument,
-    // so this criterion's invocation is byte-identical to the one it has always measured.
+    // `model: None`, exactly as before this field existed: a canned codex launch compiles none.
+    // codex runs over app-server since S36, so the expiry is its driver's: `turn/interrupt`, then
+    // marion's kill of every process below the server (`kill::kill_descendants`).
     a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         "s7-timeout",
         "codex-impl",
         None,
         "Start the long-running command and keep it running.",
-        Expiry::TwoStepSweep,
+        Expiry::Driver,
         |runaway, pidfile| Script {
             child_exec_js: Some(case_b_js(runaway, pidfile)),
             ..Script::default()
@@ -170,7 +171,7 @@ fn a_timed_out_acp_opencode_child_leaves_no_surviving_tool_call_descendant() {
         "acp-opencode",
         None,
         &format!("{OPENCODE_MARKER}: Start the long-running command and keep it running."),
-        Expiry::AcpDriver,
+        Expiry::Driver,
         opencode_bash_script,
     );
 }
@@ -201,9 +202,11 @@ enum Expiry {
     /// The launch-only path's two-step group kill, whose step-1 enumeration `last_kill_sweep`
     /// returns — so the cell asserts the tool call's pids were in it.
     TwoStepSweep,
-    /// The ACP driver's own shutdown — `session/cancel`, SIGINT, then the group kill — which
-    /// records no enumeration; the cell asserts on the tool call's recorded pids alone.
-    AcpDriver,
+    /// A typed driver's own shutdown — ACP's `session/cancel`, app-server's `turn/interrupt` and
+    /// its kill of the turn's processes, then SIGINT and the group kill — whose last sweep runs
+    /// after the server has exited and so is not the enumeration to read; the cell asserts on the
+    /// tool call's recorded pids alone.
+    Driver,
 }
 
 /// One cell at a time: see the lock's use in the helper.
@@ -267,7 +270,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
     // What marion enumerated in step 1 of its own two-step kill, plus what the tool call recorded.
     let enumerated = match expiry {
         Expiry::TwoStepSweep => last_kill_sweep(),
-        Expiry::AcpDriver => Vec::new(),
+        Expiry::Driver => Vec::new(),
     };
     let recorded = pids_in(&pidfile);
 

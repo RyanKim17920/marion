@@ -210,17 +210,17 @@ fn a_real_run_leaves_both_node_kinds_replayable_from_streams_one_supervisor_wrot
 
     // ---- the child's own words, written by the bridge's process and by nothing else ------------
     //
-    // This is the case §7.3.3 cannot answer any other way. `codex exec --json` is a `LaunchOnly`
-    // harness, so these frames were recovered from its capture after it exited — the only route
-    // that path has — and the root's were recorded live off its duplex stream.
+    // This is the case §7.3.3 cannot answer any other way. The codex child runs over app-server
+    // (S36), so these frames were recorded live off its driver's line seam, by the bridge's
+    // process, and the root's off its duplex stream.
     let (child_dir, child_kinds) = recorded
         .iter()
-        .find(|(_, k)| k.iter().any(|s| s.starts_with("frame:thread.started")))
+        .find(|(_, k)| k.iter().any(|s| s.starts_with("frame:thread/started")))
         .expect("the codex child's own frames must be on disk somewhere");
     assert!(
         child_kinds
             .iter()
-            .any(|s| s == "frame:item.completed" || s.starts_with("frame:turn.")),
+            .any(|s| s == "frame:item/completed" || s.starts_with("frame:turn/")),
         "the child's stream is bookends and nothing else: {child_kinds:?}"
     );
     let (_, child_events) = replay(child_dir);

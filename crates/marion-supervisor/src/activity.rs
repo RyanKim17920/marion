@@ -544,8 +544,8 @@ mod tests {
         assert!(long.len() <= PEEK_CAP && long.ends_with('…'));
     }
 
-    /// The file as a live launch-only child leaves it: codex's s6 stream recorded line by line,
-    /// with the bookend marion writes first, read back through the row.
+    /// The file as a live codex node leaves it: its app-server stream (S36 P4) recorded line by
+    /// line, with the bookend marion writes first, read back through the row.
     #[test]
     fn a_peek_reads_the_frames_a_running_nodes_stream_recorded() {
         use crate::events::{EventSink, EventWriter};
@@ -559,17 +559,21 @@ mod tests {
                 "unused".into(),
             );
             s.lifecycle(marion_core::event::Lifecycle::Opened);
-            for line in
-                include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl").lines()
-            {
+            for line in marion_testsupport::app_server_capture("p4-items.jsonl").lines() {
                 s.record_line(line);
             }
         }
         let out = peek(&path, Harness::Codex);
+        // P4's four items in order — two `report`s (direct, then from code-mode JS), the shell
+        // command, the patch — and the completed agent message.
         assert_eq!(
             out,
             "Recent activity (oldest first):\n\
-             - report({\"narrative\":\"s6 probe: reporting via MCP\"})\n- last said: done"
+             - report({\"narrative\":\"p4 report\"})\n\
+             - commandExecution(/bin/zsh -lc 'echo hello-p4')\n\
+             - fileChange([{\"diff\":\"p4\\n\",\"kind\":{\"type\":\"add\"},\"path\":\"<SCRATCH>/runs/p4/repo/src/p4.txt\"}])\n\
+             - report({\"narrative\":\"p4 via js\"})\n\
+             - last said: p4 final message"
         );
     }
 
@@ -583,7 +587,7 @@ mod tests {
         let dir = marion_testsupport::scratch("activity-pages");
         let path = dir.join("events.jsonl");
         let agent = marion_core::contract::AgentId("019f-pages".into());
-        let stream = include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl");
+        let stream = marion_testsupport::app_server_capture("p4-items.jsonl");
         let lines: Vec<&str> = stream.lines().collect();
         let sink = EventSink::new(
             EventWriter::open_path(&path, &agent).unwrap(),

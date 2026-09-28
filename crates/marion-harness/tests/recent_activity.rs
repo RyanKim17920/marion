@@ -39,27 +39,51 @@ fn acp_activity_of(h: Harness, agent: Option<&str>, stdout: &str) -> Option<Rece
     Some(recent_activity(rule, &json_frames(stdout), 5))
 }
 
+/// codex's exec fallback row's rule (`codex::EXEC`), for the exec captures.
+fn exec_activity_of(stdout: &str) -> RecentActivity {
+    let rule = marion_harness::codex::EXEC
+        .stream
+        .and_then(|g| g.activity.as_ref())
+        .expect("the exec row reads activity");
+    recent_activity(rule, &json_frames(stdout), 5)
+}
+
 fn names(a: &RecentActivity) -> Vec<&str> {
     a.calls.iter().map(|c| c.name.as_str()).collect()
 }
 
 #[test]
 fn each_harness_reads_its_calls_and_words_from_the_stream_it_was_measured_emitting() {
-    let cases: &[(&str, Harness, &str, &[&str], &str)] = &[
-        // A patch item, `item.started` then `item.completed` under one id: one call, not two.
+    // codex's exec captures, through the exec row it kept (`codex::EXEC`). A patch item,
+    // `item.started` then `item.completed` under one id: one call, not two.
+    for (what, stdout, calls, text) in [
         (
             "codex s6 patch",
-            Harness::Codex,
             fixture!("s6/exec-codemode-apply-patch.stream.jsonl"),
-            &["file_change"],
+            &["file_change"][..],
             "patched",
         ),
         (
             "codex s6 mcp",
-            Harness::Codex,
             fixture!("s6/exec-mcp-report.stream.jsonl"),
-            &["report"],
+            &["report"][..],
             "done",
+        ),
+    ] {
+        let a = exec_activity_of(stdout);
+        assert_eq!(names(&a), calls, "{what}: {a:?}");
+        assert_eq!(a.text.as_deref(), Some(text), "{what}: {a:?}");
+    }
+    let p4 = marion_testsupport::app_server_capture("p4-items.jsonl");
+    let cases: &[(&str, Harness, &str, &[&str], &str)] = &[
+        // S36 P4 over app-server: `item/started` then `item/completed` under one id, the MCP call
+        // named by its tool and the rest by kind; the words are the completed agent message.
+        (
+            "codex S36 p4",
+            Harness::Codex,
+            &p4,
+            &["report", "commandExecution", "fileChange", "report"],
+            "p4 final message",
         ),
         (
             "claude-code s9",
@@ -130,13 +154,13 @@ fn each_harness_reads_its_calls_and_words_from_the_stream_it_was_measured_emitti
 /// command's argument is the command line itself.
 #[test]
 fn a_calls_arguments_are_what_the_harness_gave_the_tool() {
-    let a = activity_of(Harness::Codex, fixture!("s6/exec-mcp-report.stream.jsonl")).unwrap();
+    let a = exec_activity_of(fixture!("s6/exec-mcp-report.stream.jsonl"));
     assert_eq!(
         a.calls[0].args,
         serde_json::json!({"narrative": "s6 probe: reporting via MCP"})
     );
     // `s7`'s shell commands: three item frames under two ids are two calls, each its command line.
-    let a = activity_of(Harness::Codex, fixture!("s7/exec-spawn-child.stream.jsonl")).unwrap();
+    let a = exec_activity_of(fixture!("s7/exec-spawn-child.stream.jsonl"));
     assert_eq!(
         names(&a),
         ["command_execution", "command_execution"],

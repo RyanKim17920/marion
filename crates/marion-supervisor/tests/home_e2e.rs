@@ -2,10 +2,11 @@
 //! terminal emulator the way an operator's eye reads it.
 //!
 //! The bed is a `codex` shim on a stated `PATH`, as `node_kill.rs` builds one, so it needs no
-//! harness, no network and no credential. The shim prints codex's recorded `exec --json` stream a
-//! line at a time when it is run headless — so the Watch tab's action stream has real frames to
-//! show, arriving while the node runs — and, run in a pane, prints a banner and echoes what is typed
-//! into it. Both hold until the test opens a gate file.
+//! harness, no network and no credential. Run headless it is the app-server shim
+//! (`common::app_server`), whose turn prints a `report` call's app-server items a line at a time —
+//! so the Watch tab's action stream has frames to show, arriving while the node runs — and, run in
+//! a pane, it prints a banner and echoes what is typed into it. Both hold until the test opens a
+//! gate file.
 //!
 //! What it proves, in the order an operator meets it: Start renders with the shim's readiness; a
 //! typed prompt and Enter run `marion run … --detach`, and the node appears on Watch; its commands
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
-use marion_testsupport::{Scratch, fixture_repo, scratch, sweep, write_executable};
+use marion_testsupport::{Scratch, fixture_repo, scratch, sweep};
 
 mod common;
 use common::cast::cast_records;
@@ -35,47 +36,41 @@ const SIZE: WinSize = WinSize {
 };
 const TASK: &str = "HOMEE2E-TASK list the limiter files";
 
-/// A `codex` that streams the recorded `exec --json` frames (all but the turn's end) when headless, is a tiny echoing TUI
+/// A `codex` that streams a `report` call's app-server items when headless, is a tiny echoing TUI
 /// when run in a pane, and holds until `gate` exists.
 fn shim(bin: &Path, gate: &Path) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/s6/exec-mcp-report.stream.jsonl")
-        .canonicalize()
-        .expect("the recorded codex stream");
+    let started = r#"{"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"call_home","server":"marion","tool":"report","status":"inProgress","arguments":{"narrative":"s6 probe: reporting via MCP"}}}}"#;
+    let completed = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"call_home","server":"marion","tool":"report","status":"completed","arguments":{"narrative":"s6 probe: reporting via MCP"}}}}"#;
+    let said = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_home","text":"done"}}}"#;
     let script = format!(
-        r#"#!/bin/sh
-case "$1" in
+        r#"case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0 ;;
 esac
-# What marion launched it with, and the node token from its environment — a live codex node's
-# token rides the environment, never argv — for the test to find the node's identity and token in.
-mkdir -p {argv} && printf '%s TOKEN_FROM_ENV="%s"\n' "$*" "${{MARION_NODE_TOKEN-}}" > {argv}/$$
-case "$*" in
-  *exec*)
-    # The turn's opening frames and its first call, a line at a time; the rest only once the gate
-    # opens, so the node is still running while the test steers and cancels it.
-    sed -n '1,4p' {fixture} | while IFS= read -r line; do echo "$line"; sleep 0.3; done
-    waited=0
-    while [ ! -e {gate} ] && [ "$waited" -le 6000 ]; do sleep 0.05; waited=$((waited + 1)); done
-    sed -n '5,$p' {fixture}
-    exit 0
-    ;;
-  *)
-    echo "HOMEE2E-PANE-READY"
-    ( while [ ! -e {gate} ]; do sleep 0.1; done; kill $$ ) &
-    while IFS= read -r typed; do echo "typed: $typed"; done
-    ;;
-esac
+mkdir -p {argv}
+if [ -n "$MARION_SHIM_TURN" ]; then
+  # What marion launched the server with, and the node token from its environment — a live codex
+  # node's token rides the environment, never argv — under the server's pid.
+  printf '%s TOKEN_FROM_ENV="%s"\n' "$MARION_SHIM_ARGV" "${{MARION_NODE_TOKEN-}}" > {argv}/$PPID
+  # The turn's first call, then the rest only once the gate opens, so the node is still running
+  # while the test steers and cancels it.
+  sleep 0.3; echo '{started}'
+  waited=0
+  while [ ! -e {gate} ] && [ "$waited" -le 6000 ]; do sleep 0.05; waited=$((waited + 1)); done
+  echo '{completed}'; echo '{said}'
+  exit 0
+fi
+echo "$@" > {argv}/$$
+echo "HOMEE2E-PANE-READY"
+( while [ ! -e {gate} ]; do sleep 0.1; done; kill $$ ) &
+while IFS= read -r typed; do echo "typed: $typed"; done
 waited=0
 while [ ! -e {gate} ] && [ "$waited" -le 1200 ]; do sleep 0.05; waited=$((waited + 1)); done
 exit 0
 "#,
-        fixture = common::shell_quote(&fixture),
         gate = common::shell_quote(gate),
         argv = common::shell_quote(&bin.join("../argv")),
     );
-    let path = bin.join("codex");
-    write_executable(&path, script);
+    common::app_server::fake_codex(bin, &script);
 }
 
 /// This test's own credential store: a file under its scratch directory, never the operator's
@@ -433,8 +428,8 @@ fn start_runs_a_task_and_watch_shows_it_steers_it_and_cancels_it() {
         s.contains("NODES") && s.lines().any(|l| l.contains("codex") && l.contains('❯'))
     });
 
-    // A child under it, spawned the way the root's own `spawn` would be (its node token): a
-    // launch-only child records its stream live, so its call appears while it runs.
+    // A child under it, spawned the way the root's own `spawn` would be (its node token): its
+    // app-server stream is recorded live, so its call appears while it runs.
     let root = bed.root_id();
     let child = bed.spawn_child(&root, "HOMEE2E-CHILD read the limiter");
     op.wait_for("the child in the forest", |s| {

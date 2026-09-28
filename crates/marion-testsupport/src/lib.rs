@@ -1764,6 +1764,22 @@ pub fn carries(v: &Value, needle: &str) -> bool {
     }
 }
 
+/// **The server's side of an S36 `codex app-server` capture** (`tests/fixtures/app-server-0.155.1/`),
+/// one frame per line: exactly the stdout marion's app-server driver records for a node. The
+/// captures log both directions and the provider as `{t, dir, msg}` lines; this keeps `dir: "s2c"`.
+pub fn app_server_capture(file: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/app-server-0.155.1")
+        .join(file);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).expect("an S36 capture line is JSON"))
+        .filter(|o| o["dir"] == "s2c")
+        .map(|o| format!("{}\n", o["msg"]))
+        .collect()
+}
+
 /// A `--canned --base-url` for a run whose harness is a stub that never dials it: a real listener
 /// that accepts connections and answers nothing, so `marion run --canned`'s reachability probe
 /// passes. The listener lives as long as the test process, so a run spawned in the background

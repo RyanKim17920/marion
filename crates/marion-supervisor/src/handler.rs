@@ -6343,7 +6343,7 @@ mod tests {
             "unused".into(),
         )
         .publishing_to(&id("child"), Some(w.fx.handle.spending.clone()));
-        for l in include_str!("../../../tests/fixtures/s6/exec-mcp-report.stream.jsonl").lines() {
+        for l in marion_testsupport::app_server_capture("p4-items.jsonl").lines() {
             sink.record_line(l);
         }
         let spent = sink
@@ -6351,17 +6351,28 @@ mod tests {
             .usage
             .expect("the fixture states its usage")
             .total();
-        let Frame::Notification(n) = next_frame(&mut r) else {
-            panic!("expected a notification")
+        // One replacement per total that moved — codex states its thread's running total after
+        // every response — and the last is the whole spend.
+        let node = loop {
+            let Frame::Notification(n) = next_frame(&mut r) else {
+                panic!("expected a notification")
+            };
+            let Event::NodeAdded { node, .. } = n.event else {
+                panic!(
+                    "a total that moved must arrive as tree/node-added, got {:?}",
+                    n.event.method()
+                )
+            };
+            assert_eq!(node.agent_id, id("child"));
+            assert!(
+                node.tokens.is_some_and(|t| t <= spent),
+                "a running total never passes the whole: {:?} of {spent}",
+                node.tokens
+            );
+            if node.tokens == Some(spent) {
+                break node;
+            }
         };
-        let Event::NodeAdded { node, .. } = n.event else {
-            panic!(
-                "a total that moved must arrive as tree/node-added, got {:?}",
-                n.event.method()
-            )
-        };
-        assert_eq!(node.agent_id, id("child"));
-        assert_eq!(node.tokens, Some(spent));
         assert_eq!(
             node.state,
             NodeState::Running,

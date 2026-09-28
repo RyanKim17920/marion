@@ -65,7 +65,7 @@
 //! built one honest `agent/spawn` at a time, the test presenting each node's own capability token
 //! the way that node's bridge would (see [`spawn_over_socket`]). The ancestors are shims that block
 //! on a gate — no model calls, no cost — and the node under test is the real binary, routed to by
-//! the shim on [`DELEGATOR_MARKER`]. What the file measures is unchanged; what it measures it
+//! the shim on its depth; the provider knows its turns by [`DELEGATOR_MARKER`]. What the file measures is unchanged; what it measures it
 //! *through* is now the production path.
 //!
 //! The grandchild's half of the script is a complete, working child script for that same harness. If
@@ -97,7 +97,6 @@ use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     carries, fixture_repo, git, kill_hard, on_path, persisted_contracts, scratch, survivors, which,
-    write_executable,
 };
 use serde_json::{Value, json};
 
@@ -358,8 +357,8 @@ impl Evidence {
 ///
 /// Every chain node is a **shim**: a `codex` on the supervisor's `PATH` that blocks on a gate file,
 /// so the chain stays live and costs no model call. The one invocation that must be real — the node
-/// under test — is told apart by [`DELEGATOR_MARKER`] in its argv, and the shim `exec`s the real
-/// binary for it. That keeps the production invocation byte-for-byte the adapter's own while
+/// under test — is told apart by its depth (a codex prompt is an app-server turn, not argv), and
+/// the shim `exec`s the real binary for it. That keeps the production invocation byte-for-byte the adapter's own while
 /// letting its ancestors be free.
 const CHAIN_TYPE: &str = "codex-impl";
 
@@ -379,20 +378,25 @@ const BOUND: Duration = Duration::from_secs(180);
 
 /// The shim: a `codex` that blocks until the gate exists, and `exec`s the real binary for the
 /// invocations that must be real — the node under test, and a codex grandchild it is allowed.
-fn chain_shim(dir: &Path, gate: &Path, real: &Path) -> PathBuf {
-    let bin = dir.join(CHAIN_PROGRAM);
-    let script = format!(
-        r#"#!/bin/sh
-case "$1" in
-  --version) echo "codex-cli 0.146.0-marion-depth-shim"; exit 0 ;;
-esac
-case "$*" in
-  # The node under test. Its argv is the adapter's own, so this hands the real harness exactly what
-  # marion compiled — the shim is a router, never a translator.
-  *{marker}*|*{grandchild}*) exec {real} "$@" ;;
-esac
-# A chain node: hold this depth open until the fixture releases it. Mortal by construction, because
-# a shim that could only ever wait for a gate would outlive a panicking test.
+///
+/// codex runs over app-server (S36), whose prompt is a turn rather than argv, so the real
+/// invocations are told apart by the depth marion declared for them (`real_depths`, read off the
+/// canned `config.toml`), and the chain nodes are the app-server shim, each turn blocked on the
+/// gate (`common::app_server`).
+fn chain_shim(
+    dir: &Path,
+    gate: &Path,
+    real: &Path,
+    real_depths: std::ops::RangeInclusive<u32>,
+) -> PathBuf {
+    common::app_server::real_codex_at_depths(
+        dir,
+        real,
+        real_depths,
+        "codex-cli 0.146.0-marion-depth-shim",
+        &format!(
+            r#"# A chain node: hold this depth open until the fixture releases it. Mortal by
+# construction, because a shim that could only ever wait for a gate would outlive a panicking test.
 waited=0
 while [ ! -e {gate} ]; do
   sleep 0.05
@@ -401,13 +405,9 @@ while [ ! -e {gate} ]; do
 done
 exit 0
 "#,
-        marker = DELEGATOR_MARKER,
-        grandchild = GRANDCHILD_MARKER,
-        real = common::shell_quote(real),
-        gate = common::shell_quote(gate),
-    );
-    write_executable(&bin, script);
-    bin
+            gate = common::shell_quote(gate),
+        ),
+    )
 }
 
 /// The spawn a chain node is asked for: a shim of the chain's own type, holding its depth open.
@@ -477,7 +477,13 @@ fn drive(node: &Node) -> Evidence {
     let gate = dir.join("chain-gate");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::create_dir_all(&shim_dir).unwrap();
-    chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM));
+    // The node under test sits at max_depth; everything above it is a chain shim.
+    chain_shim(
+        &shim_dir,
+        &gate,
+        &which(CHAIN_PROGRAM),
+        DEFAULT_MAX_DEPTH..=DEFAULT_MAX_DEPTH,
+    );
 
     let server = CannedServer::start(Config {
         addr: ([127, 0, 0, 1], 0).into(),
@@ -855,7 +861,8 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
     let gate = dir.join("chain-gate");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::create_dir_all(&shim_dir).unwrap();
-    chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM));
+    // The codex grandchild, at depth 2, is the one real codex; the root at 0 is a chain shim.
+    chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM), 2..=2);
 
     let spawn = marion_tool(&CLAUDE, "spawn");
     let script = Script {

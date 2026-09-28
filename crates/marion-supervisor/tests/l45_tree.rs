@@ -89,12 +89,13 @@ fn forest() -> Vec<NodeSummary> {
             true,
             NodeState::Idle,
         ),
-        // codex on its shipped `LaunchOnly` surface: nothing publishes, whatever the version says.
+        // opencode on its shipped `LaunchOnly` surface: nothing publishes, whatever the version
+        // says — it advertises `resume` (S31) and the surface clips it.
         node(
-            "codex-146",
+            "opencode-1832",
             Some("root-claude"),
-            Harness::Codex,
-            Some("0.146.0"),
+            Harness::OpenCode,
+            Some("1.18.32"),
             false,
             NodeState::Blocked(BlockReason::Permission),
         ),
@@ -102,7 +103,7 @@ fn forest() -> Vec<NodeSummary> {
         // conservative key, which is the one §3.3's *degrade visibly* asks for.
         node(
             "codex-unversioned",
-            Some("codex-146"),
+            Some("opencode-1832"),
             Harness::Codex,
             None,
             false,
@@ -257,7 +258,7 @@ fn l45_tree_pane_node_greys_what_its_surfaces_cannot_carry() {
 fn l45_tree_a_launch_only_node_greys_everything() {
     let mut tree = build(&forest(), None);
     tree.move_by(2);
-    assert_eq!(tree.selected().unwrap().id, "codex-146");
+    assert_eq!(tree.selected().unwrap().id, "opencode-1832");
     insta::assert_snapshot!(report(&tree, true));
 }
 

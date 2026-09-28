@@ -295,15 +295,32 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // §9: "`codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is exactly
     // `continue_()` + `prompt()`". That is a claim about the *binary*; the surface it is asked
     // for on is what decides whether it is publishable, and on `codex exec --json` it is not.
+    //
+    // S36 on 0.155.1, over `codex app-server`: `turn/steer` folds a message into the running
+    // turn (P6), `turn/interrupt` ends it at once (P7), and `thread/tokenUsage/updated` reports
+    // the thread's running total after every response (P4) — marion has driven all three
+    // (`tests/codex_app_server.rs`). Nothing earlier than that version is claimed. [`EXEC`]
+    // inherits the claim and its `LaunchOnly` ceiling clips it.
     advertised: Advertised {
         always: Capabilities::NONE,
-        from_version: &[(
-            Capabilities {
-                resume: true,
-                ..Capabilities::NONE
-            },
-            (0, 146, 0),
-        )],
+        from_version: &[
+            (
+                Capabilities {
+                    resume: true,
+                    ..Capabilities::NONE
+                },
+                (0, 146, 0),
+            ),
+            (
+                Capabilities {
+                    steer: true,
+                    interrupt: true,
+                    usage: true,
+                    ..Capabilities::NONE
+                },
+                (0, 155, 1),
+            ),
+        ],
     },
     // `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no
     // per-tool knob at all (`SANDBOX_MODE`).
@@ -669,7 +686,9 @@ pub const APP_STREAM: StreamGrammar = StreamGrammar {
             },
             status: None,
             kind: Some("/params/error/codexErrorInfo"),
-            words: &["/params/error/message"],
+            // The provider's own words ride `additionalDetails` (`unexpected status 401 …`), the
+            // retry count `message` (`Reconnecting... 1/5`): conformance P-errors on 0.155.1.
+            words: &["/params/error/additionalDetails", "/params/error/message"],
         },
         ErrorRule {
             at: Where {
@@ -1074,7 +1093,7 @@ impl HarnessAdapter for CodexAdapter {
 
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
-    spec: &EXEC,
+    spec: &SPEC,
     adapter: |_| Ok(Box::new(CodexAdapter)),
 };
 
@@ -1706,25 +1725,12 @@ mod tests {
 
     /// The server's side of an S36 capture: every frame app-server wrote, in order.
     fn s36(file: &str) -> Vec<Value> {
-        let path = format!(
-            "{}/../../tests/fixtures/app-server-0.155.1/{file}",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{path}: {e}"))
-            .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .filter(|o| o["dir"] == "s2c")
-            .map(|o| o["msg"].clone())
-            .collect()
+        crate::stream::json_frames(&marion_testsupport::app_server_capture(file))
     }
 
     /// [`s36`] as the stdout a node's driver records: one frame per line.
     fn s36_stdout(file: &str) -> String {
-        s36(file)
-            .iter()
-            .map(|f| format!("{f}\n"))
-            .collect::<String>()
+        marion_testsupport::app_server_capture(file)
     }
 
     #[test]

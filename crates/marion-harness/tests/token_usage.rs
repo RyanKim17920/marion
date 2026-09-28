@@ -50,15 +50,31 @@ const GEMINI_RESULT: &str = r#"{"type":"result","timestamp":"<TS>","status":"suc
 /// `opencode run --format json`'s `step_finish`, verbatim from `s13/README.md`.
 const OPENCODE_STEP_FINISH: &str = r#"{"type":"step_finish","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"reason":"stop","type":"step-finish","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}"#;
 
+/// codex's exec capture, through the exec row it kept (`codex::EXEC`): `turn.completed` counts
+/// cache reads inside `input_tokens`, 14997 of which 11008 cached.
+#[test]
+fn codexs_exec_row_reads_its_usage_from_its_own_capture() {
+    let rule = marion_harness::codex::EXEC
+        .stream
+        .and_then(|g| g.usage.as_ref())
+        .expect("the exec row reads usage");
+    assert_eq!(
+        marion_harness::grammar::usage(rule, &json_frames(fixture!("s4/codex/stream-none.jsonl"))),
+        Some(reasoning(tokens(3989, 5, 11008, 0), 0))
+    );
+}
+
 #[test]
 fn each_harness_reads_its_usage_from_the_stream_it_was_measured_emitting() {
+    let p4 = marion_testsupport::app_server_capture("p4-items.jsonl");
     let cases: &[(&str, Harness, &str, Option<TokenUsage>)] = &[
-        // `turn.completed` counts cache reads inside `input_tokens`: 14997 of which 11008 cached.
+        // app-server's `thread/tokenUsage/updated` is the thread's running total; the last one in
+        // S36 P4 is 1500 input of which 100 cached, 73 output of which 10 reasoning.
         (
-            "codex s4",
+            "codex S36 p4",
             Harness::Codex,
-            fixture!("s4/codex/stream-none.jsonl"),
-            Some(reasoning(tokens(3989, 5, 11008, 0), 0)),
+            &p4,
+            Some(reasoning(tokens(1400, 73, 100, 0), 10)),
         ),
         // agy's `thinking_tokens` is part of `output_tokens`: 86 of 146, `total_tokens` 9456.
         (

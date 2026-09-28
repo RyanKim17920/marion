@@ -29,6 +29,8 @@ use marion_supervisor::run::run_bounded;
 use marion_supervisor::spawn::TreeSnapshot;
 use marion_testsupport::{fixture_repo, git, scratch, write_executable};
 
+mod common;
+
 /// Generous. The bound exists so a hung `marion` fails the suite loudly instead of wedging it —
 /// `launch_only_root.rs`'s `RUN_BOUND`, and the same reasoning.
 const RUN_BOUND: Duration = Duration::from_secs(60);
@@ -321,7 +323,14 @@ fn a_state_dir_inside_the_measured_repository_is_refused_naming_both_directories
 /// so a `> a.txt` in the body is a write by the node marion is recording, arriving through exactly
 /// the route a real harness's write would.
 fn stub_codex(dir: &Path, body: &str) -> PathBuf {
-    stub(dir, "codex", body)
+    // codex's headless row is app-server (S36): the shim serves the protocol and runs `body` as
+    // the turn, in the root's cwd, with `--version` answered ahead of it as before.
+    let bin = dir.join("bin");
+    common::app_server::fake_codex(
+        &bin,
+        &format!("if [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
+    );
+    bin
 }
 
 /// The same stub under the name the gemini adapter launches, for the grant-gate test — `gemini-impl`
@@ -344,9 +353,9 @@ fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
     bin
 }
 
-/// One marion verb, called and answered, in codex's stream shape. Without it the run is refused as
+/// One marion verb, called and answered, in codex's stream shape (app-server's `item/completed`). Without it the run is refused as
 /// `BridgeNeverReached` — which is a case this file tests deliberately and must not stumble into.
-const REACHED_THE_BRIDGE: &str = r#"echo '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}'"#;
+const REACHED_THE_BRIDGE: &str = r#"echo '{"method":"item/completed","params":{"item":{"id":"item_0","type":"mcpToolCall","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}}'"#;
 
 /// The same claim in **gemini's** stream shape: a `tool_use` naming the verb in gemini's own
 /// `mcp_marion_*` spelling, plus the separate `tool_result` frame that says it was answered. Two
@@ -721,11 +730,12 @@ fn a_root_that_wrote_only_an_ignored_path_does_not_read_as_a_root_that_wrote_not
 /// The post-snapshot sits at the **top** of `journal_the_roots_outcome`, before the match on the
 /// run's result, and this is the test that says why. Three endings, one of them `Ok`:
 ///
-/// * a **wall-clock kill** on the `LaunchOnly` path — the node wrote and then hung, and marion
-///   killed its process group. A write that already happened is not undone by the kill, and this is
-///   precisely the run whose record it would be worst to lose;
-/// * **`BridgeNeverReached`** — the node wrote and never called a marion verb, so marion refuses
-///   the *result*. The write is still on disk;
+/// * a **wall-clock kill** — the node wrote and then hung, and marion killed its process group. A
+///   write that already happened is not undone by the kill, and this is precisely the run whose
+///   record it would be worst to lose;
+/// * **a turn that failed** — the node wrote, called no marion verb and its turn ended `failed`
+///   (codex's app-server; the `LaunchOnly` form of this ending was `BridgeNeverReached`, which a
+///   row with a readiness gate never reaches). The write is still on disk;
 /// * a **clean exit**, so the other two cannot pass by a record that is written only for failures.
 ///
 /// Red if the snapshot moves onto the `Ok` arm: the first two cases then find no record at all and
@@ -740,8 +750,8 @@ fn the_record_is_written_on_every_exit_path_and_not_only_a_clean_one() {
             false,
         ),
         (
-            "refused-the-bridge-was-never-reached",
-            "printf 'x\\n' > a.txt\necho 'Here is a summary of the repository.'\nexit 0".into(),
+            "failed-in-its-own-turn",
+            "printf 'x\\n' > a.txt\necho 'Here is a summary of the repository.'\nexit 1".into(),
             false,
         ),
         (

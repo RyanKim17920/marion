@@ -4431,19 +4431,22 @@ mod tests {
         );
 
         // **The same two-sided check on codex, because codex now has a pane too.** Its headless
-        // shape is `codex exec --json`, which is M1's child launch, and a selection bug that gave
-        // every codex node the TUI would take that path away without any adapter test noticing.
+        // shape is `codex app-server` (S36), and a selection bug that gave every codex node the TUI
+        // would take that path away without any adapter test noticing.
         let cx = prepare(&root_spec(&dir, "codex")).expect("a codex root");
         let cx_paned = prepare(&RootSpec {
             pane: true,
             ..root_spec(&dir, "codex")
         })
         .expect("a codex root with a pane");
-        assert_eq!(cx.path, RootPath::LaunchOnly);
-        assert_eq!(cx.invocation.args.first().map(String::as_str), Some("exec"));
+        assert_eq!(cx.path, RootPath::AppServer);
+        assert_eq!(
+            cx.invocation.args.first().map(String::as_str),
+            Some("app-server")
+        );
         assert!(
-            cx.invocation.args.iter().any(|a| a == "--json"),
-            "M1's codex launch lost its JSONL stream: {:?}",
+            !cx.invocation.args.iter().any(|a| a == "delegate it"),
+            "the headless prompt is a turn, never argv: {:?}",
             cx.invocation.args
         );
         assert!(
@@ -4453,9 +4456,8 @@ mod tests {
         assert_eq!(cx_paned.path, RootPath::Terminal);
         assert_ne!(
             cx_paned.invocation.args.first().map(String::as_str),
-            Some("exec"),
-            "the codex pane compiled the exec shape, whose flags the interactive command rejects: \
-             {:?}",
+            Some("app-server"),
+            "the codex pane compiled the headless shape instead of the TUI: {:?}",
             cx_paned.invocation.args
         );
         assert!(

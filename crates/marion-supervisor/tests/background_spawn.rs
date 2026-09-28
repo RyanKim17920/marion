@@ -110,7 +110,8 @@ const IDLE_GRACE: Duration = Duration::from_secs(600);
 /// must outlive the test from the children that must not.
 const ROOT_MARKER: &str = "MARION-BACKGROUND-SPAWN-ROOT-a41f";
 
-/// A `codex` that blocks until the test says otherwise.
+/// A `codex` that blocks until the test says otherwise — the app-server shim
+/// (`common::app_server`), whose every turn runs this hook with the turn's text as `$1`.
 ///
 /// * `--version` answers immediately — unless the `slow_version` marker exists, which is how one
 ///   test reproduces a harness that hangs on the version probe.
@@ -120,7 +121,7 @@ const ROOT_MARKER: &str = "MARION-BACKGROUND-SPAWN-ROOT-a41f";
 ///   real process existed, rather than inferring it — then polls for the gate file and exits 0,
 ///   writing a *done* marker on the way out.
 ///
-/// It writes nothing to stdout, so a child's contract lands `Unreported`. That is correct and
+/// The hook prints nothing, so a child's contract lands `Unreported`. That is correct and
 /// irrelevant: this file asserts about *when* contracts arrive and *whether* spawns are refused,
 /// never about what a child said.
 /// A child prompt carrying this makes the shim write `work.txt` in its workspace before it exits.
@@ -156,21 +157,22 @@ case "$*" in
   *) wait_for={gate}
      mkdir -p {started} {done}
      # A distinct marker per invocation, so a test can count the children that really launched.
-     : > {started}/$$
+     # The server's pid — the process marion spawned — is the hook's parent.
+     : > {started}/$PPID
      # **A child that has done something before it blocks.** Opt-in, like `slow_version`: codex
-     # frames of the shapes `s6`/`s7` recorded — six commands, the first seen twice, then a
-     # message — so `status` has a running child's activity to peek at. No `thread.started` and
-     # no marion `report`, so no other test's journal or contract changes.
+     # app-server items of the shapes S36 P4 recorded — six commands, the first seen twice, then a
+     # message — so `status` has a running child's activity to peek at. No marion `report`, so no
+     # other test's journal or contract changes.
      if [ -e {chatty} ]; then
        printf '%s\n' \
-         '{{"type":"item.started","item":{{"id":"item_1","type":"command_execution","command":"cargo test step-1","status":"in_progress"}}}}' \
-         '{{"type":"item.completed","item":{{"id":"item_1","type":"command_execution","command":"cargo test step-1","status":"completed"}}}}' \
-         '{{"type":"item.started","item":{{"id":"item_2","type":"command_execution","command":"cargo test step-2","status":"in_progress"}}}}' \
-         '{{"type":"item.started","item":{{"id":"item_3","type":"command_execution","command":"cargo test step-3","status":"in_progress"}}}}' \
-         '{{"type":"item.started","item":{{"id":"item_4","type":"command_execution","command":"cargo test step-4","status":"in_progress"}}}}' \
-         '{{"type":"item.started","item":{{"id":"item_5","type":"command_execution","command":"cargo test step-5","status":"in_progress"}}}}' \
-         '{{"type":"item.started","item":{{"id":"item_6","type":"command_execution","command":"cargo test step-6 {long}","status":"in_progress"}}}}' \
-         '{{"type":"item.completed","item":{{"id":"item_7","type":"agent_message","text":"thinking\nrunning the suite now"}}}}'
+         '{{"method":"item/started","params":{{"item":{{"id":"item_1","type":"commandExecution","command":"cargo test step-1","status":"inProgress"}}}}}}' \
+         '{{"method":"item/completed","params":{{"item":{{"id":"item_1","type":"commandExecution","command":"cargo test step-1","status":"completed"}}}}}}' \
+         '{{"method":"item/started","params":{{"item":{{"id":"item_2","type":"commandExecution","command":"cargo test step-2","status":"inProgress"}}}}}}' \
+         '{{"method":"item/started","params":{{"item":{{"id":"item_3","type":"commandExecution","command":"cargo test step-3","status":"inProgress"}}}}}}' \
+         '{{"method":"item/started","params":{{"item":{{"id":"item_4","type":"commandExecution","command":"cargo test step-4","status":"inProgress"}}}}}}' \
+         '{{"method":"item/started","params":{{"item":{{"id":"item_5","type":"commandExecution","command":"cargo test step-5","status":"inProgress"}}}}}}' \
+         '{{"method":"item/started","params":{{"item":{{"id":"item_6","type":"commandExecution","command":"cargo test step-6 {long}","status":"inProgress"}}}}}}' \
+         '{{"method":"item/completed","params":{{"item":{{"id":"item_7","type":"agentMessage","text":"thinking\nrunning the suite now"}}}}}}'
      fi ;;
 esac
 # **Mortal by construction.** The gate lives in a `Scratch` directory that is removed when the
@@ -192,7 +194,7 @@ case "$*" in
   *{work_marker}*) echo work > work.txt; : > {done}/$$ ;;
   # A second marker at exit, so "the child has finished" is an event the test can observe rather
   # than a time it has to guess.
-  *) : > {done}/$$ ;;
+  *) : > {done}/$PPID ;;
 esac
 exit 0
 "#,
@@ -208,7 +210,8 @@ exit 0
         life_ticks = SHIM_LIFE.as_millis() / 50,
         life_secs = SHIM_LIFE.as_secs(),
     );
-    write_executable(&bin, script);
+    let written = common::app_server::fake_codex(dir, &script);
+    debug_assert_eq!(written, bin);
     bin
 }
 
@@ -523,6 +526,29 @@ fn fixture(tag: &str) -> Fixture {
         "§9: a root has no task contract, so nothing may name one for it"
     );
     let declaration = declaration_of(&state, &root.agent_id);
+    // **Settled before any test reads the journal**: the root's app-server answers `thread/start`
+    // at once, and the session record that answer journals lands a moment after `agent/spawn`
+    // returns — so a test counting records waits for it first rather than counting it as its own.
+    let journal_has_session = || {
+        let mut settled = false;
+        walk(&state, &mut |p| {
+            if p.file_name().is_some_and(|n| n == "journal.jsonl") {
+                let bytes = std::fs::read(p).unwrap_or_default();
+                settled |= marion_core::registry::replay(&bytes)
+                    .get(&root.agent_id)
+                    .is_some_and(|n| n.harness_session.is_some());
+            }
+        });
+        settled
+    };
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    while !journal_has_session() {
+        assert!(
+            Instant::now() < deadline,
+            "the root never journaled its thread"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Fixture {
         needle: dir.to_string_lossy().to_string(),
         _scratch: s,
@@ -656,8 +682,8 @@ impl Fixture {
     /// The pids of the shim children that have actually started, **as the children named
     /// themselves**.
     ///
-    /// The shim's marker file is named `$$` — the started process's own pid, written by that
-    /// process. So this is the one measurement in the file that can contradict marion about
+    /// The shim's marker file is named `$PPID` — the started server's own pid, written by the hook
+    /// that server runs. So this is the one measurement in the file that can contradict marion about
     /// *which* process it started, rather than only about how many.
     fn started_pids(&self) -> Vec<i32> {
         let mut pids: Vec<i32> = std::fs::read_dir(&self.started)
@@ -851,8 +877,8 @@ fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
 ///
 /// 1. *A pid is recorded at all.* `pid: None` leaves the reading `[None]`, which is deliberately
 ///    distinguishable from the record not having arrived.
-/// 2. *It is the child's pid, and nobody else's.* The shim names its own marker file `$$`, so the
-///    journal is checked against a number the child wrote about itself — and the two plausible
+/// 2. *It is the child's pid, and nobody else's.* The shim names its marker file after the
+///    server's own pid (its hook's `$PPID`), so the journal is checked against a number the child wrote about itself — and the two plausible
 ///    wrong fill-ins, the bridge's pid and the supervisor's, are ruled out by name. The second is
 ///    new since step 5: the process doing the spawning is the supervisor now, so
 ///    `std::process::id()` inside `run_spawn` would be *its* pid rather than the bridge's.
@@ -2229,7 +2255,7 @@ fn status_on_a_running_child_shows_its_recent_tool_calls_within_bounds() {
     let calls: Vec<&str> = lines
         .iter()
         .copied()
-        .filter(|l| l.starts_with("- command_execution("))
+        .filter(|l| l.starts_with("- commandExecution("))
         .collect();
     assert_eq!(calls.len(), 5, "the last five of six: {peek}");
     for (line, step) in calls.iter().zip(2..=6) {
