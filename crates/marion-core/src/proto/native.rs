@@ -908,6 +908,7 @@ mod tests {
             "geometry": { "cols": 80, "rows": 24, "xpixel": 0, "ypixel": 0 },
         });
         let params = AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "t".into(),
             prompt: "p".into(),

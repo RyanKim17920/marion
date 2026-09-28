@@ -429,6 +429,7 @@ fn spawn_params(
     repo: Option<std::path::PathBuf>,
 ) -> marion_core::proto::params::AgentSpawnParams {
     marion_core::proto::params::AgentSpawnParams {
+        review_of: None,
         // A node that backgrounds a child is owed its end as a message (turn delivery); read
         // before `caller` moves into its field below.
         notify_parent: caller.is_some() && args["background"].as_bool() == Some(true),

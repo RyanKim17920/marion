@@ -2690,6 +2690,8 @@ pub fn child_launch_spec(
         // of item 24's dead end, and just as silent.
         allowed_tools: marion_core::agent_type::child_verbs(agent_type, depth)
             .into_iter()
+            // A reviewer reports and does nothing else: it delegates no part of a judgement.
+            .filter(|verb| req.review.is_none() || *verb == marion_core::agent_type::REPORT_VERB)
             .map(|verb| adapter.marion_tool_name(verb))
             .collect(),
         mcp: McpDeclaration::Marion,

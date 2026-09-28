@@ -290,6 +290,7 @@ fn params(
     timeout_secs: u64,
 ) -> AgentSpawnParams {
     AgentSpawnParams {
+        review_of: None,
         agent_type: agent_type.into(),
         prompt,
         native_launch: None,

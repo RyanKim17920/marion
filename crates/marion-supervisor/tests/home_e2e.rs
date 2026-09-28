@@ -355,6 +355,7 @@ impl Bed {
             common::client::Client::dial(&common::client::paths_for(&self.state, &self.repo));
         let id = c.send(marion_core::proto::Call::AgentSpawn(
             marion_core::proto::params::AgentSpawnParams {
+                review_of: None,
                 notify_parent: false,
                 agent_type: "codex".into(),
                 prompt: prompt.into(),

@@ -705,6 +705,7 @@ mod enabled_launch {
         let paths = socket_paths(&bed.state, &project_root(&bed.project), own_uid());
         let mut client = crate::common::client::Client::dial(&paths);
         client.send(Call::AgentSpawn(AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "claude".into(),
             prompt: "a child of the operator's own native session".into(),

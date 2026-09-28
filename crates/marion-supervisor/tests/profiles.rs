@@ -300,6 +300,7 @@ fn bed(tag: &str, work_mode: &str, cwork_mode: &str) -> Bed {
         token: String::new(),
     };
     let root = bed.spawn(AgentSpawnParams {
+        review_of: None,
         agent_type: "codex".into(),
         prompt: format!("{ROOT_MARKER}: hold"),
         repo: Some(bed.repo.clone()),
@@ -334,6 +335,7 @@ fn root_token(root_argv: &Path) -> String {
 
 fn params() -> AgentSpawnParams {
     AgentSpawnParams {
+        review_of: None,
         agent_type: String::new(),
         prompt: String::new(),
         native_launch: None,
@@ -388,6 +390,7 @@ impl Bed {
     /// A child of the root, in the root's own checkout, run to its contract.
     fn child(&self, agent_type: &str) -> (AgentId, TaskContract) {
         let (id, task) = self.spawn(AgentSpawnParams {
+            review_of: None,
             agent_type: agent_type.into(),
             prompt: "do the task".into(),
             caller: Some(SpawnCaller {
@@ -665,6 +668,7 @@ fn a_root_runs_on_the_named_profile_and_a_node_may_not_choose_one() {
     let bed = bed("profiles-root", "ok", "ok");
     let root = |profile: Option<&str>| {
         bed.spawn(AgentSpawnParams {
+            review_of: None,
             agent_type: "two-accounts".into(),
             prompt: "root".into(),
             repo: Some(bed.repo.clone()),
@@ -692,6 +696,7 @@ fn a_root_runs_on_the_named_profile_and_a_node_may_not_choose_one() {
     assert!(dirs.contains(&bed.dir("claude-code", "work")), "{dirs:?}");
     let refused = bed
         .call(Call::AgentSpawn(AgentSpawnParams {
+            review_of: None,
             agent_type: "two-accounts".into(),
             prompt: "x".into(),
             caller: Some(SpawnCaller {

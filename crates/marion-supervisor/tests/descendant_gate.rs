@@ -187,6 +187,7 @@ fn spawn_over_socket(
     p: AgentSpawnParams,
 ) -> Owned {
     let p = AgentSpawnParams {
+        review_of: None,
         native_launch: None,
         caller: caller.map(|c| SpawnCaller {
             agent_id: c.agent_id.clone(),
@@ -214,6 +215,7 @@ fn spawn_over_socket(
 
 fn params(prompt: String, repo: Option<&Path>, timeout_secs: u64) -> AgentSpawnParams {
     AgentSpawnParams {
+        review_of: None,
         notify_parent: false,
         agent_type: "codex-impl".into(),
         prompt,

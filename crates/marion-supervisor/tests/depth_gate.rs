@@ -444,6 +444,7 @@ fn spawn_over_socket(
     p: AgentSpawnParams,
 ) -> Result<Owned, String> {
     let p = AgentSpawnParams {
+        review_of: None,
         native_launch: None,
         caller: caller.map(|c| SpawnCaller {
             agent_id: c.agent_id.clone(),
@@ -471,6 +472,7 @@ fn spawn_over_socket(
 /// The spawn a chain node is asked for: a shim of the chain's own type, holding its depth open.
 fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
     AgentSpawnParams {
+        review_of: None,
         notify_parent: false,
         agent_type: CHAIN_TYPE.into(),
         prompt: format!("depth-gate chain node at depth {depth}: hold until released"),
@@ -570,6 +572,7 @@ fn drive(node: &Node) -> Evidence {
         &state,
         Some(&caller),
         AgentSpawnParams {
+            review_of: None,
             native_launch: None,
             agent_type: node.agent_type.into(),
             prompt: format!("{DELEGATOR_MARKER}: delegate this task to a child of your own."),
@@ -957,6 +960,7 @@ fn a_claude_child_below_max_depth_spawns_a_codex_grandchild_and_reads_its_contra
         &state,
         Some(&root),
         AgentSpawnParams {
+            review_of: None,
             agent_type: CLAUDE.agent_type.into(),
             prompt: format!("{DELEGATOR_MARKER}: delegate this task to a codex child."),
             acceptance_criteria: vec!["the task is delegated".into()],

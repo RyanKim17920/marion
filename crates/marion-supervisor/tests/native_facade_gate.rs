@@ -154,6 +154,7 @@ impl Bed {
 
     fn root_params(&self) -> AgentSpawnParams {
         AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "claude".into(),
             prompt: "unused because native launch is gated".into(),

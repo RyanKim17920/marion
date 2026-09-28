@@ -609,6 +609,7 @@ mod tests {
         let e = spawn(
             socket,
             AgentSpawnParams {
+                review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "nothing may be started by this call".into(),

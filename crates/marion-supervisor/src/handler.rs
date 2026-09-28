@@ -1196,6 +1196,44 @@ impl crate::run::SpawnObserver for NodeOwner {
 ///
 /// *An unreadable peer is a refusal.* [`Peer::Unknown`] means `getpeereid` failed, and a check that
 /// cannot be made is not a check that passed.
+/// **§2's one-socket-one-project rule for a spawn that names its own `repo`** — a root, or an
+/// operator's review: the tree named must key to the project this supervisor serves.
+fn check_project(env: &crate::run::Env, repo: &Path) -> Result<(), RpcError> {
+    let named = marion_core::paths::ProjectDir::new(&env.state, &crate::socket::project_root(repo));
+    if named != env.project_dir {
+        return Err(RpcError::refused(
+            "repo",
+            format!(
+                "this supervisor serves the project keyed at {}, and {} keys to {}. §2 keys a \
+                     supervisor and its state on the project root — the git common dir — so one \
+                     socket serves one repository and every linked worktree of it, and no other. A \
+                     root created here would be journaled under the project it named while this \
+                     supervisor kept following its own, so marion would report a node that no \
+                     `tree/subscribe` on this socket could ever show. Dial the supervisor for that \
+                     repository instead; refused before the node is claimed, so nothing was written \
+                     under either project.",
+                env.project_dir.path().display(),
+                repo.display(),
+                named.path().display(),
+            ),
+            "§2, §5.4",
+        ));
+    }
+    Ok(())
+}
+
+/// A fresh contract id. Minted by marion rather than by the caller, for §9's reason: the id names a
+/// run marion performed, and a caller-chosen one would let two runs share a contract file.
+fn mint_task_id() -> Result<TaskId, RpcError> {
+    crate::run::entropy()
+        .map(|e| marion_core::contract::new_task_id(crate::run::unix_millis(), e))
+        .map_err(|e| {
+            RpcError::internal(format!(
+                "marion could not mint a task id for this spawn, so nothing was started: {e}"
+            ))
+        })
+}
+
 fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
     let own = crate::socket::own_uid();
     match peer {
@@ -3315,6 +3353,9 @@ impl RegistryHandle {
                 "§2",
             ));
         };
+        if let Some(target) = &p.review_of {
+            return self.spawn_review(me, env, p, target, peer);
+        }
         let Some(caller_id) = p.caller.as_ref() else {
             // **A client creating a root** — §11 item 28 step 6. Answered on its own path rather
             // than folded into the child one: `run_spawn` writes `parent_id: Some(caller)`
@@ -3355,15 +3396,7 @@ impl RegistryHandle {
         agent_type::check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)
             .map_err(gate_refusal)?;
 
-        // Minted here rather than by the caller, for §9's reason: the contract id names a run
-        // marion performed, and a caller-chosen one would let two runs share a contract file.
-        let task_id = crate::run::entropy()
-            .map(|e| marion_core::contract::new_task_id(crate::run::unix_millis(), e))
-            .map_err(|e| {
-                RpcError::internal(format!(
-                    "marion could not mint a task id for this spawn, so nothing was started: {e}"
-                ))
-            })?;
+        let task_id = mint_task_id()?;
         let req = crate::run::SpawnRequest {
             review: None,
             agent_type: p.agent_type.clone(),
@@ -3389,12 +3422,28 @@ impl RegistryHandle {
             resume: None,
             profile: None,
         };
+        // A background spawn's end is owed to its caller as a message (turn delivery).
+        let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
+        self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
+    }
 
+    /// The end every `agent/spawn` of a child shares, ordinary or review: launch it through
+    /// [`Self::launch_child`], remember the task it was sent, and answer with its contract's id.
+    #[allow(clippy::too_many_arguments)]
+    fn start_child(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        req: crate::run::SpawnRequest,
+        task_id: TaskId,
+        caller: crate::run::Caller,
+        repo: PathBuf,
+        decision: std::sync::MutexGuard<'_, ()>,
+        announce_to: Option<AgentId>,
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
         // Kept out of the thread's move, because the answer names it: the composing client reads
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
-        // A background spawn's end is owed to its caller as a message (turn delivery).
-        let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
         // The prompt as the child will receive it, resolved the way `run_spawn_watched` resolves
         // it, before `req` moves into the launch.
         let delivered = crate::run::agent_types(&req.repo)
@@ -3418,6 +3467,124 @@ impl RegistryHandle {
             // what lets the caller find the file when the run ends.
             task_id: Some(answered_task_id),
         })
+    }
+
+    /// **`agent/spawn` with `review_of`: a read-only reviewer of an ended node** ([`crate::review`]).
+    ///
+    /// One spawn path for both client forms: `marion review` sends this with no `caller` (the
+    /// operator, authorized as a root spawn is, naming the `repo`), and a parent model sends it
+    /// through its bridge's `spawn` with its own token. Either way the reviewer is placed **under
+    /// the node it reviews** — the reviewed node stands as the caller for §6.1's gates, the tree
+    /// and the contract's `requester` — so the tree shows the review where the work is.
+    ///
+    /// Refused, in plain words and before anything is written, when the node is unknown, is a
+    /// root, has not ended, or changed nothing.
+    fn spawn_review(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        p: &marion_core::proto::params::AgentSpawnParams,
+        target: &AgentId,
+        peer: Peer,
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
+        let repo = match p.caller.as_ref() {
+            Some(c) => self.authenticate(c).ok_or_else(|| {
+                RpcError::refused(
+                    &c.agent_id.0,
+                    "this supervisor did not mint that node token, so it will not start a review \
+                     on its word.",
+                    "§5.4",
+                )
+            })?,
+            None => {
+                root_spawn_authorized(peer)?;
+                let repo = p.repo.clone().ok_or_else(|| {
+                    RpcError::internal("a review with no caller reached the launcher with no repo")
+                })?;
+                check_project(&env, &repo)?;
+                repo
+            }
+        };
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let refuse = |why: String| RpcError::refused(&target.0, why, "review");
+        let (intent, state) = self
+            .live
+            .read(|r| r.tree().get(target).map(|n| (n.intent.clone(), n.state)))
+            .ok_or_else(|| {
+                refuse(crate::review::refusal(
+                    target,
+                    "no node with that id is in this project's journal",
+                ))
+            })?;
+        if !state.is_exited() {
+            return Err(refuse(crate::review::refusal(
+                target,
+                "it has not ended yet; wait for it to finish, then ask again",
+            )));
+        }
+        let intent = intent.ok_or_else(|| {
+            refuse(crate::review::refusal(
+                target,
+                "its journal has no spawn record, so marion cannot tell what it was asked to do",
+            ))
+        })?;
+        let task_id = intent.task_id.clone().ok_or_else(|| {
+            refuse(crate::review::refusal(
+                target,
+                "it is a root, which has no task contract to review",
+            ))
+        })?;
+        let path = env.project_dir.agent(target).contract(&task_id);
+        let contract = std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| {
+                serde_json::from_slice::<marion_core::contract::TaskContract>(&b)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e| {
+                refuse(crate::review::refusal(
+                    target,
+                    &format!("its contract at {} could not be read ({e})", path.display()),
+                ))
+            })?;
+        let review = crate::review::target(target, &contract).map_err(refuse)?;
+        let agent_type = tree_types(&repo)?
+            .resolve(&intent.agent_type)
+            .ok_or_else(|| {
+                Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(target)
+            })?;
+        let caller = crate::run::Caller {
+            agent_id: target.0.clone(),
+            agent_type,
+            depth: intent.depth,
+            live_children: self.live_children_of(target),
+        };
+        agent_type::check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)
+            .map_err(gate_refusal)?;
+        let task_id = mint_task_id()?;
+        let req = crate::run::SpawnRequest {
+            agent_type: p.agent_type.clone(),
+            prompt: crate::review::prompt(&review, &contract),
+            repo: repo.clone(),
+            acceptance_criteria: vec![],
+            verification: vec![],
+            writable_scope: vec![],
+            timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+            model: p.model.clone(),
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
+            resume: None,
+            profile: None,
+            review: Some(review),
+        };
+        // A parent that asked for its child's review in the background is owed its end.
+        let announce_to = p
+            .caller
+            .as_ref()
+            .filter(|_| p.notify_parent)
+            .map(|c| c.agent_id.clone());
+        self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
     }
 
     /// **The child launcher, driven from a fully-built [`crate::run::SpawnRequest`]** — the mirror
@@ -3596,27 +3763,7 @@ impl RegistryHandle {
         // worktree of one repository hashes to the same `<project-hash>` and a legitimate worktree
         // root is accepted. What it rejects is a `repo` in a *different* repository, which is the
         // only case that could put a record in another project's journal.
-        let named =
-            marion_core::paths::ProjectDir::new(&env.state, &crate::socket::project_root(&repo));
-        if named != env.project_dir {
-            return Err(RpcError::refused(
-                "repo",
-                format!(
-                    "this supervisor serves the project keyed at {}, and {} keys to {}. §2 keys a \
-                     supervisor and its state on the project root — the git common dir — so one \
-                     socket serves one repository and every linked worktree of it, and no other. A \
-                     root created here would be journaled under the project it named while this \
-                     supervisor kept following its own, so marion would report a node that no \
-                     `tree/subscribe` on this socket could ever show. Dial the supervisor for that \
-                     repository instead; refused before the node is claimed, so nothing was written \
-                     under either project.",
-                    env.project_dir.path().display(),
-                    repo.display(),
-                    named.path().display(),
-                ),
-                "§2, §5.4",
-            ));
-        }
+        check_project(&env, &repo)?;
         // Resolved here so an unknown type is refused **in the frame that asked for it** rather
         // than arriving as a node that was never going to start. `root::prepare` refuses it again
         // one layer down; two call sites of one lookup, never two rules.
@@ -5723,7 +5870,6 @@ mod tests {
         assert_eq!(e.kind(), Some(FailureKind::NotFound), "{e}");
         // A built-in is resolved regardless of the file, and the file's own refusal is its own.
         let builtin = SpawnIntent {
-            review_of: None,
             agent_type: "claude".into(),
             harness: Harness::ClaudeCode,
             ..intent.clone()
@@ -11591,6 +11737,7 @@ mod tests {
 
         fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
+                review_of: None,
                 notify_parent: false,
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),
@@ -11708,6 +11855,91 @@ mod tests {
                 fx.handle.owned_nodes(),
                 1,
                 "…and must not add a node to the table"
+            );
+        }
+
+        /// **A review names a node that exists and has ended, or it is refused in plain words and
+        /// writes nothing** — an unknown id, and a child still running.
+        #[test]
+        fn a_review_of_an_unknown_or_running_node_is_refused_plainly_and_journals_nothing() {
+            let fx = owning(
+                "owns-review-refused",
+                vec![
+                    intent("root", None, "claude", 0),
+                    intent("child", Some("root"), "codex", 1),
+                ],
+            );
+            let token = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            let before = journal_len(&fx);
+            for (target, says) in [
+                ("no-such-node", "no node with that id"),
+                ("child", "has not ended yet"),
+            ] {
+                let e = spawn(
+                    &fx,
+                    AgentSpawnParams {
+                        review_of: Some(id(target)),
+                        ..params(
+                            Some(SpawnCaller {
+                                agent_id: id("root"),
+                                node_token: token.expose().to_string().into(),
+                            }),
+                            1,
+                        )
+                    },
+                )
+                .expect_err(&format!("a review of {target} must be refused"));
+                assert_eq!(e.kind(), Some(FailureKind::Refused), "{target}: {e:?}");
+                assert!(
+                    e.message
+                        .contains(&format!("marion cannot review node {target}: "))
+                        && e.message.contains(says),
+                    "{target}: {}",
+                    e.message
+                );
+            }
+            assert_eq!(
+                journal_len(&fx),
+                before,
+                "a refused review journals nothing"
+            );
+        }
+
+        /// **A review token is checked like any spawn's**: a forged caller asking for a review is
+        /// refused before the target is even looked up.
+        #[test]
+        fn a_review_asked_with_a_forged_token_is_refused() {
+            let fx = owning(
+                "owns-review-forged",
+                vec![intent("root", None, "claude", 0)],
+            );
+            let _ = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            let e = spawn(
+                &fx,
+                AgentSpawnParams {
+                    review_of: Some(id("root")),
+                    ..params(
+                        Some(SpawnCaller {
+                            agent_id: id("root"),
+                            node_token: "not-the-token".to_string().into(),
+                        }),
+                        1,
+                    )
+                },
+            )
+            .expect_err("a forged token must not start a review");
+            assert!(
+                e.message.contains("did not mint that node token"),
+                "{}",
+                e.message
             );
         }
 

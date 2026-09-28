@@ -511,6 +511,14 @@ pub struct AgentSpawnParams {
     /// it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// **A review of an ended node**: the spawn becomes a read-only reviewer of that node's work,
+    /// placed under it in the tree, shown its task, report, verification and diff, and asked for
+    /// findings. `prompt` is then marion's own review prompt, and a caller's is ignored in favour
+    /// of it. With a `caller` the asker is that node (a parent reviewing its child); without one it
+    /// is the operator, on a root spawn's authorization and `repo`. Skipped on the wire when absent,
+    /// so every other frame is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_of: Option<crate::contract::AgentId>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -603,6 +611,7 @@ mod tests {
             response: ElicitationResponse::Provided(serde_json::json!({"branch": "main"}))
         });
         rt!(AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
@@ -621,6 +630,7 @@ mod tests {
             profile: None,
         });
         rt!(AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
@@ -735,6 +745,7 @@ mod tests {
         // makes the legacy shape one thing.
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
@@ -757,6 +768,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
+                review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),

@@ -158,6 +158,7 @@ impl Bed {
 
     fn spawn_root(&self, marker: &str) -> AgentId {
         self.spawn(AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "codex".into(),
             prompt: format!("{marker}: hold until the gate opens"),
@@ -182,6 +183,7 @@ impl Bed {
             .remove("MARION_NODE_TOKEN")
             .expect("declaration_of asserts the token is there");
         self.spawn(AgentSpawnParams {
+            review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
             prompt: format!("{marker}: hold until the gate opens"),
