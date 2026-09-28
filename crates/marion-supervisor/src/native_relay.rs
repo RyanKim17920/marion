@@ -36,8 +36,8 @@ const WRITE_BOUND: std::time::Duration = std::time::Duration::from_millis(50);
 const STATUS_SUBSCRIBE_ID: RequestId = RequestId::Number(2);
 static RESIZED: AtomicBool = AtomicBool::new(false);
 /// "Look at the flags again": rung by the relay's signal handler after it publishes a resize or a
-/// termination, and by the keyboard worker after a status toggle, so the pump's `poll(2)` returns
-/// for them. [`crate::wake::Pipe::wake`] is an atomic swap and one `write(2)`, both
+/// termination, so the pump's `poll(2)` returns for them. Process-wide because the handler is; what
+/// one session's keyboard worker says goes to that session's own [`RawPaneSession::nudge`]. [`crate::wake::Pipe::wake`] is an atomic swap and one `write(2)`, both
 /// async-signal-safe; the pipe exists before any handler is installed ([`relay_wake`] runs in
 /// [`RelaySignalGuard::acquire`] first). `None` inside only if no descriptor could be had, and the
 /// pump then re-checks at [`crate::wake::DEGRADED_RECHECK`].
@@ -1119,6 +1119,11 @@ struct RawPaneSession<W: Write> {
     /// only if something was sent for it to refuse.
     input_sent: Arc<AtomicBool>,
     keyboard: Option<std::thread::JoinHandle<()>>,
+    /// Rung by this session's keyboard worker after a status toggle, so the pump's `poll(2)`
+    /// returns to paint or clear the row. The session's own, not [`RELAY_WAKE`]: two sessions in
+    /// one process (the tests run many) would otherwise drain each other's wakes. `None` only if
+    /// no descriptor could be had; the pump then re-checks at the degraded bound.
+    nudge: Option<Arc<crate::wake::Pipe>>,
     status: StatusOverlay,
     /// Set by the keyboard worker on the operator's `^] d`, and only then: the relay's other
     /// endings are not a detach and get no reattach hint.
@@ -1355,6 +1360,7 @@ impl<W: Write> RawPaneSession<W> {
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             input_sent: Arc::new(AtomicBool::new(false)),
             keyboard: None,
+            nudge: crate::wake::Pipe::new().ok().map(Arc::new),
             status: StatusOverlay::new(geometry),
             detached: Arc::new(AtomicBool::new(false)),
         };
@@ -1533,6 +1539,7 @@ impl<W: Write> RawPaneSession<W> {
         let status_wanted = Arc::clone(&self.status.wanted);
         let detached = Arc::clone(&self.detached);
         let input_fd = self.input_fd;
+        let nudge = self.nudge.clone();
         // The pump blocks in `poll(2)` on the socket. Shutting the read side from here makes it
         // readable at once, so a worker that stops — for any reason — ends the relay now; `pump`
         // reads the failure slot before the EOF it caused.
@@ -1589,7 +1596,9 @@ impl<W: Write> RawPaneSession<W> {
                                 // is marion's and never the node's.
                                 Action::ToggleStatus => {
                                     status_wanted.fetch_xor(true, Ordering::SeqCst);
-                                    ring_relay_wake();
+                                    if let Some(nudge) = &nudge {
+                                        nudge.wake();
+                                    }
                                 }
                                 // A pane that had already ended when this relay attached has
                                 // no write half for anyone. The supervisor answers an unleased
@@ -1700,8 +1709,9 @@ impl<W: Write> RawPaneSession<W> {
     }
 
     /// Block in `poll(2)` until the socket is readable (`true`), or until `deadline`, a ring of
-    /// [`RELAY_WAKE`] or the owned stop's watch (`false`). Both wakes are drained here, before the
-    /// pump looks at what they are about, so an edge after the drain wakes the next wait.
+    /// [`RELAY_WAKE`] or of this session's [`Self::nudge`], or the owned stop's watch (`false`).
+    /// Every wake is drained here, before the pump looks at what it is about, so an edge after the
+    /// drain wakes the next wait.
     fn wait_for_socket(
         &self,
         deadline: Option<std::time::Instant>,
@@ -1709,7 +1719,12 @@ impl<W: Write> RawPaneSession<W> {
     ) -> bool {
         use std::os::fd::AsFd;
         let wake = relay_wake();
-        let mut fds = vec![Some(self.stream.as_fd()), wake.map(|w| w.fd())];
+        let nudge = self.nudge.as_deref();
+        let mut fds = vec![
+            Some(self.stream.as_fd()),
+            wake.map(|w| w.fd()),
+            nudge.map(|n| n.fd()),
+        ];
         if let Some(stop) = stop {
             fds.push(stop.fd());
         }
@@ -1719,7 +1734,12 @@ impl<W: Write> RawPaneSession<W> {
         {
             wake.drain();
         }
-        if ready.get(2).copied().unwrap_or(false)
+        if ready[2]
+            && let Some(nudge) = nudge
+        {
+            nudge.drain();
+        }
+        if ready.get(3).copied().unwrap_or(false)
             && let Some(stop) = stop
         {
             stop.drain();
