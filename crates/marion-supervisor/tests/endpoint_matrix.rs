@@ -1075,7 +1075,7 @@ fn a_rate_limited_root_fails_over_to_the_next_stated_credential_before_its_first
     let outcome = root::launch(
         &node,
         std::time::Duration::from_secs(120),
-        root::MCP_READY_TIMEOUT,
+        node.boot.budget(),
     );
     let requests = server.requests().unwrap_or_default();
     // The root's own project key: `prepare` keys it on the canonical repository root.

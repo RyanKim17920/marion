@@ -5089,7 +5089,7 @@ impl RegistryHandle {
                 crate::root::launch_owned(
                     &node,
                     bound,
-                    crate::root::MCP_READY_TIMEOUT,
+                    node.boot.budget(),
                     // No live sink here: this runs inside `marion-supervisor`, and the client
                     // watches through `node/attach` over the socket rather than through a pipe
                     // this process would have to own. `events.jsonl` is what both legs read.

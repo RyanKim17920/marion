@@ -443,6 +443,10 @@ pub struct RootNode {
     /// [`marion_core::agent_type::AgentType::acp_agent`], for the adapter `launch` asks again to
     /// read the root's stream: on ACP the harness alone names a protocol, not an agent.
     pub acp_agent: Option<String>,
+    /// What the root's harness costs to start ([`marion_harness::HarnessAdapter::boot`]) — the
+    /// budget of every wait that holds its boot: the duplex path's tool-list marker and the ACP
+    /// path's `initialize` and `session/new`. Resolved with the adapter here, as `surfaces` is.
+    pub boot: marion_harness::spec::Boot,
     /// The root's inbox and its row's mid-turn behaviour, for a headless root whose owner keeps
     /// one (the supervisor's; `marion run` keeps none) — what lets a steer or a background child's
     /// end reach the root as a turn after its first: through the typed driver on the duplex and
@@ -697,14 +701,6 @@ pub enum RootError {
     )]
     UnaccountableNode { why: String },
 }
-
-/// How long the root may take to have marion's tool list before the run is refused (§6.1 step 8).
-///
-/// Generous — the measured connect is ~70 ms — because the alternative to waiting is a run that
-/// ends in plain text with no error anywhere. It lives here rather than in `bin/marion.rs` for the
-/// same reason [`blocked_bound_secs`] does: since §11 item 28 step 6 the supervisor is what launches
-/// a root, so this is the bound the launch is actually made under.
-pub const MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 /// **The root's node-level bound (§9), resolved from the flag and the agent type.**
 ///
@@ -1060,6 +1056,7 @@ pub fn prepare_watched(
         acp_client: crate::acp_child::ClientPolicy::for_node(&invocation.cwd, &agent_type, false),
         invocation,
         acp_agent: agent_type.acp_agent.clone(),
+        boot: adapter.boot(),
         resumed: spec.resume.as_ref().map(|r| r.session.clone()),
         resumed_usage: spec.resume.as_ref().and_then(|r| r.usage),
         spending: observer.spending(),
@@ -2581,6 +2578,7 @@ fn launch_acp(
         on_line: Some(&on_line),
         turns: node.turns.clone(),
         policy: node.acp_client.clone(),
+        boot: node.boot,
     })?;
     let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
     Ok(RootOutcome {

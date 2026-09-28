@@ -41,13 +41,6 @@ use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
 use crate::kill::{DRAIN_GRACE, kill_process_tree};
 use crate::spawn::{ChildOutcome, SpawnError, build_contract, changed_paths, diff_text};
 
-/// How long a **child**'s harness may take to have marion's tool list before the run is refused
-/// (§6.1 step 8). The same 30 s `marion run` gives a root, for the same reason: the measured
-/// connect is ~70 ms, and the alternative to waiting is a run that ends in plain text with no error
-/// anywhere. It is additionally capped at the child's own `timeout_secs` in [`duplex_child`] — a
-/// child may not spend longer waiting to be ready than it is allowed to live.
-const CHILD_MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
-
 /// **The longest wall clock marion will hold for one child**, and the reason there has to be one.
 ///
 /// `timeout_secs` is caller-controlled and the caller is a *language model* — on the background path
@@ -1442,6 +1435,10 @@ struct ChildDuplex<'a> {
     dialect: duplex::Dialect,
     /// The row's headless abort verb ([`DuplexSpec::abort`]).
     abort: marion_harness::spec::AbortVerb,
+    /// What the child's harness costs to start ([`marion_harness::spec::Boot`]): how long it may
+    /// take to have marion's tool list before the run is refused (§6.1 step 8), capped at the
+    /// child's own bound — a child may not spend longer waiting to be ready than it may live.
+    boot: marion_harness::spec::Boot,
 }
 
 fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, SpawnError> {
@@ -1459,6 +1456,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         stop_on,
         dialect,
         abort,
+        boot,
     } = child;
     let mut cmd = inv.command(tmpdir);
     // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
@@ -1486,7 +1484,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
             ready_file,
             prompt,
             init_id: init_request_id(agent_id),
-            mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
+            mcp_ready_timeout: boot.budget().min(bound),
             // The child's own depth, not the caller's — the same value its bridge is told, so the
             // driver and the bridge answer the same question about the same node.
             depth,
@@ -2512,6 +2510,7 @@ pub fn run_spawn_watched(
                     &agent_type,
                     req.is_read_only(),
                 ),
+                boot: adapter.boot(),
             })
             .map(|r| ChildRun {
                 stdout: r.stdout,
@@ -2582,6 +2581,7 @@ pub fn run_spawn_watched(
                     stop_on: &|frame| adapter.auth_refusal(frame),
                     dialect: duplex::Dialect::of(adapter.spec()),
                     abort: adapter.spec().abort.headless,
+                    boot: adapter.boot(),
                 },
             ),
         };
@@ -3313,7 +3313,7 @@ pub(crate) fn app_server_spec<'a>(
         opening,
         gate: (launch.mcp == marion_harness::McpDeclaration::Marion)
             .then_some(marion_harness::spec::MCP_ALIAS),
-        mcp_ready: CHILD_MCP_READY_TIMEOUT,
+        mcp_ready: adapter.boot().budget().min(bound),
         prompt,
         bound,
         on_started,

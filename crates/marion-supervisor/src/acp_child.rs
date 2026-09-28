@@ -81,16 +81,17 @@ const SET_SELECT_BUDGET: Duration = Duration::from_secs(30);
 pub const VIA_MID_TURN: &str = "acp:mid-turn";
 pub const VIA_NEXT_TURN: &str = "acp:next-turn";
 
-/// How long the agent is given to answer `initialize`. A process start and one frame.
+/// How long `session/new` is given **at least**. Longer than the handshake because S20 measured it
+/// reaching a vendor over the network before answering — including to say no (`gemini --acp`'s
+/// `-32000`). The agent's own boot budget takes over where it is longer: `session/new` is where an
+/// agent starts and connects the MCP servers the session declares, which is boot work too.
 ///
-/// S22 measured what makes this a budget and not a formality: `npx -y @agentclientprotocol/codex-acp`
-/// was still *downloading* when 30 s expired, returned zero frames, and looked exactly like a dead
-/// agent. The same version run from `node_modules/.bin` handshakes in under a second. So an expiry
-/// here is reported as an expiry with the agent's stderr attached, never as "the agent is broken".
-const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
-
-/// How long `session/new` is given. Longer than the handshake because S20 measured it reaching a
-/// vendor over the network before answering — including to say no (`gemini --acp`'s `-32000`).
+/// `initialize` has no constant of its own: it is a process start and one frame, so it is given the
+/// agent's boot budget ([`AcpChildSpec::boot`]). S22 measured what makes that a budget and not a
+/// formality: `npx -y @agentclientprotocol/codex-acp` was still *downloading* when 30 s expired,
+/// returned zero frames, and looked exactly like a dead agent. The same version run from
+/// `node_modules/.bin` handshakes in under a second. So an expiry there is reported as an expiry
+/// with the agent's stderr attached, never as "the agent is broken".
 const SESSION_BUDGET: Duration = Duration::from_secs(60);
 
 /// How long the cancelled turn is given to answer after `session/cancel`.
@@ -152,6 +153,9 @@ pub struct AcpChildSpec<'a> {
     /// What marion's client lets the agent do through it: which tree its file calls reach and which
     /// of its tools a permission request is approved for.
     pub policy: ClientPolicy,
+    /// What starting the agent costs ([`marion_harness::HarnessAdapter::boot`]): the budget
+    /// `initialize` is waited on for, and the least `session/new` is.
+    pub boot: marion_harness::spec::Boot,
 }
 
 /// The largest file `fs/read_text_file` returns. The whole text goes back in one frame the agent
@@ -438,7 +442,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         })?;
     (spec.on_started)(agent.pid);
 
-    let handshake = handshake_with(&mut agent, deadline)?;
+    let handshake = handshake_with(&mut agent, deadline, spec.boot.budget())?;
     // The one capability the handshake gates here: a resume goes out only to an agent that says
     // it can replay a session. Checked before the frame is sent, so an agent without it never sees
     // a `session/load` it would answer with an error marion would then have to interpret.
@@ -452,7 +456,13 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         });
     }
 
-    let (session, opened) = open_session(&mut agent, &session_new, &opening, deadline)?;
+    let (session, opened) = open_session(
+        &mut agent,
+        &session_new,
+        &opening,
+        deadline,
+        SESSION_BUDGET.max(spec.boot.budget()),
+    )?;
     // The model first, then the approval mode: each is its own select, and a refusal of either
     // ends the run before the prompt.
     for (category, value) in [
@@ -490,13 +500,14 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
 fn handshake_with(
     agent: &mut Driver<'_>,
     deadline: Instant,
+    budget: Duration,
 ) -> Result<AgentHandshake, AcpChildError> {
     send(agent, &acp::initialize_request(INITIALIZE_ID), "initialize")?;
-    let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, HANDSHAKE_BUDGET)) {
+    let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, budget)) {
         Some(f) => f,
         None => {
             return Err(agent.refuse(|end, frames| AcpChildError::NoHandshake {
-                waited: HANDSHAKE_BUDGET,
+                waited: budget,
                 frames,
                 stderr: excerpt(&end.stderr),
             }));
@@ -521,13 +532,14 @@ fn open_session(
     session_new: &Value,
     opening: &Opening,
     deadline: Instant,
+    budget: Duration,
 ) -> Result<(String, String), AcpChildError> {
     send(agent, session_new, opening.method)?;
-    let opened = match agent.settle(opening.id, clip(deadline, SESSION_BUDGET)) {
+    let opened = match agent.settle(opening.id, clip(deadline, budget)) {
         Some(f) => f,
         None => {
             return Err(agent.refuse(|end, frames| AcpChildError::NoSession {
-                waited: SESSION_BUDGET,
+                waited: budget,
                 frames,
                 stderr: excerpt(&end.stderr),
             }));
@@ -1207,6 +1219,7 @@ mod tests {
             on_line: None,
             turns: None,
             policy: full_grant(&inv.cwd),
+            boot: marion_harness::acp::UNMEASURED_AGENT,
         }
     }
 
@@ -1532,10 +1545,10 @@ sleep 15"#,
             other => panic!("expected NoHandshake, got {other:?}"),
         }
         assert!(e.to_string().contains("initialize"), "{e}");
-        // And a dead agent is not waited out: the handshake budget is 30 s and this must not spend
-        // it, or "the agent crashed" and "the agent hung" become the same finding.
+        // And a dead agent is not waited out: the handshake budget is the boot budget and this must
+        // not spend it, or "the agent crashed" and "the agent hung" become the same finding.
         assert!(
-            started.elapsed() < HANDSHAKE_BUDGET / 2,
+            started.elapsed() < marion_harness::spec::BOOT_FLOOR / 2,
             "waited {:?} on an agent that had already exited",
             started.elapsed()
         );
@@ -1617,6 +1630,7 @@ sleep 15"#,
                 on_line: None,
                 turns: None,
                 policy: full_grant(&inv.cwd),
+                boot: marion_harness::acp::UNMEASURED_AGENT,
             })
             .expect_err("refused")
         };
