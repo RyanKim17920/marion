@@ -1064,6 +1064,24 @@ pub fn recent_activity(rule: &ActivityRule, frames: &[Value], max_calls: usize) 
     }
 }
 
+/// **The last text the model wrote in `stdout`**, whole and trimmed — the final item of
+/// [`activity_stream`] that is words, over the stream's JSON lines (anything else is skipped).
+/// `None` where it wrote none.
+pub fn last_said(rule: &ActivityRule, stdout: &str) -> Option<String> {
+    let frames: Vec<Value> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str(l.trim()).ok())
+        .collect();
+    activity_stream(rule, &frames)
+        .into_iter()
+        .rev()
+        .find_map(|i| match i.item {
+            Activity::Said(t) => Some(t.trim().to_string()),
+            Activity::Call(_) => None,
+        })
+        .filter(|t| !t.is_empty())
+}
+
 /// One thing a stream shows a node doing, in the order it happened.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Activity {

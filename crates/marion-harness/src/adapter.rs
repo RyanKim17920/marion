@@ -698,6 +698,21 @@ pub trait HarnessAdapter {
         self.spec().stream?.activity.as_ref()
     }
 
+    /// Whether `stdout` — the whole stream, or one turn's stretch of it — holds the node's
+    /// `report` call, as [`Self::parse_stream`] reads one.
+    fn reported(&self, stdout: &str) -> bool {
+        self.parse_stream(stdout, ChildExit::default())
+            .narrative
+            .is_some()
+    }
+
+    /// The last text the model wrote in `stdout`, whole and trimmed, under [`Self::activity`]'s
+    /// rule — what marion quotes, as its own synthesis, for a turn that ended without a report.
+    /// `None` where it wrote none, or the row has no rule to read one by.
+    fn final_words(&self, stdout: &str) -> Option<String> {
+        grammar::last_said(self.activity()?, stdout)
+    }
+
     /// The stream's own failure claim, **without** `parse_stream`'s refused-`report` rule — the
     /// reading a **root** is judged by, since §9 gives a root no contract and §5.4 refuses its
     /// `report`. A row with no grammar reads as [`Self::parse_stream`] does.
@@ -1362,6 +1377,45 @@ mod tests {
         }
     }
     use marion_core::agent_type;
+
+    /// **A turn's report and its last words, read the row's way, per stretch of stream** — on the
+    /// live s4 codex child (2026-09-27): its first generation reported, and its second, carrying
+    /// the operator's steer, fixed the code, committed and ended without calling `report`. Each
+    /// generation is read alone, as marion reads the stretch after a turn's delivery.
+    #[test]
+    fn a_stretch_of_stream_says_whether_it_reported_and_what_it_said_last() {
+        let path = format!(
+            "{}/../../tests/fixtures/live-smoke-2026-09-27/s4/child1-codex.transcript.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let frames: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let generation = |from: usize, to: usize| -> String {
+            frames[from..to]
+                .iter()
+                .map(|f| f["frame"].to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // Frames 1..27 are the first `exec`, 27..42 the resumed one (`thread.started` again).
+        assert_eq!(frames[27]["key"], "thread.started");
+        let (first, steered) = (generation(1, 27), generation(27, 42));
+        // The capture is `codex exec`'s, so it is read by the exec row's grammar; the row's own
+        // (app-server) reading goes through the same two functions.
+        let exec = crate::codex::EXEC.stream.expect("the exec row reads a stream");
+        let tool = adapter_for(Harness::Codex).unwrap().marion_tool_name("");
+        let reported = |s: &str| grammar::parse_stream(exec, s, &tool).narrative.is_some();
+        let final_words = |s: &str| grammar::last_said(exec.activity.as_ref()?, s);
+        assert!(reported(&first));
+        assert!(!reported(&steered));
+        let last = final_words(&steered).expect("it said something last");
+        assert!(
+            last.starts_with("Updated `average([])` to return `0.0`"),
+            "{last}"
+        );
+        assert!(final_words("").is_none());
+        assert!(!reported(""));
+    }
 
     /// One S37 P-errors run as the harness said it: its stdout (the frames it wrote, one JSON line
     /// each) and its stderr, read back from the committed transcript.
