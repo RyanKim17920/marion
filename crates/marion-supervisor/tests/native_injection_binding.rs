@@ -2,7 +2,6 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use marion_core::PRODUCTION_NATIVE_FACADES;
@@ -17,7 +16,7 @@ use marion_harness::{
     assemble_native,
 };
 use marion_supervisor::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
-use marion_testsupport::{Scratch, scratch};
+use marion_testsupport::{Scratch, scratch, write_executable};
 
 const EXECUTABLE: &str = "atlas-cli";
 
@@ -46,10 +45,7 @@ fn executable_fixture(tag: &str) -> (Scratch, PathBuf, PathBuf) {
     let bin = work.join("bin");
     std::fs::create_dir(&bin).expect("the isolated fixture bin exists");
     let executable = bin.join(EXECUTABLE);
-    std::fs::write(&executable, b"inert synthetic executable\n")
-        .expect("the inert executable fixture is written");
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
-        .expect("the inert executable fixture is executable");
+    write_executable(&executable, b"inert synthetic executable\n");
     (work, bin, executable)
 }
 

@@ -56,7 +56,9 @@ use marion_core::contract::AgentId;
 use marion_core::proto::params::AgentSpawnParams;
 use marion_core::proto::{Call, Method, MethodResult};
 use marion_supervisor::socket::project_root;
-use marion_testsupport::{Liveness, Scratch, fixture_repo, liveness, scratch, survivors, sweep};
+use marion_testsupport::{
+    Liveness, Scratch, fixture_repo, liveness, scratch, survivors, sweep, write_executable,
+};
 use serde_json::{Value, json};
 
 mod common;
@@ -206,13 +208,7 @@ exit 0
         life_ticks = SHIM_LIFE.as_millis() / 50,
         life_secs = SHIM_LIFE.as_secs(),
     );
-    std::fs::write(&bin, script).expect("the shim is written");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .expect("the shim is executable");
-    }
+    write_executable(&bin, script);
     bin
 }
 
@@ -620,11 +616,7 @@ impl Fixture {
     /// exist, so the file is still found and still executable and the failure is the exec.
     fn break_the_harness(&self) {
         let bin = self.shim_dir.join("codex");
-        std::fs::write(&bin, "#!/marion/no/such/interpreter\nexit 0\n")
-            .expect("the broken shim is written");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .expect("the broken shim is executable");
+        write_executable(&bin, "#!/marion/no/such/interpreter\nexit 0\n");
     }
 
     /// Make the shim hang when asked its version, from the next invocation on.

@@ -55,7 +55,7 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
 use marion_core::root_change::{RootChange, RootDelta};
 use marion_supervisor::socket::project_root;
-use marion_testsupport::fixture_repo;
+use marion_testsupport::{fixture_repo, write_executable};
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -214,17 +214,10 @@ fn stub(dir: &Path, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).expect("stub bin dir");
     let program = bin.join("codex");
-    std::fs::write(
+    write_executable(
         &program,
         format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
-    )
-    .expect("write stub");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("stub is executable");
-    }
+    );
     bin
 }
 

@@ -27,7 +27,7 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::root_change::{RootChange, RootChanged, RootDelta, RootObservation};
 use marion_supervisor::run::run_bounded;
 use marion_supervisor::spawn::TreeSnapshot;
-use marion_testsupport::{fixture_repo, git, scratch};
+use marion_testsupport::{fixture_repo, git, scratch, write_executable};
 
 /// Generous. The bound exists so a hung `marion` fails the suite loudly instead of wedging it —
 /// `launch_only_root.rs`'s `RUN_BOUND`, and the same reasoning.
@@ -337,16 +337,10 @@ fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
     let program = bin.join(program_name);
     // The root launch asks `--version` once before the run; answered here so the probe never
     // runs `body`, whose writes are the measurement under test.
-    std::fs::write(
+    write_executable(
         &program,
         format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n{body}\n"),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     bin
 }
 

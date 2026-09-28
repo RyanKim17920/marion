@@ -7,9 +7,8 @@
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use marion_core::proto::params::AgentSpawnParams;
@@ -17,7 +16,7 @@ use marion_core::proto::{
     Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1,
     OpaqueOsValueV1, Outcome, Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
 };
-use marion_testsupport::{Scratch, fixture_repo, scratch};
+use marion_testsupport::{Scratch, fixture_repo, scratch, write_executable};
 
 mod common;
 use common::Supervisor;
@@ -32,12 +31,6 @@ const PROBE_POLL: Duration = Duration::from_millis(10);
 /// if the test process itself is killed before cleanup can run.
 const SHIM_LIFE_TICKS: u32 = 200;
 const CLEANUP_ACK_BOUND: Duration = Duration::from_secs(3);
-
-fn executable(path: &Path, body: &str) {
-    std::fs::write(path, body).expect("the marker program is written");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("the marker program is executable");
-}
 
 fn opaque(value: &OsStr) -> OpaqueOsValueV1 {
     OpaqueOsValueV1::from_os_str(value).expect("Unix preserves native launch bytes")
@@ -70,7 +63,7 @@ impl Bed {
         let managed_done = scratch.join("managed-done");
         let release = scratch.join("release-shims");
         let native_program = bin.join("native-program");
-        executable(
+        write_executable(
             &native_program,
             &format!(
                 "#!/bin/sh\n\
@@ -89,7 +82,7 @@ impl Bed {
                 done = common::shell_quote(&native_done),
             ),
         );
-        executable(
+        write_executable(
             &bin.join("claude"),
             &format!(
                 "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.222'; exit 0; fi\n\

@@ -38,7 +38,9 @@ use marion_core::contract::{ExitStatus, TaskId};
 use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::kill::last_kill_sweep;
 use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
-use marion_testsupport::{alive, fixture_repo, kill_hard, on_path, pinned_version, scratch};
+use marion_testsupport::{
+    alive, fixture_repo, kill_hard, on_path, pinned_version, scratch, write_executable,
+};
 
 mod common;
 
@@ -57,7 +59,7 @@ const RUNAWAY_SECS: u64 = 900;
 /// `exec`s into another, recording both pids. It never exits on its own, so `exec_command`'s short
 /// `yield_time_ms` returns with it still alive.
 fn runaway_script(path: &Path, pidfile: &Path) {
-    std::fs::write(
+    write_executable(
         path,
         format!(
             "#!/bin/sh\n\
@@ -68,13 +70,7 @@ fn runaway_script(path: &Path, pidfile: &Path) {
              exec /bin/sleep {RUNAWAY_SECS}\n",
             pidfile = pidfile.display()
         ),
-    )
-    .expect("runaway script is written");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
 }
 
 /// The code-mode JavaScript for the child's single `exec` tool call.

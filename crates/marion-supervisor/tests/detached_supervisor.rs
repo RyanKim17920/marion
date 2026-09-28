@@ -20,7 +20,7 @@ use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_wit
 use marion_supervisor::socket::{
     SocketPaths, SupervisorIdentity, own_uid, read_identity, socket_paths,
 };
-use marion_testsupport::until_within;
+use marion_testsupport::{until_within, write_executable};
 
 mod common;
 use common::journal::seed;
@@ -436,9 +436,7 @@ fn a_supervisor_whose_state_directory_is_removed_stands_down_rather_than_serving
 fn wrapper(bed: &Bed, name: &str, body: &str) -> PathBuf {
     let real = env!("CARGO_BIN_EXE_marion-supervisor");
     let path = bed.state.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\nREAL='{real}'\n{body}\n"))
-        .expect("write the stand-in");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    write_executable(&path, format!("#!/bin/sh\nREAL='{real}'\n{body}\n"));
     path
 }
 

@@ -1397,6 +1397,20 @@ pub fn scratch(tag: &str) -> Scratch {
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
+/// Write `body` to `path` and make it executable (`0o755`): the stub, shim or wrapper a test puts
+/// on a `PATH` or hands a launcher as its program.
+///
+/// Both steps panic naming the path, because a fixture that half-exists fails later and somewhere
+/// else — an exec that reports `EACCES`, or a `PATH` lookup that silently falls through to a real
+/// binary the test meant to stand in for.
+pub fn write_executable(path: &Path, body: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body)
+        .unwrap_or_else(|e| panic!("the executable {} is written: {e}", path.display()));
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("{} is made executable: {e}", path.display()));
+}
+
 /// Append `bytes` to the file at `path`, creating it if need be, as a journal writer's `O_APPEND`
 /// `write` would land them — including a partial line or a line that is not a record at all,
 /// which is why this takes bytes and not a record: the tests that use it are about what a reader

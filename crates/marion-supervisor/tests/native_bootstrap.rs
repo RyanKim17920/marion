@@ -105,7 +105,6 @@ mod enabled_launch {
     use std::ffi::OsString;
     use std::os::fd::OwnedFd;
     use std::os::unix::ffi::OsStringExt;
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitCode, Stdio};
@@ -209,7 +208,7 @@ mod enabled_launch {
         // argv byte-exact with NUL separators, then the environment, then the completion marker
         // last so a reader that sees the marker sees complete records; then one line on its own
         // terminal, which only a relay can carry to the operator's.
-        std::fs::write(
+        marion_testsupport::write_executable(
             &shim,
             format!(
                 "#!/bin/sh\n\
@@ -222,9 +221,7 @@ mod enabled_launch {
                 marker = crate::common::shell_quote(marker),
                 greeting = VENDOR_GREETING,
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
     }
 
     fn wait_for(path: &Path, bound: Duration) -> bool {

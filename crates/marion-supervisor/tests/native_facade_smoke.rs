@@ -14,7 +14,6 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,7 +27,7 @@ use marion_supervisor::socket::own_uid;
 use marion_supervisor::socket::{
     SocketPaths, nobody_is_serving, project_root, read_identity, socket_paths,
 };
-use marion_testsupport::{on_path, scratch};
+use marion_testsupport::{on_path, scratch, write_executable};
 
 #[cfg(target_os = "linux")]
 const TIOCSCTTY: usize = 0x540e;
@@ -54,16 +53,14 @@ fn write_recording_shim(bin: &Path, cwd_record: &Path, real: &Path) {
     std::fs::create_dir_all(bin).unwrap();
     let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
     let shim = bin.join(HARNESS);
-    std::fs::write(
+    write_executable(
         &shim,
         format!(
             "#!/bin/sh\npwd -P > {record}\nexec {real} \"$@\"\n",
             record = quote(cwd_record),
             real = quote(real),
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 }
 
 /// Leave no supervisor behind, whichever way the assertions go: the one the client starts would

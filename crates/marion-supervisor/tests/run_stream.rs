@@ -32,7 +32,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use marion_testsupport::scratch;
+use marion_testsupport::{scratch, write_executable};
 use serde_json::Value;
 
 /// Generous. It exists so a hung `marion` fails loudly instead of wedging the suite.
@@ -55,7 +55,7 @@ fn stub_claude(dir: &Path) -> std::path::PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let program = bin.join("claude");
-    std::fs::write(
+    write_executable(
         &program,
         format!(
             r#"#!/bin/sh
@@ -92,13 +92,7 @@ printf 'this line is not json at all\n'
 printf '{{"type":"result","subtype":"success","is_error":false,"duration_ms":4200,"num_turns":2}}\n'
 "#
         ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     bin
 }
 

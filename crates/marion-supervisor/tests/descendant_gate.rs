@@ -51,7 +51,7 @@ use marion_provider::{CannedServer, Config, NodeScript, Script, ScriptedCall};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
-    fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors, which,
+    fixture_repo, kill_hard, on_path, pinned_version, scratch, survivors, which, write_executable,
 };
 use serde_json::{Value, json};
 
@@ -151,10 +151,7 @@ exit 0
         root_gate = common::shell_quote(root_gate),
         grandchild_gate = common::shell_quote(grandchild_gate),
     );
-    std::fs::write(&bin, script).expect("the shim is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-        .expect("the shim is executable");
+    write_executable(&bin, script);
     bin
 }
 

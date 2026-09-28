@@ -32,7 +32,7 @@ use marion_core::journal::{ProfileFailover, RecordKind};
 use marion_core::proto::params::{AgentSpawnParams, NodeResumeParams, SpawnCaller};
 use marion_core::proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_supervisor::socket::{SocketPaths, own_uid, project_root, socket_paths};
-use marion_testsupport::{Scratch, fixture_repo, git, scratch};
+use marion_testsupport::{Scratch, fixture_repo, git, scratch, write_executable};
 
 mod common;
 use common::{shell_quote, walk};
@@ -148,12 +148,6 @@ esac
         root_argv = shell_quote(root_argv),
     );
     write_executable(&bin.join("codex"), &script);
-}
-
-fn write_executable(path: &Path, body: &str) {
-    std::fs::write(path, body).expect("the fake is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("executable");
 }
 
 struct Bed {

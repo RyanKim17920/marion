@@ -39,6 +39,7 @@ use marion_supervisor::events::EventReader;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     Liveness, Scratch, fixture_repo, liveness, persisted_contracts, scratch, survivors, sweep,
+    write_executable,
 };
 
 mod common;
@@ -88,9 +89,7 @@ exit 0
         gate = common::shell_quote(gate),
         pids = common::shell_quote(pids),
     );
-    std::fs::write(&bin, script).expect("the shim is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&bin, script);
 }
 
 struct Bed {

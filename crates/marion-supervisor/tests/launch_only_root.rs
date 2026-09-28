@@ -60,7 +60,7 @@ use std::time::{Duration, Instant};
 use marion_core::harness::Harness;
 use marion_harness::adapter_for;
 use marion_supervisor::run::run_bounded;
-use marion_testsupport::scratch;
+use marion_testsupport::{scratch, write_executable};
 
 /// Generous. The bound exists so a hung `marion` fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(60);
@@ -242,7 +242,7 @@ fn stub_harness(dir: &Path, node: &Node, prologue: &str, body: &str) -> PathBuf 
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let program = bin.join(node.program);
-    std::fs::write(
+    write_executable(
         &program,
         format!(
             "#!/bin/sh\n\
@@ -254,13 +254,7 @@ fn stub_harness(dir: &Path, node: &Node, prologue: &str, body: &str) -> PathBuf 
             argv = dir.join("argv.txt").display(),
             env = dir.join("env.txt").display(),
         ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     bin
 }
 

@@ -39,7 +39,9 @@ use std::time::{Duration, Instant};
 use marion_supervisor::socket::{own_uid, project_root, socket_paths};
 
 mod common;
-use marion_testsupport::{Scratch, fixture_repo, scratch, survivors, sweep, until_within};
+use marion_testsupport::{
+    Scratch, fixture_repo, scratch, survivors, sweep, until_within, write_executable,
+};
 use serde_json::{Value, json};
 
 /// A bound that exists **only to fail**, never to be reached on a passing run. Nothing here asserts
@@ -87,10 +89,7 @@ exit 0
         gate = common::shell_quote(gate),
         ticks = SHIM_LIFE.as_millis() / 50,
     );
-    std::fs::write(&bin, script).expect("the shim is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-        .expect("the shim is executable");
+    write_executable(&bin, script);
 }
 
 struct Fixture {

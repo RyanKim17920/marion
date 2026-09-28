@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
-use marion_testsupport::{Scratch, fixture_repo, scratch, sweep};
+use marion_testsupport::{Scratch, fixture_repo, scratch, sweep, write_executable};
 
 mod common;
 use common::cast::cast_records;
@@ -75,9 +75,7 @@ exit 0
         argv = common::shell_quote(&bin.join("../argv")),
     );
     let path = bin.join("codex");
-    std::fs::write(&path, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&path, script);
 }
 
 /// This test's own credential store: a file under its scratch directory, never the operator's

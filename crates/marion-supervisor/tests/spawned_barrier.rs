@@ -49,7 +49,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use marion_core::journal::MAX_RECORD_BYTES;
-use marion_testsupport::{scratch, sweep};
+use marion_testsupport::{scratch, sweep, write_executable};
 
 /// Long enough that the encoded `Spawned` record cannot fit under the cap whatever else is in it,
 /// and short enough to stay far below `ARG_MAX`.
@@ -98,7 +98,7 @@ fn gemini_stub(dir: &Path, lingers: bool) -> PathBuf {
     } else {
         String::new()
     };
-    std::fs::write(
+    write_executable(
         &program,
         format!(
             "#!/bin/sh\n\
@@ -110,13 +110,7 @@ fn gemini_stub(dir: &Path, lingers: bool) -> PathBuf {
              EOF\n\
              exit 0\n"
         ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     bin
 }
 

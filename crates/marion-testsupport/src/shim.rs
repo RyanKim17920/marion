@@ -515,14 +515,12 @@ pub fn process_shim() -> &'static Shim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scratch;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::{scratch, write_executable};
 
     /// A fake release: an executable that prints `--version` the way the real one does.
     fn fake_release(path: &Path, prints: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{prints}'\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(path, format!("#!/bin/sh\nprintf '%s\\n' '{prints}'\n"));
     }
 
     fn table(
@@ -553,15 +551,13 @@ mod tests {
     /// build it downloaded — copilot 1.0.83 execing its cached 1.0.87, measured 2026-09-22.
     fn self_updating_release(path: &Path, key: &str, value: &str, pinned: &str, updated: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
+        write_executable(
             path,
             format!(
                 "#!/bin/sh\nif [ \"${key}\" = '{value}' ]; then printf '%s\\n' '{pinned}'; \
                  else printf '%s\\n' '{updated}'; fi\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
     }
 
     fn shim_in(dir: &Path, table: &'static [PinnedHarness]) -> Shim {
@@ -713,12 +709,10 @@ mod tests {
         let marker = dir.join("npm-ran");
         let npm = dir.join("bin/npm");
         std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
-        std::fs::write(
+        write_executable(
             &npm,
             format!("#!/bin/sh\n/usr/bin/touch '{}'\nexit 1\n", marker.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         marker
     }
 
