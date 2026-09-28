@@ -57,7 +57,7 @@
 //! precisely what group commit exists to avoid. Ordering is not lost by dropping the lock: §4.3
 //! makes the journal's total order the **file's** order, and the kernel assigns it.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -117,10 +117,7 @@ impl Journal {
     /// makes loss detectable (§4.2's `Ordinal` form), and two processes sharing an identity would
     /// read as one writer emitting an interleaved, gap-ridden sequence.
     pub fn open_path(path: &Path, writer: WriterId) -> Result<Self, JournalError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = crate::private_fs::open_append(path)?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -546,6 +543,26 @@ mod tests {
         assert_eq!(child.parent_id(), Some(&AgentId("root".into())));
         assert_eq!(child.state, NodeState::Exited(ExitStatus::Ok));
         assert_eq!(child.task_id(), Some(&TaskId("t-1".into())));
+    }
+
+    /// **The journal names every node, its task and its workspace, so nobody but the operator may
+    /// read it.** A fresh state tree is created `0700` at every level marion makes, and the file
+    /// itself `0600`, whatever the umask would have granted.
+    ///
+    /// Mutation: open with plain `create_dir_all`/`OpenOptions` and both modes read `0755`/`0644`.
+    #[test]
+    fn a_fresh_journal_and_its_directories_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("journal-private");
+        let path = dir.join("state").join("project").join("journal.jsonl");
+        Journal::open_path(&path, WriterId("w".into()))
+            .unwrap()
+            .append(intent("root", None))
+            .unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join("state")), 0o700);
+        assert_eq!(mode(&dir.join("state").join("project")), 0o700);
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]

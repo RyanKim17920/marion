@@ -704,7 +704,7 @@ pub fn prepare_watched(
     // call is made in `marion run` and in the bridge's `spawn_env`, so the three cannot drift.
     let project = ProjectDir::new(&spec.state, &crate::socket::project_root(&spec.repo));
     let agent_dir = project.agent(&agent_id);
-    std::fs::create_dir_all(agent_dir.config_dir())?;
+    crate::private_fs::create_dir_all(&agent_dir.config_dir())?;
 
     // §6.1 step 5, through the seam, **dispatched on the root's own agent type** — the root used to
     // be `Harness::ClaudeCode` by constant, which is why `marion run codex` compiled a Claude Code

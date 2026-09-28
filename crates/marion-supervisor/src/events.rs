@@ -62,7 +62,7 @@
 //! be inventing a stream.
 
 use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -466,7 +466,7 @@ pub struct EventWriter {
 impl EventWriter {
     /// Open (creating) a node's event stream inside its agent dir.
     pub fn open(agent: &AgentDir, agent_id: &AgentId) -> Result<Self, EventError> {
-        std::fs::create_dir_all(agent.path())?;
+        crate::private_fs::create_dir_all(agent.path())?;
         Self::open_path(&agent.events(), agent_id)
     }
 
@@ -483,14 +483,14 @@ impl EventWriter {
     /// what it is doing now because of a line written before it started.
     pub fn open_path(path: &Path, agent_id: &AgentId) -> Result<Self, EventError> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            crate::private_fs::create_dir_all(dir)?;
         }
         let seq = match std::fs::read(path) {
             Ok(bytes) => marion_core::event::read(&bytes).0.next_seq().unwrap_or(0),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => return Err(e.into()),
         };
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = crate::private_fs::open_append(path)?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -821,6 +821,24 @@ mod tests {
 
     fn node() -> AgentId {
         AgentId("a-1".into())
+    }
+
+    /// **A node's event stream carries its transcript, so its directory is `0700` and the file
+    /// `0600`** — created that way, not left to the umask.
+    ///
+    /// Mutation: open with plain `create_dir_all`/`OpenOptions` and both modes read `0755`/`0644`.
+    #[test]
+    fn a_fresh_agent_directory_and_event_stream_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("events-private");
+        let project = marion_core::paths::ProjectDir::new(&dir, Path::new("/repo"));
+        let agent = project.agent(&node());
+        let mut w = EventWriter::open(&agent, &node()).unwrap();
+        w.append(frame("k")).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(project.path()), 0o700);
+        assert_eq!(mode(agent.path()), 0o700);
+        assert_eq!(mode(&agent.events()), 0o600);
     }
 
     fn frame(key: &str) -> Draft {

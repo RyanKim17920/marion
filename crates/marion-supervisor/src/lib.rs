@@ -102,6 +102,8 @@ mod pane_client;
 pub mod paste;
 /// `doctor`'s checks of the machine itself: the two binaries, the OS, the state dir, git.
 pub mod preflight;
+/// Owner-only directories and files under the state root: one place decides the modes.
+pub(crate) mod private_fs;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;

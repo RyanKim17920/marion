@@ -766,7 +766,7 @@ fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskCon
     // too narrow to sample from outside.
     #[cfg(test)]
     at_contract_write::fire();
-    std::fs::create_dir_all(agent.contracts_dir())?;
+    crate::private_fs::create_dir_all(&agent.contracts_dir())?;
     let path = agent.contract(&contract.task_id);
     let mut file = std::fs::File::create(path)?;
     serde_json::to_writer_pretty(&mut file, contract)?;
@@ -1636,7 +1636,7 @@ pub fn run_spawn_watched(
     };
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
-    std::fs::create_dir_all(&ch)?;
+    crate::private_fs::create_dir_all(&ch)?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
     let (workspace, base, cwd_claim) =
@@ -2469,7 +2469,7 @@ fn select_workspace(
                 });
             }
             let wt = agent_dir.worktree();
-            std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
+            crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
             let branch = worktree_branch(task_id);
             let base = make_worktree(&req.repo, &wt, &branch)?;
             Ok((
@@ -2682,23 +2682,9 @@ pub(crate) fn write_config_documents(
 ) -> std::io::Result<Vec<PathBuf>> {
     let mut written = Vec::with_capacity(files.len());
     for (path, contents) in files {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         // Owner-only: a document can carry the node's capability token and, on an endpoint node,
-        // the user's key. The mode is set again after the write for a file that already existed.
-        {
-            use std::io::Write as _;
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)?;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-            f.write_all(contents.as_bytes())?;
-        }
+        // the user's key.
+        std::io::Write::write_all(&mut crate::private_fs::create(&path)?, contents.as_bytes())?;
         written.push(path);
     }
     Ok(written)

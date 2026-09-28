@@ -175,20 +175,8 @@ fn parse_shortstat(out: &str) -> Option<DiffStat> {
 /// a write that fails is said on stderr and the run goes on.
 pub fn persist_root_prompt(dir: &marion_core::paths::AgentDir, prompt: &str) {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let path = dir.prompt();
-    let written = std::fs::create_dir_all(dir.path()).and_then(|()| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        // `mode` applies only to a file this call creates.
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        f.write_all(prompt.as_bytes())
-    });
+    let written = crate::private_fs::create(&path).and_then(|mut f| f.write_all(prompt.as_bytes()));
     if let Err(e) = written {
         eprintln!(
             "marion: cannot keep the root's prompt at {}: {e}",
