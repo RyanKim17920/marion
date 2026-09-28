@@ -451,6 +451,111 @@ impl Builtin {
 /// not open one is §11 item 24 half-closed — measured in `tests/fixtures/s14/`, where claude's
 /// `Read` is absent under marion's `--tools ""` and present under `--tools Read`.
 const BUILTINS: &[Builtin] = &[
+    // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
+    // named after the harness because there the harness *is* the program. Here it is not: a type
+    // named `acp` would have to pick an agent, and §6.4 says marion may not.
+    //
+    // The rule is mechanical: every `marion_harness::acp::AGENTS` row whose `session/new` opened a
+    // session (S33) is `acp-<row id>`, bound to that row, and a row stopped at an account wall has
+    // none. `marion_harness`'s `every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row`
+    // holds the two lists together.
+    //
+    // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a recipe
+    // for marion's canned provider, which is what lets an ACP node run in the default suite at
+    // $0.00 — so it is also the one that states a model. Every other ACP type runs on the
+    // operator's own login or provider configuration for that agent (marion inherits it, never
+    // chooses it), in the model that configuration selects unless `spawn` names one.
+    Builtin {
+        canonical: "acp-claude-acp",
+        aliases: &[],
+        description: "Implements a well-specified change on Claude Code through the claude-agent-acp shim.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("claude-acp"),
+    },
+    Builtin {
+        canonical: "acp-codex-acp",
+        aliases: &[],
+        description: "Implements a well-specified change on Codex through the codex-acp shim.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("codex-acp"),
+    },
+    Builtin {
+        canonical: "acp-copilot",
+        aliases: &[],
+        description: "Implements a well-specified change on the GitHub Copilot CLI over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("copilot"),
+    },
+    Builtin {
+        canonical: "acp-fast-agent",
+        aliases: &[],
+        description: "Implements a well-specified change on fast-agent over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("fast-agent"),
+    },
+    Builtin {
+        canonical: "acp-goose",
+        aliases: &[],
+        description: "Implements a well-specified change on goose over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("goose"),
+    },
+    Builtin {
+        canonical: "acp-kilo",
+        aliases: &[],
+        description: "Implements a well-specified change on Kilo over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("kilo"),
+    },
+    Builtin {
+        canonical: "acp-opencode",
+        aliases: &[],
+        description: "Implementer on opencode over the Agent Client Protocol: all of opencode's \
+                      own tools.",
+        harness: Harness::Acp,
+        model: Some(OPENCODE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: Some("opencode"),
+    },
+    Builtin {
+        canonical: "acp-qwen",
+        aliases: &[],
+        description: "Implements a well-specified change on Qwen Code over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("qwen"),
+    },
+    Builtin {
+        canonical: "acp-vibe",
+        aliases: &[],
+        description: "Implements a well-specified change on Mistral Vibe over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("vibe"),
+    },
+    Builtin {
+        canonical: "acp-vtcode",
+        aliases: &[],
+        description: "Implements a well-specified change on VT Code over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: None,
+        tools: &[],
+        acp_agent: Some("vtcode"),
+    },
     Builtin {
         canonical: "claude",
         aliases: &["claude-impl"],
@@ -632,111 +737,6 @@ const BUILTINS: &[Builtin] = &[
         tools: &[],
         acp_agent: None,
     },
-    // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
-    // named after the harness because there the harness *is* the program. Here it is not: a type
-    // named `acp` would have to pick an agent, and §6.4 says marion may not.
-    //
-    // The rule is mechanical: every `marion_harness::acp::AGENTS` row whose `session/new` opened a
-    // session (S33) is `acp-<row id>`, bound to that row, and a row stopped at an account wall has
-    // none. `marion_harness`'s `every_opened_row_is_a_builtin_type_and_every_acp_builtin_is_a_row`
-    // holds the two lists together.
-    //
-    // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a recipe
-    // for marion's canned provider, which is what lets an ACP node run in the default suite at
-    // $0.00 — so it is also the one that states a model. Every other ACP type runs on the
-    // operator's own login or provider configuration for that agent (marion inherits it, never
-    // chooses it), in the model that configuration selects unless `spawn` names one.
-    Builtin {
-        canonical: "acp-opencode",
-        aliases: &[],
-        description: "Implementer on opencode over the Agent Client Protocol: all of opencode's \
-                      own tools.",
-        harness: Harness::Acp,
-        model: Some(OPENCODE_DEFAULT_MODEL),
-        tools: &[],
-        acp_agent: Some("opencode"),
-    },
-    Builtin {
-        canonical: "acp-claude-acp",
-        aliases: &[],
-        description: "Implements a well-specified change on Claude Code through the claude-agent-acp shim.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("claude-acp"),
-    },
-    Builtin {
-        canonical: "acp-codex-acp",
-        aliases: &[],
-        description: "Implements a well-specified change on Codex through the codex-acp shim.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("codex-acp"),
-    },
-    Builtin {
-        canonical: "acp-copilot",
-        aliases: &[],
-        description: "Implements a well-specified change on the GitHub Copilot CLI over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("copilot"),
-    },
-    Builtin {
-        canonical: "acp-kilo",
-        aliases: &[],
-        description: "Implements a well-specified change on Kilo over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("kilo"),
-    },
-    Builtin {
-        canonical: "acp-qwen",
-        aliases: &[],
-        description: "Implements a well-specified change on Qwen Code over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("qwen"),
-    },
-    Builtin {
-        canonical: "acp-goose",
-        aliases: &[],
-        description: "Implements a well-specified change on goose over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("goose"),
-    },
-    Builtin {
-        canonical: "acp-fast-agent",
-        aliases: &[],
-        description: "Implements a well-specified change on fast-agent over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("fast-agent"),
-    },
-    Builtin {
-        canonical: "acp-vibe",
-        aliases: &[],
-        description: "Implements a well-specified change on Mistral Vibe over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("vibe"),
-    },
-    Builtin {
-        canonical: "acp-vtcode",
-        aliases: &[],
-        description: "Implements a well-specified change on VT Code over the Agent Client Protocol.",
-        harness: Harness::Acp,
-        model: None,
-        tools: &[],
-        acp_agent: Some("vtcode"),
-    },
 ];
 
 /// A built-in by name, or the one open-ended family: any ACP agent, named by its command.
@@ -790,36 +790,19 @@ fn acp_command(name: &str) -> Option<AgentType> {
 /// schema and `marion doctor` list. An alias still resolves through [`builtin`]; listing it beside
 /// its type would print the same type twice under two names.
 pub fn builtin_names() -> &'static [&'static str] {
-    &[
-        "acp-claude-acp",
-        "acp-codex-acp",
-        "acp-copilot",
-        "acp-fast-agent",
-        "acp-goose",
-        "acp-kilo",
-        "acp-opencode",
-        "acp-qwen",
-        "acp-vibe",
-        "acp-vtcode",
-        "claude",
-        "claude-orchestrator",
-        "codex",
-        "gemini",
-        "gemini-orchestrator",
-        "opencode",
-        "copilot",
-        "copilot-orchestrator",
-        "goose",
-        "goose-orchestrator",
-        "cline",
-        "qwen",
-        "qwen-orchestrator",
-        "agy",
-        "agy-orchestrator",
-        "pi",
-        "pi-orchestrator",
-    ]
+    &BUILTIN_NAMES
 }
+
+/// [`BUILTINS`]' canonical names, in table order — derived, so no second list can drift from it.
+const BUILTIN_NAMES: [&str; BUILTINS.len()] = {
+    let mut names = [""; BUILTINS.len()];
+    let mut i = 0;
+    while i < BUILTINS.len() {
+        names[i] = BUILTINS[i].canonical;
+        i += 1;
+    }
+    names
+};
 
 /// The agent types one working tree can spawn: the built-ins, plus the rows of that tree's
 /// `.marion/agents.toml`, resolved through **one table and one path**.
