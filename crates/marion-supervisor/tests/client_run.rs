@@ -157,10 +157,24 @@ fn assert_contiguous_from(seqs: &[u64], first: u64, what: &str) {
 ///
 /// It also retires the last `ps -o lstart=` fork in the workspace, which `procid`'s module doc
 /// already argued against on the boundary `Cargo.toml` draws around shelling out.
+///
+/// **Waited for, within a bound.** `read_identity` answers `None` while the lock probe cannot see a
+/// server or the identity file is not yet whole, which a machine under load (or a CI runner) can
+/// show for an instant after the supervisor is already serving; one read raced that and failed the
+/// suite. The identity is the production barrier, so it is polled until it appears or the bound
+/// expires, and a supervisor that never publishes still fails loudly.
 fn supervisor_identity(paths: &SocketPaths) -> (i32, StartId) {
-    let pid = read_identity(paths)
-        .expect("a serving supervisor publishes its identity")
-        .pid;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let pid = loop {
+        if let Some(id) = read_identity(paths) {
+            break id.pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a serving supervisor publishes its identity"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     match procid::read(pid) {
         procid::Read::Id(start) => (pid, start),
         other => panic!("the kernel cannot identify the serving supervisor's pid {pid}: {other:?}"),
