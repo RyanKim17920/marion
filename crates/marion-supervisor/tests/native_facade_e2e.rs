@@ -40,7 +40,7 @@ use marion_supervisor::socket::{Acquired, SocketPaths, acquire, project_root, so
 use marion_testsupport::{on_path, scratch, until_within};
 
 mod common;
-use common::cast::{cast_records, cast_text};
+use common::cast::{cast_records, cast_text, resize_from};
 use common::client::Client;
 
 /// Every wait in this file is bounded by this and none is a verdict.
@@ -536,14 +536,6 @@ fn repair_len(rest: &str, tail: &str) -> Option<usize> {
     let body = rest.strip_prefix("\u{1b}[")?;
     let digits = body.bytes().take_while(u8::is_ascii_digit).count();
     (digits > 0 && body[digits..].starts_with(tail)).then_some(2 + digits + tail.len())
-}
-
-fn resize_from(term: &mut marion_term::Term, record: &str) {
-    if let Some((c, r)) = record.split_once('x')
-        && let (Ok(c), Ok(r)) = (c.parse(), r.parse())
-    {
-        term.resize(marion_term::Size::new(c, r));
-    }
 }
 
 fn tail(s: &str) -> String {

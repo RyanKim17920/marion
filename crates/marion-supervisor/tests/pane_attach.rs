@@ -99,7 +99,7 @@ use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
 use marion_testsupport::{fixture_repo, on_path, pinned_version, scratch, sweep, until_within};
 
 mod common;
-use common::cast::{cast_records, cast_text};
+use common::cast::{cast_records, cast_text, resize_from};
 use common::client::{Client, paths_for};
 
 /// How long anything here may take before it is a failure. Never a verdict: every assertion below
@@ -1099,15 +1099,6 @@ fn geometries(cast: &Path) -> Vec<String> {
         .filter(|(c, _)| c == "r")
         .map(|(_, d)| d)
         .collect()
-}
-
-/// Apply one `r` record's geometry to a replaying grid.
-fn resize_from(term: &mut marion_term::Term, record: &str) {
-    if let Some((c, r)) = record.split_once('x')
-        && let (Ok(c), Ok(r)) = (c.parse(), r.parse())
-    {
-        term.resize(marion_term::Size::new(c, r));
-    }
 }
 
 fn tail(s: &str) -> String {

@@ -31,3 +31,13 @@ pub fn cast_text(path: &Path, code: &str) -> String {
         .map(|(_, d)| d)
         .collect()
 }
+
+/// Apply one `r` record's geometry (`<cols>x<rows>`) to a replaying grid; a record that does not
+/// parse is skipped rather than guessed at.
+pub fn resize_from(term: &mut marion_term::Term, record: &str) {
+    if let Some((c, r)) = record.split_once('x')
+        && let (Ok(c), Ok(r)) = (c.parse(), r.parse())
+    {
+        term.resize(marion_term::Size::new(c, r));
+    }
+}
