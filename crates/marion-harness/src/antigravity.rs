@@ -45,6 +45,7 @@ use crate::spec::{
     LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
 };
+use crate::spec::{Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -160,6 +161,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "s32 on agy 1.2.8: the -p stream-json surface, the --add-dir root declaration, the \
            workspace sort order, headless auto-denial and the operator allow rule, \
            --conversation resume; the gated live test runs this row end to end",
+    requires: &[
+        // agy has no measured way to point it at another provider (an API-key route would need
+        // the operator's profile relocated, which loses the keychain login), so a "canned" node
+        // would spend the operator's real quota under a mode that promises it spends nothing, and
+        // an endpoint node would bill the operator's login instead of the provider it names.
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::NoRecipe,
+            why: "agy has no canned or endpoint provider route: it runs only on the operator's own \
+                   login, so launch it without --canned or a provider",
+        },
+    ],
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).
@@ -340,26 +353,14 @@ impl HarnessAdapter for AntigravityAdapter {
         })
     }
 
-    /// The refusal this harness owes, the root, and the working-directory preamble.
-    ///
-    /// **Canned and endpoint are refused by name.** agy has no measured way to point it at another
-    /// provider (an API-key route would need the operator's profile relocated, which loses the
-    /// keychain login), so a "canned" node would spend the operator's real quota under a mode
-    /// that promises it spends nothing, and an endpoint node would bill the operator's login
-    /// instead of the provider it names.
+    /// The root and the working-directory preamble. Canned and endpoint are refused by the row
+    /// ([`SPEC`]'s `requires`).
     fn fields(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        if spec.auth.overlays() {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::Antigravity,
-                what: "agy has no canned or endpoint provider route: it runs only on the \
-                       operator's own login, so launch it without --canned or a provider",
-            });
-        }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         if spec.mcp == McpDeclaration::Marion {
             let root = root_dir(&spec.config_dir);

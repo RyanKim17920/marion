@@ -167,6 +167,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \
            refused session/new vendor-side). The argv of every refinement row is the one those \
            spikes launched; a generic `acp:<command>` row is the operator's own",
+    requires: &[],
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**

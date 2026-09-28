@@ -42,7 +42,6 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
-use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
@@ -54,6 +53,7 @@ use crate::spec::{
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use crate::spec::{Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -229,6 +229,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \
            goose cell runs this row end to end",
+    requires: &[
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::BaseUrl,
+            why: "a canned node needs a provider base URL: without OPENAI_HOST the openai provider \
+                   posts to the vendor's own endpoint",
+        },
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::Model,
+            why: "an explicit model is mandatory: GOOSE_MODEL is how the openai provider is told what \
+                   to name, it has no default, and marion will not guess one",
+        },
+        Requirement {
+            modes: Modes::Inherited,
+            need: Need::ModelOtherThan(agent_type::GOOSE_DEFAULT_MODEL),
+            why: "that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real model (-m <model>), or none to use the harness's \
+                   own default",
+        },
+    ],
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).
@@ -496,46 +517,14 @@ impl HarnessAdapter for GooseAdapter {
         })
     }
 
-    /// The refusals this harness owes, the declaration token, and the environment the bridge
-    /// inherits.
+    /// The unspellable-path refusal, the declaration token, and the environment the bridge
+    /// inherits; the launch-input refusals are the row's ([`SPEC`]'s `requires`).
     fn fields(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        match spec.auth {
-            Auth::Canned | Auth::Endpoint => {
-                // Without a host the `openai` provider posts to api.openai.com with marion's
-                // placeholder key — a real vendor call on a run premised on making none.
-                if spec.base_url.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Goose,
-                        what: "a canned node needs a provider base URL: without OPENAI_HOST the \
-                               openai provider posts to the vendor's own endpoint",
-                    });
-                }
-                if spec.model.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Goose,
-                        what: "an explicit model is mandatory: GOOSE_MODEL is how the openai \
-                               provider is told what to name, it has no default, and marion will \
-                               not guess one",
-                    });
-                }
-            }
-            // The canned default names marion's own endpoint's plumbing; a live node has none.
-            Auth::Inherited => {
-                if spec.model.as_deref() == Some(agent_type::GOOSE_DEFAULT_MODEL) {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Goose,
-                        what: "that model name belongs to marion's canned test provider, which a \
-                               run on your own login does not use. Pass a real model (-m <model>), \
-                               or none to use the harness's own default",
-                    });
-                }
-            }
-        }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         if spec.mcp == McpDeclaration::Marion {
             let bridge = declared_bridge(self, spec, ctx);

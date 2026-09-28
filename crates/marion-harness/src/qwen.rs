@@ -57,6 +57,7 @@ use crate::spec::{
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
     TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use crate::spec::{Modes, Need, Requirement};
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -249,6 +250,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            combination that offers the declared names, --mcp-config inline as the declaration \
            route in both modes, --resume <session_id>; harness_matrix's qwen cell runs this row \
            end to end",
+    requires: &[
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::BaseUrl,
+            why: "a canned node needs a provider base URL: without OPENAI_BASE_URL the provider posts \
+                   to the vendor's own endpoint",
+        },
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::Model,
+            why: "an explicit model is mandatory: OPENAI_MODEL is how the provider is told what to \
+                   name, and marion will not guess one",
+        },
+        Requirement {
+            modes: Modes::Inherited,
+            need: Need::ModelOtherThan(agent_type::QWEN_DEFAULT_MODEL),
+            why: "that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real model (-m <model>), or none to use the harness's \
+                   own default",
+        },
+    ],
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,
@@ -358,43 +380,13 @@ impl HarnessAdapter for QwenAdapter {
         })
     }
 
-    /// The refusals this harness owes, and the declaration token.
+    /// The declaration token; the refusals are the row's ([`SPEC`]'s `requires`).
     fn fields(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        match spec.auth {
-            Auth::Canned | Auth::Endpoint => {
-                // Without a base URL the OpenAI provider posts to the vendor with marion's
-                // placeholder key; without a model it has nothing to name.
-                if spec.base_url.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Qwen,
-                        what: "a canned node needs a provider base URL: without OPENAI_BASE_URL \
-                               the provider posts to the vendor's own endpoint",
-                    });
-                }
-                if spec.model.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Qwen,
-                        what: "an explicit model is mandatory: OPENAI_MODEL is how the provider is \
-                               told what to name, and marion will not guess one",
-                    });
-                }
-            }
-            Auth::Inherited => {
-                if spec.model.as_deref() == Some(agent_type::QWEN_DEFAULT_MODEL) {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Qwen,
-                        what: "that model name belongs to marion's canned test provider, which a \
-                               run on your own login does not use. Pass a real model (-m <model>), \
-                               or none to use the harness's own default",
-                    });
-                }
-            }
-        }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         // **Under `Inherited` the declaration is compiled onto argv, not written to a file** —
         // codex's arrangement, for codex's reason: a live node's settings document is the

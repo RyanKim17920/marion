@@ -46,6 +46,7 @@ use crate::spec::{
     LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Remembers, Resume, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
 };
+use crate::spec::{Modes, Need, Requirement};
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
 /// and [`models_path`].
@@ -193,6 +194,34 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            client extension loaded with -e as the declaration in both modes, --tools as the one \
            list on both axes, provider faults read from the final agent_end, --session <id>; \
            harness_matrix's pi cell and tests/pi_rpc.rs run this row end to end",
+    requires: &[
+        Requirement {
+            modes: Modes::Canned,
+            need: Need::BaseUrl,
+            why: "a canned node needs a provider base URL and an explicit model: both are fields of \
+                   the models.json marion writes, and marion will not write a provider that points \
+                   nowhere or names no model",
+        },
+        Requirement {
+            modes: Modes::Canned,
+            need: Need::Model,
+            why: "a canned node needs a provider base URL and an explicit model: both are fields of \
+                   the models.json marion writes, and marion will not write a provider that points \
+                   nowhere or names no model",
+        },
+        Requirement {
+            modes: Modes::Endpoint,
+            need: Need::NoRecipe,
+            why: "pi has no measured endpoint recipe: launch it canned or on your own login",
+        },
+        Requirement {
+            modes: Modes::Inherited,
+            need: Need::ModelOtherThan(agent_type::PI_DEFAULT_MODEL),
+            why: "the built-in default model names marion's canned endpoint, which a --live node does \
+                   not talk to. Name a real model instead (marion run --live -m …), or none to keep \
+                   pi's own default",
+        },
+    ],
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).
@@ -517,42 +546,13 @@ impl HarnessAdapter for PiAdapter {
         })
     }
 
-    /// The refusals this harness owes, and the extension path.
+    /// The extension path; the refusals are the row's ([`SPEC`]'s `requires`).
     fn fields(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        match spec.auth {
-            Auth::Canned => {
-                if spec.base_url.is_none() || spec.model.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Pi,
-                        what: "a canned node needs a provider base URL and an explicit model: \
-                               both are fields of the models.json marion writes, and marion will \
-                               not write a provider that points nowhere or names no model",
-                    });
-                }
-            }
-            Auth::Endpoint => {
-                return Err(HarnessError::MissingInput {
-                    harness: Harness::Pi,
-                    what: "pi has no measured endpoint recipe: launch it canned or on your own \
-                           login",
-                });
-            }
-            Auth::Inherited => {
-                if spec.model.as_deref() == Some(agent_type::PI_DEFAULT_MODEL) {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Pi,
-                        what: "the built-in default model names marion's canned endpoint, which a \
-                               --live node does not talk to. Name a real model instead \
-                               (marion run --live -m …), or none to keep pi's own default",
-                    });
-                }
-            }
-        }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
             extension_path(&spec.config_dir)

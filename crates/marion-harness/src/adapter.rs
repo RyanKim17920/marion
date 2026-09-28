@@ -356,6 +356,7 @@ pub trait HarnessAdapter {
     /// the whole of `compile` for every migrated harness: the row is the launch, the hook is the
     /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        requirements(self.spec(), spec)?;
         let f = self.fields(spec, ctx, spec::Shape::Headless)?;
         // An approval mode is a session mode, and only a hook that has a session to set it in
         // carries it onward; anything else would launch a node ignoring the operator's choice.
@@ -448,6 +449,7 @@ pub trait HarnessAdapter {
         if self.pane_surfaces().is_none() {
             return Err(HarnessError::NoPaneSurface(self.harness()));
         }
+        requirements(self.spec(), spec)?;
         let f = self.fields(spec, ctx, spec::Shape::Pane)?;
         let mut inv = render_row(self.spec(), spec::Shape::Pane, &f)?;
         inv.env.extend(bridge_process_env(self, spec, ctx));
@@ -875,6 +877,29 @@ pub(crate) fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Field
     }
 }
 
+/// **The row's [`spec::Requirement`]s against this launch**: the first one unmet, refused by name in
+/// the row's words — before the row's hook runs, so a launch missing an input is never compiled.
+pub(crate) fn requirements(row: &spec::HarnessSpec, spec: &LaunchSpec) -> Result<(), HarnessError> {
+    let met = |need: spec::Need| match need {
+        spec::Need::BaseUrl => spec.base_url.is_some(),
+        spec::Need::Model => spec.model.is_some(),
+        spec::Need::ApiKey => spec.api_key.is_some(),
+        spec::Need::ModelOtherThan(canned) => spec.model.as_deref() != Some(canned),
+        spec::Need::NoRecipe => false,
+    };
+    match row
+        .requires
+        .iter()
+        .find(|r| r.modes.covers(spec.auth) && !met(r.need))
+    {
+        Some(r) => Err(HarnessError::MissingInput {
+            harness: row.harness,
+            what: r.why,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// **The bridge declaration for this node**, in the neutral form every harness's document
 /// serialises ([`BridgeEnv`]): what marion knows about the node ([`SpawnCtx`]) and what the launch
 /// asked for ([`LaunchSpec`]), joined once so no two adapters can hand the bridge different values.
@@ -1080,6 +1105,43 @@ mod tests {
     use crate::qwen::QwenAdapter;
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
+
+    /// **Every requirement a row states is refused by name when unmet**, in the row's own words,
+    /// and the launch is never compiled. Each is violated alone on a launch the row otherwise
+    /// accepts, in the first auth mode it binds. Mutation: drop an entry's check, or let a hook
+    /// refuse first.
+    #[test]
+    fn every_requirement_a_row_states_is_refused_by_name_when_unmet() {
+        use crate::spec::Need;
+        let mut checked = 0;
+        for h in Harness::ALL {
+            for r in harness_spec(h).requires {
+                let auth = [Auth::Canned, Auth::Endpoint, Auth::Inherited]
+                    .into_iter()
+                    .find(|a| r.modes.covers(*a))
+                    .expect("a requirement binds some mode");
+                let mut launch = LaunchSpec {
+                    auth,
+                    ..spec_for(h)
+                };
+                match r.need {
+                    Need::BaseUrl => launch.base_url = None,
+                    Need::Model => launch.model = None,
+                    Need::ApiKey => launch.api_key = None,
+                    Need::ModelOtherThan(canned) => launch.model = Some(canned.into()),
+                    Need::NoRecipe => {}
+                }
+                let got = launch_adapter(h).unwrap().compile(&launch, &ctx());
+                assert!(
+                    matches!(&got, Err(HarnessError::MissingInput { harness, what })
+                        if *harness == h && *what == r.why),
+                    "{h} {r:?}: {got:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "the sweep checked nothing");
+    }
 
     /// [`ROWS`] is the registry: each row's adapter answers for its own harness, and whether a type
     /// must name an agent is the row's spelling, never its name. Mutation: key the refusal on a
@@ -7067,9 +7129,11 @@ mod tests {
                         Shape::Headless => a.compile(launch, &ctx()),
                         Shape::Pane => a.compile_pane(launch, &ctx()),
                     };
-                    let got = a.fields(launch, &ctx(), shape).and_then(|f| {
-                        render(row, shape, &f).map_err(|_| HarnessError::NoPaneSurface(h))
-                    });
+                    let got = requirements(row, launch)
+                        .and_then(|()| a.fields(launch, &ctx(), shape))
+                        .and_then(|f| {
+                            render(row, shape, &f).map_err(|_| HarnessError::NoPaneSurface(h))
+                        });
                     assert_eq!(
                         got, expected,
                         "{h} ({mode}, {shape:?}): the row must render exactly what the adapter \

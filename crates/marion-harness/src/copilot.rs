@@ -39,7 +39,6 @@ use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
     neutral_fields,
 };
-use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
     SessionId, StreamGrammar, TextUnit, ToolUnit, Verdict, Where,
@@ -52,6 +51,7 @@ use crate::spec::{
     Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
     WireRecipe,
 };
+use crate::spec::{Modes, Need, Requirement};
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
 /// live declaration and [`mcp_config_path`].
@@ -302,6 +302,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",
+    requires: &[
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::BaseUrl,
+            why: "a canned node needs a provider base URL: COPILOT_PROVIDER_BASE_URL is what \
+                   selects BYOK at all, and without it the CLI requires a GitHub login",
+        },
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::Model,
+            why: "an explicit model is mandatory under BYOK: 1.0.83 exits 1 with `BYOK providers \
+                   require an explicit model` before any request, and marion will not guess one",
+        },
+        Requirement {
+            modes: Modes::Inherited,
+            need: Need::ModelOtherThan(agent_type::COPILOT_DEFAULT_MODEL),
+            why: "that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real Copilot model (-m <model>), or none to use \
+                   Copilot's own default",
+        },
+    ],
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).
@@ -646,49 +667,14 @@ impl HarnessAdapter for CopilotAdapter {
         })
     }
 
-    /// The three refusals this harness owes, and where argv names the declaration document.
+    /// Where argv names the declaration document; the refusals are the row's ([`SPEC`]'s
+    /// `requires`).
     fn fields(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        match spec.auth {
-            Auth::Canned | Auth::Endpoint => {
-                // Both measured as hard refusals by the CLI itself, so marion refuses first and
-                // says why. Without a base URL there is no BYOK at all and the CLI goes looking
-                // for a GitHub login; without a model BYOK exits 1 before any request.
-                if spec.base_url.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Copilot,
-                        what: "a canned node needs a provider base URL: COPILOT_PROVIDER_BASE_URL \
-                               is what selects BYOK at all, and without it the CLI requires a \
-                               GitHub login",
-                    });
-                }
-                if spec.model.is_none() {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Copilot,
-                        what: "an explicit model is mandatory under BYOK: 1.0.83 exits 1 with \
-                               `BYOK providers require an explicit model` before any request, \
-                               and marion will not guess one",
-                    });
-                }
-            }
-            // The canned default names marion's own endpoint's plumbing, and a live node has no
-            // such endpoint — the string would go to GitHub's model routing and name nothing. The
-            // same refusal opencode makes for `marion/default`, for the same reason.
-            Auth::Inherited => {
-                if spec.model.as_deref() == Some(agent_type::COPILOT_DEFAULT_MODEL) {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Copilot,
-                        what: "that model name belongs to marion's canned test provider, which a \
-                               run on your own login does not use. Pass a real Copilot model \
-                               (-m <model>), or none to use Copilot's own default",
-                    });
-                }
-            }
-        }
         let mut f = neutral_fields(spec, self.axes(spec)?);
         // `--additional-mcp-config @<file>`: the `@` is how the flag reads a file, and the path is
         // the one `config_files` writes.

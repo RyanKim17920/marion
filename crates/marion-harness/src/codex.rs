@@ -298,6 +298,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
+    requires: &[],
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).

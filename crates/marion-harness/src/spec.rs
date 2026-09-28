@@ -156,6 +156,58 @@ pub struct HarnessSpec {
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
+    /// **The launch inputs this row cannot run without**, per auth mode, in the order they are
+    /// checked — each refused by name with its own measured reason before the row's hook runs
+    /// ([`crate::adapter::requirements`]). Empty where the row needs nothing a launch could omit.
+    pub requires: &'static [Requirement],
+}
+
+/// **One input a row cannot launch without**, under the auth modes it names. Row data rather
+/// than a branch in the row's hook, so every row's refusals are stated the same way and swept by
+/// one test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Requirement {
+    pub modes: Modes,
+    pub need: Need,
+    /// The refusal, in the row's words: what the harness does without the input, as measured.
+    pub why: &'static str,
+}
+
+/// The auth modes a [`Requirement`] binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modes {
+    All,
+    /// Canned and endpoint: the modes that overlay a provider ([`Auth::overlays`]).
+    Overlay,
+    Canned,
+    Endpoint,
+    /// Live: the operator's own login.
+    Inherited,
+}
+
+impl Modes {
+    pub const fn covers(self, auth: Auth) -> bool {
+        match self {
+            Modes::All => true,
+            Modes::Overlay => auth.overlays(),
+            Modes::Canned => matches!(auth, Auth::Canned),
+            Modes::Endpoint => matches!(auth, Auth::Endpoint),
+            Modes::Inherited => matches!(auth, Auth::Inherited),
+        }
+    }
+}
+
+/// What a [`Requirement`] needs of the launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    BaseUrl,
+    Model,
+    ApiKey,
+    /// Any model but this one — the row's canned default, which names marion's test endpoint's
+    /// plumbing and nothing a live login serves. No model at all satisfies it.
+    ModelOtherThan(&'static str),
+    /// Nothing satisfies it: the row has no measured recipe for the mode.
+    NoRecipe,
 }
 
 /// **How one harness speaks one wire in endpoint mode**: the wire, and the environment that

@@ -47,20 +47,18 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
-use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
     StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec;
 use crate::spec::{
     Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
     McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
     ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use crate::spec::{Modes, Need, Requirement};
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
 /// env row and [`mcp_settings_path`]. Named by [`MCP_SETTINGS_PATH_ENV`] in both auth modes.
@@ -218,6 +216,34 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \
            harness_matrix's cline cell runs this row end to end",
+    requires: &[
+        // A document with no base URL would select the vendor's own endpoint through cline's
+        // default — s27 item 14 measured a missing provider file as exactly that fallback.
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::BaseUrl,
+            why: NEEDS_BASE_URL,
+        },
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::Model,
+            why: NEEDS_MODEL,
+        },
+        Requirement {
+            modes: Modes::Overlay,
+            need: Need::ApiKey,
+            why: NEEDS_API_KEY,
+        },
+        // Any other model rides `-m`, measured to win over the operator's `providers.json` (s27
+        // item 15); none at all leaves the operator's own.
+        Requirement {
+            modes: Modes::Inherited,
+            need: Need::ModelOtherThan(agent_type::CLINE_DEFAULT_MODEL),
+            why: "that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real model (-m <model>), or none to use \
+                   providers.json's own",
+        },
+    ],
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).
@@ -448,6 +474,16 @@ pub fn mcp_settings_json(b: &BridgeEnv) -> Value {
     })
 }
 
+/// The refusals a canned node's `providers.json` is owed: it is the only provider selection cline
+/// reads, so each value it names must be given.
+const NEEDS_BASE_URL: &str = "a canned node needs a provider base URL: providers.json is the only \
+                              provider selection cline reads, and without one it falls back to its \
+                              own vendor with no credential (s27 item 14)";
+const NEEDS_MODEL: &str =
+    "an explicit model is mandatory: providers.json names one, and marion will not guess it";
+const NEEDS_API_KEY: &str = "a canned node needs a credential: providers.json carries apiKey as a \
+                             string and an absent one is not a spelling the document has";
+
 /// cline 3.0.61, headless `--json <prompt>` (fixture `tests/fixtures/s27/`).
 ///
 /// opencode's shape: the provider is a document marion writes, the tool set is the harness's own
@@ -458,26 +494,16 @@ pub fn mcp_settings_json(b: &BridgeEnv) -> Value {
 pub struct ClineAdapter;
 
 impl ClineAdapter {
-    /// The `providers.json` values, or the refusal each missing one is owed.
+    /// The `providers.json` values, or the refusal each missing one is owed — the row's own
+    /// ([`SPEC`]'s `requires`), since the document is written before the launch compiles.
     fn provider(spec: &LaunchSpec) -> Result<ProviderSpec, HarnessError> {
-        // A document with no base URL would select the vendor's own endpoint through cline's
-        // default — s27 item 14 measured a missing provider file as exactly that fallback.
-        let base_url = spec.base_url.clone().ok_or(HarnessError::MissingInput {
+        let missing = |what| HarnessError::MissingInput {
             harness: Harness::Cline,
-            what: "a canned node needs a provider base URL: providers.json is the only provider \
-                   selection cline reads, and without one it falls back to its own vendor with no \
-                   credential (s27 item 14)",
-        })?;
-        let model = spec.model.clone().ok_or(HarnessError::MissingInput {
-            harness: Harness::Cline,
-            what: "an explicit model is mandatory: providers.json names one, and marion will not \
-                   guess it",
-        })?;
-        let api_key = spec.api_key.clone().ok_or(HarnessError::MissingInput {
-            harness: Harness::Cline,
-            what: "a canned node needs a credential: providers.json carries apiKey as a string and \
-                   an absent one is not a spelling the document has",
-        })?;
+            what,
+        };
+        let base_url = spec.base_url.clone().ok_or(missing(NEEDS_BASE_URL))?;
+        let model = spec.model.clone().ok_or(missing(NEEDS_MODEL))?;
+        let api_key = spec.api_key.clone().ok_or(missing(NEEDS_API_KEY))?;
         Ok(ProviderSpec {
             model,
             base_url,
@@ -489,38 +515,6 @@ impl ClineAdapter {
 impl HarnessAdapter for ClineAdapter {
     fn harness(&self) -> Harness {
         Harness::Cline
-    }
-
-    /// The refusals this harness owes. Nothing else: the row's argv reads the launch verbatim, the
-    /// provider is a document, and the declaration rides an env-named document.
-    fn fields(
-        &self,
-        spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
-        _shape: spec::Shape,
-    ) -> Result<spec::Fields, HarnessError> {
-        match spec.auth {
-            Auth::Canned | Auth::Endpoint => {
-                Self::provider(spec)?;
-            }
-            // The canned default names marion's own endpoint's plumbing; a live node has none. Any
-            // other model rides `-m`, measured to win over the operator's `providers.json` (s27
-            // item 15); none at all leaves the operator's own.
-            Auth::Inherited => {
-                if spec.model.as_deref() == Some(agent_type::CLINE_DEFAULT_MODEL) {
-                    return Err(HarnessError::MissingInput {
-                        harness: Harness::Cline,
-                        what: "that model name belongs to marion's canned test provider, which a \
-                               run on your own login does not use. Pass a real model (-m <model>), \
-                               or none to use providers.json's own",
-                    });
-                }
-            }
-        }
-        // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
-        // the row reads the result — see `Self::tool_name`'s row entry for why a declaration
-        // compiles nothing.
-        Ok(neutral_fields(spec, self.axes(spec)?))
     }
 
     /// The MCP document **first** — [`McpRoute::Document`] reads the first file as the

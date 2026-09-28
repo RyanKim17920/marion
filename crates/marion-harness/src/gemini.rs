@@ -29,6 +29,7 @@ use crate::spec::{
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling,
     Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
+use crate::spec::{Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -228,6 +229,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
+    requires: &[Requirement {
+        modes: Modes::All,
+        need: Need::Model,
+        why: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
+                   a classifier call that retried 5x and hung, and marion will not guess a model",
+    }],
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).
@@ -638,7 +645,8 @@ impl HarnessAdapter for GeminiAdapter {
         })
     }
 
-    /// The two refusals this harness owes, and the one derivation.
+    /// The base URL's refusal, and the one derivation. The model's refusal is the row's
+    /// ([`SPEC`]'s `requires`):
     ///
     /// **The model is refused rather than defaulted.** A pinned id would be a guess marion has no
     /// basis for, and S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to
@@ -652,13 +660,6 @@ impl HarnessAdapter for GeminiAdapter {
         _ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        if spec.model.is_none() {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::Gemini,
-                what: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
-                       a classifier call that retried 5x and hung, and marion will not guess a model",
-            });
-        }
         if let Some(u) = &spec.base_url
             && !base_url_is_acceptable(u)
         {
