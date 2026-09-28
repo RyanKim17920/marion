@@ -224,7 +224,8 @@ impl LaunchedNativeCommand {
                 if worker_gate.wait() == LifecycleDecision::Abort {
                     return Ok(None);
                 }
-                let waited = crate::root::wait_for_the_pane_to_end(&lifecycle_host, None);
+                let waited =
+                    crate::root::wait_for_the_pane_to_end(&lifecycle_host, None, &mut || false);
                 let finished = crate::root::finish_terminal_pane(
                     Some(lifecycle_owner.as_ref()),
                     &lifecycle_agent,

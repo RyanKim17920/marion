@@ -81,7 +81,7 @@ use marion_harness::spec::{
 };
 
 use crate::inbox::{DeliveryPort, Inboxes, Message, render};
-use crate::pty::{Injected, Injection, InputState, PtyHost};
+use crate::pty::{DialogHold, Injected, Injection, InputState, PtyHost};
 
 /// The lane's word on `MessageDelivered`.
 pub const VIA: &str = "pty:paste";
@@ -479,6 +479,19 @@ impl Worker {
                 &mut unready_since,
             );
             self.observe(&decision);
+            // Tell the launcher what the first message waits on, where it is a boot dialog marion
+            // does not answer: it raises the node's attention item and, past the grace, ends it.
+            // `Expired` is final: the launcher ends the node on it.
+            let showing = host.input_state().boot_dialog;
+            let was = host.dialog_hold();
+            host.set_dialog_hold(match (&decision, showing) {
+                _ if matches!(was, DialogHold::Expired(_)) => was,
+                (Gate::Wait(Hold::BootDialog, _), Some(d)) => DialogHold::Held(d),
+                (Gate::Refuse(_), Some(d)) if boot.is_some() => DialogHold::Expired(d),
+                // Held on something else (the operator typing) with the dialog still up.
+                (Gate::Wait(..), Some(_)) => was,
+                _ => DialogHold::Clear,
+            });
             next_look = Some(match &decision {
                 Gate::Wait(_, at) => *at,
                 Gate::Answer(dialog) => {

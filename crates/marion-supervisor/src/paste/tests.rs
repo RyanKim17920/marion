@@ -112,11 +112,13 @@ const WINDOW_TITLE: Option<Boot> = Some(Boot {
 /// The measured claude dialog, answerable, and the marker-free fallback the row holds on.
 const TRUST: BootDialog = BootDialog {
     needle: "❯ No, exit Yes, I trust this folder",
+    action: "trust {repo} once",
     answer: DialogAnswer::Keys(b"\x1b[B\r"),
     note: "test: claude-like folder trust, default No",
 };
 const TRUST_HELD: BootDialog = BootDialog {
     needle: "Is this a project you created or one you trust?",
+    action: "trust {repo} once",
     answer: DialogAnswer::Hold,
     note: "test: the same dialog, selection unmeasured",
 };
@@ -990,6 +992,14 @@ fn a_paste_waits_for_the_operator_to_dismiss_a_boot_dialog() {
     bed.node_writes(CLAUDE_TRUST_SCREEN);
     let id = bed.steer("after the dialog");
     bed.await_decision(|d| matches!(d, Gate::Wait(Hold::BootDialog, _)));
+    // The launcher is told what the message waits on, so the node's attention item names it.
+    assert!(
+        marion_testsupport::until_within(Duration::from_secs(5), Duration::from_millis(5), || {
+            matches!(bed.host.dialog_hold(), crate::pty::DialogHold::Held(d) if d.needle == TRUST.needle)
+        }),
+        "the hold was not reported: {:?}",
+        bed.host.dialog_hold()
+    );
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
     bed.host.write_input(&lease, b"\x1b[B\r").unwrap();
     assert_eq!(
@@ -1004,6 +1014,11 @@ fn a_paste_waits_for_the_operator_to_dismiss_a_boot_dialog() {
         bed.resolution(&id),
         RecordKind::MessageDelivered(_)
     ));
+    assert_eq!(
+        bed.host.dialog_hold(),
+        crate::pty::DialogHold::Clear,
+        "dismissed, so nothing is held any more"
+    );
 }
 
 /// **In marion's own workspace the row's keys answer a default-No trust dialog — never a bare
@@ -1044,6 +1059,7 @@ fn a_default_no_trust_dialog_is_answered_with_the_rows_keys_never_a_bare_cr() {
 /// A codex-like directory-trust dialog: default `1. Yes, continue`, answered by CR.
 const CODEX_TRUST: BootDialog = BootDialog {
     needle: "› 1. Yes, continue 2. No, quit",
+    action: "trust {repo} once",
     answer: DialogAnswer::Keys(b"\r"),
     note: "test: codex-like directory trust, default Yes",
 };
@@ -1114,6 +1130,12 @@ fn a_dialog_marion_never_answers_drops_the_message_by_name() {
         RecordKind::MessageDropped(d) => assert!(d.reason.contains("dialog"), "{d:?}"),
         other => panic!("expected a drop, got {other:?}"),
     }
+    // Past the grace the launcher is told, and stays told: it ends the node on this.
+    assert!(
+        matches!(bed.host.dialog_hold(), crate::pty::DialogHold::Expired(d) if d.needle == TRUST_HELD.needle),
+        "{:?}",
+        bed.host.dialog_hold()
+    );
     let lease = bed.host.lease_writer(ConnId(1)).unwrap();
     bed.host.write_input(&lease, b"x").unwrap();
     assert_eq!(

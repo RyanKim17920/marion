@@ -1832,6 +1832,13 @@ deny reply refuses it), copilot, qwen and gemini refuse, codex fails the call.
   undocumented `CLAUDE_CODE_SANDBOXED`/`IS_DEMO` skip the dialog but still write a projects entry
   and change other behaviour), and codex's `-c projects."<dir>".trust_level="trusted"` neither
   hides its TUI dialog nor stops the answer persisting.
+- **A held boot dialog is surfaced, never a silent drop.** While a pane root's first message waits on
+  a dialog marion does not answer, its launcher journals `StateChanged(Blocked(BootDialog))` with
+  a `reason` naming the harness, the repository (a worktree's main checkout) and the row's one
+  `BootDialog::action` ("trust <repo> in claude once …; worktrees inherit it"); the node is on
+  the attention queue — Home's Nodes header and row, the tree strip, `marion list --attention` —
+  with those words. Dismissed, it returns to `Running`. Past the paste grace (30 s) the launcher
+  ends the node `Failed` with the same action as its exit description.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

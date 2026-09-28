@@ -172,6 +172,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     boot_dialogs: BootDialogs {
         dialogs: &[BootDialog {
             needle: "Do you trust the files in this folder?",
+            action: "trust {repo} in gemini once (run `gemini` there and trust the folder)",
             answer: DialogAnswer::Hold,
             note: "S37 0.53.0 folder trust; its answer persists and was not measured",
         }],

@@ -236,17 +236,20 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         dialogs: &[
             BootDialog {
                 needle: "❯ No, exit Yes, I trust this folder",
+                action: "trust {repo} in claude once (run `claude` there and choose `Yes, I trust this folder`); worktrees inherit it",
                 answer: DialogAnswer::Keys(b"\x1b[B\r"),
                 note: "S37 2.1.283 folder trust, default `No, exit`: `ESC[B` + CR as one write \
                        selects `Yes, I trust this folder` and the composer draws; CR alone exits",
             },
             BootDialog {
                 needle: "Is this a project you created or one you trust?",
+                action: "trust {repo} in claude once (run `claude` there and choose `Yes, I trust this folder`); worktrees inherit it",
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
             BootDialog {
                 needle: "WARNING: Loading development channels",
+                action: "attach to the pane (`marion attach`) and choose `I am using this for local development`",
                 answer: DialogAnswer::Hold,
                 note: "S37 2.1.283 (`claude-code-2.1.283-channels.raw`): after folder trust, a \
                        claude.ai login shows this for the pane's `--dangerously-load-development-\

@@ -10030,6 +10030,11 @@ mod tests {
             );
             for d in row.dialogs {
                 assert!(!d.note.trim().is_empty(), "{h}: {:?} has no note", d.needle);
+                assert!(
+                    !d.action.trim().is_empty(),
+                    "{h}: {:?} names no action for the operator it is held for",
+                    d.needle
+                );
                 let normal = d.needle.split_whitespace().collect::<Vec<_>>().join(" ");
                 assert!(
                     !d.needle.is_empty() && d.needle == normal,

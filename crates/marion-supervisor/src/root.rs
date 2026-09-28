@@ -465,6 +465,9 @@ pub struct RootOutcome {
     /// [`ANSWERED_WITHOUT_DELEGATING`] in its exit description. Set only by the post-hoc check,
     /// the one place that can tell; `false` everywhere else.
     pub bridge_unused: bool,
+    /// marion ended the node itself, and why, in its own words: a pane whose boot dialog marion
+    /// may not answer stayed up past the paste grace. `Failed`, with this as the description.
+    pub ended: Option<String>,
 }
 
 /// The note an `Ok` root's exit description carries when it answered without calling any marion
@@ -1550,6 +1553,14 @@ fn tee_root_frame(
 /// timeout outranks everything for the same reason it does in `build_contract` — it is marion's own
 /// attributed kill.
 fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
+    if let Some(why) = &outcome.ended {
+        let exit = ProcessExit {
+            code: outcome.exit_code,
+            signal: None,
+            description: why.clone(),
+        };
+        return (ExitStatus::Failed, exit);
+    }
     let status = if outcome.timed_out {
         ExitStatus::TimedOut
     } else if outcome.failure.is_some() || outcome.exit_code.unwrap_or(0) != 0 {
@@ -2200,6 +2211,7 @@ fn fold_generations(earlier: RootOutcome, later: RootOutcome) -> RootOutcome {
         timed_out: later.timed_out,
         failure: later.failure,
         bridge_unused: false,
+        ended: None,
     }
 }
 
@@ -2281,6 +2293,7 @@ fn launch_only_generation(
         denied_permissions: vec![],
         timed_out: out.timed_out,
         bridge_unused: false,
+        ended: None,
     })
 }
 
@@ -2330,6 +2343,7 @@ fn launch_acp(
         denied_permissions: vec![],
         timed_out: run.exit.timed_out,
         bridge_unused: false,
+        ended: None,
     })
 }
 
@@ -2382,7 +2396,8 @@ const PANE_SIZE: crate::pty::WinSize = crate::pty::WinSize { cols: 80, rows: 24 
 /// the corpus §5.3's claims are read off.
 const PANE_TERM: &str = "xterm-256color";
 
-/// Block until the node exits or `bound` expires, whichever comes first.
+/// Block until the node exits, `bound` expires, or `end` says marion is ending it, whichever comes
+/// first. `end` is asked on each of the loop's existing looks, so it adds no wakeup of its own.
 ///
 /// Whether the wait timed out. Split out of [`launch_terminal`] so its one fallible step can be
 /// held as a value across the un-advertisement — see the call site. Exit observation deliberately
@@ -2390,10 +2405,11 @@ const PANE_TERM: &str = "xterm-256color";
 pub(crate) fn wait_for_the_pane_to_end(
     host: &crate::pty::PtyHost,
     bound: Option<StdDuration>,
+    end: &mut dyn FnMut() -> bool,
 ) -> std::io::Result<bool> {
     let deadline = bound.map(|bound| std::time::Instant::now() + bound);
     loop {
-        if host.poll_exited_unreaped()? {
+        if host.poll_exited_unreaped()? || end() {
             return Ok(false);
         }
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
@@ -2582,7 +2598,42 @@ fn launch_terminal(
     // leave it there — answering a later `node/attach` with a pane onto a master that is about to
     // close, which is precisely what `forget_pane` exists to prevent. So the wait's failure is
     // *carried* past the un-advertisement rather than thrown through it.
-    let waited = wait_for_the_pane_to_end(&host, Some(bound));
+    // A boot dialog marion may not answer holds the pane's first message: raise the node's
+    // attention item while it waits, lower it once dismissed, and end the node past the grace.
+    let repository = repository_of(&inv.cwd);
+    let program = marion_harness::adapter::harness_spec(node.harness)
+        .program
+        .unwrap_or(node.harness.as_str());
+    let mut shown = crate::pty::DialogHold::Clear;
+    let mut ended = None;
+    let mut end = || {
+        let now = host.dialog_hold();
+        if now == shown {
+            return false;
+        }
+        shown = now;
+        let (state, reason) = match now {
+            crate::pty::DialogHold::Held(d) => (
+                marion_core::node::NodeState::Blocked(marion_core::node::BlockReason::BootDialog),
+                Some(dialog_held(program, d, &repository)),
+            ),
+            crate::pty::DialogHold::Clear => (marion_core::node::NodeState::Running, None),
+            crate::pty::DialogHold::Expired(d) => {
+                ended = Some(dialog_expired(program, d, &repository));
+                return true;
+            }
+        };
+        crate::journal::record(
+            &node.project,
+            RecordKind::StateChanged(marion_core::journal::StateChanged {
+                agent_id: node.agent_id.clone(),
+                state,
+                reason,
+            }),
+        );
+        false
+    };
+    let waited = wait_for_the_pane_to_end(&host, Some(bound), &mut end);
 
     // Stop admitting live attaches and control before teardown, but retain the same host while the
     // reader drains its final bytes and terminal End. The polling loop deliberately left even a
@@ -2608,7 +2659,40 @@ fn launch_terminal(
         denied_permissions: vec![],
         timed_out,
         bridge_unused: false,
+        ended,
     })
+}
+
+/// The repository a pane's boot dialog is about: the main checkout of the git repository `cwd`
+/// is in (a worktree's trust is keyed there), or `cwd` itself outside git.
+fn repository_of(cwd: &std::path::Path) -> String {
+    let root = crate::socket::project_root(cwd);
+    let main = match root.file_name().and_then(|f| f.to_str()) {
+        Some(".git") => root.parent().unwrap_or(&root),
+        _ => &root,
+    };
+    main.display().to_string()
+}
+
+/// The held node's attention item: the harness, the repository and the one action.
+fn dialog_held(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) -> String {
+    format!(
+        "{program} is waiting on its boot dialog (`{}`), which marion does not answer: {}",
+        d.needle,
+        d.action_for(repo)
+    )
+}
+
+/// Why marion ended a pane whose boot dialog stayed up past the paste grace.
+fn dialog_expired(program: &str, d: &marion_harness::spec::BootDialog, repo: &str) -> String {
+    format!(
+        "{program}'s boot dialog (`{}`) stayed up for {} s and marion does not answer it, so its          first message could not be delivered and marion ended the node: {}",
+        d.needle,
+        crate::paste::PastePolicy::PRODUCTION
+            .paste_mode_grace
+            .as_secs(),
+        d.action_for(repo)
+    )
 }
 
 /// §6.1 step 8's post-hoc readiness assertion, as a decision over what the run produced.
@@ -2788,6 +2872,7 @@ fn launch_duplex(
         failure: out.stopped.map(crate::run::stopped_words),
         timed_out: out.timed_out,
         bridge_unused: false,
+        ended: None,
     })
 }
 
@@ -3004,7 +3089,8 @@ mod tests {
             saw_waitable_leader_in_hook.store(true, Ordering::SeqCst);
         }));
 
-        let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_secs(5)));
+        let waited =
+            wait_for_the_pane_to_end(&host, Some(StdDuration::from_secs(5)), &mut || false);
         let (status, timed_out) = finish_terminal_pane(
             None,
             &id,
@@ -3080,7 +3166,8 @@ mod tests {
             .expect("spawn bounded pane"),
         );
 
-        let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_millis(25)));
+        let waited =
+            wait_for_the_pane_to_end(&host, Some(StdDuration::from_millis(25)), &mut || false);
         let (status, timed_out) = finish_terminal_pane(
             None,
             &id,
@@ -4686,6 +4773,7 @@ mod tests {
         assert!(assert_a_verb_was_answered(Harness::Codex, &answered).is_ok());
         let (status, exit) = roots_exit(&RootOutcome {
             bridge_unused: true,
+            ended: None,
             ..answered
         });
         assert_eq!(status, ExitStatus::Ok);
@@ -4697,6 +4785,78 @@ mod tests {
         // A root that did call marion gets no such note.
         let (_, delegated) = roots_exit(&ran(&["spawn"], 3, Some(0), ""));
         assert!(!delegated.description.contains(ANSWERED_WITHOUT_DELEGATING));
+    }
+
+    /// **A held boot dialog is named, then ends the node with the same words.** The attention item
+    /// and the exit description both carry the harness, the repository and the one action; a node
+    /// marion ended is `Failed` with that description whatever its exit code.
+    #[test]
+    fn a_held_boot_dialog_names_its_action_and_ends_the_node_with_it() {
+        let dialog = marion_harness::adapter::harness_spec(Harness::ClaudeCode)
+            .boot_dialogs
+            .dialogs[0];
+        let held = dialog_held("claude", &dialog, "/work/repo");
+        assert!(
+            held.starts_with("claude is waiting on its boot dialog"),
+            "{held}"
+        );
+        assert!(held.contains("trust /work/repo in claude once"), "{held}");
+        assert!(held.contains("worktrees inherit it"), "{held}");
+        let why = dialog_expired("claude", &dialog, "/work/repo");
+        assert!(why.contains("marion ended the node"), "{why}");
+        assert!(why.contains("trust /work/repo in claude once"), "{why}");
+        let (status, exit) = roots_exit(&RootOutcome {
+            ended: Some(why.clone()),
+            ..ran(&[], 3, Some(0), "")
+        });
+        assert_eq!(status, ExitStatus::Failed);
+        assert_eq!(exit.description, why);
+    }
+
+    /// **A worktree's dialog is about its main checkout**, where the harness keys the trust; a
+    /// directory outside git is about itself.
+    #[test]
+    fn a_worktrees_boot_dialog_names_the_main_repository() {
+        let dir = marion_testsupport::scratch("root-repository-of");
+        let main = dir.join("main");
+        let wt = dir.join("wt");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", &main.to_string_lossy()]);
+        git(&[
+            "-C",
+            &main.to_string_lossy(),
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "i",
+        ]);
+        git(&[
+            "-C",
+            &main.to_string_lossy(),
+            "worktree",
+            "add",
+            "-q",
+            &wt.to_string_lossy(),
+        ]);
+        let canon = main.canonicalize().unwrap().display().to_string();
+        assert_eq!(repository_of(&wt), canon);
+        assert_eq!(repository_of(&main), canon);
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(
+            repository_of(&plain),
+            plain.canonicalize().unwrap().display().to_string()
+        );
     }
 
     /// **What still guards a genuinely broken run**: no marion call *and* no answer (no frame at

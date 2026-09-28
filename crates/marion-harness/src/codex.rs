@@ -234,11 +234,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         dialogs: &[
             BootDialog {
                 needle: "› 1. Yes, continue 2. No, quit",
+                action: "trust {repo} in codex once (run `codex` there and choose `Yes, continue`); worktrees inherit it",
                 answer: DialogAnswer::Keys(b"\r"),
                 note: "S37 0.155.1 directory trust, default `1. Yes, continue`: CR trusts",
             },
             BootDialog {
                 needle: "Do you trust the contents of this directory?",
+                action: "trust {repo} in codex once (run `codex` there and choose `Yes, continue`); worktrees inherit it",
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },

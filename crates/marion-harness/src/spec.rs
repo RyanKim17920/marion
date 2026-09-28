@@ -537,8 +537,19 @@ impl Relocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootDialog {
     pub needle: &'static str,
+    /// **What the operator does about it where marion does not answer** — one action, with
+    /// `{repo}` for the repository the node runs in. It is the held node's attention item and, past
+    /// the grace, the reason it ends ([`BootDialog::action_for`]).
+    pub action: &'static str,
     pub answer: DialogAnswer,
     pub note: &'static str,
+}
+
+impl BootDialog {
+    /// [`Self::action`] for `repo`.
+    pub fn action_for(&self, repo: &str) -> String {
+        self.action.replace("{repo}", repo)
+    }
 }
 
 /// What marion may do about a [`BootDialog`] on a node's screen.

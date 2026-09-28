@@ -2545,6 +2545,16 @@ fn pane_frame(agent_id: &AgentId, record: splice::DisplayRecord) -> PaneFrameV1 
     PaneFrameV1::new(agent_id.clone(), record.seq, frame)
 }
 
+/// **What a pane's first message waits on, where that is a boot dialog marion does not answer** —
+/// the paste driver's word to the launcher. `Held` while it waits, `Expired` once the grace ran
+/// out with the dialog still up, `Clear` otherwise (never held, or dismissed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogHold {
+    Clear,
+    Held(&'static marion_harness::spec::BootDialog),
+    Expired(&'static marion_harness::spec::BootDialog),
+}
+
 /// One node's pty, its recording, and the thread that reads it.
 ///
 /// **Every method takes `&self`, including [`Self::adopt`] and [`Self::shutdown`], and the two
@@ -2569,6 +2579,10 @@ pub struct PtyHost {
     /// is published, only where the child runs in a worktree marion created for it
     /// ([`Self::license_boot_dialog_answers`]).
     answers_boot_dialogs: AtomicBool,
+    /// What the paste driver's first message waits on, where it is a boot dialog marion does not
+    /// answer ([`DialogHold`]) — read by the pane's launcher, which journals it and ends the node
+    /// past the grace.
+    dialog_hold: Mutex<DialogHold>,
     child: Mutex<Option<PtyChild>>,
     reader: Mutex<Option<std::thread::JoinHandle<io::Result<()>>>>,
     reader_completion: Arc<ReaderCompletion>,
@@ -2796,6 +2810,7 @@ impl PtyHost {
             shared,
             typing: Mutex::new(input::Typing::default()),
             answers_boot_dialogs: AtomicBool::new(false),
+            dialog_hold: Mutex::new(DialogHold::Clear),
             child: Mutex::new(None),
             reader: Mutex::new(reader),
             reader_completion,
@@ -3673,6 +3688,15 @@ impl PtyHost {
 
     pub fn answers_boot_dialogs(&self) -> bool {
         self.answers_boot_dialogs.load(Ordering::SeqCst)
+    }
+
+    /// The paste driver says what its first message waits on ([`DialogHold`]).
+    pub fn set_dialog_hold(&self, hold: DialogHold) {
+        *self.dialog_hold.lock().unwrap_or_else(|e| e.into_inner()) = hold;
+    }
+
+    pub fn dialog_hold(&self) -> DialogHold {
+        *self.dialog_hold.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// **Marion types into the node's terminal** — turn delivery's paste (`crate::paste`).

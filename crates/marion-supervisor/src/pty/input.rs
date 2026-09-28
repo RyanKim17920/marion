@@ -601,6 +601,7 @@ mod tests {
 
     const HELD: BootDialog = BootDialog {
         needle: "No, exit Yes, I trust this folder",
+        action: "trust {repo} once",
         answer: DialogAnswer::Hold,
         note: "test",
     };

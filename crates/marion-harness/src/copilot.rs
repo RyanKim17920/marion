@@ -216,11 +216,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         dialogs: &[
             BootDialog {
                 needle: "❯ 1. Yes",
+                action: "attach to the pane (`marion attach`) and confirm folder trust; copilot keeps it for the session only",
                 answer: DialogAnswer::Keys(b"\r"),
                 note: "S37 1.0.83 folder trust, default `1. Yes` (this session): CR trusts",
             },
             BootDialog {
                 needle: "Do you trust the files in this folder?",
+                action: "attach to the pane (`marion attach`) and confirm folder trust; copilot keeps it for the session only",
                 answer: DialogAnswer::Hold,
                 note: "the same dialog with a selection S37 did not measure",
             },
