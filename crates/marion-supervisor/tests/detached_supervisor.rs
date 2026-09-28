@@ -824,6 +824,33 @@ fn a_finished_node(path: &Path, agent: &str) {
 }
 
 /// Ask a running supervisor to quit, and read what it answered.
+/// Block until the supervisor **answers a request**, which it does only once its registry has
+/// booted: the published identity is written inside `acquire`, before `Registry::boot`, so it says
+/// the socket is taken and not that the tree has been read. A record journaled in between is
+/// already there at boot, which `restart.rs` rightly reads as an orphan. A `node/get` for a node
+/// that does not exist is answered (refused) without changing anything.
+fn serving(paths: &SocketPaths) {
+    use std::io::{BufRead, Write};
+    let mut c = std::os::unix::net::UnixStream::connect(paths.socket()).expect("dial");
+    c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let frame = marion_core::proto::Frame::Request(marion_core::proto::Request::new(
+        marion_core::proto::RequestId::Number(1),
+        marion_core::proto::Call::NodeGet(marion_core::proto::params::NodeGetParams::of(
+            marion_core::contract::AgentId("nobody".into()),
+        )),
+    ));
+    c.write_all(frame.to_line().as_bytes()).unwrap();
+    c.flush().unwrap();
+    let mut line = String::new();
+    assert!(
+        std::io::BufReader::new(c)
+            .read_line(&mut line)
+            .expect("an answer arrives")
+            > 0,
+        "the supervisor closed without answering"
+    );
+}
+
 fn session_quit(paths: &SocketPaths) -> marion_core::proto::QuitOutcome {
     use std::io::{BufRead, Write};
     let mut c = std::os::unix::net::UnixStream::connect(paths.socket()).expect("dial");
@@ -1128,6 +1155,7 @@ fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by
 
     let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
     let id = published(&bed.paths);
+    serving(&bed.paths);
     // **The node is journaled after the supervisor is up, which is the production order** — and
     // here it is load-bearing rather than incidental. A node already `Live` when a supervisor boots
     // is §7.2's restart case: `restart.rs` marks it `Orphaned`, and an orphan is not somebody's
