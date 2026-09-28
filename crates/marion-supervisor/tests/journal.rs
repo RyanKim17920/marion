@@ -67,6 +67,7 @@ fn a_tree() -> Vec<RecordKind> {
         kinds.push(RecordKind::StateChanged(StateChanged {
             agent_id: child.clone(),
             state: NodeState::Running,
+            reason: None,
         }));
         kinds.push(RecordKind::Exited(Exited {
             agent_id: child.clone(),
@@ -230,6 +231,7 @@ fn append_many(path: &Path, writer: &str) {
         j.append(RecordKind::StateChanged(StateChanged {
             agent_id: AgentId(format!("{writer}-{i}")),
             state: NodeState::Running,
+            reason: None,
         }))
         .unwrap();
         // A barrier every tenth record, so the fsync path is exercised concurrently too.

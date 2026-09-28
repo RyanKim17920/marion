@@ -396,6 +396,7 @@ fn watch_view(cursor: usize, expanded: Option<Expanded>) -> WatchView {
         running: 2,
         attention: 2,
         feed: feed(),
+        attention_note: None,
         filter: None,
     }
 }
@@ -1215,4 +1216,19 @@ fn a_long_forest_keeps_the_selection_on_screen() {
     let text = rows_of(&buf).join("\n");
     assert!(text.contains("claude review 88f2"), "{text}");
     assert!(text.contains("RESULT"), "{text}");
+}
+
+/// The Nodes header names what the first held node needs, after the count, where the supervisor
+/// gave its words — the operator reads the one action without selecting the node.
+#[test]
+fn watch_names_what_the_first_held_node_needs() {
+    let mut v = watch_view(0, None);
+    v.attention = 1;
+    v.attention_note = Some("trust ~/r in claude once; worktrees inherit it".into());
+    let sc = screen(Body::Watch(&v), command("", ""), "watch");
+    let text = report(&sc, 200, 30);
+    assert!(
+        text.contains("1 need you: trust ~/r in claude once; worktrees inherit it"),
+        "{text}"
+    );
 }

@@ -107,6 +107,9 @@ pub struct ReplayedNode {
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
+    /// The last `StateChanged`'s `reason`, cleared by one without — what the operator is asked to
+    /// do about the current state.
+    pub state_reason: Option<String>,
     pub reap_state: ReapState,
     /// Set by a `ReapIntent` with no `ReapConfirmed` yet. §7.2's restart resolution reads this;
     /// replay only reports it.
@@ -183,6 +186,7 @@ impl ReplayedNode {
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
             state: NodeState::Spawning,
+            state_reason: None,
             reap_state: ReapState::Live,
             reap_intent: None,
             exit: None,
@@ -404,6 +408,7 @@ impl ReplayedNode {
         self.credential = s.credential;
         if self.spawn_generation > 1 {
             self.state = NodeState::Spawning;
+            self.state_reason = None;
             self.exit = None;
             self.reap_state = ReapState::Live;
             self.reap_intent = None;
@@ -416,11 +421,13 @@ impl ReplayedNode {
     fn fold_state_changed(&mut self, s: StateChanged) {
         if !self.state.is_exited() {
             self.state = s.state;
+            self.state_reason = s.reason;
         }
     }
 
     fn fold_exited(&mut self, e: Exited) {
         self.state = NodeState::Exited(e.status);
+        self.state_reason = None;
         self.exit = Some(e.exit);
     }
 
@@ -431,6 +438,7 @@ impl ReplayedNode {
 
     fn fold_kill_confirmed(&mut self, k: KillConfirmed) {
         self.state = NodeState::Exited(crate::contract::ExitStatus::Cancelled);
+        self.state_reason = None;
         self.exit = Some(k.exit);
     }
 
@@ -860,6 +868,7 @@ mod tests {
             next(RecordKind::StateChanged(StateChanged {
                 agent_id: id("child"),
                 state: NodeState::Running,
+                reason: None,
             })),
             next(RecordKind::Exited(Exited {
                 agent_id: id("child"),
@@ -1165,6 +1174,49 @@ mod tests {
         }
     }
 
+    /// **A state change's reason lasts as long as the state it came with**: kept on the node while
+    /// it is `Blocked(BootDialog)`, gone at the next state change without one, and gone at an exit.
+    #[test]
+    fn a_state_changes_reason_is_kept_until_the_next_state_change_or_exit() {
+        use crate::node::BlockReason;
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let mut r = replay(&bytes(&j));
+        let change = |n: u64, state: NodeState, reason: Option<&str>| {
+            record(
+                n,
+                RecordKind::StateChanged(StateChanged {
+                    agent_id: id("root"),
+                    state,
+                    reason: reason.map(str::to_string),
+                }),
+            )
+        };
+        let n = j.len() as u64;
+        let held = NodeState::Blocked(BlockReason::BootDialog);
+        r.extend(&bytes(&[change(n, held, Some("trust /r in claude once"))]));
+        assert_eq!(
+            r.get(&id("root")).unwrap().state_reason.as_deref(),
+            Some("trust /r in claude once")
+        );
+        r.extend(&bytes(&[change(n + 1, NodeState::Running, None)]));
+        assert_eq!(r.get(&id("root")).unwrap().state_reason, None);
+        r.extend(&bytes(&[change(n + 2, held, Some("again"))]));
+        r.extend(&bytes(&[record(
+            n + 3,
+            RecordKind::Exited(Exited {
+                agent_id: id("root"),
+                status: crate::contract::ExitStatus::Failed,
+                exit: crate::contract::ProcessExit {
+                    code: None,
+                    signal: None,
+                    description: "ended".into(),
+                },
+            }),
+        )]));
+        assert_eq!(r.get(&id("root")).unwrap().state_reason, None);
+    }
+
     /// The other half of the same rule: a record that decides **nothing** leaves the verdict
     /// standing. Without this the clause above could be "retract on any record at all", which would
     /// un-mark an orphan the moment any unrelated writer touched it.
@@ -1181,6 +1233,7 @@ mod tests {
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("root"),
                 state: NodeState::Running,
+                reason: None,
             }),
         )]));
 
@@ -1465,6 +1518,7 @@ mod tests {
                 RecordKind::StateChanged(StateChanged {
                     agent_id: id("a"),
                     state: NodeState::Running,
+                    reason: None,
                 }),
             ),
         ];
@@ -1513,6 +1567,7 @@ mod tests {
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("a"),
                 state: NodeState::Exited(ExitStatus::Ok),
+                reason: None,
             }),
         ));
         let r = replay(&bytes(&with_echo));

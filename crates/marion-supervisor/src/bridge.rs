@@ -2015,6 +2015,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             tokens: None,
+            attention: None,
         };
         let done = text(&status_result(
             &json!(1),

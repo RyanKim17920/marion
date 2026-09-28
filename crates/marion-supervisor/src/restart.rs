@@ -696,6 +696,7 @@ mod tests {
         log.push(RecordKind::StateChanged(StateChanged {
             agent_id: id("lost"),
             state: NodeState::Idle,
+            reason: None,
         }));
         log.push(RecordKind::Exited(Exited {
             agent_id: id("lost"),

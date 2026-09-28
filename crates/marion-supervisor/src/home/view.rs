@@ -230,6 +230,11 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
         expanded: home.selected().map(|n| expanded(home, n)),
         running: crate::tree::running(&w.nodes),
         attention: crate::tree::attention_count(&w.nodes),
+        attention_note: w
+            .nodes
+            .iter()
+            .filter(|n| attention_of(n).is_some())
+            .find_map(|n| n.attention.clone()),
         feed: w
             .feed
             .iter()

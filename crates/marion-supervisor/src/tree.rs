@@ -117,12 +117,14 @@ pub fn row(node: &NodeSummary) -> tree::Node {
         state: state_label(node.state, node.reap_state),
         tone: tone_of(node.state, node.reap_state),
         actions: actions_for(node),
-        // The conservative key is the right answer for an unread version (§3.3), and the strip
-        // should say that is why, rather than let ten greyed words read as "this harness cannot".
-        note: node
-            .harness_version
-            .is_none()
-            .then(|| "harness version unknown".to_string()),
+        // What the operator is asked to do comes first; otherwise the conservative key is the
+        // right answer for an unread version (§3.3), and the strip should say that is why, rather
+        // than let ten greyed words read as "this harness cannot".
+        note: node.attention.clone().or_else(|| {
+            node.harness_version
+                .is_none()
+                .then(|| "harness version unknown".to_string())
+        }),
     }
 }
 
@@ -228,7 +230,8 @@ fn tone_of(state: NodeState, reap: ReapState) -> Tone {
 ///
 /// Not a clean exit, not a cancel (a decision somebody already made), not a reap, not a live
 /// state. The precedence is [`state_label`]'s: an exit outranks a reap state, which outranks the
-/// live state. Decided from the summary's two state fields only — never from a pane's screen.
+/// live state. Decided from the summary's two state fields only — never from a pane's screen —
+/// with the supervisor's [`NodeSummary::attention`] after the word where it says what to do.
 pub fn attention_of(node: &NodeSummary) -> Option<String> {
     use marion_core::contract::ExitStatus;
     let (state, reap) = (node.state, node.reap_state);
@@ -240,7 +243,11 @@ pub fn attention_of(node: &NodeSummary) -> Option<String> {
         (NodeState::Blocked(_), ReapState::Live) => true,
         (_, ReapState::Live) => false,
     };
-    needs.then(|| state_label(state, reap))
+    let label = state_label(state, reap);
+    needs.then(|| match &node.attention {
+        Some(what) => format!("{label}: {what}"),
+        None => label,
+    })
 }
 
 /// What `Enter` does to `node`: the id to attach to, or the sentence saying why not.
@@ -302,6 +309,10 @@ pub fn list_line(node: &NodeSummary) -> String {
     if let Some(parent) = &node.parent_id {
         line.push_str(" parent ");
         line.push_str(short_id(&parent.0));
+    }
+    if let Some(what) = attention_of(node).and(node.attention.as_deref()) {
+        line.push_str(" — ");
+        line.push_str(what);
     }
     line
 }
@@ -583,6 +594,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             tokens: None,
+            attention: None,
         }
     }
 
@@ -1005,6 +1017,37 @@ mod tests {
         );
     }
 
+    /// **A held node says what to do, wherever it is listed.** The supervisor's
+    /// [`NodeSummary::attention`] follows the state word in the attention reason (Home's row, `!`),
+    /// takes the tree strip's note, and ends the `marion list` line — but only while the node is in
+    /// a state the queue shows; an exited node's stale words are not repeated.
+    #[test]
+    fn attention_carries_the_supervisors_words_after_the_state_word() {
+        use marion_core::node::BlockReason::BootDialog;
+        let words = "claude is waiting on its boot dialog: trust /r in claude once";
+        let held = NodeSummary {
+            state: NodeState::Blocked(BootDialog),
+            attention: Some(words.into()),
+            ..summary("x", Harness::ClaudeCode, true, None)
+        };
+        assert_eq!(
+            attention_of(&held).as_deref(),
+            Some(format!("blocked:bootdialog: {words}").as_str())
+        );
+        assert_eq!(row(&held).note.as_deref(), Some(words));
+        assert!(
+            list_line(&held).ends_with(&format!(" — {words}")),
+            "{}",
+            list_line(&held)
+        );
+        let done = NodeSummary {
+            state: NodeState::Exited(marion_core::contract::ExitStatus::Ok),
+            ..held.clone()
+        };
+        assert_eq!(attention_of(&done), None);
+        assert!(!list_line(&done).contains(words));
+    }
+
     /// **The tone is decided here, with the label, from the same two fields.** A failed exit, a
     /// timeout and a kill are all trouble; a clean exit is done; a cancel, an unreported exit,
     /// an orphan and a reap are things marion does not claim to know the outcome of; anything
@@ -1065,6 +1108,7 @@ mod tests {
     /// rather than a silent `None`.
     #[test]
     fn attention_is_blocked_failed_unreported_or_orphaned_and_nothing_else() {
+        // Also: `attention_carries_the_supervisors_words_after_the_state_word` below.
         use NodeState::{Blocked, Exited, Idle, Ready, Running, Spawning};
         use ReapState::{Live, Orphaned, ReapedIdle};
         use marion_core::contract::ExitStatus::*;
@@ -1077,6 +1121,7 @@ mod tests {
             (Blocked(Permission), Live, Some("blocked:permission")),
             (Blocked(Elicitation), Live, Some("blocked:elicitation")),
             (Blocked(Descendants), Live, Some("blocked:descendants")),
+            (Blocked(BootDialog), Live, Some("blocked:bootdialog")),
             (Exited(Ok), Live, None),
             (Exited(Cancelled), Live, None),
             (Exited(Failed), Live, Some("exited:failed")),
@@ -1090,6 +1135,7 @@ mod tests {
             (Blocked(Permission), Orphaned, Some("orphaned")),
             (Blocked(Elicitation), Orphaned, Some("orphaned")),
             (Blocked(Descendants), Orphaned, Some("orphaned")),
+            (Blocked(BootDialog), Orphaned, Some("orphaned")),
             (Exited(Ok), Orphaned, None),
             (Exited(Cancelled), Orphaned, None),
             (Exited(Failed), Orphaned, Some("exited:failed")),
@@ -1103,6 +1149,7 @@ mod tests {
             (Blocked(Permission), ReapedIdle, None),
             (Blocked(Elicitation), ReapedIdle, None),
             (Blocked(Descendants), ReapedIdle, None),
+            (Blocked(BootDialog), ReapedIdle, None),
             (Exited(Ok), ReapedIdle, None),
             (Exited(Cancelled), ReapedIdle, None),
             (Exited(Failed), ReapedIdle, Some("exited:failed")),
@@ -1110,7 +1157,7 @@ mod tests {
             (Exited(Killed), ReapedIdle, Some("exited:killed")),
             (Exited(Unreported), ReapedIdle, Some("exited:unreported")),
         ];
-        assert_eq!(table.len(), 13 * 3, "every state under every reap state");
+        assert_eq!(table.len(), 14 * 3, "every state under every reap state");
         for &(state, reap, want) in table {
             let n = NodeSummary {
                 state,

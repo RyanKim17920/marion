@@ -93,6 +93,11 @@ pub struct NodeSummary {
     /// marion never prices a run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// What the operator is asked to do about a `Blocked` state, in marion's words, where the state
+    /// alone does not say — a held boot dialog names its harness, repository and the one action.
+    /// `None` otherwise, and from a supervisor that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<String>,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -123,6 +128,8 @@ impl Delivery {
     /// * `Blocked(Permission)` and `Blocked(Elicitation)` are **`Steer`**. §6.3: such a node *"has
     ///   a turn in flight, so it is treated as `Running` for delivery"*. Reading them as idle would
     ///   send a `prompt` into a live turn.
+    /// * `Blocked(BootDialog)` is **`Steer`**, as the `Running` pane it was: its message is queued
+    ///   behind the dialog, and delivery to a pane is the paste queue either way.
     /// * `Blocked(Descendants)` is **`Prompt`**. §7.6's hold is *"resolved by a re-prompt or a
     ///   timeout"*; there is no turn in flight to inject into.
     /// * `Exited(_)` is **`Prompt`**. §6.3: resuming a finished node is `continue_()` then
@@ -133,9 +140,9 @@ impl Delivery {
             NodeState::Spawning => None,
             NodeState::Ready | NodeState::Idle => Some(Delivery::Prompt),
             NodeState::Running => Some(Delivery::Steer),
-            NodeState::Blocked(BlockReason::Permission | BlockReason::Elicitation) => {
-                Some(Delivery::Steer)
-            }
+            NodeState::Blocked(
+                BlockReason::Permission | BlockReason::Elicitation | BlockReason::BootDialog,
+            ) => Some(Delivery::Steer),
             NodeState::Blocked(BlockReason::Descendants) => Some(Delivery::Prompt),
             NodeState::Exited(_) => Some(Delivery::Prompt),
         }
@@ -704,6 +711,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             tokens: None,
+            attention: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

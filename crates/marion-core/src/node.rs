@@ -44,6 +44,10 @@ pub enum BlockReason {
     Descendants,
     Permission,
     Elicitation,
+    /// A pane's TUI shows a boot dialog (folder trust) that marion may not answer, and its first
+    /// message waits behind it. Resolved by the operator answering it; the `StateChanged` that
+    /// entered it carries the one action as its `reason`.
+    BootDialog,
 }
 
 /// §3.2's `state`. Externally tagged, so a payload-carrying variant reads as

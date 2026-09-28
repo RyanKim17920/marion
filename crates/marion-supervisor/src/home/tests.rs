@@ -24,6 +24,7 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         started_at: None,
         ended_at: None,
         tokens: None,
+        attention: None,
     }
 }
 

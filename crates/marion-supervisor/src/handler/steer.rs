@@ -340,6 +340,7 @@ mod tests {
             self.write(RecordKind::StateChanged(StateChanged {
                 agent_id: id(agent),
                 state: NodeState::Running,
+                reason: None,
             }));
             self.handle.live.refresh();
             self.handle
@@ -546,6 +547,7 @@ mod tests {
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("native"),
                 state: NodeState::Running,
+                reason: None,
             }),
         ] {
             fx.write(kind);

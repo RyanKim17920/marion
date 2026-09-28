@@ -136,6 +136,9 @@ pub struct WatchView {
     pub expanded: Option<Expanded>,
     pub running: usize,
     pub attention: usize,
+    /// The first node's own words on what it needs, where the supervisor gave some — a held boot
+    /// dialog's one action — drawn after the count so the operator reads it without selecting.
+    pub attention_note: Option<String>,
     pub feed: Vec<FeedRow>,
     /// The filter the operator typed after `/`, when one is on.
     pub filter: Option<String>,
@@ -182,6 +185,9 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
     let mut note = format!("{} · {} running", v.rows.len(), v.running);
     if v.attention > 0 {
         note.push_str(&format!(" · {} need you", v.attention));
+        if let Some(what) = &v.attention_note {
+            note.push_str(&format!(": {what}"));
+        }
     }
     if let Some(f) = &v.filter {
         note.push_str(&format!(" · /{f}"));

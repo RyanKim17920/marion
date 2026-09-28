@@ -326,6 +326,7 @@ pub fn gate_or_woken<T>(
                 RecordKind::StateChanged(StateChanged {
                     agent_id: agent_id.clone(),
                     state: NodeState::Blocked(BlockReason::Descendants),
+                    reason: None,
                 }),
             );
             let remaining = bound.saturating_sub(spawned.elapsed().unwrap_or_default());
@@ -796,6 +797,7 @@ mod tests {
             RecordKind::StateChanged(StateChanged {
                 agent_id: id("g"),
                 state: NodeState::Running,
+                reason: None,
             }),
         )
         .unwrap();

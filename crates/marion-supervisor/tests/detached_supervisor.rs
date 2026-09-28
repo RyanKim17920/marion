@@ -789,6 +789,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
         RecordKind::StateChanged(StateChanged {
             agent_id: id,
             state: marion_core::node::NodeState::Running,
+            reason: None,
         }),
     );
 }

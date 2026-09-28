@@ -263,7 +263,16 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
         started_at: clock(node).0,
         ended_at: clock(node).1,
         tokens: None,
+        attention: attention(node),
     })
+}
+
+/// What the operator is asked to do about the node's current state, where its last `StateChanged`
+/// said — only while it is `Blocked`, which is the state the attention queue shows it for.
+fn attention(node: &ReplayedNode) -> Option<String> {
+    matches!(node.state, NodeState::Blocked(_))
+        .then(|| node.state_reason.clone())
+        .flatten()
 }
 
 /// When a node started and ended, in the journal's own times — never this process's clock (see
@@ -299,6 +308,8 @@ struct Extra {
     started_at: Option<marion_core::encoding::SystemTime>,
     ended_at: Option<marion_core::encoding::SystemTime>,
     tokens: Option<u64>,
+    /// A hash of [`NodeSummary::attention`]: a new reason under the same `Blocked` state is news.
+    attention: Option<u64>,
 }
 
 impl Extra {
@@ -309,6 +320,12 @@ impl Extra {
             started_at,
             ended_at,
             tokens: spending.shown_total(n),
+            attention: attention(n).map(|a| {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                a.hash(&mut h);
+                h.finish()
+            }),
         }
     }
 }
@@ -5805,6 +5822,7 @@ mod tests {
         RecordKind::StateChanged(StateChanged {
             agent_id: id(agent),
             state,
+            reason: None,
         })
     }
 
@@ -6024,6 +6042,7 @@ mod tests {
                 RecordKind::StateChanged(StateChanged {
                     agent_id: id("child"),
                     state: NodeState::Running,
+                    reason: None,
                 }),
             ),
         );

@@ -428,6 +428,7 @@ pub fn running(agent_id: &AgentId) -> RecordKind {
     RecordKind::StateChanged(StateChanged {
         agent_id: agent_id.clone(),
         state: NodeState::Running,
+        reason: None,
     })
 }
 
@@ -523,6 +524,7 @@ mod tests {
             j.append(RecordKind::StateChanged(StateChanged {
                 agent_id: AgentId("child".into()),
                 state: NodeState::Running,
+                reason: None,
             }))
             .unwrap();
             j.append(RecordKind::Exited(Exited {
@@ -597,6 +599,7 @@ mod tests {
         j.append(RecordKind::StateChanged(StateChanged {
             agent_id: AgentId("root".into()),
             state: NodeState::Running,
+            reason: None,
         }))
         .unwrap();
         assert!(
@@ -616,6 +619,7 @@ mod tests {
         j.append(RecordKind::StateChanged(StateChanged {
             agent_id: AgentId("root".into()),
             state: NodeState::Running,
+            reason: None,
         }))
         .unwrap();
         assert!(j.dirty);

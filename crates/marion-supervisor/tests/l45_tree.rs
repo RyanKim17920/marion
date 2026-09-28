@@ -59,6 +59,7 @@ fn node(
         started_at: None,
         ended_at: None,
         tokens: None,
+        attention: None,
     }
 }
 

@@ -380,6 +380,11 @@ pub struct SpawnAborted {
 pub struct StateChanged {
     pub agent_id: AgentId,
     pub state: NodeState,
+    /// Why, in marion's words, where the state alone does not say what to do — a
+    /// `Blocked(BootDialog)` names the harness, the repository and the one action. `None` on every
+    /// other state and on journals written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,6 +639,21 @@ mod tests {
         })
     }
 
+    /// **`StateChanged.reason` is additive on the wire**: absent when `None`, so every record an
+    /// older reader parsed is byte-identical, and an older record reads back as `None`.
+    #[test]
+    fn a_state_change_without_a_reason_is_written_and_read_as_before() {
+        let plain = RecordKind::StateChanged(StateChanged {
+            agent_id: AgentId("a".into()),
+            state: NodeState::Running,
+            reason: None,
+        });
+        let line = serde_json::to_string(&plain).unwrap();
+        assert!(!line.contains("reason"), "{line}");
+        let old: RecordKind =
+            serde_json::from_str(r#"{"StateChanged":{"agent_id":"a","state":"Running"}}"#).unwrap();
+        assert_eq!(old, plain);
+    }
     #[test]
     fn a_record_pins_its_wire_shape() {
         // The whole envelope, byte for byte. Every field here is read by a replayer that may be a
@@ -710,6 +730,7 @@ mod tests {
             RecordKind::StateChanged(StateChanged {
                 agent_id: AgentId("a-1".into()),
                 state: NodeState::Blocked(crate::node::BlockReason::Descendants),
+                reason: None,
             }),
             RecordKind::Exited(Exited {
                 agent_id: AgentId("a-1".into()),
@@ -818,6 +839,7 @@ mod tests {
             !RecordKind::StateChanged(StateChanged {
                 agent_id: a.clone(),
                 state: NodeState::Running,
+                reason: None,
             })
             .is_barrier()
         );
