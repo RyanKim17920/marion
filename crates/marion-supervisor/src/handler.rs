@@ -3518,9 +3518,13 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let refuse = |why: String| RpcError::refused(&target.0, why, "review");
-        let (intent, state) = self
+        let (intent, state, model) = self
             .live
-            .read(|r| r.tree().get(target).map(|n| (n.intent.clone(), n.state)))
+            .read(|r| {
+                r.tree()
+                    .get(target)
+                    .map(|n| (n.intent.clone(), n.state, n.model.clone()))
+            })
             .ok_or_else(|| {
                 refuse(crate::review::refusal(
                     target,
@@ -3573,8 +3577,13 @@ impl RegistryHandle {
         agent_type::check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)
             .map_err(gate_refusal)?;
         let task_id = mint_task_id()?;
+        // No type named: a reviewer from another model family than the work's.
+        let reviewer = match p.agent_type.trim() {
+            "" => crate::review::default_reviewer(intent.harness, model.as_deref()).to_string(),
+            named => named.to_string(),
+        };
         let req = crate::run::SpawnRequest {
-            agent_type: p.agent_type.clone(),
+            agent_type: reviewer,
             prompt: crate::review::prompt(&review, &contract),
             repo: repo.clone(),
             acceptance_criteria: vec![],

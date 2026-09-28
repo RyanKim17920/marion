@@ -18,6 +18,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use marion_core::contract::{AgentId, Oid, TaskContract};
+use marion_core::harness::Harness;
 use marion_core::review::{self, ReviewSpec, Verdict};
 
 /// What a reviewer's launch knows about the node it reviews, read off that node's contract once,
@@ -30,6 +31,29 @@ pub struct Target {
     pub commit: Option<Oid>,
     /// The paths the reviewed change touched — what a finding must name to be grounded.
     pub changed_paths: Vec<PathBuf>,
+}
+
+/// The built-in agent types a review falls back to when none is named, in order of preference.
+/// Data, so a new vendor's CLI is a new entry and nothing else.
+const REVIEWERS: &[&str] = &["codex", "claude", "gemini"];
+
+/// **Who reviews when nobody said**: the first of [`REVIEWERS`] from a different model family than
+/// the reviewed node's ([`review::model_family`]) — a second opinion from the same model is the
+/// weakest one — else the first of them, where the node's family is unknown or every candidate
+/// shares it. Unknown is never taken for different.
+pub fn default_reviewer(harness: Harness, model: Option<&str>) -> &'static str {
+    let theirs = review::model_family(harness, model);
+    REVIEWERS
+        .iter()
+        .copied()
+        .find(|name| {
+            theirs.is_some()
+                && marion_core::agent_type::builtin(name).is_some_and(|t| {
+                    let ours = review::model_family(t.harness, t.model.as_deref());
+                    ours.is_some() && ours != theirs
+                })
+        })
+        .unwrap_or(REVIEWERS[0])
 }
 
 /// Why a review was refused, in words an operator or a parent model can act on.
@@ -146,6 +170,21 @@ mod tests {
             commit: Some(Oid("abc123".into())),
             changed_paths: vec![PathBuf::from("src/a.rs")],
         }
+    }
+
+    #[test]
+    fn an_unnamed_reviewer_comes_from_another_model_family() {
+        assert_eq!(default_reviewer(Harness::ClaudeCode, None), "codex");
+        assert_eq!(default_reviewer(Harness::Codex, None), "claude");
+        assert_eq!(
+            default_reviewer(Harness::OpenCode, Some("openai/gpt-5")),
+            "claude"
+        );
+        assert_eq!(
+            default_reviewer(Harness::OpenCode, None),
+            "codex",
+            "an unknown family is not taken for a different one: the first candidate"
+        );
     }
 
     #[test]
