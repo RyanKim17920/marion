@@ -102,15 +102,22 @@ impl Pipe {
     }
 
     /// Consume every pending wake. Call **before** examining the state the wakes are about.
+    ///
+    /// **Read, then clear `pending`** — never the other way round. Cleared first, a wake landing
+    /// between the clear and the read would write its byte, have it consumed by this read, and
+    /// leave `pending` set with the descriptor empty: every later wake would see `pending` and
+    /// write nothing, and the waiter would never be woken again. In this order a wake during the
+    /// read sees `pending` still set and writes nothing, which is safe because what it announces
+    /// happened before the caller's look; a wake after the clear writes a byte.
     pub fn drain(&self) {
         use std::io::Read;
-        self.pending.store(false, Ordering::Release);
         let mut buf = [0u8; 64];
         while let Ok(n) = (&self.read).read(&mut buf) {
             if n < buf.len() {
                 break;
             }
         }
+        self.pending.store(false, Ordering::Release);
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
@@ -924,6 +931,43 @@ mod tests {
             !wait_readable(&[pipe.fd()], Some(Duration::ZERO))[0],
             "coalesced wakes drain to not-readable"
         );
+    }
+
+    /// **No wake is ever lost to a drain.** A waker announcing a change races a waiter that drains
+    /// and looks; whatever the interleaving, a change the waiter has not seen leaves the pipe
+    /// readable. Clearing `pending` before the read lost wakes here within a few thousand rounds
+    /// and then stayed silent for good.
+    #[test]
+    fn a_wake_racing_a_drain_is_never_lost() {
+        use std::sync::atomic::AtomicU64;
+        let pipe = Arc::new(Pipe::new().unwrap());
+        let changed = Arc::new(AtomicU64::new(0));
+        const ROUNDS: u64 = 50_000;
+        let waker = {
+            let (pipe, changed) = (Arc::clone(&pipe), Arc::clone(&changed));
+            std::thread::spawn(move || {
+                for i in 1..=ROUNDS {
+                    changed.store(i, Ordering::SeqCst);
+                    pipe.wake();
+                    // Spread the wakes out so they land all over the waiter's drain.
+                    for _ in 0..(i % 64) {
+                        std::hint::spin_loop();
+                    }
+                }
+            })
+        };
+        let mut seen = 0;
+        while seen < ROUNDS {
+            let readable = wait_readable(&[pipe.fd()], Some(BOUND))[0];
+            pipe.drain();
+            let now = changed.load(Ordering::SeqCst);
+            assert!(
+                readable || now == seen,
+                "a change ({now} after {seen}) left the pipe silent"
+            );
+            seen = now;
+        }
+        waker.join().unwrap();
     }
 
     #[test]
