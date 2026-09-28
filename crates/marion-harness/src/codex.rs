@@ -16,7 +16,6 @@ use marion_core::provider::Wire;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 use crate::grammar::{
@@ -26,12 +25,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
-use crate::spec::AxesRule;
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
-    Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
+    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push,
+    ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -301,6 +299,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            the exec row end to end",
     requires: &[],
     axes: AxesRule::Split,
+    // `-m` is compiled only where a real endpoint serves the model it is asked for: canned compiles
+    // none, so every canned contract records `None` and the canned argv is byte-identical to what
+    // it was before `-m` was known to exist here.
+    model: ModelForm::OmitUnderCanned,
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).
@@ -720,14 +722,7 @@ impl HarnessAdapter for CodexAdapter {
         // The trait's default `axes` runs the refusal owed to a `tools:` declaration on every
         // harness; nothing in the row reads the result — see `Self::tool_name` for why a codex
         // declaration compiles no flag. Discarding the names is the honest outcome.
-        let mut f = neutral_fields(spec, self.axes(spec)?);
-        // Canned compiles none, so every existing contract still records `None` and the canned argv
-        // is byte-identical to what it was before `-m` was known to exist here.
-        f.model = match spec.auth {
-            Auth::Canned => None,
-            // A real endpoint serves the model it is asked for, so it must be asked.
-            Auth::Inherited | Auth::Endpoint => spec.model.clone(),
-        };
+        let mut f = self.launch_fields(spec, ctx)?;
         // A live node reads no marion-written config, so the sandbox the contract records rides
         // `-c` first, bridge or no bridge (`live_sandbox_override`).
         f.pairs = match (spec.auth, spec.mcp) {

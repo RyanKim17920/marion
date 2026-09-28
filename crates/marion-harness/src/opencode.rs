@@ -20,7 +20,6 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 use crate::grammar::{
@@ -31,11 +30,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
-use crate::spec::AxesRule;
 use crate::spec::{
-    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly, Remembers,
+    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    WireRecipe,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -96,7 +95,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Lit("--format"),
         Arg::Lit("json"),
         // **Required.** Without `--title` opencode issues an extra `You are a title generator`
-        // request against `small_model` — S13 measured 3 POSTs instead of 2.
+        // request against `small_model` — S13 measured 3 POSTs instead of 2. The title is the node's
+        // own (`grammar::session_title`): stable, and how a node whose stream never named its
+        // session is found in `opencode session list` without leaking the prompt.
         Arg::Flag("--title", Field::Title),
         // `provider/model`, the only form `-m` accepts; the adapter parses it once so the config's
         // provider block and argv can never name different providers.
@@ -309,6 +310,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            runs this row end to end",
     requires: &[],
     axes: AxesRule::Split,
+    // `provider/model`, parsed once for argv and the generated provider block and refused where it
+    // is not one, qualified under marion's own block on an endpoint, and dropped on a live node
+    // given only the canned plumbing default ([`OpenCodeAdapter::model_ref`]) — one parse three
+    // consumers share, so it stays the hook's.
+    model: ModelForm::Hook,
 };
 
 /// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).
@@ -761,12 +767,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
         // the row reads the result — see `Self::tool_name` for why a declaration here compiles
         // nothing.
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         f.model = Self::model_ref(spec)?.map(|m| m.qualified());
-        // Any stable string suppresses the title-generation call; the node's own id makes the
-        // session identifiable in `opencode session list` without leaking the prompt — which is
-        // how a node whose stream never named its session is found ([`grammar::TitleLookup`]).
-        f.title = Some(crate::grammar::session_title(&ctx.agent_id));
         f.inline_config = match spec.auth {
             Auth::Canned | Auth::Endpoint => None,
             Auth::Inherited => (spec.mcp == McpDeclaration::Marion)

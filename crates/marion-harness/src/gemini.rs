@@ -23,11 +23,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push,
+    ReadOnly, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// The live node's system-settings document, as bytes: [`live_settings_json`] with the bridge,
@@ -258,6 +258,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         when_any: EDIT_TOOLS,
         by_name: ALLOWED_BY_NAME,
     },
+    model: ModelForm::AsGiven,
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).

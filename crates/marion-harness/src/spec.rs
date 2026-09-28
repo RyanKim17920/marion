@@ -162,6 +162,29 @@ pub struct HarnessSpec {
     pub requires: &'static [Requirement],
     /// How §3.1's two axes are compiled from a launch ([`crate::HarnessAdapter::axes`]).
     pub axes: AxesRule,
+    /// How the launch's model reaches the row's [`Field::Model`].
+    pub model: ModelForm,
+}
+
+/// **How a row spells the launch's model**, before its hook sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelForm {
+    /// The model the launch names, verbatim.
+    AsGiven,
+    /// None under [`Auth::Canned`], whose endpoint serves one model whatever is asked; verbatim
+    /// otherwise.
+    OmitUnderCanned,
+    /// The row's hook spells it, because no form above says what it measured; the row says why.
+    Hook,
+}
+
+impl ModelForm {
+    pub fn apply(self, auth: Auth, model: Option<String>) -> Option<String> {
+        match (self, auth) {
+            (ModelForm::OmitUnderCanned, Auth::Canned) => None,
+            _ => model,
+        }
+    }
 }
 
 /// **How a row compiles §3.1's availability and permission axes**, from the declared tools mapped

@@ -446,8 +446,23 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
         shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let _ = (ctx, shape);
-        Ok(neutral_fields(spec, self.axes(spec)?))
+        let _ = shape;
+        self.launch_fields(spec, ctx)
+    }
+
+    /// **What the row's data makes of this launch**, before any hook: [`neutral_fields`] over
+    /// [`Self::axes`], the model in the row's [`spec::ModelForm`], and the node's session title
+    /// ([`grammar::session_title`]) for a row that names [`spec::Field::Title`]. Every hook starts
+    /// from this, so a rule stated as row data is applied on every harness that states it.
+    fn launch_fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<spec::Fields, HarnessError> {
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        f.model = self.spec().model.apply(spec.auth, f.model);
+        f.title = Some(grammar::session_title(&ctx.agent_id));
+        Ok(f)
     }
 
     /// The surfaces this harness runs under **when a run asks for a pane**, or `None` where marion
@@ -893,7 +908,7 @@ pub trait HarnessAdapter {
 /// The launch spec's values, verbatim, with **live mode already applied to the overlay**: under
 /// [`Auth::Inherited`] no base URL and no credential are carried, on any harness, because *"live
 /// is a removal"* is one rule and not five.
-pub(crate) fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
+fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
     let (base_url, api_key) = match spec.auth {
         Auth::Canned | Auth::Endpoint => (spec.base_url.clone(), spec.api_key.clone()),
         Auth::Inherited => (None, None),

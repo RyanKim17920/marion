@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, InFlight, ModelName, Name, OnRefusedReport,
@@ -25,12 +24,11 @@ pub use crate::mcp_bridge::{
 };
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
-use crate::spec::AxesRule;
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env, Field,
-    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Relocation,
-    Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
-    Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env,
+    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly,
+    Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 use std::path::PathBuf;
@@ -364,6 +362,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
     requires: &[],
     axes: AxesRule::Split,
+    model: ModelForm::AsGiven,
 };
 
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
@@ -715,7 +714,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     fn fields(
         &self,
         spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
         shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         if shape == spec::Shape::Headless && !Self::prompt_is_written_after_launch(spec) {
@@ -732,7 +731,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         // permission is *"the same list, plus marion's own `mcp__marion__*`"*. This harness is the
         // one where both axes are marion's to set and where opening only the first is a measured
         // dead end (§11 item 24).
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         f.mcp_config = Some(Self::mcp_config_path(spec).to_string_lossy().into_owned());
         Ok(f)
     }

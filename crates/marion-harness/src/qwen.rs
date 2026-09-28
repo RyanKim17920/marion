@@ -47,17 +47,16 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
+    Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -284,6 +283,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
              allowlist, and the model would be offered every built-in (s25 item 16)",
         ),
     },
+    model: ModelForm::AsGiven,
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,
@@ -375,7 +375,7 @@ impl HarnessAdapter for QwenAdapter {
         ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         // **Under `Inherited` the declaration is compiled onto argv, not written to a file** —
         // codex's arrangement, for codex's reason: a live node's settings document is the
         // operator's own, and `--mcp-config` was measured carrying the same block inline.

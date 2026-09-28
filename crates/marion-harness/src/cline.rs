@@ -54,11 +54,11 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
+    Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
+    When, WireRecipe,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
 /// env row and [`mcp_settings_path`]. Named by [`MCP_SETTINGS_PATH_ENV`] in both auth modes.
@@ -245,6 +245,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     axes: AxesRule::Split,
+    model: ModelForm::AsGiven,
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).

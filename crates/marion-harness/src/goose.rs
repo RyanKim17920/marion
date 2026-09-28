@@ -40,7 +40,6 @@ use marion_core::provider::Wire;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
@@ -49,11 +48,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec, LiveDeclaration,
-    McpRoute, McpRoutes, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarrier,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
+    Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -258,6 +257,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         when_any: DEVELOPER_TOOLS,
         by_name: &[],
     },
+    model: ModelForm::AsGiven,
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).
@@ -523,7 +523,7 @@ impl HarnessAdapter for GooseAdapter {
         ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         if spec.mcp == McpDeclaration::Marion {
             let bridge = declared_bridge(self, spec, ctx);
             // goose splits the token on whitespace; a path it would split is refused by name

@@ -51,7 +51,6 @@ use marion_core::harness::Harness;
 use crate::adapter::SESSION_NEW_ID;
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
@@ -59,11 +58,10 @@ use crate::grammar::{
     ActivityRule, Cond, Reasoning, SessionId, TextUnit, ToolUnit, UsageFold, UsageRule, Where,
 };
 use crate::spec;
-use crate::spec::AxesRule;
 use crate::spec::{
-    Approval, Arg, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute, McpRoutes,
-    MidTurn, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers, TurnDelivery,
-    UpdatePolicy,
+    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Field, HarnessSpec, McpRoute,
+    McpRoutes, MidTurn, ModelForm, Push, ReadOnly, Remembers, Spelling, Surfaces, TokenCarriers,
+    TurnDelivery, UpdatePolicy,
 };
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
@@ -170,6 +168,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            spikes launched; a generic `acp:<command>` row is the operator's own",
     requires: &[],
     axes: AxesRule::Split,
+    // The model rides the session, set by the driver over the protocol, and under the opencode
+    // canned recipe it is that config's own ([`AcpAdapter`]'s hook).
+    model: ModelForm::Hook,
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**
@@ -1912,7 +1913,7 @@ impl HarnessAdapter for AcpAdapter {
     ) -> Result<spec::Fields, HarnessError> {
         let binding = self.binding(spec)?;
         // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         let (program, args) = binding
             .argv()
             .split_first()

@@ -31,7 +31,6 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::auth::Auth;
 use crate::grammar::{
@@ -42,11 +41,11 @@ use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, MidTurn, Push, ReadOnly, Remembers, Resume, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
+    HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need, Push,
+    ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// `$PI_CODING_AGENT_DIR`'s name under the node's config dir. One spelling for [`SPEC`]'s env row
 /// and [`models_path`].
@@ -226,6 +225,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // built-ins. An empty list is legitimate here, since `--tools ""` offers nothing
     // (`pi-empty-tools.*`), so unlike qwen there is nothing to refuse.
     axes: AxesRule::OneList { refuse_empty: None },
+    model: ModelForm::AsGiven,
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).
@@ -541,10 +541,10 @@ impl HarnessAdapter for PiAdapter {
     fn fields(
         &self,
         spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
             extension_path(&spec.config_dir)
                 .to_string_lossy()

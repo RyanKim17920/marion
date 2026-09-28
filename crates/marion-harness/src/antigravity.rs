@@ -32,7 +32,6 @@ use serde_json::json;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::grammar::{
     ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
@@ -41,11 +40,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
-    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume, Spelling,
-    Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy,
+    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
+    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly,
+    Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 use std::path::PathBuf;
 
 /// marion's workspace root under the node's config dir: the directory `--add-dir` names.
@@ -180,6 +179,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         when_any: &[WRITE_TOOL],
         by_name: &[],
     },
+    model: ModelForm::AsGiven,
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).
@@ -353,10 +353,10 @@ impl HarnessAdapter for AntigravityAdapter {
     fn fields(
         &self,
         spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         if spec.mcp == McpDeclaration::Marion {
             let root = root_dir(&spec.config_dir);
             f.prompt = format!(

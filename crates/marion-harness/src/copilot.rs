@@ -37,7 +37,6 @@ use serde_json::{Value, json};
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
-    neutral_fields,
 };
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
@@ -46,12 +45,11 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Push, ReadOnly, Remembers, Resume,
-    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
-    WireRecipe,
+    Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
+    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
+    Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
-use crate::spec::{AxesRule, Modes, Need, Requirement};
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
 /// live declaration and [`mcp_config_path`].
@@ -327,6 +325,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // and marion's verbs are re-read out of the model-facing spelling, with a refusal of its own:
     // no rule above states that, so [`CopilotAdapter::axes`] does.
     axes: AxesRule::Hook,
+    model: ModelForm::AsGiven,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).
@@ -676,10 +675,10 @@ impl HarnessAdapter for CopilotAdapter {
     fn fields(
         &self,
         spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
-        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let mut f = self.launch_fields(spec, ctx)?;
         // `--additional-mcp-config @<file>`: the `@` is how the flag reads a file, and the path is
         // the one `config_files` writes.
         f.mcp_config = (spec.mcp == McpDeclaration::Marion)
