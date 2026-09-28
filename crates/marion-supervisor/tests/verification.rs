@@ -86,6 +86,7 @@ fn fixture(root: &Path) -> Fixture {
 
 fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
     SpawnRequest {
+        review: None,
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: fx.repo.clone(),

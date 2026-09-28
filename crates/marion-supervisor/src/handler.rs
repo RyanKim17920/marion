@@ -3365,6 +3365,7 @@ impl RegistryHandle {
                 ))
             })?;
         let req = crate::run::SpawnRequest {
+            review: None,
             agent_type: p.agent_type.clone(),
             prompt: p.prompt.clone(),
             repo: repo.clone(),
@@ -4232,6 +4233,7 @@ impl RegistryHandle {
             live_children: self.live_children_of(&parent_id),
         };
         let req = crate::run::SpawnRequest {
+            review: None,
             agent_type: agent_type.name.clone(),
             prompt: prompt.to_string(),
             repo: repo.clone(),

@@ -121,6 +121,7 @@ fn the_inner_run_spawns_one_opencode_child() {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        review: None,
     };
     let caller = Caller::root(
         "root",

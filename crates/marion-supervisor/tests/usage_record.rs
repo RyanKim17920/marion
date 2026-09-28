@@ -81,6 +81,7 @@ fn a_childs_usage_lands_in_its_contract_and_one_journal_record_and_survives_repl
     let contract = run_spawn(
         &env,
         &SpawnRequest {
+            review: None,
             agent_type: "codex-impl".into(),
             prompt: "Edit the file under src/ and report back through marion.".into(),
             repo: repo.clone(),

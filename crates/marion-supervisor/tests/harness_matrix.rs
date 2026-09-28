@@ -183,6 +183,7 @@ fn drive(cell: &Cell) -> Evidence {
         auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
+        review: None,
         agent_type: cell.agent_type.into(),
         prompt: "Add the matrix marker file under src/ and report back through marion.".into(),
         repo: repo.clone(),

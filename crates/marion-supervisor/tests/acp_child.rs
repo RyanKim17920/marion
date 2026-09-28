@@ -94,6 +94,7 @@ fn fixture(root: &Path) -> Fixture {
 
 fn spawn_acp_child(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
     let req = SpawnRequest {
+        review: None,
         agent_type: "acp-opencode".into(),
         prompt: "Create a file under src/ and report back through marion.".into(),
         repo: fx.repo.clone(),
@@ -213,6 +214,7 @@ fn a_real_copilot_acp_child_reports_through_the_argv_declared_bridge() {
     let root = scratch("acp-copilot");
     let (repo, env) = inherited_fixture(&root);
     let req = SpawnRequest {
+        review: None,
         // The row's id, not `copilot --acp`: the command form binds the generic path, which on this
         // version reaches no bridge (S28).
         agent_type: "acp:copilot".into(),
@@ -300,6 +302,7 @@ fn spawn_unknown_agent(name: &str, verification: Vec<String>) -> TaskContract {
     let root = scratch(name);
     let (repo, env) = inherited_fixture(&root);
     let req = SpawnRequest {
+        review: None,
         agent_type: format!("acp:python3 {fake}"),
         prompt: "Create a file under src/ and report back through marion.".into(),
         repo: repo.clone(),

@@ -84,6 +84,7 @@ fn env_for(state: &std::path::Path, repo: &std::path::Path, base_url: Option<Str
 
 fn request(repo: &std::path::Path) -> SpawnRequest {
     SpawnRequest {
+        review: None,
         agent_type: "reviewer".into(),
         prompt: PROMPT.into(),
         repo: repo.to_path_buf(),

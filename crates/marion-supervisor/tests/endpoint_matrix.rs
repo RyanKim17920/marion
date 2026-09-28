@@ -140,6 +140,7 @@ fn tree(tag: &str, base_url: Option<String>) -> Tree {
 
 fn request(t: &Tree, agent_type: &str, model: &str) -> SpawnRequest {
     SpawnRequest {
+        review: None,
         agent_type: agent_type.into(),
         prompt: "Report back through marion.".into(),
         repo: t.repo.clone(),

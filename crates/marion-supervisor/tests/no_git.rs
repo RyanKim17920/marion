@@ -119,6 +119,7 @@ fn fixture(root: &Path, cwd: PathBuf) -> Fixture {
 
 fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
     SpawnRequest {
+        review: None,
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: fx.cwd.clone(),

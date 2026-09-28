@@ -39,9 +39,7 @@ use marion_harness::{
 pub(crate) use crate::clock::{entropy, unix_millis};
 use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
 use crate::kill::{DRAIN_GRACE, kill_process_tree};
-use crate::spawn::{
-    ChildOutcome, SpawnError, build_contract, changed_paths, diff_text, make_worktree,
-};
+use crate::spawn::{ChildOutcome, SpawnError, build_contract, changed_paths, diff_text};
 
 /// How long a **child**'s harness may take to have marion's tool list before the run is refused
 /// (§6.1 step 8). The same 30 s `marion run` gives a root, for the same reason: the measured
@@ -197,6 +195,11 @@ pub struct SpawnRequest {
     /// `profiles.toml`'s `[default]` — a spawn's own choice, or, on a resume, the profile the
     /// node's session was recorded under. `None` resolves as `profiles::resolve` says.
     pub profile: Option<String>,
+    /// **A review, or ordinary work** — `Some` makes this child a reviewer of an ended node
+    /// ([`crate::review`]): journaled as its intent's `review_of`, cut at the reviewed work,
+    /// launched read-only under an empty writable scope, and its report read into findings.
+    /// `None` on every other spawn.
+    pub review: Option<crate::review::Target>,
 }
 
 /// What a child's second life is reconstructed from — all of it read off the journal, none of it
@@ -1608,7 +1611,7 @@ pub fn run_spawn_watched(
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
-            review_of: None,
+            review_of: req.review.as_ref().map(|t| t.agent_id.clone()),
             agent_id: agent_id.clone(),
             // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the
             // clock the node is running under rather than its agent type's default.
@@ -2262,9 +2265,10 @@ pub fn run_spawn_watched(
     // **The child's work onto its own branch, over the same sealed tree the diff describes** —
     // before verification can write into it, and before the reap below removes it. Without this
     // the reap deleted uncommitted work and the diff text was the only copy left.
+    // A reviewer's change is a violation to record, never work to land.
     let landed = crate::spawn::Landed::land(
         &workspace,
-        base.as_ref(),
+        base.as_ref().filter(|_| req.review.is_none()),
         changed.as_deref(),
         &crate::spawn::commit_message(
             &req.agent_type,
@@ -2368,6 +2372,10 @@ pub fn run_spawn_watched(
     // refused first — and it is propagated rather than swallowed because an audit record that
     // silently guesses is worse than a spawn that stops.
     contract.allowed_tools = adapter.compiled_permissions(&launch)?;
+    let tally = req
+        .review
+        .as_ref()
+        .and_then(|t| record_review(&mut contract, t, adapter.spec().read_only));
     // §7.6's flags, from the gate that ran above — `reported_early`, `held_to_timeout`,
     // `died_before_gate` and the live set — written onto the completion before it reaches disk.
     gated.apply(&mut contract);
@@ -2399,7 +2407,7 @@ pub fn run_spawn_watched(
     crate::journal::record(
         &env.project_dir,
         RecordKind::ContractPersisted(ContractPersisted {
-            review: None,
+            review: tally,
             agent_id: agent_id.clone(),
             task_id: task_id.clone(),
             requester: AgentId(caller.agent_id.clone()),
@@ -2425,6 +2433,34 @@ pub fn run_spawn_watched(
 /// the stream or the exit code would have made of the signalled process — the same precedence a
 /// timeout has in `build_contract`, because both are marion's own attributed act. The description
 /// keeps what marion observed of the process and names marion as the sender first, as §6.7 asks.
+/// A reviewer's contract, finished: the row's read-only switch named in `allowed_tools` beside the
+/// constraint the row always records, and its report read into `Completion::findings`. Returns the
+/// tally the journal carries, or `None` where there is nothing to count — the reviewer never
+/// reported, or its report could not be read, which is said in the exit description and is never
+/// a block.
+fn record_review(
+    contract: &mut TaskContract,
+    target: &crate::review::Target,
+    read_only: marion_harness::spec::ReadOnly,
+) -> Option<marion_core::review::ReviewTally> {
+    contract
+        .allowed_tools
+        .push(format!("read-only:{}", read_only.kind()));
+    let completion = contract.completion.as_mut()?;
+    let narrative = completion.narrative.as_ref().map(|n| n.value.as_str());
+    match crate::review::verdict(narrative, target)? {
+        Ok(v) => {
+            let tally = marion_core::review::ReviewTally::of(&v);
+            completion.findings = Some(v.findings);
+            Some(tally)
+        }
+        Err(e) => {
+            completion.exit.description = format!("{}; {e}", completion.exit.description);
+            None
+        }
+    }
+}
+
 fn record_cancelled(contract: &mut TaskContract) {
     if let Some(completion) = contract.completion.as_mut() {
         completion.status = ExitStatus::Cancelled;
@@ -2438,6 +2474,11 @@ fn record_cancelled(contract: &mut TaskContract) {
 /// The scope a child asked for, in §5.4's vocabulary: an empty `writable_scope` is the whole
 /// workspace, not nothing.
 fn requested_scope(req: &SpawnRequest) -> Vec<Glob> {
+    // A reviewer may write nothing: an empty list matches no path, so every change it makes is a
+    // scope violation on its contract — the record every row's read-only switch backs up.
+    if req.review.is_some() {
+        return Vec::new();
+    }
     if req.writable_scope.is_empty() {
         vec![Glob("**".into())]
     } else {
@@ -2505,7 +2546,9 @@ fn select_workspace(
             let wt = agent_dir.worktree();
             crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
             let branch = worktree_branch(task_id);
-            let base = make_worktree(&req.repo, &wt, &branch)?;
+            // A reviewer's tree is the reviewed work as it landed, so it reads what it judges.
+            let at = req.review.as_ref().and_then(|t| t.commit.as_ref());
+            let base = crate::spawn::make_worktree_at(&req.repo, &wt, &branch, at)?;
             let prelaunch = PrelaunchWorktree {
                 repo: req.repo.clone(),
                 target: Some((wt.clone(), branch.clone(), base.clone())),
@@ -2618,7 +2661,13 @@ pub fn child_launch_spec(
         // — `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — was byte-identical
         // to a child whose write escaped its worktree. Empty on every built-in, so nothing marion
         // spawns today is launched any differently.
-        tools: agent_type.tools.clone(),
+        // A reviewer declares no `write` on any row; its row's `ReadOnly` switch does the rest.
+        tools: agent_type
+            .tools
+            .iter()
+            .filter(|t| req.review.is_none() || t.as_str() != marion_core::agent_type::TOOL_WRITE)
+            .cloned()
+            .collect(),
         // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
         // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
         // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
@@ -2683,6 +2732,7 @@ pub fn child_launch_spec(
         wire: None,
         provider: None,
         extra: Extras {
+            read_only: req.review.is_some(),
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),
@@ -2997,6 +3047,7 @@ mod tests {
         let agent_dir = ProjectDir::new(&dir.join("state"), &repo).agent(&agent_id);
         let task_id = TaskId("t-1".into());
         let mut req = SpawnRequest {
+            review: None,
             agent_type: "claude".into(),
             prompt: "carry on".into(),
             repo: repo.clone(),
@@ -3887,6 +3938,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            review: None,
             agent_type: "codex".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -4031,6 +4083,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            review: None,
             agent_type: "bare-acp".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -4180,6 +4233,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            review: None,
             agent_type: "claude".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -4315,6 +4369,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            review: None,
             agent_type: "claude".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -4631,6 +4686,7 @@ mod tests {
 
     fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {
         SpawnRequest {
+            review: None,
             agent_type: agent_type.into(),
             prompt: "do the task".into(),
             // A placeholder, overwritten by every caller that actually launches: `resolve_model`

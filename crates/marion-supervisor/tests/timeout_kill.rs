@@ -248,6 +248,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
+        review: None,
         agent_type: agent_type.into(),
         prompt: prompt.into(),
         repo: repo.clone(),

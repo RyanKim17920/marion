@@ -574,8 +574,22 @@ impl CwdClaim {
 /// actually created at. §6.7 calls `base_commit` an audit record; an audit record raced against the
 /// thing it describes is worse than a slower spawn.
 pub fn make_worktree(repo: &Path, path: &Path, branch: &str) -> Result<Oid, SpawnError> {
+    make_worktree_at(repo, path, branch, None)
+}
+
+/// [`make_worktree`], cut at `at` where one is named — a reviewer's tree, at the reviewed node's
+/// landed commit — and at `repo`'s HEAD otherwise.
+pub fn make_worktree_at(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+    at: Option<&Oid>,
+) -> Result<Oid, SpawnError> {
     let _serialized = repo_write_guard();
-    let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+    let head = match at {
+        Some(commit) => commit.0.clone(),
+        None => git(repo, &["rev-parse", "HEAD"])?.trim().to_string(),
+    };
     git(
         repo,
         &[

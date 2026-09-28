@@ -83,6 +83,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         auth: marion_harness::Auth::Inherited,
     };
     let req = SpawnRequest {
+        review: None,
         agent_type: "agy".into(),
         prompt: format!(
             "Create a file named {FILE} in your working directory whose entire content is the \

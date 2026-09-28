@@ -172,6 +172,7 @@ pub fn compile(
         auth: Auth::Canned,
     };
     let req = SpawnRequest {
+        review: None,
         agent_type: t.agent_type.name.clone(),
         prompt: child_prompt(&t.agent_type, prompt),
         repo: w.repo.clone(),

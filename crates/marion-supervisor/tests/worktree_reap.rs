@@ -130,6 +130,7 @@ fn spawn_in(
     isolation: Isolation,
 ) -> Result<TaskContract, String> {
     let req = SpawnRequest {
+        review: None,
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
         repo: repo.to_path_buf(),
