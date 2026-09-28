@@ -24,8 +24,9 @@ merged) goes here. Do not put a screen tour here. -->
   never merged for you. Its contract records the commit, its verification output, and any write
   outside its declared scope.
 - **Rules enforced by marion, not by the prompt.** A node cannot exit while one of its children is running,
-  delegation stops at depth 3, a timeout kills the node's whole process tree, and a node can
-  steer only nodes below it.
+  delegation stops at depth 3 (each agent type's default), a timeout kills the node's whole
+  process tree, a node can steer only nodes below it, and it can `wait` on or check the `status`
+  of only its own direct children.
 - **Survives a crash.** `kill -9` the supervisor, and `marion resume <id>` continues the root under the
   same id against the same harness session.
 
@@ -46,11 +47,11 @@ This installs `marion` and `marion-supervisor` side by side in `~/.cargo/bin`. K
 together: `marion` starts the supervisor next to it. marion never updates itself; to upgrade,
 run the same command again.
 
-**Prebuilt binaries are not published yet.** When the first packaged release is out, these
-channels will install the same archive (macOS and Linux, glibc and static musl, arm64 and
-x86_64), with no Rust toolchain needed:
+**Prebuilt binaries: available from the first release.** No packaged release has been cut yet,
+so none of these works today. Once one is, each installs the same archive (macOS and Linux,
+glibc and static musl, arm64 and x86_64) with no Rust toolchain:
 
-| channel | command |
+| channel (available from the first release) | command |
 |---|---|
 | shell installer | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RyanKim17920/marion/releases/latest/download/marion-supervisor-installer.sh \| sh` |
 | Homebrew | `brew install RyanKim17920/tap/marion` |

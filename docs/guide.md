@@ -79,9 +79,9 @@ generation is per harness; see [Harness detail](#harness-detail).
 
 - **A parent** steers with its `steer` tool, addressed by the `task_id` its `spawn` handle
   carries or by an `agent_id` from `list` (the only way to name a grandchild). A node may steer
-  only nodes below it; its parent, siblings and itself are refused with one sentence. Before
-  steering, a parent's `status` on a running child shows its last few tool calls and the last
-  line it wrote.
+  any node below it; its parent, siblings and itself are refused with one sentence. `wait` and
+  `status` reach only its direct children. Before steering, a parent's `status` on a running
+  child shows its last few tool calls and the last line it wrote.
 - **The operator** presses `s` on a node in Watch, or runs `marion steer <id|short-id> <text…>`.
   Exit 0 prints the queued message's id; exit 1 prints the supervisor's refusal (an ended node
   points at `marion resume`).
@@ -130,8 +130,9 @@ with `read` and `write`; `<harness>-impl` is kept as an alias on every row excep
 writes (not codex, opencode or cline). `acp-<row>` types reach the ACP agents below. `marion --help` lists
 every built-in type; a repository adds its own in `.marion/agents.toml`.
 
-Delegation stops at depth 3 (the root is depth 0), and a node
-cannot exit while one of its descendants is still running.
+Delegation stops at depth 3 (the root is depth 0): `max_depth` is a field of every agent type,
+3 by default, and `.marion/agents.toml` does not set it yet. A node cannot exit while one of its
+descendants is still running.
 
 ## Logins, API keys and endpoints
 
