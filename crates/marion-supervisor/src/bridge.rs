@@ -1371,6 +1371,7 @@ pub(crate) fn contract_that_ran(outcome: crate::spawn::ChildOutcome) -> TaskCont
     crate::spawn::build_contract(
         TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
         AgentId("019fbf94-0000-7000-8000-000000000001".into()),
+        marion_core::Harness::Codex,
         RepoIdentity {
             git_common_dir: Some("/repo/.git".into()),
             head_branch: Some("main".into()),

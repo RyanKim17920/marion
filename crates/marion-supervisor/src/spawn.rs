@@ -1252,6 +1252,8 @@ impl ChildOutcome {
 pub fn build_contract(
     task_id: TaskId,
     requester: AgentId,
+    // The harness that ran — the adapter's answer, never the agent type's request (§6.7).
+    harness: marion_core::Harness,
     repo: RepoIdentity,
     base: Option<Oid>,
     workspace: Workspace,
@@ -1400,10 +1402,10 @@ pub fn build_contract(
     TaskContract {
         task_id,
         requester,
-        // Provisional, all three fields: `run_spawn` overwrites them from the **adapter** and from
-        // the **compiled invocation**, which are the only things that know what actually ran.
+        // `version` and `model` are provisional: `run_spawn` overwrites them from the **compiled
+        // invocation**, which is the only thing that knows what actually ran.
         child: ChildRef {
-            harness: marion_core::Harness::Codex,
+            harness,
             version: "unknown".into(),
             model: None,
             provider: None,
@@ -1641,6 +1643,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -1686,6 +1689,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -1742,6 +1746,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -1780,6 +1785,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -1813,6 +1819,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -1847,6 +1854,7 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -2288,6 +2296,7 @@ mod tests {
         build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,

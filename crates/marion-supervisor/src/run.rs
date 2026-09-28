@@ -2420,6 +2420,11 @@ pub fn run_spawn_watched(
     let mut contract = build_contract(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
+        // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so
+        // the harness it names must be the one that actually produced the work, never the one that
+        // was asked for. Sourcing it here makes that an invariant the code enforces rather than one
+        // a reader has to check.
+        adapter.harness(),
         RepoIdentity {
             git_common_dir: crate::socket::git_common_dir(&req.repo),
             head_branch: None,
@@ -2462,12 +2467,6 @@ pub fn run_spawn_watched(
             ),
         );
     }
-    // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
-    // harness it names must be the one that actually produced the work, never the one that was
-    // asked for. The two agree today precisely because the dispatch above reads the same field —
-    // sourcing it here makes that an invariant the code enforces rather than one a reader has to
-    // check, and it is the reason a divergence between the two could never again be silent.
-    contract.child.harness = adapter.harness();
     contract.child.version = version;
     // Read off the **compiled invocation** for the same reason, one step further: §3.1 makes the
     // marion-name → harness-name mapping the adapter's, and §6.7's `allowed_tools` records "the
@@ -3245,6 +3244,7 @@ mod tests {
             crate::spawn::build_contract(
                 TaskId("t".into()),
                 AgentId("child".into()),
+                marion_core::Harness::Codex,
                 RepoIdentity {
                     git_common_dir: None,
                     head_branch: None,
@@ -3542,6 +3542,7 @@ mod tests {
         let contract = crate::spawn::build_contract(
             TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
             AgentId("019fbf94-0000-7000-8000-000000000001".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/repo/.git".into()),
                 head_branch: Some("main".into()),
@@ -3832,6 +3833,7 @@ mod tests {
         let contract = build_contract(
             TaskId("task".into()),
             AgentId("root".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -4410,6 +4412,7 @@ mod tests {
         let contract = build_contract(
             TaskId("task".into()),
             AgentId("root".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
@@ -4466,6 +4469,7 @@ mod tests {
         let contract = build_contract(
             task.clone(),
             AgentId("root".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: None,
                 head_branch: None,
@@ -6093,6 +6097,7 @@ mod tests {
         let contract = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: None,
                 head_branch: None,

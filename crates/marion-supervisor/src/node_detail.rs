@@ -315,6 +315,7 @@ mod tests {
         let mut c = crate::spawn::build_contract(
             task.clone(),
             AgentId("parent".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: None,
                 head_branch: None,

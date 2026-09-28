@@ -586,6 +586,7 @@ mod tests {
         crate::spawn::build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
+            marion_core::Harness::Codex,
             RepoIdentity {
                 git_common_dir: None,
                 head_branch: None,
