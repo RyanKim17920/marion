@@ -370,6 +370,22 @@ pub enum Remembers {
     OperatorConfig(Relocation),
 }
 
+impl Remembers {
+    /// **What a test launch carries so an answer it gives stays out of the operator's config**:
+    /// under `OperatorConfig`, the relocation applied at `dir` ([`Relocation::apply`]); nothing
+    /// otherwise, since there the answer already lands in marion's scratch or nowhere.
+    pub fn test_env(
+        &self,
+        dir: &Path,
+        operator: impl Fn(&str) -> Option<String>,
+    ) -> std::io::Result<Vec<(String, String)>> {
+        match self {
+            Remembers::OperatorConfig(r) => r.apply(dir, operator),
+            Remembers::Nothing | Remembers::CannedHome => Ok(Vec::new()),
+        }
+    }
+}
+
 /// **How a test moves a harness's config off the operator's while keeping their login**: `config`
 /// names the directory the harness reads and writes its config in, `store` the one its login is
 /// looked up under. Setting `config` alone would log the harness out (claude keys its keychain

@@ -16,7 +16,7 @@ use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_harness::adapter::harness_spec;
 use marion_harness::invocation::Invocation;
-use marion_harness::spec::{HarnessSpec, Remembers};
+use marion_harness::spec::HarnessSpec;
 use marion_harness::{Auth, HarnessAdapter, SpawnCtx, acp, adapter_for_type};
 use marion_supervisor::duplex::{LaunchPath, launch_path};
 use marion_supervisor::run::{Env, SpawnRequest, child_launch_spec, child_prompt};
@@ -246,12 +246,13 @@ pub fn compile(
     // A pane is where a boot dialog gets answered. A row whose TUI keeps that answer in the
     // operator's own config (`Remembers::OperatorConfig`) runs on a config moved into this world,
     // still on the operator's login, so the answer is left in the scratch and never in theirs.
-    if knobs.pane
-        && let Remembers::OperatorConfig(r) = t.spec.boot_dialogs.remembers
-    {
-        let moved = r
-            .apply(&w.root.join("harness-config"), |k| std::env::var(k).ok())
-            .map_err(|e| format!("moving {} into the world: {e}", r.config))?;
+    if knobs.pane {
+        let moved = t
+            .spec
+            .boot_dialogs
+            .remembers
+            .test_env(&w.root.join("harness-config"), |k| std::env::var(k).ok())
+            .map_err(|e| format!("moving the harness config into the world: {e}"))?;
         inv.env.retain(|(k, _)| !moved.iter().any(|(m, _)| m == k));
         inv.env.extend(moved);
     }

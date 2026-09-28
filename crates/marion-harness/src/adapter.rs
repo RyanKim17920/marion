@@ -10223,6 +10223,26 @@ mod tests {
             r#"{"onboarded":true}"#
         );
 
+        // A test launch carries exactly the relocation, and nothing for a row that needs none.
+        use crate::spec::Remembers;
+        assert_eq!(
+            Remembers::OperatorConfig(r)
+                .test_env(&dir.join("cfg4"), home_env())
+                .unwrap(),
+            r.apply(&dir.join("cfg4"), home_env()).unwrap()
+        );
+        for none in [Remembers::Nothing, Remembers::CannedHome] {
+            assert!(
+                none.test_env(&dir.join("cfg5"), home_env())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(
+            !dir.join("cfg5").exists(),
+            "a row that needs no move creates nothing"
+        );
+
         std::fs::write(&theirs, r#"{"account":{"accessToken":"x"}}"#).unwrap();
         let refused = r.apply(&dir.join("cfg3"), home_env()).unwrap_err();
         assert!(
