@@ -215,6 +215,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `exec_command`'s `printf > file` (`operation not permitted`); no file either way",
     },
     client_name: None,
+    // Printed by every `exec` (codex-cli 0.155.1, live smoke 2026-09-27), clean runs included.
+    stderr_boilerplate: &["Reading additional input from stdin..."],
     delivery: Deliveries {
         headless: TurnDelivery::TypedTurn {
             mid_turn: MidTurn::Fold,

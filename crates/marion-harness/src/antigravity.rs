@@ -142,6 +142,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                route",
     },
     client_name: Some("antigravity-client"),
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
             note: "s32 on 1.2.8: `--conversation <id> -p …` continues the conversation under the \

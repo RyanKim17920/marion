@@ -190,6 +190,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                tools, and declining approval declines marion's `report` too",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::None {
             note: "S27: cline 3.0.61's `--id <id>` forces interactive mode and exits 1 headless, \

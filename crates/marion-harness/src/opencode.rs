@@ -264,6 +264,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                both let a file land",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
             note: "S31 p0b/opencode (1.18.32): `run --session <id>` continues the session with the \

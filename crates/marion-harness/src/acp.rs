@@ -136,6 +136,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `session/set_config_option mode=plan` refused it, agent-specifically",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         // Protocol-generic: any agent takes a second `session/prompt` after the first resolved.
         headless: TurnDelivery::TypedTurn {

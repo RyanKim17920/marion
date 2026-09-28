@@ -222,6 +222,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                `--yolo`; no file",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
             note: "S31 p0b/qwen (0.23.0): `--resume <session_id> -p …` continues the session",

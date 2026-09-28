@@ -219,6 +219,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                available: Write. Write is disabled for this session`), exit 0, no file",
     },
     client_name: Some("claude-code"),
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         // S31 `p0a/b3`, `p0a/b`, `p0a/b2` (2.1.280, repeated on 2.1.276).
         headless: TurnDelivery::TypedTurn {

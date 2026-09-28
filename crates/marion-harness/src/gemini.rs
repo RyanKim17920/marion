@@ -184,6 +184,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                (the `generalist` subagent's tools exclude `write_file` too)",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::None {
             note: "gemini's --resume takes `latest` or an index, not a session id, and S31 did not \

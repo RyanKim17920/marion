@@ -213,6 +213,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                scripted `create` (`Tool 'create' does not exist.`), no file",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::Continuation {
             note: "S31 p0b/copilot (1.0.83): `-p … --resume=<sessionId>` continues the session",

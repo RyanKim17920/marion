@@ -176,6 +176,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         note: "pi 0.80.2 dist/config.js: getAuthPath() = <PI_CODING_AGENT_DIR>/auth.json",
     }),
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::TypedTurn {
             mid_turn: MidTurn::Fold,

@@ -2304,7 +2304,8 @@ pub fn run_spawn_watched(
     {
         parsed.failure = Some(why);
     }
-    let mut outcome = ChildOutcome::from_stream(parsed, run.exit, run.stderr.clone());
+    let row = marion_harness::adapter::harness_spec(adapter.harness());
+    let mut outcome = ChildOutcome::from_stream(parsed, run.exit, row.quiet_stderr(&run.stderr));
     note_stopped(&mut outcome, &run);
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
@@ -2422,7 +2423,7 @@ pub fn run_spawn_watched(
             let mut later = ChildOutcome::from_stream(
                 adapter.parse_stream(&next.stdout, next.exit),
                 next.exit,
-                next.stderr.clone(),
+                row.quiet_stderr(&next.stderr),
             );
             note_stopped(&mut later, &next);
             outcome = crate::continuation::fold(outcome, later);

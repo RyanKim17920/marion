@@ -201,6 +201,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                (`Tool 'write' was not advertised for this model turn`), no file",
     },
     client_name: None,
+    stderr_boilerplate: &[],
     delivery: Deliveries {
         headless: TurnDelivery::None {
             note: "S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name \

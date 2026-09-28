@@ -134,6 +134,10 @@ pub struct HarnessSpec {
     /// where no `MARION_AGENT_TYPE` names a row) can still find this row's [`Self::push`].
     /// `None` where it was never observed; such a bridge falls back to [`Push::McpLog`].
     pub client_name: Option<&'static str>,
+    /// **Whole stderr lines this harness prints on every run**, whatever happened — not news, so
+    /// never what a parent reads as the child's last word ([`Self::quiet_stderr`]). Empty where
+    /// none was seen.
+    pub stderr_boilerplate: &'static [&'static str],
     /// **How a message reaches this node's next turn**, per shape — the one mechanism behind both
     /// a child's end pushed to its parent and a parent's or operator's steer into a child.
     /// Resolved by [`delivery_for`] alone; the sweep `every_row_states_a_turn_delivery_its_
@@ -489,6 +493,20 @@ pub enum TurnDelivery {
     },
     /// No measured way. A message for such a node is refused by name, quoting `note`.
     None { note: &'static str },
+}
+
+impl HarnessSpec {
+    /// `stderr` without the lines [`Self::stderr_boilerplate`] names, trimmed. A line is dropped
+    /// only when it is one of them whole, so an error that merely quotes one is kept.
+    pub fn quiet_stderr(&self, stderr: &str) -> String {
+        stderr
+            .lines()
+            .filter(|l| !self.stderr_boilerplate.contains(&l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
+    }
 }
 
 impl TurnDelivery {
@@ -2175,6 +2193,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **A row's boilerplate stderr is not news**: codex prints "Reading additional input from
+    /// stdin..." on every `exec`, and a live run's parent read it as the child's last word. Only
+    /// a whole line the row names is dropped; anything around it, and any other harness's
+    /// identical line, is kept.
+    #[test]
+    fn a_rows_boilerplate_stderr_lines_are_dropped_and_nothing_else() {
+        let codex = crate::adapter::harness_spec(Harness::Codex);
+        assert_eq!(
+            codex.quiet_stderr("Reading additional input from stdin...\nreal trouble\n"),
+            "real trouble"
+        );
+        assert_eq!(
+            codex.quiet_stderr("Reading additional input from stdin...\n"),
+            ""
+        );
+        assert_eq!(
+            codex.quiet_stderr("x Reading additional input from stdin..."),
+            "x Reading additional input from stdin..."
+        );
+        let claude = crate::adapter::harness_spec(Harness::ClaudeCode);
+        assert_eq!(
+            claude.quiet_stderr("Reading additional input from stdin..."),
+            "Reading additional input from stdin..."
+        );
     }
 
     /// A row reads the key through [`Field::ApiKey`] to place it where its harness looks; a
