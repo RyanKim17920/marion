@@ -1412,6 +1412,9 @@ pub struct RegistryHandle {
     /// cycle that never drops.
     me: std::sync::Weak<RegistryHandle>,
     live: Arc<LiveRegistry>,
+    /// The socket a client dials to reach this supervisor, as the listener bound it. See
+    /// [`Self::owning`] for why it is carried rather than derived from the journal.
+    socket_path: PathBuf,
     shared: Mutex<Shared>,
     runtime: Arc<dyn QuitRuntime>,
     /// **The nodes this supervisor owns** — §11 item 28's whole point. See [`NodeHandle`].
@@ -1606,20 +1609,40 @@ enum PaneDelivery<'a> {
 
 impl RegistryHandle {
     /// A handle that describes nodes and does not own any. See [`Self::spawn_env`].
+    ///
+    /// It serves no socket of its own, so the socket its guidance names is the journal-adjacent
+    /// default rather than one a listener bound.
     pub fn new(live: Arc<LiveRegistry>) -> Arc<RegistryHandle> {
-        Self::build(live, Arc::new(SystemQuitRuntime), None)
+        let socket_path = Self::journal_adjacent_socket(&live);
+        Self::build(live, socket_path, Arc::new(SystemQuitRuntime), None)
     }
 
     /// A handle that **owns the nodes it spawns**: §2's `agent/spawn`, answered rather than refused.
     ///
     /// The environment is passed in rather than derived because it cannot be derived — see
-    /// [`Self::spawn_env`].
-    pub fn owning(live: Arc<LiveRegistry>, env: crate::run::Env) -> Arc<RegistryHandle> {
-        Self::build(live, Arc::new(SystemQuitRuntime), Some(env))
+    /// [`Self::spawn_env`]. So is `socket_path`, the socket the server in front of this handle
+    /// actually bound: §2 moves a socket whose path would exceed `sun_path` to a `/tmp` fallback
+    /// while the journal stays under the state root, so the journal cannot say where clients dial.
+    pub fn owning(
+        live: Arc<LiveRegistry>,
+        env: crate::run::Env,
+        socket_path: PathBuf,
+    ) -> Arc<RegistryHandle> {
+        Self::build(live, socket_path, Arc::new(SystemQuitRuntime), Some(env))
+    }
+
+    fn journal_adjacent_socket(live: &LiveRegistry) -> PathBuf {
+        live.read(|r| {
+            r.path()
+                .parent()
+                .map(|p| p.join("supervisor.sock"))
+                .unwrap_or_else(|| PathBuf::from("supervisor.sock"))
+        })
     }
 
     fn build(
         live: Arc<LiveRegistry>,
+        socket_path: PathBuf,
         runtime: Arc<dyn QuitRuntime>,
         spawn_env: Option<crate::run::Env>,
     ) -> Arc<RegistryHandle> {
@@ -1637,6 +1660,7 @@ impl RegistryHandle {
         Arc::new_cyclic(|me| RegistryHandle {
             me: me.clone(),
             live,
+            socket_path,
             inboxes,
             shared: Mutex::new(Shared::default()),
             runtime,
@@ -1663,7 +1687,8 @@ impl RegistryHandle {
 
     #[cfg(test)]
     fn with_runtime(live: Arc<LiveRegistry>, runtime: Arc<dyn QuitRuntime>) -> Arc<RegistryHandle> {
-        Self::build(live, runtime, None)
+        let socket_path = Self::journal_adjacent_socket(&live);
+        Self::build(live, socket_path, runtime, None)
     }
 
     fn pane_now(&self) -> std::time::Instant {
@@ -4293,11 +4318,7 @@ impl RegistryHandle {
     }
 
     fn guidance(&self) -> DetachGuidance {
-        let socket = self
-            .journal_path()
-            .parent()
-            .map(|p| p.join("supervisor.sock"))
-            .unwrap_or_else(|| PathBuf::from("supervisor.sock"));
+        let socket = &self.socket_path;
         DetachGuidance {
             reattach: format!(
                 "Reconnect to {} and call tree/subscribe. Until then, any named gate_exposed node \
@@ -11453,6 +11474,51 @@ mod tests {
             _dir: marion_testsupport::Scratch,
         }
 
+        /// **Detach guidance names the socket this supervisor serves, not the journal's
+        /// neighbour.** A state root long enough to overflow `sun_path` moves the socket to §2's
+        /// `/tmp` fallback while the journal stays under `<state>`, and an operator told to
+        /// reconnect to `<state>/…/supervisor.sock` would dial nothing.
+        ///
+        /// Mutation: derive the path from the journal directory and both lines name the primary.
+        #[test]
+        fn detach_guidance_names_the_serving_socket_when_it_overflowed_to_tmp() {
+            let dir = scratch("handler-overflow-guidance");
+            let root = dir.join("repo");
+            let state = dir.join("a".repeat(100));
+            let paths = crate::socket::socket_paths(&state, &root, crate::socket::own_uid());
+            assert!(
+                paths.overflow().is_some(),
+                "the fixture must overflow: {}",
+                state.display()
+            );
+            let project = ProjectDir::new(&state, &root);
+            let primary = project.supervisor_sock();
+            assert_ne!(paths.socket(), primary);
+            std::fs::create_dir_all(project.path()).unwrap();
+            let live = Arc::new(crate::registry::LiveRegistry::follow(
+                Registry::boot(&project).unwrap(),
+                std::time::Duration::from_millis(2),
+            ));
+            let handle = RegistryHandle::owning(
+                live,
+                crate::run::Env {
+                    project_dir: project.clone(),
+                    state: state.clone(),
+                    project_root: root.clone(),
+                    bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
+                    base_url: Some("http://127.0.0.1:8099/v1".into()),
+                    auth: marion_harness::Auth::Canned,
+                },
+                paths.socket().to_path_buf(),
+            );
+            let guidance = handle.guidance();
+            let serving = format!("Reconnect to {} and call ", paths.socket().display());
+            for line in [guidance.reattach, guidance.stop_fleet] {
+                assert!(line.contains(&serving), "{line}");
+                assert!(!line.contains(&primary.display().to_string()), "{line}");
+            }
+        }
+
         fn owning(tag: &str, records: Vec<RecordKind>) -> Owning {
             let dir = scratch(tag);
             let repo = fixture_repo(&dir);
@@ -11488,6 +11554,7 @@ mod tests {
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
                     auth: marion_harness::Auth::Canned,
                 },
+                project.supervisor_sock(),
             );
             Owning {
                 handle,
@@ -12542,6 +12609,7 @@ mod tests {
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
                     auth: marion_harness::Auth::Canned,
                 },
+                project.supervisor_sock(),
             );
             let fx = Owning {
                 handle,
@@ -12793,6 +12861,7 @@ mod tests {
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
                     auth: marion_harness::Auth::Canned,
                 },
+                project.supervisor_sock(),
             );
             Owning {
                 handle,

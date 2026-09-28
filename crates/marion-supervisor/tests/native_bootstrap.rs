@@ -359,7 +359,7 @@ mod enabled_launch {
                 base_url: Some("http://127.0.0.1:8099/v1".into()),
                 auth: marion_harness::Auth::Canned,
             };
-            let handle = RegistryHandle::owning(live, env.clone());
+            let handle = RegistryHandle::owning(live, env.clone(), serving.path().to_path_buf());
             let server = Server::start_with_native_launch(
                 serving,
                 Arc::clone(&handle),

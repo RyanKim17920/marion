@@ -103,7 +103,7 @@ impl Bed {
             base_url: Some(base_url.to_string()),
             auth: marion_harness::Auth::Canned,
         };
-        let handle = RegistryHandle::owning(live, env.clone());
+        let handle = RegistryHandle::owning(live, env.clone(), serving.path().to_path_buf());
         let server = Server::start_with_native_launch(
             serving,
             Arc::clone(&handle),

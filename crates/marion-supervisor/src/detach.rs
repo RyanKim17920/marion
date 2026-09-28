@@ -645,6 +645,9 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         );
     }
     let live = std::sync::Arc::new(LiveRegistry::follow(registry, REGISTRY_POLL));
+    // The bound listener is the authority on where clients dial, not the journal's directory: §2
+    // may have moved the socket to its `/tmp` fallback. See `RegistryHandle::owning`.
+    let socket_path = serving.path().to_path_buf();
     let sentry = serving.sentry();
     // **`owning`, so §2's `agent/spawn` is answered rather than refused** (§11 item 28 step 5).
     //
@@ -672,7 +675,7 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     // exercises with a fixture table.
     let server = Server::start_with_native_launch(
         serving,
-        RegistryHandle::owning(live, env.clone()),
+        RegistryHandle::owning(live, env.clone(), socket_path),
         NativeLaunchConfig {
             descriptors: marion_core::PRODUCTION_NATIVE_FACADES,
             adapter_for: marion_harness::native_adapter,
