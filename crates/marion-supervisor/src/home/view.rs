@@ -212,11 +212,19 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
             id: n.agent_id.0.clone(),
             prefix: prefix.to_string(),
             harness: n.harness.cli_name().to_string(),
-            kind: n
-                .name
-                .clone()
-                .or_else(|| crate::tree::review_note(n))
-                .unwrap_or_else(|| kind_of(n)),
+            // An endpoint node's `provider:model` rides the kind, which is what gives way first on
+            // a narrow window.
+            kind: {
+                let kind = n
+                    .name
+                    .clone()
+                    .or_else(|| crate::tree::review_note(n))
+                    .unwrap_or_else(|| kind_of(n));
+                match &n.endpoint {
+                    Some(e) => format!("{kind} {}", e.label()).trim().to_string(),
+                    None => kind,
+                }
+            },
             short: short_id(&n.agent_id.0).to_string(),
             tone: tnode.tone,
             elapsed: row_time(n, now),
@@ -398,6 +406,14 @@ fn home_caps(n: &NodeSummary) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// `provider:model · route` for an endpoint node's expansion.
+fn endpoint_of(n: &NodeSummary) -> Option<String> {
+    n.endpoint.as_ref().map(|e| match &e.route {
+        Some(r) => format!("{} · {r}", e.label()),
+        None => e.label(),
+    })
+}
+
 fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
     let live = !n.state.is_exited();
     let needs = matches!(n.state, marion_core::node::NodeState::Blocked(_))
@@ -413,11 +429,13 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
             needs,
             stream_unread: Some("reading…".into()),
             caps,
+            endpoint: endpoint_of(n),
             ..Default::default()
         };
     };
     Expanded {
         live,
+        endpoint: endpoint_of(n),
         task: d.task.as_ref().map(|t| TaskView {
             prompt: t.prompt.clone(),
             // marion's own report instruction, named rather than quoted: the sentence is the same

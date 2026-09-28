@@ -27,6 +27,7 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         ended_at: None,
         tokens: None,
         attention: None,
+        endpoint: None,
     }
 }
 
@@ -1158,4 +1159,30 @@ fn a_new_listing_selects_the_profile_just_added_and_keeps_the_cursor_on_a_real_r
     h.set_profiles(Vec::new(), harnesses, None);
     assert_eq!(h.setup.cursor, 4);
     assert!(h.on_profiles() && h.selected_profile().is_none());
+}
+
+/// **An endpoint node says which model it runs on**: `provider:model` on its row, and with the route
+/// in its expansion; a node on its harness's own configuration shows neither.
+#[test]
+fn an_endpoint_node_shows_its_provider_and_model_on_its_row_and_its_route_when_expanded() {
+    let mut h = home();
+    let mut root = node("root", None, NodeState::Running);
+    root.endpoint = Some(marion_core::proto::NodeEndpoint {
+        provider: "groq".into(),
+        model: Some("llama-3.3-70b".into()),
+        route: Some("translated".into()),
+    });
+    h.set_nodes(vec![root, node("child", Some("root"), NodeState::Running)]);
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.watch.rows[0].kind.ends_with("groq:llama-3.3-70b"),
+        "{:?}",
+        f.watch.rows[0]
+    );
+    assert!(!f.watch.rows[1].kind.contains(':'), "{:?}", f.watch.rows[1]);
+    let expanded = f.watch.expanded.unwrap();
+    assert_eq!(
+        expanded.endpoint.as_deref(),
+        Some("groq:llama-3.3-70b · translated")
+    );
 }

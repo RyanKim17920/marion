@@ -133,11 +133,16 @@ pub fn row(node: &NodeSummary) -> tree::Node {
 /// The tree row and the detail pane's title are the same string by construction rather than by
 /// agreement: two spellings of a node's name is how an operator ends up unsure whether the `8ea3`
 /// in the sidebar and the `01a091ba-8ea3-…` in the pane are the same agent.
+/// An endpoint node's `provider:model` follows, so which model a node runs on is on its row.
 pub fn label_of(node: &NodeSummary) -> String {
-    let label = node
+    let name = node
         .name
         .clone()
         .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(&node.agent_id.0)));
+    let label = match &node.endpoint {
+        Some(e) => format!("{name} {}", e.label()),
+        None => name,
+    };
     match review_note(node) {
         Some(note) => format!("{label} · {note}"),
         None => label,
@@ -411,8 +416,8 @@ pub(crate) fn fold_tree_event(nodes: &mut Vec<NodeSummary>, event: &Event) -> bo
     match event {
         Event::NodeAdded { node, .. } => {
             match nodes.iter_mut().find(|n| n.agent_id == node.agent_id) {
-                Some(existing) => *existing = node.clone(),
-                None => nodes.push(node.clone()),
+                Some(existing) => *existing = (**node).clone(),
+                None => nodes.push((**node).clone()),
             }
             true
         }
@@ -578,6 +583,30 @@ mod tests {
     /// The home screen polls the socket itself and reads it without blocking, so a frame can
     /// arrive in pieces — even split inside a multi-byte character — and must be folded whole
     /// once its end arrives, never dropped or garbled.
+    /// An endpoint node's row carries its `provider:model` after its name; any other node's does not.
+    #[test]
+    fn an_endpoint_nodes_label_carries_its_provider_and_model() {
+        let mut n = summary(
+            "01a091ba-8ea3-7000-8000-000000000001",
+            Harness::Codex,
+            false,
+            None,
+        );
+        let plain = label_of(&n);
+        assert!(!plain.contains(':'), "{plain}");
+        n.endpoint = Some(marion_core::proto::NodeEndpoint {
+            provider: "openrouter".into(),
+            model: Some("qwen/qwen3-coder".into()),
+            route: Some("native".into()),
+        });
+        assert_eq!(label_of(&n), format!("{plain} openrouter:qwen/qwen3-coder"));
+        assert_eq!(
+            row(&n).label,
+            label_of(&n),
+            "the row and the pane title agree"
+        );
+    }
+
     #[test]
     fn a_nonblocking_subscription_keeps_a_frame_split_across_reads() {
         let (a, mut b) = UnixStream::pair().unwrap();
@@ -593,7 +622,7 @@ mod tests {
         let mut node = summary("019f-a", Harness::Codex, false, None);
         node.name = Some("é-worker".into());
         let line = Frame::Notification(marion_core::proto::Notification::new(Event::NodeAdded {
-            node,
+            node: Box::new(node),
             ts: marion_core::encoding::SystemTime(std::time::SystemTime::now()),
         }))
         .to_line();
@@ -631,6 +660,7 @@ mod tests {
             ended_at: None,
             tokens: None,
             attention: None,
+            endpoint: None,
         }
     }
 
@@ -664,7 +694,7 @@ mod tests {
         );
 
         let added = Event::NodeAdded {
-            node: summary("b", Harness::Codex, false, None),
+            node: Box::new(summary("b", Harness::Codex, false, None)),
             ts,
         };
         assert!(fold_tree_event(&mut nodes, &added));

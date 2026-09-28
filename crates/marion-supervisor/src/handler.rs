@@ -266,6 +266,19 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
         attention: attention(node),
         review_of: intent.review_of.clone(),
         review: tally(node),
+        // Off the latest `Spawned`, with the harness's own spelling of the model undone — the
+        // `provider:model` an operator would type to ask for it again.
+        endpoint: node
+            .provider
+            .as_ref()
+            .map(|provider| marion_core::proto::NodeEndpoint {
+                provider: provider.clone(),
+                model: node.model.as_deref().map(|m| {
+                    marion_harness::adapter_for_type(intent.harness, None)
+                        .map_or_else(|_| m.to_string(), |a| a.endpoint_model(m))
+                }),
+                route: node.route.clone(),
+            }),
     })
 }
 
@@ -5458,7 +5471,7 @@ fn collect(
                 // every flush. `project` is what counts it.
                 if let Some(node) = summary {
                     events.push(Event::NodeAdded {
-                        node,
+                        node: Box::new(node),
                         ts: journal_ts(n.first_ts),
                     });
                 }
@@ -5476,7 +5489,7 @@ fn collect(
                     && let Some(node) = summary
                 {
                     events.push(Event::NodeAdded {
-                        node,
+                        node: Box::new(node),
                         ts: journal_ts(n.state_ts.or(n.first_ts)),
                     });
                 }

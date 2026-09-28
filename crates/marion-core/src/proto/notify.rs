@@ -44,7 +44,13 @@ pub enum Event {
     /// client that learned of nodes only from state changes would show a tree that is missing
     /// exactly the nodes currently being created — the ones an operator is most likely watching.
     #[serde(rename = "tree/node-added")]
-    NodeAdded { node: NodeSummary, ts: SystemTime },
+    ///
+    /// Boxed: a summary is several times the size of every other event, and each event is moved
+    /// through the fan-out queues whole. The wire shape is the summary's own.
+    NodeAdded {
+        node: Box<NodeSummary>,
+        ts: SystemTime,
+    },
 
     /// §3.2's `state` moved. Carries `reap_state` alongside it because §7.6's gating rule is the
     /// *disjunction* of the two (`Exited(_)` **or** `reap_state ∈ {Orphaned, ReapedIdle}`), and a
@@ -221,7 +227,7 @@ mod tests {
     fn every_event() -> Vec<Event> {
         vec![
             Event::NodeAdded {
-                node: NodeSummary {
+                node: Box::new(NodeSummary {
                     review_of: None,
                     review: None,
                     agent_id: AgentId("a".into()),
@@ -239,7 +245,8 @@ mod tests {
                     ended_at: None,
                     tokens: None,
                     attention: None,
-                },
+                    endpoint: None,
+                }),
                 ts: ts(),
             },
             Event::NodeState {

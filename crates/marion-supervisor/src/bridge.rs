@@ -2097,6 +2097,7 @@ mod tests {
             ended_at: None,
             tokens: None,
             attention: None,
+            endpoint: None,
         };
         let done = text(&status_result(
             &json!(1),

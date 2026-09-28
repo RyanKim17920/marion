@@ -56,6 +56,8 @@ pub struct Expanded {
     pub result: Option<ResultView>,
     /// Where it works: its worktree, or the operator's checkout for a root.
     pub workspace: Option<String>,
+    /// An endpoint node's `provider:model · route`, already worded.
+    pub endpoint: Option<String>,
     /// What its harness can be asked to do on its surfaces, each with whether marion has measured
     /// it there: the unmeasured ones are drawn in [`crate::tree::greyed`], never hidden — M5's
     /// "greying out what they cannot do", decided by the supervisor as the tree screen's strip was.
@@ -433,6 +435,14 @@ fn expanded_rows<'a>(
 
     if let Some(n) = &e.needs {
         push_block(&mut rows, "Needs you", vec![vec![span(n.clone(), warn())]]);
+    }
+
+    if let Some(m) = &e.endpoint {
+        push_block(
+            &mut rows,
+            "Model",
+            vec![vec![span(m.clone(), Style::default())]],
+        );
     }
 
     let running = if e.live { "Running" } else { "Ran" };

@@ -106,6 +106,34 @@ pub struct NodeSummary {
     /// marion's decision. Never the findings' text, which stays in its contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<crate::review::ReviewTally>,
+    /// **Where an endpoint node's requests go**: its provider, the provider's model id and the
+    /// route there, as its latest `Spawned` recorded them. `None` on a canned or live node, which
+    /// runs on its harness's own configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<NodeEndpoint>,
+}
+
+/// An endpoint node's provider, model and route, for a client to show beside the node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeEndpoint {
+    /// The registry id of the provider (`groq`, `openrouter`).
+    pub provider: String,
+    /// The provider's own model id, with any harness spelling undone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `native`, or `translated` through marion's gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+}
+
+impl NodeEndpoint {
+    /// `provider:model` — the spelling an operator types to ask for it — or the provider alone.
+    pub fn label(&self) -> String {
+        match &self.model {
+            Some(m) => format!("{}:{m}", self.provider),
+            None => self.provider.clone(),
+        }
+    }
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -722,6 +750,7 @@ mod tests {
             ended_at: None,
             tokens: None,
             attention: None,
+            endpoint: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

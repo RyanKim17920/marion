@@ -2334,6 +2334,7 @@ mod tests {
             ended_at: None,
             tokens: None,
             attention: None,
+            endpoint: None,
         }
     }
 
