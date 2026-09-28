@@ -24,8 +24,8 @@ use std::process::ExitCode;
 use marion_core::harness::Harness;
 
 use crate::profiles::{
-    LoginState, Profile, ProfileEntry, ProfileError, ProfilePaths, ProfilesFile, carrier,
-    display_name, login_state, parse_harness, read_usage,
+    Listed, LoginState, ProfileEntry, ProfileError, ProfilePaths, ProfilesFile, carrier,
+    display_name, listed, login_state, parse_harness,
 };
 
 /// The usage line `marion --help` shows, and what a malformed `profile` verb prints.
@@ -208,8 +208,8 @@ pub fn login_command(harness: Harness, env: &str, dir: &str, hint: &str) -> Stri
 /// **`list`**: every profile, its login as the harness's own probe reports it, when it was last
 /// used, and the last usage reading a child's stream left — each with its age.
 fn list(paths: &ProfilePaths, out: &mut dyn Write) -> Result<(), Refusal> {
-    let file = ProfilesFile::load(&paths.config)?;
-    if file.profile.is_empty() {
+    let rows = listed(paths)?;
+    if rows.is_empty() {
         writeln!(
             out,
             "no profiles in {}; add one with `marion profile add <harness> <name>`",
@@ -218,22 +218,17 @@ fn list(paths: &ProfilePaths, out: &mut dyn Write) -> Result<(), Refusal> {
         return Ok(());
     }
     let now = crate::clock::unix_millis();
-    for entry in &file.profile {
-        let Ok(harness) = entry.harness.parse::<Harness>() else {
-            continue;
-        };
-        let default = file.default.get(harness.as_str()) == Some(&entry.name);
-        let profile = Profile {
-            name: entry.name.clone(),
-            harness,
-            dir: entry.dir.clone(),
-        };
+    for Listed {
+        profile,
+        default,
+        usage,
+    } in rows
+    {
         let login = match login_state(&profile) {
             LoginState::LoggedIn => "logged in".to_string(),
             LoginState::LoggedOut => "logged out".to_string(),
             LoginState::Unknown(why) => format!("login unknown ({why})"),
         };
-        let usage = read_usage(paths, harness, &entry.name);
         let used = usage
             .last_used_ms
             .map(|t| format!("used {}", age(now, t)))
@@ -241,11 +236,11 @@ fn list(paths: &ProfilePaths, out: &mut dyn Write) -> Result<(), Refusal> {
         writeln!(
             out,
             "{}{} ({}) — {login}, {used}",
-            entry.name,
+            profile.name,
             if default { " [default]" } else { "" },
-            display_name(harness)
+            display_name(profile.harness)
         )?;
-        writeln!(out, "  {}", entry.dir)?;
+        writeln!(out, "  {}", profile.dir)?;
         if let Some(limit) = usage.limit {
             let window = limit.window.as_deref().unwrap_or("usage");
             let resets =

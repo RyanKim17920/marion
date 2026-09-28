@@ -413,6 +413,38 @@ pub fn failover_target(
     (matches!(cause, Some(FailureCause::Auth { .. })) && next < chain.len()).then_some(next)
 }
 
+/// One profile as a listing shows it, before any probe: its entry, whether it is its harness's
+/// default, and what children's streams last said about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub profile: Profile,
+    pub default: bool,
+    pub usage: Usage,
+}
+
+/// **Every profile in the file, in its order**, without asking any harness — the cheap half of
+/// `marion profile list`, which a screen shows at once and then fills in with [`login_state`]. An
+/// entry whose harness this build does not know is skipped, as `list` always has.
+pub fn listed(paths: &ProfilePaths) -> Result<Vec<Listed>, ProfileError> {
+    let file = ProfilesFile::load(&paths.config)?;
+    Ok(file
+        .profile
+        .iter()
+        .filter_map(|entry| {
+            let harness = entry.harness.parse::<Harness>().ok()?;
+            Some(Listed {
+                default: file.default.get(harness.as_str()) == Some(&entry.name),
+                usage: read_usage(paths, harness, &entry.name),
+                profile: Profile {
+                    name: entry.name.clone(),
+                    harness,
+                    dir: entry.dir.clone(),
+                },
+            })
+        })
+        .collect())
+}
+
 /// What the harness's own probe says about a profile's login.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginState {
