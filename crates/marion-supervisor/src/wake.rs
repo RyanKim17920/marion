@@ -24,6 +24,42 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+/// **The one bounded poll**, for a wait nothing can wake: a child's exit where the caller holds no
+/// descriptor for it, a file another process creates without a watch. `cond` is asked every `step`
+/// until `budget` runs out, and once more after it, so a transition that lands exactly at the
+/// deadline is still seen; the answer is the condition's, never the clock's.
+///
+/// Every sleep-until-deadline loop in the one-shot paths goes through here, so the efficiency
+/// check has one site to hold to a clear deadline instead of one per copy.
+pub fn poll_until(budget: Duration, step: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(step);
+    }
+    cond()
+}
+
+/// `Child::wait` with a ceiling, over [`poll_until`]. `None` is "still running at the deadline",
+/// which is a finding and not an error — or a child that can no longer be waited on at all.
+pub fn wait_bounded(
+    child: &mut std::process::Child,
+    budget: Duration,
+) -> Option<std::process::ExitStatus> {
+    let mut status = None;
+    poll_until(budget, Duration::from_millis(20), || match child.try_wait() {
+        Ok(Some(s)) => {
+            status = Some(s);
+            true
+        }
+        Ok(None) => false,
+        Err(_) => true,
+    });
+    status
+}
+
 /// A self-pipe: [`Self::wake`] from any thread makes [`Self::fd`] readable until [`Self::drain`].
 ///
 /// A socket pair rather than `pipe(2)`: it is created close-on-exec by the standard library on every

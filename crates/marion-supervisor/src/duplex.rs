@@ -388,14 +388,7 @@ pub fn deny_response(request_id: &str, reason: &str) -> String {
 /// for this, because a sleep encodes the very race it is covering and the failure it permits is
 /// silent.
 pub fn wait_for_ready(path: &Path, timeout: StdDuration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(StdDuration::from_millis(10));
-    }
-    path.exists()
+    crate::wake::poll_until(timeout, StdDuration::from_millis(10), || path.exists())
 }
 
 /// Everything the driver observes on a node's stdout, handed to a [`DuplexSpec::sink`] **as it is

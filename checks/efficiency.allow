@@ -22,14 +22,12 @@ crates/marion-supervisor/src/run.rs:DRAIN_POLL_MS  tracked: efficiency waves (20
 crates/marion-supervisor/src/run.rs:Drain::finish  tracked: efficiency waves (DRAIN_POLL_MS sleep loop)
 crates/marion-supervisor/src/run.rs:run_bounded_with  tracked: efficiency waves (try_wait + sleep loop on the child)
 crates/marion-supervisor/src/duplex.rs:watchdog  tracked: efficiency waves (duplex watchdog sleep loop)
-crates/marion-supervisor/src/duplex.rs:wait_for_ready  tracked: efficiency waves (ready-file sleep loop)
 crates/marion-supervisor/src/duplex.rs:run_duplex  tracked: efficiency waves (recv_timeout on a fixed period)
 crates/marion-supervisor/src/descendant_gate.rs:HOLD_POLL  partial: a held node re-reads its subtree only when the registry changed (perf-wave1 95ec1bf); the 100 ms pause remains where no follower reads the journal
 crates/marion-supervisor/src/acp_child.rs:POLL  tracked: efficiency waves (20 ms ACP child poll)
 crates/marion-supervisor/src/acp_child.rs:prompt_session  tracked: efficiency waves (try_wait + sleep(POLL) loop)
 crates/marion-supervisor/src/acp_child.rs:Driver::settle_while  tracked: efficiency waves (try_wait + sleep(POLL) loop)
 crates/marion-supervisor/src/acp_child.rs:Driver::finish  tracked: efficiency waves (sleep(POLL) loop)
-crates/marion-supervisor/src/acp_child.rs:wait_bounded  tracked: efficiency waves (try_wait + sleep loop until a deadline)
 crates/marion-supervisor/src/native_relay.rs:POLL  tracked: efficiency waves (50 ms native relay tick)
 crates/marion-supervisor/src/native_relay.rs:RawPaneSession::start_keyboard  tracked: efficiency waves (keyboard thread sleep loop)
 crates/marion-supervisor/src/native_relay.rs:RawPaneSession::open_with_io  tracked: efficiency waves (read timeout as the relay tick)
@@ -39,19 +37,18 @@ crates/marion-supervisor/src/attach.rs:Session::open_with_terminal  tracked: eff
 crates/marion-supervisor/src/tree.rs:POLL  tracked: efficiency waves (50 ms tree poll)
 crates/marion-supervisor/src/tree.rs:dial  tracked: efficiency waves (read timeout as the tree tick)
 crates/marion-supervisor/src/bin/marion.rs:JOURNAL_POLL  backstop only: marion run tails the journal on write notifications; a 1 s re-read bounds a missed event (perf-wave1 bba68e0)
-crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::wait_for_supervisor_exit  tracked: efficiency waves (sleep loop until the supervisor exits)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
 crates/marion-supervisor/src/continuation.rs:OWED_POLL  untracked: 100 ms owed-turn poll period
 crates/marion-supervisor/src/handler.rs:Broadcast::start  untracked: broadcast thread sleeps in a loop
 crates/marion-supervisor/src/doctor.rs:AcpChild::response  untracked: doctor's ACP probe sleeps in a loop for a response (one-shot command, bounded)
-crates/marion-supervisor/src/doctor.rs:wait_bounded  untracked: doctor's try_wait + sleep loop (one-shot command, bounded)
 crates/marion-supervisor/src/socket.rs:acquire_within  untracked: sleep loop acquiring the socket lock until a deadline
 
 # --- bounded one-shot waits with a clear deadline -----------------------------------------------
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
 crates/marion-supervisor/src/handler.rs:ATTACHED_TICK  tracked: efficiency waves — 5 ms re-read of a followed node's events.jsonl, only while a client is attached to it (the accept loop itself now blocks in poll(2)); remove when a per-node file watch wakes it
+crates/marion-supervisor/src/wake.rs:poll_until  bounded one-shot wait: the one sleep-until-deadline loop, for a child's exit or a file nothing can wake on; every caller passes its own budget (ready file, INTERRUPT_GRACE, SUPERVISOR_EXIT_WAIT)
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
 
 # --- home-polish (2026-09-27): the event-driven home loop ---------------------------------------

@@ -2449,11 +2449,12 @@ impl SupervisorSession {
     /// Wait up to [`SUPERVISOR_EXIT_WAIT`] for an exiting supervisor's socket to go, and say so
     /// on `err` if it is still there.
     fn wait_for_supervisor_exit(&self, err: &mut io::Stderr) {
-        let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
-        while self.socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(StdDuration::from_millis(2));
-        }
-        if self.socket.exists() {
+        let gone = marion_supervisor::wake::poll_until(
+            SUPERVISOR_EXIT_WAIT,
+            StdDuration::from_millis(2),
+            || !self.socket.exists(),
+        );
+        if !gone {
             let _ = writeln!(
                 err,
                 "marion: this project's supervisor said it was exiting and {} is still there \

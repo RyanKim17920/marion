@@ -944,7 +944,7 @@ fn terminate(
     interrupted: bool,
     trailing: &mut Vec<String>,
 ) -> Option<std::process::ExitStatus> {
-    let exit = wait_bounded(child, INTERRUPT_GRACE);
+    let exit = crate::wake::wait_bounded(child, INTERRUPT_GRACE);
     match &exit {
         Some(s) => trailing.push(format!(
             "termination: exit {}{}",
@@ -1214,7 +1214,7 @@ impl AcpChild {
     fn finish(&mut self) -> bool {
         self.stdin.take();
         unsafe { kill(self.pid, SIGINT) };
-        if wait_bounded(&mut self.child, INTERRUPT_GRACE).is_some() {
+        if crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE).is_some() {
             return true;
         }
         unsafe { kill(self.pid, SIGKILL) };
@@ -1563,24 +1563,6 @@ fn read_bounded(child: &mut std::process::Child, budget: Duration) -> (String, b
     match rx.recv_timeout(budget) {
         Ok(s) => (s, false),
         Err(_) => (String::new(), true),
-    }
-}
-
-fn wait_bounded(
-    child: &mut std::process::Child,
-    budget: Duration,
-) -> Option<std::process::ExitStatus> {
-    let deadline = Instant::now() + budget;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => return Some(s),
-            Ok(None) => {}
-            Err(_) => return None,
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

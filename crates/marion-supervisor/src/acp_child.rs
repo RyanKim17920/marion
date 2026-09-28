@@ -1051,7 +1051,7 @@ impl<'a> Driver<'a> {
         if interruptible {
             unsafe { kill(self.pid, SIGINT) };
         }
-        let status = wait_bounded(&mut self.child, INTERRUPT_GRACE);
+        let status = crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE);
         let ended_on = if status.is_some() { SIGINT } else { SIGKILL };
         if status.is_none() {
             kill_process_tree(self.pid);
@@ -1165,23 +1165,6 @@ fn ok(id: &Value, result: Value) -> Value {
 
 fn err(id: &Value, code: i64, message: String) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
-/// `Child::wait` with a ceiling. `None` is "still running at the deadline", which is a finding and
-/// not an error.
-fn wait_bounded(child: &mut Child, budget: Duration) -> Option<std::process::ExitStatus> {
-    let deadline = Instant::now() + budget;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => return Some(s),
-            Ok(None) => {}
-            Err(_) => return None,
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(POLL);
-    }
 }
 
 #[cfg(test)]
