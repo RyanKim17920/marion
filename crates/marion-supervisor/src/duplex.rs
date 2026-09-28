@@ -1849,6 +1849,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     on_started: None,
                     turns: None,
                     stop_on: Some(&stop_on),
+                    dialect: Dialect::StreamJson,
                 },
             )
             .expect("the run returns");

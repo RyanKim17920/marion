@@ -197,6 +197,8 @@ pub fn compile(
         } else {
             t.path
         },
+        // A child of a root, the one depth every probe drives.
+        1,
         &w.repo,
         &w.config,
     );
