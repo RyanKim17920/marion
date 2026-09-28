@@ -5,8 +5,8 @@
 # deletes its line. THIS LIST ONLY SHRINKS: every entry below is debt with a named way out.
 #
 # Known per-harness code a syntax check cannot see (tracked in the same wave, not listed here
-# because nothing here would match it): duplex's `TypedKind::StreamJson | AppServer` launch-path
-# mapping, bin/marion.rs's stream-json frame renderers, doctor's `Option<acp::Binding>` paths.
+# because nothing here would match it): bin/marion.rs's stream-json frame renderers, doctor's
+# `Option<acp::Binding>` paths.
 
 # --- tracked: generalization wave B1–B8 ---------------------------------------------------------
 crates/marion-harness/src/adapter.rs:adapter_for  tracked: generalization wave B1–B8 (registry lookup instead of a per-variant match)

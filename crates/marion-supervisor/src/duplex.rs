@@ -90,9 +90,8 @@ pub enum LaunchPath {
 
 /// The path a node with these surfaces takes.
 ///
-/// Total on the control axis, and deliberately still an `Option`: the `None` is gone but the
-/// signature is the seam three call sites read, and widening it to a bare `LaunchPath` would put
-/// an unrelated edit in `root.rs` and `run.rs` on the same commit as this one.
+/// An `Option` because a typed protocol can be named before marion drives it: `None` is a
+/// transport with no path yet, which every call site refuses by name.
 pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
     match surfaces.control {
         // **Named, not a wildcard's leftover.** `Typed(_)` used to mean `stream-json` because it
@@ -103,9 +102,13 @@ pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
         ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
         // A row's JSONL command channel is driven by the same loop as stream-json, in the row's
         // own vocabulary ([`Dialect::Jsonl`]).
-        ControlTransport::Typed(
-            TypedKind::StreamJson | TypedKind::AppServer | TypedKind::JsonlRpc,
-        ) => Some(LaunchPath::Duplex),
+        ControlTransport::Typed(TypedKind::StreamJson | TypedKind::JsonlRpc) => {
+            Some(LaunchPath::Duplex)
+        }
+        // **No driver yet, so no path.** codex's app-server speaks JSON-RPC with a thread
+        // handshake; driven as `Duplex` it would be written stream-json frames it cannot read.
+        // `None` is every caller's named refusal (`UnsupportedRootSurface`), never a guess.
+        ControlTransport::Typed(TypedKind::AppServer) => None,
         ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
         ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
     }
@@ -1091,6 +1094,18 @@ mod tests {
     use marion_harness::adapter_for;
     use marion_testsupport::scratch;
 
+    /// An app-server node has no driver, so it has no path — never the stream-json loop, whose
+    /// `user` frames a JSON-RPC server cannot read. Mutation: route `AppServer` to `Duplex`.
+    #[test]
+    fn an_app_server_node_is_given_no_path_until_one_drives_it() {
+        use marion_harness::DisplaySurface;
+        for display in [DisplaySurface::StructuredUi, DisplaySurface::NativePty] {
+            let control = ControlTransport::Typed(TypedKind::AppServer);
+            let s = ExecutionSurfaces::new(control, display, []);
+            assert_eq!(launch_path(&s), None, "{s:?}");
+        }
+    }
+
     /// **The routing rule, asserted the way §3.4 requires it to be written.** Not one arm of this
     /// matches on a harness name: the expectation is derived from the adapter's own
     /// `ExecutionSurfaces`, so a fifth harness gets the right path by declaring its surfaces and
@@ -1104,6 +1119,7 @@ mod tests {
             let surfaces = adapter_for(h).unwrap().surfaces();
             let expected = match surfaces.control {
                 ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
+                ControlTransport::Typed(TypedKind::AppServer) => None,
                 ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
                 ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
                 ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
