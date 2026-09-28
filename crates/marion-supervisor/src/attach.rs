@@ -277,15 +277,45 @@ fn watch_keyboard(
     writer: Arc<std::sync::Mutex<UnixStream>>,
     leaving: Arc<AtomicBool>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
-    mut encoder: KeyboardEncoder,
+    encoder: KeyboardEncoder,
 ) {
     let Some(mut stdin) = open_keyboard(input_fd, &failure, &leaving) else {
         return;
     };
+    pump_keyboard(&mut stdin, id, writable, writer, leaving, failure, encoder);
+}
+
+/// The operator's keyboard as [`pump_keyboard`] reads it: a bounded wait for input, then the read,
+/// as two steps so the worker can look at `leaving` between them. A trait only so a test can hold
+/// the wait open at the one instant that matters.
+trait KeyboardInput {
+    fn wait(&mut self, timeout: std::time::Duration) -> std::io::Result<bool>;
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>>;
+}
+
+impl KeyboardInput for marion_tui::guard::Keyboard {
+    fn wait(&mut self, timeout: std::time::Duration) -> std::io::Result<bool> {
+        self.wait_within(timeout)
+    }
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+        self.read_ready(buf)
+    }
+}
+
+/// [`watch_keyboard`]'s loop, over an already-open keyboard.
+fn pump_keyboard(
+    stdin: &mut impl KeyboardInput,
+    id: AgentId,
+    writable: bool,
+    writer: Arc<std::sync::Mutex<UnixStream>>,
+    leaving: Arc<AtomicBool>,
+    failure: Arc<std::sync::Mutex<Option<String>>>,
+    mut encoder: KeyboardEncoder,
+) {
     let mut keys = Keys::new();
     let mut buf = [0u8; 4096];
     while !leaving.load(Ordering::SeqCst) {
-        let n = match read_keyboard(&mut stdin, &mut buf, &encoder, &failure, &leaving) {
+        let n = match read_keyboard(stdin, &mut buf, &encoder, &failure, &leaving) {
             KeyRead::Idle => continue,
             KeyRead::Bytes(n) => n,
             KeyRead::Stop => return,
@@ -322,14 +352,25 @@ fn open_keyboard(
 
 /// One bounded read. A closed stdin is reported rather than treated as a detach, and the report
 /// names a half-typed scalar because that is the one case where bytes were actually lost.
+///
+/// **`leaving` is looked at again between the wait and the read.** The session can end while the
+/// wait is open — a detach, the supervisor closing the connection — and a keystroke that woke the
+/// wait after that belongs to the operator's shell, not to a node this client no longer holds. It
+/// is left unread in the terminal rather than consumed and forwarded.
 fn read_keyboard(
-    stdin: &mut marion_tui::guard::Keyboard,
+    stdin: &mut impl KeyboardInput,
     buf: &mut [u8; 4096],
     encoder: &KeyboardEncoder,
     failure: &std::sync::Mutex<Option<String>>,
     leaving: &AtomicBool,
 ) -> KeyRead {
-    match stdin.read_within(buf, POLL) {
+    let read = match stdin.wait(POLL) {
+        Ok(false) => Ok(None),
+        Ok(true) if leaving.load(Ordering::SeqCst) => return KeyRead::Stop,
+        Ok(true) => stdin.read(buf),
+        Err(error) => Err(error),
+    };
+    match read {
         Ok(None) => KeyRead::Idle,
         Ok(Some(0)) => {
             *failure.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -1239,6 +1280,79 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use marion_core::proto::PaneFrameKindV1;
+
+    /// **A keystroke that wakes the keyboard wait after the session ended is neither read nor
+    /// forwarded.** The wait is held open by the fake; the session ends (`leaving`) while it is;
+    /// then input arrives and the wait returns ready. The worker must stop without reading, so the
+    /// byte stays in the operator's terminal and nothing reaches the supervisor.
+    ///
+    /// Mutation: drop the `leaving` check between wait and read and `k` is read and sent.
+    #[test]
+    fn a_keystroke_that_arrives_after_the_session_ends_is_not_forwarded() {
+        struct HeldWait {
+            entered: std::sync::mpsc::SyncSender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl KeyboardInput for HeldWait {
+            fn wait(&mut self, _: std::time::Duration) -> std::io::Result<bool> {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+                Ok(true)
+            }
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                buf[0] = b'k';
+                Ok(Some(1))
+            }
+        }
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (entered, entered_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release) = std::sync::mpsc::sync_channel(0);
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let leaving = Arc::new(AtomicBool::new(false));
+        let failure = Arc::new(std::sync::Mutex::new(None));
+        let mut input = HeldWait {
+            entered,
+            release,
+            reads: Arc::clone(&reads),
+        };
+        let worker = {
+            let (leaving, failure) = (Arc::clone(&leaving), Arc::clone(&failure));
+            let writer = Arc::new(std::sync::Mutex::new(client));
+            std::thread::spawn(move || {
+                pump_keyboard(
+                    &mut input,
+                    AgentId("root".into()),
+                    true,
+                    writer,
+                    leaving,
+                    failure,
+                    KeyboardEncoder::V1,
+                );
+            })
+        };
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the worker waits for input");
+        leaving.store(true, Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        worker.join().expect("the worker stops cleanly");
+
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "the keystroke stays unread"
+        );
+        let mut sent = Vec::new();
+        server.read_to_end(&mut sent).unwrap();
+        assert!(
+            sent.is_empty(),
+            "nothing was forwarded: {:?}",
+            String::from_utf8_lossy(&sent)
+        );
+        assert_eq!(*failure.lock().unwrap(), None, "a detach is not a failure");
+    }
     use std::io::{BufRead, BufReader};
     use std::os::fd::AsRawFd;
     use std::sync::Mutex;

@@ -381,7 +381,8 @@ impl Keyboard {
         Ok(Self { fd })
     }
 
-    /// Wait up to `timeout` for input, then read what is there.
+    /// Wait up to `timeout` for input, then read what is there: [`Self::wait_within`], then
+    /// [`Self::read_ready`].
     ///
     /// `Ok(None)` is silence — nothing arrived in time, and an interrupted wait counts as silence
     /// too, since the caller's loop is about to look again. `Ok(Some(0))` is the descriptor closed
@@ -393,7 +394,19 @@ impl Keyboard {
         buf: &mut [u8],
         timeout: std::time::Duration,
     ) -> std::io::Result<Option<usize>> {
-        use std::os::fd::{FromRawFd, IntoRawFd};
+        if !self.wait_within(timeout)? {
+            return Ok(None);
+        }
+        self.read_ready(buf)
+    }
+
+    /// Wait up to `timeout` for the descriptor to become readable, reading nothing.
+    ///
+    /// `Ok(false)` is silence (an interrupted wait included). `Ok(true)` means input, a hang-up or
+    /// an error is pending, so a following [`Self::read_ready`] cannot block. Separate from the
+    /// read so a caller can re-check its own state between the two: a keystroke that arrives as
+    /// the caller decides to stop stays unread in the terminal rather than being consumed.
+    pub fn wait_within(&mut self, timeout: std::time::Duration) -> std::io::Result<bool> {
         let mut pfd = PollFd {
             fd: self.fd,
             events: POLLIN,
@@ -406,13 +419,13 @@ impl Keyboard {
         if ready < 0 {
             let error = std::io::Error::last_os_error();
             return if error.kind() == std::io::ErrorKind::Interrupted {
-                Ok(None)
+                Ok(false)
             } else {
                 Err(error)
             };
         }
         if ready == 0 {
-            return Ok(None);
+            return Ok(false);
         }
         if pfd.revents & POLLNVAL != 0 {
             return Err(std::io::Error::new(
@@ -421,6 +434,13 @@ impl Keyboard {
             ));
         }
         // `POLLIN`, `POLLHUP` or `POLLERR`: the read decides, and cannot block after any of them.
+        Ok(true)
+    }
+
+    /// Read what [`Self::wait_within`] reported, as `read(2)` does: `Ok(Some(0))` is a closed
+    /// descriptor, and an interrupted read is `Ok(None)`.
+    pub fn read_ready(&mut self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+        use std::os::fd::{FromRawFd, IntoRawFd};
         // SAFETY: `self.fd` is owned by the caller for this reader's lifetime; the `File` is
         // immediately defused with `into_raw_fd` so it never closes a descriptor it did not open.
         let mut f = unsafe { std::fs::File::from_raw_fd(self.fd) };
