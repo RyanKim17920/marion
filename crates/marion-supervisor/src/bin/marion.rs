@@ -1895,16 +1895,11 @@ fn follow_journal(
     }
 }
 
-/// The journal tail's **safety** poll while a run is in flight.
-///
-/// Not the latency: the tail waits on the journal's change notification and on the run's stop
-/// flag ([`nap_until_the_journal_changes`]), so a record is read as soon as it is written and a
-/// finished run stops at once. This bounds only what a watch could miss. It used to be the
-/// latency, at 100 ms — ten `open`+`metadata` pairs and ten wakeups a second for the whole run.
-const JOURNAL_POLL: StdDuration = StdDuration::from_secs(1);
-
-/// [`follow_journal`]'s pause: until the journal is written, the run stops, or `safety` passes
-/// ([`JOURNAL_POLL`] in production).
+/// [`follow_journal`]'s pause: until the journal is written or the run stops — no timeout. The
+/// journal's change notification sees every writer and re-arms across a replaced file, and the
+/// stop flag's descriptor ends a finished run's nap at once; only a source that could not be made
+/// pollable makes the nap re-check at [`marion_supervisor::wake::DEGRADED_RECHECK`]. It used to
+/// re-read every 100 ms — ten `open`+`metadata` pairs and ten wakeups a second for the whole run.
 ///
 /// **Wait, then re-arm**, and the poll comes after: a write that lands between the poll and this
 /// wait left an event pending since the last re-arm, so the wait returns at once, and a write that
@@ -1912,17 +1907,9 @@ const JOURNAL_POLL: StdDuration = StdDuration::from_secs(1);
 fn nap_until_the_journal_changes(
     file: &std::cell::RefCell<marion_supervisor::wake::Watch>,
     stop: &marion_supervisor::wake::Flag,
-    safety: StdDuration,
 ) {
     let mut file = file.borrow_mut();
-    {
-        let fds: Vec<_> = file.fd().into_iter().chain(stop.fd()).collect();
-        if fds.is_empty() {
-            std::thread::sleep(safety);
-        } else {
-            marion_supervisor::wake::wait_readable(&fds, Some(safety));
-        }
-    }
+    marion_supervisor::wake::wait_until(&[file.fd(), stop.fd()], None);
     file.rearm();
 }
 
@@ -2289,13 +2276,26 @@ impl SupervisorSession {
 
     /// Wait up to [`SUPERVISOR_EXIT_WAIT`] for an exiting supervisor's socket to go, and say so
     /// on `err` if it is still there.
+    ///
+    /// The socket's **directory** is watched, not the socket: a socket cannot be opened to be
+    /// watched, and its unlinking is an entry change in the directory. The watch is armed before
+    /// the first look, so an unlink between the look and the wait still ends it.
     fn wait_for_supervisor_exit(&self, err: &mut io::Stderr) {
-        let gone = marion_supervisor::wake::poll_until(
-            SUPERVISOR_EXIT_WAIT,
-            StdDuration::from_millis(2),
-            || !self.socket.exists(),
-        );
-        if !gone {
+        let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
+        let mut dir = self
+            .socket
+            .parent()
+            .map(marion_supervisor::wake::Watch::new);
+        while self.socket.exists() && std::time::Instant::now() < deadline {
+            marion_supervisor::wake::wait_until(
+                &[dir.as_ref().and_then(|w| w.fd())],
+                Some(deadline),
+            );
+            if let Some(dir) = dir.as_mut() {
+                dir.rearm();
+            }
+        }
+        if self.socket.exists() {
             let _ = writeln!(
                 err,
                 "marion: this project's supervisor said it was exiting and {} is still there \
@@ -2857,7 +2857,7 @@ fn tail_children(
         follow_journal(
             &mut watch,
             &|| stop.load(Ordering::Relaxed),
-            &|| nap_until_the_journal_changes(&file, &stop, JOURNAL_POLL),
+            &|| nap_until_the_journal_changes(&file, &stop),
             &mut |event| {
                 terminal.show(&|w| {
                     let _ = render_child(event, w);
@@ -4080,8 +4080,8 @@ mod tests {
     ///
     /// Deterministic rather than timed: the records land *during* the nap, from the test's own
     /// `nap`, after the stop flag is already set.
-    /// **The tail sleeps until the journal is written or the run stops**, not on a timer: with an
-    /// hour's safety poll, an append from another process and a raised stop flag each end the nap.
+    /// **The tail sleeps until the journal is written or the run stops**, not on a timer: with no
+    /// timeout at all, an append from another process and a raised stop flag each end the nap.
     #[test]
     fn the_journal_tail_naps_until_a_write_or_a_stop() {
         let dir = marion_testsupport::scratch("marion-bin-nap");
@@ -4096,7 +4096,7 @@ mod tests {
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let cell = file.lock().unwrap().take().unwrap();
-                nap_until_the_journal_changes(&cell, &stop, StdDuration::from_secs(3600));
+                nap_until_the_journal_changes(&cell, &stop);
                 *file.lock().unwrap() = Some(cell);
                 let _ = tx.send(());
             });

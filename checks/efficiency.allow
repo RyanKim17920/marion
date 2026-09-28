@@ -12,7 +12,6 @@ crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  tracked: effici
 crates/marion-supervisor/src/rpc.rs:Driver::settle_until  bounded: waits on the reader/inbox condvar; try_wait is the one non-event check, once per LIVENESS_TICK (2 s) while a node is live, for a server that died with its stdout still held
 crates/marion-supervisor/src/rpc.rs:LIVENESS_TICK  bounded: the safety bound on a condvar wait (2 s), never the ordinary path — see Driver::settle_until
 crates/marion-supervisor/src/acp_child.rs:prompt_session  bounded: the held-inbox wait blocks on the shared driver's condvar (rpc::Driver::wait_event); try_wait once per wake or LIVENESS_TICK (2 s)
-crates/marion-supervisor/src/bin/marion.rs:JOURNAL_POLL  backstop only: marion run tails the journal on write notifications; a 1 s re-read bounds a missed event (perf-wave1 bba68e0)
 
 # --- untracked: first found by the three-axis check; reported, not yet scheduled ----------------
 crates/marion-supervisor/src/handler.rs:Broadcast::start  untracked: broadcast thread sleeps in a loop
