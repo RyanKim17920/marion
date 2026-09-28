@@ -1,6 +1,7 @@
 //! **The `marion run` under test, and the cleanup that outlives a failing assertion.**
 //!
-//! Shared by `client_run.rs` and `node_attach.rs`, which each used to carry a copy.
+//! Shared by `client_run.rs` and `node_attach.rs`, which each used to carry a copy; [`finish`] by
+//! `pi_rpc.rs` and `turn_delivery.rs`, likewise.
 
 use std::path::Path;
 use std::process::{Child, Command};
@@ -117,4 +118,28 @@ pub fn start_run(
         gate: Arc::clone(gate),
         needle: dir.display().to_string(),
     }
+}
+
+/// Wait for a plain `marion run` child to exit 0 inside `bound`, killing it on expiry.
+///
+/// For the beds that spawn `marion run` themselves with stderr sent to `stderr_log`: a nonzero
+/// exit fails with that file's contents in hand, so the reason is in the failure, not a rerun away.
+pub fn finish(mut run: Child, bound: Duration, stderr_log: &Path) {
+    let until = Instant::now() + bound;
+    let status = loop {
+        if let Some(s) = run.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= until {
+            let _ = run.kill();
+            let _ = run.wait();
+            panic!("marion run did not finish inside {bound:?}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let stderr = std::fs::read_to_string(stderr_log).unwrap_or_default();
+    assert!(
+        status.success(),
+        "marion run exited {status}\nstderr:\n{stderr}"
+    );
 }

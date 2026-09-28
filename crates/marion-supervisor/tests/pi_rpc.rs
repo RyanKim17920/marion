@@ -35,6 +35,8 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::run::finish;
+
 /// Generous; it exists so a hang fails instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(90);
 
@@ -216,27 +218,6 @@ impl Bed {
     }
 }
 
-/// Wait for `marion run` to exit 0 inside the bound, killing it on expiry.
-fn finish(bed: &Bed, mut run: Child) {
-    let until = Instant::now() + RUN_BOUND;
-    let status = loop {
-        if let Some(s) = run.try_wait().unwrap() {
-            break s;
-        }
-        if Instant::now() >= until {
-            let _ = run.kill();
-            let _ = run.wait();
-            panic!("marion run did not finish inside {RUN_BOUND:?}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let stderr = std::fs::read_to_string(bed.dir.join("run.stderr")).unwrap_or_default();
-    assert!(
-        status.success(),
-        "marion run exited {status}\nstderr:\n{stderr}"
-    );
-}
-
 /// A pi root whose one call is a blocking `spawn` of a pi child with `child_prompt`.
 fn delegating_root(marker: &str, child_prompt: String, timeout_secs: u64) -> NodeScript {
     NodeScript {
@@ -319,7 +300,7 @@ fn a_steer_into_a_running_pi_child_is_read_in_the_next_request_of_the_same_turn(
         !bed.delivered(&child).is_empty()
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let child_requests: Vec<Value> = bed
         .requests()
@@ -396,7 +377,7 @@ fn a_pi_child_past_its_wall_clock_is_aborted_and_times_out_without_a_kill() {
     });
     let events = bed.events_of(&child);
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     assert!(
         events.contains(r#""stopReason":"aborted""#),
@@ -475,7 +456,7 @@ fn a_background_childs_end_reaches_its_held_pi_parent_once_as_its_next_turn() {
         bed.events_of(&root).contains(r#""type":"agent_end""#)
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let last_root = bed
         .requests()

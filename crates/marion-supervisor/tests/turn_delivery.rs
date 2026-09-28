@@ -44,6 +44,8 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::run::finish;
+
 /// Generous; it exists so a hang fails instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(240);
 
@@ -230,27 +232,6 @@ impl Bed {
     }
 }
 
-/// Wait for `marion run` to exit 0 inside the bound, killing it on expiry.
-fn finish(bed: &Bed, mut run: Child) {
-    let until = Instant::now() + RUN_BOUND;
-    let status = loop {
-        if let Some(s) = run.try_wait().unwrap() {
-            break s;
-        }
-        if Instant::now() >= until {
-            let _ = run.kill();
-            let _ = run.wait();
-            panic!("marion run did not finish inside {RUN_BOUND:?}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let stderr = std::fs::read_to_string(bed.dir.join("run.stderr")).unwrap_or_default();
-    assert!(
-        status.success(),
-        "marion run exited {status}\nstderr:\n{stderr}"
-    );
-}
-
 fn delivered(bed: &Bed, agent: &AgentId) -> Vec<(String, String)> {
     common::journal::delivered_to(&bed.project().journal(), agent)
 }
@@ -306,7 +287,7 @@ fn a_steer_into_a_running_headless_claude_node_is_read_in_the_next_request_of_th
         !delivered(&bed, &root).is_empty()
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let root_requests: Vec<Value> = bed
         .requests()
@@ -392,7 +373,7 @@ fn a_background_childs_end_reaches_its_held_headless_claude_parent_once_as_its_n
         std::fs::read_to_string(&events).is_ok_and(|e| e.contains(r#""type":"result""#))
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let last_root = bed
         .requests()
@@ -482,7 +463,7 @@ fn a_steer_into_a_running_acp_opencode_node_is_read_in_the_next_request_of_the_s
         !delivered(&bed, &root).is_empty()
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let root_requests: Vec<Value> = bed
         .requests()
@@ -575,7 +556,7 @@ fn a_background_codex_childs_end_reaches_its_held_acp_opencode_parent_once_as_it
         std::fs::read_to_string(&events).is_ok_and(|e| e.contains(r#""stopReason""#))
     });
     hold.release();
-    finish(&bed, run);
+    finish(run, RUN_BOUND, &bed.dir.join("run.stderr"));
 
     let last_root = bed
         .requests()
