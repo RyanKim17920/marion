@@ -217,11 +217,31 @@ impl Flag {
         self.set.load(order)
     }
 
+    /// Raising rings the descriptor; lowering drains it, so a flag that is reused (a worker
+    /// parked and restarted) does not leave its next waiter woken by the last raise. Lower it only
+    /// while nobody is waiting on it.
     pub fn store(&self, value: bool, order: Ordering) {
         self.set.store(value, order);
-        if value && let Some(wake) = &self.wake {
-            wake.wake();
+        if let Some(wake) = &self.wake {
+            if value {
+                wake.wake();
+            } else {
+                wake.drain();
+            }
         }
+    }
+
+    /// [`Self::store`], returning the previous value.
+    pub fn swap(&self, value: bool, order: Ordering) -> bool {
+        let was = self.set.swap(value, order);
+        if let Some(wake) = &self.wake {
+            if value {
+                wake.wake();
+            } else {
+                wake.drain();
+            }
+        }
+        was
     }
 
     /// Readable once the flag has been raised. `None` if no descriptor could be had, in which case
@@ -337,6 +357,183 @@ impl ProcExit {
     /// The descriptor to include in a `poll`. `None` means "nothing will wake you".
     pub fn fd(&self) -> Option<BorrowedFd<'_>> {
         self.inner.as_ref().map(|i| i.fd())
+    }
+}
+
+/// A **signal's arrival** made pollable, for a signal the caller keeps blocked and inspects with
+/// `sigpending` (so a handler never runs and nothing else would wake a `poll`).
+///
+/// kqueue `EVFILT_SIGNAL` on macOS and the BSDs, which records every attempt to deliver the
+/// signal — blocked or not — from its registration on; a signalfd on Linux, readable while the
+/// signal is pending for the calling thread and **never read**, since a read would consume it.
+/// Create it on the thread that blocks the signal.
+///
+/// Register, then look: a signal already pending when the watch was made may not show on it, so a
+/// waiter checks `sigpending` after creating the watch and after every wake, as with
+/// [`ProcExit`]. `None` from [`Self::fd`] means no mechanism; [`wait_until`] then re-checks at
+/// [`DEGRADED_RECHECK`].
+pub struct SignalWatch {
+    inner: Option<signal_imp::Inner>,
+}
+
+impl std::fmt::Debug for SignalWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalWatch")
+            .field("armed", &self.inner.is_some())
+            .finish()
+    }
+}
+
+impl SignalWatch {
+    pub fn new(signal: i32) -> SignalWatch {
+        SignalWatch {
+            inner: signal_imp::Inner::new(signal),
+        }
+    }
+
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.inner.as_ref().map(|i| i.fd())
+    }
+
+    /// Consume the postings seen so far, so the descriptor is quiet until the next one. Call after
+    /// it woke a wait and **before** looking at `sigpending`. A no-op on a signalfd, whose
+    /// readiness is the pending state itself: consuming that would consume the signal.
+    pub fn drain(&self) {
+        if let Some(inner) = &self.inner {
+            inner.drain();
+        }
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+mod signal_imp {
+    //! kqueue `EVFILT_SIGNAL`: readable once the signal has been posted since registration or
+    //! the last [`Inner::drain`].
+    use rustix::event::kqueue::{Event, EventFilter, EventFlags, kevent, kqueue};
+    use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+
+    pub(super) struct Inner {
+        kq: OwnedFd,
+    }
+
+    impl Inner {
+        pub(super) fn new(signal: i32) -> Option<Inner> {
+            let kq = kqueue().ok()?;
+            let signal = rustix::process::Signal::from_named_raw(signal)?;
+            let change = Event::new(
+                EventFilter::Signal { signal, times: 0 },
+                EventFlags::ADD,
+                std::ptr::null_mut(),
+            );
+            let mut none: Vec<Event> = Vec::new();
+            // SAFETY: a signal filter names a signal, not a descriptor.
+            unsafe { kevent(&kq, &[change], &mut none, Some(std::time::Duration::ZERO)) }.ok()?;
+            Some(Inner { kq })
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            self.kq.as_fd()
+        }
+
+        pub(super) fn drain(&self) {
+            let mut buf: Vec<Event> = Vec::with_capacity(4);
+            loop {
+                buf.clear();
+                // SAFETY: the only registration is a signal filter, which names no descriptor.
+                let got = unsafe {
+                    kevent(
+                        &self.kq,
+                        &[],
+                        rustix::buffer::spare_capacity(&mut buf),
+                        Some(std::time::Duration::ZERO),
+                    )
+                };
+                if !matches!(got, Ok(n) if n > 0) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod signal_imp {
+    //! A signalfd over one signal, polled and never read.
+    use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
+
+    /// glibc's and musl's `sigset_t`: 1024 bits. The kernel reads the first 64.
+    type SigSet = [u64; 16];
+
+    unsafe extern "C" {
+        fn signalfd(fd: std::ffi::c_int, mask: *const SigSet, flags: std::ffi::c_int)
+        -> std::ffi::c_int;
+    }
+
+    /// `SFD_CLOEXEC | SFD_NONBLOCK`: `O_CLOEXEC` and `O_NONBLOCK` on every Linux marion builds for.
+    const SFD_FLAGS: std::ffi::c_int = 0o2_000_000 | 0o4_000;
+
+    pub(super) struct Inner {
+        fd: OwnedFd,
+    }
+
+    impl Inner {
+        pub(super) fn new(signal: i32) -> Option<Inner> {
+            let bit = u32::try_from(signal).ok()?.checked_sub(1)?;
+            let mut mask: SigSet = [0; 16];
+            *mask.get_mut((bit / 64) as usize)? |= 1u64 << (bit % 64);
+            // SAFETY: `mask` is a live, correctly sized `sigset_t`; -1 asks for a new descriptor.
+            let fd = unsafe { signalfd(-1, &mask, SFD_FLAGS) };
+            if fd < 0 {
+                return None;
+            }
+            // SAFETY: `signalfd` just returned this descriptor and nothing else owns it.
+            Some(Inner {
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+            })
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            self.fd.as_fd()
+        }
+
+        pub(super) fn drain(&self) {}
+    }
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_os = "linux"
+)))]
+mod signal_imp {
+    //! No signal watch: waiters re-check at [`super::DEGRADED_RECHECK`].
+    use std::os::fd::BorrowedFd;
+
+    pub(super) struct Inner(std::convert::Infallible);
+
+    impl Inner {
+        pub(super) fn new(_signal: i32) -> Option<Inner> {
+            None
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            match self.0 {}
+        }
+
+        pub(super) fn drain(&self) {
+            match self.0 {}
+        }
     }
 }
 
@@ -733,6 +930,88 @@ mod tests {
         flag.store(true, Ordering::SeqCst);
         assert!(flag.load(Ordering::SeqCst));
         assert!(wait_readable(&[flag.fd().unwrap()], Some(BOUND))[0]);
+    }
+
+    #[test]
+    fn lowering_a_flag_drains_it_so_a_reused_flag_does_not_wake_its_next_waiter() {
+        let flag = Flag::new();
+        assert!(!flag.swap(true, Ordering::SeqCst));
+        assert!(wait_readable(&[flag.fd().unwrap()], Some(Duration::ZERO))[0]);
+        assert!(flag.swap(false, Ordering::SeqCst));
+        assert!(
+            !wait_readable(&[flag.fd().unwrap()], Some(Duration::ZERO))[0],
+            "a lowered flag is quiet"
+        );
+        flag.store(true, Ordering::SeqCst);
+        flag.store(false, Ordering::SeqCst);
+        assert!(!wait_readable(&[flag.fd().unwrap()], Some(Duration::ZERO))[0]);
+    }
+
+    /// A blocked signal runs no handler and interrupts no `poll`; the watch is what wakes a waiter
+    /// for it and stays readable until drained — on Linux, until the signal is no longer pending.
+    /// Run in a child process that starts with the signal
+    /// blocked — the mask survives `exec`, so every thread libtest makes inherits it and a
+    /// process-directed signal (what a terminal's `^Z` is) can only go pending.
+    #[test]
+    fn a_signal_watch_fires_for_a_blocked_signal_and_leaves_it_pending() {
+        use std::os::unix::process::CommandExt;
+        const PROBE: &str = "MARION_WAKE_SIGNAL_WATCH_PROBE";
+        // SIGUSR2: 31 on Darwin, 12 on Linux.
+        #[cfg(target_os = "linux")]
+        const SIGUSR2: i32 = 12;
+        #[cfg(not(target_os = "linux"))]
+        const SIGUSR2: i32 = 31;
+        type SigSet = [u64; 16];
+        unsafe extern "C" {
+            fn pthread_sigmask(how: i32, set: *const SigSet, old: *mut SigSet) -> i32;
+        }
+        #[cfg(target_os = "linux")]
+        const SIG_BLOCK: i32 = 0;
+        #[cfg(not(target_os = "linux"))]
+        const SIG_BLOCK: i32 = 1;
+        let bit: u64 = 1 << (SIGUSR2 - 1);
+        if std::env::var_os(PROBE).is_none() {
+            let mut probe = std::process::Command::new(std::env::current_exe().unwrap());
+            probe
+                .args([
+                    "--exact",
+                    "wake::tests::a_signal_watch_fires_for_a_blocked_signal_and_leaves_it_pending",
+                    "--test-threads=1",
+                ])
+                .env(PROBE, "1");
+            // SAFETY: `pthread_sigmask` is async-signal-safe; `set` is a live, large enough
+            // `sigset_t`.
+            unsafe {
+                probe.pre_exec(move || {
+                    let mut set: SigSet = [0; 16];
+                    set[0] = bit;
+                    match pthread_sigmask(SIG_BLOCK, &set, std::ptr::null_mut()) {
+                        0 => Ok(()),
+                        e => Err(std::io::Error::from_raw_os_error(e)),
+                    }
+                });
+            }
+            let status = probe.status().unwrap();
+            assert!(status.success(), "the probe failed: {status}");
+            return;
+        }
+        let watch = SignalWatch::new(SIGUSR2);
+        assert!(!readable(watch.fd(), Duration::ZERO), "nothing posted yet");
+        let signal = rustix::process::Signal::from_named_raw(SIGUSR2).unwrap();
+        rustix::process::kill_process(rustix::process::getpid(), signal).unwrap();
+        assert!(readable(watch.fd(), BOUND), "the posting makes it readable");
+        assert!(readable(watch.fd(), Duration::ZERO), "and it stays readable");
+        watch.drain();
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            !readable(watch.fd(), Duration::ZERO),
+            "a drained kqueue is quiet until the next posting"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            readable(watch.fd(), Duration::ZERO),
+            "a signalfd stays readable while the signal is pending: a drain must not consume it"
+        );
     }
 
     #[test]

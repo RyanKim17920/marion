@@ -30,10 +30,30 @@ mod sequence;
 
 type Refusal = String;
 
-const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+/// How long one write to the supervisor may block. A bound on a stalled peer, never a cadence.
+const WRITE_BOUND: std::time::Duration = std::time::Duration::from_millis(50);
 /// The attach is request 1; the status row's `tree/subscribe` is the relay's only other request.
 const STATUS_SUBSCRIBE_ID: RequestId = RequestId::Number(2);
 static RESIZED: AtomicBool = AtomicBool::new(false);
+/// "Look at the flags again": rung by the relay's signal handler after it publishes a resize or a
+/// termination, and by the keyboard worker after a status toggle, so the pump's `poll(2)` returns
+/// for them. [`crate::wake::Pipe::wake`] is an atomic swap and one `write(2)`, both
+/// async-signal-safe; the pipe exists before any handler is installed ([`relay_wake`] runs in
+/// [`RelaySignalGuard::acquire`] first). `None` inside only if no descriptor could be had, and the
+/// pump then re-checks at [`crate::wake::DEGRADED_RECHECK`].
+static RELAY_WAKE: std::sync::OnceLock<Option<crate::wake::Pipe>> = std::sync::OnceLock::new();
+
+fn relay_wake() -> Option<&'static crate::wake::Pipe> {
+    RELAY_WAKE
+        .get_or_init(|| crate::wake::Pipe::new().ok())
+        .as_ref()
+}
+
+fn ring_relay_wake() {
+    if let Some(Some(wake)) = RELAY_WAKE.get() {
+        wake.wake();
+    }
+}
 static RELAY_SIGNAL_EVENTS: AtomicU32 = AtomicU32::new(0);
 static FIRST_RELAY_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static RELAY_SIGNAL_OWNER: Mutex<()> = Mutex::new(());
@@ -256,6 +276,7 @@ extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
         }
         _ => {}
     }
+    ring_relay_wake();
 }
 
 struct PriorSignalAction {
@@ -316,6 +337,7 @@ impl std::error::Error for RelaySignalRestoreError {}
 impl RelaySignalGuard {
     pub(crate) fn acquire() -> Result<Self, Refusal> {
         let (owner, stop_owned) = Self::claim_ownership()?;
+        relay_wake();
         // No signal edge from a prior owner may leak into this session.
         RESIZED.store(false, Ordering::SeqCst);
         RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
@@ -1088,7 +1110,9 @@ struct RawPaneSession<W: Write> {
     /// ended when the relay reached it: the node is finished, so this session replays what it
     /// said and never sends a resize or a keystroke at it.
     writable: bool,
-    leaving: Arc<AtomicBool>,
+    /// Raised by the keyboard worker when it stops and by [`Self::park_keyboard`]; raising it
+    /// wakes the worker's `poll`, and lowering it (a resume) drains it.
+    leaving: Arc<crate::wake::Flag>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     /// Whether any keystroke has been forwarded. The supervisor refuses opaque input by closing
     /// the connection (`serve::Departure::PaneInputFailed`), so an EOF before End is a refusal
@@ -1103,7 +1127,8 @@ struct RawPaneSession<W: Write> {
 
 /// The shortest gap between two repaints of the status row that node output asked for: the node
 /// may have cleared the screen or switched screens under it. A change to the row's own text
-/// repaints at the next tick, and an idle node gets no repaint at all.
+/// repaints at the pump's next pass, output since the last paint sets a deadline of this long
+/// after it ([`StatusOverlay::next_due`]), and an idle node gets no repaint at all.
 const STATUS_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// marion's one optional row on the operator's terminal, and the `tree/subscribe` behind it.
@@ -1223,6 +1248,21 @@ impl StatusOverlay {
         }
     }
 
+    /// When the pump must look at the row again with nothing else waking it: [`STATUS_REDRAW`]
+    /// after the last paint, while node output has touched the terminal since and the row could be
+    /// painted now. `None` otherwise — a change to the row's text arrives with a frame or a wake,
+    /// and a stream stopped mid-sequence can only be finished by more of it.
+    fn next_due(&self) -> Option<std::time::Instant> {
+        if !self.wanted.load(Ordering::SeqCst)
+            || !self.touched
+            || self.rows < 2
+            || !self.stream.at_boundary()
+        {
+            return None;
+        }
+        self.last_drawn.map(|drawn| drawn + STATUS_REDRAW)
+    }
+
     /// Whether the row needs painting now: a change, or node output since a paint long enough ago.
     fn due(&self) -> bool {
         self.dirty
@@ -1292,14 +1332,13 @@ impl<W: Write> RawPaneSession<W> {
                 return Err("native resize tracking requires a terminal input descriptor".into());
             }
         };
-        stream
-            .set_read_timeout(Some(POLL))
-            .map_err(|error| format!("bounding native pane reads: {error}"))?;
+        // Reads block and are issued only after `poll(2)` said the socket is readable (see
+        // [`Self::wait_for_socket`]), so no read timeout is needed to keep the pump responsive.
         let writer_stream = stream
             .try_clone()
             .map_err(|error| format!("cloning the native pane socket: {error}"))?;
         writer_stream
-            .set_write_timeout(Some(POLL))
+            .set_write_timeout(Some(WRITE_BOUND))
             .map_err(|error| format!("bounding native pane writes: {error}"))?;
         let writer = Arc::new(std::sync::Mutex::new(writer_stream));
         let mut session = Self {
@@ -1312,7 +1351,7 @@ impl<W: Write> RawPaneSession<W> {
             cut: 0,
             input_fd,
             writable: false,
-            leaving: Arc::new(AtomicBool::new(false)),
+            leaving: Arc::new(crate::wake::Flag::new()),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             input_sent: Arc::new(AtomicBool::new(false)),
             keyboard: None,
@@ -1401,7 +1440,7 @@ impl<W: Write> RawPaneSession<W> {
 
     fn await_attach_response(&mut self) -> Result<marion_core::proto::Response, Refusal> {
         loop {
-            let frame = self.next_frame().map_err(attach_frame_error)?;
+            let frame = self.next_frame(None, None).map_err(attach_frame_error)?;
             match frame {
                 Some(Frame::Response(response)) if response.id == RequestId::Number(1) => {
                     return Ok(response);
@@ -1493,9 +1532,10 @@ impl<W: Write> RawPaneSession<W> {
         let writable = self.writable;
         let status_wanted = Arc::clone(&self.status.wanted);
         let detached = Arc::clone(&self.detached);
-        // The pump blocks in `stream.read` for up to `POLL`. Shutting the read side from here
-        // returns that read at once, so a worker that stops — for any reason — ends the relay now
-        // rather than at the next timeout; `pump` reads the failure slot before the EOF it caused.
+        let input_fd = self.input_fd;
+        // The pump blocks in `poll(2)` on the socket. Shutting the read side from here makes it
+        // readable at once, so a worker that stops — for any reason — ends the relay now; `pump`
+        // reads the failure slot before the EOF it caused.
         let wake = self
             .stream
             .try_clone()
@@ -1525,7 +1565,14 @@ impl<W: Write> RawPaneSession<W> {
                                         | std::io::ErrorKind::Interrupted
                                 ) =>
                             {
-                                std::thread::sleep(POLL);
+                                // The terminal's stdin is non-blocking while the relay owns it:
+                                // wait for a key or for `leaving`, with no timeout. A fixture's
+                                // input has no descriptor and is re-read at the degraded bound.
+                                // SAFETY: `input_fd` is the relay terminal's stdin, open for the
+                                // whole relay; the borrow ends with the wait.
+                                let keyboard = input_fd
+                                    .map(|fd| unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) });
+                                crate::wake::wait_until(&[keyboard, leaving.fd()], None);
                                 continue;
                             }
                             Err(error) => {
@@ -1542,6 +1589,7 @@ impl<W: Write> RawPaneSession<W> {
                                 // is marion's and never the node's.
                                 Action::ToggleStatus => {
                                     status_wanted.fetch_xor(true, Ordering::SeqCst);
+                                    ring_relay_wake();
                                 }
                                 // A pane that had already ended when this relay attached has
                                 // no write half for anyone. The supervisor answers an unleased
@@ -1592,7 +1640,14 @@ impl<W: Write> RawPaneSession<W> {
             .take()
     }
 
-    fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
+    /// One frame, or `None` when none arrived by `deadline` (`None`: no deadline) or a signal, a
+    /// status toggle or an owned stop (`stop`) woke the wait — each the pump's cue to look at its
+    /// flags before waiting again.
+    fn next_frame(
+        &mut self,
+        deadline: Option<std::time::Instant>,
+        stop: Option<&crate::wake::SignalWatch>,
+    ) -> Result<Option<Frame>, FrameError> {
         loop {
             if let Some(end) = self.inbound.iter().position(|byte| *byte == b'\n') {
                 if end > crate::serve::MAX_FRAME_BYTES {
@@ -1620,6 +1675,9 @@ impl<W: Write> RawPaneSession<W> {
                     crate::serve::MAX_FRAME_BYTES
                 )));
             }
+            if !self.wait_for_socket(deadline, stop) {
+                return Ok(None);
+            }
             let mut bytes = [0u8; 8192];
             match self.stream.read(&mut bytes) {
                 Ok(0) => {
@@ -1629,12 +1687,7 @@ impl<W: Write> RawPaneSession<W> {
                 }
                 Ok(count) => self.inbound.extend_from_slice(&bytes[..count]),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     return Ok(None);
                 }
                 Err(error) => {
@@ -1644,6 +1697,34 @@ impl<W: Write> RawPaneSession<W> {
                 }
             }
         }
+    }
+
+    /// Block in `poll(2)` until the socket is readable (`true`), or until `deadline`, a ring of
+    /// [`RELAY_WAKE`] or the owned stop's watch (`false`). Both wakes are drained here, before the
+    /// pump looks at what they are about, so an edge after the drain wakes the next wait.
+    fn wait_for_socket(
+        &self,
+        deadline: Option<std::time::Instant>,
+        stop: Option<&crate::wake::SignalWatch>,
+    ) -> bool {
+        use std::os::fd::AsFd;
+        let wake = relay_wake();
+        let mut fds = vec![Some(self.stream.as_fd()), wake.map(|w| w.fd())];
+        if let Some(stop) = stop {
+            fds.push(stop.fd());
+        }
+        let ready = crate::wake::wait_until(&fds, deadline);
+        if ready[1]
+            && let Some(wake) = wake
+        {
+            wake.drain();
+        }
+        if ready.get(2).copied().unwrap_or(false)
+            && let Some(stop) = stop
+        {
+            stop.drain();
+        }
+        ready[0]
     }
 
     /// What a socket closed before End means, in the order the causes are known: a keyboard
@@ -1672,14 +1753,22 @@ impl<W: Write> RawPaneSession<W> {
         Err("the native pane socket closed before End".into())
     }
 
+    /// **Event-driven**: between frames the pump sleeps in `poll(2)` on the socket, the relay
+    /// wake (signals, the status toggle) and, while the stop is owned, a watch on `SIGTSTP` — made
+    /// here, on the relay thread that blocks it, and before the first look at `sigpending`. Its
+    /// only deadline is the status row's [`StatusOverlay::next_due`], so an idle relay makes no
+    /// wakeups.
     fn pump(&mut self) -> Result<RelayStop, Refusal> {
+        let stop_watch = STOP_OWNED
+            .load(Ordering::SeqCst)
+            .then(|| crate::wake::SignalWatch::new(SIGTSTP));
         loop {
             if let Some(stop) = self.stop_before_frame()? {
                 return Ok(stop);
             }
             self.forward_resize()?;
             self.refresh_status()?;
-            let frame = match self.next_frame() {
+            let frame = match self.next_frame(self.status.next_due(), stop_watch.as_ref()) {
                 Ok(frame) => frame,
                 Err(FrameError::Closed { unfinished }) => {
                     return self.closed_before_end(unfinished);
@@ -5636,12 +5725,12 @@ mod tests {
         assert_eq!(finished, Err(refusal));
     }
 
-    /// A keyboard worker that fails must end the pump **now**, not at the next socket read
-    /// timeout: it shuts the socket's read side so the blocked read returns at once, and the pump
-    /// reports the worker's failure rather than the EOF it caused.
+    /// A keyboard worker that fails must end the pump **now**: it shuts the socket's read side so
+    /// the pump's `poll` returns at once, and the pump reports the worker's failure rather than the
+    /// EOF it caused.
     ///
-    /// Mutation: leave the wake to the poll interval (the elapsed bound fails), or let the EOF
-    /// message displace the worker's (the message assertion fails).
+    /// Mutation: drop the shutdown (the pump then waits on a silent socket and the elapsed bound
+    /// fails), or let the EOF message displace the worker's (the message assertion fails).
     #[test]
     fn a_keyboard_failure_wakes_the_pump_immediately_with_its_own_message() {
         struct FailingInput;
@@ -5651,12 +5740,14 @@ mod tests {
             }
         }
 
+        // How soon the wake must end the pump: the old poll interval, which the wake replaced.
+        const WAKE_BOUND: Duration = Duration::from_millis(50);
         let (client, mut server) = UnixStream::pair().unwrap();
-        // The server completes the attach and then goes silent for far longer than the pump's poll,
-        // so only a deliberate wake can end the pump early.
+        // The server completes the attach and then goes silent for far longer than that, so only
+        // a deliberate wake can end the pump early.
         let server_thread = std::thread::spawn(move || {
             complete_attach(&mut server);
-            std::thread::sleep(super::POLL * 10);
+            std::thread::sleep(WAKE_BOUND * 10);
             drop(server);
         });
         let started = Instant::now();
@@ -5675,8 +5766,8 @@ mod tests {
             "the pump reported something other than the keyboard failure: {error}"
         );
         assert!(
-            elapsed < super::POLL,
-            "the pump waited for its poll interval instead of being woken: {elapsed:?}"
+            elapsed < WAKE_BOUND,
+            "the pump was not woken by the worker's stop: {elapsed:?}"
         );
         drop(session);
         server_thread.join().unwrap();
