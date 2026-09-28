@@ -273,7 +273,7 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix = vec![OsString::from(flag), named];
                 injection.documents.push(NativeDocument {
                     path,
-                    contents: body(bridge).into_bytes(),
+                    contents: body.render(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::EnvDocument { key, file, body } => {
@@ -283,13 +283,13 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                     .push((OsString::from(key), path.as_os_str().to_owned()));
                 injection.documents.push(NativeDocument {
                     path,
-                    contents: body(bridge).into_bytes(),
+                    contents: body.render(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::EnvInline { key, body } => {
                 injection
                     .env_overlay
-                    .push((OsString::from(key), OsString::from(body(bridge))));
+                    .push((OsString::from(key), OsString::from(body.render(bridge))));
             }
             LiveDeclaration::ArgvPairs { flag, pairs, .. } => {
                 // The update policy's pair first, exactly where the managed launch renders it
@@ -311,11 +311,12 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix = vec![OsString::from(flag), dir.as_os_str().to_owned()];
                 injection.documents.push(NativeDocument {
                     path: dir.join(file),
-                    contents: body(bridge).into_bytes(),
+                    contents: body.render(bridge).into_bytes(),
                 });
             }
             LiveDeclaration::ArgvInline { flag, body, .. } => {
-                injection.argv_prefix = vec![OsString::from(flag), OsString::from(body(bridge))];
+                injection.argv_prefix =
+                    vec![OsString::from(flag), OsString::from(body.render(bridge))];
             }
         }
         // The row's completion push is enabled here as on the pane shape, and for the same reason

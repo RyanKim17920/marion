@@ -48,7 +48,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
     LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
     Requirement, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery,
     UpdatePolicy, Val, When, WireRecipe,
@@ -149,7 +149,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: Some(LiveDeclaration::ArgvInline {
         flag: "--with-extension",
         key: EXTENSION_KEY,
-        body: extension_declaration,
+        body: Body::Code(extension_declaration),
     }),
     // goose persists every `ENV=v` pair of the `--with-extension` token in its session store, so
     // the token rides the process environment in both modes; the extension child inherits it.

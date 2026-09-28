@@ -52,9 +52,9 @@ use crate::auth::Auth;
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
-    Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
+    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly,
+    Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarrier, TokenCarriers, ToolSpelling,
     TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
@@ -177,7 +177,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: Some(LiveDeclaration::ArgvInline {
         flag: "--mcp-config",
         key: MCP_CONFIG_KEY,
-        body: mcp_config_document,
+        body: Body::McpServers(MCP_SERVERS),
     }),
     // A canned node's token sits in its 0600 `settings.json`. A live node's declaration is argv,
     // so the token rides qwen's environment, which its MCP launcher hands the bridge.
@@ -339,19 +339,21 @@ pub fn settings_json(mcp: Option<&BridgeEnv>) -> Value {
 /// `ready_file` is `None` on this surface: under [`MCP_BLOCKING_ENV`] the CLI itself holds turn
 /// one for discovery, and `init.mcp_servers[]` says `connected` before the first request.
 pub fn mcp_servers_json(b: &BridgeEnv) -> Value {
-    json!({
-        MCP_ALIAS: {
-            "command": b.bridge.to_string_lossy(),
-            "args": b.args,
-            "env": b.env_json(),
-        }
-    })
+    json!({ MCP_ALIAS: MCP_SERVERS.entry(b) })
 }
+
+/// The declaration's shape: an untyped stdio entry, compact — it rides one argv token.
+pub const MCP_SERVERS: McpServers = McpServers {
+    typed: false,
+    nested: None,
+    tools: &[],
+    pretty: false,
+};
 
 /// The `--mcp-config` document, inline: `{"mcpServers": {…}}` as one argv token
 /// (`qwen-mcp-config-argv.argv.json`).
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
-    json!({ MCP_CONFIG_KEY: mcp_servers_json(b) }).to_string()
+    MCP_SERVERS.render(b)
 }
 
 /// qwen 0.23.0, headless `-p` (fixture `tests/fixtures/s25/`).

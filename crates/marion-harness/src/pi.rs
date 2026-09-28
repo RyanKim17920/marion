@@ -41,7 +41,7 @@ use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
+    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Modes, Need, Push,
     ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
     TurnDelivery, UpdatePolicy, Val, When,
@@ -120,7 +120,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "-e",
         file: EXTENSION_FILE,
         prefix: "",
-        body: extension_source,
+        // pi has no MCP client: the declaration is marion's own extension source, not a document.
+        body: Body::Code(extension_source),
     }),
     token: TokenCarriers::DECLARATION,
     // The `--tools` list itself, prefixed with its axis.

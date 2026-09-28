@@ -28,7 +28,6 @@
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
-use serde_json::json;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
@@ -40,10 +39,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Field, HarnessSpec,
-    LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly,
-    Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
-    UpdatePolicy,
+    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Field,
+    HarnessSpec, LiveDeclaration, MCP_ALIAS, McpRoute, McpRoutes, McpServers, ModelForm, Modes,
+    Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
+    ToolSpelling, TurnDelivery, UpdatePolicy,
 };
 use std::path::PathBuf;
 
@@ -113,7 +112,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--add-dir",
         root: ROOT_DIR,
         file: MCP_CONFIG_FILE,
-        body: mcp_config_document,
+        body: Body::McpServers(MCP_SERVERS),
     }),
     token: TokenCarriers::DECLARATION,
     constraint: Constraint::Mode {
@@ -305,17 +304,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// The root's declaration document: marion's server under `mcpServers`, the bridge's contract
 /// verbatim.
 pub fn mcp_config_document(b: &BridgeEnv) -> String {
-    json!({
-        "mcpServers": {
-            MCP_ALIAS: {
-                "command": b.bridge.to_string_lossy(),
-                "args": b.args,
-                "env": b.env_json(),
-            }
-        }
-    })
-    .to_string()
+    MCP_SERVERS.render(b)
 }
+
+/// The workspace declaration's shape: an untyped stdio entry, compact.
+pub const MCP_SERVERS: McpServers = McpServers {
+    typed: false,
+    nested: None,
+    tools: &[],
+    pretty: false,
+};
 
 /// The head of every prompt a launch with marion's root carries: where the node works, and that
 /// the root is not it. Without it the model takes whichever workspace sorts first as "the current
@@ -397,6 +395,7 @@ mod tests {
     use super::*;
     use crate::grammar::{marion_calls, parse_stream, session_id, usage};
     use crate::stream::CallOutcome;
+    use serde_json::json;
 
     macro_rules! fixture {
         ($p:literal) => {

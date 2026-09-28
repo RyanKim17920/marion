@@ -1638,6 +1638,79 @@ pub enum Spelling {
     PerAgent,
 }
 
+/// **A declaration's body**: the `mcpServers` map most harnesses read, described as data
+/// ([`McpServers`]), or — where a harness's declaration is not that map — the row's own serialiser,
+/// which the row names and says why. Data where it can be, so a row read from a file can carry it.
+#[derive(Debug, Clone, Copy)]
+pub enum Body {
+    McpServers(McpServers),
+    Code(fn(&BridgeEnv) -> String),
+}
+
+impl Body {
+    /// The body for the node `b` serves.
+    pub fn render(self, b: &BridgeEnv) -> String {
+        match self {
+            Body::McpServers(m) => m.render(b),
+            Body::Code(f) => f(b),
+        }
+    }
+}
+
+/// **`{"mcpServers": {"marion": {command, args, env}}}`, in one harness's dialect**: the stdio
+/// entry marion's bridge is declared by, with the few ways harnesses measured it differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpServers {
+    /// `"type": "stdio"` stated on the entry.
+    pub typed: bool,
+    /// The key the entry sits under inside marion's server, where the harness nests it (cline's
+    /// `transport`).
+    pub nested: Option<&'static str>,
+    /// The entry's `tools` list, where the harness gates tools per server (copilot's `["*"]`);
+    /// empty states none.
+    pub tools: &'static [&'static str],
+    /// Pretty-printed, as a file the harness reads; compact where it rides one argv token.
+    pub pretty: bool,
+}
+
+impl McpServers {
+    /// The whole document as JSON.
+    pub fn json(self, b: &BridgeEnv) -> serde_json::Value {
+        serde_json::json!({ MCP_SERVERS_KEY: { MCP_ALIAS: self.entry(b) } })
+    }
+
+    /// marion's server entry alone, without the `mcpServers` map around it.
+    pub fn entry(self, b: &BridgeEnv) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "command": b.bridge.to_string_lossy(),
+            "args": b.args,
+            "env": b.env_json(),
+        });
+        if self.typed {
+            entry["type"] = serde_json::json!("stdio");
+        }
+        if let Some(key) = self.nested {
+            entry = serde_json::json!({ key: entry });
+        }
+        if !self.tools.is_empty() {
+            entry["tools"] = serde_json::json!(self.tools);
+        }
+        entry
+    }
+
+    pub fn render(self, b: &BridgeEnv) -> String {
+        let v = self.json(b);
+        if self.pretty {
+            serde_json::to_string_pretty(&v).expect("a Value always serialises")
+        } else {
+            v.to_string()
+        }
+    }
+}
+
+/// The top-level key of an [`McpServers`] document.
+pub const MCP_SERVERS_KEY: &str = "mcpServers";
+
 /// How marion's MCP declaration is carried onto a node that keeps the operator's own
 /// configuration — [`McpRoutes::live`], spelled out.
 ///
@@ -1656,21 +1729,18 @@ pub enum LiveDeclaration {
         flag: &'static str,
         file: &'static str,
         prefix: &'static str,
-        body: fn(&BridgeEnv) -> String,
+        body: Body,
     },
     /// A document written to `file` under the node's own directory whose path rides the
     /// environment variable `key` — gemini's `GEMINI_CLI_SYSTEM_SETTINGS_PATH`.
     EnvDocument {
         key: &'static str,
         file: &'static str,
-        body: fn(&BridgeEnv) -> String,
+        body: Body,
     },
     /// The document itself, inline in the environment variable `key`; nothing is written —
     /// opencode's `OPENCODE_CONFIG_CONTENT`.
-    EnvInline {
-        key: &'static str,
-        body: fn(&BridgeEnv) -> String,
-    },
+    EnvInline { key: &'static str, body: Body },
     /// `<flag> <k>=<v>` once per pair on argv; nothing is written — codex's `-c`. `key` is the
     /// config key every pair sits under, the needle [`McpRoute::Argv`] checks argv for.
     ArgvPairs {
@@ -1684,7 +1754,7 @@ pub enum LiveDeclaration {
     ArgvInline {
         flag: &'static str,
         key: &'static str,
-        body: fn(&BridgeEnv) -> String,
+        body: Body,
     },
     /// `<flag> <dir>/<root>` on argv, naming a **directory** the harness reads a document out of:
     /// the document is written to `<root>/<file>` under the node's own directory — agy's
@@ -1694,7 +1764,7 @@ pub enum LiveDeclaration {
         flag: &'static str,
         root: &'static str,
         file: &'static str,
-        body: fn(&BridgeEnv) -> String,
+        body: Body,
     },
 }
 

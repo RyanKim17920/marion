@@ -23,8 +23,8 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push,
+    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
+    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push,
     ReadOnly, Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling,
     TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
@@ -135,7 +135,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: Some(LiveDeclaration::EnvDocument {
         key: SYSTEM_SETTINGS_PATH_ENV,
         file: SETTINGS_FILE,
-        body: live_settings_document,
+        // The system-settings layer, whose MCP block sits beside settings no `mcpServers` shape
+        // states (trust, the auth selection it must leave alone).
+        body: Body::Code(live_settings_document),
     }),
     token: TokenCarriers::DECLARATION,
     // On this harness the mode **is** the constraint: under `default` the mutating tools are

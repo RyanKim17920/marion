@@ -31,7 +31,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
+    Approval, Arg, AxesRule, Body, BootDialogs, BootSignal, Constraint, Deliveries, Env, Field,
     HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Push, ReadOnly, Remembers,
     Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
     WireRecipe,
@@ -216,7 +216,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     live_declaration: Some(LiveDeclaration::EnvInline {
         key: CONFIG_CONTENT_ENV,
-        body: live_config_document,
+        body: Body::Code(live_config_document),
     }),
     token: TokenCarriers::DECLARATION,
     constraint: Constraint::Fixed {

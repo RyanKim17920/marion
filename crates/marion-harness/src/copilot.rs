@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use marion_core::agent_type;
 use marion_core::harness::Harness;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
@@ -45,10 +45,10 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
-    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes,
-    Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces, TokenCarriers,
-    ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, BootSignal, Constraint, Deliveries,
+    DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers,
+    ModelForm, Modes, Need, Push, ReadOnly, Remembers, Requirement, Resume, Spelling, Surfaces,
+    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -175,7 +175,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--additional-mcp-config",
         file: MCP_CONFIG_FILE,
         prefix: "@",
-        body: mcp_config_document,
+        body: Body::McpServers(MCP_SERVERS),
     }),
     token: TokenCarriers::DECLARATION,
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
@@ -582,18 +582,17 @@ pub fn mcp_config_path(config_dir: &Path) -> PathBuf {
 /// after which it proceeds tool-less and says so in that frame (`status: "failed"`). That is the
 /// gate §6.1 step 8 makes marion build for Claude Code, built into the harness.
 pub fn mcp_config_json(b: &BridgeEnv) -> Value {
-    json!({
-        "mcpServers": {
-            MCP_ALIAS: {
-                "type": "stdio",
-                "command": b.bridge.to_string_lossy(),
-                "args": b.args,
-                "env": b.env_json(),
-                "tools": ["*"],
-            }
-        }
-    })
+    MCP_SERVERS.json(b)
 }
+
+/// The `--additional-mcp-config` document's shape: a typed stdio entry offering every tool the
+/// server lists, pretty-printed.
+pub const MCP_SERVERS: McpServers = McpServers {
+    typed: true,
+    nested: None,
+    tools: &["*"],
+    pretty: true,
+};
 
 /// GitHub Copilot CLI 1.0.83, headless `-p` (fixture `tests/fixtures/s24/`).
 ///
@@ -710,6 +709,7 @@ pub const ROW: Row = Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// The four s24 captures this module's claims rest on, verbatim (paths and ids redacted).
     const WRITE_THEN_REPORT: &str = include_str!(concat!(

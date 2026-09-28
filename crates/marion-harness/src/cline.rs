@@ -54,10 +54,10 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
-    LiveDeclaration, McpRoute, McpRoutes, ModelForm, Modes, Need, Push, ReadOnly, Remembers,
-    Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val,
-    When, WireRecipe,
+    Approval, Arg, AxesRule, Body, BootDialogs, Constraint, Deliveries, Env, Field, HarnessSpec,
+    LiveDeclaration, McpRoute, McpRoutes, McpServers, ModelForm, Modes, Need, Push, ReadOnly,
+    Remembers, Requirement, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
+    UpdatePolicy, Val, When, WireRecipe,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -149,7 +149,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     live_declaration: Some(LiveDeclaration::EnvDocument {
         key: MCP_SETTINGS_PATH_ENV,
         file: MCP_SETTINGS_FILE,
-        body: mcp_settings_document,
+        body: Body::McpServers(MCP_SERVERS),
     }),
     token: TokenCarriers::DECLARATION,
     // marion compiles no constraint at all, and says so (opencode's record, for the same reason).
@@ -462,19 +462,16 @@ pub fn providers_json(p: &ProviderSpec) -> Value {
 /// `ready_file` is `None` on this surface: the prompt rides argv, and s27 measured `tools/list`
 /// answered before the first request on every capture.
 pub fn mcp_settings_json(b: &BridgeEnv) -> Value {
-    json!({
-        "mcpServers": {
-            MCP_ALIAS: {
-                "transport": {
-                    "type": "stdio",
-                    "command": b.bridge.to_string_lossy(),
-                    "args": b.args,
-                    "env": b.env_json(),
-                }
-            }
-        }
-    })
+    MCP_SERVERS.json(b)
 }
+
+/// The MCP settings document's shape: a typed stdio entry nested under `transport`, pretty-printed.
+pub const MCP_SERVERS: McpServers = McpServers {
+    typed: true,
+    nested: Some("transport"),
+    tools: &[],
+    pretty: true,
+};
 
 /// The refusals a canned node's `providers.json` is owed: it is the only provider selection cline
 /// reads, so each value it names must be given.

@@ -8,7 +8,7 @@
 use marion_core::agent_type;
 use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::adapter::{
     HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
@@ -25,10 +25,10 @@ pub use crate::mcp_bridge::{
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec;
 use crate::spec::{
-    Approval, Arg, AxesRule, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer, Env,
-    Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, MidTurn, ModelForm, Push, ReadOnly,
-    Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery,
-    UpdatePolicy, Val, When, WireRecipe,
+    Approval, Arg, AxesRule, Body, BootDialog, BootDialogs, Constraint, Deliveries, DialogAnswer,
+    Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, McpServers, MidTurn, ModelForm,
+    Push, ReadOnly, Relocation, Remembers, Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling,
+    TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use crate::surfaces::TypedKind;
 use std::path::PathBuf;
@@ -178,7 +178,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         flag: "--mcp-config",
         file: MCP_CONFIG_FILE,
         prefix: "",
-        body: mcp_config_document,
+        body: Body::McpServers(MCP_SERVERS),
     }),
     token: TokenCarriers::DECLARATION,
     // The one harness with a real per-tool allowlist: the record is the literal contents of
@@ -630,17 +630,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// counterpart ([`crate::codex::config_toml`]) has always lived beside its own compile step. The
 /// `env` block is [`BridgeEnv::env_json`], the same derivation every harness's document writes.
 pub fn mcp_config_json(b: &BridgeEnv) -> Value {
-    json!({
-        "mcpServers": {
-            "marion": {
-                "type": "stdio",
-                "command": b.bridge.to_string_lossy(),
-                "args": b.args,
-                "env": b.env_json()
-            }
-        }
-    })
+    MCP_SERVERS.json(b)
 }
+
+/// The `--mcp-config` document's shape: a typed stdio entry, pretty-printed.
+pub const MCP_SERVERS: McpServers = McpServers {
+    typed: true,
+    nested: None,
+    tools: &[],
+    pretty: true,
+};
 
 /// Claude Code 2.1.220, headless (§5.2, §9). marion's root.
 #[derive(Debug, Clone, Copy, Default)]
