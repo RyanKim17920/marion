@@ -152,12 +152,14 @@ impl Draft {
 /// Neither is normalized, because nothing in this workspace can normalize one — see
 /// `marion_core::event::Normalization`.
 ///
-/// **`key` is the frame's `type`, verbatim, or empty.** Measured rather than assumed: `type` is the
-/// discriminator on every frame in `tests/fixtures/s1/` (Claude Code `stream-json`), `s6/`
-/// (`codex exec --json`: `thread.started`, `item.completed`, …) and S12's gemini capture. A frame
-/// that carries none gets an **empty** key rather than an invented one — the whole frame is still
-/// in `json`, so nothing is lost, and guessing a discriminator would be the fabrication
-/// `handler.rs`'s `Unprojectable` refuses.
+/// **`key` is the frame's `type`, verbatim — a JSON-RPC notification's `method` — or empty.**
+/// Measured rather than assumed: `type` is the discriminator on every frame in `tests/fixtures/s1/`
+/// (Claude Code `stream-json`), `s6/` (`codex exec --json`: `thread.started`, `item.completed`, …)
+/// and S12's gemini capture, and `method` is the one on every JSON-RPC notification (S21's ACP
+/// `session/update`, S36's app-server `item/completed`). A frame that carries neither — a JSON-RPC
+/// answer — gets an **empty** key rather than an invented one: the whole frame is still in `json`,
+/// so nothing is lost, and guessing a discriminator would be the fabrication `handler.rs`'s
+/// `Unprojectable` refuses.
 pub fn from_stream_event(harness: Harness, ev: StreamEvent<'_>) -> Draft {
     let payload = match ev {
         StreamEvent::Frame(json) => Payload::Vendor {
@@ -465,8 +467,9 @@ impl EventSink {
 /// A frame's own discriminator, or `""`. See [`from_stream_event`] for why it is `type` and why an
 /// absent one is not invented.
 fn frame_key(json: &serde_json::Value) -> &str {
-    json.get("type")
-        .and_then(serde_json::Value::as_str)
+    ["type", "method"]
+        .iter()
+        .find_map(|k| json.get(*k).and_then(serde_json::Value::as_str))
         .unwrap_or_default()
 }
 

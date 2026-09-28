@@ -1594,13 +1594,15 @@ fn mcp_result_text(text: &str) -> Option<String> {
 }
 
 /// One parsed frame, by its `type`; each kind has a renderer of its own. A JSON-RPC frame is
-/// ACP's and has no `type`, so its shape is read first.
+/// ACP's and has no `type`, so its shape is read first. A frame of a JSON-RPC server with no
+/// `jsonrpc` member (codex's app-server, S36 P2) is named by its `method`.
 fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
     if frame["jsonrpc"] == "2.0" {
         return render_json_rpc(frame, out);
     }
     let subtype = frame["subtype"].as_str().unwrap_or_default();
-    match frame["type"].as_str().unwrap_or_default() {
+    let kind = frame["type"].as_str().or_else(|| frame["method"].as_str());
+    match kind.unwrap_or_default() {
         "assistant" => render_assistant(frame, out),
         "user" => render_user(frame, out),
         "result" => render_result(frame, out),
@@ -1704,7 +1706,7 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
 /// Rule 1. Not a dump and not silence: the kind, and its subtype when it has one.
 fn render_unknown_frame(kind: &str, subtype: &str, out: &mut dyn Write) -> io::Result<()> {
     let body = match (kind, subtype) {
-        ("", _) => "a stdout frame with no `type` field".to_string(),
+        ("", _) => "a stdout frame with no `type` or `method` field".to_string(),
         (other, "") => other.to_string(),
         (other, s) => format!("{other}/{s}"),
     };
