@@ -2304,6 +2304,55 @@ fn status_on_a_running_child_shows_its_recent_tool_calls_within_bounds() {
     assert!(bridge.close().success());
 }
 
+/// **A parent that collected its child's end with `wait` is not handed it again as a turn.** A
+/// live codex root was relaunched for a whole generation just to hear about a child it had
+/// already waited on. Here the root's bridge waits on a backgrounded child; marion queues the
+/// child's end for the root (it backgrounded it), and the bridge's `node/collected` resolves that
+/// message `via: "wait"` in whichever order the two land, so no turn of the root carries it.
+#[test]
+fn a_childs_end_the_parent_collected_with_wait_is_not_delivered_as_a_turn() {
+    let fx = fixture("bg-collected");
+    let mut bridge = fx.bridge();
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    fx.await_children(1);
+    fx.open_gate();
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "{collected}"
+    );
+    let records = |journal: &str, kind: &str| -> Vec<Value> {
+        journal
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["kind"][kind].as_object().cloned().map(Value::Object))
+            .collect()
+    };
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    loop {
+        let journal = fx.journal_text();
+        let ended: Vec<Value> = records(&journal, "MessageQueued")
+            .into_iter()
+            .filter(|q| q["source"].get("ChildEnded").is_some())
+            .collect();
+        let via_wait: Vec<Value> = records(&journal, "MessageDelivered")
+            .into_iter()
+            .filter(|d| d["via"] == "wait")
+            .collect();
+        if let ([q], [d]) = (ended.as_slice(), via_wait.as_slice()) {
+            assert_eq!(q["message_id"], d["message_id"], "{journal}");
+            assert_eq!(q["agent_id"], fx.root_id.0.as_str(), "{journal}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child's end was not resolved through `wait`: {journal}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(bridge.close().success());
+}
+
 /// **A node may steer only below itself.** A child's bridge — started from the declaration marion
 /// wrote for the child — steering its parent or its sibling gets the supervisor's §5.4 refusal,
 /// verbatim, and queues nothing.

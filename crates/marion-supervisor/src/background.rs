@@ -85,6 +85,9 @@ struct Handed {
     /// produced an error has nothing at all. Saying "it is on disk" about the second is the
     /// false-receipt shape this codebase keeps deleting.
     collected: Option<Collected>,
+    /// How many `wait`s on this handle are blocked right now ([`Background::waiting`]). Each will
+    /// hand its caller this node's end, so a push announcing it meanwhile is the same news twice.
+    waits: usize,
 }
 
 /// What an earlier `wait` walked away with, remembered only so a later one can be told the truth.
@@ -196,6 +199,7 @@ impl Background {
             wait_bound,
             watched: false,
             collected: None,
+            waits: 0,
         });
         started
     }
@@ -220,6 +224,7 @@ impl Background {
             wait_bound,
             watched: true,
             collected: None,
+            waits: 0,
         });
     }
 
@@ -295,6 +300,27 @@ impl Background {
             .map(|h| h.task_id.0.clone()))
     }
 
+    /// **A `wait` on `task_id` is blocked until the guard drops.** While one is, the node's end is
+    /// on its way to the caller through it, so [`Self::announceable`] says no.
+    pub fn waiting(&self, task_id: &str) -> Waiting<'_> {
+        if let Some(h) = self.lock().iter_mut().find(|h| h.task_id.0 == task_id) {
+            h.waits += 1;
+        }
+        Waiting {
+            bg: self,
+            task_id: task_id.to_string(),
+        }
+    }
+
+    /// Whether a push announcing `task_id`'s end would be news: no `wait` has collected it and
+    /// none is blocked on it. `false` for a handle this bridge never handed out.
+    pub fn announceable(&self, task_id: &str) -> bool {
+        self.lock()
+            .iter()
+            .find(|h| h.task_id.0 == task_id)
+            .is_some_and(|h| h.collected.is_none() && h.waits == 0)
+    }
+
     /// Remember *what* a `wait` collected, not merely that something was. See [`Collected`].
     ///
     /// **Only a `wait` that reached the node's terminal state collects.** One that expired against
@@ -303,6 +329,25 @@ impl Background {
     pub fn collected(&self, task_id: &str, what: Collected) {
         if let Some(h) = self.lock().iter_mut().find(|h| h.task_id.0 == task_id) {
             h.collected = Some(what);
+        }
+    }
+}
+
+/// A `wait` in flight on one handle, from [`Background::waiting`] until it drops.
+pub struct Waiting<'a> {
+    bg: &'a Background,
+    task_id: String,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Some(h) = self
+            .bg
+            .lock()
+            .iter_mut()
+            .find(|h| h.task_id.0 == self.task_id)
+        {
+            h.waits = h.waits.saturating_sub(1);
         }
     }
 }
@@ -319,6 +364,25 @@ mod tests {
             "codex-impl".into(),
             Duration::from_secs(30),
         );
+    }
+
+    /// **A push announces only news**: not an end a `wait` already collected, and not one a `wait`
+    /// in flight is about to return — that `wait` hands its caller the same end, and a push
+    /// beside it is a second turn for one fact. Once the `wait` gives up (its bound), the end is
+    /// news again.
+    #[test]
+    fn an_end_is_announced_only_while_no_wait_has_or_is_taking_it() {
+        let bg = Background::new();
+        hand(&bg, "task-1");
+        assert!(bg.announceable("task-1"));
+        {
+            let _waiting = bg.waiting("task-1");
+            assert!(!bg.announceable("task-1"), "a wait in flight returns it");
+        }
+        assert!(bg.announceable("task-1"), "the wait left without it");
+        bg.collected("task-1", Collected::Contract);
+        assert!(!bg.announceable("task-1"), "already collected");
+        assert!(!bg.announceable("no-such-task"));
     }
 
     /// **A handle resolves to the node it is about**, which is the one fact this table exists for:

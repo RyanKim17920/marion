@@ -341,6 +341,35 @@ pub fn steer(
     })
 }
 
+/// **Tell the supervisor a node read one of its children's end for itself** — §2's
+/// `node/collected`, sent by a node's bridge once its `wait` returned the child's end or its
+/// `status` found the child finished, so marion spends no turn of the node announcing it. `true`
+/// iff a queued announcement was withdrawn.
+pub fn collected(
+    socket: &Path,
+    child: &AgentId,
+    caller: marion_core::proto::SpawnCaller,
+) -> Result<bool, SpawnError> {
+    match Conn::dial(socket)?.ask(
+        Call::NodeCollected(marion_core::proto::params::NodeCollectedParams {
+            agent_id: child.clone(),
+            caller,
+        }),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `node/collected` within {} s, so the child's end may still be \
+             announced to its parent",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NodeCollected(r) => Ok(r.withdrawn),
+        _ => Err(unreachable(
+            socket,
+            "it answered `node/collected` with a result marion cannot read",
+        )),
+    }
+}
+
 /// **End one node, as the operator** — §2's `node/kill`, which §6.7 records as `Cancelled`.
 ///
 /// The supervisor decides whether it may and whether there is anything to signal (a node already

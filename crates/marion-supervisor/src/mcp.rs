@@ -14,6 +14,7 @@
 //! `the_mcp_entry_point_has_no_spawn_path_of_its_own` is where that stops being a habit.
 
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use marion_core::contract::{AgentId, Isolation, TaskId};
@@ -644,9 +645,14 @@ fn tool_wait(
     // The contract to read at the end comes from the **table**, not from the handle: for a
     // root the handle is the node's id and there is no contract, and a `wait` that turned
     // its own handle into a path would go looking for `contracts/<agent-id>.json`.
+    let waiting = bg.waiting(task_id);
     let delivered =
         courier::await_contract(sock.socket(), &project, &agent_id, contract.as_ref(), bound);
-    collect_if_terminal(bg, task_id, &delivered);
+    let collected = collect_if_terminal(bg, task_id, &delivered);
+    drop(waiting);
+    if collected {
+        tell_collected(who, sock.socket(), &agent_id);
+    }
     // The agent type for the result line comes from the table, not from these arguments: a
     // `wait` carries no `agent_type`, and inventing one would put a name in an answer that
     // names the wrong thing.
@@ -690,22 +696,35 @@ fn pending_handle(
 /// marking the handle collected there would turn one unreachable moment into a handle that can
 /// never be resolved again. `StillRunning` collects nothing for the same reason, one step further
 /// along.
+///
+/// `true` iff the handle was collected: the caller now has the node's end.
 fn collect_if_terminal(
     bg: &background::Background,
     task_id: &str,
     delivered: &Result<courier::Delivered, SpawnError>,
-) {
-    match delivered {
-        Ok(courier::Delivered::Contract(_)) => {
-            bg.collected(task_id, background::Collected::Contract);
-        }
-        Ok(courier::Delivered::Ended { .. }) => {
-            bg.collected(task_id, background::Collected::Ended);
-        }
+) -> bool {
+    let what = match delivered {
+        Ok(courier::Delivered::Contract(_)) => background::Collected::Contract,
+        Ok(courier::Delivered::Ended { .. }) => background::Collected::Ended,
         Err(SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }) => {
-            bg.collected(task_id, background::Collected::NoContract);
+            background::Collected::NoContract
         }
-        _ => {}
+        _ => return false,
+    };
+    bg.collected(task_id, what);
+    true
+}
+
+/// **A node has its child's end, so marion need not announce it** (`node/collected`): without
+/// this, a parent that waited on its child was later handed the same end as a whole turn of its
+/// own. Best-effort — the parent already has its answer, and a supervisor that did not hear this
+/// costs one redundant turn, never a lost result. A top-level client is announced nothing.
+fn tell_collected(who: &Principal, socket: &std::path::Path, child: &AgentId) {
+    if !matches!(who, Principal::Node) {
+        return;
+    }
+    if let Ok(caller) = node_identity() {
+        let _ = courier::collected(socket, child, caller);
     }
 }
 
@@ -751,8 +770,13 @@ fn tool_status(
             // **A peek only while the child has not finished**: a finished child's answer is its
             // contract, which `wait` returns, and a stale "last said" beside `finished` would read
             // as work still going on.
-            let peek = (!matches!(r.node.state, marion_core::node::NodeState::Exited(_)))
+            let exited = matches!(r.node.state, marion_core::node::NodeState::Exited(_));
+            let peek = (!exited)
                 .then(|| crate::activity::peek(&project.agent(&agent_id).events(), r.node.harness));
+            // A caller told its child finished has learnt its end; `wait` has the rest.
+            if exited {
+                tell_collected(who, sock.socket(), &agent_id);
+            }
             Ok(bridge::status_result(id, task_id, &r.node, peek.as_deref()))
         }
         // The supervisor's own sentence where there is one (`SupervisorRefused` carries a
@@ -1275,7 +1299,7 @@ fn push_for_client(client_name: Option<&str>) -> Push {
 /// the supervisor's, and a bridge that leaves takes its watchers with it and loses nothing a
 /// later `wait` cannot recover. A thread that could not start announces nothing, for the same
 /// reason a `StillRunning` does not: `wait` still resolves the handle.
-fn start_watchers(who: &Principal, bg: &background::Background, push: Push) {
+fn start_watchers(who: &Principal, bg: &Arc<background::Background>, push: Push) {
     if push == Push::None {
         return;
     }
@@ -1283,7 +1307,7 @@ fn start_watchers(who: &Principal, bg: &background::Background, push: Push) {
         return;
     };
     for target in bg.unwatched() {
-        let (sock, project) = (sock.clone(), project.clone());
+        let (sock, project, bg) = (sock.clone(), project.clone(), Arc::clone(bg));
         let _ = std::thread::Builder::new()
             .name(format!("marion-push-{}", target.task_id.0))
             .spawn(move || {
@@ -1296,7 +1320,9 @@ fn start_watchers(who: &Principal, bg: &background::Background, push: Push) {
                         target.bound,
                     )
                 });
-                if let Some(frame) = frame {
+                // A `wait` that collected this end, or is about to return it, already tells the
+                // parent; the push would be a second turn for the same news.
+                if let Some(frame) = frame.filter(|_| bg.announceable(&target.task_id.0)) {
                     emit(&std::io::stdout(), &frame);
                 }
             });
@@ -1422,7 +1448,7 @@ fn write_frame(out: &mut impl Write, frame: &serde_json::Value) -> bool {
 /// `tests/background_spawn.rs`'s `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
 /// is where it is measured rather than argued.
 pub fn serve_stdio(who: Principal) {
-    let bg = background::Background::new();
+    let bg = Arc::new(background::Background::new());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     // How a backgrounded child's end is announced to this client, resolved at each `initialize`

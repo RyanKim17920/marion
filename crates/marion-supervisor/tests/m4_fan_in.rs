@@ -330,10 +330,12 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         root_intent.get("task_id").is_none_or(Value::is_null),
         "§9: a root has no contract, so its intent carries no task id"
     );
-    // **One `Spawned`, and it is the launch.** A codex root runs over app-server (S36), so each
-    // background child's end — queued for it as a message even though its own `wait` already
-    // collected the contract — reaches the same process: folded into the running turn, or its
-    // next turn. Two children, two deliveries, and no relaunch.
+    // **One `Spawned`, and each child's end reaches the root once.** The root backgrounds both
+    // children and collects each with its own `wait`, which tells marion it read that end
+    // (`node/collected`, delivered `wait`), so it is not also queued. An end that lands before the
+    // root's `wait` is blocked on it is news, and goes into the running turn over the root's own
+    // app-server instead — never both, and never a relaunch. A live codex
+    // root was once relaunched for a whole generation to hear about a child it had waited on.
     let root_spawns: Vec<&Value> = records
         .iter()
         .filter(|r| {
@@ -356,11 +358,13 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
     assert_eq!(
         delivered.len(),
         2,
-        "each background child's end reached the root once: {delivered:?}"
+        "each end reached the root once: {delivered:?}"
     );
     assert!(
-        delivered.iter().all(|v| v.starts_with("app-server:")),
-        "over the root's own channel, not by relaunch: {delivered:?}"
+        delivered
+            .iter()
+            .all(|v| *v == "wait" || v.starts_with("app-server:")),
+        "by its own `wait` or over its own channel, not by relaunch: {delivered:?}"
     );
     let root_spawned = root_spawns[0]["kind"]["Spawned"].clone();
     assert!(
