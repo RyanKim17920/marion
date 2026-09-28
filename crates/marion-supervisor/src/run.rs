@@ -880,31 +880,33 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
 /// [`HARNESS_VERSION_TIMEOUT`] and kills its whole process group on expiry, which is the same
 /// treatment the child itself gets and for the same reason.
 ///
-/// A timed-out or failed probe is `"unknown"`, never an error: the version is a field in an audit
-/// record, and losing a whole node's contract because a version string did not arrive would trade a
-/// large truth for a small one.
+/// A timed-out, failed or refused probe is `"unknown"`, never an error: the version is a field in
+/// an audit record, and losing a whole node's contract because a version string did not arrive
+/// would trade a large truth for a small one.
 pub(crate) fn harness_version(program: &str, harness: marion_core::harness::Harness) -> String {
-    run_bounded(&mut version_probe(program, harness), HARNESS_VERSION_TIMEOUT)
+    probe_version(program, harness).unwrap_or_else(|| "unknown".into())
+}
+
+/// One bounded `--version` probe, uncached: the version line, or `None` for anything else.
+fn probe_version(program: &str, harness: marion_core::harness::Harness) -> Option<String> {
+    let mut probe = version_probe(program, harness).ok()?;
+    run_bounded(&mut probe.command, HARNESS_VERSION_TIMEOUT)
         .ok()
         .filter(|o| !o.timed_out && o.code == Some(0))
         .and_then(|o| version_line(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_else(|| "unknown".into())
 }
 
-/// `<program> --version` as every marion probe runs it: carrying the harness row's no-self-update
-/// variable. Without it copilot 1.0.83 downloads a newer build and answers with *that* version,
-/// which is neither the build marion's nodes run (they carry the variable) nor one it should have
-/// fetched. The doctor and every spawn's audit probe build their command here.
+/// `<program> --version` as every marion probe runs it: under the harness row's no-self-update
+/// switch, whatever its shape ([`marion_harness::probe`]) — or not at all, where the row's binary
+/// may update itself and no switch is known. Without it copilot 1.0.83 downloads a newer build and
+/// answers with *that* version, and gemini 0.53.0 updated the operator's install. The doctor and
+/// every spawn's audit probe build their command here; keep the returned probe alive until the
+/// child exits, since it owns a document switch's settings file.
 pub(crate) fn version_probe(
     program: impl AsRef<std::ffi::OsStr>,
     harness: marion_core::harness::Harness,
-) -> SysCommand {
-    let mut cmd = SysCommand::new(program);
-    cmd.arg("--version");
-    if let Some((key, value)) = marion_harness::adapter::harness_spec(harness).updates.env() {
-        cmd.env(key, value);
-    }
-    cmd
+) -> Result<marion_harness::probe::VersionProbe, marion_harness::probe::ProbeError> {
+    marion_harness::probe::version_probe(marion_harness::adapter::harness_spec(harness), program)
 }
 
 /// The line of a `--version` output that names the version: the first non-blank one, trimmed.
@@ -2981,6 +2983,79 @@ fn task_branch_ref(branch: &str) -> Option<String> {
     one_segment.then(|| format!("refs/heads/{branch}"))
 }
 
+/// A fake harness for the `--version` probe tests: a shell script at `<dir>/<name>` that, run with
+/// `--version`, appends one record to [`version_fake::log`] — its argv, the value of each variable
+/// in `watch`, and the contents of the file that value names if it is one — then prints `version`.
+/// So a test can see what switch reached the process, including a document deleted since.
+#[cfg(test)]
+pub(crate) mod version_fake {
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn write(dir: &Path, name: &str, version: &str, watch: &[&str]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let log = log(dir);
+        let mut script = format!(
+            "#!/bin/sh\ncase \" $* \" in *\" --version \"*) ;; *) exit 64 ;; esac\n\
+             printf 'probe\\n' >> '{log}'\n\
+             for a in \"$@\"; do printf 'arg:%s\\n' \"$a\" >> '{log}'; done\n",
+            log = log.display()
+        );
+        for var in watch {
+            script.push_str(&format!(
+                "printf 'var:{var}=%s\\n' \"${{{var}:-}}\" >> '{log}'\n\
+                 [ -f \"${{{var}:-}}\" ] && {{ printf 'doc:' >> '{log}'; cat \"${var}\" >> '{log}'; \
+                 printf '\\n' >> '{log}'; }}\n",
+                log = log.display()
+            ));
+        }
+        script.push_str(&format!("echo '{version}'\n"));
+        let path = dir.join(name);
+        std::fs::write(&path, script).expect("the fake harness is written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake harness is executable");
+        path
+    }
+
+    /// What a probe of `h`'s row must carry, read off the row's own data: the variables a
+    /// [`version_fake`] should record, and a check of one probe's record.
+    pub(crate) fn switch_evidence(h: marion_core::harness::Harness) -> (Vec<String>, Vec<String>) {
+        use marion_harness::probe::{DocumentChannel, ProbeSwitch};
+        match ProbeSwitch::for_row(marion_harness::adapter::harness_spec(h)).unwrap() {
+            ProbeSwitch::Env { key, value } => {
+                (vec![key.clone()], vec![format!("var:{key}={value}")])
+            }
+            ProbeSwitch::Args(args) => {
+                let mut want = vec!["arg:--version".to_string()];
+                want.extend(args.iter().map(|a| format!("arg:{a}")));
+                (vec![], want)
+            }
+            ProbeSwitch::Document {
+                via: DocumentChannel::Env(key),
+                body,
+            } => (vec![key.to_string()], vec![format!("doc:{body}")]),
+            other => panic!("{h}: no switch to look for: {other:?}"),
+        }
+    }
+
+    pub(crate) fn log(dir: &Path) -> PathBuf {
+        dir.join("probes.log")
+    }
+
+    /// Each probe's record, in order.
+    pub(crate) fn probes(dir: &Path) -> Vec<Vec<String>> {
+        let text = std::fs::read_to_string(log(dir)).unwrap_or_default();
+        let mut out: Vec<Vec<String>> = Vec::new();
+        for line in text.lines() {
+            if line == "probe" {
+                out.push(Vec::new());
+            } else if let Some(last) = out.last_mut() {
+                last.push(line.to_string());
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3235,6 +3310,59 @@ mod tests {
             out.code,
             Some(0),
             "and the process really ran, and was really reaped"
+        );
+    }
+
+    /// **Every spawn-time probe carries the row's no-self-update switch**, for each shape of
+    /// switch: an Env row (claude), a Pair row (codex, on its own `-c`), a Document row (gemini, a
+    /// settings file named by its own variable). `harness_version` is the probe `run_spawn`,
+    /// `root::launch_inner` and the native launch all take.
+    #[test]
+    fn the_spawn_probe_carries_every_shape_of_switch() {
+        for h in [Harness::ClaudeCode, Harness::Codex, Harness::Gemini] {
+            let dir = scratch(&format!("vprobe-switch-{h}"));
+            let (watch, want) = version_fake::switch_evidence(h);
+            let watch: Vec<&str> = watch.iter().map(String::as_str).collect();
+            let fake = version_fake::write(&dir, "harness", "9.9.9 (fake)", &watch);
+            assert_eq!(
+                harness_version(fake.to_str().unwrap(), h),
+                "9.9.9 (fake)",
+                "{h}"
+            );
+            let probes = version_fake::probes(&dir);
+            assert_eq!(probes.len(), 1, "{h}: {probes:?}");
+            for line in &want {
+                assert!(
+                    probes[0].contains(line),
+                    "{h}: no {line:?} in {:?}",
+                    probes[0]
+                );
+            }
+        }
+    }
+
+    /// A row whose binary may update itself and has no known switch is **not run** to read a
+    /// version: the probe is refused and the version is `"unknown"`.
+    #[test]
+    fn a_row_with_no_known_switch_is_never_probed() {
+        let dir = scratch("vprobe-refused");
+        let fake = version_fake::write(&dir, "agent", "1.0.0", &[]);
+        let refused: Vec<Harness> = Harness::ALL
+            .into_iter()
+            .filter(|h| {
+                matches!(
+                    marion_harness::adapter::harness_spec(*h).updates,
+                    marion_harness::spec::UpdatePolicy::None { .. }
+                )
+            })
+            .collect();
+        assert!(!refused.is_empty(), "the sweep needs a row to refuse");
+        for h in refused {
+            assert_eq!(harness_version(fake.to_str().unwrap(), h), "unknown", "{h}");
+        }
+        assert!(
+            version_fake::probes(&dir).is_empty(),
+            "the binary never ran"
         );
     }
 

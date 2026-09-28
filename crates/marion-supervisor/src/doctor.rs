@@ -1585,20 +1585,27 @@ fn wait_bounded(
 }
 
 /// [`crate::run::version_probe`], piped for reading.
-fn version_command(program: &Path, harness: Harness) -> Command {
-    let mut command = crate::run::version_probe(program, harness);
-    command
+fn version_command(
+    program: &Path,
+    harness: Harness,
+) -> Result<marion_harness::probe::VersionProbe, marion_harness::probe::ProbeError> {
+    let mut probe = crate::run::version_probe(program, harness)?;
+    probe
+        .command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    command
+    Ok(probe)
 }
 
 fn read_version(program: &Path, harness: Harness, notes: &mut Vec<String>) -> Option<String> {
     let started = Instant::now();
-    let mut command = version_command(program, harness);
+    // Held to the end of this function: a document switch's settings file lives as long as it.
+    let mut probe = version_command(program, harness)
+        .map_err(|e| notes.push(format!("version: not read — {e}")))
+        .ok()?;
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
-        .spawn(&mut command)
+        .spawn(&mut probe.command)
         .map_err(|e| notes.push(format!("version: FAILED — {e}")))
         .ok()?;
     let (out, timed_out) = read_bounded(&mut child, VERSION_BUDGET);
@@ -2297,25 +2304,59 @@ mod tests {
     #[test]
     fn the_version_probe_carries_each_rows_no_self_update_variable() {
         for h in Harness::ALL {
-            let command = version_command(Path::new("/bin/x"), h);
-            let got: Vec<(String, String)> = command
-                .get_envs()
-                .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
-                .collect();
             let want: Vec<(String, String)> = marion_harness::adapter::harness_spec(h)
                 .updates
                 .env()
                 .into_iter()
                 .collect();
+            if want.is_empty() {
+                continue; // Another shape of switch, or a refusal: `marion_harness::probe`'s sweep.
+            }
+            let probe = version_command(Path::new("/bin/x"), h).unwrap();
+            let got: Vec<(String, String)> = probe
+                .command
+                .get_envs()
+                .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+                .collect();
             assert_eq!(got, want, "{h}");
         }
-        let copilot = version_command(Path::new("/bin/copilot"), Harness::Copilot);
+        let copilot = version_command(Path::new("/bin/copilot"), Harness::Copilot).unwrap();
         assert!(
             copilot
+                .command
                 .get_envs()
                 .any(|(k, v)| k == "COPILOT_AUTO_UPDATE" && v == Some("false".as_ref())),
             "the case that was measured"
         );
+    }
+
+    /// **Doctor's probe carries every shape of switch too** — the same fake the spawn probe's
+    /// test uses, read through `read_version`: an Env row, a Pair row on the row's own flag, a
+    /// Document row's settings file.
+    #[test]
+    fn the_doctor_probe_carries_every_shape_of_switch() {
+        use crate::run::version_fake;
+        for h in [Harness::ClaudeCode, Harness::Codex, Harness::Gemini] {
+            let dir = marion_testsupport::scratch(&format!("doctor-vprobe-{h}"));
+            let (watch, want) = version_fake::switch_evidence(h);
+            let watch: Vec<&str> = watch.iter().map(String::as_str).collect();
+            let fake = version_fake::write(&dir, "harness", "9.9.9", &watch);
+            let mut notes = Vec::new();
+            assert_eq!(
+                read_version(&fake, h, &mut notes).as_deref(),
+                Some("9.9.9"),
+                "{h}: {notes:?}"
+            );
+            let probes = version_fake::probes(&dir);
+            assert_eq!(probes.len(), 1, "{h}: {probes:?}");
+            for line in &want {
+                assert!(
+                    probes[0].contains(line),
+                    "{h}: no {line:?} in {:?}",
+                    probes[0]
+                );
+            }
+        }
     }
 
     /// **The summary opens with the machine's own checks**, and one failing check makes the
