@@ -50,6 +50,11 @@ use marion_harness::spec::{MidTurn, TurnDelivery};
 /// Marion's name for one message, shared by the records that audit it.
 pub type MessageId = String;
 
+/// The `via` of a child's end the node read for itself ([`Inboxes::received`]): no turn carried
+/// it, and `note` says so.
+const VIA_READ: &str = "wait";
+const READ_NOTE: &str = "the node read this end itself (`wait` or `status`), so no turn carried it";
+
 /// **The node's driver, as the inbox sees it**: something that takes the next message at a turn
 /// boundary. The inbox only ever tells it there is one. Each lane (duplex, ACP, continuation, pty,
 /// bridge) implements it in its own phase; none is wired yet.
@@ -356,6 +361,9 @@ struct Inbox {
     /// inbox cannot seal while any is owed, which is what makes the hold race-free — "the child
     /// ended" and "its announcement is queued" are one step ([`Inboxes::announce`]).
     owed: usize,
+    /// Children whose end this node read for itself (`wait`) before marion announced it: their
+    /// announcement is resolved as it arrives rather than queued ([`Inboxes::received`]).
+    received: std::collections::HashSet<AgentId>,
 }
 
 /// Every node's inbox, keyed by the node. Held by the supervisor beside its node table.
@@ -470,6 +478,37 @@ impl Inboxes {
         }
     }
 
+    /// **`agent` read `child`'s end for itself** — its `wait` returned it, or its `status` said it
+    /// finished — so announcing it too would spend a whole turn on news the node already has.
+    /// A queued announcement is withdrawn; one not yet made is resolved the moment it is
+    /// ([`Self::announce`]). Either way the journal records it delivered `via: "wait"`, and a
+    /// driver held for it is woken. `true` iff a queued announcement was withdrawn.
+    pub fn received(&self, agent: &AgentId, child: &AgentId) -> bool {
+        let (withdrawn, port) = {
+            let mut boxes = self.lock();
+            let Some(inbox) = boxes.get_mut(agent).filter(|b| !b.sealed) else {
+                return false;
+            };
+            let at = inbox.queue.iter().position(
+                |m| matches!(&m.source, Source::ChildEnded { child: c, .. } if c == child),
+            );
+            match at.and_then(|i| inbox.queue.remove(i)) {
+                Some(m) => (Some(m.id), inbox.port.clone()),
+                None => {
+                    inbox.received.insert(child.clone());
+                    (None, None)
+                }
+            }
+        };
+        if let Some(id) = &withdrawn {
+            self.delivered_noting(agent, id, VIA_READ, Some(READ_NOTE));
+        }
+        if let Some(port) = port {
+            port.wake();
+        }
+        withdrawn.is_some()
+    }
+
     /// The inbox exists and is not sealed — after a `take_or_seal` found it empty, that means an
     /// announcement is owed and the driver must wait. See [`TurnSource::held`].
     pub fn held(&self, agent: &AgentId) -> bool {
@@ -508,18 +547,28 @@ impl Inboxes {
                 sha256: sha256_hex(text.as_bytes()),
             }))
             .map_err(Refusal::Journal)?;
-            inbox.queue.push_back(Message {
-                id: id.clone(),
-                source,
-                text,
-                queued_at: SystemTime::now(),
-            });
+            // An end the node already read for itself is resolved here, never queued.
+            let read = match &source {
+                Source::ChildEnded { child, .. } if settles_debt => inbox.received.remove(child),
+                _ => false,
+            };
+            if !read {
+                inbox.queue.push_back(Message {
+                    id: id.clone(),
+                    source,
+                    text,
+                    queued_at: SystemTime::now(),
+                });
+            }
             if settles_debt {
                 inbox.owed = inbox.owed.saturating_sub(1);
             }
-            (id, inbox.port.clone())
+            (id, inbox.port.clone(), read)
         };
-        let (id, port) = port;
+        let (id, port, read) = port;
+        if read {
+            self.delivered_noting(agent, &id, VIA_READ, Some(READ_NOTE));
+        }
         if let Some(port) = port {
             port.wake();
         }
@@ -978,6 +1027,72 @@ pub(crate) mod tests {
             inboxes.enqueue(&p, TYPED, Source::Operator, "late".into()),
             Err(Refusal::Ended)
         );
+    }
+
+    /// **A child's end its parent already read with `wait` costs the parent no turn** — whichever
+    /// comes first. A live codex root got a whole extra generation just to hear about a child it
+    /// had waited on. Read after the announcement is queued, the queued message is withdrawn;
+    /// read before, the announcement is never queued. Either way the debt is settled, the driver
+    /// is woken, and the journal says the end reached the node through `wait`.
+    #[test]
+    fn a_childs_end_the_parent_already_read_is_withdrawn_or_never_queued() {
+        let delivered_via_wait = |log: &Arc<Mutex<Vec<RecordKind>>>| {
+            records(log)
+                .iter()
+                .filter(|r| matches!(r, RecordKind::MessageDelivered(d) if d.via == "wait"))
+                .count()
+        };
+        // The end is queued first, then read.
+        let (inboxes, log) = recording();
+        let p = id("parent");
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        inboxes
+            .announce(&p, TYPED, ended("child"), "the end".into())
+            .unwrap();
+        inboxes
+            .enqueue(&p, TYPED, Source::Operator, "keep me".into())
+            .unwrap();
+        assert!(
+            inboxes.received(&p, &id("child")),
+            "the queued end is withdrawn"
+        );
+        assert_eq!(
+            inboxes.take_next(&p).map(|m| m.text),
+            Some("keep me".into())
+        );
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.held(&p), "nothing owed, nothing queued: sealed");
+        assert_eq!(delivered_via_wait(&log), 1);
+
+        // The end is read first, then announced.
+        let (inboxes, log) = recording();
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        let port = Arc::new(Counting(AtomicUsize::new(0)));
+        inboxes.attach_port(&p, port.clone());
+        assert!(!inboxes.received(&p, &id("child")), "nothing queued yet");
+        inboxes
+            .announce(&p, TYPED, ended("child"), "the end".into())
+            .expect("accepted, and resolved at once");
+        assert_eq!(inboxes.queued(&p), 0, "no turn is spent on it");
+        assert!(
+            port.0.load(Ordering::SeqCst) >= 1,
+            "the held driver is told"
+        );
+        assert_eq!(inboxes.take_or_seal(&p), None);
+        assert!(!inboxes.held(&p), "the debt is settled");
+        assert_eq!(delivered_via_wait(&log), 1);
+
+        // Another child's end is still announced.
+        let (inboxes, _) = recording();
+        inboxes.open(&p);
+        inboxes.owe(&p);
+        inboxes.received(&p, &id("child"));
+        inboxes
+            .announce(&p, TYPED, ended("other"), "the other end".into())
+            .unwrap();
+        assert_eq!(inboxes.queued(&p), 1);
     }
 
     /// An announcement that will not be delivered by the inbox — the parent's lane pushes it
