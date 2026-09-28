@@ -31,7 +31,6 @@ crates/marion-harness/src/caps.rs:advertised  untracked: per-harness capability 
 crates/marion-harness/src/spec.rs:Push::argv  untracked: `Push::ClaudeChannel` strategy is named for one harness; rename it for its mechanism
 crates/marion-supervisor/src/bridge.rs:initialize_result  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename
 crates/marion-supervisor/src/bridge.rs:push_frame  untracked: matches `Push::ClaudeChannel`; goes with the strategy rename
-crates/marion-core/src/agent_type.rs:known_harnesses  untracked: special-cases ClaudeCode where `Harness::cli_name` already says "claude"
 crates/marion-core/src/agent_type.rs:builtin_names  untracked: a second hand-kept list of the built-in names; derive it from BUILTINS
 
 # --- verified row data, not a branch ------------------------------------------------------------

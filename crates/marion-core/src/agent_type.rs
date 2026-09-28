@@ -893,14 +893,14 @@ pub enum AgentTypesError {
     InvalidProfileName { name: String, profile: String },
 }
 
-/// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: Claude Code as
-/// `claude`, the name a person types, with its wire spelling beside it.
+/// `Harness::ALL`'s spellings, joined for [`AgentTypesError::UnknownHarness`]: each harness by the
+/// name a person types ([`Harness::cli_name`]), with its wire spelling beside it where they differ.
 fn known_harnesses() -> String {
     Harness::ALL
         .iter()
-        .map(|h| match h {
-            Harness::ClaudeCode => "claude (or claude-code)",
-            other => other.as_str(),
+        .map(|h| match (h.cli_name(), h.as_str()) {
+            (typed, wire) if typed == wire => wire.to_string(),
+            (typed, wire) => format!("{typed} (or {wire})"),
         })
         .collect::<Vec<_>>()
         .join(", ")
