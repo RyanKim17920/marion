@@ -492,7 +492,7 @@ native_facade_e2e 2 over five lanes, pane_attach 2, descendant_gate 3), `restart
 ~90 function splits (every production fn in the split files at cyclomatic complexity ≤ 10),
 gemini native lane, §7.6 descendant gating, child resume, `marion-proto` folded into
 `marion_core::proto`, a real stream writer-lock race fixed (forked children inherit `flock`),
-and the video refreshed (492 s, 39 frames). `sentrux` 6542 (cycles 0, depth 9).
+and the video refreshed (492 s, 39 frames). Structural score 6542 (cycles 0, depth 9).
 
 **Request-shape drift a pin cannot catch (2026-09-09).** The same shimmed claude 2.1.263 that
 passed `m1_hop` on 2026-09-06 failed it 3/3 on 2026-09-09: the request body now carries
@@ -513,7 +513,7 @@ copies are now one, `tests/common/mcp_result.rs`, which drops a `text` block tha
 are documented on the module. The `DISABLE_AUTOUPDATER` read and the trust-dialog text are
 byte-identical in the 2.1.268 binary.
 
-**Structure.** `sentrux` 0.5.7 quality signal 6542 at `24f4821` (cycles 0, redundancy 9168,
+**Structure.** The structural-quality scan's signal 6542 at `24f4821` (cycles 0, redundancy 9168,
 modularity 5100, equality 5452, depth 4706 at raw 9); the day started at 4856 with three import
 cycles and depth 10. The remaining depth is a real client path, `bin/marion` → `facade_cli` →
 `native_relay` → `native_tty` → `pty` → `run` → core, whose only test-side shortcut would recreate

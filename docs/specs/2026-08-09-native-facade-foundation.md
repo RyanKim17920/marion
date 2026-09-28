@@ -4,7 +4,7 @@
 
 **Architecture:** Keep command discovery and resolution pure in `marion-core`; keep exact, versioned launch data in `marion-proto`; let the `marion` binary recognize only registry entries before its legacy parser; and carry a root-only native context through the supervisor while an explicit readiness gate still refuses launch. This slice deliberately stops before adapter injection and transparent PTY proxying, so no user-visible facade can claim compatibility prematurely.
 
-**Tech Stack:** Rust 1.94, edition 2024, serde/JSON-RPC, Unix `OsStrExt`/`OsStringExt`, existing Cargo workspace tests, `.githooks/pre-commit`, and Sentrux.
+**Tech Stack:** Rust 1.94, edition 2024, serde/JSON-RPC, Unix `OsStrExt`/`OsStringExt`, existing Cargo workspace tests, and `.githooks/pre-commit`.
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - Preserve the dependency direction in the main design: `marion-core` stays pure/no I/O and does not depend on protocol, supervisor, terminal, or harness crates.
 - Tests may use synthetic facade descriptors. Production must have zero ready descriptors and every new critical assertion needs a named mutation check.
 - No test may silently skip because a binary, credential, platform feature, or fixture is absent. This slice's exact-byte evidence is Unix/macOS-only and must say so explicitly.
-- Sentrux quality must not regress from the recorded baseline **5146**; acyclicity is the current bottleneck. Run a separate cleanup review after the feature tasks.
+- Structural quality must not regress from the recorded baseline **5146**; acyclicity is the current bottleneck. Run a separate cleanup review after the feature tasks.
 - Preserve unrelated operator work, especially `docs/research/2026-08-09-zed-acp-antigravity.md` and gitignored task notes.
 
 ---
@@ -329,11 +329,11 @@ CARGO_NET_OFFLINE=true cargo test --workspace --all-targets --locked --offline
 
 Expected: zero failures and zero silent skips. Compare with the pre-change baseline, including the real provider socket and pane-attach suites.
 
-- [ ] **6.5 Close the Sentrux session.** Run the `sentrux:scan` session-end workflow. Require overall quality `>= 5146`, no new dependency cycle, and a non-regressed acyclicity score. If a score falls, assign a cleanup worker before proceeding.
+- [ ] **6.5 Close the structural-quality session.** Run the structural scan's session-end workflow. Require overall quality `>= 5146`, no new dependency cycle, and a non-regressed acyclicity score. If a score falls, assign a cleanup worker before proceeding.
 
-- [ ] **6.6 Final whole-slice review.** Use a fresh high-capability reviewer with the plan brief, task reports, full diff package, mutation ledger, and Sentrux result. Resolve findings through one scoped fix wave and re-review.
+- [ ] **6.6 Final whole-slice review.** Use a fresh high-capability reviewer with the plan brief, task reports, full diff package, mutation ledger, and structural-quality result. Resolve findings through one scoped fix wave and re-review.
 
-- [ ] **6.7 Update `tasks/todo.md` Review locally.** Record exact commands/results and link the next plan. Do not commit the gitignored task ledger.
+- [ ] **6.7 Update the local task ledger's review.** Record exact commands/results and link the next plan. Do not commit the gitignored task ledger.
 
 - [ ] **6.8 Commit any review-only fixes** in the smallest logical commit; do not squash the task commits.
 
@@ -357,5 +357,5 @@ Those belong to the next three plans in this order: adapter-owned native injecti
 - [ ] Every opaque value stays byte-exact on Unix.
 - [ ] Legacy command/process behavior has explicit regression coverage.
 - [ ] Every critical assertion has a named mutation.
-- [ ] Cleanup and Sentrux gates recur before the next slice.
+- [ ] Cleanup and structural-quality gates recur before the next slice.
 - [ ] A placeholder-marker scan is empty.

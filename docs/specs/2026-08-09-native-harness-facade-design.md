@@ -512,7 +512,7 @@ Two behavior-neutral dependency moves accompany the work:
 1. move `Auth` from the adapter hub to a leaf `auth` module;
 2. move `ROOT_DEPTH` from `root` to a neutral lifecycle/depth leaf.
 
-No broader supervisor/registry/TUI reorganization is part of this slice. Sentrux's
+No broader supervisor/registry/TUI reorganization is part of this slice. The structural-quality scan's
 pre-change quality signal is 5146 with acyclicity as the bottleneck. Session-end scanning
 is a structural non-regression signal, never a substitute for behavior evidence.
 
@@ -528,7 +528,7 @@ is a structural non-regression signal, never a substitute for behavior evidence.
 8. Add Marion-repository Codex→ACP dogfood.
 9. Add explicit Marion recursive adapter/nested-client mode and its dogfood test.
 10. Apply the two cycle-breaking leaf moves.
-11. Run targeted, milestone, workspace, mutation, live, and Sentrux verification.
+11. Run targeted, milestone, workspace, mutation, live, and structural-quality verification.
 
 Changes land as small logical commits. Each step compiles and keeps its affected tests
 green before the next step.
@@ -564,5 +564,5 @@ This slice is complete only when:
   dogfood, and recursive Marion dogfood pass without paid traffic or silent skips;
 - existing managed run, attach, protocol, M1/M2/M3/M4/M5 evidence, fmt, clippy, and full
   workspace targets remain green;
-- every listed mutation fails for the intended assertion and Sentrux reports no
+- every listed mutation fails for the intended assertion and the structural-quality scan reports no
   structural regression.
