@@ -73,6 +73,18 @@ impl Wire {
     }
 }
 
+/// **The wire pairs marion's own gateway translates** — `(what the harness speaks, what the
+/// provider serves)`. Endpoint resolution routes a node through the gateway only where the harness
+/// and the provider share no wire and their pair is listed here; everywhere else the harness talks
+/// to the provider directly, or the launch is refused naming both wire lists. An operator's own
+/// gateway needs no entry: it is a provider in `providers.toml` serving the wire it speaks.
+pub const TRANSLATIONS: &[(Wire, Wire)] = &[(Wire::AnthropicMessages, Wire::OpenAiChat)];
+
+/// Whether marion's gateway bridges a harness speaking `harness` to a provider serving `provider`.
+pub fn translates(harness: Wire, provider: Wire) -> bool {
+    TRANSLATIONS.contains(&(harness, provider))
+}
+
 impl fmt::Display for Wire {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
