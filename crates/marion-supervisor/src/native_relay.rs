@@ -4486,8 +4486,7 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
-            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut lines = complete_attach(&mut server);
             let subscribe = read_frame(&mut lines);
             let Frame::Request(request) = subscribe else {
                 panic!("the toggle did not subscribe to the tree: {subscribe:?}");
@@ -4671,8 +4670,8 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
-            frames_until_eof(&mut BufReader::new(server))
+            let mut lines = complete_attach(&mut server);
+            frames_until_eof(&mut lines)
         });
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
         let sink = Sink::default();
@@ -4721,14 +4720,14 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
+            let mut lines = complete_attach(&mut server);
             cue_rx
                 .recv_timeout(Duration::from_secs(10))
                 .expect("the test's cue to write");
             server
                 .write_all(&output_frame(0, b"\x1b[2Jcleared"))
                 .unwrap();
-            frames_until_eof(&mut BufReader::new(server))
+            frames_until_eof(&mut lines)
         });
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
         let sink = Sink::default();
@@ -4773,8 +4772,8 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
-            frames_until_eof(&mut BufReader::new(server))
+            let mut lines = complete_attach(&mut server);
+            frames_until_eof(&mut lines)
         });
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
         let sink = Sink::default();
@@ -4820,13 +4819,13 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
+            let mut lines = complete_attach(&mut server);
             server.write_all(&output_frame(0, WIDENING)).unwrap();
             cue_rx
                 .recv_timeout(Duration::from_secs(10))
                 .expect("the test's cue that the row is shown");
             server.write_all(&output_frame(1, WIDENING)).unwrap();
-            frames_until_eof(&mut BufReader::new(server))
+            frames_until_eof(&mut lines)
         });
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
         let sink = Sink::default();
@@ -4878,13 +4877,13 @@ mod tests {
             server
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
-            complete_attach(&mut server);
+            let mut lines = complete_attach(&mut server);
             server.write_all(&output_frame(0, b"\x1b[30;")).unwrap();
             rest_rx
                 .recv_timeout(Duration::from_secs(10))
                 .expect("the test's cue to finish the sequence");
             server.write_all(&output_frame(1, b"6HPassed.")).unwrap();
-            frames_until_eof(&mut BufReader::new(server))
+            frames_until_eof(&mut lines)
         });
         let (keys_tx, keys_rx) = mpsc::channel::<Vec<u8>>();
         let sink = Sink::default();
@@ -4974,7 +4973,12 @@ mod tests {
         Frame::from_line(&line).unwrap()
     }
 
-    fn complete_attach(server: &mut UnixStream) {
+    /// The fake supervisor's half of an attach, read through the reader it returns — which the
+    /// caller must keep reading from. A second `BufReader` over the same socket would lose whatever
+    /// this one read ahead: on a loaded machine the relay's next frame (a status `tree/subscribe`,
+    /// a resize) can arrive in the same `read` as the pane-ready line, and a fresh reader would
+    /// then wait for a frame already consumed.
+    fn complete_attach(server: &mut UnixStream) -> BufReader<UnixStream> {
         let mut lines = BufReader::new(server.try_clone().unwrap());
         assert!(matches!(read_frame(&mut lines), Frame::Request(_)));
         server
@@ -4989,6 +4993,7 @@ mod tests {
             read_frame(&mut lines),
             Frame::Input(note) if matches!(note.input, Input::NodePaneReady(_))
         ));
+        lines
     }
 
     #[derive(Clone, Copy, Debug)]
