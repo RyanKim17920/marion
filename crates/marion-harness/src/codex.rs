@@ -25,12 +25,13 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
+use crate::rpc_channel::{Answer, ReadyGate, RpcChannel, Turns};
 use crate::spec;
 use crate::spec::{
     Advertised, Approval, Arg, AxesRule, BootDialog, BootDialogs, BootSignal, Constraint,
     Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes,
-    ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces, TokenCarrier,
-    TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
+    MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume, Spelling, Surfaces,
+    TokenCarrier, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When, WireRecipe,
 };
 use std::path::PathBuf;
 
@@ -73,37 +74,18 @@ use std::path::PathBuf;
 /// [`SANDBOX_MODE`] exists to prevent.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Codex,
-    // `LaunchOnly` + `ProtocolEvents` + no display — §3.4's combination outside the four presets.
-    surfaces: Surfaces::LaunchOnly,
+    // Typed turns over `codex app-server` ([`APP`]); `exec` is kept as [`EXEC`].
+    surfaces: Surfaces::AppServer(&APP),
     program: Some("codex"),
     argv: &[
-        Arg::Lit("exec"),
-        // **Ahead of the subcommand, because `exec resume` does not take it** (0.147.0,
-        // `tests/fixtures/s29/`): `-C/--cd` is on `codex exec --help` and absent from `codex exec
-        // resume --help`, and `exec resume <id> … -C <dir>` exits 2 with "unexpected argument
-        // '-C'". `codex exec [OPTIONS] <COMMAND> [ARGS]` accepts it before `resume`, and a fresh
-        // `exec` reads its flags in any order, so one position serves both launches.
-        Arg::Flag("-C", Field::Cwd),
-        // `codex exec resume [SESSION_ID] [PROMPT]` (0.147.0): a subcommand of `exec`, ahead of
-        // the flags below, every one of which the resume help lists too (`--json`,
-        // `--skip-git-repo-check`, `-c`, `-m`, `--output-schema`, `-o`) and the s29 probe accepted
-        // after `resume <id>`.
-        Arg::Resume,
-        Arg::Lit("--json"),
-        Arg::Lit("--skip-git-repo-check"),
-        // The live route's whole configuration, one `-c key=value` per pair
-        // ([`live_config_overrides`]); empty under canned, where the same settings are written into
-        // the generated `config.toml` instead.
+        Arg::Lit("app-server"),
+        // The live route's whole configuration and the no-self-update switch, one `-c key=value`
+        // per pair, exactly as `exec` takes them: `-c` is global on 0.155.1 (`codex app-server
+        // --help`), and app-server reads `mcp_servers.marion.*` from argv like `config.toml` (S36
+        // P3). Empty but for the update pair under canned, whose settings live in the document.
         Arg::Each("-c", Field::Pairs),
-        // **Verified on 0.146.0**, where `codex exec --help` lists `-m, --model <MODEL>`. The
-        // adapter places none under a canned provider, so every contract this harness has ever
-        // written still records `None`; under a real vendor the model is the operator's to choose.
-        Arg::Flag("-m", Field::Model),
-        // `--output-schema`, the §9 fallback branch. S6 proved the primary branch, so M1 leaves it
-        // unset.
-        Arg::Flag("--output-schema", Field::OutputSchema),
-        Arg::Flag("--output-last-message", Field::OutputLastMessage),
-        Arg::Pos(Field::Prompt),
+        // app-server has no `-m`; the model is the same configuration key `-m` sets.
+        Arg::Pair("-c", "model", Field::Model),
     ],
     pane: Some(&[
         Arg::Each("-c", Field::Pairs),
@@ -136,7 +118,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Overlay,
         },
     ],
-    stream: Some(&STREAM),
+    stream: Some(&APP_STREAM),
     // `write` → `sandbox:workspace-write`, §3.1's *"coarsest equivalent"* named for this exact
     // harness: `codex exec` has no `--tools` and no permission list, only `--sandbox`, and marion
     // compiles `workspace-write` on every node — into [`config_toml`] when canned, as the
@@ -194,7 +176,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     // The TUI's `codex resume` is a different grammar and unmeasured, so the pane row carries no
     // `Arg::Resume` and a paned resume is refused.
-    resume: Some(Resume::Subcommand("resume")),
+    // A resume is app-server's own `thread/resume` ([`APP`]), never argv (S36 P8: after a SIGKILL
+    // and relaunch it carries the thread's history, and it reopens `exec` threads too).
+    resume: None,
     // codex 0.147.0 has **no** update-related variable in its `CODEX_*` list; the switch is the
     // config key `check_for_update_on_startup` (a boolean in its `ConfigToml` field list, and
     // runtime-typed: `-c check_for_update_on_startup=notabool` fails with "expected a boolean",
@@ -231,10 +215,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     client_name: None,
     delivery: Deliveries {
-        headless: TurnDelivery::Continuation {
-            note: "S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the \
-                   -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read \
-                   once before the first request, never mid-run",
+        headless: TurnDelivery::TypedTurn {
+            mid_turn: MidTurn::Fold,
+            note: "S36 P6 (app-server 0.155.1): `turn/steer` answers at once mid tool, while a \
+                   request is held and during an approval, and the text is a user message in the \
+                   next request of the same turn, with one `turn/completed`; `turn/start` on an \
+                   active turn steers too",
         },
         // 0.155.1 draws a provisional composer (`tui/src/startup_draft.rs`) the moment it starts,
         // then goes quiet while its app server boots: 1.25 s idle unloaded, longer under load. It
@@ -295,9 +281,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         shared: &["config.toml", "AGENTS.md"],
         note: "codex 0.155.1 `login status` on a fresh CODEX_HOME: Not logged in",
     }),
-    note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
-           omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
-           the exec row end to end",
+    note: "S36 on codex 0.155.1 for app-server over stdio (tests/fixtures/app-server-0.155.1); \
+           S6 on 0.146.0 for exec --json (tests/fixtures/s6), kept as EXEC; the TUI row and its \
+           omissions measured on 0.147.0 for M3 C2; tests/codex_app_server.rs, harness_matrix's \
+           codex cell and M1's hop run the app-server row end to end",
     requires: &[],
     axes: AxesRule::Split,
     // `-m` is compiled only where a real endpoint serves the model it is asked for: canned compiles
@@ -322,6 +309,58 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // per-tool knob at all (`SANDBOX_MODE`).
     writes_without_grant: true,
 };
+
+/// **The `codex exec` row**: the prompt rides argv, the JSONL stream is read, and a later turn is
+/// an `exec resume <thread>` relaunch (S6, S31). [`SPEC`] with its channel removed, kept so that
+/// falling back is one edit of row data, and so the exec fixtures keep a row to be read against.
+pub const EXEC: HarnessSpec = HarnessSpec {
+    // `LaunchOnly` + `ProtocolEvents` + no display — §3.4's combination outside the four presets.
+    surfaces: Surfaces::LaunchOnly,
+    argv: EXEC_ARGV,
+    stream: Some(&STREAM),
+    resume: Some(Resume::Subcommand("resume")),
+    delivery: Deliveries {
+        headless: TurnDelivery::Continuation {
+            note: "S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the \
+                   -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read \
+                   once before the first request, never mid-run",
+        },
+        ..SPEC.delivery
+    },
+    note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6), the headless row before S36",
+    ..SPEC
+};
+
+/// `codex exec`'s argv ([`EXEC`]).
+const EXEC_ARGV: &[Arg] = &[
+    Arg::Lit("exec"),
+    // **Ahead of the subcommand, because `exec resume` does not take it** (0.147.0,
+    // `tests/fixtures/s29/`): `-C/--cd` is on `codex exec --help` and absent from `codex exec
+    // resume --help`, and `exec resume <id> … -C <dir>` exits 2 with "unexpected argument
+    // '-C'". `codex exec [OPTIONS] <COMMAND> [ARGS]` accepts it before `resume`, and a fresh
+    // `exec` reads its flags in any order, so one position serves both launches.
+    Arg::Flag("-C", Field::Cwd),
+    // `codex exec resume [SESSION_ID] [PROMPT]` (0.147.0): a subcommand of `exec`, ahead of
+    // the flags below, every one of which the resume help lists too (`--json`,
+    // `--skip-git-repo-check`, `-c`, `-m`, `--output-schema`, `-o`) and the s29 probe accepted
+    // after `resume <id>`.
+    Arg::Resume,
+    Arg::Lit("--json"),
+    Arg::Lit("--skip-git-repo-check"),
+    // The live route's whole configuration, one `-c key=value` per pair
+    // ([`live_config_overrides`]); empty under canned, where the same settings are written into
+    // the generated `config.toml` instead.
+    Arg::Each("-c", Field::Pairs),
+    // **Verified on 0.146.0**, where `codex exec --help` lists `-m, --model <MODEL>`. The
+    // adapter places none under a canned provider, so every contract this harness has ever
+    // written still records `None`; under a real vendor the model is the operator's to choose.
+    Arg::Flag("-m", Field::Model),
+    // `--output-schema`, the §9 fallback branch. S6 proved the primary branch, so M1 leaves it
+    // unset.
+    Arg::Flag("--output-schema", Field::OutputSchema),
+    Arg::Flag("--output-last-message", Field::OutputLastMessage),
+    Arg::Pos(Field::Prompt),
+];
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).
 ///
@@ -490,6 +529,249 @@ pub const STREAM: StreamGrammar = StreamGrammar {
                 unit: &[],
             },
             path: "/item/text",
+            joins: false,
+        }],
+    }),
+};
+
+/// **`codex app-server`'s vocabulary** (S36, `tests/fixtures/app-server-0.155.1/`, 0.155.1).
+///
+/// - `initialize` then the `initialized` notification (P2); frames carry no `jsonrpc` member.
+/// - A thread is `thread/start {cwd, ephemeral: false, sandbox}`, persisted so a later
+///   `thread/resume {threadId}` reopens it with its history after a relaunch (P8: an ephemeral
+///   thread is `no rollout found`). **`sandbox` rides the request** because it beats both
+///   `config.toml` and argv `-c sandbox_mode` (P3), so the mode the contract records is the one the
+///   thread runs under whatever the operator's configuration says.
+/// - **The first turn waits for `mcpServer/startupStatus/updated` `ready` for marion's server**
+///   (P3): the turn's first request otherwise goes out ~1 s after start without marion's tools.
+/// - `turn/start` opens a turn; `turn/steer {expectedTurnId}` folds a message into the running one
+///   (P6); `turn/interrupt {turnId}` ends it at once (P7). `turn/started` and `turn/completed`
+///   bracket it. A `commandExecution` item names its process, which app-server leaves running
+///   after an interrupt (P7), so the driver kills it.
+/// - Approvals are **declined, never cancelled** (P5): a decline is read by the model as "rejected
+///   by user" and the turn goes on; a cancel ends the turn `interrupted`.
+/// - The delta notifications marion reads nothing from are opted out of (P10).
+pub const APP: RpcChannel = RpcChannel {
+    initialize: "initialize",
+    initialized: Some("initialized"),
+    opt_out: &[
+        "item/agentMessage/delta",
+        "item/commandExecution/outputDelta",
+        "account/rateLimits/updated",
+        "turn/diff/updated",
+        "remoteControl/status/changed",
+    ],
+    open: "thread/start",
+    resume: "thread/resume",
+    resume_id: "threadId",
+    cwd: "cwd",
+    open_fields: &[("ephemeral", "false"), ("sandbox", "\"workspace-write\"")],
+    thread_id: "/result/thread/id",
+    ready: Some(ReadyGate {
+        at: &[Cond::Eq("/method", "mcpServer/startupStatus/updated")],
+        server: "/params/name",
+        status: "/params/status",
+        ready: "ready",
+        failed: &["failed", "cancelled"],
+        error: "/params/error",
+    }),
+    turns: Turns {
+        start: "turn/start",
+        steer: "turn/steer",
+        interrupt: "turn/interrupt",
+        thread: "threadId",
+        input: "input",
+        text_item: ("type", "text", "text"),
+        expected: "expectedTurnId",
+        turn: "turnId",
+        started: &[Cond::Eq("/method", "turn/started")],
+        ended: &[Cond::Eq("/method", "turn/completed")],
+        turn_id: "/params/turn/id",
+        answered: &["/result/turn/id", "/result/turnId"],
+        process: &[
+            Cond::Eq("/method", "item/started"),
+            Cond::Eq("/params/item/type", "commandExecution"),
+        ],
+        pid: "/params/item/processId",
+    },
+    answers: &[
+        Answer {
+            method: "item/commandExecution/requestApproval",
+            result: r#"{"decision":"decline"}"#,
+        },
+        Answer {
+            method: "item/fileChange/requestApproval",
+            result: r#"{"decision":"decline"}"#,
+        },
+        Answer {
+            method: "mcpServer/elicitation/request",
+            result: r#"{"action":"decline","content":null,"_meta":null}"#,
+        },
+    ],
+    note: "S36 on codex 0.155.1 (tests/fixtures/app-server-0.155.1): P2 handshake, P3 readiness \
+           and sandbox, P5 approvals, P6 steer, P7 interrupt, P8 resume, P10 opt-out",
+};
+
+/// How a `codex app-server` stream is read: [`STREAM`]'s readings over app-server's notifications
+/// (S36 P4, `p4-items.jsonl`). Items arrive as `item/started` then `item/completed` under one
+/// `params.item.id`, camel-cased (`mcpToolCall`, `commandExecution`, `fileChange`,
+/// `agentMessage`); an item may complete **after** its turn did (P7), and is read all the same.
+///
+/// - **Usage** is `thread/tokenUsage/updated`'s `total`, the thread's running sum after each
+///   provider response, so it folds as the session total `exec`'s `turn.completed` is.
+///   `inputTokens` counts `cachedInputTokens` as it does there.
+/// - **The session** is the thread id in the answer to `thread/start` or `thread/resume`, which
+///   names the thread it reopened (P8), so a different id is a fresh thread.
+/// - **Failures** are a `turn/completed` whose turn `failed`, and the `error` notification.
+pub const APP_STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[
+            Cond::Eq("/params/item/type", "mcpToolCall"),
+            Cond::Eq("/params/item/server", MCP_ALIAS),
+        ],
+        each: None,
+        unit: &[],
+    },
+    name: Name::Verb("/params/item/tool"),
+    args: "/params/item/arguments",
+    pairing: Pairing::SameUnit {
+        id: Some("/params/item/id"),
+        verdict: Verdict::Status {
+            path: "/params/item/status",
+            ok: "completed",
+            pending: &["inProgress"],
+            words: &["/params/item/error/message"],
+        },
+    },
+    refused_report: OnRefusedReport::Record,
+    failures: &[crate::grammar::Failure::Frame {
+        at: Where {
+            frame: &[
+                Cond::Eq("/method", "turn/completed"),
+                Cond::Eq("/params/turn/status", "failed"),
+            ],
+            each: None,
+            unit: &[],
+        },
+        words: &["/params/turn/error/message"],
+        fallback: "the child's turn/completed said the turn failed",
+    }],
+    errors: &[
+        ErrorRule {
+            at: Where {
+                frame: &[Cond::Eq("/method", "error")],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: Some("/params/error/codexErrorInfo"),
+            words: &["/params/error/message"],
+        },
+        ErrorRule {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/method", "turn/completed"),
+                    Cond::Eq("/params/turn/status", "failed"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            status: None,
+            kind: Some("/params/turn/error/codexErrorInfo"),
+            words: &["/params/turn/error/message"],
+        },
+    ],
+    file_changes: Some(PathList {
+        at: Where {
+            frame: &[
+                Cond::Eq("/method", "item/completed"),
+                Cond::Eq("/params/item/type", "fileChange"),
+            ],
+            each: None,
+            unit: &[],
+        },
+        list: "/params/item/changes",
+        path: "/path",
+    }),
+    // No S36 frame was read for the running model; the exec row's measurement is not this one.
+    model: None,
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Has("/result/thread/id")],
+            each: None,
+            unit: &[],
+        },
+        path: "/result/thread/id",
+        resumes_in_place: true,
+        // `thread/start` answers the thread's id before the first turn.
+        by_title: None,
+    }),
+    usage: Some(UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/method", "thread/tokenUsage/updated")],
+            each: None,
+            unit: &[],
+        },
+        input: "/params/tokenUsage/total/inputTokens",
+        output: "/params/tokenUsage/total/outputTokens",
+        cache_read: Some("/params/tokenUsage/total/cachedInputTokens"),
+        cache_write: Some("/params/tokenUsage/total/cacheWriteInputTokens"),
+        reasoning: Some(Reasoning::Within(
+            "/params/tokenUsage/total/reasoningOutputTokens",
+        )),
+        input_includes_cache: true,
+        fold: UsageFold::Session,
+        // The thread's running total follows every response, so a turn cut short has already
+        // been counted up to its last one.
+        in_flight: None,
+    }),
+    rate_limit: None,
+    activity: Some(ActivityRule {
+        calls: &[
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/params/item/type", "mcpToolCall")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/params/item/tool",
+                args: "/params/item/arguments",
+                id: Some("/params/item/id"),
+                shape: CallShape::Tool,
+            },
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/params/item/type", "commandExecution")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/params/item/type",
+                args: "/params/item/command",
+                id: Some("/params/item/id"),
+                shape: CallShape::Command,
+            },
+            ToolUnit {
+                at: Where {
+                    frame: &[Cond::Eq("/params/item/type", "fileChange")],
+                    each: None,
+                    unit: &[],
+                },
+                name: "/params/item/type",
+                args: "/params/item/changes",
+                id: Some("/params/item/id"),
+                shape: CallShape::Files,
+            },
+        ],
+        text: &[TextUnit {
+            at: Where {
+                frame: &[
+                    Cond::Eq("/method", "item/completed"),
+                    Cond::Eq("/params/item/type", "agentMessage"),
+                ],
+                each: None,
+                unit: &[],
+            },
+            path: "/params/item/text",
             joins: false,
         }],
     }),
@@ -788,7 +1070,7 @@ impl HarnessAdapter for CodexAdapter {
 
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
-    spec: &SPEC,
+    spec: &EXEC,
     adapter: |_| Ok(Box::new(CodexAdapter)),
 };
 
@@ -798,6 +1080,7 @@ mod tests {
     use std::path::PathBuf;
 
     use marion_core::contract::AgentId;
+    use serde_json::Value;
 
     use crate::auth::Auth;
     use crate::invocation::Invocation;
@@ -831,6 +1114,10 @@ mod tests {
     }
 
     fn compile_exec(f: &Fields) -> Invocation {
+        render(&EXEC, Shape::Headless, f).unwrap()
+    }
+
+    fn compile_app_server(f: &Fields) -> Invocation {
         render(&SPEC, Shape::Headless, f).unwrap()
     }
 
@@ -1411,5 +1698,231 @@ mod tests {
         });
         assert!(inv.args.iter().any(|a| a == "--output-schema"));
         assert!(inv.args.iter().any(|a| a == "--output-last-message"));
+    }
+
+    /// The server's side of an S36 capture: every frame app-server wrote, in order.
+    fn s36(file: &str) -> Vec<Value> {
+        let path = format!(
+            "{}/../../tests/fixtures/app-server-0.155.1/{file}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{path}: {e}"))
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|o| o["dir"] == "s2c")
+            .map(|o| o["msg"].clone())
+            .collect()
+    }
+
+    /// [`s36`] as the stdout a node's driver records: one frame per line.
+    fn s36_stdout(file: &str) -> String {
+        s36(file)
+            .iter()
+            .map(|f| format!("{f}\n"))
+            .collect::<String>()
+    }
+
+    #[test]
+    fn the_app_server_vocabulary_is_well_formed_and_its_sandbox_is_the_one_marion_records() {
+        crate::rpc_channel::tests::assert_well_formed(&APP);
+        let open = APP.opening(1, "/wt", None);
+        assert_eq!(open["method"], "thread/start");
+        assert_eq!(open["params"]["cwd"], "/wt");
+        assert_eq!(open["params"]["sandbox"], SANDBOX_MODE);
+        assert_eq!(
+            open["params"]["ephemeral"], false,
+            "a thread marion may resume must be persisted (P8: an ephemeral one is gone)"
+        );
+        assert!(open.get("jsonrpc").is_none(), "P2: no jsonrpc member");
+        let resume = APP.opening(1, "/wt", Some("t-9"));
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["threadId"], "t-9");
+        assert_eq!(
+            resume["params"]["sandbox"], SANDBOX_MODE,
+            "P8: resume takes it too"
+        );
+        assert_eq!(APP.opened_by(&open), Some(None));
+        assert_eq!(APP.opened_by(&resume), Some(Some("t-9".into())));
+    }
+
+    /// The turn requests carry what P6/P7 sent: the thread, the expected turn on a steer, the turn
+    /// on an interrupt, and the text as one `text` item.
+    #[test]
+    fn the_turn_requests_are_the_shapes_s36_sent() {
+        let start = APP.turn_request(3, "t", "go");
+        assert_eq!(start["method"], "turn/start");
+        assert_eq!(
+            start["params"],
+            serde_json::json!({"threadId": "t", "input": [{"type": "text", "text": "go"}]})
+        );
+        let steer = APP.steer_request(4, "t", "u", "more");
+        assert_eq!(steer["method"], "turn/steer");
+        assert_eq!(steer["params"]["expectedTurnId"], "u");
+        assert_eq!(steer["params"]["input"][0]["text"], "more");
+        let stop = APP.interrupt_request(5, "t", "u");
+        assert_eq!(
+            stop,
+            serde_json::json!({"method": "turn/interrupt", "id": 5, "params": {"threadId": "t", "turnId": "u"}})
+        );
+    }
+
+    /// Read off P4's capture: the thread, the turn's opening and close under one id, the
+    /// command's process, and marion's server becoming ready.
+    #[test]
+    fn a_turns_life_reads_off_the_p4_capture() {
+        let frames = s36("p4-items.jsonl");
+        let thread = frames
+            .iter()
+            .find_map(|f| APP.thread_of(f))
+            .expect("no thread/start answer is kept in p4, but thread/started is");
+        let _ = thread;
+        let opened: Vec<String> = frames.iter().filter_map(|f| APP.opens_turn(f)).collect();
+        let closed: Vec<String> = frames.iter().filter_map(|f| APP.closes_turn(f)).collect();
+        assert!(!opened.is_empty());
+        assert_eq!(
+            opened, closed,
+            "every turn opened is closed under its own id"
+        );
+        let pids: Vec<i32> = frames.iter().filter_map(|f| APP.process_of(f)).collect();
+        assert!(pids.contains(&23220), "{pids:?}");
+        let ready = s36("p3-mcp-readiness.jsonl");
+        assert!(
+            ready
+                .iter()
+                .any(|f| APP.startup(f, "marion") == Some(crate::rpc_channel::Startup::Ready))
+        );
+        assert!(
+            ready.iter().all(|f| APP.startup(f, "github").is_none()),
+            "another server's state is not marion's"
+        );
+    }
+
+    /// A start answer names its turn, and a steer answer the turn it joined (P6).
+    #[test]
+    fn a_start_and_a_steer_answer_name_their_turn() {
+        let start =
+            serde_json::json!({"id": 3, "result": {"turn": {"id": "u-1", "status": "inProgress"}}});
+        let steer = serde_json::json!({"id": 4, "result": {"turnId": "u-1"}});
+        assert_eq!(APP.answered_turn(&start).as_deref(), Some("u-1"));
+        assert_eq!(APP.answered_turn(&steer).as_deref(), Some("u-1"));
+    }
+
+    /// A failed server start closes the gate in the server's words (P3's missing bridge).
+    #[test]
+    fn a_failed_startup_closes_the_gate_in_its_own_words() {
+        let failed = serde_json::json!({"method": "mcpServer/startupStatus/updated", "params": {
+            "threadId": "t", "name": "marion", "status": "failed",
+            "error": "MCP client for `marion` failed to start: No such file"}});
+        assert_eq!(
+            APP.startup(&failed, "marion"),
+            Some(crate::rpc_channel::Startup::Failed(
+                "MCP client for `marion` failed to start: No such file".into()
+            ))
+        );
+    }
+
+    /// **Approvals are declined, never cancelled** (P5: a cancel ends the turn), each in the shape
+    /// its request takes, and anything else is refused by name rather than left unanswered.
+    #[test]
+    fn every_approval_s36_saw_is_declined_and_nothing_is_left_unanswered() {
+        let asked: Vec<Value> = ["p5-approvals.jsonl", "p5-mcp-approvals.jsonl"]
+            .iter()
+            .flat_map(|f| s36(f))
+            .filter(|f| f.get("id").is_some() && f.get("method").is_some())
+            .collect();
+        assert!(asked.len() >= 3, "{asked:?}");
+        for request in &asked {
+            let reply = APP.answer(request);
+            assert_eq!(reply["id"], request["id"]);
+            let text = reply.to_string();
+            assert!(text.contains("decline"), "{request} -> {reply}");
+            assert!(!text.contains("cancel"), "{request} -> {reply}");
+        }
+        let other =
+            APP.answer(&serde_json::json!({"id": 9, "method": "item/tool/requestUserInput"}));
+        assert_eq!(other["error"]["code"], -32601);
+    }
+
+    /// **The app-server stream reads as the exec one does**: P4's turn reports, changes a file,
+    /// names its session and spends tokens, and the reading comes off the row's grammar.
+    #[test]
+    fn the_p4_capture_reads_through_the_app_server_grammar() {
+        let stdout = s36_stdout("p4-items.jsonl");
+        let out = crate::grammar::parse_stream(&APP_STREAM, &stdout, "");
+        // P4 reports twice, directly and then from code-mode JS; the later report is the reading.
+        assert_eq!(out.narrative.as_deref(), Some("p4 via js"));
+        assert_eq!(out.failure, None);
+        assert_eq!(out.file_change_paths.len(), 1, "{out:?}");
+        let frames = crate::stream::json_frames(&stdout);
+        let usage =
+            crate::grammar::usage(APP_STREAM.usage.as_ref().unwrap(), &frames).expect("usage");
+        // The thread's running total: the latest notification's `total` is the whole spend.
+        let last = frames
+            .iter()
+            .rfind(|f| f["method"] == "thread/tokenUsage/updated")
+            .expect("p4 carries usage");
+        let total = &last["params"]["tokenUsage"]["total"];
+        assert_eq!(
+            (usage.output, usage.cache_read),
+            (
+                total["outputTokens"].as_u64().unwrap(),
+                total["cachedInputTokens"].as_u64().unwrap()
+            ),
+            "{usage:?}"
+        );
+        let thread = serde_json::json!({"id": 2, "result": {"thread": {"id": "t-7"}}});
+        assert_eq!(
+            crate::grammar::session_id(&APP_STREAM, &thread).as_deref(),
+            Some("t-7")
+        );
+    }
+
+    /// **An item that completes after its turn is still read** (P7: the interrupted turn's command
+    /// completed ~20 s after `turn/completed`).
+    #[test]
+    fn an_item_completed_after_its_turn_is_still_read() {
+        let frames = s36("p7-interrupt.jsonl");
+        let closed_at = frames
+            .iter()
+            .position(|f| APP.closes_turn(f).is_some())
+            .expect("the interrupt closes a turn");
+        assert!(
+            frames[closed_at..]
+                .iter()
+                .any(|f| f["method"] == "item/completed"),
+            "the capture holds a late item"
+        );
+        let items = crate::grammar::activity_stream(APP_STREAM.activity.as_ref().unwrap(), &frames);
+        assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn app_server_carries_the_update_switch_and_the_model_as_configuration() {
+        let inv = compile_app_server(&Fields {
+            model: Some("gpt-5.1-codex".into()),
+            ..spec()
+        });
+        assert_eq!(inv.args[0], "app-server");
+        assert_eq!(
+            pairs(&inv),
+            [
+                "check_for_update_on_startup=false",
+                "model=\"gpt-5.1-codex\""
+            ]
+        );
+        assert!(
+            !inv.args.iter().any(|a| a == "do the task"),
+            "the prompt is a turn, never argv"
+        );
+        let resumed = compile_app_server(&Fields {
+            resume: Some("t-1".into()),
+            ..spec()
+        });
+        assert!(
+            !resumed.args.iter().any(|a| a == "t-1"),
+            "a resume is thread/resume, never argv: {:?}",
+            resumed.args
+        );
     }
 }

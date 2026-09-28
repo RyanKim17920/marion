@@ -38,6 +38,7 @@ use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
 use crate::jsonl_channel::JsonlChannel;
 use crate::mcp_bridge::{BridgeEnv, NODE_TOKEN_ENV};
+use crate::rpc_channel::RpcChannel;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// The name marion gives its own MCP server in every declaration, and therefore half of every
@@ -1118,6 +1119,9 @@ pub enum Arg {
     Flag(&'static str, Field),
     /// `<flag>=<value>` when the field carries a value; nothing otherwise.
     FlagEq(&'static str, Field),
+    /// `<flag> <key>=<value>` when the field carries a value, the value a TOML string; nothing
+    /// otherwise. codex's `-c model="…"`, on the command that has no `-m` (`codex app-server`).
+    Pair(&'static str, &'static str, Field),
     /// `<flag> <item>` once per item of a list field.
     Each(&'static str, Field),
     /// `<flag>=<item>` once per item of a list field.
@@ -1544,6 +1548,15 @@ fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
         Arg::Lit(s) => vec![s.to_string()],
         Arg::Flag(flag, field) => arg_flag(flag, field, f),
         Arg::FlagEq(flag, field) => arg_flag_eq(flag, field, f),
+        Arg::Pair(flag, key, field) => f
+            .value(field)
+            .map(|v| {
+                vec![
+                    flag.to_string(),
+                    format!("{key}={}", serde_json::Value::String(v)),
+                ]
+            })
+            .unwrap_or_default(),
         Arg::Each(flag, field) => arg_each(flag, field, spec, f),
         Arg::EachEq(flag, field) => arg_each_eq(flag, field, spec, f),
         Arg::Joined(flag, field) => vec![flag.to_string(), items(spec, f, field).join(",")],
@@ -1589,7 +1602,10 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         Some(p) => p.to_string(),
         None => f.program.clone().ok_or(Refusal::NoProgram)?,
     };
-    if f.resume.is_some() && !(spec.resume.is_some() && argv.contains(&Arg::Resume)) {
+    // A thread channel resumes over the protocol, so its argv carries no resume and needs none.
+    let resumes_on_argv = spec.resume.is_some() && argv.contains(&Arg::Resume);
+    let resumes_on_channel = shape == Shape::Headless && spec.surfaces.rpc().is_some();
+    if f.resume.is_some() && !resumes_on_argv && !resumes_on_channel {
         return Err(Refusal::NoResume);
     }
     // The push flag leads the pane argv, so the row's own first flag closes it: it is variadic
@@ -1650,6 +1666,9 @@ pub enum Surfaces {
     /// the channel is part of the choice, so a row cannot select the surface without stating
     /// what to write on it. A row without one stays [`Self::LaunchOnly`].
     JsonlRpc(&'static JsonlChannel),
+    /// Headless over an id-correlated JSON-RPC thread server ([`TypedKind::AppServer`]), **with its
+    /// vocabulary**, for the same reason as [`Self::JsonlRpc`]: codex's `app-server` (S36).
+    AppServer(&'static RpcChannel),
 }
 
 impl Surfaces {
@@ -1658,6 +1677,7 @@ impl Surfaces {
             Surfaces::Headless(kind) => ExecutionSurfaces::headless(kind),
             Surfaces::LaunchOnly => ExecutionSurfaces::launch_only_with_protocol_events(),
             Surfaces::JsonlRpc(_) => ExecutionSurfaces::headless(TypedKind::JsonlRpc),
+            Surfaces::AppServer(_) => ExecutionSurfaces::headless(TypedKind::AppServer),
         }
     }
 
@@ -1665,7 +1685,16 @@ impl Surfaces {
     pub fn channel(self) -> Option<&'static JsonlChannel> {
         match self {
             Surfaces::JsonlRpc(c) => Some(c),
-            Surfaces::Headless(_) | Surfaces::LaunchOnly => None,
+            Surfaces::Headless(_) | Surfaces::LaunchOnly | Surfaces::AppServer(_) => None,
+        }
+    }
+
+    /// The row's JSON-RPC thread channel, where it drives one. A resume on such a row is the
+    /// channel's own request ([`RpcChannel::resume`]), never an argv element.
+    pub fn rpc(self) -> Option<&'static RpcChannel> {
+        match self {
+            Surfaces::AppServer(c) => Some(c),
+            Surfaces::Headless(_) | Surfaces::LaunchOnly | Surfaces::JsonlRpc(_) => None,
         }
     }
 }

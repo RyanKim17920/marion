@@ -598,13 +598,23 @@ pub trait HarnessAdapter {
     /// It is compiled here, beside argv, rather than assembled by whoever drives the session, so
     /// that [`McpRoute::verify`] can check it before a byte is sent — the same guarantee the other
     /// four get from their route being a file or an environ.
+    ///
+    /// The default is a thread channel's opening request ([`spec::Surfaces::rpc`]): the row's
+    /// `thread/start`, or its `thread/resume` of the launch's session — a resume on such a row is
+    /// this request, never argv — and `None` on every other row.
     fn session_declaration(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Option<serde_json::Value>, HarnessError> {
-        let _ = (spec, ctx);
-        Ok(None)
+        let _ = ctx;
+        Ok(self.spec().surfaces.rpc().map(|c| {
+            c.opening(
+                SESSION_NEW_ID,
+                &spec.cwd.to_string_lossy(),
+                spec.resume.as_deref(),
+            )
+        }))
     }
 
     /// Read this harness's own output stream (§6.1 step 9).
