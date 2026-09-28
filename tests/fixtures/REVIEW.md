@@ -22,6 +22,13 @@ has read it and filled in a row of the provenance table below.**
 
 ## 2. Scan for — every file, every time
 
+`scripts/fixture-privacy.py` automates the first pass and runs in `scripts/three-axis.sh` and after
+every `scripts/conformance.sh` capture: non-placeholder home paths, non-example emails, the
+running machine's `$HOME`, and the names of the skills, plugins and MCP servers installed on it.
+Operator-specific needles it cannot derive go in a local, never-committed
+`$XDG_CONFIG_HOME/marion/fixture-deny.tsv`. `--fix <tsv>` applies same-length replacements, so
+byte offsets hold. It does not replace the human read below.
+
 | Class | Examples seen in this repo |
 |---|---|
 | Absolute home paths | `/Users/<name>/...`, and **path-encoded** forms like `-Users-<name>-Desktop-...` |

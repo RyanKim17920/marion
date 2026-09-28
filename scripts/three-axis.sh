@@ -46,4 +46,13 @@ if [ "$status" -ne 0 ]; then
 fi
 
 printf '%s\n' "$output" | grep '^test result:' | tail -1
+
+# Security, part two: no committed capture may carry the operator's home path, email, or the
+# skills, plugins and MCP servers installed on the machine running this check.
+if [ -z "$filter" ] || [ "$filter" = security ]; then
+	if ! scripts/fixture-privacy.py; then
+		printf '\nthree-axis: FAILED (fixture privacy)\n' >&2
+		exit 1
+	fi
+fi
 printf 'three-axis: ok\n' >&2

@@ -42,8 +42,14 @@ done
 [ -n "$rows" ] || usage
 
 cd "$here" || exit 1
+out=${out:-$here/tests/fixtures/conformance}
 MARION_CONFORMANCE=$rows \
-MARION_CONFORMANCE_OUT=${out:-$here/tests/fixtures/conformance} \
+MARION_CONFORMANCE_OUT=$out \
 MARION_CONFORMANCE_BASELINE=$baseline \
 COPILOT_AUTO_UPDATE=false \
-    exec cargo test -p marion-supervisor --test conformance -- battery --nocapture
+    cargo test -p marion-supervisor --test conformance -- battery --nocapture
+status=$?
+# A capture on the operator's own profile prints what that profile holds; refuse to leave any of
+# it in the transcripts (scripts/fixture-privacy.py says what it looks for).
+"$here/scripts/fixture-privacy.py" "$out" || status=1
+exit $status

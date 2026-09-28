@@ -105,6 +105,11 @@ which parses every shipped source file and fails on:
   login or device flow. Do instead: a secret type with a redacting `Debug`, env instead of argv,
   `OpenOptionsExt::mode(0o600)`, and a BLOCKED report naming the login command for the user.
 
+The security axis also runs `scripts/fixture-privacy.py` over `tests/fixtures/` (and
+`scripts/conformance.sh` runs it on every capture): a home path, an email, or the name of a
+skill, plugin or MCP server installed on your machine in a committed capture fails it. Scrub with
+`--fix <tsv>` (same-length replacements) and record the pass in `tests/fixtures/REVIEW.md`.
+
 Known findings live in `checks/{generality,efficiency,security}.allow` as `path:item  reason`.
 The lists are a ratchet: a new finding fails the check, and so does an entry nothing matches any
 more — a fix deletes its line in the same commit. Add an entry only with a reason a reviewer can
