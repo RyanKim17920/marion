@@ -48,27 +48,16 @@
 //! The workspace has no async runtime and `agent-client-protocol` 2.0.0 is not a dependency. One
 //! detached reader thread per pipe and a poll loop, exactly as `doctor` and `run_bounded` do it.
 
-use std::io::{BufRead, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use marion_harness::{AgentHandshake, ChildExit, Invocation, acp};
 
-use crate::kill::{DRAIN_GRACE, kill_process_tree};
-use crate::run::Drain;
+use crate::rpc::{Peer, clip};
 
-unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-
-const SIGINT: i32 = 2;
-const SIGKILL: i32 = 9;
+pub use crate::rpc::turn_exit;
 
 /// The JSON-RPC id marion stamps on `initialize`. doctor's number, kept, so a capture taken with
 /// one and read against the other still correlates.
@@ -112,20 +101,6 @@ const SESSION_BUDGET: Duration = Duration::from_secs(60);
 /// — but it is not worth waiting for indefinitely, because an agent that ignores the cancel is
 /// exactly the agent the kill below exists for.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
-
-/// How long the agent is given to go away on SIGINT before the process group is killed. doctor's
-/// number, for the same reason: §8 calls a binary that hangs on interrupt a distinct finding from a
-/// binary that is absent.
-const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
-
-/// How often a wait wakes to re-read the frame sink.
-const POLL: Duration = Duration::from_millis(20);
-
-/// How long after the agent's process is gone marion keeps reading its pipe before concluding the
-/// answer is never coming. Not zero: the frames are drained by another thread, so an agent that
-/// wrote its last frame and exited in the same breath has a window in which the process is dead and
-/// the answer is still in flight through a pipe and a mutex.
-const DEATH_GRACE: Duration = Duration::from_millis(250);
 
 /// How much of the agent's stderr a refusal carries. Enough to hold a stack trace's last words;
 /// bounded because an error message is read by a person and an agent that fails at startup can
@@ -311,21 +286,6 @@ pub enum AcpChildError {
     },
 }
 
-/// **The turn's end, not the process's**, as a node's recorded exit: code 0 for a turn the agent
-/// answered, and no code at all for one marion cut short on its bound. An ACP agent is a stdio
-/// server marion shuts down once the turn settles — EOF, then SIGINT ([`AcpRun::exit`]) — so the
-/// process status describes marion's shutdown, and recorded as the node's exit it would read as
-/// a node killed by a signal on every ordinary run (a resumed ACP child's `marion resume` failed
-/// on exactly that). What can still fail the turn is its stream, read separately. One rule for
-/// roots and children alike.
-pub fn turn_exit(exit: ChildExit) -> ChildExit {
-    ChildExit {
-        code: (!exit.timed_out).then_some(0),
-        signal: None,
-        timed_out: exit.timed_out,
-    }
-}
-
 /// Drive one ACP turn and hand back the transcript.
 ///
 /// The order is ACP's, and each step is bounded and refuses by name rather than falling through to
@@ -358,7 +318,13 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         .checked_add(spec.bound)
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
 
-    let mut agent = Driver::spawn(spec.inv, spec.tmpdir, spec.on_line)?;
+    let mut agent =
+        Driver::spawn(spec.inv, spec.tmpdir, spec.on_line, AcpPeer).map_err(|source| {
+            AcpChildError::Spawn {
+                program: spec.inv.program.clone(),
+                source,
+            }
+        })?;
     (spec.on_started)(agent.pid);
 
     let handshake = handshake_with(&mut agent, deadline)?;
@@ -420,7 +386,7 @@ fn handshake_with(
     agent: &mut Driver<'_>,
     deadline: Instant,
 ) -> Result<AgentHandshake, AcpChildError> {
-    agent.send(&acp::initialize_request(INITIALIZE_ID), "initialize")?;
+    send(agent, &acp::initialize_request(INITIALIZE_ID), "initialize")?;
     let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, HANDSHAKE_BUDGET)) {
         Some(f) => f,
         None => {
@@ -451,7 +417,7 @@ fn open_session(
     opening: &Opening,
     deadline: Instant,
 ) -> Result<(String, String), AcpChildError> {
-    agent.send(session_new, opening.method)?;
+    send(agent, session_new, opening.method)?;
     let opened = match agent.settle(opening.id, clip(deadline, SESSION_BUDGET)) {
         Some(f) => f,
         None => {
@@ -528,7 +494,8 @@ fn select_in_session(
         acp::SelectChannel::ConfigOption { .. } => acp::SET_CONFIG_OPTION_METHOD,
         acp::SelectChannel::SetMode => acp::SET_MODE_METHOD,
     };
-    agent.send(
+    send(
+        agent,
         &acp::select_request(SET_SELECT_ID, session, &select, value),
         method,
     )?;
@@ -579,13 +546,13 @@ fn prompt_session(
     turns: Option<&crate::inbox::TurnFeed>,
 ) -> Result<bool, AcpChildError> {
     let mut last_id = FIRST_PROMPT_ID;
-    agent.send(
+    send(
+        agent,
         &acp::prompt_request(last_id, session, prompt),
         "session/prompt",
     )?;
-    let latch = Arc::new(crate::inbox::Latch::default());
     if let Some(feed) = turns {
-        feed.source.attach_port(latch.clone());
+        feed.source.attach_port(agent.wake_port());
     }
     let folding = turns.filter(|f| f.folds());
     let mut pending = vec![last_id];
@@ -593,7 +560,7 @@ fn prompt_session(
         while let Some(&id) = pending.first() {
             let mut sent = Vec::new();
             let answered = agent.settle_while(id, deadline, |agent| {
-                let Some(feed) = folding.filter(|_| latch.take()) else {
+                let Some(feed) = folding.filter(|_| agent.take_wake()) else {
                     return;
                 };
                 while let Some(msg) = feed.source.take_next() {
@@ -624,7 +591,7 @@ fn prompt_session(
             }
             // Owed a background child's end: wait for the inbox, bounded by the wall clock.
             None if feed.source.held() => loop {
-                if latch.take() {
+                if agent.take_wake() {
                     break;
                 }
                 if Instant::now() >= deadline {
@@ -635,7 +602,7 @@ fn prompt_session(
                 }
                 // Answered while waiting: an agent may still ask marion something between turns.
                 agent.classify();
-                std::thread::sleep(POLL);
+                agent.wait_event(deadline);
             },
             None => return Ok(true),
         }
@@ -662,6 +629,18 @@ fn send_turn(
             feed.source
                 .dropped(&msg.id, &format!("the agent's stdin closed: {e}"));
             false
+        }
+    }
+}
+
+/// [`Driver::write`], with the failure named after the step that could not be sent: the request
+/// never went out, so no budget below it was ever really spent.
+fn send(agent: &mut Driver<'_>, frame: &Value, step: &'static str) -> Result<(), AcpChildError> {
+    match agent.write(frame) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            let _ = agent.finish(true);
+            Err(AcpChildError::Unwritable { step, source })
         }
     }
 }
@@ -727,231 +706,18 @@ fn declared(request: &Value) -> Result<Opening, AcpChildError> {
     })
 }
 
-/// A step's deadline: its own measured budget, clipped to what is left of the caller's wall clock.
-/// Never the later of the two — the caller's number is a ceiling, and a step budget that outran it
-/// would make the wall clock advisory.
-fn clip(overall: Instant, budget: Duration) -> Instant {
-    let step = Instant::now()
-        .checked_add(budget)
-        .unwrap_or_else(|| Instant::now() + budget / 2);
-    step.min(overall)
-}
-
-/// The last of `s`, bounded. The *last*, because a process that failed at startup says why in its
-/// final lines and buries them under whatever it logged on the way there.
+/// The last of `s`, bounded: [`STDERR_EXCERPT`] of a failed agent's final words.
 fn excerpt(s: &str) -> String {
-    let s = s.trim_end();
-    if s.len() <= STDERR_EXCERPT {
-        return if s.is_empty() {
-            "<empty>".into()
-        } else {
-            s.into()
-        };
-    }
-    let cut = s.len() - STDERR_EXCERPT;
-    let cut = (cut..s.len())
-        .find(|i| s.is_char_boundary(*i))
-        .unwrap_or(s.len());
-    format!("…{}", &s[cut..])
+    crate::rpc::excerpt(s, STDERR_EXCERPT)
 }
 
-/// What the shutdown produced.
-struct Finish {
-    stdout: String,
-    stderr: String,
-    exit: ChildExit,
-    capture_truncated: bool,
-}
+/// marion's ACP client: the [`Peer`] that answers what an agent asks mid-turn.
+struct AcpPeer;
 
-/// A spawned ACP agent with both pipes drained by threads, so a client-bound request can be
-/// answered while frames are still arriving.
-///
-/// **Every exit from this struct kills the agent, and kills its group.** An ACP agent is a
-/// long-lived stdio server that never closes stdout on its own — §8's leak check names exactly this
-/// shape — and the agent's own children (marion's MCP bridge among them) inherit its pipes.
-/// [`Drop`] is what makes that true on the paths that return an error; [`Driver::finish`] is the
-/// one that also reports what the kill took.
-struct Driver<'a> {
-    child: Child,
-    pid: i32,
-    stdin: Option<ChildStdin>,
-    /// Every line the agent has written, in order. Shared with the reader thread.
-    frames: Arc<Mutex<Vec<String>>>,
-    /// The reader thread reached EOF, i.e. every holder of the stdout write end let go. False at
-    /// the end of a run means the transcript is a prefix.
-    stdout_eof: Arc<AtomicBool>,
-    stderr: Option<Drain>,
-    /// How far into `frames` the classifier has read. Requests are answered once and responses are
-    /// indexed once, however many times a wait loop wakes.
-    cursor: usize,
-    /// `(id, frame)` for every response the agent has sent. Kept because S21 measured
-    /// `session/update` notifications interleaved with, and arriving *before*, the response they
-    /// belong to — so "the next line" is not the answer to anything, and an answer that arrives
-    /// while marion is waiting on an earlier id must still be there when marion asks for it.
-    responses: Vec<(u64, String)>,
-    /// [`AcpChildSpec::on_line`]. Fed from [`Self::classify`], whose cursor already guarantees each
-    /// line is read once, and topped up with the tail in [`Self::finish`].
-    on_line: Option<&'a dyn Fn(&str)>,
-}
+/// A spawned ACP agent: the shared id-correlated driver with marion's ACP client as its peer.
+type Driver<'a> = crate::rpc::Driver<'a, AcpPeer>;
 
-impl<'a> Driver<'a> {
-    fn spawn(
-        inv: &Invocation,
-        tmpdir: &Path,
-        on_line: Option<&'a dyn Fn(&str)>,
-    ) -> Result<Self, AcpChildError> {
-        let mut cmd = inv.command(tmpdir);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Its own group. The agent starts marion's MCP bridge from the `session/new` declaration
-        // (S21 watched it happen), that bridge inherits both of the agent's pipes, and a `read` on
-        // a pipe returns EOF only when *every* write end is closed. So killing the agent alone
-        // leaves the drains wedged — `duplex` measured that deadlock — and killing the group is
-        // what closes them. `kill_process_tree` refuses marion's own pgid, so without a group of
-        // its own the sweep would have nothing it is allowed to address.
-        cmd.process_group(0);
-        let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
-            .spawn(&mut cmd)
-            .map_err(|source| AcpChildError::Spawn {
-                program: inv.program.clone(),
-                source,
-            })?;
-        let pid = child.id() as i32;
-        let stdin = child.stdin.take();
-        let frames = Arc::new(Mutex::new(Vec::new()));
-        let stdout_eof = Arc::new(AtomicBool::new(false));
-        let out = child.stdout.take().expect("stdout was piped");
-        let sink = Arc::clone(&frames);
-        let eof = Arc::clone(&stdout_eof);
-        // Detached, and it has to be: the join is what would deadlock if anything the agent started
-        // outlives it, so the group kill above is this thread's exit condition rather than a join.
-        // Line-oriented because ACP's transport is newline-delimited and the driver answers
-        // requests mid-turn — a whole-pipe read has nothing to answer with until the pipe closes.
-        std::thread::spawn(move || {
-            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                sink.lock().expect("frame sink").push(line);
-            }
-            eof.store(true, Ordering::Relaxed);
-        });
-        let stderr = Drain::start(child.stderr.take().expect("stderr was piped"));
-        Ok(Self {
-            child,
-            pid,
-            stdin,
-            frames,
-            stdout_eof,
-            stderr: Some(stderr),
-            cursor: 0,
-            responses: Vec::new(),
-            on_line,
-        })
-    }
-
-    /// One frame, newline-terminated. The transport is newline-delimited, so a frame that contained
-    /// one would be two frames; `serde_json`'s compact form never does.
-    fn write(&mut self, frame: &Value) -> std::io::Result<()> {
-        let Some(w) = self.stdin.as_mut() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "marion has already closed the agent's stdin",
-            ));
-        };
-        writeln!(w, "{frame}")?;
-        w.flush()
-    }
-
-    /// [`Self::write`], with the failure named after the step that could not be sent.
-    fn send(&mut self, frame: &Value, step: &'static str) -> Result<(), AcpChildError> {
-        match self.write(frame) {
-            Ok(()) => Ok(()),
-            Err(source) => {
-                let _ = self.finish(true);
-                Err(AcpChildError::Unwritable { step, source })
-            }
-        }
-    }
-
-    /// Wait for the response carrying `id`, **answering every client-bound request that arrives in
-    /// the meantime**. `None` is "not by the deadline".
-    ///
-    /// The answering is not a courtesy. ACP is bidirectional: the agent sends marion requests
-    /// mid-turn, and a request marion never answers stops the turn dead — the agent is waiting on
-    /// marion, marion is waiting on the agent, and the only thing that ends it is the wall clock.
-    /// S21's probe grew `answer_agent_requests` for this; `doctor` has no equivalent only because
-    /// its micro-prompt is chosen so nothing is ever asked.
-    fn settle(&mut self, id: u64, deadline: Instant) -> Option<String> {
-        self.settle_while(id, deadline, |_| {})
-    }
-
-    /// [`Self::settle`], calling `between` on every poll — where a driver sends what it may send
-    /// while the agent is still working (a folded prompt).
-    fn settle_while(
-        &mut self,
-        id: u64,
-        deadline: Instant,
-        mut between: impl FnMut(&mut Self),
-    ) -> Option<String> {
-        let mut gone: Option<Instant> = None;
-        loop {
-            self.classify();
-            between(self);
-            if let Some((_, frame)) = self.responses.iter().find(|(k, _)| *k == id) {
-                return Some(frame.clone());
-            }
-            // A dead agent will not answer, and waiting out a 60 s budget to discover that turns
-            // "the agent crashed" into "the agent hung" — two findings §8 insists on telling apart.
-            // The grace is because the process dying and its last frame arriving are not ordered:
-            // the frame crosses a pipe and a mutex after the exit status is readable.
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                match gone {
-                    Some(t) if t.elapsed() >= DEATH_GRACE => return None,
-                    Some(_) => {}
-                    None => gone = Some(Instant::now()),
-                }
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(POLL);
-        }
-    }
-
-    /// Read every frame the agent has written since the last call: index the responses, answer the
-    /// requests, ignore the notifications.
-    fn classify(&mut self) {
-        let new: Vec<String> = {
-            let seen = self.frames.lock().expect("frame sink");
-            if seen.len() <= self.cursor {
-                return;
-            }
-            let from = self.cursor;
-            self.cursor = seen.len();
-            seen[from..].to_vec()
-        };
-        for line in new {
-            // Before the parse: a watcher sees what the agent wrote, banners included.
-            if let Some(sink) = self.on_line {
-                sink(&line);
-            }
-            // A line that is not JSON is kept in the transcript verbatim and classified as nothing.
-            // Agents write banners and warnings to stdout, and `acp::json_frames` already skips
-            // them; inventing a reply to one would be worse than ignoring it.
-            let Ok(frame) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let has_id = frame.get("id").is_some();
-            if has_id && frame.get("method").is_some() {
-                self.answer(&frame);
-            } else if has_id
-                && (frame.get("result").is_some() || frame.get("error").is_some())
-                && let Some(k) = frame.get("id").and_then(Value::as_u64)
-            {
-                self.responses.push((k, line));
-            }
-        }
-    }
-
+impl Peer for AcpPeer {
     /// Answer one client-bound request.
     ///
     /// **Permissively, and the three kinds are not a policy marion invented here.** The shipped
@@ -983,14 +749,14 @@ impl<'a> Driver<'a> {
     /// `duplex`'s reason about unimplemented `control_request`s. `terminal/*` is the live case:
     /// marion advertises `terminal: true` and implements none of it, so a terminal-using agent
     /// learns that in one frame instead of hanging until the wall clock.
-    fn answer(&mut self, request: &Value) {
+    fn answer(&mut self, request: &Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let method = request
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let params = request.get("params").unwrap_or(&Value::Null).clone();
-        let reply = match method {
+        match method {
             "session/request_permission" => match allow_option(&params) {
                 Some(pick) => ok(
                     &id,
@@ -1033,102 +799,7 @@ impl<'a> Driver<'a> {
                      `fs/read_text_file` and `fs/write_text_file`, and not `{other}`"
                 ),
             ),
-        };
-        // Best-effort: an agent whose stdin has closed is being shut down anyway, and a write
-        // failure here must not take down a turn whose frames are already worth reading.
-        let _ = self.write(&reply);
-    }
-
-    /// Shut the agent down and collect everything.
-    ///
-    /// `marion_cut_it_short` is the caller's own statement that the turn did not finish, and it is
-    /// what §6.7 calls an attributed kill — not something read off a signal number.
-    fn finish(&mut self, marion_cut_it_short: bool) -> (Finish, usize) {
-        // EOF on the agent's stdin first: it is the polite end of a stdio session, and an agent
-        // that honours it exits before the signal.
-        self.stdin.take();
-        let interruptible = matches!(self.child.try_wait(), Ok(None));
-        if interruptible {
-            unsafe { kill(self.pid, SIGINT) };
         }
-        let status = crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE);
-        let ended_on = if status.is_some() { SIGINT } else { SIGKILL };
-        if status.is_none() {
-            kill_process_tree(self.pid);
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-        // Unconditional, and it is what makes the drains below terminate. The agent is reaped by
-        // here; what is not is whatever it started — marion's own MCP bridge, holding the write end
-        // of both pipes. The group survives its leader, so `kill(-pgid)` still addresses them.
-        kill_process_tree(self.pid);
-
-        let drain_deadline = Instant::now() + DRAIN_GRACE;
-        while !self.stdout_eof.load(Ordering::Relaxed) && Instant::now() < drain_deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let stdout_complete = self.stdout_eof.load(Ordering::Relaxed);
-        let collected = self.frames.lock().expect("frame sink").clone();
-        // The lines no wait loop classified — whatever arrived after the last answer marion waited
-        // for — so a watcher's view ends where the transcript does.
-        if let Some(sink) = self.on_line {
-            collected.iter().skip(self.cursor).for_each(|l| sink(l));
-        }
-        self.cursor = collected.len();
-        let (stderr, stderr_complete) = match self.stderr.take() {
-            Some(d) => d.finish(drain_deadline),
-            None => (Vec::new(), true),
-        };
-
-        // **Marion's kill, reported as marion's kill.** On the short path the agent's own status is
-        // not the turn's: an agent that raced the cancel and exited 0 would otherwise hand a
-        // downstream reader an exit 0 for a turn marion cut off. `timed_out` is the field that says
-        // what happened, and the code is dropped rather than reported as a success nobody earned.
-        let exit = if marion_cut_it_short {
-            ChildExit {
-                code: None,
-                signal: Some(ended_on),
-                timed_out: true,
-            }
-        } else {
-            ChildExit {
-                code: status.as_ref().and_then(std::process::ExitStatus::code),
-                signal: status
-                    .as_ref()
-                    .and_then(ExitStatusExt::signal)
-                    .or((status.is_none()).then_some(SIGKILL)),
-                timed_out: false,
-            }
-        };
-        (
-            Finish {
-                stdout: collected.join("\n"),
-                stderr: String::from_utf8_lossy(&stderr).into_owned(),
-                exit,
-                capture_truncated: !(stdout_complete && stderr_complete),
-            },
-            collected.len(),
-        )
-    }
-
-    /// Shut down and build a refusal out of what the agent left behind. The agent's stderr is the
-    /// only thing an operator can act on when the frames say nothing, so no error path may skip it.
-    fn refuse(&mut self, make: impl FnOnce(Finish, usize) -> AcpChildError) -> AcpChildError {
-        let (end, frames) = self.finish(true);
-        make(end, frames)
-    }
-}
-
-impl Drop for Driver<'_> {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            unsafe { kill(self.pid, SIGKILL) };
-            let _ = self.child.wait();
-        }
-        // The group, for the reason `finish` sweeps it: the agent's children hold its pipes, and a
-        // driver dropped on an error path has the same obligation as one that returned a
-        // transcript.
-        kill_process_tree(self.pid);
     }
 }
 
@@ -1172,6 +843,7 @@ mod tests {
     use super::*;
     use marion_testsupport::scratch;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     /// **A `session/load` must name a session**: an empty or blank `sessionId` would be a wait on
     /// a session no agent can open, so it is refused before the spawn; a real id is carried as

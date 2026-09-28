@@ -125,6 +125,7 @@ pub mod registry;
 pub mod restart;
 pub mod review;
 pub mod root;
+pub(crate) mod rpc;
 pub mod run;
 /// The serve loop over §2's socket: NDJSON framing, dispatch, and §7.3.1's rule that a dropped
 /// socket is not a quit.

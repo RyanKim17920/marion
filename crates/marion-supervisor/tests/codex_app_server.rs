@@ -241,7 +241,10 @@ fn finish(bed: &Bed, mut run: Child, must_succeed: bool) {
         if Instant::now() >= until {
             let _ = run.kill();
             let _ = run.wait();
-            panic!("marion did not finish inside {RUN_BOUND:?}\n{}", bed.evidence());
+            panic!(
+                "marion did not finish inside {RUN_BOUND:?}\n{}",
+                bed.evidence()
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -582,7 +585,8 @@ fn a_background_childs_end_reaches_its_held_codex_parent_once_as_its_next_turn()
     });
     let root = bed.root().expect("the root's intent is journaled");
     bed.wait("the root's first turn to end", || {
-        bed.events_of(&root).contains(r#""method":"turn/completed""#)
+        bed.events_of(&root)
+            .contains(r#""method":"turn/completed""#)
     });
     hold.release();
     finish(&bed, run, true);
@@ -683,7 +687,10 @@ fn a_codex_root_resumes_its_thread_after_its_supervisor_is_sigkilled() {
     // The first life's held request is released with its process already gone.
     hold.release();
 
-    let resume = bed.marion(&["resume", &root.0, "--prompt", RESUME_PROMPT], "resume.stderr");
+    let resume = bed.marion(
+        &["resume", &root.0, "--prompt", RESUME_PROMPT],
+        "resume.stderr",
+    );
     finish(&bed, resume, false);
 
     let second: Vec<Value> = bed
