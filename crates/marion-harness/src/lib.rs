@@ -37,7 +37,7 @@ pub use acp::AcpAdapter;
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
     Extras, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
-    adapter_for, adapter_for_type,
+    adapter_for, adapter_for_type, writes_files,
 };
 pub use antigravity::AntigravityAdapter;
 pub use auth::{

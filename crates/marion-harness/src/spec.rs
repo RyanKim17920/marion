@@ -169,6 +169,55 @@ pub struct HarnessSpec {
     /// What the harness's software claims before any surface clips it
     /// ([`crate::caps::advertised`]): every `true` names its measurement in the row.
     pub advertised: Advertised,
+    /// **Can a node on this harness change a file with an empty `tools:` list?**
+    ///
+    /// §6.6's occupancy rule is *"at most one node with **write tools** per cwd"*, and reading that
+    /// off `marion_core::agent_type::AgentType::tools` alone gets the answer backwards on half the
+    /// harnesses. §3.1's `tools:` is a **grant list** — what marion must positively enable that the
+    /// harness would not do on its own — and two of the four need no such grant. That asymmetry is
+    /// already stated in `marion_core::agent_type::TOOL_READ`'s table, which says outright that
+    /// answering `read` with codex's shell *"would let a reader of `tools: [read]` believe a codex
+    /// node was read-only when it is not"*. The same trap, one field over.
+    ///
+    /// What each adapter actually compiles, which is where these two answers come from:
+    ///
+    /// | harness | with `tools: []` | source |
+    /// |---|---|---|
+    /// | codex | **writes** — `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no per-tool knob at all | `codex::SANDBOX_MODE` |
+    /// | opencode | **writes** — marion compiles no constraint whatsoever | `opencode::NO_COMPILED_TOOL_CONSTRAINT` |
+    /// | claude-code | withheld — `--tools ""` unless `write` is declared | `ClaudeCodeAdapter::permission_axis` |
+    /// | gemini | withheld — the default approval mode drops the mutating tools from `functionDeclarations` outright | `gemini::DEFAULT_APPROVAL_MODE` |
+    /// | copilot | withheld — `--available-tools` names only marion's verbs unless `write` is declared, and an ungranted `create` is `denied` (measured, `tests/fixtures/s24/`) | `CopilotAdapter::permission_axis` |
+    /// | acp | **writes** — twice over; see below | `acp::NO_TOOL_AVAILABILITY_SURFACE` |
+    ///
+    /// **The `acp` arm is decided, not inherited.** Two independent reasons, either sufficient:
+    ///
+    /// 1. *ACP has no tool-availability surface at all.* There is no field in `initialize` or
+    ///    `session/new` that narrows an agent's own tools, so marion compiles no constraint — the
+    ///    opencode row's situation, one protocol up. S21 measured it: an `opencode acp` session
+    ///    marion opened had `write`, `edit` and `bash` in scope with marion having asked for
+    ///    nothing. Worse, marion's own `initialize` **hands the agent a write channel**
+    ///    (`clientCapabilities.fs.writeTextFile: true`, [`crate::acp::initialize_request`]), so an ACP node with `tools: []` can change a
+    ///    file *through marion*.
+    /// 2. *marion does not know which agent this is until after the process exists.* §5.2's `acp`
+    ///    row is one adapter over many agents and the identity arrives in the handshake, so any
+    ///    `false` here would be a claim about an agent nobody had named yet.
+    ///
+    /// Both land on the same answer as the erring-towards-`true` rule below, which is the only
+    /// reason a fifth arm is safe to add at all.
+    ///
+    /// **Erring towards `true` is the only safe direction here** and is what the two `true` arms
+    /// are. A false `true` costs a caller a refusal they can lift with one documented parameter
+    /// (`allow_concurrent_writes`); a false `false` lets two agents write one tree, which §6.6
+    /// calls worse than two humans doing it — each harness keeps its own checkpoint state, so a
+    /// restore in one silently reverts the other's work — and the caller finds out afterwards, if
+    /// at all.
+    ///
+    /// Stated by every row, so a new harness cannot inherit an answer nobody measured for it; the
+    /// adapter sweep
+    /// `the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint` pins it
+    /// against what each row compiles.
+    pub writes_without_grant: bool,
 }
 
 /// **The capabilities a row's binary claims**, keyed by version: what every version measured

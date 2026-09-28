@@ -318,6 +318,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             (0, 146, 0),
         )],
     },
+    // `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no
+    // per-tool knob at all (`SANDBOX_MODE`).
+    writes_without_grant: true,
 };
 
 /// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).

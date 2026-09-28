@@ -207,6 +207,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
         from_version: &[],
     },
+    // Decided, not inherited: ACP has no tool-availability surface, and marion does not know which
+    // agent it is until the process exists (see the field's doc).
+    writes_without_grant: true,
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**
@@ -423,7 +426,7 @@ fn object_keys(parent: Option<&Value>, field: &str) -> BTreeSet<String> {
 /// so this string is half of what a compiled prompt has to say.
 pub const MCP_SERVER_NAME: &str = crate::spec::MCP_ALIAS;
 
-/// Why an ACP node with `tools: []` still writes (`Harness::writes_without_a_declaration`).
+/// Why an ACP node with `tools: []` still writes (the row's `writes_without_grant`).
 ///
 /// ACP has no field anywhere that narrows an agent's own tools — not in `initialize`, not in
 /// `session/new`. S21's session had `write`, `edit` and `bash` in scope with marion asking for

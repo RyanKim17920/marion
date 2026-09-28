@@ -180,6 +180,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Nothing measured beyond what the row compiles: `--conversation` is the row's resume
     // grammar (s32), not this table's supervisor-driven `resume`. `false` is "not measured".
     advertised: Advertised::NONE,
+    // Measured on 1.2.8 (s32): in the default `request-review` mode a headless `write_to_file` is
+    // auto-denied; `--mode accept-edits` is what a `write` compiles.
+    writes_without_grant: false,
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).

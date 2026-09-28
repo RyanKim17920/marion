@@ -334,6 +334,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             (1, 18, 32),
         )],
     },
+    // marion compiles no constraint whatsoever (`NO_COMPILED_TOOL_CONSTRAINT`).
+    writes_without_grant: true,
 };
 
 /// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).

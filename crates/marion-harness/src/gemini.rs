@@ -266,6 +266,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `gemini -p` refused by the vendor on this machine, so no capability has been observed to
     // work — including through ACP, where S20 found `session/new` refused outright.
     advertised: Advertised::NONE,
+    // The default approval mode drops the mutating tools from `functionDeclarations` outright.
+    writes_without_grant: false,
 };
 
 /// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).

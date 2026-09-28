@@ -426,7 +426,11 @@ fn root_in_checkout(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let types = crate::run::agent_types(repo).map_err(|e| format!("marion: {e}"))?;
-    let writes = |name: &str| types.resolve(name).is_some_and(|t| t.writes_files());
+    let writes = |name: &str| {
+        types
+            .resolve(name)
+            .is_some_and(|t| marion_harness::adapter::writes_files(&t))
+    };
     let mut args = args.clone();
     let acknowledged = args["isolation"].as_str() == Some(Isolation::SharedCwd.as_wire());
     if acknowledged && let Some(o) = args.as_object_mut() {

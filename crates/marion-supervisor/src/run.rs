@@ -2666,7 +2666,7 @@ fn select_workspace(
         let base = crate::spawn::head_commit(r.workspace.path());
         let claim = match &r.workspace {
             Workspace::SharedCwd { path }
-                if agent_type.writes_files() && !req.allow_concurrent_writes =>
+                if marion_harness::writes_files(agent_type) && !req.allow_concurrent_writes =>
             {
                 crate::spawn::CwdClaim::claim(path, agent_id)?
             }
@@ -2717,7 +2717,8 @@ fn select_workspace(
             let base = crate::spawn::head_commit(&req.repo);
             // §6.6: at most one write-capable node per cwd. Taken *before* the child exists and
             // released when this claim drops, which is every exit from `run_spawn_watched`.
-            let claim = if agent_type.writes_files() && !req.allow_concurrent_writes {
+            let claim = if marion_harness::writes_files(agent_type) && !req.allow_concurrent_writes
+            {
                 crate::spawn::CwdClaim::claim(&req.repo, agent_id)?
             } else {
                 crate::spawn::CwdClaim::none()

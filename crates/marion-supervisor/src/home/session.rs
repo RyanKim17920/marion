@@ -726,7 +726,7 @@ impl Session {
                     .filter_map(|n| types.resolve(n))
                     .map(|t| AgentType {
                         harness: harness_name(t.harness, t.acp_agent.as_deref()),
-                        writes: t.writes_files(),
+                        writes: marion_harness::writes_files(&t),
                         custom: user.contains(&t.name.as_str()),
                         name: t.name.clone(),
                     })

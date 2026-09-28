@@ -332,6 +332,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
     // is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
     advertised: Advertised::NONE,
+    // Measured on 1.0.83 (`tests/fixtures/s24/`): `--available-tools` withholds every built-in it
+    // does not name, and an ungranted `create` is denied at exit 0.
+    writes_without_grant: false,
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).

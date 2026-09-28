@@ -264,6 +264,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // the ten; `--resume` exists on 1.49.0's `--help` and no frame carries the id it takes, so
     // nothing is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
     advertised: Advertised::NONE,
+    // Measured on 1.49.0 (`tests/fixtures/s26/`): under `--no-profile` the model is offered
+    // marion's tools and nothing else; `write` arrives with `--with-builtin developer`.
+    writes_without_grant: false,
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).

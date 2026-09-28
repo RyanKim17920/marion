@@ -309,7 +309,8 @@ impl AgentType {
     /// `tools:` is a *grant list* — what marion must positively enable that the harness would not
     /// do on its own — so it answers "did the operator ask for write?" and not "can this node
     /// write?". On codex and opencode those come apart completely:
-    /// [`Harness::writes_without_a_declaration`] carries the measurement, and the short form is
+    /// the harness row's `writes_without_grant` carries the measurement (passed in as
+    /// `writes_without_grant`, since the rows live in `marion-harness`), and the short form is
     /// that `codex-impl` — marion's own canonical implementer, the type every worked example
     /// spawns, the one that applies patches — declares **no tools at all** and writes freely under
     /// `sandbox_mode = "workspace-write"`. A `tools:`-only predicate therefore said "does not
@@ -326,8 +327,8 @@ impl AgentType {
     /// Every verb but [`TOOL_READ`] writes: [`TOOL_WRITE`] and [`TOOL_EDIT`] change files, and a
     /// shell ([`TOOL_BASH`]) can change anything its redirections reach. A verb added later lands
     /// on one side of this predicate or the other, here, rather than in a `contains` at a call site.
-    pub fn writes_files(&self) -> bool {
-        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t != TOOL_READ)
+    pub fn writes_files(&self, writes_without_grant: bool) -> bool {
+        writes_without_grant || self.tools.iter().any(|t| t != TOOL_READ)
     }
 
     /// **Can a node of this type run a command** — its tests, its build — in its workspace?
@@ -336,8 +337,8 @@ impl AgentType {
     /// without a declaration offer their shell with it (codex's `exec_command` under every sandbox
     /// mode and opencode's `bash`, s14; cline's `run_commands`, S27; an ACP agent's own tools,
     /// S21), and every other harness offers one only when [`TOOL_BASH`] is declared.
-    pub fn runs_commands(&self) -> bool {
-        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t == TOOL_BASH)
+    pub fn runs_commands(&self, writes_without_grant: bool) -> bool {
+        writes_without_grant || self.tools.iter().any(|t| t == TOOL_BASH)
     }
 
     /// The model a spawn of this type runs on when the request names none.
@@ -438,8 +439,8 @@ impl Builtin {
 /// the name written into a contract is the plain one.
 ///
 /// **The read-only flavour has a name that says so**: `<harness>-orchestrator`, on exactly the
-/// harnesses where marion can withhold writes ([`Harness::writes_without_a_declaration`] is
-/// false). Where the harness writes on its own (codex, opencode, cline) a "read-only" type would
+/// harnesses where marion can withhold writes (the harness row's `writes_without_grant` is
+/// false; `marion-harness` holds the two lists together). Where the harness writes on its own (codex, opencode, cline) a "read-only" type would
 /// describe a grant marion does not compile, so there is none.
 ///
 /// What guards the operator's checkout from a root with a grant is
@@ -1400,36 +1401,6 @@ mod tests {
         }
     }
 
-    /// **Every implementer can run the commands it is told to run** — its tests above all — and
-    /// no orchestrator is granted a shell.
-    ///
-    /// Measured live (2026-09-27, `s2`): a claude implementer granted `Read` and `Write` alone could
-    /// not run `python3 -m unittest`, and spawned six codex grandchildren to run it. Stated over
-    /// every listed type, so a new implementer has to land on the right side.
-    ///
-    /// agy is the one named exception: its headless mode approves a command only through the
-    /// operator's own allowlist (`--mode accept-edits` approves file edits and nothing else, s32),
-    /// so a declaration would offer a tool marion cannot grant.
-    #[test]
-    fn every_implementer_can_run_commands() {
-        for name in builtin_names() {
-            let t = builtin(name).unwrap();
-            if name.ends_with("-orchestrator") {
-                assert!(
-                    !t.runs_commands(),
-                    "{name}: an orchestrator stays tool-light"
-                );
-            } else if *name == "agy" {
-                assert!(!t.runs_commands(), "{name}: see this test's doc comment");
-            } else {
-                assert!(
-                    t.runs_commands(),
-                    "{name}: an implementer must run commands"
-                );
-            }
-        }
-    }
-
     /// Every word a type may declare is one the file format accepts.
     #[test]
     fn the_file_format_accepts_the_whole_vocabulary() {
@@ -1439,7 +1410,7 @@ mod tests {
         )
         .expect("the whole vocabulary parses");
         let t = types.resolve("runner").unwrap();
-        assert!(t.runs_commands() && t.writes_files());
+        assert!(t.runs_commands(false) && t.writes_files(false));
     }
 
     /// **A plain harness name is that harness's full implementer**, and `<harness>-impl` is the
@@ -1456,7 +1427,6 @@ mod tests {
         ] {
             let plain = builtin(name).unwrap_or_else(|| panic!("{name} resolves"));
             assert_eq!(plain.name, name, "{name} is the canonical spelling");
-            assert!(plain.writes_files(), "{name} must be able to change files");
             assert_eq!(
                 builtin(&format!("{name}-impl")),
                 Some(plain),
@@ -1474,29 +1444,9 @@ mod tests {
             .copied()
             .filter(|n| n.ends_with("-orchestrator"))
             .collect();
-        for (plain, h) in [
-            ("claude", Harness::ClaudeCode),
-            ("codex", Harness::Codex),
-            ("gemini", Harness::Gemini),
-            ("opencode", Harness::OpenCode),
-            ("copilot", Harness::Copilot),
-            ("goose", Harness::Goose),
-            ("cline", Harness::Cline),
-            ("qwen", Harness::Qwen),
-        ] {
-            // Only where the harness writes on a declaration alone can the grant be withheld; a
-            // "read-only" codex type would be a lie, since codex writes under its own sandbox.
-            let name = format!("{plain}-orchestrator");
-            assert_eq!(
-                orchestrators.contains(&name.as_str()),
-                !h.writes_without_a_declaration(),
-                "{name}"
-            );
-        }
         for name in orchestrators {
             let t = builtin(name).unwrap();
             assert!(t.tools.is_empty(), "{name}");
-            assert!(!t.writes_files(), "{name}");
             assert!(
                 t.description.starts_with("Orchestrator") && t.description.contains("cannot write"),
                 "{name}: {}",

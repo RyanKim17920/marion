@@ -1143,6 +1143,18 @@ pub fn row(h: Harness) -> &'static Row {
     &ROWS[h as usize]
 }
 
+/// **Can a node of this agent type change files?** — §6.6's occupancy question: its type declares
+/// the write grant, or its harness writes without one ([`spec::HarnessSpec::writes_without_grant`]).
+pub fn writes_files(t: &marion_core::agent_type::AgentType) -> bool {
+    t.writes_files(harness_spec(t.harness).writes_without_grant)
+}
+
+/// **Can a node of this agent type run a command?** Its type declares the shell, or its harness
+/// grants its whole tool set without a declaration ([`spec::HarnessSpec::writes_without_grant`]).
+pub fn runs_commands(t: &marion_core::agent_type::AgentType) -> bool {
+    t.runs_commands(harness_spec(t.harness).writes_without_grant)
+}
+
 /// The row's spec (`plan-harness-spec.md`).
 pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
     row(h).spec
@@ -1249,6 +1261,81 @@ mod tests {
             }
         }
         assert!(checked > 0, "the sweep checked nothing");
+    }
+
+    /// **Every harness answers the occupancy question itself**, named one at a time: a row copying
+    /// a neighbour changes exactly one of these. The measurement behind each is on its row.
+    #[test]
+    fn each_row_answers_the_occupancy_question_for_itself() {
+        assert_eq!(
+            Harness::ALL.map(|h| (h.as_str(), harness_spec(h).writes_without_grant)),
+            [
+                ("claude-code", false),
+                ("codex", true),
+                ("gemini", false),
+                ("opencode", true),
+                ("copilot", false),
+                ("goose", false),
+                ("cline", true),
+                ("qwen", false),
+                ("agy", false),
+                ("pi", false),
+                ("acp", true),
+            ]
+        );
+    }
+
+    /// **A read-only type exists exactly where marion can withhold writes**, and every plain
+    /// harness name is an implementer that can change files: a "read-only" codex type would be a
+    /// lie, since codex writes under its own sandbox.
+    /// **Every implementer can run the commands it is told to run** — its tests above all — and
+    /// no orchestrator is granted a shell.
+    ///
+    /// Measured live (2026-09-27, `s2`): a claude implementer granted `Read` and `Write` alone could
+    /// not run `python3 -m unittest`, and spawned six codex grandchildren to run it. Stated over
+    /// every listed type, so a new implementer has to land on the right side.
+    ///
+    /// agy is the one named exception: its headless mode approves a command only through the
+    /// operator's own allowlist (`--mode accept-edits` approves file edits and nothing else, s32),
+    /// so a declaration would offer a tool marion cannot grant.
+    #[test]
+    fn every_implementer_can_run_commands() {
+        for name in marion_core::agent_type::builtin_names() {
+            let t = marion_core::agent_type::builtin(name).unwrap();
+            if name.ends_with("-orchestrator") {
+                assert!(
+                    !runs_commands(&t),
+                    "{name}: an orchestrator stays tool-light"
+                );
+            } else if *name == "agy" {
+                assert!(!runs_commands(&t), "{name}: see this test's doc comment");
+            } else {
+                assert!(
+                    runs_commands(&t),
+                    "{name}: an implementer must run commands"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrators_exist_where_a_row_can_withhold_writes_and_implementers_write() {
+        let names = agent_type::builtin_names();
+        for plain in [
+            "claude", "codex", "gemini", "opencode", "copilot", "goose", "cline", "qwen",
+        ] {
+            let t = agent_type::builtin(plain).unwrap();
+            assert!(writes_files(&t), "{plain} must be able to change files");
+            let orchestrator = format!("{plain}-orchestrator");
+            assert_eq!(
+                names.contains(&orchestrator.as_str()),
+                !harness_spec(t.harness).writes_without_grant,
+                "{orchestrator}"
+            );
+        }
+        for name in names.iter().filter(|n| n.ends_with("-orchestrator")) {
+            assert!(!writes_files(&agent_type::builtin(name).unwrap()), "{name}");
+        }
     }
 
     /// [`ROWS`] is the registry: each row's adapter answers for its own harness, and whether a type
@@ -6315,9 +6402,9 @@ mod tests {
 
     /// **§6.6's occupancy predicate, checked against what the adapters actually compile.**
     ///
-    /// [`Harness::writes_without_a_declaration`] lives in `marion-core`, because §6.6's rule does;
-    /// the evidence for it lives here, in four `compiled_permissions` implementations. Two files
-    /// holding one fact is exactly the drift this repo refuses elsewhere, so this is the join: for
+    /// Each row's `writes_without_grant` is a claim; the evidence for it is what the row's
+    /// `compiled_permissions` records. Two places holding one fact is exactly the drift this repo
+    /// refuses elsewhere, so this is the join: for
     /// each harness, compile a spec that declares **no tools at all** and assert the constraint
     /// marion emits is still the one the classification was read off.
     ///
@@ -6391,7 +6478,7 @@ mod tests {
                 ),
             }
             assert_eq!(
-                harness.writes_without_a_declaration(),
+                harness_spec(harness).writes_without_grant,
                 writes,
                 "{harness}: marion-core's classification and this harness's compiled constraint \
                  have come apart, which is §6.6's guard going wrong about which nodes write"

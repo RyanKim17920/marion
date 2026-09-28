@@ -23,7 +23,7 @@
 //!   empty, `pgrep` empty and `~/.cline` untouched.
 //! - **The built-in tool set cannot be narrowed.** 26 `type: "function"` tools — `editor`,
 //!   `run_commands`, `read_files`, `spawn_agent` and nineteen `team_*` — are offered whatever
-//!   `global-settings.json` says and whatever flag is passed. So `writes_without_a_declaration`
+//!   `global-settings.json` says and whatever flag is passed. So `writes_without_grant`
 //!   is `true`, the availability axis answers (`read → read_files`, `write → editor`) and compiles
 //!   nothing, and the contract records `harness-default:unconstrained`, as opencode's does.
 //! - **The stream is two frame families, and neither is the exit code.** `agent_event` frames
@@ -252,6 +252,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // ten; `--id` exists and exits 1 headless, so `resume` is measured *absent* rather than
     // unmeasured, and the answer is the same `false`.
     advertised: Advertised::NONE,
+    // Measured on 3.0.61 (`tests/fixtures/s27/`): `editor` and `run_commands` are among the 26
+    // tools every launch offers, and nothing marion compiles withholds them.
+    writes_without_grant: true,
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).

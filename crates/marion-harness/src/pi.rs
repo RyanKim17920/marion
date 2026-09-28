@@ -240,6 +240,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
         from_version: &[],
     },
+    // Measured on 0.80.2 (`tests/fixtures/s34-pi/`): `--tools` names what the model is offered,
+    // and `--tools ""` offers nothing at all.
+    writes_without_grant: false,
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).

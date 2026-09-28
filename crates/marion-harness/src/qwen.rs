@@ -290,6 +290,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `resume` grammar, not this table's `resume` capability, whose meaning §3.3 keys on a
     // supervisor-driven surface no LaunchOnly row has. `false` here is "not measured".
     advertised: Advertised::NONE,
+    // Measured on 0.23.0 (`tests/fixtures/s25/`): `--core-tools` names what the model is offered,
+    // and `write_file` is in `tools[]` only when the launch names it.
+    writes_without_grant: false,
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,

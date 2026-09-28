@@ -389,6 +389,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
         from_version: &[],
     },
+    writes_without_grant: false,
 };
 
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
