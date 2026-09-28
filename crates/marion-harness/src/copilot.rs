@@ -379,6 +379,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/sessionId",
         resumes_in_place: false,
+        by_title: None,
     }),
     // **No token count exists to read** (`s24/*.stdout.jsonl`): the terminal `result.usage` carries
     // `premiumRequests`, API and session durations and `codeChanges`, never tokens.

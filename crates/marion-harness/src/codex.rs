@@ -362,6 +362,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/thread_id",
         resumes_in_place: false,
+        by_title: None,
     }),
     // One `turn.completed` per turn (`s4/codex/stream-*.jsonl`), carrying the **thread's** running
     // total rather than the turn's: a resumed `exec resume` turn reported both generations' spend

@@ -578,6 +578,12 @@ pub trait HarnessAdapter {
         grammar::session_id(self.spec().stream?, frame)
     }
 
+    /// Where the harness lists its sessions by title, for a node whose stream never named its
+    /// session — the row's [`grammar::SessionId::by_title`] — or `None` where it lists none.
+    fn session_lookup(&self) -> Option<&'static grammar::TitleLookup> {
+        self.spec().stream?.session.as_ref()?.by_title.as_ref()
+    }
+
     /// The rule a running node's recent tool calls and words are read by — the row's
     /// [`grammar::StreamGrammar::activity`] — or `None` where there is none, which a caller says
     /// rather than showing an empty peek.
@@ -1342,8 +1348,9 @@ impl HarnessAdapter for OpenCodeAdapter {
         let mut f = neutral_fields(spec, self.axes(spec)?);
         f.model = Self::model_ref(spec)?.map(|m| m.qualified());
         // Any stable string suppresses the title-generation call; the node's own id makes the
-        // session identifiable in `opencode session list` without leaking the prompt.
-        f.title = Some(format!("marion-{}", ctx.agent_id.0));
+        // session identifiable in `opencode session list` without leaking the prompt — which is
+        // how a node whose stream never named its session is found ([`grammar::TitleLookup`]).
+        f.title = Some(grammar::session_title(&ctx.agent_id));
         f.inline_config = match spec.auth {
             Auth::Canned | Auth::Endpoint => None,
             Auth::Inherited => (spec.mcp == McpDeclaration::Marion)
@@ -9713,6 +9720,32 @@ mod tests {
             note.contains("no") || note.contains("never"),
             "{h}: `None` must say what was searched and not found: {note}"
         );
+    }
+
+    /// **A row that finds sessions by title titles every session it launches headless**, with the
+    /// one spelling the lookup searches for — a lookup for a title no launch carries finds nothing.
+    #[test]
+    fn every_row_with_a_title_lookup_titles_its_headless_launches_for_it() {
+        let dir = PathBuf::from("/state/agents/019f-root");
+        let title = grammar::session_title(&ctx().agent_id);
+        let mut rows = 0;
+        for h in Harness::ALL {
+            let Ok(a) = launch_adapter(h) else { continue };
+            if a.session_lookup().is_none() {
+                continue;
+            }
+            rows += 1;
+            for (shape, inv, _) in rendered_launches(h, &dir) {
+                if shape.ends_with("headless") {
+                    assert!(
+                        inv.args.contains(&title),
+                        "{h} {shape}: no {title} on {:?}",
+                        inv.args
+                    );
+                }
+            }
+        }
+        assert!(rows > 0, "no row lists its sessions by title");
     }
 
     #[test]

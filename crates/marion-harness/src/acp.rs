@@ -1310,6 +1310,7 @@ pub const SESSION: SessionId = SessionId {
     // A resume is a `session/load` of the journaled id, whose answer names no session at all, so
     // there is no first session unit to check against it.
     resumes_in_place: false,
+    by_title: None,
 };
 
 /// What an ACP node has been doing, read off the protocol's own `session/update` notifications:

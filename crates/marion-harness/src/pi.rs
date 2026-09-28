@@ -269,6 +269,7 @@ pub const RPC_STREAM: StreamGrammar = StreamGrammar {
         path: "/data/sessionId",
         // As on [`STREAM`]: a resumed rpc launch naming its own session was not measured.
         resumes_in_place: false,
+        by_title: None,
     }),
     ..STREAM
 };
@@ -356,6 +357,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         path: "/id",
         // Not measured: S34 resumed a known id only, so what an unknown one starts is unknown.
         resumes_in_place: false,
+        by_title: None,
     }),
     // One unit per assistant message, and `input` is already net of cache reads (item 7).
     usage: Some(UsageRule {

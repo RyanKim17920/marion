@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use crate::auth::Auth;
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, Reasoning,
-    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    SessionId, StreamGrammar, TextUnit, TitleLookup, ToolUnit, UsageFold, UsageRule, Verdict,
+    Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -354,6 +355,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/sessionID",
         resumes_in_place: true,
+        // `opencode session list --format json` (1.18.32): the node's session is listed under its
+        // `--title` while its first request is still in flight, with the directory it was created
+        // in (`s36-opencode-parity/held-first/session-list.json`). The listing is per project, so
+        // it runs from the project's tree; `--pure` loads none of the operator's plugins.
+        by_title: Some(TitleLookup {
+            argv: &["session", "list", "--pure", "--format", "json"],
+            id: "/id",
+            title: "/title",
+            directory: "/directory",
+        }),
     }),
     // One `step_finish` per model step (`s13/README.md`), each that step's spend. **Measured
     // non-zero on 1.18.32** (`s36-opencode-parity/run-usage.stdout.jsonl`): a provider answer of
@@ -1177,5 +1188,71 @@ mod tests {
             config_json(&c, None)["provider"]["canned"]["options"]["apiKey"],
             "sk-SENTINEL-opencode-0d3c"
         );
+    }
+
+    /// **A node whose first request was still in flight is found by its title.** s36 `held-first/`:
+    /// `opencode run` prints no frame, so no `sessionID`, until its first response streams — but
+    /// `opencode session list --format json` already lists the session under the `--title` marion
+    /// gave it, with the directory it was created in (`session-list.json`, captured from a child
+    /// parked on its first request). Only the node's own title matches, and only once.
+    #[test]
+    fn a_node_that_named_no_session_is_found_by_its_title_in_the_listing() {
+        let listing = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/s36-opencode-parity/held-first/session-list.json"
+        ));
+        let lookup = STREAM
+            .session
+            .as_ref()
+            .and_then(|s| s.by_title.as_ref())
+            .expect("opencode lists its sessions by title");
+        let node = marion_core::contract::AgentId("01a0e606-d02c-7137-907c-88b585393b49".into());
+        let found = crate::grammar::session_by_title(
+            lookup,
+            listing,
+            &crate::grammar::session_title(&node),
+        )
+        .expect("the node's session is listed under its title");
+        assert_eq!(found.id, "ses_s36fake0000000000000000003");
+        assert_eq!(
+            found.directory.as_deref(),
+            Some(std::path::Path::new(
+                "<SCRATCH>/state/4833d4c337dd/agents/01a0e606-d02c-7137-907c-88b585393b49/worktree"
+            ))
+        );
+        let other = marion_core::contract::AgentId("01a0e606-0000-0000-0000-000000000000".into());
+        assert_eq!(
+            crate::grammar::session_by_title(
+                lookup,
+                listing,
+                &crate::grammar::session_title(&other)
+            ),
+            None,
+            "another node's title names nothing"
+        );
+        let twice: Vec<serde_json::Value> = [listing, listing]
+            .iter()
+            .flat_map(|l| serde_json::from_str::<Vec<serde_json::Value>>(l).unwrap())
+            .collect();
+        assert_eq!(
+            crate::grammar::session_by_title(
+                lookup,
+                &serde_json::to_string(&twice).unwrap(),
+                &crate::grammar::session_title(&node)
+            ),
+            None,
+            "two sessions wearing one title are no answer"
+        );
+        for not_a_listing in ["", "[]", "{}", "not json"] {
+            assert_eq!(
+                crate::grammar::session_by_title(
+                    lookup,
+                    not_a_listing,
+                    &crate::grammar::session_title(&node)
+                ),
+                None,
+                "{not_a_listing:?}"
+            );
+        }
     }
 }

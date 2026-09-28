@@ -185,6 +185,65 @@ pub struct SessionId {
     /// resume is checked: a harness that mints a new id per resumed turn would otherwise fail
     /// every resume it ever ran.
     pub resumes_in_place: bool,
+    /// Where the harness lists its sessions by title, for a node whose stream never named its
+    /// session; `None` on a row that names its session before its first request, or lists none.
+    pub by_title: Option<TitleLookup>,
+}
+
+/// **A harness's own read-only listing of its sessions**, for a node whose stream never named its
+/// session: opencode names it only once its first response streams (s36 `held-first/`), so a node
+/// whose supervisor died during its first request journaled none. marion titles every session it
+/// launches [`session_title`], so the listed session wearing the node's title is the node's.
+///
+/// `argv` follows the row's program and runs with the node's own environment — where the harness
+/// keeps its session store — from the project's working tree. The listing is a JSON array; each
+/// element states its id, its title and the directory the session was created in at the pointers.
+#[derive(Debug)]
+pub struct TitleLookup {
+    pub argv: &'static [&'static str],
+    pub id: &'static str,
+    pub title: &'static str,
+    pub directory: &'static str,
+}
+
+/// One session a [`TitleLookup`] listing names by a node's title: its id, and the directory the
+/// harness created it in — where a resume of it has to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitledSession {
+    pub id: String,
+    pub directory: Option<std::path::PathBuf>,
+}
+
+/// The title marion gives a node's harness session: stable, so a harness that would otherwise ask
+/// a model for one makes no extra call, and the node's own id, so its session can be found by it
+/// ([`TitleLookup`]) without leaking the prompt.
+pub fn session_title(agent_id: &marion_core::contract::AgentId) -> String {
+    format!("marion-{}", agent_id.0)
+}
+
+/// The session `listing` names by `title` under `lookup` — only where exactly one does. Two
+/// sessions wearing one node's title are not a node's session but a question marion cannot answer,
+/// and output that is not the listing names nothing.
+pub fn session_by_title(lookup: &TitleLookup, listing: &str, title: &str) -> Option<TitledSession> {
+    let sessions: Vec<Value> = serde_json::from_str(listing.trim()).ok()?;
+    let mut named = sessions
+        .iter()
+        .filter(|s| s.pointer(lookup.title).and_then(Value::as_str) == Some(title));
+    let session = named.next()?;
+    if named.next().is_some() {
+        return None;
+    }
+    Some(TitledSession {
+        id: session
+            .pointer(lookup.id)
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())?
+            .to_string(),
+        directory: session
+            .pointer(lookup.directory)
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from),
+    })
 }
 
 /// A set of JSON units inside a stream: frames of a shape, or elements of an array in them.

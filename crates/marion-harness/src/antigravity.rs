@@ -203,6 +203,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         path: "/conversation_id",
         resumes_in_place: true,
+        by_title: None,
     }),
     // The terminal `result` totals the run; `input_tokens` excludes cache reads (sC: 12733 input
     // beside 32519 cache reads, `total_tokens` = input + output), and `thinking_tokens` is part of
