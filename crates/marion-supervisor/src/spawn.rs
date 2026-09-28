@@ -326,6 +326,18 @@ pub enum SpawnError {
          will still be written; nothing was cancelled."
     )]
     OutlivedTheWait(u64),
+    /// The proposed child's first durable fact could not be confirmed, so no side effect was taken
+    /// and nothing needs aborting. The append may have failed before writing or while syncing
+    /// bytes already written; treating either as a known intent would invent certainty.
+    #[error(
+        "could not durably journal the spawn intent for proposed node {} before launch: {source}",
+        agent_id.0
+    )]
+    SpawnIntentBarrier {
+        agent_id: marion_core::contract::AgentId,
+        #[source]
+        source: crate::journal::JournalError,
+    },
     /// **The process started and the journal would not take it, so the process was unwound.**
     ///
     /// §6.1 step 7's `Spawned` is the only record carrying a pid, which makes it the only record

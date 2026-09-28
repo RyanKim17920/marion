@@ -1596,7 +1596,12 @@ pub fn run_spawn_watched(
     // resolved *above* the intent rather than at its first use because the intent now records it:
     // one clamp, and the journal's copy is the compiled value §6.7 records everywhere else.
     let bound = effective_timeout(req.timeout_secs);
-    crate::journal::record(
+    //
+    // **A barrier, not a best-effort record**: `append`, and the spawn is refused if it fails. The
+    // intent is the only record naming the node before anything exists, so a child launched after
+    // its intent was lost is invisible to a restart — the untracked live process this ordering
+    // exists to prevent.
+    crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
             agent_id: agent_id.clone(),
@@ -1617,7 +1622,11 @@ pub fn run_spawn_watched(
             // A child runs under a contract; §9's `None` is for a root.
             task_id: Some(task_id.clone()),
         }),
-    );
+    )
+    .map_err(|source| SpawnError::SpawnIntentBarrier {
+        agent_id: agent_id.clone(),
+        source,
+    })?;
     // **§11 item 28 step 4's first hook, and its position is the argument.** The intent is on disk,
     // so a supervisor that crashes after this line has a record naming the node; and nothing below
     // has happened yet, so the token this returns is decided before the document that carries it is
@@ -3754,6 +3763,78 @@ mod tests {
             .filter(|n| n != path.file_name().unwrap())
             .collect();
         assert!(strays.is_empty(), "no staging file survives: {strays:?}");
+    }
+
+    /// **A child whose `SpawnIntent` cannot be made durable is refused before its first side
+    /// effect.** The intent is what lets a restarted supervisor name the node; launching without it
+    /// is the untracked live process §9's M2 criteria forbid. The fault is real: the journal path
+    /// is a directory, so the append fails. No owner is told of an identity, no agent directory or
+    /// worktree exists, and no branch was made.
+    ///
+    /// Mutation: write the intent through `journal::record` and the spawn goes on to take a
+    /// worktree (and `identified` fires).
+    #[test]
+    fn a_child_whose_intent_cannot_be_journalled_is_refused_before_any_side_effect() {
+        struct Counter(Mutex<Vec<AgentId>>);
+        impl SpawnObserver for Counter {
+            fn identified(&self, agent_id: &AgentId) -> Option<Secret> {
+                self.0.lock().unwrap().push(agent_id.clone());
+                None
+            }
+            fn started(&self, _: &AgentId, _: i32) {}
+        }
+        let root = scratch("supervisor-intent-barrier");
+        let repo = fixture_repo(&root);
+        let state = root.join("state");
+        let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+        std::fs::create_dir_all(project.journal()).unwrap();
+        let env = Env {
+            project_dir: project.clone(),
+            state: state.clone(),
+            project_root: repo.clone(),
+            bridge: PathBuf::from("/bin/marion-supervisor"),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
+        };
+        let req = SpawnRequest {
+            agent_type: "codex".into(),
+            prompt: "do the task".into(),
+            repo: repo.clone(),
+            acceptance_criteria: vec![],
+            verification: vec![],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: 1,
+            model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
+            resume: None,
+            profile: None,
+        };
+        let observer = Counter(Mutex::default());
+        let e = run_spawn_watched(
+            &env,
+            &req,
+            &TaskId("intent-barrier".into()),
+            &Caller::root("root", builtin("codex").unwrap()),
+            &observer,
+        )
+        .expect_err("no durable intent, no child");
+        assert!(
+            matches!(e, SpawnError::SpawnIntentBarrier { .. }),
+            "the wrong refusal: {e}"
+        );
+        assert!(
+            observer.0.lock().unwrap().is_empty(),
+            "no identity announced"
+        );
+        let agents: Vec<_> = std::fs::read_dir(project.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "journal.jsonl")
+            .collect();
+        assert!(agents.is_empty(), "no agent directory: {agents:?}");
+        let branches = marion_testsupport::git(&repo, &["branch", "--list", "marion/*"]);
+        assert!(branches.trim().is_empty(), "no task branch: {branches}");
     }
 
     /// A short capture that reads as a whole one is the invisible failure design §6.7 exists to

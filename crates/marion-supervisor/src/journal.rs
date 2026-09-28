@@ -324,8 +324,9 @@ fn wake_listeners(path: &Path) {
 /// [`record`]'s destination with [`append_at`]'s failure policy: **one project's journal, and the
 /// caller is told when the record did not land.**
 ///
-/// The door for a record a caller has to *act* on the loss of, which today is `Spawned` and only
-/// `Spawned` — see [`record`] for why that record is not like the others. It exists as its own name
+/// The door for a record a caller has to *act* on the loss of: `SpawnIntent`, whose loss leaves a
+/// node nothing can name before it has a pid, and `Spawned` — see [`record`] for why those records
+/// are not like the others. It exists as its own name
 /// rather than as `append_at(&project.journal(), …)` at each call site so that the set of records
 /// marion refuses to lose is greppable, and so that the two spawn paths cannot drift into spelling
 /// the same decision differently.
@@ -356,8 +357,9 @@ pub fn append(project: &ProjectDir, kind: RecordKind) -> Result<JournalRecord, J
 /// mid-edit over a full disk buys nothing against that, so those keep this policy and stay loud on
 /// stderr.
 ///
-/// **`Spawned` is the one record that is not like the others, and it does not come through here.**
-/// It is the only record that carries a pid, so losing it does not make the tree stale — it makes
+/// **`SpawnIntent` and `Spawned` are not like the others, and they do not come through here.**
+/// `SpawnIntent` is the only record naming a node before anything exists; both spawn paths refuse
+/// the launch when it does not land (`SpawnError::SpawnIntentBarrier`). `Spawned` is the only record that carries a pid, so losing it does not make the tree stale — it makes
 /// the process *unnameable*. `procid::audit`'s scope is `node.pid.is_some()`, so a live child whose
 /// `Spawned` never landed is invisible to the audit, which is §11 item 30's untracked live process
 /// exactly — the shape §9's criterion 3 exists to exclude. Its call sites therefore use [`append`],

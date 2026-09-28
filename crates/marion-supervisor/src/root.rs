@@ -866,7 +866,10 @@ pub fn prepare_watched(
     // §9's two absences are written as absences, not placeholders: a root has **no parent** and
     // **no `TaskContract`**. Its depth is `ROOT_DEPTH`, from the same constant the declaration its
     // own bridge reads is stamped from.
-    crate::journal::record(
+    //
+    // A barrier: `append`, and the root is refused when it fails, because a root launched without
+    // its intent is exactly the untracked live process this ordering exists to prevent.
+    crate::journal::append(
         &project,
         RecordKind::SpawnIntent(SpawnIntent {
             agent_id: agent_id.clone(),
@@ -882,7 +885,11 @@ pub fn prepare_watched(
             timeout_secs: Some(spec.bound_secs),
             verification: vec![],
         }),
-    );
+    )
+    .map_err(|source| SpawnError::SpawnIntentBarrier {
+        agent_id: agent_id.clone(),
+        source,
+    })?;
     // **§6.1 step 7's shape, applied to the other thing this function decides.**
     //
     // `journal_the_roots_outcome` writes the change record when `launch_watched` *returns*, so
@@ -3835,6 +3842,28 @@ mod tests {
         journal_the_roots_outcome(&never, &Err(unstarted), false, "1.0.0", false);
         let tree = marion_core::registry::replay(&std::fs::read(never.project.journal()).unwrap());
         assert!(tree.get(&never.agent_id).unwrap().spawn_aborted.is_some());
+    }
+
+    /// **A root whose `SpawnIntent` cannot be made durable is refused.** The intent is the one
+    /// record that names the node before a process exists; a root launched without it is the
+    /// untracked live process §9's M2 criteria forbid. The fault is real, not injected: the journal
+    /// path is a directory, so every append fails.
+    ///
+    /// Mutation: write the intent through `journal::record` and `prepare` succeeds.
+    #[test]
+    fn a_root_whose_intent_cannot_be_journalled_is_refused() {
+        let dir = temp("intent-barrier");
+        let spec = root_spec(&dir, "claude-orchestrator");
+        let project = ProjectDir::new(&spec.state, &crate::socket::project_root(&spec.repo));
+        std::fs::create_dir_all(project.journal()).unwrap();
+        match prepare(&spec) {
+            Err(RootError::Run(SpawnError::SpawnIntentBarrier { .. })) => {}
+            Err(other) => panic!("the wrong refusal: {other}"),
+            Ok(node) => panic!(
+                "a root with no durable intent prepared: {}",
+                node.agent_id.0
+            ),
+        }
     }
 
     /// A root's scope is its type's **ceiling and nothing else**, because no parent authored a
