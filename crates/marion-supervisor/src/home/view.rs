@@ -505,7 +505,10 @@ fn expanded(home: &Home, n: &NodeSummary) -> Expanded {
                     || u32::try_from(c.changed_paths).unwrap_or(u32::MAX),
                     |d| d.files,
                 ),
-                merge: c.branch.as_ref().map(|b| format!("git merge --no-ff {b}")),
+                merge: c
+                    .branch
+                    .as_deref()
+                    .map(marion_core::contract::merge_command),
             }
         }),
         caps,

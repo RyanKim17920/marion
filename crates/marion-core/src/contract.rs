@@ -426,7 +426,20 @@ impl Completion {
 /// rather than as a [`Completion`] — one wording, wherever it is printed.
 pub fn landed_line(branch: &str, commit: &str) -> String {
     let short = commit.get(..12).unwrap_or(commit);
-    format!("changes on branch {branch} ({short}); merge with: git merge {branch}")
+    format!(
+        "changes on branch {branch} ({short}); merge with: {}",
+        merge_command(branch)
+    )
+}
+
+/// **The one command that takes a node's branch**, wherever marion prints or copies it.
+///
+/// `--no-ff` because a child's branch is usually cut from the parent's HEAD and so fast-forwards:
+/// a plain `git merge` would lay its commits flat onto the parent's line, and the history would no
+/// longer say which of them one node did. The merge commit keeps the child's work visible — and
+/// revertable, `git revert -m 1` — as one unit.
+pub fn merge_command(branch: &str) -> String {
+    format!("git merge --no-ff {branch}")
 }
 
 /// The tokens one node's run spent, as its harness's own stream reported them.
@@ -556,6 +569,15 @@ mod tests {
         cache_write: 0,
         reasoning: None,
     };
+
+    /// The push text and every copy of the merge are one command: the one that keeps a merge
+    /// commit.
+    #[test]
+    fn the_landed_line_names_the_one_merge_command() {
+        let b = "marion/01a0e64e-433c-7375-a613-f205ee674759";
+        assert_eq!(merge_command(b), format!("git merge --no-ff {b}"));
+        assert!(landed_line(b, "416b95c0123456789").ends_with(&merge_command(b)));
+    }
 
     #[test]
     fn a_token_usage_totals_every_counter_once() {

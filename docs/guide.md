@@ -114,7 +114,7 @@ under the child's line. marion never merges into your branch:
 
 ```sh
 git log -p HEAD..marion/<task_id>     # what the child did
-git merge marion/<task_id>            # take it
+git merge --no-ff marion/<task_id>   # take it
 git branch -D marion/<task_id>        # or drop it
 ```
 

@@ -801,7 +801,7 @@ impl Home {
                 None => self.notice = Some("it has landed no branch".into()),
             },
             Key::Char('c') => match self.branch() {
-                Some(b) => return Effect::Copy(format!("git merge --no-ff {b}")),
+                Some(b) => return Effect::Copy(marion_core::contract::merge_command(&b)),
                 None => self.notice = Some("it has landed no branch to merge".into()),
             },
             _ => {}

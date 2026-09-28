@@ -85,7 +85,7 @@ it:
 
 ```sh
 git log -p HEAD..marion/<task_id>
-git merge marion/<task_id>
+git merge --no-ff marion/<task_id>
 ```
 
 **3. Work the way you already do.**

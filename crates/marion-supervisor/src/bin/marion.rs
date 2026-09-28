@@ -543,7 +543,7 @@ fn detail_text(
             kv("said", n.lines().next().unwrap_or(""));
         }
         if let Some(b) = &c.branch {
-            kv("merge", &format!("git merge --no-ff {b}"));
+            kv("merge", &marion_core::contract::merge_command(b));
         }
     }
     if let Some(page) = &d.stream {
@@ -3856,7 +3856,7 @@ mod tests {
         assert!(
             lines[1].ends_with(
                 "changes on branch marion/01a0ca90 (52dff3a01234); merge with: git merge \
-                 marion/01a0ca90"
+                 --no-ff marion/01a0ca90"
             ),
             "{lines:?}"
         );

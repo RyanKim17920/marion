@@ -484,7 +484,7 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
         Some(
             format!(
                 "changes on branch marion/reap-branch ({}); merge with: git merge \
-                 marion/reap-branch",
+                 --no-ff marion/reap-branch",
                 &tip[..12]
             )
             .as_str()

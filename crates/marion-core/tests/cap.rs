@@ -253,7 +253,7 @@ fn the_landed_line_names_the_branch_the_short_sha_and_how_to_merge() {
         comp.landed_line().as_deref(),
         Some(
             "changes on branch marion/01a0ca90 (52dff3a01234); merge with: git merge \
-             marion/01a0ca90"
+             --no-ff marion/01a0ca90"
         )
     );
 }
