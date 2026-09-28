@@ -573,7 +573,12 @@ impl CwdClaim {
     }
 }
 
-/// Create the child's worktree at `base_commit`.
+/// Create the child's worktree at `base_commit`, on the first of `branches` the repository does not
+/// already have — the readable name, else the task's own id, which no other task shares — and
+/// return the commit and the branch it was cut on.
+///
+/// The existence check is under the same guard as `worktree add`, so two siblings cannot both find
+/// one name free and race for it.
 ///
 /// `rev-parse HEAD` is inside the guard as well as `worktree add`, deliberately: the two are one
 /// operation — *"branch this child off whatever HEAD is now"* — and reading HEAD outside the lock
@@ -600,10 +605,10 @@ impl CwdClaim {
 pub fn make_worktree(
     repo: &Path,
     path: &Path,
-    branch: &str,
+    branches: &[String],
     carry_work: bool,
-) -> Result<Oid, SpawnError> {
-    make_worktree_at(repo, path, branch, None, carry_work)
+) -> Result<(Oid, String), SpawnError> {
+    make_worktree_at(repo, path, branches, None, carry_work)
 }
 
 /// [`make_worktree`], cut at `at` where one is named — a reviewer's tree, at the reviewed node's
@@ -612,10 +617,10 @@ pub fn make_worktree(
 pub fn make_worktree_at(
     repo: &Path,
     path: &Path,
-    branch: &str,
+    branches: &[String],
     at: Option<&Oid>,
     carry_work: bool,
-) -> Result<Oid, SpawnError> {
+) -> Result<(Oid, String), SpawnError> {
     let _serialized = repo_write_guard();
     let head = match at {
         Some(commit) => commit.0.clone(),
@@ -627,18 +632,45 @@ pub fn make_worktree_at(
             git(repo, &["rev-parse", "HEAD"])?.trim().to_string()
         }
     };
+    let taken = |b: &str| {
+        git(
+            repo,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{b}"),
+            ],
+        )
+        .is_ok()
+    };
+    let branch = branches
+        .iter()
+        .find(|b| !taken(b))
+        .or(branches.last())
+        .expect("at least one branch name")
+        .clone();
     git(
         repo,
         &[
             "worktree",
             "add",
             "-b",
-            branch,
+            &branch,
             &path.to_string_lossy(),
             &head,
         ],
     )?;
-    Ok(Oid(head))
+    Ok((Oid(head), branch))
+}
+
+/// The branch the worktree at `wt` has checked out, or `None` where it is detached, gone, or not
+/// a worktree at all.
+pub fn checked_out_branch(wt: &Path) -> Option<String> {
+    git(wt, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
 }
 
 /// **HEAD of the tree at `cwd`, or `None` because there is no commit to name.**
@@ -2274,12 +2306,13 @@ mod tests {
     fn a_child_cut_from_a_marion_worktree_starts_from_its_parents_uncommitted_work() {
         let (dir, repo, base) = committed_repo("spawn-carry-work");
         let parent = dir.join("parent-wt");
-        make_worktree(&repo, &parent, "marion/parent", false).expect("the parent's worktree");
+        make_worktree(&repo, &parent, &["marion/parent".into()], false)
+            .expect("the parent's worktree");
         std::fs::write(parent.join("keep.txt"), "the parent's edit\n").unwrap();
         std::fs::write(parent.join("new.txt"), "the parent's new file\n").unwrap();
 
         let child = dir.join("child-wt");
-        let child_base = make_worktree(&parent, &child, "marion/child", true)
+        let (child_base, _) = make_worktree(&parent, &child, &["marion/child".into()], true)
             .expect("the child's worktree, carrying the parent's work");
         assert_eq!(
             std::fs::read_to_string(child.join("keep.txt")).unwrap(),
@@ -2313,7 +2346,8 @@ mod tests {
         // The operator's checkout is never committed to.
         std::fs::write(repo.join("keep.txt"), "the operator's edit\n").unwrap();
         let plain = dir.join("plain-wt");
-        let plain_base = make_worktree(&repo, &plain, "marion/plain", false).unwrap();
+        let (plain_base, _) =
+            make_worktree(&repo, &plain, &["marion/plain".into()], false).unwrap();
         assert_eq!(plain_base, base, "cut from HEAD");
         assert_eq!(tgit(&repo, &["status", "--porcelain"]), "M keep.txt");
     }

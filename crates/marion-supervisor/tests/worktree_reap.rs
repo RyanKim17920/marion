@@ -427,7 +427,11 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
         "the worktree is still reaped: {}",
         wt.display()
     );
-    assert_eq!(branch, "marion/reap-branch");
+    // Named for the node's short id and its task's first words, never the operator's branch.
+    assert!(
+        branch.starts_with("marion/") && branch.ends_with("-edit-the-file-under-src"),
+        "{branch}"
+    );
     let tip = git(&fx.repo, &["rev-parse", &branch]).trim().to_string();
     assert_eq!(
         git(
@@ -469,7 +473,7 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
     );
 
     // The contract says where the work is, and so does the copy on disk.
-    assert_eq!(comp.branch.as_deref(), Some("marion/reap-branch"));
+    assert_eq!(comp.branch.as_deref(), Some(branch.as_str()));
     assert_eq!(
         comp.commit.as_ref().map(|c| c.0.as_str()),
         Some(tip.as_str())
@@ -483,8 +487,7 @@ fn a_childs_changes_are_committed_onto_its_branch_before_the_reap() {
         comp.landed_line().as_deref(),
         Some(
             format!(
-                "changes on branch marion/reap-branch ({}); merge with: git merge \
-                 --no-ff marion/reap-branch",
+                "changes on branch {branch} ({}); merge with: git merge --no-ff {branch}",
                 &tip[..12]
             )
             .as_str()
@@ -585,35 +588,30 @@ fn a_second_spawn_can_reuse_a_task_id_whose_first_run_changed_nothing() {
     );
 }
 
-/// **A branch that holds work is never reaped**, so a second spawn under the same `task_id` is
-/// refused by it rather than handed it. Cleanup's delete is a compare against the recorded base,
-/// and marion's commit of the first child's work moved the branch past it.
+/// The residue is not inert, and it is not handed on: a second spawn under the same `task_id` is a
+/// second node, on a branch of its own, and the first one's branch keeps the first child's work
+/// exactly where it was.
 #[test]
-fn a_second_spawn_of_the_same_task_id_is_refused_by_a_branch_holding_the_first_ones_work() {
+fn a_second_spawn_of_the_same_task_id_gets_its_own_branch_and_leaves_the_first_ones() {
     require_codex();
     let _root = scratch("reap-twice");
     let fx = fixture(&_root, CREATE);
     let first = spawn_one(&fx, "reap-twice").expect("the first child runs");
-    let branches = git(&fx.repo, &["branch", "--list", "marion/*"]);
-    assert!(
-        branches.contains("marion/reap-twice"),
-        "the first spawn's branch holds its work and survives the reap: {branches:?}"
-    );
+    let (_, first_branch) = workspace_of(&first);
+    let first_tip = git(&fx.repo, &["rev-parse", &first_branch]);
     assert_ne!(
-        git(&fx.repo, &["rev-parse", "marion/reap-twice"]).trim(),
+        first_tip.trim(),
         base_of(&first),
-        "because it moved past the base"
+        "the first child's branch holds its work, so the reap kept it"
     );
 
-    let e = spawn_one(&fx, "reap-twice").expect_err(
-        "`git worktree add -b marion/reap-twice` cannot create a branch that already exists, and \
-         that branch holds the first child's work, so the second spawn must be refused rather \
-         than handed it",
-    );
-    assert!(
-        e.contains("a branch named 'marion/reap-twice' already exists"),
-        "and it is the branch collision that refused it — git's own message, surfaced verbatim \
-         through `SpawnError`: {e}"
+    let second = spawn_one(&fx, "reap-twice").expect("the second child runs");
+    let (_, second_branch) = workspace_of(&second);
+    assert_ne!(second_branch, first_branch);
+    assert_eq!(
+        git(&fx.repo, &["rev-parse", &first_branch]),
+        first_tip,
+        "the first child's work was not handed to the second"
     );
 }
 

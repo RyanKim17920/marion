@@ -105,17 +105,19 @@ Any other client takes `command: "marion", args: ["mcp", "--repo", "/path/to/rep
 
 ## Where a child's work lands
 
-A child spawned with `isolation: "worktree"` works in its own git worktree on the branch
-`marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch
+A child spawned with `isolation: "worktree"` works in its own git worktree on its own branch,
+named for the node's short id and the first words of its task (`marion/433f-add-a-top-n-option`;
+where that name is taken, `marion/<task_id>`). Branches made by earlier versions keep their
+`marion/<task_id>` names, and resume finds either kind from the contract. When it finishes, marion commits everything it changed onto that branch
 (authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks
 and signing skipped), removes the worktree directory, and keeps the branch. The contract records
 the branch and commit (`completion.branch`, `completion.commit`), and `marion run` prints them
 under the child's line. marion never merges into your branch:
 
 ```sh
-git log -p HEAD..marion/<task_id>     # what the child did
-git merge --no-ff marion/<task_id>   # take it
-git branch -D marion/<task_id>        # or drop it
+git log -p HEAD..marion/<branch>      # what the child did
+git merge --no-ff marion/<branch>    # take it
+git branch -D marion/<branch>         # or drop it
 ```
 
 Paths outside the child's `writable_scope` are committed too and listed in the contract's

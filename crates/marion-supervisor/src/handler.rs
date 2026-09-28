@@ -1705,9 +1705,13 @@ fn listed_workspace(
         _ => a == b,
     };
     Some(if same(dir, &worktree) {
+        // The branch it has checked out, whichever way it was named; a tree too far gone to say
+        // is on the name its task's branch had before names were readable.
+        let branch = crate::spawn::checked_out_branch(&worktree)
+            .unwrap_or_else(|| crate::run::legacy_worktree_branch(task));
         Workspace::Worktree {
             path: worktree,
-            branch: crate::run::worktree_branch(task),
+            branch,
         }
     } else {
         Workspace::SharedCwd {
@@ -13244,21 +13248,18 @@ mod tests {
             let child_b = child_of("root-b", &side_b);
 
             let base_of = |child: &AgentId| -> String {
-                let task = fx
-                    .handle
-                    .owned_task_id(child)
-                    .expect("the supervisor owns this node and knows its contract");
+                let branch = crate::spawn::checked_out_branch(&fx.project.agent(child).worktree())
+                    .expect("the child's worktree is on the branch marion cut for it");
                 // Read out of the **main** repository: refs are shared across every worktree of one
                 // repository, so this cannot be reading "the tree it was made in".
                 let out = std::process::Command::new("git")
                     .current_dir(&main)
-                    .args(["rev-parse", &format!("marion/{}", task.0)])
+                    .args(["rev-parse", &branch])
                     .output()
                     .expect("git runs");
                 assert!(
                     out.status.success(),
-                    "`make_worktree` must have created marion/{}: {out:?}",
-                    task.0
+                    "`make_worktree` must have created {branch}: {out:?}"
                 );
                 String::from_utf8_lossy(&out.stdout).trim().to_string()
             };

@@ -1323,8 +1323,11 @@ fn d_claude_root_spawns_an_opencode_child_that_verifies_lands_its_branch_and_jou
         comp.evidence[0]
     );
     assert_eq!(
-        comp.branch.as_deref(),
-        Some(format!("marion/{}", contract.task_id.0).as_str()),
+        comp.branch.as_ref(),
+        match &contract.workspace {
+            marion_core::contract::Workspace::Worktree { branch, .. } => Some(branch),
+            other => panic!("a worktree child: {other:?}"),
+        },
         "the child's write landed on its own branch"
     );
     assert!(comp.commit.is_some(), "at a commit marion read back");

@@ -2783,14 +2783,22 @@ fn select_workspace(
             }
             let wt = agent_dir.worktree();
             crate::private_fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
-            let branch = worktree_branch(task_id);
             // A reviewer's tree is the reviewed work as it landed, so it reads what it judges.
             let at = req.review.as_ref().and_then(|t| t.commit.as_ref());
             // A caller in a worktree marion made (under this project's agent dirs) hands its child
             // its current state; the operator's own checkout is never committed to. See
             // `make_worktree`.
             let carry_work = req.repo.starts_with(project.agents_dir());
-            let base = crate::spawn::make_worktree_at(&req.repo, &wt, &branch, at, carry_work)?;
+            let (base, branch) = crate::spawn::make_worktree_at(
+                &req.repo,
+                &wt,
+                &[
+                    worktree_branch(agent_id, &req.prompt),
+                    legacy_worktree_branch(task_id),
+                ],
+                at,
+                carry_work,
+            )?;
             let prelaunch = PrelaunchWorktree {
                 repo: req.repo.clone(),
                 target: Some((wt.clone(), branch.clone(), base.clone())),
@@ -3065,9 +3073,60 @@ pub fn child_launch_spec(
     }
 }
 
-/// The branch a child's worktree is cut on: one per task.
-pub(crate) fn worktree_branch(task_id: &TaskId) -> String {
+/// **The branch a child's worktree is cut on**, readable: `marion/<short-id>-<task words>`, the
+/// short id the node's row shows and the first few words of its prompt — `marion/433f-add-a-top-n`
+/// — so the branch fits a screen and says whose it is and what for. The full task id stays in the
+/// contract, beside the branch it names; nothing reads an id back out of a branch name.
+///
+/// **Collision-safe** through [`make_worktree`], which falls back to [`legacy_worktree_branch`]
+/// where the readable name is already taken (two siblings spawned in the same millisecond with the
+/// same opening words).
+///
+/// **Migration.** Branches cut before this, `marion/<task_id>`, stay as they are: a resumed node
+/// takes its workspace — branch included — from the journal and its contract, never by recomputing
+/// a name, and a listed workspace reads the branch its worktree has checked out
+/// ([`crate::spawn::checked_out_branch`]), so an old node's branch and a new one's are found the
+/// same way.
+pub(crate) fn worktree_branch(agent_id: &AgentId, prompt: &str) -> String {
+    let short = crate::tree::short_id(&agent_id.0);
+    match slug(prompt) {
+        s if s.is_empty() => format!("marion/{short}"),
+        s => format!("marion/{short}-{s}"),
+    }
+}
+
+/// The branch a task's worktree was cut on before names were readable, and the fallback when a
+/// readable one is taken: the task id, which no other task shares.
+pub(crate) fn legacy_worktree_branch(task_id: &TaskId) -> String {
     format!("marion/{}", task_id.0)
+}
+
+/// The most characters of prompt a branch name carries.
+const SLUG_CHARS: usize = 24;
+
+/// The first words of `prompt` as a ref-safe slug: ASCII letters and digits lowercased, every
+/// other run of characters one `-`, whole words only up to [`SLUG_CHARS`] (a first word longer than
+/// that cut to it). Empty where the prompt has no ASCII word.
+fn slug(prompt: &str) -> String {
+    let mut out = String::new();
+    for word in prompt
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        let word = word.to_ascii_lowercase();
+        let need = if out.is_empty() { 0 } else { 1 } + word.len();
+        if out.len() + need > SLUG_CHARS {
+            if out.is_empty() {
+                out = word[..SLUG_CHARS].to_string();
+            }
+            break;
+        }
+        if !out.is_empty() {
+            out.push('-');
+        }
+        out.push_str(&word);
+    }
+    out
 }
 
 /// **One launch of a node, declared and compiled**: the adapter's configuration documents written,
@@ -3537,7 +3596,7 @@ mod tests {
         };
         let caller_wt = project.agent(&AgentId("caller".into())).worktree();
         std::fs::create_dir_all(caller_wt.parent().unwrap()).unwrap();
-        crate::spawn::make_worktree(&repo, &caller_wt, "marion/caller", false).unwrap();
+        crate::spawn::make_worktree(&repo, &caller_wt, &["marion/caller".into()], false).unwrap();
         std::fs::write(caller_wt.join("src/keep.txt"), "the caller's edit\n").unwrap();
         std::fs::write(repo.join("src/keep.txt"), "the operator's edit\n").unwrap();
 
@@ -4756,19 +4815,22 @@ mod tests {
         };
 
         let unchanged = root.join("wt-unchanged");
-        let base =
-            crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false).unwrap();
+        let (base, _) =
+            crate::spawn::make_worktree(&repo, &unchanged, &["marion/unchanged".into()], false)
+                .unwrap();
         cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
         assert!(!unchanged.exists(), "the worktree is removed");
         assert!(
             !exists("marion/unchanged"),
             "and its unchanged branch with it"
         );
-        crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false)
+        crate::spawn::make_worktree(&repo, &unchanged, &["marion/unchanged".into()], false)
             .expect("so the task id can be used again");
 
         let advanced = root.join("wt-advanced");
-        let base = crate::spawn::make_worktree(&repo, &advanced, "marion/advanced", false).unwrap();
+        let (base, _) =
+            crate::spawn::make_worktree(&repo, &advanced, &["marion/advanced".into()], false)
+                .unwrap();
         git(
             &advanced,
             &[
@@ -4892,6 +4954,63 @@ mod tests {
             note_truncated_capture("child exceeded its timeout and its process group was killed");
         assert!(noted.starts_with("child exceeded its timeout"));
         assert!(noted.contains("output capture truncated"));
+    }
+
+    /// **A branch name says whose and what for, in a screen's width**: the row's short id, then
+    /// the prompt's first words as a ref-safe slug; the short id alone where the prompt has no
+    /// ASCII word.
+    #[test]
+    fn a_worktree_branch_is_the_short_id_and_the_tasks_first_words() {
+        let agent = AgentId("01a0e64e-433f-7ed8-aa38-c369b4e5918c".into());
+        assert_eq!(
+            worktree_branch(
+                &agent,
+                "Add a --top N option to wordfreq.py that prints only the N most frequent words"
+            ),
+            "marion/433f-add-a-top-n-option-to"
+        );
+        assert_eq!(worktree_branch(&agent, "  ¿qué?  "), "marion/433f-qu");
+        assert_eq!(worktree_branch(&agent, "日本語"), "marion/433f");
+        assert_eq!(
+            slug("Supercalifragilisticexpialidocious words"),
+            "supercalifragilisticexpi"
+        );
+        assert_eq!(slug("fix: CI.lock ../..//x"), "fix-ci-lock-x");
+        for p in ["", "a", "Add a limiter", "x".repeat(100).as_str()] {
+            let b = worktree_branch(&agent, p);
+            assert!(b.len() <= "marion/433f-".len() + SLUG_CHARS, "{b}");
+            let ok = std::process::Command::new("git")
+                .args(["check-ref-format", "--branch", &b])
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "{b} is a valid branch name");
+        }
+        assert_eq!(
+            legacy_worktree_branch(&TaskId("01a0e64e-433c".into())),
+            "marion/01a0e64e-433c"
+        );
+    }
+
+    /// **A readable name already taken falls back to the task's own id**, which no other task
+    /// shares, rather than failing the spawn or reusing another node's branch.
+    #[test]
+    fn a_taken_branch_name_falls_back_to_the_task_id() {
+        let s = scratch("worktree-branch-taken");
+        let repo = fixture_repo(&s);
+        let names = |t: &str| vec!["marion/433f-add".to_string(), format!("marion/{t}")];
+        let (_, first) =
+            crate::spawn::make_worktree(&repo, &s.join("wt1"), &names("t-1"), false).unwrap();
+        assert_eq!(first, "marion/433f-add");
+        let (_, second) =
+            crate::spawn::make_worktree(&repo, &s.join("wt2"), &names("t-2"), false).unwrap();
+        assert_eq!(second, "marion/t-2");
+        assert_eq!(
+            crate::spawn::checked_out_branch(&s.join("wt2")).as_deref(),
+            Some("marion/t-2")
+        );
+        assert_eq!(crate::spawn::checked_out_branch(&s.join("gone")), None);
     }
 
     /// A repo with one commit, which is all `make_worktree` needs to get past `rev-parse HEAD`.

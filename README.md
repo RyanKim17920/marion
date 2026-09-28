@@ -20,7 +20,7 @@ merged) goes here. Do not put a screen tour here. -->
   steer it, attach to its terminal, take the branch it landed.
 - **Your harness, unchanged.** `marion claude`, `marion codex`, `marion opencode`, `marion pi`, … run
   the harness's own TUI with your login, flags and keys, with marion's tools connected.
-- **Results you can check.** A child's changes land on the branch `marion/<task_id>`, committed and
+- **Results you can check.** A child's changes land on its own branch (`marion/433f-add-a-top-n`), committed and
   never merged for you. Its contract records the commit, its verification output, and any write
   outside its declared scope.
 - **Rules enforced by marion, not by the prompt.** A node cannot exit while one of its children is running,
@@ -84,8 +84,8 @@ When the child finishes, marion prints its branch under the child's line. Review
 it:
 
 ```sh
-git log -p HEAD..marion/<task_id>
-git merge --no-ff marion/<task_id>
+git log -p HEAD..marion/<branch>
+git merge --no-ff marion/<branch>
 ```
 
 **3. Work the way you already do.**
