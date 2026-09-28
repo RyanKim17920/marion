@@ -27,11 +27,16 @@
 # status probe says it is logged out is BLOCKED and skipped. Status probes carry each harness's
 # no-self-update switch, as marion's launches do.
 #
-# Claude records every folder it runs in under `projects` in ~/.claude.json. The suite backs that
-# file up once (0600, in the run's scratch dir) and afterwards deletes exactly the entries under the
-# run's scratch root, nothing else. Results and redacted transcripts go to
-# tests/fixtures/live-smoke-<date>/ (override with MARION_LIVE_SMOKE_OUT); read them against
-# tests/fixtures/REVIEW.md before committing.
+# Harnesses record the folders they run in: claude under `projects` in ~/.claude.json, codex as a
+# `[projects."<repo>"] trust_level = "trusted"` table in ~/.codex/config.toml (measured in this
+# suite's first run: one table per scenario repo), and claude keeps each folder's session history
+# in ~/.claude/projects/<the path with every non-alphanumeric as '-'>. The suite backs both files up
+# once (0600, in the run's scratch dir) and afterwards deletes exactly the entries under the run's
+# scratch root, nothing else; the history dirs of the scratch paths move into the scratch dir. Results and redacted transcripts go to tests/fixtures/live-smoke-<date>/ (override with
+# MARION_LIVE_SMOKE_OUT); read them against tests/fixtures/REVIEW.md before committing.
+#
+# MARION_LIVE_SMOKE_OPENCODE_MODEL names the model s3's prompt asks for, for an operator whose
+# opencode default model is one their account cannot use (a subscription-only provider).
 
 set -euo pipefail
 
@@ -48,6 +53,7 @@ DATE=$(date +%Y-%m-%d)
 OUT=${MARION_LIVE_SMOKE_OUT:-$REPO_ROOT/tests/fixtures/live-smoke-$DATE}
 ONLY=${1:-}
 CANNED=${MARION_LIVE_SMOKE_CANNED:+1}
+OPENCODE_MODEL=${MARION_LIVE_SMOKE_OPENCODE_MODEL:-}
 
 export CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only
 
@@ -67,43 +73,71 @@ RUN=$(mktemp -d "${TMPDIR:-/tmp}/marion-live-smoke.XXXXXX")
 RUN=$(cd "$RUN" && pwd -P)
 mkdir -p "$OUT"
 
-# ---- ~/.claude.json: one backup, then only this run's own `projects` entries removed -------------
+# ---- harness folder records: one backup, then only this run's own entries removed ----------------
 
 CLAUDE_JSON="$HOME/.claude.json"
-if [ -f "$CLAUDE_JSON" ]; then
-	(umask 077 && cp -p "$CLAUDE_JSON" "$RUN/claude.json.bak")
-fi
+CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
+for f in "$CLAUDE_JSON" "$CODEX_CONFIG"; do
+	[ -f "$f" ] && (umask 077 && cp -p "$f" "$RUN/$(basename "$f").bak")
+done
 
-prune_claude_json() {
-	[ -f "$CLAUDE_JSON" ] || return 0
-	python3 - "$CLAUDE_JSON" "$RUN" <<-'EOF'
-		import json, os, sys, tempfile
-		path, scratch = sys.argv[1], sys.argv[2]
+prune_folder_records() {
+	python3 - "$CLAUDE_JSON" "$CODEX_CONFIG" "$RUN" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" <<-'EOF'
+		import json, os, re, shutil, sys, tempfile
+		claude_json, codex_config, scratch, claude_projects = sys.argv[1:5]
 		prefixes = {scratch, os.path.realpath(scratch)}
 		if scratch.startswith("/private/"):
 		    prefixes.add(scratch[len("/private"):])
-		with open(path) as f:
-		    doc = json.load(f)
-		projects = doc.get("projects") or {}
-		gone = [k for k in projects if any(k == p or k.startswith(p + "/") for p in prefixes)]
-		if not gone:
-		    sys.exit(0)
-		for k in gone:
-		    del projects[k]
-		fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".claude.json.live-smoke.")
-		with os.fdopen(fd, "w") as f:
-		    json.dump(doc, f, indent=2)
-		os.chmod(tmp, os.stat(path).st_mode & 0o777)
-		os.replace(tmp, path)
-		print(f"live-smoke: removed {len(gone)} ~/.claude.json project entries under the scratch root", file=sys.stderr)
+		ours = lambda k: any(k == p or k.startswith(p + "/") for p in prefixes)
+
+		def replace(path, text):
+		    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".live-smoke.")
+		    with os.fdopen(fd, "w") as f:
+		        f.write(text)
+		    os.chmod(tmp, os.stat(path).st_mode & 0o777)
+		    os.replace(tmp, path)
+
+		if os.path.isfile(claude_json):
+		    with open(claude_json) as f:
+		        doc = json.load(f)
+		    projects = doc.get("projects") or {}
+		    gone = [k for k in projects if ours(k)]
+		    for k in gone:
+		        del projects[k]
+		    if gone:
+		        replace(claude_json, json.dumps(doc, indent=2))
+		        print(f"live-smoke: removed {len(gone)} ~/.claude.json project entries", file=sys.stderr)
+
+		if os.path.isfile(codex_config):
+		    kept, skip, gone = [], False, 0
+		    for line in open(codex_config).read().split("\n"):
+		        if line.startswith("["):
+		            skip = line.startswith('[projects."') and ours(line[len('[projects."'):].split('"', 1)[0])
+		            gone += skip
+		        if not skip:
+		            kept.append(line)
+		    if gone:
+		        replace(codex_config, "\n".join(kept))
+		        print(f"live-smoke: removed {gone} codex config.toml project tables", file=sys.stderr)
+
+		if os.path.isdir(claude_projects):
+		    encoded = {re.sub(r"[^A-Za-z0-9]", "-", p) for p in prefixes}
+		    moved = 0
+		    for name in os.listdir(claude_projects):
+		        if any(name == e or name.startswith(e + "-") for e in encoded):
+		            os.makedirs(os.path.join(scratch, "claude-projects"), exist_ok=True)
+		            shutil.move(os.path.join(claude_projects, name), os.path.join(scratch, "claude-projects", name))
+		            moved += 1
+		    if moved:
+		        print(f"live-smoke: moved {moved} claude session-history dirs into the scratch dir", file=sys.stderr)
 	EOF
 }
 
 cleanup() {
-	prune_claude_json || echo "live-smoke: could not prune ~/.claude.json; backup at $RUN/claude.json.bak" >&2
+	prune_folder_records || echo "live-smoke: could not prune harness folder records; backups in $RUN" >&2
 	# Worktrees a killed child left behind point into $RUN; drop the scratch repos with them.
-	find "$RUN" -mindepth 1 -maxdepth 1 -type d -name 's*' -exec rm -rf {} + 2>/dev/null || true
-	echo "live-smoke: scratch kept for inspection at $RUN (holds only the ~/.claude.json backup)" >&2
+	find "$RUN" -mindepth 1 -maxdepth 1 -type d -name 's[0-9]*' -exec rm -rf {} + 2>/dev/null || true
+	echo "live-smoke: scratch kept at $RUN (config backups and moved claude session history)" >&2
 }
 trap cleanup EXIT
 
@@ -206,7 +240,7 @@ scenario() {
 		--out "$out" >/dev/null ||
 		echo "live-smoke: $id: collecting results failed (see $dir)" >&2
 	echo "live-smoke: $id done in $((end - start))s (marion run exit $rc)" >&2
-	prune_claude_json
+	prune_folder_records
 }
 
 # Wait for the root's first child to be running, then steer it as the operator.
@@ -270,7 +304,7 @@ scenario s2 codex - claude \
 	'from textutil import char_frequency as f; assert f("aab") == {"a": 2, "b": 1}, f("aab"); assert f("") == {}'
 
 scenario s3 claude haiku opencode \
-	"Delegate this to an opencode agent: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to an opencode agent${OPENCODE_MODEL:+ on the $OPENCODE_MODEL model}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]; assert l("a\nb\nc", 3) == ["a", "b", "c"]'
 
 scenario s4 claude haiku codex \
@@ -283,23 +317,28 @@ scenario s4 claude haiku codex \
 python3 - "$OUT" <<-'EOF' | tee "$OUT/results.md"
 	import json, pathlib, sys
 	out = pathlib.Path(sys.argv[1])
-	print("| scenario | delegated | child (harness, model) | reported | verify on branch | landed | wall | tokens root/child | steer |")
-	print("|---|---|---|---|---|---|---|---|---|")
+	print("| scenario | delegated | expected child: model, status | reported | verify on branch | landed | wall | tokens root / children | every child (harness@depth: exit) | steer |")
+	print("|---|---|---|---|---|---|---|---|---|---|")
 	yn = lambda b: "y" if b else "n"
 	for p in sorted(out.glob("s*/result.json")):
 	    r = json.loads(p.read_text())
 	    if "blocked" in r:
-	        print(f"| {r['scenario']} | BLOCKED: {r['blocked']} |||||||")
+	        print(f"| {r['scenario']} | BLOCKED: {r['blocked']} ||||||||")
 	        continue
 	    kids = r["children"]
-	    kid = f"{kids[0]['harness']} {kids[0]['version'] or ''}, {r['child_model'] or 'default model'}" if kids else "-"
-	    tok = lambda u: str(u["total"]) if u else "?"
+	    expected = f"{r['child_harness_expected']}" + ("" if r["child_harness_matches"] else " (never ran)")
+	    expected += f": {r['child_model'] or 'default model'}, {r['status']}"
+	    # A node killed at its timeout records no usage: marion has no claim, which is not zero.
+	    tok = lambda u: str(u["total"]) if u else "none recorded"
 	    root_tok = tok(r["root"]["usage"]) if r["root"] else "?"
-	    kid_tok = "+".join(tok(k["usage"]) for k in kids) or "-"
+	    kid_tok = sum(k["usage"]["total"] for k in kids if k["usage"])
+	    unknown = sum(1 for k in kids if not k["usage"])
+	    kid_tok = f"{kid_tok}" + (f" (+{unknown} unrecorded)" if unknown else "")
+	    every = ", ".join(f"{k['harness']}@{k['depth']}: {k['exit']}" for k in kids) or "-"
 	    steer = "-"
 	    if r["steer"]:
-	        recs = [s["record"] for s in r["steer_records"]]
+	        recs = [s["record"] + (f" via {s['detail'].get('via')}" if s["detail"].get("via") else "") for s in r["steer_records"]]
 	        steer = ", ".join(recs) or "not queued"
 	    wall = f"{r['wall_secs']}s" + (" (timed out)" if r["timed_out"] else "")
-	    print(f"| {r['scenario']} | {yn(r['delegated'])} | {kid} | {yn(r['reported'])} | {r['verify']} | {yn(r['branch_landed'])} | {wall} | {root_tok}/{kid_tok} | {steer} |")
+	    print(f"| {r['scenario']} | {yn(r['delegated'])} | {expected} | {yn(r['reported'])} | {r['verify']} | {yn(r['branch_landed'])} | {wall} | {root_tok} / {kid_tok} | {every} | {steer} |")
 EOF
