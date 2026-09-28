@@ -6141,10 +6141,7 @@ mod tests {
     fn fx_with_runtime(tag: &str, records: Vec<RecordKind>, runtime: Arc<dyn QuitRuntime>) -> Fx {
         let dir = scratch(tag);
         let path = dir.join("journal.jsonl");
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(2),
-        ));
+        let live = Arc::new(LiveRegistry::follow(Registry::boot_path(&path).unwrap()));
         for (seq, kind) in records.into_iter().enumerate() {
             append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
         }
@@ -7338,10 +7335,7 @@ mod tests {
         for (seq, kind) in records.into_iter().enumerate() {
             append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
         }
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(2),
-        ));
+        let live = Arc::new(LiveRegistry::follow(Registry::boot_path(&path).unwrap()));
         assert!(
             !live.read(|r| r.restart_marks().is_empty()),
             "the point of this fixture is a boot that marked something",
@@ -8436,16 +8430,13 @@ mod tests {
     }
 
     /// **An idle supervisor's accept loop does not run between changes.** Every pass asks the idle
-    /// predicate, which refreshes the registry, so the registry's poll count is the pass count
-    /// once the follower's own safety poll is out of the picture. The loop used to run every 5 ms.
+    /// predicate, which refreshes the registry, so the registry's poll count is the pass count: the
+    /// follower has no safety poll of its own. The loop used to run every 5 ms.
     #[test]
     fn an_idle_supervisor_runs_no_accept_passes_between_changes() {
         let dir = scratch("handler-idle-passes");
         let path = dir.join("journal.jsonl");
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_secs(3600),
-        ));
+        let live = Arc::new(LiveRegistry::follow(Registry::boot_path(&path).unwrap()));
         let handle = RegistryHandle::with_runtime(Arc::clone(&live), Arc::new(SystemQuitRuntime));
         let sock = std::path::PathBuf::from(format!("/tmp/mh-idle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&sock);
@@ -11944,7 +11935,6 @@ mod tests {
             std::fs::create_dir_all(project.path()).unwrap();
             let live = Arc::new(crate::registry::LiveRegistry::follow(
                 Registry::boot(&project).unwrap(),
-                std::time::Duration::from_millis(2),
             ));
             let handle = RegistryHandle::owning(
                 live,
@@ -11984,7 +11974,6 @@ mod tests {
             // supervisor never decided the fate of and `restart.rs` marks `Orphaned`.
             let live = Arc::new(crate::registry::LiveRegistry::follow(
                 Registry::boot_path(&journal).unwrap(),
-                std::time::Duration::from_millis(2),
             ));
             for (seq, kind) in records.into_iter().enumerate() {
                 append(&journal, &line(seq as u64, 1_000 + seq as u64, kind));
@@ -13213,7 +13202,6 @@ mod tests {
 
             let live = Arc::new(crate::registry::LiveRegistry::follow(
                 Registry::boot_path(&project.journal()).unwrap(),
-                std::time::Duration::from_millis(2),
             ));
             for (seq, kind) in [
                 intent("root-a", None, "claude", 0),
@@ -13478,7 +13466,6 @@ mod tests {
             }
             let live = Arc::new(crate::registry::LiveRegistry::follow(
                 Registry::boot_path(&journal).unwrap(),
-                std::time::Duration::from_millis(2),
             ));
             let handle = RegistryHandle::owning(
                 live,

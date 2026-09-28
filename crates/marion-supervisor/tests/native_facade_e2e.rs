@@ -116,7 +116,6 @@ impl Bed {
         let project_dir = ProjectDir::new(&state, paths.canonical_project());
         let live = Arc::new(LiveRegistry::follow(
             Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
-            Duration::from_millis(10),
         ));
         let env = marion_supervisor::run::Env {
             project_dir: project_dir.clone(),

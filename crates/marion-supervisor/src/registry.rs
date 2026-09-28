@@ -77,7 +77,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use marion_core::paths::ProjectDir;
 use marion_core::proto::ReplayPoint;
@@ -414,21 +413,25 @@ fn unparsable_reason(path: &Path, offset: u64) -> String {
 ///
 /// **Woken, not ticking.** The follower blocks until the journal can have changed: this process's
 /// own appends wake it through [`crate::journal::append_at`], another process's through the file's
-/// change notification ([`crate::wake::Watch`]), and a safety poll every `interval` covers anything
-/// neither reports. It used to poll every 10 ms, which on an idle supervisor was a hundred `open`s
-/// and a hundred wakeups a second of pure cost.
+/// change notification ([`crate::wake::Watch`]) — which sees every writer, and a replaced or
+/// removed journal re-arms it — and [`Self::halt`] through the same pipe. With both descriptors it
+/// waits with no timeout at all; only when one could not be had does it re-check at
+/// [`crate::wake::DEGRADED_RECHECK`]. It used to poll every 10 ms, which on an idle supervisor was
+/// a hundred `open`s and a hundred wakeups a second of pure cost. Every decision point
+/// (`session/quit`, the idle-exit predicate) still calls [`Self::refresh`] synchronously, so no
+/// correctness claim rests on the follower's timing.
 pub struct LiveRegistry {
     inner: Arc<Mutex<Registry>>,
     stop: Arc<AtomicBool>,
     /// Wakes the follower: this process's appends and [`Self::halt`]. `None` only when no
-    /// descriptor could be had, in which case the follower is on its safety poll alone.
+    /// descriptor could be had, in which case the follower re-checks at the degraded bound.
     wake: Option<Arc<crate::wake::Pipe>>,
     changes: Arc<crate::wake::Signal>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl LiveRegistry {
-    /// Start following: fold whenever the journal is written, and at least every `interval`.
+    /// Start following: fold whenever the journal is written.
     ///
     /// **The loop reads the stop flag *before* its poll and returns *after* it**, which is the same
     /// rule `bin/marion.rs`'s `follow_journal` is written to and for the same reason: records
@@ -437,7 +440,7 @@ impl LiveRegistry {
     ///
     /// **Drain, re-arm, then read**, every pass: a write that lands after the read leaves a wake
     /// pending for the next wait, so no append can fall between a poll and the wait after it.
-    pub fn follow(registry: Registry, interval: Duration) -> Self {
+    pub fn follow(registry: Registry) -> Self {
         let path = registry.path().to_path_buf();
         let inner = Arc::new(Mutex::new(registry));
         let stop = Arc::new(AtomicBool::new(false));
@@ -464,17 +467,7 @@ impl LiveRegistry {
                     if done {
                         return;
                     }
-                    let fds: Vec<_> = wake
-                        .as_ref()
-                        .map(|w| w.fd())
-                        .into_iter()
-                        .chain(watch.fd())
-                        .collect();
-                    if fds.is_empty() {
-                        std::thread::sleep(interval);
-                    } else {
-                        crate::wake::wait_readable(&fds, Some(interval));
-                    }
+                    crate::wake::wait_until(&[wake.as_ref().map(|w| w.fd()), watch.fd()], None);
                 }
             })
         };
@@ -1149,10 +1142,7 @@ mod tests {
         let dir = scratch("registry-live");
         let path = dir.join("journal.jsonl");
         append(&path, &line("w", 0, intent("root", None)));
-        let live = LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(5),
-        );
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         assert_eq!(live.read(|r| r.tree().nodes().len()), 1);
 
         append(&path, &line("w", 1, intent("child", Some("root"))));
@@ -1179,14 +1169,12 @@ mod tests {
         );
     }
 
-    /// A safety poll long enough that only a wake can explain a prompt pickup.
-    const NO_POLL: std::time::Duration = std::time::Duration::from_secs(3600);
-    /// How long a woken follower may take. Far below [`NO_POLL`], far above a scheduler hiccup.
+    /// How long a woken follower may take: far above a scheduler hiccup. The follower has no
+    /// safety poll, so only a wake explains a pickup within it.
     const WAKE_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
-    /// Wait for `cond` on a follower whose safety poll is [`NO_POLL`]. On failure the follower is
-    /// leaked rather than dropped, so a follower that only sleeps reports a failure instead of
-    /// hanging the suite in its `Drop` for an hour.
+    /// Wait for `cond` on a follower. On failure the follower is leaked rather than dropped, so a
+    /// follower that only sleeps reports a failure instead of hanging the suite in its `Drop`.
     fn woken_within(
         live: LiveRegistry,
         cond: impl Fn(&Registry) -> bool,
@@ -1212,7 +1200,7 @@ mod tests {
         let dir = scratch("registry-wake-foreign");
         let path = dir.join("journal.jsonl");
         append(&path, &line("w", 0, intent("root", None)));
-        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         // Let the follower reach its wait: the pickup below must be a wake, not its first poll.
         std::thread::sleep(std::time::Duration::from_millis(50));
         append(&path, &line("other", 0, intent("child", Some("root"))));
@@ -1231,7 +1219,7 @@ mod tests {
         let dir = scratch("registry-wake-local");
         let path = dir.join("journal.jsonl");
         append(&path, &line("w", 0, intent("root", None)));
-        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         std::thread::sleep(std::time::Duration::from_millis(50));
         crate::journal::append_at(&path, intent("child", Some("root"))).unwrap();
         let live = woken_within(
@@ -1248,7 +1236,7 @@ mod tests {
     fn a_journal_created_after_the_follow_began_is_noticed_without_the_safety_poll() {
         let dir = scratch("registry-wake-create");
         let path = dir.join("journal.jsonl");
-        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         std::thread::sleep(std::time::Duration::from_millis(50));
         append(&path, &line("other", 0, intent("root", None)));
         let live = woken_within(
@@ -1266,7 +1254,7 @@ mod tests {
         let dir = scratch("registry-wake-signal");
         let path = dir.join("journal.jsonl");
         append(&path, &line("w", 0, intent("root", None)));
-        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         let changes = live.changes();
         let seen = changes.generation();
         let waiter = std::thread::spawn(move || changes.wait_past(seen, WAKE_BOUND));
@@ -1281,14 +1269,14 @@ mod tests {
         live.stop();
     }
 
-    /// Stopping a follower whose safety poll is an hour returns at once, with the last poll still
+    /// Stopping a follower that waits with no timeout returns at once, with the last poll still
     /// taken after the stop was decided.
     #[test]
     fn stopping_a_follower_does_not_wait_out_its_safety_poll() {
         let dir = scratch("registry-wake-stop");
         let path = dir.join("journal.jsonl");
         append(&path, &line("w", 0, intent("root", None)));
-        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap(), NO_POLL);
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
         std::thread::sleep(std::time::Duration::from_millis(50));
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1311,10 +1299,7 @@ mod tests {
         let dir = scratch("registry-poison");
         let path = dir.join("journal.jsonl");
         journal(&path, None);
-        let live = LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(5),
-        );
+        let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
 
         let hushed = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));

@@ -1313,7 +1313,6 @@ mod tests {
         let work = marion_testsupport::scratch("native-launch-real-claim-abort");
         let live = Arc::new(LiveRegistry::follow(
             Registry::boot_path(&work.join("journal.jsonl")).unwrap(),
-            Duration::from_millis(2),
         ));
         let handle = crate::handler::RegistryHandle::new(live);
         let authority = Arc::new(
@@ -1475,7 +1474,6 @@ mod tests {
         let journal_path = work.join("journal.jsonl");
         let live = Arc::new(LiveRegistry::follow(
             Registry::boot_path(&journal_path).unwrap(),
-            Duration::from_millis(2),
         ));
         let handle = crate::handler::RegistryHandle::new(live);
         let agent_id = AgentId("019f81eb-36a4-7000-8000-0000000000a1".into());

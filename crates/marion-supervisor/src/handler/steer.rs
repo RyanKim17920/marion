@@ -426,10 +426,7 @@ mod tests {
     fn fx(tag: &str) -> Fx {
         let dir = scratch(tag);
         let path = dir.join("journal.jsonl");
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(2),
-        ));
+        let live = Arc::new(LiveRegistry::follow(Registry::boot_path(&path).unwrap()));
         Fx {
             _dir: dir,
             path,

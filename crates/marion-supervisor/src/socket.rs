@@ -712,9 +712,11 @@ impl Sentry {
             && FileId::at(&self.native_bootstrap_socket) == self.native_bootstrap_bound;
     }
 
-    /// The names whose removal or replacement ends the entitlement and that a file watch can see:
-    /// the lock and the directory holding it. (A socket cannot be opened to be watched; its
-    /// replacement is still caught by [`Self::still_entitled`] on the watcher's safety poll.)
+    /// The names whose removal or replacement ends the entitlement, as a file watch sees them: the
+    /// lock, and the directory holding it. A socket cannot be opened to be watched, but it lives in
+    /// that same directory (both the project dir and the `/tmp` overflow keep the lock beside the
+    /// sockets), and unlinking or replacing it changes the directory's entries, which a watch on
+    /// the directory reports.
     pub fn watched_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.lock_path.clone()];
         if let Some(dir) = self.lock_path.parent() {

@@ -764,7 +764,6 @@ mod tests {
         std::fs::create_dir_all(project.path()).unwrap();
         let _registry = crate::registry::LiveRegistry::follow(
             crate::registry::Registry::boot_path(&project.journal()).unwrap(),
-            Duration::from_secs(3600),
         );
         let observer = std::sync::Arc::new(Counted::default());
         let (tx, rx) = std::sync::mpsc::channel();

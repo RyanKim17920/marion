@@ -284,7 +284,7 @@ pub fn wait_readable(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> Vec<b
 }
 
 /// A **file** made pollable: readable when the file is written, extended, created, removed or
-/// renamed.
+/// renamed — or, for a directory, when its entries change (one is created, removed or renamed).
 ///
 /// The target need not exist. Until it does the watch is on its parent directory, whose entries
 /// changing is how a creation shows; [`Self::rearm`] moves the watch onto the file once it exists,
@@ -838,17 +838,22 @@ mod imp {
                 let _ = inotify::remove_watch(&self.fd, wd);
             }
             let added = if exists {
-                inotify::add_watch(
-                    &self.fd,
-                    target,
-                    // `ATTRIB` for an unlink: a file someone still holds open (a lock) loses a link
-                    // without being deleted, so `DELETE_SELF` would not fire.
-                    inotify::WatchFlags::MODIFY
-                        | inotify::WatchFlags::ATTRIB
-                        | inotify::WatchFlags::DELETE_SELF
-                        | inotify::WatchFlags::MOVE_SELF,
-                )
-                .map(|wd| (wd, true))
+                // `ATTRIB` for an unlink: a file someone still holds open (a lock) loses a link
+                // without being deleted, so `DELETE_SELF` would not fire.
+                let mut flags = inotify::WatchFlags::MODIFY
+                    | inotify::WatchFlags::ATTRIB
+                    | inotify::WatchFlags::DELETE_SELF
+                    | inotify::WatchFlags::MOVE_SELF;
+                // A directory's own `MODIFY` is not raised by its entries changing, as kqueue's
+                // `NOTE_WRITE` on a directory is: ask for the entry events too, so a watched
+                // directory means the same thing on both platforms.
+                if target.is_dir() {
+                    flags |= inotify::WatchFlags::CREATE
+                        | inotify::WatchFlags::DELETE
+                        | inotify::WatchFlags::MOVED_FROM
+                        | inotify::WatchFlags::MOVED_TO;
+                }
+                inotify::add_watch(&self.fd, target, flags).map(|wd| (wd, true))
             } else if let Some(parent) = target.parent() {
                 inotify::add_watch(
                     &self.fd,
@@ -1175,6 +1180,28 @@ mod tests {
         assert_eq!(
             wait_until(&[None, Some(pipe.fd())], Some(Instant::now() + BOUND)),
             vec![false, true]
+        );
+    }
+
+    #[test]
+    fn a_watch_on_a_directory_fires_when_an_entry_is_removed_or_replaced() {
+        let dir = scratch("wake-watch-dir");
+        let entry = dir.join("supervisor.sock");
+        std::fs::write(&entry, b"").unwrap();
+        let mut watch = Watch::new(&dir);
+        assert!(!readable(watch.fd(), Duration::ZERO));
+        std::fs::remove_file(&entry).unwrap();
+        assert!(
+            readable(watch.fd(), BOUND),
+            "an unlinked entry shows on the directory"
+        );
+        watch.rearm();
+        assert!(!readable(watch.fd(), Duration::ZERO));
+        std::fs::write(dir.join("supervisor.sock.new"), b"").unwrap();
+        std::fs::rename(dir.join("supervisor.sock.new"), &entry).unwrap();
+        assert!(
+            readable(watch.fd(), BOUND),
+            "a replaced entry shows on the directory"
         );
     }
 

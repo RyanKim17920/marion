@@ -644,7 +644,7 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
              queued: {e}"
         );
     }
-    let live = std::sync::Arc::new(LiveRegistry::follow(registry, REGISTRY_POLL));
+    let live = std::sync::Arc::new(LiveRegistry::follow(registry));
     // The bound listener is the authority on where clients dial, not the journal's directory: §2
     // may have moved the socket to its `/tmp` fallback. See `RegistryHandle::owning`.
     let socket_path = serving.path().to_path_buf();
@@ -723,21 +723,19 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
         return;
     };
     std::thread::spawn(move || {
-        // The lock and its directory, watched: removing `<state>/<hash>` unlinks the lock, which
-        // is a vnode event the kernel reports at once. Anything the watches cannot see — a socket
-        // unlinked on its own, a platform with no watch — is the safety poll's.
+        // The lock and its directory, watched: removing `<state>/<hash>` unlinks the lock, and
+        // removing or replacing a socket changes the directory's entries — vnode/inotify events
+        // the kernel reports at once. The wait has no timeout; a watch that could not be armed
+        // makes it re-check at the degraded bound instead.
         let mut watches: Vec<crate::wake::Watch> = sentry
             .watched_paths()
             .iter()
             .map(|p| crate::wake::Watch::new(p))
             .collect();
         loop {
-            let fds: Vec<_> = watches.iter().filter_map(|w| w.fd()).collect();
-            if fds.is_empty() {
-                std::thread::sleep(ENTITLEMENT_POLL);
-            } else {
-                crate::wake::wait_readable(&fds, Some(ENTITLEMENT_POLL));
-            }
+            let fds: Vec<_> = watches.iter().map(|w| w.fd()).collect();
+            crate::wake::wait_until(&fds, None);
+            drop(fds);
             for watch in &mut watches {
                 watch.rearm();
             }
@@ -749,26 +747,6 @@ fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
         }
     });
 }
-
-/// The supervisor's **safety** re-check that it is still the supervisor.
-///
-/// Not the latency: the lock file and its directory are watched, so removing `<state>/<hash>` is
-/// noticed when it happens. This bounds what a watch cannot see — the socket unlinked on its own
-/// (a socket cannot be opened to be watched), a platform without a watch — and the cost of
-/// noticing that a few seconds late is a few seconds of a split brain that has already happened.
-/// It used to be the latency, at two `stat` rounds a second.
-const ENTITLEMENT_POLL: Duration = Duration::from_secs(5);
-
-/// The detached supervisor's **safety** poll of its journal.
-///
-/// Not the latency: the follower is woken by every append — this process's through
-/// `journal::append_at`, a bridge's or another generation's through the file's change notification
-/// (`wake::Watch`) — so a record is folded as soon as it is written. This bounds only what those
-/// wakes could miss (a platform without a watch, a journal replaced under it). It used to be the
-/// latency, at 10 ms, which on an idle supervisor was a hundred `open`s and wakeups a second. Every
-/// decision point (`session/quit`, the idle-exit predicate) still calls `LiveRegistry::refresh`
-/// synchronously, so no correctness claim rests on this number.
-const REGISTRY_POLL: Duration = Duration::from_secs(1);
 
 /// Why stage 3 refused to serve. Both arms mean the double fork did not happen.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
