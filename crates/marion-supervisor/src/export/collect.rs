@@ -17,7 +17,7 @@ use marion_core::harness::Harness;
 use marion_core::node::ReapState;
 use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
-use marion_core::proto::result::{ActionKind, ActionLine};
+use marion_core::proto::result::{ActionKind, ActionLine, MessageLine};
 use marion_core::registry::{Replay, ReplayedNode};
 
 use super::model::{
@@ -63,7 +63,7 @@ pub fn collect(
         .iter()
         .filter(|n| n.intent.is_some())
         .map(|n| n.agent_id.0.as_str());
-    let id = crate::tree::resolve_id(target, known)?;
+    let id = crate::tree::resolve_node(target, known)?;
     let root = replay
         .get(&id)
         .filter(|n| n.intent.is_some())
@@ -108,7 +108,7 @@ struct Walk<'a> {
     project: &'a ProjectDir,
     replay: &'a Replay,
     opts: &'a ExportOpts,
-    messages: &'a mut HashMap<AgentId, Vec<marion_core::proto::result::MessageLine>>,
+    messages: &'a mut HashMap<AgentId, Vec<MessageLine>>,
     nodes: &'a mut Vec<NodeReport>,
     tree: &'a mut Vec<String>,
     owns: &'a mut Vec<Own>,
@@ -217,7 +217,23 @@ impl Walk<'_> {
             status: crate::tree::state_label(node.state, node.reap_state),
             task,
             task_withheld,
-            steers: self.messages.remove(&node.agent_id).unwrap_or_default(),
+            steers: self
+                .messages
+                .remove(&node.agent_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| MessageLine {
+                    at: relative(&m.at, started),
+                    // A sender is named by the id its tree row shows, as every node here is.
+                    from: m
+                        .from
+                        .split(' ')
+                        .map(short_id)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    ..m
+                })
+                .collect(),
             timeline: timeline(&dir.events(), intent.harness, started, self.opts.timeline),
             checks: completion
                 .map(|c| c.evidence.iter().map(check_line).collect())
@@ -274,18 +290,9 @@ fn tree_row(n: &NodeReport) -> String {
         row.push_str(&format!(" ({m})"));
     }
     if let Some(u) = n.usage {
-        row.push_str(&format!(" · {} tokens", tokens(u.total())));
+        row.push_str(&format!(" · {} tokens", super::words::tokens(u.total())));
     }
     row
-}
-
-/// A token count as a person reads it: `812`, `12.4k`, `1.3M`.
-pub fn tokens(n: u64) -> String {
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
-        _ => format!("{:.1}M", n as f64 / 1e6),
-    }
 }
 
 /// Why a node did not end well, where anything recorded says: the harness's own classified words
@@ -380,7 +387,7 @@ fn timeline(
     let mut lines = Vec::new();
     let mut cursor = 0;
     loop {
-        let page = crate::activity::page(events, harness, ActivityCursor::From(cursor));
+        let page = crate::activity::page(events, harness, ActivityCursor::From(cursor), None);
         if let Some(why) = page.unread {
             return Timeline {
                 unread: Some(why),
@@ -461,10 +468,12 @@ fn merge_runs(lines: Vec<ActionLine>) -> Vec<ActionLine> {
                 }
             }
             text.push_str(&format!(" ×{}", run.len()));
+            // A merged run of calls is no one call, so it carries no call id.
             out.push(ActionLine {
                 at: run[0].at.clone(),
                 kind: ActionKind::Call,
                 text,
+                id: None,
             });
         }
         i = j;
@@ -496,6 +505,7 @@ mod tests {
             at: at.into(),
             kind: ActionKind::Call,
             text: text.into(),
+            id: None,
         }
     }
 
@@ -553,12 +563,5 @@ mod tests {
         );
         let before = crate::activity::rfc3339(SystemTime::from_unix_millis(1_789_999_999_000));
         assert_eq!(relative(&before, start), "+00:00", "never negative");
-    }
-
-    #[test]
-    fn token_counts_read_short() {
-        assert_eq!(tokens(812), "812");
-        assert_eq!(tokens(12_400), "12.4k");
-        assert_eq!(tokens(1_300_000), "1.3M");
     }
 }

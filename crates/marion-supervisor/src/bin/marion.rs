@@ -2438,6 +2438,22 @@ fn profile_main(argv: &[String]) -> Result<ExitCode, Exit> {
     Ok(marion_supervisor::profile_cli::main(&argv[1..]))
 }
 
+/// `marion export`, parsed by its own module over the same project resolution as every verb.
+fn export_main(argv: &[String]) -> Result<ExitCode, Exit> {
+    if cli::asks_for_help(&argv[1..]) {
+        return Err(Exit::Help);
+    }
+    Ok(marion_supervisor::export::cli::main(
+        &argv[1..],
+        |repo, state_dir| {
+            resolve_project(&Place {
+                repo,
+                state_dir: state_dir.map(str::to_string),
+            })
+        },
+    ))
+}
+
 /// `marion trust`, parsed by its own module.
 fn trust_main(argv: &[String]) -> Result<ExitCode, Exit> {
     if cli::asks_for_help(&argv[1..]) {
@@ -3294,7 +3310,7 @@ mod tests {
         for v in cli::VERBS {
             assert_eq!(cli::verb(v.name).map(|found| found.name), Some(v.name));
         }
-        assert_eq!(cli::VERBS.len(), 13, "a command was added or dropped");
+        assert_eq!(cli::VERBS.len(), 14, "a command was added or dropped");
         assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
         assert!(cli::verb("bogus").is_none());
         let top = cli::top_help();

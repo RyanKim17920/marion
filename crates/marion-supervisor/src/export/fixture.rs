@@ -137,6 +137,8 @@ fn write_journal(p: &ProjectDir) {
             task_id: task.map(|t| TaskId(t.into())),
             timeout_secs: Some(900),
             verification: Vec::new(),
+            review_of: None,
+            race: None,
         })
     };
     let spawned = |agent: &str, version: &str, model: &str, credential: Option<&str>| {
@@ -180,6 +182,7 @@ fn write_journal(p: &ProjectDir) {
             task_id: TaskId(task.into()),
             requester: id(ROOT),
             status: Some(status),
+            review: None,
         })
     };
     let records = [
@@ -427,6 +430,7 @@ fn contract(task: &str, instructions: &str) -> marion_core::contract::TaskContra
     crate::spawn::build_contract(
         TaskId(task.into()),
         id(ROOT),
+        Harness::Codex,
         RepoIdentity {
             git_common_dir: None,
             head_branch: None,

@@ -9,15 +9,51 @@
 //! Every string of a report passes through [`scrub::Scrubber`] once, at one point
 //! ([`model::Report::scrub`]), before it is rendered, and the rendered text passes through it again.
 
+pub mod cli;
 pub mod collect;
+pub mod md;
 pub mod model;
 pub mod scrub;
+pub mod words;
 
 #[cfg(test)]
 mod fixture;
 
+use std::path::Path;
+
 use crate::credentials::CredentialStore;
 use marion_core::secret::Secret;
+use model::{Format, Report};
+use scrub::Scrubber;
+
+/// `report` as the text of `format`: scrubbed at the one scrub point, rendered, and the rendered
+/// text cleaned again — the backstop for anything a renderer adds.
+pub fn render(report: Report, scrubber: &Scrubber, format: Format) -> Result<String, String> {
+    let report = report.scrub(scrubber)?;
+    let text = match format {
+        Format::Markdown => md::render(&report),
+        Format::Html => return Err("HTML output is not built yet; use --md".into()),
+    };
+    Ok(scrubber.clean(&text))
+}
+
+/// Write `text` to `path` **owner-only**: created `0600`, an existing file narrowed to `0600`
+/// before a byte is written, and a symlink at `path` refused rather than followed — a report is
+/// scrubbed, but it still describes the operator's work, and sharing it is theirs to decide.
+pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)?;
+    // `mode` applies only to a file this call creates.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(text.as_bytes())
+}
 
 /// The keys behind `credentials` — the ids a report's endpoint nodes ran on — for the scrubber to
 /// remove. **Fails closed**: a store that cannot answer stops the export, because a key marion
@@ -79,6 +115,7 @@ mod tests {
         assert_eq!(landed.parent.as_deref(), Some("8ea3"));
         assert_eq!(landed.steers.len(), 1);
         assert_eq!(landed.steers[0].outcome, "delivered via turn");
+        assert_eq!(landed.steers[0].at, "+00:34", "timed from the node's start");
         let texts: Vec<&str> = landed
             .timeline
             .head
@@ -180,6 +217,106 @@ mod tests {
                 "the root prompt is in exactly when asked for"
             );
         }
+    }
+
+    /// The report rendered as a sharer sees it: the fixture collected, scrubbed and drawn in
+    /// `format`, the marion version pinned so a release does not churn the snapshot.
+    pub(super) fn rendered(
+        f: &fixture::Fixture,
+        o: &ExportOpts,
+        format: super::model::Format,
+    ) -> String {
+        let mut c = collect(&f.project, &f.repo, "8ea3", o, fixture::now()).unwrap();
+        c.report.version = "0.0.0-test".into();
+        super::render(c.report, &fixture::scrubber(&c.credentials), format).unwrap()
+    }
+
+    #[test]
+    fn the_markdown_report_matches_its_snapshot() {
+        let f = fixture::build("export-md-snapshot");
+        let md = rendered(&f, &opts(false), super::model::Format::Markdown);
+        insta::assert_snapshot!("run_report_md", md);
+    }
+
+    /// **No planted secret reaches the rendered Markdown either**, whatever the options: the
+    /// scrub point and the backstop pass together.
+    #[test]
+    fn the_rendered_markdown_carries_no_planted_secret() {
+        let f = fixture::build("export-sentinel-md");
+        for include_prompt in [false, true] {
+            for timeline in [TimelineMode::All, TimelineMode::Condensed(2)] {
+                let o = ExportOpts {
+                    timeline,
+                    ..opts(include_prompt)
+                };
+                let md = rendered(&f, &o, super::model::Format::Markdown);
+                for (source, planted) in SENTINELS {
+                    assert!(!md.contains(planted), "{source} leaked: {planted}");
+                }
+                assert!(!md.contains(fixture::HOME), "the home directory leaked");
+                assert!(md.contains("~/code/app"));
+                assert_eq!(md.contains(fixture::ROOT_PROMPT), include_prompt);
+            }
+        }
+    }
+
+    /// **`marion export -o` writes owner-only and starts nothing**: the file is `0600` (an
+    /// existing one narrowed before it is written), a symlink in its place is refused, and the
+    /// state directory holds no socket or lock afterwards — no supervisor was started.
+    #[test]
+    fn the_verb_writes_an_owner_only_file_and_starts_no_supervisor() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture::build("export-cli");
+        let state = f.project.path().parent().unwrap().to_path_buf();
+        let before = tree_of(&state);
+        let out = marion_testsupport::scratch("export-cli-out");
+        let file = out.join("report.md");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let args: Vec<String> = ["8ea3", "-o", file.to_str().unwrap()]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        let resolve =
+            |_: Option<std::path::PathBuf>, _: Option<&str>| Some((f.repo.clone(), state.clone()));
+        assert_eq!(
+            super::cli::main(&args, resolve),
+            std::process::ExitCode::SUCCESS
+        );
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the report is owner-only");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("# marion report: claude 8ea3"), "{text}");
+        assert_eq!(
+            tree_of(&state),
+            before,
+            "the export wrote nothing under the state dir"
+        );
+
+        let link = out.join("link.md");
+        std::os::unix::fs::symlink(out.join("elsewhere.md"), &link).unwrap();
+        assert!(
+            super::write_private(&link, "x").is_err(),
+            "a symlink is refused"
+        );
+        assert!(!out.join("elsewhere.md").exists());
+    }
+
+    /// Every path under `dir`, sorted: what a run left there.
+    fn tree_of(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p.clone());
+                }
+                out.push(p);
+            }
+        }
+        out.sort();
+        out
     }
 
     /// **A store that cannot answer stops the export**: a key marion cannot look up is a key it

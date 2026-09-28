@@ -117,6 +117,13 @@ pub const VERBS: &[Verb] = &[
         main: super::profile_main,
     },
     Verb {
+        name: "export",
+        aliases: &[],
+        summary: Some("write a shareable report of an agent and everything under it"),
+        help: export_help,
+        main: super::export_main,
+    },
+    Verb {
         name: "trust",
         aliases: &[],
         summary: Some("allow the commands a repository's agent types run"),
@@ -511,6 +518,19 @@ fn profile_help() -> String {
          forgets one, and --purge also deletes its directory. `marion run --profile <name>`\n\
          picks one for a single run.",
         marion_supervisor::profile_cli::USAGE
+    )
+}
+
+fn export_help() -> String {
+    format!(
+        "usage: {}\n\
+         \n\
+         Write a shareable report of a node and everything under it: each node's task, steers,\n\
+         activity, checks, result, landed branch and tokens, as Markdown. Keys, secret-shaped\n\
+         strings and your home directory are scrubbed; the root's own prompt is left out unless\n\
+         --include-prompt. -o writes the file owner-only. It reads the project's files and starts\n\
+         no supervisor.",
+        marion_supervisor::export::cli::USAGE
     )
 }
 

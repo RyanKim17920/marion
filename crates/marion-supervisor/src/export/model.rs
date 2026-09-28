@@ -106,7 +106,8 @@ pub struct NodeReport {
     pub task: Option<TaskSent>,
     /// A root's prompt that was left out because `--include-prompt` was not given.
     pub task_withheld: bool,
-    /// The messages queued for it — who, when, how long, what came of each; never the text.
+    /// The messages queued for it — who, when (since it started), how long, what came of each;
+    /// never the text.
     pub steers: Vec<MessageLine>,
     pub timeline: Timeline,
     /// Its verification commands, as they ran.
