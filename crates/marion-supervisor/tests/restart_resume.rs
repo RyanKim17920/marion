@@ -58,6 +58,10 @@ use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Scri
 use marion_testsupport::{Liveness, fixture_repo, liveness, on_path, scratch, until_within};
 use serde_json::json;
 
+mod common;
+
+use common::journal::{journal_bytes, project};
+
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
@@ -79,14 +83,6 @@ const VERIFICATION: &str = "touch VERIFIED";
 /// The root's wall clock (codex is a LaunchOnly surface, so `--timeout` is a wall-clock bound).
 const ROOT_TIMEOUT: &str = "150";
 const BOUND: Duration = Duration::from_secs(120);
-
-fn project(state: &Path, repo: &Path) -> marion_core::paths::ProjectDir {
-    marion_core::paths::ProjectDir::new(state, &marion_supervisor::socket::project_root(repo))
-}
-
-fn journal_bytes(state: &Path, repo: &Path) -> Vec<u8> {
-    std::fs::read(project(state, repo).journal()).unwrap_or_default()
-}
 
 fn journal_nodes(state: &Path, repo: &Path) -> Vec<marion_core::registry::ReplayedNode> {
     marion_core::registry::replay(&journal_bytes(state, repo))

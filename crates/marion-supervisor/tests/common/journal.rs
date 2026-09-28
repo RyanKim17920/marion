@@ -12,8 +12,10 @@ use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
 use marion_core::journal::{Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, WriterId};
 use marion_core::node::NodeState;
+use marion_core::paths::ProjectDir;
 use marion_core::registry::Replay;
 use marion_supervisor::journal::read_path;
+use marion_supervisor::socket::project_root;
 use serde_json::Value;
 
 use super::client::BOUND;
@@ -142,4 +144,15 @@ pub fn journal_lines(journal: &Path) -> Vec<Value> {
         .lines()
         .map(|l| serde_json::from_str(l).expect("a journal line is JSON"))
         .collect()
+}
+
+/// `repo`'s project directory under `state`, keyed the way marion keys it: on the **canonical**
+/// project root (`socket::project_root`), not the path the test happened to spell.
+pub fn project(state: &Path, repo: &Path) -> ProjectDir {
+    ProjectDir::new(state, &project_root(repo))
+}
+
+/// The whole journal's bytes for `repo`, read from a second process; empty before it exists.
+pub fn journal_bytes(state: &Path, repo: &Path) -> Vec<u8> {
+    std::fs::read(project(state, repo).journal()).unwrap_or_default()
 }

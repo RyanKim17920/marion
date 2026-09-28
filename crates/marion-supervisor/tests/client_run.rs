@@ -70,6 +70,7 @@ use marion_testsupport::{Liveness, fixture_repo, liveness, scratch, sweep};
 
 mod common;
 use common::client::{Client, assert_contiguous_from, paths_for};
+use common::journal::{journal_bytes, project};
 use common::run::start_run;
 use common::script::{Delegation, claude_delegates_to_codex};
 
@@ -274,10 +275,6 @@ fn while_the_supervisor_holds(
         );
         cond()
     })
-}
-
-fn project(state: &Path, repo: &Path) -> marion_core::paths::ProjectDir {
-    marion_core::paths::ProjectDir::new(state, &marion_supervisor::socket::project_root(repo))
 }
 
 /// **The journal, read from a second process** — which is the whole point of every assertion that
@@ -858,11 +855,6 @@ fn contracts_on_disk(
     // anyway: a node's contracts are distinguished by their task ids.
     out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     out
-}
-
-/// The whole journal's bytes, read from a second process.
-fn journal_bytes(state: &Path, repo: &Path) -> Vec<u8> {
-    std::fs::read(project(state, repo).journal()).unwrap_or_default()
 }
 
 /// **Replay exactly `records` records**, which is what *"the journal as of the replay's own read"*
