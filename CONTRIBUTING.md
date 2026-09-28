@@ -163,12 +163,16 @@ static musl Linux, each arm64 and x86_64) carries both `marion` and `marion-supe
 Homebrew formula named `marion`, and the npm package `@ryankim17920/marion` (plain `marion` is
 taken on npm), whose install step downloads the archive for the platform it runs on.
 
-To cut a release, bump `version`, commit, and push a tag of the form `v0.2.0`. The existing
-`v0.1.0` release was made by hand and holds no archives, so the first cargo-dist release must use
-a later version (or that release and tag must be deleted first). The workflow
-builds every target, creates the GitHub Release, pushes the formula to the tap and publishes the
-npm package. Pull
-requests run `dist plan` only.
+The Homebrew and npm publish jobs are the two exceptions to "generated": `publish-jobs` names
+`./publish-homebrew` and `./publish-npm`, which are `.github/workflows/publish-homebrew.yml` and
+`publish-npm.yml`, copies of dist's own jobs that print a notice and succeed when their token is
+not set, instead of failing the release. (`dist` then warns that the Homebrew publish job is
+disabled; it cannot see that the local job is that job.) After upgrading dist, compare the two
+files with the jobs a fresh `dist generate` would write for `publish-jobs = ["homebrew", "npm"]`.
+
+Pull requests run `dist plan` only. To build every target on a pull request without publishing,
+set `pr-run-mode = "upload"` on a throwaway branch, run `dist generate`, and open a draft pull
+request from it; the archives appear as workflow artifacts and nothing is released.
 
 Before changing the configuration, check it locally:
 
@@ -178,22 +182,62 @@ dist build --artifacts=local --target aarch64-apple-darwin   # one archive, for 
 dist generate --check                                 # release.yml matches the config
 ```
 
-**One-time setup the owner does outside this repository** (nothing here can do it):
+### Cutting a release
+
+1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run
+   `cargo update --workspace --offline` so `Cargo.lock` follows, and commit. Never reuse a
+   version whose tag exists: `v0.1.0` was made by hand and holds only the demo video, so the
+   first cargo-dist release is `v0.2.0`.
+2. Land that commit on `main` and wait for `main`'s CI to pass.
+3. Tag the commit and push the tag (the tag's version must equal the workspace version):
+
+   ```sh
+   git tag -a v0.2.0 -m "marion v0.2.0" origin/main
+   git push origin v0.2.0
+   ```
+
+The tag starts `release.yml`. What it publishes:
+
+| Output | Where | Needs |
+|---|---|---|
+| Six archives (`marion-supervisor-<target>.tar.xz`, each holding `marion` and `marion-supervisor`) and their `.sha256` files | GitHub Release | nothing |
+| `marion-supervisor-installer.sh`, `sha256.sum`, `source.tar.gz` | GitHub Release | nothing |
+| `cargo binstall` (reads `[package.metadata.binstall]` against the archives above) | GitHub Release | nothing |
+| `marion.rb` | pushed to `RyanKim17920/homebrew-tap` | `HOMEBREW_TAP_TOKEN` |
+| `@ryankim17920/marion` | npmjs.com | `NPM_TOKEN` |
+
+Without a token, its job shows a notice ("Homebrew formula not published" or "npm package not
+published") on the run summary and succeeds; the formula and the npm tarball are still attached
+to the GitHub Release. A tag with a pre-release suffix (`v0.3.0-rc.1`) makes a pre-release and
+skips both publish jobs.
+
+If a release fails part-way, delete the GitHub Release and the tag (`git push --delete origin
+v0.2.0`), fix, and tag again; nothing outside GitHub was published unless a publish job ran.
+
+### One-time setup the owner does outside this repository
+
+Nothing here can do these. Until they are done, the Homebrew and npm jobs skip as above.
 
 1. Create the public repository `RyanKim17920/homebrew-tap`, with a default branch. It may be
    empty; the first release adds `Formula/marion.rb`.
 2. Create a fine-grained personal access token with **Contents: read and write** on that tap
    repository only, and add it to this repository as the Actions secret `HOMEBREW_TAP_TOKEN`
-   (Settings → Secrets and variables → Actions). The publish job fails without it.
+   (Settings → Secrets and variables → Actions).
 3. On npmjs.com, as the `ryankim17920` user (the scope must match it or an organization of that
    name), create a **granular access token** with read and write on packages in the
    `@ryankim17920` scope, and add it as the Actions secret `NPM_TOKEN`. The first publish creates
-   the public package `@ryankim17920/marion`; the npm publish job fails without the secret.
+   the public package `@ryankim17920/marion`.
 
-The workflow asks for `contents: write` itself, so no repository-wide Actions setting changes.
+No repository-wide Actions setting needs to change. The workflow asks for `contents: write`
+itself, which the repository's default of read-only workflow permissions allows, and no job opens
+or approves a pull request (the formula is pushed straight to the tap with `HOMEBREW_TAP_TOKEN`),
+so "Allow GitHub Actions to create and approve pull requests" can stay off.
 
 After that, `brew install RyanKim17920/tap/marion`, `npm install -g @ryankim17920/marion` and the
-`curl … | sh` line on the release page all work.
+`curl … | sh` line on the release page all work. A secret added after a release takes effect from
+the next tag; to publish an existing release's formula or package, re-run that release's
+`custom-publish-homebrew` or `custom-publish-npm` job from the Actions tab while the run's
+artifacts are still retained (90 days by default).
 
 ## Windows
 
