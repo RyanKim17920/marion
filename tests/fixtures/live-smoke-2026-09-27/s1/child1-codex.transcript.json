@@ -38,7 +38,7 @@
   "frame": {
    "item": {
     "aggregated_output": "<dropped: output of a call that read operator config>",
-    "command": "/bin/zsh -lc 'pwd; git status --short; command -v cymbal; command -v semble; ls'",
+    "command": "/bin/zsh -lc 'pwd; git status --short; command -v cymbal; command -v tool02; ls'",
     "exit_code": null,
     "id": "item_1",
     "status": "in_progress",
@@ -53,7 +53,7 @@
   "frame": {
    "item": {
     "aggregated_output": "<dropped: output of a call that read operator config>",
-    "command": "/bin/zsh -lc 'pwd; git status --short; command -v cymbal; command -v semble; ls'",
+    "command": "/bin/zsh -lc 'pwd; git status --short; command -v cymbal; command -v tool02; ls'",
     "exit_code": 0,
     "id": "item_1",
     "status": "completed",
@@ -68,7 +68,7 @@
   "frame": {
    "item": {
     "aggregated_output": "",
-    "command": "/bin/zsh -lc \"semble search 'text utilities and unit tests' . --top-k 3\"",
+    "command": "/bin/zsh -lc \"tool02 search 'text utilities and unit tests' . --top-k 3\"",
     "exit_code": null,
     "id": "item_2",
     "status": "in_progress",
@@ -82,8 +82,8 @@
   "key": "item.completed",
   "frame": {
    "item": {
-    "aggregated_output": "Error saving index: [Errno 1] Operation not permitted: '<HOME>/Library/Caches/semble/d9026182045893c3d9228a1682bf8dd51d207682b2f4cc67b006a8a010ce85ba'\n{\"query\": \"text utilities and unit tests\", \"results\": [{\"chunk\": {\"content\": \"\\\"\\\"\\\"Small text helpers.\\\"\\\"\\\"\\n\\n\\ndef count_lines(s):\\n    \\\"\\\"\\\"Return the number of lines in s.\\\"\\\"\\\"\\n    return len(s.splitlines())\\n\\n\\ndef last_n_lines(s, n):\\n  …[17 more chars]",
-    "command": "/bin/zsh -lc \"semble search 'text utilities and unit tests' . --top-k 3\"",
+    "aggregated_output": "Error saving index: [Errno 1] Operation not permitted: '<HOME>/Library/Caches/tool02/d9026182045893c3d9228a1682bf8dd51d207682b2f4cc67b006a8a010ce85ba'\n{\"query\": \"text utilities and unit tests\", \"results\": [{\"chunk\": {\"content\": \"\\\"\\\"\\\"Small text helpers.\\\"\\\"\\\"\\n\\n\\ndef count_lines(s):\\n    \\\"\\\"\\\"Return the number of lines in s.\\\"\\\"\\\"\\n    return len(s.splitlines())\\n\\n\\ndef last_n_lines(s, n):\\n  …[17 more chars]",
+    "command": "/bin/zsh -lc \"tool02 search 'text utilities and unit tests' . --top-k 3\"",
     "exit_code": 0,
     "id": "item_2",
     "status": "completed",

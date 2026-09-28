@@ -68,7 +68,7 @@
   "frame": {
    "item": {
     "aggregated_output": "<dropped: output of a call that read operator config>",
-    "command": "/bin/zsh -lc 'command -v semble; command -v cymbal; cat textutil.py test_textutil.py .gitignore'",
+    "command": "/bin/zsh -lc 'command -v tool02; command -v cymbal; cat textutil.py test_textutil.py .gitignore'",
     "exit_code": null,
     "id": "item_2",
     "status": "in_progress",
@@ -83,7 +83,7 @@
   "frame": {
    "item": {
     "aggregated_output": "<dropped: output of a call that read operator config>",
-    "command": "/bin/zsh -lc 'command -v semble; command -v cymbal; cat textutil.py test_textutil.py .gitignore'",
+    "command": "/bin/zsh -lc 'command -v tool02; command -v cymbal; cat textutil.py test_textutil.py .gitignore'",
     "exit_code": 0,
     "id": "item_2",
     "status": "completed",
@@ -112,7 +112,7 @@
   "key": "item.completed",
   "frame": {
    "item": {
-    "aggregated_output": "Error saving index: [Errno 1] Operation not permitted: '<HOME>/Library/Caches/semble/0dca93f474f335b88616d135d58abe0fb9715cd8036412657b0217173c41e4c8'\n{\"query\": \"textutil arithmetic mean helper\", \"results\": [{\"chunk\": {\"content\": \"\\\"\\\"\\\"Small text helpers.\\\"\\\"\\\"\\n\\n\\ndef count_lines(s):\\n    \\\"\\\"\\\"Return the number of lines in s.\\\"\\\"\\\"\\n    return len(s.splitlines())\\n\\n\\ndef last_n_lines(s, n):\\n…[17 more chars]",
+    "aggregated_output": "Error saving index: [Errno 1] Operation not permitted: '<HOME>/Library/Caches/tool02/0dca93f474f335b88616d135d58abe0fb9715cd8036412657b0217173c41e4c8'\n{\"query\": \"textutil arithmetic mean helper\", \"results\": [{\"chunk\": {\"content\": \"\\\"\\\"\\\"Small text helpers.\\\"\\\"\\\"\\n\\n\\ndef count_lines(s):\\n    \\\"\\\"\\\"Return the number of lines in s.\\\"\\\"\\\"\\n    return len(s.splitlines())\\n\\n\\ndef last_n_lines(s, n):\\n…[17 more chars]",
     "command": "/bin/zsh -lc \"mkdir -p tasks\ncat > tasks/todo.md <<'EOF'\n- [ ] Implement average with a clear error for an empty list.\n- [ ] Add normal, edge-case, and calculation tests.\n- [ ] Run python3 -m unittest -q and check the diff.\n- [ ] Commit the implementation and tests; report completion.\n\nReview: pending verification.\nEOF\nsemble search 'textutil arithmetic mean helper' . --top-k 2\"",
     "exit_code": 0,
     "id": "item_3",
