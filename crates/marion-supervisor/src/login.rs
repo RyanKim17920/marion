@@ -22,7 +22,8 @@ use crate::credentials::{self, CredentialStore, Logins, Secret, parse_key};
 pub const USAGE: &str = "\
 usage: marion login <provider>[:<label>] [--from-env | --stdin]
        marion login --list
-       marion login custom <id> --base-url <url> --wire <wire>[,<wire>] [--name <name>] [--auth api-key|none]
+       marion login custom <id> --base-url <url> --wire <wire>[,<wire>]
+                           [--name <name>] [--auth api-key|none]
        marion logout <provider>[:<label>]
 
   <provider>   a provider id; `marion login --list` shows them all

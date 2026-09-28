@@ -3254,6 +3254,12 @@ mod tests {
         for v in cli::VERBS {
             let help = (v.help)();
             assert!(help.starts_with("usage: marion "), "{}:\n{help}", v.name);
+            let widest = help.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+            assert!(
+                widest <= 92,
+                "{} help runs {widest} columns wide:\n{help}",
+                v.name
+            );
             assert!(
                 help.lines().count() <= 40,
                 "{} help is a wall:\n{help}",

@@ -469,8 +469,8 @@ fn resume_help() -> String {
          {BACKEND_HELP}\n\
          {PLACE_HELP}\n\
          \n\
-         {ID_HELP} It is looked up in this\n\
-         project's journal, so it works with no supervisor running."
+         {ID_HELP}\n\
+         It is looked up in this project's journal, so it works with no supervisor running."
     )
 }
 
@@ -479,8 +479,9 @@ fn mcp_help() -> String {
     format!(
         "usage: marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \n\
-         Serve marion's tools ({tools}) over stdio, for an MCP client you configure:\n\
+         Serve marion's tools over stdio to an MCP client you configure, for example:\n\
          \x20 command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]\n\
+         The tools: {tools}.\n\
          Its spawn starts an agent the way `marion run` does. stdout carries only JSON-RPC.\n\
          \n\
          {BACKEND_HELP}\n\
