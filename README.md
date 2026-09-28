@@ -1,35 +1,40 @@
 # marion
 
-marion runs any agent harness — Claude Code, Codex, Gemini CLI, opencode, Copilot CLI, goose, Cline, Qwen Code, pi, or any ACP agent — as a first-class subagent of any other, and gives you one supervisor and one UI over the whole tree.
+Any model, any harness, as any subagent. A Claude Code session can delegate to a codex child,
+and codex can delegate to claude, opencode or pi. Each child runs in its own git worktree,
+marion checks its work, and the result goes back to the parent as a structured contract, not as
+prose.
 
-A demo of a Claude session delegating a build to a codex child is coming.
+<!-- DEMO PLACEHOLDER: a new recording of one real delegation (a Claude Code session spawns a
+codex child, the child builds something in its worktree, the result returns and the branch is
+merged) goes here. Do not put a screen tour here. -->
+> **Demo:** a recording of a real delegation is on the way.
 
-## What marion does
+## What it does
 
-- Supervises eight harnesses as one tree. Every node is journaled, addressable by id, and shown in the same view regardless of which CLI is behind it.
-- Gives a running agent six tools over MCP — `spawn`, `wait`, `status`, `list`, `steer`, `report` — so a harness delegates to another harness, and redirects what it delegated, by calling a tool, not by shelling out.
-- Runs a harness's own TUI as a marion root: `marion claude`, `marion codex`, `marion gemini`, `marion opencode`, `marion copilot`. Same login, same keybindings, plus marion's MCP server injected and the session journaled.
-- Opens a home screen with bare `marion`: harness readiness and a prompt box to run a task (Start), the fleet with the selected node expanded in place — what marion sent it, a live stream of what it runs, its tokens, its capabilities, the branch it landed (Watch, also `marion ls`) — and the doctor checks and agent types (Setup). Every key's CLI equivalent is shown in the box at the bottom. Attaches to any live node's terminal from there or with `marion attach`.
-- Survives its own death. `kill -9` the supervisor and `marion resume <id>` relaunches the lost root under the same id against the same session, recorded as a second generation.
-- Enforces the gates in the topology, not in a prompt: a node cannot exit while a descendant is live, delegation stops at `max_depth 3`, a run past `--timeout` has its process group killed, and a node may address only its own descendants and its parent.
-- Reaches any ACP agent with no adapter code: `acp:<command> [args…]` launches it and speaks the protocol; `marion-supervisor doctor --acp-command "<cmd>"` probes one by its own handshake.
-- Treats harness drift as a first-class problem. Versions are pinned by evidence, an unadmitted version fails by name rather than skipping, and at runtime `doctor --capabilities` measures the installed binary and the TUI dims what it has not measured.
-
-The contract every layer is built around:
-
-```
-Agent(harness, model, tools, prompt, …) -> handle
-handle: observe · steer · interrupt · result
-```
-
-Topology is a star, not a mesh: 1→N fan-out, N→1 fan-in, every edge has a parent.
+- **Delegation by tool call.** A running agent gets marion's MCP tools (`spawn`, `wait`,
+  `status`, `list`, `steer`, `report`), so it hands work to another harness by calling a tool,
+  not by shelling out. The same tools work from any MCP client (`marion mcp`).
+- **One tree, whatever the vendor.** Every node is journaled and addressable by id. `marion` opens a
+  terminal UI over the whole tree: start a task, watch each node's live tool calls and tokens,
+  steer it, attach to its terminal, take the branch it landed.
+- **Your harness, unchanged.** `marion claude`, `marion codex`, `marion opencode`, `marion pi`, … run
+  the harness's own TUI with your login, flags and keys, with marion's tools connected.
+- **Results you can check.** A child's changes land on the branch `marion/<task_id>`, committed and
+  never merged for you. Its contract records the commit, its verification output, and any write
+  outside its declared scope.
+- **Rules enforced by marion, not by the prompt.** A node cannot exit while one of its children is running,
+  delegation stops at depth 3, a timeout kills the node's whole process tree, and a node can
+  steer only nodes below it.
+- **Survives a crash.** `kill -9` the supervisor, and `marion resume <id>` continues the root under the
+  same id against the same harness session.
 
 ## Install
 
-You need macOS or Linux, a Rust toolchain (1.94 or newer; the repository pins it in `rust-toolchain.toml`), and:
+marion runs on macOS and Linux. On Windows, use WSL 2 and follow the Linux steps. You also need
+`git` and at least one harness CLI on `PATH`, already logged in.
 
-- at least one harness CLI on `PATH`, **already logged in**: marion runs each harness on the login you set up for it and never starts a login of its own;
-- `git`, so each child can work in its own worktree and branch.
+**Today, build from source** (Rust 1.94 or newer):
 
 ```sh
 cargo install --locked --git https://github.com/RyanKim17920/marion marion-supervisor
@@ -37,213 +42,141 @@ marion --version
 marion doctor
 ```
 
-This installs two binaries, `marion` and `marion-supervisor`, into `~/.cargo/bin`. Keep them in the same directory: `marion` starts the supervisor that sits beside it, and `marion doctor` fails if the two come from different builds. marion never updates itself. To upgrade, run the install command again. From a checkout, `cargo install --locked --path crates/marion-supervisor` does the same.
+This installs `marion` and `marion-supervisor` side by side in `~/.cargo/bin`. Keep them
+together: `marion` starts the supervisor next to it. marion never updates itself; to upgrade,
+run the same command again.
 
-Once a release is published, prebuilt binaries skip the Rust toolchain. Every channel installs the same archive, `marion` and `marion-supervisor` side by side:
+**Prebuilt binaries are not published yet.** When the first packaged release is out, these
+channels will install the same archive (macOS and Linux, glibc and static musl, arm64 and
+x86_64), with no Rust toolchain needed:
 
-- **Homebrew (macOS, Linux):** `brew install RyanKim17920/tap/marion`
-- **Shell installer (macOS, Linux):** `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RyanKim17920/marion/releases/latest/download/marion-supervisor-installer.sh | sh`
-- **npm (macOS, Linux, WSL; Node 14.14 or newer):** `npm install -g @ryankim17920/marion`
-- **cargo binstall (a prebuilt archive, no compile):** `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor`; or build it with the `cargo install` line above.
-- **Windows:** install inside WSL 2 with any of the Linux channels above. Native Windows is not supported; `CONTRIBUTING.md` says why.
+| channel | command |
+|---|---|
+| shell installer | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RyanKim17920/marion/releases/latest/download/marion-supervisor-installer.sh \| sh` |
+| Homebrew | `brew install RyanKim17920/tap/marion` |
+| npm (Node 14.14+) | `npm install -g @ryankim17920/marion` |
+| cargo-binstall | `cargo binstall --git https://github.com/RyanKim17920/marion marion-supervisor` |
+| archives | the release page, one `.tar.xz` per target |
 
-Archives cover macOS and Linux (glibc and static musl) on arm64 and x86_64. Upgrade with the channel you installed from: `brew upgrade`, `npm update -g`, or the same command again.
+`marion doctor` checks both binaries, the state directory, git and every harness it finds, then
+prints `overall: ready: yes` or `no`, with the fix for anything broken.
 
-`marion doctor` checks both binaries, the OS, the state directory and its socket path, git, and every harness it finds, and ends with `overall: ready: yes` or `no`. A harness newer than the last version marion verified is marked unmeasured. It still runs.
+## Quickstart
 
-## Quick start
+**1. A free dry run, with no account and no cost.** marion's canned model server plays a Claude Code
+root that delegates one edit to a codex child. You need `claude` and `codex` on `PATH`.
 
 ```sh
-# Free, no credentials: marion's canned provider plays a Claude Code root that delegates
-# one edit to a Codex child. Needs `claude` and `codex` on PATH.
 cargo install --locked --git https://github.com/RyanKim17920/marion marion-provider   # marion-canned
 marion-canned &
 marion run claude --prompt "say hello" --canned
+```
 
-# On your own login. These make real model calls and cost real money.
-marion run codex --prompt "say hello"
+**2. A real delegation on your own login.** This makes real model calls, which cost real money. Run it
+inside a git repository:
+
+```sh
 marion run claude --model haiku --prompt "Spawn a codex child to create hello.txt containing hi, then tell me its branch."
-
-# A harness's own TUI, as a journaled marion root with marion's MCP server connected.
-marion claude
-marion codex
-
-# The home screen: run a task, watch the fleet, check the harnesses.
-marion
-
-# The same things as commands. A detached run returns once the root has started.
-marion run codex --prompt "say hello" --detach
-marion ls                      # the Watch tab; `marion ls <id>` prints one node's detail
-marion list
-marion attach <agent-id>
-marion resume <agent-id>
-marion cancel 8ea3             # end a running node (id or its short id); recorded as cancelled
-
-# Queue a message for a running node's next turn, as the operator (id or its short id).
-marion steer 8ea3 "use the v2 API, not v1"
-
-# Store a provider key for endpoint mode (read with echo off; or pipe it with --stdin).
-marion login openrouter
-marion login --list
-
-# Any harness on that provider: a registry id before the model picks the endpoint (endpoint mode).
-marion run opencode --prompt "say hello" --model openrouter:qwen/qwen3-coder
 ```
 
-- **The first `marion claude` in a folder** shows Claude Code's own dialogs: whether you trust the folder, then a one-time "Loading development channels" warning, because marion loads its channel so that a background child's result reaches the session without a `wait`. `marion codex` asks its own trust question. They are the harness's prompts, so you answer them; marion never answers them for you.
-- **Inside `marion <harness>`**, `^] d` detaches and leaves the session running (`marion attach <agent-id>` brings it back) and `^] s` toggles marion's status row. Every other key goes to the harness.
-- **A child's work** lands on its own branch, `marion/<task_id>`, and marion never merges it into yours. See [Where a child's work lands](#where-a-childs-work-lands).
-- **State** (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`, else `~/.local/state/marion`. Every command follows that rule, so `marion ls` shows a session only when it sees the same value the session started with.
-
-**Steering.** A message for a running node goes into that node's inbox and reaches its model at the node's next turn boundary, never mid-sentence. A parent sends one with its `steer` tool, addressed by the `task_id` its `spawn` handle carries or by an `agent_id` from `list` (the only way to name a grandchild); the supervisor lets a node steer only nodes below it and refuses its parent, siblings and itself with one sentence. The operator presses `s` on a node on the home screen's Watch tab and types the message in the box (Enter sends, Esc cancels, the answer shows on the hint row), or sends one with `marion steer <id|short-id> <text…>` (`-` reads stdin; exit 0 prints the queued message's id, exit 1 prints the supervisor's refusal — an ended node points at `marion resume`). Before steering, a parent's `status` on a running child shows its last few tool calls and the last line it wrote, read from the child's own event stream through its harness's row (an ACP child's through the protocol's own `session/update` frames). Which harnesses and shapes actually hand a queued message over is per row and still landing; `MILESTONES.md` says which.
-
-`marion login <provider>` keeps a key you paste in the macOS Keychain (or, elsewhere or with `MARION_CREDENTIAL_STORE=file`, a `0600` file under `$XDG_CONFIG_HOME/marion/`); it never prints it and never runs a vendor's own login. `marion login custom <id> --base-url <url> --wire <wire>` adds your own OpenAI-, Anthropic- or Gemini-compatible endpoint to the user-level `providers.toml` (a repository's `.marion/` is never read for providers), and `marion logout <provider>` removes a key. Several keys for one provider are kept apart by label (`marion login openrouter --label work`, or `openrouter:work`); `providers.toml`'s `[credentials]` table states the order a launch tries them in. Subscription logins (Claude, ChatGPT, Copilot, Google accounts) stay with their own harness; marion never reuses them.
-
-Bare `marion` on a terminal opens the home screen. **Start** lists each harness's readiness as `marion doctor` finds it (● ready, ✗ broken with the fix, ○ not installed), the agent types of the selected harness (the plain name edits in a worktree; `^o` picks the read-only `<harness>-orchestrator`), the models you last ran it on (`←→`), and headless or pane (`^p`); type the task and press Enter, and it runs `marion run … --detach`, shown above the box before you press it. **Watch** is the forest: `j/k` move, and the selected node opens in place with the task marion sent it, its steers, a live stream of the calls it makes (`J/K` or Page Up/Down scroll, the end is followed), its tokens (never a price), its capabilities with the unmeasured ones greyed, and the branch it landed with the `git merge` to take it. Enter attaches to a pane node (`^] d` comes back), `s` steers, `x` cancels after asking, `u` resumes an ended node, `o` opens a shell in its workspace, `d` shows what its branch changed, `c` copies the merge, `!` jumps to the next node that needs you. **Setup** shows the doctor checks with their fixes (`r` re-checks) and the agent types (`e` edits `.marion/agents.toml`, then validates it). `Tab` changes screen, `^c` quits; in a pipe bare `marion` prints usage. Keys marion keeps are `marion login`'s (below); subscription logins stay with each harness's own CLI. `marion mcp` serves marion's tools over stdio for an MCP client to be configured with; it is not a command to type at a terminal.
-
-## Profiles: more than one login per harness
-
-A profile is a directory you logged into with the harness's own login, so a node can run on your work account while another runs on your personal one. marion never logs in, never copies, links or reads a credential, and never runs the login command; it only points the harness at the directory.
+When the child finishes, marion prints its branch under the child's line. Review it and take
+it:
 
 ```sh
-marion profile add claude work              # makes the directory and prints the login to run yourself:
-                                            #   CLAUDE_CONFIG_DIR='…/marion/profiles/claude-code/work' claude auth login
-marion profile add claude old --dir ~/.claude-work   # or adopt a directory you already use, exactly as you export it
-marion profile list                         # logged in or out (the harness's own status probe), last used, last limit reading
-marion profile use claude work              # make it the default for claude nodes
-marion profile remove old [--purge]         # --purge deletes only a directory marion made
-marion run claude --prompt "…" --profile work
-MARION_PROFILE=work marion claude           # a native session
+git log -p HEAD..marion/<task_id>
+git merge marion/<task_id>
 ```
 
-Profiles live in `$XDG_CONFIG_HOME/marion/profiles.toml`, directories under `$XDG_DATA_HOME/marion/profiles/<harness>/<name>/`. An agent type in `.marion/agents.toml` names one with `profile = "work"`, or a list, `profile = ["work", "personal"]`. Resolution is the run's own choice (`--profile`, `MARION_PROFILE`), then the agent type, then `[default]`, then the harness's own default login. An unknown profile, a profile of another harness, and a directory that is gone are each refused before anything starts, naming `marion profile add`. A node's children run on their agent type's profile; a node cannot pick one.
-
-What happens when a run fails depends on why:
-
-- **Usage limit** (`You've hit your session limit`, `usage_limit_exceeded`, a rejected `rate_limit_event`, a 429): a notice — "profile `work` (claude) hit its session limit; resets 7:50pm" — leads the contract, the parent's `wait` and a backgrounded child's announcement, the node needs attention in the tree, and `profile list` shows the reading. Nothing is relaunched and no other account is suggested.
-- **Expired or refused login** (`Invalid API key`, `Not logged in`, a 401) on a child that reported nothing: marion relaunches it fresh on the next profile its agent type listed and journals a `ProfileFailover`. A root takes its first profile only.
-- **Vendor outage** (`overloaded_error`, a 529 or 5xx): recorded as the cause; the profile is never changed.
-
-A resume continues on the profile its session was recorded under. Profiles apply to live runs only; `--canned` runs keep marion's own isolation.
-
-| harness | profile variable | status probe | shared from the default directory |
-|---|---|---|---|
-| `claude` | `CLAUDE_CONFIG_DIR` (and `CLAUDE_SECURESTORAGE_CONFIG_DIR` removed) | `claude auth status --json` | `settings.json`, `CLAUDE.md`, `skills`, `agents`, `commands`, `keybindings.json` (links) |
-| `codex` | `CODEX_HOME` | `codex login status` | `config.toml`, `AGENTS.md` (links; never `auth.json`) |
-| `opencode` | `XDG_DATA_HOME` | `opencode/auth.json` exists | — |
-| `gemini` | `GEMINI_CLI_HOME` | `.gemini/oauth_creds.json` exists | — |
-| `copilot` | none: a fresh `COPILOT_HOME` still authenticates (1.0.83), so a directory cannot choose an account | | |
-| `goose`, `cline`, `qwen`, `acp:` | none yet: unmeasured | | |
-
-## Where a child's work lands
-
-A child spawned with `isolation: "worktree"` works in its own git worktree on the branch `marion/<task_id>`. When it finishes, marion commits everything it changed onto that branch — authored as your configured git user, or `marion <marion@localhost>` if none is set, with hooks and signing skipped — removes the worktree directory, and keeps the branch. The contract records the branch and commit (`completion.branch`, `completion.commit`), and `marion run` prints them under the child's `CHILD` line as `changes on branch marion/<task_id> (<sha>); merge with: git merge marion/<task_id>`. marion never merges into your branch; review and merge it yourself:
+**3. Work the way you already do.**
 
 ```sh
-git log -p HEAD..marion/<task_id>     # what the child did
-git merge marion/<task_id>            # take it
-git branch -D marion/<task_id>        # or drop it
+marion claude                 # Claude Code's own TUI, with marion's tools; ^] d detaches
+marion                        # the home screen: Start a task, Watch the tree, Setup
+marion run codex --prompt "…" --detach
+marion ls                     # watch it
+marion steer <short-id> "use the v2 API, not v1"
 ```
 
-Paths outside the child's `writable_scope` are committed too and listed in the contract's `scope_violations`, so decide before merging. A child that changed nothing leaves its branch at the commit it started from. If the commit itself fails, the worktree is kept rather than removed and the contract's exit description says where. A `shared-cwd` child writes straight into your directory, so there is nothing to merge.
+**4. Or drive marion from any MCP client.**
+
+```sh
+claude mcp add marion -- marion mcp --repo "$PWD"
+```
+
+[docs/guide.md](docs/guide.md) covers every verb, the home screen's keys, steering, profiles,
+endpoints and where work lands.
 
 ## Harnesses
 
-| harness | pinned version | headless | native lane (`marion <harness>`) | ACP |
-|---|---|---|---|---|
-| `claude` (Claude Code) | 2.1.220 | yes, with a pane shape | yes | `claude-acp` |
-| `codex` (Codex CLI) | 0.146.0 | yes, with a pane shape | yes | `codex-acp` |
-| `gemini` (Gemini CLI) | 0.53.0 | yes | yes | `gemini` |
-| `opencode` | 1.17.3 (measured through 1.18.32) | yes | yes | `opencode` / `acp-opencode` |
-| `copilot` (Copilot CLI) | 1.0.83 | yes | yes | `copilot` |
-| `goose` | 1.49.0 | yes | no — interactive shape unmeasured | — |
-| `cline` | 3.0.61 | yes | no — interactive shape unmeasured | — |
-| `qwen` (Qwen Code) | 0.23.0 | yes | no — interactive shape unmeasured | — |
-| `pi` | 0.80.2 | yes, over `--mode rpc` (steer folds into the running turn) — MCP through marion's own `-e` extension | yes | — |
-| `acp:<command>` | n/a | — | — | the generic path |
+| harness | native `marion <harness>` | tested against the canned provider | live runs on record |
+|---|---|---|---|
+| Claude Code (`claude`) | yes | yes | root, native session, ACP (2026-09-22, 2026-09-27) |
+| Codex (`codex`) | yes | yes | root, child, ACP (2026-09-22, 2026-09-27) |
+| opencode | yes | yes, in all three shapes | one ACP child on a free model (2026-09-22) |
+| pi | yes | yes | none |
+| Copilot CLI (`copilot`) | yes | yes | ACP child (2026-09-05), child (2026-09-22) |
+| Gemini CLI (`gemini`) | yes | yes | none: blocked by Google for individual accounts |
+| Qwen Code (`qwen`) | no | yes | none |
+| goose | no | yes | none |
+| Cline (`cline`) | no | yes | none |
+| Antigravity (`agy`) | no | no canned route | one end-to-end run (2026-09-27) |
+| any ACP agent (`acp:<command>`) | — | opencode's ACP mode | claude-acp, codex-acp (2026-09-27) |
 
-The pin is the oldest version whose evidence is on record, not a ceiling; the admitted set widens as versions are re-measured. Agent types layer intent on a harness. A plain harness name — `claude`, `codex`, `opencode`, … — is that harness's implementer and grants `read` and `write` (`<harness>-impl` is kept as an alias); `<harness>-orchestrator` is the read-only planner, on the harnesses where marion can withhold writes. `marion --help` lists all fourteen built-in types, and bare `marion`'s Start tab offers them per harness.
+Every row's launch shape was measured against a real install, and the test suite drives the
+real harness binaries with only the model replaced. **Live coverage with paid models is thin.**
+The last column lists every live run on record, so a green canned test means the plumbing
+works, not that a vendor's endpoint accepts what marion sends. Gemini CLI fails with
+`IneligibleTierError` on an individual account before it reaches the model, with or without
+marion. Versions, steer and resume behaviour per harness, and the ACP agents table are in
+[docs/guide.md](docs/guide.md#harness-detail).
 
-**opencode, in all three of its shapes, against the two harnesses marion is most used with** —
-each `yes` is a test that drives the real binary against the canned provider, or for `status` and usage a reader held to a real capture (`MILESTONES.md`, s36):
+## Logins
 
-| | `claude` | `codex` | `opencode` (`run`) | `acp-opencode` | `marion opencode` |
-|---|---|---|---|---|---|
-| child: spawn, report, worktree, verification, landed branch | yes (verification and branch untested) | yes | yes | yes (verification on a fake agent) | — (a root) |
-| parent: `spawn` reaches marion, contract comes back | yes | yes | yes | yes | yes |
-| a steer reaches it | mid-turn fold | next generation | next generation (`--session`) | mid-turn fold | pasted |
-| a background child's end reaches it | next turn | next generation | next generation | next prompt | pasted |
-| resumed after the supervisor is killed | unit-tested only | yes | yes | yes (`session/load`) | — |
-| `status` shows its recent calls; usage read | yes | yes | yes (reasoning counted) | yes | — (no stream) |
-| an expired child leaves no tool process | — | yes | yes | yes | — |
-| marion's tools approved at launch | `--allowedTools` | declaration key | declaration key | answers the ask | declaration key |
+marion runs every harness on the login you already set up for it: its OAuth session, its API
+key variable, or its config file. It never starts a login, never picks an auth method for you,
+and never hides your credentials from the harness.
 
-One gap is opencode's own: `opencode run` names its session only once its first response streams,
-so a node whose supervisor dies during its first request has nothing to resume.
+- **`marion login <provider>`** stores an API key you give it (macOS Keychain, or a `0600` file)
+  and adds custom OpenAI-, Anthropic- or Gemini-compatible endpoints, so any harness can run on
+  any model through `--model <provider>:<model>`.
+- **`marion profile`** points a harness at a directory you logged into yourself, so one node can
+  use your work account and another your personal one.
+- **Never:** marion never reuses a Claude, ChatGPT/Codex, Copilot or Google subscription token
+  outside that vendor's own harness, never presents itself as another client, and never rotates
+  between subscription accounts to get past a usage limit.
 
-### ACP agents
+## Security and efficiency
 
-Any ACP agent runs through `acp:<command>`. These have a refinement row in `acp::AGENTS`, probed on 2026-09-27 (S33, `tests/fixtures/s33-acp-agents/`) without an account marion made or a login marion ran. "Opened" means `session/new` answered with a session; agents marked *provider* opened only once pointed at a provider through their own env, which on your machine is your own configuration for that agent. **Refused** rows were probed only to the account wall: `initialize` works, a session does not, and there is no built-in type for them.
-
-| row | command | built-in type | session/new | notes |
-|---|---|---|---|---|
-| `opencode` | `opencode acp` | `acp-opencode` | opened | tool call measured; canned recipe |
-| `claude-acp` | `npx -y @agentclientprotocol/claude-agent-acp@0.66.0` | `acp-claude-acp` | opened (your claude login) | tool call measured; live file write 2026-09-27 |
-| `codex-acp` | `codex-acp` | `acp-codex-acp` | opened (your codex login) | tool call measured; live file write 2026-09-27 |
-| `copilot` | `copilot --acp` | `acp-copilot` | opened (your login) | bridge only through `--additional-mcp-config` |
-| `kilo` | `kilo acp` | `acp-kilo` | opened, no account | a prompt needs a Kilo login or provider |
-| `qwen` | `qwen --acp` | `acp-qwen` | opened, *provider* | turn run against a local endpoint; MCP tools deferred behind `tool_search` |
-| `goose` | `goose acp` | `acp-goose` | opened, *provider* | turn run against a local endpoint |
-| `fast-agent` | `fast-agent-acp -x` | `acp-fast-agent` | opened, *provider* | real bridge call against a local endpoint |
-| `vibe` | `vibe-acp` | `acp-vibe` | opened, *provider* | no turn run |
-| `vtcode` | `vtcode acp` | `acp-vtcode` | opened | needs `VT_ACP_ENABLED=1` or `[acp]` in its config; no turn run |
-| `gemini` | `gemini --acp` | — | **refused** | Gemini Code Assist ineligibility |
-| `auggie` | `auggie --acp` | — | **refused** | `auggie login` (account) |
-| `qoder` | `qodercli --acp` | — | **refused** | `qodercli login` (account) |
-| `cline` | `cline --acp` | — | **refused** | wants an ACP `authenticate` first |
-| `pi-acp` | `pi-acp` | — | **refused** | shim/pi version skew |
-
-`marion doctor --capabilities --harness acp` probes every row and names the MCP transports each agent advertises; `--acp-command "<cmd>"` adds your own, and says when it turns out to be one of these rows.
-
-
-![The Codex TUI running inside a marion pane after `marion attach`, showing the delegated prompt, a Working indicator, and a line typed by the operator through the attachment.](docs/media/attach-pane.png)
-
-![Claude Code's /mcp screen inside a session started by `marion claude`, listing marion among the built-in MCP servers as connected with 5 tools (the operator's own servers, connectors and plugins redacted).](docs/media/native-claude-mcp.png)
-
-![Journal queries after killing the supervisor with SIGKILL and running marion resume: three SpawnIntent records, a RootChanged, and the resumed root's Exited status Ok.](docs/media/resume-generation-2.png)
-
-![marion-supervisor doctor --capabilities: one block per harness with the binary path, version, surfaces, and which capabilities were measured on each.](docs/media/doctor-capabilities.png)
-
-## How it is tested
-
-The test suite drives the real harness binaries, not mocks — only inference is canned. `cargo test --workspace` launches actual `claude`, `codex`, `opencode` and the rest against `marion-provider`, marion's own canned model server, which dispatches on request shape rather than arrival order and costs nothing; where a binary is absent the test skips loudly rather than silently. Every test runs through `scripts/cargo-runner.sh`, which puts an empty directory first on `PATH` so a harness is reached only through a shim that execs the admitted release, and `marion_testsupport::PINNED_HARNESSES` fails a version the table does not admit *by name* instead of skipping. When a harness has genuinely moved on, `scripts/admit-harness.sh <harness> <version>` widens the accepted set, picks the affected suites by grep rather than by hand, re-runs them, and restores the table byte-for-byte if anything goes red; it never commits. The shipped binary trusts none of this — `doctor --capabilities` re-measures at runtime. CI (`.github/workflows/ci.yml`) runs fmt, clippy, the unit tests and every integration suite whose harness-launching tests can skip, on each push; the live matrix needs the real binaries and a real terminal, so it is run by hand. The most recent full run recorded in `MILESTONES.md` is 2026-09-11 at `a2b3ed8` (eight harnesses at their pins, zero failures); later commits are covered by CI and by the live suites re-run for each change, not by a new full run.
+- **The node's token never goes on argv.** Each node's bridge token reaches its harness through a
+  declaration file or the environment. A lint rejects code that puts a secret on argv, and an
+  end-to-end test reads the process table to confirm it.
+- **Secrets are protected.** A stored key is never printed or logged; its type redacts `Debug`,
+  and credential files are written `0600`. marion creates its state directory `0700`, and the
+  supervisor's socket checks each caller's uid.
+- **A repository cannot redirect your keys.** Providers come only from your user-level config;
+  a repository's `.marion/` is never read for them.
+- **Near-zero idle cost.** marion waits on events, not timers. An idle supervisor with no
+  running nodes measured 4 context switches per second, down from 264. The release binaries
+  are 2.7 MB (`marion`) and 4.6 MB (`marion-supervisor`) on arm64 macOS.
+  `scripts/perf-idle.sh` reproduces the measurement.
 
 ## Status
 
-marion works end to end and is not finished. `MILESTONES.md` is the ledger — goals, principles, and every harness fact with the spike that measured it. `docs/specs/2026-07-31-marion-design.md` is the design, rev 3. Where the two disagree, MILESTONES wins on *what* and the design doc on *how*.
+marion works end to end and is not finished. What is open:
 
-Open, honestly:
-
-- **Linux start identity is measured; the rest of Linux is thin.** `/proc/<pid>/stat` field 22 is read and checked against `btime` and the `/proc/<pid>` mtime, including a `comm` containing a space and a `)`; every platform that is neither macOS nor Linux still refuses by name and resolves to cannot-tell. Windows is out of scope — the PTY host is POSIX only. No arm-vs-x86 difference has been measured on either OS, and the Linux native-relay lanes are still red (see MILESTONES).
-- **Gemini is blocked vendor-side.** With gemini 0.53.0 on an individual account, `gemini -p` fails with `IneligibleTierError` and exit 55 before it reaches the model, with no marion involved. Gemini's green cells are all against the canned provider; do not read them as evidence that a live Gemini node works.
-- **Live paid runs are barely on record.** One live ACP run against Copilot, on 2026-09-05. Everything else in the suite is canned, so the request shapes marion sends to paid endpoints are verified far less than the harness plumbing around them.
-- Three native lanes stay disabled by name (`goose`, `cline`, `qwen`) because their interactive surfaces were never measured, and a resumed child's declared scope and acceptance criteria carry in no record (its `verification` lines are journaled on its spawn intent and re-run on resume).
-
-## Repository layout
-
-| crate | what it is |
-|---|---|
-| `marion-core` | The IR: launch specs, registry model, journal, task contract, and the client↔supervisor wire vocabulary. No processes, no filesystem. |
-| `marion-harness` | One `HarnessSpec` row per harness — argv, env, tool spelling, resume shape, update policy — each row naming the spike that measured it. |
-| `marion-provider` | The canned model provider. Replays scripted responses across four wire formats, dispatching on request shape. |
-| `marion-supervisor` | The supervisor itself, plus both binaries: the PTY host, registry, socket, spawn path, ACP driver, doctor, and native relay. |
-| `marion-term` | A VT screen model for the display plane — a streaming grid with a ratatui adapter. |
-| `marion-testsupport` | Shared test helpers, the pinned-version table, and the shim that runs an admitted release. |
-| `marion-tui` | The attach pane and the `tree` view. |
+- Live, paid coverage is thin (see above).
+- Linux is less exercised than macOS, and native Windows is out of scope; see
+  [CONTRIBUTING.md](CONTRIBUTING.md#windows).
+- The native lane stays off for qwen, goose and cline until their interactive terminals are
+  measured, and for agy, whose tools appear only after its first turn starts.
+- A pi child cannot delegate further, because pi's `--tools` also governs extension tools.
 
 ## More
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test, and land a change.
-- [MILESTONES.md](MILESTONES.md) — the ledger of what is verified and what is not.
-- [docs/specs/](docs/specs/) — the design doc and the native-facade specs.
-- [docs/research/](docs/research/) — research snapshots behind specific decisions.
+- [docs/guide.md](docs/guide.md): the usage reference.
+- [CONTRIBUTING.md](CONTRIBUTING.md): build, test, the three-axis gate, releasing.
+- [MILESTONES.md](MILESTONES.md): the engineering log, with every harness fact and the spike
+  that measured it.
+- [docs/](docs/README.md): the design and its specs.
+
+MIT licensed.
