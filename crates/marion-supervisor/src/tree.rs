@@ -177,31 +177,42 @@ pub fn short_id(id: &str) -> &str {
     if uuid_shaped { &id[9..13] } else { id }
 }
 
-/// **The node `marion steer <id|short-id>` means**, read off one snapshot.
+/// **The agent an operator means by `arg`**, out of the ids they could have meant — the one rule
+/// every command that takes an agent uses (`ls`, `attach`, `steer`, `cancel`, `resume`, and the
+/// MCP tools' `id`).
 ///
-/// A whole id is itself. Otherwise the one node whose [`short_id`] is `arg` — the id the tree row
-/// shows, so an operator can type what they see. Two nodes sharing a short id is refused with every
-/// candidate's whole id, because guessing between them would steer an agent nobody chose. An arg
-/// that names nothing is returned as-is: the supervisor's own `not found` sentence is the better
-/// answer, and a second one here would be a second spelling of it.
-pub fn resolve_target(arg: &str, nodes: &[NodeSummary]) -> Result<AgentId, String> {
-    if nodes.iter().any(|n| n.agent_id.0 == arg) {
+/// A whole id is itself. Otherwise the one id whose [`short_id`] is `arg` — what the tree row
+/// shows, so an operator can type what they see — or which starts with `arg`, so a copied prefix
+/// works too. More than one candidate is refused with every whole id named, because guessing
+/// between them would act on an agent nobody chose. An arg that names nothing is returned as-is:
+/// the supervisor's own `not found` sentence is the better answer, and a second one here would be a
+/// second spelling of it.
+pub fn resolve_node<'a>(
+    arg: &str,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<AgentId, String> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    if arg.is_empty() || ids.contains(&arg) {
         return Ok(AgentId(arg.to_string()));
     }
-    let matches: Vec<&str> = nodes
-        .iter()
-        .map(|n| n.agent_id.0.as_str())
-        .filter(|id| short_id(id) == arg)
+    let matches: Vec<&str> = ids
+        .into_iter()
+        .filter(|id| short_id(id) == arg || id.starts_with(arg))
         .collect();
     match matches.as_slice() {
         [] => Ok(AgentId(arg.to_string())),
         [one] => Ok(AgentId((*one).to_string())),
         many => Err(format!(
-            "`{arg}` is the short id of {} nodes ({}); name the one you mean by its whole id",
+            "`{arg}` matches {} agents ({}); name the one you mean by more of its id",
             many.len(),
             many.join(", ")
         )),
     }
+}
+
+/// [`resolve_node`] over one `tree/subscribe` snapshot.
+pub fn resolve_target(arg: &str, nodes: &[NodeSummary]) -> Result<AgentId, String> {
+    resolve_node(arg, nodes.iter().map(|n| n.agent_id.0.as_str()))
 }
 
 /// A node's state in one short word.
@@ -996,6 +1007,19 @@ mod tests {
             resolve_target("root-claude", &[]),
             Ok(AgentId("root-claude".into()))
         );
+    }
+
+    /// **A unique prefix of a whole id names its agent too**, so an id copied short works; a prefix
+    /// several ids share is refused with each of them, like an ambiguous short id.
+    #[test]
+    fn a_unique_prefix_of_a_whole_id_names_its_agent() {
+        let a = "01a091ba-8ea3-7000-8000-000000000001";
+        let b = "01a091bb-5b04-7000-8000-000000000003";
+        assert_eq!(resolve_node("01a091ba", [a, b]), Ok(AgentId(a.into())));
+        assert_eq!(resolve_node("01a091bb-5", [a, b]), Ok(AgentId(b.into())));
+        let both = resolve_node("01a091", [a, b]).expect_err("both start with it");
+        assert!(both.contains(a) && both.contains(b), "{both}");
+        assert_eq!(resolve_node("", [a]), Ok(AgentId(String::new())));
     }
 
     /// **`marion list`'s line: glyph, state, type, the whole id, and the parent's short id.** The
