@@ -1041,6 +1041,59 @@ fn a_default_no_trust_dialog_is_answered_with_the_rows_keys_never_a_bare_cr() {
     );
 }
 
+/// A codex-like directory-trust dialog: default `1. Yes, continue`, answered by CR.
+const CODEX_TRUST: BootDialog = BootDialog {
+    needle: "› 1. Yes, continue 2. No, quit",
+    answer: DialogAnswer::Keys(b"\r"),
+    note: "test: codex-like directory trust, default Yes",
+};
+const CODEX_LIKE: &[BootDialog] = &[CODEX_TRUST];
+
+/// **On a window-title row the dialog comes first, then the title, then the paste** — codex
+/// 0.155.1 opens on directory trust, then draws its provisional composer, and only its real one
+/// sets the title. The dialog is answered with the row's keys alone; the provisional screen that
+/// follows, however long it stays quiet, does not open the gate; the paste lands `settle` after
+/// the title.
+#[test]
+fn a_window_title_row_answers_its_dialog_then_waits_for_the_title_before_pasting() {
+    let mut bed = Bed::with_row("paste-dialog-title", fast(), TITLED_PASTE, CODEX_LIKE, true);
+    bed.node_writes(
+        b"\x1b[?2004h\x1b[2J\x1b[HDo you trust the contents of this directory?\r\n\
+                      \xe2\x80\xba 1. Yes, continue\r\n  2. No, quit",
+    );
+    let id = bed.steer("after trust and title");
+    assert_eq!(
+        bed.read_slave(1),
+        b"\r",
+        "the row's keys answer the dialog, alone"
+    );
+    bed.node_writes(b"\x1b[2J\x1b[H> Ask Codex to do anything");
+    let drawn_at = Instant::now();
+    bed.await_decision(|d| {
+        matches!(d, Gate::Wait(Hold::Booting, _)) && drawn_at.elapsed() >= BED_SETTLE * 4
+    });
+    assert!(
+        !bed.records.lock().unwrap().iter().any(|r| matches!(
+            r,
+            RecordKind::MessageDelivered(_) | RecordKind::MessageDropped(_)
+        )),
+        "the redrawn provisional composer, quiet and untitled, is not typed into"
+    );
+    bed.node_writes(b"\x1b]0;repo\x07");
+    let titled_at = Instant::now();
+    let want = expected_paste("after trust and title");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(
+        titled_at.elapsed() >= BED_SETTLE,
+        "the paste came {:?} after the title",
+        titled_at.elapsed()
+    );
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
+}
+
 /// **A dialog marion never answers drops the message by name** past the grace, and the node
 /// receives nothing of it — even in marion's own workspace.
 #[test]
