@@ -49,6 +49,8 @@ pub struct ReplayedContract {
     pub task_id: TaskId,
     pub requester: AgentId,
     pub status: Option<ResultStatus>,
+    /// A reviewer's tally, from [`ContractPersisted::review`].
+    pub review: Option<crate::review::ReviewTally>,
 }
 
 /// One node of the replayed tree.
@@ -450,17 +452,20 @@ impl ReplayedNode {
             task_id,
             requester,
             status,
+            review,
             ..
         } = c;
         match self.contracts.iter_mut().find(|c| c.task_id == task_id) {
             Some(existing) => {
                 existing.requester = requester;
                 existing.status = status;
+                existing.review = review;
             }
             None => self.contracts.push(ReplayedContract {
                 task_id,
                 requester,
                 status,
+                review,
             }),
         }
     }
@@ -882,6 +887,7 @@ mod tests {
                 },
             })),
             next(RecordKind::ContractPersisted(ContractPersisted {
+                review: None,
                 agent_id: id("child"),
                 task_id: TaskId("t-1".into()),
                 requester: id("root"),
@@ -1030,6 +1036,7 @@ mod tests {
                 task_id: TaskId("t-1".into()),
                 requester: id("root"),
                 status: Some(ExitStatus::Ok),
+                review: None,
             }]
         );
         assert!(r.unresolved().is_empty(), "both nodes exited on the record");
@@ -1607,11 +1614,17 @@ mod tests {
 
     #[test]
     fn a_contract_record_updates_rather_than_duplicates() {
+        let tally = crate::review::ReviewTally {
+            findings: 2,
+            blocking: 1,
+            decision: crate::review::Decision::Block,
+        };
         let mut j = m1_journal();
         let n = j.len() as u64;
         j.push(record(
             n,
             RecordKind::ContractPersisted(ContractPersisted {
+                review: Some(tally),
                 agent_id: id("child"),
                 task_id: TaskId("t-1".into()),
                 requester: id("root"),
@@ -1622,6 +1635,11 @@ mod tests {
         let c = r.get(&id("child")).unwrap();
         assert_eq!(c.contracts.len(), 1);
         assert_eq!(c.contracts[0].status, Some(ExitStatus::Failed));
+        assert_eq!(
+            c.contracts[0].review,
+            Some(tally),
+            "a reviewer's tally is folded"
+        );
     }
 
     #[test]

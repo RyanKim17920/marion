@@ -453,6 +453,29 @@ pub fn decide(parsed: Parsed, changed_paths: &[PathBuf], block_on: Severity) -> 
     }
 }
 
+/// **marion's count of one reviewer's report**, the part of a verdict the journal may carry: how
+/// many findings, how many of them block, and marion's decision. Never reviewer text, which lives
+/// only in the reviewer's contract, so a journal reader (the tree, Home Watch) can say "3
+/// findings, 1 blocking" without opening a file a foreign agent wrote into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewTally {
+    /// Every finding the reviewer reported, the capped-away ones included.
+    pub findings: usize,
+    /// Grounded findings at or above the threshold; see [`Verdict::blocking`].
+    pub blocking: usize,
+    pub decision: Decision,
+}
+
+impl ReviewTally {
+    pub fn of(v: &Verdict) -> ReviewTally {
+        ReviewTally {
+            findings: v.findings.findings.len() + v.findings.findings_omitted,
+            blocking: v.blocking,
+            decision: v.decision,
+        }
+    }
+}
+
 /// One review round: which commit was reviewed, by which reviewer node, and marion's verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRound {
@@ -1014,6 +1037,15 @@ mod tests {
         assert_eq!(v.findings.findings_omitted, n - MAX_FINDINGS);
         assert!(v.findings.findings[0].grounded, "grounded first");
         assert_eq!(v.findings.findings[0].file, "src/a.rs");
+        assert_eq!(
+            ReviewTally::of(&v),
+            ReviewTally {
+                findings: n,
+                blocking: 1,
+                decision: Decision::Block
+            },
+            "the tally counts what the cap dropped, so the journal never under-reports"
+        );
     }
 
     #[test]

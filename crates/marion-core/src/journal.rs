@@ -525,6 +525,11 @@ pub struct ContractPersisted {
     /// `None` if it ended unobserved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<ResultStatus>,
+    /// **A reviewer's tally**, on a reviewer node's contract only: marion's count and decision,
+    /// never the findings' text (see [`crate::review::ReviewTally`]). Additive: absent on every
+    /// other contract, so those records are byte-identical to what earlier builds wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review::ReviewTally>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -770,6 +775,7 @@ mod tests {
                 },
             }),
             RecordKind::ContractPersisted(ContractPersisted {
+                review: None,
                 agent_id: AgentId("a-1".into()),
                 task_id: TaskId("t-1".into()),
                 requester: AgentId("root".into()),
@@ -859,6 +865,7 @@ mod tests {
         );
         assert!(
             !RecordKind::ContractPersisted(ContractPersisted {
+                review: None,
                 agent_id: a.clone(),
                 task_id: TaskId("t".into()),
                 requester: a,

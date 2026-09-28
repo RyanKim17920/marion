@@ -2399,6 +2399,7 @@ pub fn run_spawn_watched(
     crate::journal::record(
         &env.project_dir,
         RecordKind::ContractPersisted(ContractPersisted {
+            review: None,
             agent_id: agent_id.clone(),
             task_id: task_id.clone(),
             requester: AgentId(caller.agent_id.clone()),
