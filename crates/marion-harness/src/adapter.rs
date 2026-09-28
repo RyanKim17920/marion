@@ -10880,7 +10880,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("{h} has a stream row"));
             let v: serde_json::Value = serde_json::from_str(frame).unwrap();
             assert_eq!(session_id(g, &v).as_deref(), Some(*want), "{h}");
+            // A blank id is no id, through the hook the supervisor's session watch calls: a resume
+            // bound to whitespace would name no session at all.
+            let blank: serde_json::Value =
+                serde_json::from_str(&frame.replace(want, " \\t ")).unwrap();
+            assert_eq!(adapter_for(*h).unwrap().session_id(&blank), None, "{h}");
         }
+        // ACP's hook reads the protocol's `session/new` answer, whatever the agent.
+        let acp = adapter_for(Harness::Acp).unwrap();
+        let opened = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}});
+        assert_eq!(acp.session_id(&opened).as_deref(), Some("s-1"));
+        let blank = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": " \t "}});
+        assert_eq!(acp.session_id(&blank), None);
         // A frame that is not the session-bearing unit yields nothing, on every row: the engine
         // must not read a plausible-looking field off the wrong frame.
         for h in Harness::ALL {

@@ -1522,7 +1522,7 @@ pub fn session_id(frame: &str) -> Result<String, AcpError> {
     v.get("result")
         .and_then(|r| r.get("sessionId"))
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
         .ok_or(AcpError::NeitherResultNorError)
 }
@@ -2667,8 +2667,14 @@ mod tests {
             matches!(&refused, AcpError::Refused { code: -32000, message } if message.contains("Gemini Code Assist")),
             "got {refused:?}"
         );
-        // An empty id is not an id, and neither is an absent one.
+        // An empty or blank id is not an id, and neither is an absent one. A padded id is the
+        // agent's own bytes and is kept as sent: marion echoes it back, it never rewrites it.
         assert!(session_id(r#"{"result":{"sessionId":""}}"#).is_err());
+        assert!(session_id(r#"{"result":{"sessionId":" \t "}}"#).is_err());
+        assert_eq!(
+            session_id(r#"{"result":{"sessionId":" ses_01 "}}"#),
+            Ok(" ses_01 ".into())
+        );
         assert!(session_id(r#"{"result":{}}"#).is_err());
     }
 

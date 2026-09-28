@@ -706,7 +706,7 @@ fn declared(request: &Value) -> Result<Opening, AcpChildError> {
             request
                 .pointer("/params/sessionId")
                 .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.trim().is_empty())
                 .map(str::to_string)
                 .ok_or_else(|| AcpChildError::Declaration {
                     what:
@@ -1182,6 +1182,31 @@ mod tests {
     use super::*;
     use marion_testsupport::scratch;
     use std::path::Path;
+
+    /// **A `session/load` must name a session**: an empty or blank `sessionId` would be a wait on
+    /// a session no agent can open, so it is refused before the spawn; a real id is carried as
+    /// written. Mutation: filter with `is_empty` alone and the blank id is accepted.
+    #[test]
+    fn a_session_load_naming_a_blank_session_is_refused() {
+        let load = |id: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 7, "method": acp::SESSION_LOAD_METHOD,
+                "params": {"sessionId": id}
+            })
+        };
+        for blank in ["", " \t "] {
+            assert!(
+                matches!(
+                    declared(&load(blank)),
+                    Err(AcpChildError::Declaration { .. })
+                ),
+                "{blank:?}"
+            );
+        }
+        let opening = declared(&load("ses_prev")).expect("a named session loads");
+        assert_eq!(opening.session.as_deref(), Some("ses_prev"));
+        assert_eq!(opening.id, 7);
+    }
 
     /// A fake ACP agent, in `/bin/sh` — `duplex`'s technique, for its reason: the thing under test
     /// is a driver of a *process over pipes*, and a fake that is a Rust function tests the loop
