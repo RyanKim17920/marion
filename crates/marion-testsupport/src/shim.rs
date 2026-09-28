@@ -60,6 +60,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::{fs, io};
 
 use crate::{PINNED_HARNESSES, PinnedHarness, check_version, parse_version};
 
@@ -299,7 +300,10 @@ impl Shim {
     /// Does the `program` first on the *inherited* `PATH` already satisfy the table? Asked only
     /// before an npm install, because that is the one step with a cost worth avoiding.
     fn path_binary_is_admitted(&self, pin: &PinnedHarness) -> bool {
-        version_probe(pin, &self.inherited_path)
+        let Ok((mut probe, _document)) = version_probe(pin, &self.inherited_path) else {
+            return false;
+        };
+        probe
             .output()
             .ok()
             .filter(|o| o.status.success())
@@ -352,9 +356,10 @@ impl Shim {
     pub fn gate(&self, program: &str) -> Result<(), GateFailure> {
         let pin = self.pin(program);
         let resolution = self.resolve(program);
-        let out = version_probe(pin, &self.path())
-            .output()
-            .map_err(|_| GateFailure::Absent)?;
+        let (mut probe, _document) = version_probe(pin, &self.path()).map_err(|e| {
+            GateFailure::Refused(format!("the {program} probe's settings document: {e}"))
+        })?;
+        let out = probe.output().map_err(|_| GateFailure::Absent)?;
         if !out.status.success() {
             return Err(GateFailure::Absent);
         }
@@ -385,16 +390,62 @@ impl Shim {
     }
 }
 
-/// `<program> --version` resolved through `path`, with the no-self-update env marion gives every
-/// node of the harness ([`PinnedHarness::probe_env`]) — so the version the gate reads is the one
-/// the nodes run, not a build the harness would exec when left to update itself.
-fn version_probe(pin: &PinnedHarness, path: &OsStr) -> Command {
+/// `<program> --version` resolved through `path`, carrying the no-self-update switch marion gives
+/// every node of the harness ([`PinnedHarness::probe_env`], [`PinnedHarness::probe_args`],
+/// [`PinnedHarness::probe_document`]) — so the version the gate reads is the one the nodes run, not
+/// a build the harness would exec when left to update itself. Keep the returned document guard
+/// until the probe has exited.
+fn version_probe(pin: &PinnedHarness, path: &OsStr) -> io::Result<(Command, Option<ProbeDir>)> {
     let mut probe = Command::new(pin.program);
     probe
         .env("PATH", path)
         .envs(pin.probe_env.iter().copied())
-        .arg("--version");
-    probe
+        .arg("--version")
+        .args(pin.probe_args);
+    let document = match pin.probe_document {
+        Some(doc) => {
+            let dir = ProbeDir::new()?;
+            probe.env(doc.env, dir.write(doc.body)?);
+            Some(dir)
+        }
+        None => None,
+    };
+    Ok((probe, document))
+}
+
+/// A fresh 0700 directory holding one 0600 settings document, removed on drop — the gate's copy of
+/// `marion_harness::probe`'s private document, which this crate cannot depend on.
+struct ProbeDir(PathBuf);
+
+impl ProbeDir {
+    fn new() -> io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("marion-gate-probe-{}-{seq}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Self(path))
+    }
+
+    fn write(&self, body: &str) -> io::Result<PathBuf> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self.0.join("settings.json");
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?
+            .write_all(body.as_bytes())?;
+        Ok(path)
+    }
+}
+
+impl Drop for ProbeDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The version of `pin.program` first on this process's `PATH`, read exactly as the gate reads it
@@ -405,9 +456,9 @@ fn version_probe(pin: &PinnedHarness, path: &OsStr) -> Command {
 /// installed rather than whether a test may drive it.
 pub fn installed_version(pin: &PinnedHarness) -> Result<String, String> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let out = version_probe(pin, &path)
-        .output()
-        .map_err(|e| format!("not runnable: {e}"))?;
+    let (mut probe, _document) =
+        version_probe(pin, &path).map_err(|e| format!("probe document: {e}"))?;
+    let out = probe.output().map_err(|e| format!("not runnable: {e}"))?;
     if !out.status.success() {
         return Err(format!("`--version` exited {}", out.status));
     }
@@ -493,6 +544,8 @@ mod tests {
             accepted,
             store,
             probe_env,
+            probe_args: &[],
+            probe_document: None,
         }]))
     }
 

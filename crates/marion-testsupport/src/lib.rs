@@ -290,6 +290,22 @@ pub struct PinnedHarness {
     /// 1.0.87 with passes 1.0.83 produced. `marion-harness`'s
     /// `every_pinned_harness_probes_with_its_rows_update_env` keeps the two from drifting.
     pub probe_env: &'static [(&'static str, &'static str)],
+    /// The row's switch where it is an argument pair instead: the arguments the probe passes after
+    /// `--version` — the row's `UpdatePolicy::Pair` on the flag of its own override channel
+    /// (codex's `-c check_for_update_on_startup=false`), exactly as `marion_harness::probe` spells
+    /// it. The same test keeps the two equal.
+    pub probe_args: &'static [&'static str],
+    /// The row's switch where it is a settings document: written to a private file for the probe's
+    /// lifetime, its path in [`ProbeDocument::env`] — gemini's system settings, which has no
+    /// update variable at all, and whose bare start updated the operator's install on 2026-09-27.
+    pub probe_document: Option<ProbeDocument>,
+}
+
+/// A settings document a version probe carries: `body`, at a path named by the variable `env`.
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeDocument {
+    pub env: &'static str,
+    pub body: &'static str,
 }
 
 /// **The one table.** Every version check reads from here; nothing else in the workspace decides
@@ -313,6 +329,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "claude",
         store: ReleaseStore::ClaudeVersions,
         probe_env: &[("DISABLE_AUTOUPDATER", "1")],
+        probe_args: &[],
+        probe_document: None,
         // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
         // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
         //
@@ -642,6 +660,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "codex",
         store: ReleaseStore::CodexReleases,
         probe_env: &[],
+        probe_args: &["-c", "check_for_update_on_startup=false"],
+        probe_document: None,
         // 0.146.0 is the pin: the version that accepts a bogus `-c` key with a clean exit, that
         // leaks the background `git fetch` MILESTONES records, and that `tests/fixtures/s6`, `s7`
         // and `s14`'s codex halves were captured from.
@@ -754,6 +774,11 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "gemini",
         store: ReleaseStore::Npm("@google/gemini-cli"),
         probe_env: &[],
+        probe_args: &[],
+        probe_document: Some(ProbeDocument {
+            env: "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+            body: r#"{"general":{"enableAutoUpdate":false,"enableAutoUpdateNotification":false}}"#,
+        }),
         // The version that omits MCP tools entirely without `trust: true`, silently.
         accepted: &["0.53.0"],
     },
@@ -761,6 +786,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "opencode",
         store: ReleaseStore::PathOnly,
         probe_env: &[("OPENCODE_DISABLE_AUTOUPDATE", "1")],
+        probe_args: &[],
+        probe_document: None,
         // 1.17.3 is the pin: the version that never exits on a provider hang, and the one S13's
         // `tests/fixtures/s13/` captures and the `/mcp` dialog reading were taken from.
         //
@@ -796,6 +823,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "copilot",
         store: ReleaseStore::Npm("@github/copilot"),
         probe_env: &[("COPILOT_AUTO_UPDATE", "false")],
+        probe_args: &[],
+        probe_document: None,
         // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
         // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
         // installed has none of the three, so nothing about copilot was measurable before it.
@@ -815,6 +844,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "goose",
         store: ReleaseStore::PathOnly,
         probe_env: &[],
+        probe_args: &[],
+        probe_document: None,
         // 1.49.0 is the pin: the Homebrew `block-goose-cli` bottle present on this machine on
         // 2026-09-05, and the version every S26 probe ran against — each against a canned local
         // provider at $0.00 (`tests/fixtures/s26/`).
@@ -847,6 +878,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "cline",
         store: ReleaseStore::Npm("cline"),
         probe_env: &[("CLINE_NO_AUTO_UPDATE", "1")],
+        probe_args: &[],
+        probe_document: None,
         // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
         // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
         // every S27 probe ran against — each against a canned local provider at $0.00
@@ -867,6 +900,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "qwen",
         store: ReleaseStore::Npm("@qwen-code/qwen-code"),
         probe_env: &[("QWEN_CODE_SKIP_UPDATE_CHECK_ONCE", "true")],
+        probe_args: &[],
+        probe_document: None,
         // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
         // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
         // version every S25 probe ran against — each against a canned local provider at $0.00
@@ -887,6 +922,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "agy",
         store: ReleaseStore::PathOnly,
         probe_env: &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        probe_args: &[],
+        probe_document: None,
         // 1.2.8 is the pin: the Homebrew cask (`/opt/homebrew/Caskroom/antigravity-cli/1.2.8,…`)
         // present on 2026-09-22, and the version every s32 probe ran against on the operator's own
         // keychain login (`tests/fixtures/s32/`). What was measured on it: the `--add-dir` root
@@ -899,6 +936,8 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         program: "pi",
         store: ReleaseStore::Npm("@earendil-works/pi-coding-agent"),
         probe_env: &[("PI_SKIP_VERSION_CHECK", "1")],
+        probe_args: &[],
+        probe_document: None,
         // 0.80.2 is the pin: the npm `@earendil-works/pi-coding-agent` present on this machine on
         // 2026-09-27 (under Homebrew's node prefix), and the version every S34 probe ran against —
         // each against a canned local provider at $0.00 (`tests/fixtures/s34-pi/`).
@@ -2104,6 +2143,8 @@ mod tests {
             accepted: &["2.1.220"],
             store: ReleaseStore::ClaudeVersions,
             probe_env: &[],
+            probe_args: &[],
+            probe_document: None,
         };
         let e = check_version(&only_the_pin, "2.1.222 (Claude Code)\n", "")
             .expect_err("a table that lists only 2.1.220 must not accept 2.1.222");
