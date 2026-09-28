@@ -313,7 +313,7 @@ fn attention(node: &ReplayedNode) -> Option<String> {
 /// When a node started and ended, in the journal's own times — never this process's clock (see
 /// `first_ts`): started at its latest `Spawned`, else its first record; ended at the record that
 /// moved it to `Exited`.
-fn clock(
+pub(crate) fn clock(
     node: &ReplayedNode,
 ) -> (
     Option<marion_core::encoding::SystemTime>,

@@ -323,7 +323,7 @@ pub fn resolve_target(arg: &str, nodes: &[NodeSummary]) -> Result<AgentId, Strin
 /// emphatic that `Orphaned` is *not* a claim the process died, so it is shown as its own word
 /// instead of being collapsed into an exit. A node that is both `Exited` and reaped shows the exit,
 /// which is the more specific fact.
-pub(crate) fn state_label(state: NodeState, reap: ReapState) -> String {
+pub fn state_label(state: NodeState, reap: ReapState) -> String {
     match (state, reap) {
         (NodeState::Exited(s), _) => format!("exited:{s:?}").to_lowercase(),
         (_, ReapState::Orphaned) => "orphaned".into(),

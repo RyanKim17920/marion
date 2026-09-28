@@ -17,6 +17,7 @@ use marion_core::paths::ProjectDir;
 use marion_core::proto::params::ActivityCursor;
 use marion_core::proto::result::{CompletionSummary, DiffStat, MessageLine, NodeDetail, TaskSent};
 use marion_core::registry::ReplayedNode;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// What [`read`] needs from the replayed node, taken under the registry lock.
@@ -101,7 +102,7 @@ pub fn read(
 /// What a contract's landed branch changed against the commit it started from, when it landed
 /// one: `git diff --shortstat <base> <commit>` in the repository's common dir, where the branch's
 /// objects live even once its worktree is gone.
-fn landed_diff(c: &TaskContract) -> Option<DiffStat> {
+pub(crate) fn landed_diff(c: &TaskContract) -> Option<DiffStat> {
     let completion = c.completion.as_ref()?;
     completion.branch.as_ref()?;
     diff_stat(
@@ -196,7 +197,7 @@ fn root_task(dir: &marion_core::paths::AgentDir) -> Option<TaskSent> {
 }
 
 /// The contract's task as the node received it.
-fn task_sent(c: &TaskContract) -> TaskSent {
+pub(crate) fn task_sent(c: &TaskContract) -> TaskSent {
     task_of(
         &c.instructions.value,
         c.acceptance_criteria
@@ -235,18 +236,40 @@ fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
     let Ok(bytes) = std::fs::read(journal) else {
         return Vec::new();
     };
-    let mut out: Vec<(String, MessageLine)> = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
+    fold_messages(&bytes, |a| a == id)
+        .remove(id)
+        .unwrap_or_default()
+}
+
+/// [`messages`] for every node at once, from journal bytes already read: one pass, for a reader
+/// that wants the whole tree's steers (`marion export`) rather than one node's.
+pub fn messages_by_node(journal: &[u8]) -> HashMap<AgentId, Vec<MessageLine>> {
+    fold_messages(journal, |_| true)
+}
+
+/// The delivery records of every node `keep` accepts, folded into their message lines.
+fn fold_messages(
+    journal: &[u8],
+    keep: impl Fn(&AgentId) -> bool,
+) -> HashMap<AgentId, Vec<MessageLine>> {
+    let mut by_node: HashMap<AgentId, Vec<(String, MessageLine)>> = HashMap::new();
+    let resolve = |by_node: &mut HashMap<AgentId, Vec<(String, MessageLine)>>,
+                   id: &AgentId,
+                   mid: &str,
+                   outcome: String| {
+        if let Some((_, m)) = by_node
+            .get_mut(id)
+            .and_then(|out| out.iter_mut().find(|(k, _)| k == mid))
+        {
+            m.outcome = outcome;
+        }
+    };
+    for line in journal.split(|b| *b == b'\n') {
         let Some(record) = journal::decode(line) else {
             continue;
         };
-        let resolve = |out: &mut Vec<(String, MessageLine)>, mid: &str, outcome: String| {
-            if let Some((_, m)) = out.iter_mut().find(|(k, _)| k == mid) {
-                m.outcome = outcome;
-            }
-        };
         match record.kind {
-            RecordKind::MessageQueued(q) if &q.agent_id == id => {
+            RecordKind::MessageQueued(q) if keep(&q.agent_id) => {
                 let from = match q.source {
                     MessageSource::Operator => "operator".to_string(),
                     MessageSource::Ancestor(a) => format!("ancestor {}", a.0),
@@ -255,7 +278,7 @@ fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
                     }
                     MessageSource::ReportRequested => "marion, asking for its report".to_string(),
                 };
-                out.push((
+                by_node.entry(q.agent_id).or_default().push((
                     q.message_id,
                     MessageLine {
                         at: crate::activity::rfc3339(record.ts),
@@ -265,16 +288,29 @@ fn messages(journal: &Path, id: &AgentId) -> Vec<MessageLine> {
                     },
                 ));
             }
-            RecordKind::MessageDelivered(d) if &d.agent_id == id => {
-                resolve(&mut out, &d.message_id, format!("delivered via {}", d.via));
+            RecordKind::MessageDelivered(d) if keep(&d.agent_id) => {
+                resolve(
+                    &mut by_node,
+                    &d.agent_id,
+                    &d.message_id,
+                    format!("delivered via {}", d.via),
+                );
             }
-            RecordKind::MessageDropped(d) if &d.agent_id == id => {
-                resolve(&mut out, &d.message_id, format!("dropped: {}", d.reason));
+            RecordKind::MessageDropped(d) if keep(&d.agent_id) => {
+                resolve(
+                    &mut by_node,
+                    &d.agent_id,
+                    &d.message_id,
+                    format!("dropped: {}", d.reason),
+                );
             }
             _ => {}
         }
     }
-    out.into_iter().map(|(_, m)| m).collect()
+    by_node
+        .into_iter()
+        .map(|(id, lines)| (id, lines.into_iter().map(|(_, m)| m).collect()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -688,5 +724,12 @@ mod tests {
             ]
         );
         assert!(m[0].at.ends_with('Z'), "{}", m[0].at);
+        let all = messages_by_node(&std::fs::read(p.journal()).unwrap());
+        assert_eq!(
+            all.get(&id),
+            Some(&m),
+            "one pass agrees with the one-node read"
+        );
+        assert_eq!(all.get(&other).map(Vec::len), Some(1));
     }
 }
