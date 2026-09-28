@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "marion-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "marion-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "marion-core",
  "marion-testsupport",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "marion-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "marion-testsupport",
  "serde_json",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "marion-supervisor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "marion-term"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "insta",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "marion-testsupport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "marion-core",
  "proc-macro2",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "marion-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "insta",
  "marion-term",

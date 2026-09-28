@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 # One version for the whole workspace: `marion --version` and `marion-supervisor --version`
 # print it, and the two binaries must always ship as a pair.
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 # Inherited by every member crate. `publish = false`: marion is one workspace of
