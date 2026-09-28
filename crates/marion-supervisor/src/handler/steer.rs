@@ -381,7 +381,9 @@ fn refusal(r: Refusal) -> RpcError {
     match &r {
         Refusal::Ended => RpcError::refused("agent_id", r.sentence(), "§6.3, §8"),
         Refusal::Unsupported { .. } => RpcError::unsupported("agent_id", r.sentence(), "§6.3"),
-        Refusal::NotReady => RpcError::refused("agent_id", r.sentence(), "§6.3"),
+        Refusal::NotReady | Refusal::Cancelled => {
+            RpcError::refused("agent_id", r.sentence(), "§6.3")
+        }
         Refusal::Journal(_) => RpcError::internal(r.sentence()),
     }
 }

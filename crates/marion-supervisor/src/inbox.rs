@@ -66,6 +66,14 @@ pub trait DeliveryPort: Send + Sync {
     /// replaced it. A driver that holds a thread for the port lets it go here. Called once,
     /// outside the inbox's lock; a no-op for a driver with nothing to release.
     fn closed(&self) {}
+
+    /// The node is being cancelled: end its running turn early, by the row's abort verb, and take
+    /// nothing more. `true` when the driver will send the verb; `false` — the default, for a lane
+    /// with no verb — tells the canceller the kill is all there is. Called once, outside the
+    /// inbox's lock, after every waiting message was dropped.
+    fn abort(&self) -> bool {
+        false
+    }
 }
 
 /// **One node's inbox, as that node's driver holds it** — the same queue as [`Inboxes`], bound
@@ -361,6 +369,8 @@ pub enum Refusal {
     Unsupported { note: &'static str },
     /// The node has no inbox yet — it is still spawning.
     NotReady,
+    /// The node is being cancelled: its running turn is being ended and it takes no more.
+    Cancelled,
     /// `MessageQueued` could not be journaled, so the message was not accepted.
     Journal(String),
 }
@@ -376,6 +386,9 @@ impl Refusal {
                  in this shape, so marion refuses rather than accept one it cannot hand over: \
                  {note}"
             ),
+            Refusal::Cancelled => "the node is being cancelled, so it takes no further turn; \
+                                   `node/resume` relaunches it once it has ended"
+                .to_string(),
             Refusal::NotReady => "the node is still spawning and has no inbox yet; retry once \
                                   it is running"
                 .to_string(),
@@ -448,6 +461,9 @@ pub fn relayed_end_text(agent_type: &str, parent: &str, task_id: &str, body: &st
     )
 }
 
+/// `MessageDropped.reason` for a message still waiting when its node was cancelled.
+pub const CANCELLED_BEFORE_DELIVERY: &str = "cancelled before delivery";
+
 /// Where the inbox's records go. Injected so the unit tests read them back without a journal.
 pub type Sink = Box<dyn Fn(RecordKind) -> Result<(), String> + Send + Sync>;
 
@@ -466,6 +482,9 @@ struct Inbox {
     /// marion has asked this node for its report ([`Inboxes::request_report`]), which it does
     /// once in the node's life — continuation generations share one inbox, so once per node.
     asked_for_report: bool,
+    /// [`Inboxes::cancel`] ran: nothing more is taken or accepted, and the driver ends the node
+    /// however much it is owed.
+    cancelled: bool,
 }
 
 /// Every node's inbox, keyed by the node. Held by the supervisor beside its node table.
@@ -655,7 +674,9 @@ impl Inboxes {
     /// The inbox exists and is not sealed — after a `take_or_seal` found it empty, that means an
     /// announcement is owed and the driver must wait. See [`TurnSource::held`].
     pub fn held(&self, agent: &AgentId) -> bool {
-        self.lock().get(agent).is_some_and(|b| !b.sealed)
+        self.lock()
+            .get(agent)
+            .is_some_and(|b| !b.sealed && !b.cancelled)
     }
 
     fn accept(
@@ -670,6 +691,9 @@ impl Inboxes {
             let mut boxes = self.lock();
             if boxes.get(agent).is_some_and(|b| b.sealed) {
                 return Err(Refusal::Ended);
+            }
+            if boxes.get(agent).is_some_and(|b| b.cancelled) {
+                return Err(Refusal::Cancelled);
             }
             if let TurnDelivery::None { note } = delivery {
                 return Err(Refusal::Unsupported { note });
@@ -720,7 +744,11 @@ impl Inboxes {
 
     /// The oldest waiting message, if any. Leaves the inbox open.
     pub fn take_next(&self, agent: &AgentId) -> Option<Message> {
-        self.lock().get_mut(agent)?.queue.pop_front()
+        self.lock()
+            .get_mut(agent)
+            .filter(|b| !b.cancelled)?
+            .queue
+            .pop_front()
     }
 
     /// The oldest waiting message — or, when there is none, **seal the inbox in the same step**,
@@ -728,15 +756,42 @@ impl Inboxes {
     ///
     /// **Except while an announcement is owed**: then the inbox is left open and `None` means
     /// "not yet" ([`Self::held`] says which). Sealing over a debt would refuse the child's end a
-    /// moment after marion promised to announce it.
+    /// moment after marion promised to announce it. A cancelled inbox seals whatever it is owed:
+    /// the children it waits on are being cancelled with it.
     pub fn take_or_seal(&self, agent: &AgentId) -> Option<Message> {
         let mut boxes = self.lock();
         let inbox = boxes.get_mut(agent)?;
+        if inbox.cancelled {
+            inbox.sealed = true;
+            return None;
+        }
         let next = inbox.queue.pop_front();
         if next.is_none() && inbox.owed == 0 {
             inbox.sealed = true;
         }
         next
+    }
+
+    /// **Cancel beats a queued steer**: mark the inbox cancelled and drop every waiting message
+    /// (`cancelled before delivery`) in one step under the lock, so no driver can take one after
+    /// the cancel was decided, then ask the driver to abort its running turn. From here on nothing
+    /// is taken or accepted ([`Refusal::Cancelled`]) and the driver's next boundary seals.
+    ///
+    /// `true` when a driver took the abort — it will end the turn by the row's verb; `false` for a
+    /// node with no inbox, no driver, or a lane with no verb, which the canceller kills.
+    pub fn cancel(&self, agent: &AgentId) -> bool {
+        let (port, stranded): (Option<Arc<dyn DeliveryPort>>, Vec<Message>) = {
+            let mut boxes = self.lock();
+            let Some(inbox) = boxes.get_mut(agent) else {
+                return false;
+            };
+            inbox.cancelled = true;
+            (inbox.port.clone(), inbox.queue.drain(..).collect())
+        };
+        for m in stranded {
+            self.dropped(agent, &m.id, CANCELLED_BEFORE_DELIVERY);
+        }
+        port.is_some_and(|p| p.abort())
     }
 
     /// A taken message reached the node, by `via` (the lane's verb). The record is an audit, so a
@@ -1084,6 +1139,98 @@ pub(crate) mod tests {
         inboxes.close(&a, "ended again");
         assert_eq!(second.0.load(Ordering::SeqCst), 1, "closed once");
         assert_eq!(orphan.0.load(Ordering::SeqCst), 0);
+    }
+
+    /// A port that records whether it was asked to abort, and whether the inbox's lock was free
+    /// when it was: the canceller calls `abort` outside the lock, so a driver that re-enters the
+    /// inbox from it cannot deadlock.
+    struct Aborting {
+        inboxes: std::sync::Weak<Inboxes>,
+        agent: AgentId,
+        asked: AtomicUsize,
+        takes: bool,
+    }
+    impl DeliveryPort for Aborting {
+        fn wake(&self) {}
+        fn abort(&self) -> bool {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            // Re-enter the inbox: a held lock would deadlock right here.
+            if let Some(inboxes) = self.inboxes.upgrade() {
+                assert_eq!(inboxes.take_next(&self.agent), None);
+            }
+            self.takes
+        }
+    }
+
+    /// **Cancel beats a queued steer**: every waiting message is dropped by name and never taken,
+    /// a later one is refused as cancelled, the driver is asked to abort once (outside the lock),
+    /// and its answer is the canceller's.
+    #[test]
+    fn a_cancel_drops_every_queued_message_and_refuses_the_next() {
+        let (inboxes, log) = recording();
+        let inboxes = Arc::new(inboxes);
+        let a = id("a");
+        inboxes.open(&a);
+        let queued = inboxes
+            .enqueue(&a, TYPED, Source::Operator, "steer me".into())
+            .unwrap();
+        let port = Arc::new(Aborting {
+            inboxes: Arc::downgrade(&inboxes),
+            agent: a.clone(),
+            asked: AtomicUsize::new(0),
+            takes: true,
+        });
+        assert!(inboxes.attach_port(&a, port.clone()));
+        assert!(inboxes.cancel(&a), "the driver took the abort");
+        assert_eq!(port.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(inboxes.take_next(&a), None, "the steer was never delivered");
+        assert_eq!(
+            inboxes.enqueue(&a, TYPED, Source::Operator, "late".into()),
+            Err(Refusal::Cancelled)
+        );
+        let dropped: Vec<_> = records(&log)
+            .into_iter()
+            .filter_map(|k| match k {
+                RecordKind::MessageDropped(d) => Some((d.message_id, d.reason)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            dropped,
+            [(queued, CANCELLED_BEFORE_DELIVERY.to_string())],
+            "dropped once, by name"
+        );
+        assert!(
+            !records(&log)
+                .iter()
+                .any(|k| matches!(k, RecordKind::MessageDelivered(_))),
+            "a cancelled steer is never delivered"
+        );
+    }
+
+    /// **A cancelled inbox seals at the driver's next boundary however much it is owed** — the
+    /// children it would wait on are cancelled with it — and a port with no verb, or no port at
+    /// all, tells the canceller the kill is all there is.
+    #[test]
+    fn a_cancelled_inbox_seals_over_a_debt_and_a_port_without_a_verb_says_so() {
+        let (inboxes, _) = recording();
+        let a = id("a");
+        inboxes.open(&a);
+        assert!(inboxes.owe(&a));
+        assert!(!inboxes.cancel(&a), "no driver attached, nothing to abort");
+        assert!(!inboxes.held(&a), "a cancelled node is not held open");
+        assert_eq!(inboxes.take_or_seal(&a), None);
+        assert_eq!(
+            inboxes.enqueue(&a, TYPED, Source::Operator, "late".into()),
+            Err(Refusal::Ended),
+            "sealed"
+        );
+
+        let b = id("b");
+        inboxes.open(&b);
+        assert!(inboxes.attach_port(&b, Arc::new(Counting(AtomicUsize::new(0)))));
+        assert!(!inboxes.cancel(&b), "the default port has no verb");
+        assert!(!inboxes.cancel(&id("nobody")), "no inbox, nothing to abort");
     }
 
     /// A reopened node (a resume under the same id) starts unsealed and empty.

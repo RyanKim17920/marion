@@ -673,7 +673,10 @@ pub fn run_duplex(
     writeln!(stdin, "{}", spec.dialect.turn(spec.prompt, false))?;
     stdin.flush()?;
     if let Some(feed) = &spec.turns {
-        feed.source.attach_port(Arc::new(WakePort(events)));
+        feed.source.attach_port(Arc::new(WakePort {
+            tx: events,
+            aborts: aborts.is_some(),
+        }));
     } else {
         drop(events);
     }
@@ -817,21 +820,33 @@ fn record_line(spec: &DuplexSpec<'_>, outcome: &mut DuplexOutcome, line: &str) -
     frame
 }
 
-/// What the driver waits on: a line of the node's stdout, its end, or a wake from the node's inbox.
+/// What the driver waits on: a line of the node's stdout, its end, a wake from the node's inbox,
+/// or the node's cancel.
 enum Event {
     Line(String),
     Eof,
     Wake,
+    /// The node is being cancelled: end the running turn by the row's abort, then the session.
+    Abort,
 }
 
 /// The node's inbox's [`crate::inbox::DeliveryPort`]: a wake is one more event on the driver's
 /// channel. A wake after the driver has returned goes nowhere, which is right — the node's inbox
 /// is sealed by then, or its driver died and the supervisor drops what it queued.
-struct WakePort(Sender<Event>);
+struct WakePort {
+    tx: Sender<Event>,
+    /// The row states an abort this dialect can write ([`abort_frame`]); without one a cancel is
+    /// the canceller's kill, and the port says so.
+    aborts: bool,
+}
 
 impl crate::inbox::DeliveryPort for WakePort {
     fn wake(&self) {
-        let _ = self.0.send(Event::Wake);
+        let _ = self.tx.send(Event::Wake);
+    }
+
+    fn abort(&self) -> bool {
+        self.aborts && self.tx.send(Event::Abort).is_ok()
     }
 }
 
@@ -884,7 +899,7 @@ fn await_initialize(
                     return true;
                 }
             }
-            Ok(Event::Wake) => {}
+            Ok(Event::Wake | Event::Abort) => {}
             Ok(Event::Eof) | Err(_) => return false,
         }
     }
@@ -1005,6 +1020,8 @@ fn drive(
                         }
                     }
                 }
+                // A cancel: end the turn by the row's abort; closing stdin then ends the session.
+                Event::Abort => return abort_turn(rx, stdin, spec, outcome),
                 Event::Eof => return Ok(()),
             }
             continue;
@@ -1025,6 +1042,9 @@ fn drive(
                     }
                     // Still queued; the boundary below takes it.
                     Ok(Event::Wake) => {}
+                    // Cancelled between turns: there is no turn to abort, and closing stdin ends
+                    // the session.
+                    Ok(Event::Abort) => return Ok(()),
                     Err(RecvTimeoutError::Timeout) => break,
                     Ok(Event::Eof) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
                 }
@@ -1060,7 +1080,7 @@ fn drive(
                         }
                     }
                     Some(Event::Wake) => {}
-                    Some(Event::Eof) => return Ok(()),
+                    Some(Event::Eof | Event::Abort) => return Ok(()),
                     // The clock ran out while the node was idle and held: there is no turn to abort,
                     // and closing stdin ends the session.
                     None => {
@@ -1114,7 +1134,7 @@ fn abort_turn(
                     return Ok(());
                 }
             }
-            Some(Event::Wake) => {}
+            Some(Event::Wake | Event::Abort) => {}
             Some(Event::Eof) | None => return Ok(()),
         }
     }
@@ -2584,6 +2604,114 @@ exit 0"#,
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(ends(&out), ["aborted"]);
         assert!(started.elapsed() < StdDuration::from_secs(10));
+    }
+
+    /// **A cancel mid-turn is the row's abort, and beats a queued steer**: the waiting message is
+    /// dropped by name and never written, the abort is the next frame the node reads, and the node
+    /// closes its turn and exits on its own once stdin closes — long before its wall clock, and
+    /// never signalled.
+    #[test]
+    fn a_cancelled_jsonl_node_is_aborted_and_its_queued_steer_never_written() {
+        let dir = scratch("duplex-jsonl-cancel");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let (held, aborted) = (dir.join("held"), dir.join("aborted"));
+        // Queue, so the steer waits for a boundary the cancel takes away.
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r hs
+printf '%s\n' '{JSONL_REPLY}'
+read -r first
+printf '%s\n' '{AGENT_START}'
+: > '{held}'
+read -r abort; printf '%s\n' "$abort" > '{aborted}'
+printf '%s\n' '{end}'
+while read -r rest; do printf '%s\n' "$rest" >> '{aborted}'; done
+exit 0"#,
+            held = held.display(),
+            aborted = aborted.display(),
+            end = agent_end("aborted"),
+        );
+        let started = Instant::now();
+        let out = std::thread::scope(|s| {
+            let fx = &fx;
+            let run = s.spawn(|| {
+                run_duplex(
+                    SysCommand::new("sh").args(["-c", &script]),
+                    &jsonl_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+                )
+            });
+            wait_for_file(&held);
+            let (steer, _) = fx.steer("do more");
+            assert!(fx.inboxes.cancel(&fx.agent), "the driver takes the abort");
+            let out = run.join().unwrap().expect("the run returns");
+            let dropped: Vec<_> = crate::inbox::tests::records(&fx.log)
+                .into_iter()
+                .filter_map(|r| match r {
+                    RecordKind::MessageDropped(d) => Some((d.message_id, d.reason)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                dropped,
+                [(steer, crate::inbox::CANCELLED_BEFORE_DELIVERY.to_string())]
+            );
+            out
+        });
+        assert_eq!(
+            std::fs::read_to_string(&aborted).unwrap().trim(),
+            r#"{"type":"abort"}"#,
+            "the abort was the only frame after the prompt"
+        );
+        assert!(fx.delivered().is_empty(), "the steer was never written");
+        assert!(!out.timed_out, "a cancel is not a timeout");
+        assert_eq!(out.signal, None, "ended by its own exit, not marion's kill");
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(ends(&out), ["aborted"]);
+        assert!(fx.sealed());
+        assert!(started.elapsed() < StdDuration::from_secs(10));
+    }
+
+    /// A row whose dialect cannot abort answers a cancel with `false`, so the canceller kills it:
+    /// the port never claims a verb it will not send.
+    #[test]
+    fn a_stream_json_node_tells_its_canceller_it_cannot_abort() {
+        let dir = scratch("duplex-sj-cancel");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let held = dir.join("held");
+        let fx = fed(MidTurn::Queue);
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r first
+: > '{held}'
+sleep 1
+printf '%s\n' '{{"type":"result","subtype":"success"}}'
+read -r more && exit 3
+exit 0"#,
+            held = held.display(),
+        );
+        let out = std::thread::scope(|s| {
+            let fx = &fx;
+            let run = s.spawn(|| {
+                run_duplex(
+                    SysCommand::new("sh").args(["-c", &script]),
+                    &fed_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+                )
+            });
+            wait_for_file(&held);
+            assert!(!fx.inboxes.cancel(&fx.agent), "no abort to send");
+            run.join().unwrap().expect("the run returns")
+        });
+        assert_eq!(
+            out.exit_code,
+            Some(0),
+            "the turn's end sealed the cancelled inbox: no further turn was written"
+        );
+        assert!(fx.sealed());
     }
 
     /// **The row's verb decides, not the dialect**: a JSONL node whose row states no abort is
