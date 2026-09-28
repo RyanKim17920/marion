@@ -266,6 +266,10 @@ pub enum SpawnError {
     /// is the misattribution §8 spends a whole mode preventing.
     #[error("driving the ACP child: {0}")]
     Acp(#[from] crate::acp_child::AcpChildError),
+    /// The app-server child produced no transcript: no handshake, no thread, marion's MCP server
+    /// never ready. The driver's own sentence, which carries the server's words.
+    #[error("driving the app-server child: {0}")]
+    AppServer(#[from] crate::app_server::AppServerError),
     /// §3.4's third control transport, which is not a launch path on either axis.
     #[error(
         "{0} drives its node through a terminal, and marion MUST NOT give a headless node a pty \

@@ -1,5 +1,6 @@
 //! Driving a harness process: one [`Proc`] for every surface, and a [`Node`] that speaks the
-//! surface the row declares — argv (`LaunchOnly`), Claude Code's stream-json (`Duplex`) or ACP.
+//! surface the row declares — argv (`LaunchOnly`), Claude Code's stream-json (`Duplex`), ACP, or a
+//! JSON-RPC thread server in the row's vocabulary (`AppServer`).
 //!
 //! The surface is **chosen by `duplex::launch_path` over the row's surfaces**, the same function
 //! marion's own spawn branches on, so no probe knows which harness it is driving. Every wait is on
@@ -333,6 +334,8 @@ pub struct Node {
     pub proc: Proc,
     pub path: LaunchPath,
     pub session: Option<String>,
+    /// The row's thread vocabulary, on an app-server node.
+    rpc: Option<&'static marion_harness::rpc_channel::RpcChannel>,
     next_id: u64,
     prompt_ids: Vec<u64>,
 }
@@ -347,8 +350,16 @@ pub const BOOT: Duration = Duration::from_secs(60);
 /// marion's answer to each server request its drivers answer: a stream-json permission ask is
 /// denied (`run::duplex_child`'s zero budget), an ACP permission ask gets the agent's own allow
 /// option (`acp_child`), and anything else is refused as unsupported, as marion refuses it.
-fn responder(path: LaunchPath) -> Option<Responder> {
+fn responder(path: LaunchPath, launch: &Launch) -> Option<Responder> {
     match path {
+        // The row's own answers, as `app_server` gives them: approvals declined, never cancelled.
+        LaunchPath::AppServer => {
+            let channel = launch.rpc?;
+            Some(Box::new(move |v: &Value| {
+                (v.get("method").is_some() && v.get("id").is_some_and(|i| !i.is_null()))
+                    .then(|| channel.answer(v))
+            }))
+        }
         LaunchPath::Duplex => Some(Box::new(|v: &Value| {
             if let Some((id, tool)) = duplex::can_use_tool_request(v) {
                 let reply = duplex::deny_response(
@@ -391,12 +402,13 @@ impl Node {
         gate: Gate,
     ) -> Result<Self, String> {
         let piped = !matches!(path, LaunchPath::LaunchOnly);
-        let proc = Proc::spawn(&launch.inv, piped, log, responder(path))
+        let proc = Proc::spawn(&launch.inv, piped, log, responder(path, launch))
             .map_err(|e| format!("spawn {}: {e}", launch.inv.program))?;
         let mut node = Node {
             proc,
             path,
             session: None,
+            rpc: launch.rpc,
             next_id: 10,
             prompt_ids: Vec::new(),
         };
@@ -418,6 +430,47 @@ impl Node {
                         || io.exit.is_some()
                 }) {
                     return Err("no answer to the stream-json initialize".into());
+                }
+                node.prompt(prompt)?;
+            }
+            LaunchPath::AppServer => {
+                let c = launch.rpc.ok_or("an app-server row states no vocabulary")?;
+                node.proc
+                    .send(&c.initialize_request(ACP_INIT_ID, "conformance"));
+                node.await_response(ACP_INIT_ID, BOOT)
+                    .ok_or("no answer to initialize")?;
+                if let Some(n) = c.initialized_notification() {
+                    node.proc.send(&n);
+                }
+                let opening = launch.session.clone().ok_or("no opening request")?;
+                let id = opening["id"].as_u64().unwrap_or(1);
+                node.proc.send(&opening);
+                let answer = node
+                    .await_response(id, BOOT)
+                    .ok_or("no answer to the opening request")?;
+                node.session = Some(
+                    c.thread_of(&answer)
+                        .ok_or_else(|| format!("thread refused: {answer}"))?,
+                );
+                // marion's gate: marion's MCP server reports ready (S36 P3).
+                if gate == Gate::Marion {
+                    let mut failed = None;
+                    let ready = node.proc.wait(BOOT, |io| {
+                        io.frames.iter().any(|f| match c.startup(f, "marion") {
+                            Some(marion_harness::rpc_channel::Startup::Ready) => true,
+                            Some(marion_harness::rpc_channel::Startup::Failed(w)) => {
+                                failed = Some(w);
+                                true
+                            }
+                            None => false,
+                        }) || io.exit.is_some()
+                    });
+                    if let Some(w) = failed {
+                        return Err(format!("marion's MCP server failed to start: {w}"));
+                    }
+                    if !ready {
+                        return Err("marion's MCP server never reported ready".into());
+                    }
                 }
                 node.prompt(prompt)?;
             }
@@ -464,9 +517,32 @@ impl Node {
         found
     }
 
+    /// The app-server turn still open: the last one started and not yet completed.
+    fn open_turn(&self) -> Option<String> {
+        let c = self.rpc?;
+        self.proc.with(|io| {
+            let opened: Vec<String> = io.frames.iter().filter_map(|f| c.opens_turn(f)).collect();
+            let closed: Vec<String> = io.frames.iter().filter_map(|f| c.closes_turn(f)).collect();
+            opened.into_iter().rev().find(|t| !closed.contains(t))
+        })
+    }
+
     /// A new user message on the node's typed channel.
     pub fn prompt(&mut self, text: &str) -> Result<(), String> {
         match self.path {
+            // What marion does: a steer into an open turn, a new turn otherwise.
+            LaunchPath::AppServer => {
+                let c = self.rpc.ok_or("no vocabulary")?;
+                let thread = self.session.clone().ok_or("no thread")?;
+                self.next_id += 1;
+                let frame = match self.open_turn() {
+                    Some(turn) => c.steer_request(self.next_id, &thread, &turn, text),
+                    None => c.turn_request(self.next_id, &thread, text),
+                };
+                self.prompt_ids.push(self.next_id);
+                self.proc.send(&frame);
+                Ok(())
+            }
             LaunchPath::Duplex => {
                 self.proc.send_text(&duplex::user_message(text));
                 Ok(())
@@ -485,8 +561,17 @@ impl Node {
         }
     }
 
-    pub fn cancel(&self) {
+    pub fn cancel(&mut self) {
         match self.path {
+            LaunchPath::AppServer => {
+                if let (Some(c), Some(thread), Some(turn)) =
+                    (self.rpc, self.session.clone(), self.open_turn())
+                {
+                    self.next_id += 1;
+                    self.proc
+                        .send(&c.interrupt_request(self.next_id, &thread, &turn));
+                }
+            }
             LaunchPath::Acp => {
                 if let Some(sid) = &self.session {
                     self.proc.send(&acp::cancel_notification(sid));
@@ -504,6 +589,12 @@ impl Node {
     /// process's exit for a launch-only node.
     pub fn ends(&self, io: &Io) -> usize {
         match self.path {
+            LaunchPath::AppServer => self.rpc.map_or(0, |c| {
+                io.frames
+                    .iter()
+                    .filter(|f| c.closes_turn(f).is_some())
+                    .count()
+            }),
             LaunchPath::Duplex => io.frames.iter().filter(|f| f["type"] == "result").count(),
             LaunchPath::Acp => io
                 .frames

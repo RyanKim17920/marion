@@ -86,6 +86,13 @@ pub enum LaunchPath {
     ///
     /// Driven by [`crate::acp_child::run_acp_child`].
     Acp,
+    /// **An id-correlated JSON-RPC thread server** — codex's `app-server` — in the vocabulary the
+    /// row states ([`marion_harness::spec::Surfaces::AppServer`]). The same pipes and the same
+    /// id-correlated driver as ACP ([`crate::rpc`]), a different conversation: a thread, a
+    /// readiness gate, turns that are steered and interrupted.
+    ///
+    /// Driven by [`crate::app_server::run_app_server`].
+    AppServer,
 }
 
 /// The path a node with these surfaces takes.
@@ -98,17 +105,14 @@ pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
         // was the only typed protocol shipped; ACP is the second, and it speaks JSON-RPC over the
         // same pipes with an entirely different conversation. Matching it explicitly is what makes
         // a *third* typed protocol a compile error here rather than a node driven with the wrong
-        // frames — `AppServer` (M4) is the one that will hit it.
+        // frames — which is how `AppServer` came to have its own arm.
         ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
+        ControlTransport::Typed(TypedKind::AppServer) => Some(LaunchPath::AppServer),
         // A row's JSONL command channel is driven by the same loop as stream-json, in the row's
         // own vocabulary ([`Dialect::Jsonl`]).
         ControlTransport::Typed(TypedKind::StreamJson | TypedKind::JsonlRpc) => {
             Some(LaunchPath::Duplex)
         }
-        // **No driver yet, so no path.** codex's app-server speaks JSON-RPC with a thread
-        // handshake; driven as `Duplex` it would be written stream-json frames it cannot read.
-        // `None` is every caller's named refusal (`UnsupportedRootSurface`), never a guess.
-        ControlTransport::Typed(TypedKind::AppServer) => None,
         ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
         ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
     }
@@ -1094,18 +1098,6 @@ mod tests {
     use marion_harness::adapter_for;
     use marion_testsupport::scratch;
 
-    /// An app-server node has no driver, so it has no path — never the stream-json loop, whose
-    /// `user` frames a JSON-RPC server cannot read. Mutation: route `AppServer` to `Duplex`.
-    #[test]
-    fn an_app_server_node_is_given_no_path_until_one_drives_it() {
-        use marion_harness::DisplaySurface;
-        for display in [DisplaySurface::StructuredUi, DisplaySurface::NativePty] {
-            let control = ControlTransport::Typed(TypedKind::AppServer);
-            let s = ExecutionSurfaces::new(control, display, []);
-            assert_eq!(launch_path(&s), None, "{s:?}");
-        }
-    }
-
     /// **The routing rule, asserted the way §3.4 requires it to be written.** Not one arm of this
     /// matches on a harness name: the expectation is derived from the adapter's own
     /// `ExecutionSurfaces`, so a fifth harness gets the right path by declaring its surfaces and
@@ -1119,7 +1111,7 @@ mod tests {
             let surfaces = adapter_for(h).unwrap().surfaces();
             let expected = match surfaces.control {
                 ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
-                ControlTransport::Typed(TypedKind::AppServer) => None,
+                ControlTransport::Typed(TypedKind::AppServer) => Some(LaunchPath::AppServer),
                 ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
                 ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
                 ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
@@ -1136,7 +1128,7 @@ mod tests {
             assert_eq!(
                 matches!(
                     launch_path(&surfaces),
-                    Some(LaunchPath::Duplex | LaunchPath::Acp)
+                    Some(LaunchPath::Duplex | LaunchPath::Acp | LaunchPath::AppServer)
                 ),
                 surfaces.has_typed_control_plane(),
                 "{h}: the launch path and the plane derivation must read the same axis"

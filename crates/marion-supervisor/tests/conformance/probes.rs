@@ -1047,7 +1047,7 @@ fn p_interrupt(c: &mut Ctx<'_>) -> Outcome {
             );
         }
     };
-    let node = match Node::start(
+    let mut node = match Node::start(
         c.t.path,
         &launch,
         &prompt(marker),
@@ -1642,6 +1642,7 @@ mod tests {
             files: vec![json_doc.clone(), toml_doc.clone()],
             session: None,
             ready_file: None,
+            rpc: None,
         };
         strip_key(&mut l, "trust");
         assert_eq!(l.inv.args, args(&["exec", "-c", "x=1"]));

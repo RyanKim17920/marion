@@ -2118,6 +2118,38 @@ pub fn run_spawn_watched(
                 stopped: None,
             })
             .map_err(SpawnError::from),
+            // **codex over app-server**: the same driver as ACP under a thread vocabulary. The
+            // opening request is the adapter's (`thread/start`, or `thread/resume` of the node's
+            // session), and the gate is marion's MCP server reporting ready — where the launch
+            // declares it. Recorded as it lands, exactly as the ACP arm records.
+            LaunchPath::AppServer => crate::app_server::run_app_server(app_server_spec(
+                adapter.as_ref(),
+                &inv,
+                node_tmp.path(),
+                &launch,
+                &ctx,
+                &req.prompt,
+                attempt_bound,
+                &announce_started,
+                &|line: &str| {
+                    if let Some(es) = events.as_ref() {
+                        es.record_line(line);
+                    }
+                    session.observe_line(line);
+                },
+                feed(),
+            )?)
+            .map(|r| ChildRun {
+                stdout: r.stdout,
+                stderr: r.stderr,
+                exit: crate::rpc::turn_exit(r.exit),
+                capture_truncated: r.capture_truncated,
+                // The row's answers decline every approval; a decline is the model's to read, not a
+                // permission marion withheld from an operator, so nothing is recorded here.
+                denied_permissions: vec![],
+                stopped: None,
+            })
+            .map_err(SpawnError::from),
             LaunchPath::Duplex => duplex_child(
                 &inv,
                 ChildDuplex {
@@ -2768,6 +2800,45 @@ impl Drop for SpendOnEveryEnd<'_> {
     }
 }
 
+/// A node's [`crate::app_server::AppServerSpec`], shared by a child and a root: the row's channel,
+/// the adapter's opening request, and the readiness gate on marion's server where the launch
+/// declares it. `None` for a row with no thread channel, which no app-server path reaches.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn app_server_spec<'a>(
+    adapter: &dyn marion_harness::HarnessAdapter,
+    inv: &'a Invocation,
+    tmpdir: &'a std::path::Path,
+    launch: &LaunchSpec,
+    ctx: &SpawnCtx,
+    prompt: &'a str,
+    bound: StdDuration,
+    on_started: &'a dyn Fn(i32),
+    on_line: &'a dyn Fn(&str),
+    turns: Option<crate::inbox::TurnFeed>,
+) -> Result<crate::app_server::AppServerSpec<'a>, SpawnError> {
+    let channel = adapter
+        .spec()
+        .surfaces
+        .rpc()
+        .ok_or(SpawnError::UnsupportedChildSurface(adapter.harness()))?;
+    let opening = adapter
+        .session_declaration(launch, ctx)?
+        .ok_or(SpawnError::UnsupportedChildSurface(adapter.harness()))?;
+    Ok(crate::app_server::AppServerSpec {
+        inv,
+        tmpdir,
+        channel,
+        opening,
+        gate: (launch.mcp == marion_harness::McpDeclaration::Marion)
+            .then_some(marion_harness::spec::MCP_ALIAS),
+        prompt,
+        bound,
+        on_started,
+        on_line: Some(on_line),
+        turns,
+    })
+}
+
 /// Not one of §4.3's normative files: marion's own start-up handshake with a process it did not
 /// spawn. Only the duplex path has a frame to withhold, so only it has a marker to wait on.
 fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
@@ -2789,6 +2860,10 @@ fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
         // this path marion has no way to tell whether the agent even intends to start the bridge
         // before it has answered.
         LaunchPath::Acp => None,
+        // **The app-server gate is the server's own startup notification** for marion's MCP
+        // server, which `run_app_server` waits on before the first turn (S36 P3): the server
+        // starts the bridge, and says when it is ready.
+        LaunchPath::AppServer => None,
         // §9 gives a child a `TaskContract`, and a pane node takes no turn until a human presses
         // return — so there is no readiness gate to hold, and see `run_spawn_watched`'s launch arm
         // for why a contracted child does not get one at all.
@@ -2827,7 +2902,7 @@ pub fn child_launch_spec(
             // and reaches argv on no ACP agent. `AcpAdapter::compile` ignores this field entirely,
             // and passing `req.prompt` here would put the task text in the audit record's argv
             // where the launch never put it.
-            LaunchPath::Duplex | LaunchPath::Acp => String::new(),
+            LaunchPath::Duplex | LaunchPath::Acp | LaunchPath::AppServer => String::new(),
             LaunchPath::LaunchOnly | LaunchPath::Terminal => req.prompt.clone(),
         },
         // The **availability** axis (§3.1), straight off the resolved agent type and still in

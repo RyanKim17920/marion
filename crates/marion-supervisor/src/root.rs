@@ -542,6 +542,9 @@ pub enum RootError {
     /// closed under marion's write. The driver's own sentence, which carries the agent's stderr.
     #[error("driving the ACP root: {0}")]
     Acp(#[from] crate::acp_child::AcpChildError),
+    /// An app-server root's session never produced a transcript; the driver's own sentence.
+    #[error("driving the app-server root: {0}")]
+    AppServer(#[from] crate::app_server::AppServerError),
     #[error("running the root: {0}")]
     Run(#[from] SpawnError),
     /// **Relaxed in shape, not in strength.** It used to read an empty `config_files` as the
@@ -902,7 +905,7 @@ pub fn prepare_watched(
     // Bound before `agent_id` moves into the node. Headless, since a pane takes no queued turn.
     let turns = matches!(
         path,
-        RootPath::Duplex | RootPath::Acp | RootPath::LaunchOnly
+        RootPath::Duplex | RootPath::Acp | RootPath::AppServer | RootPath::LaunchOnly
     )
     .then(|| observer.turn_source(&agent_id))
     .flatten()
@@ -1000,6 +1003,9 @@ fn root_ready_file(path: RootPath, agent_dir: &AgentDir) -> Option<PathBuf> {
         // The agent's answer to `session/new` is the gate: an ACP agent connects the servers a
         // session declares before it answers, so the prompt goes out after the tools exist.
         RootPath::Acp => None,
+        // The server's own startup notification for marion's MCP server is the gate
+        // (`app_server::run_app_server`, S36 P3).
+        RootPath::AppServer => None,
         // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
         //
         // Two different things have been collapsed under one name: the *file*, which the bridge
@@ -1080,7 +1086,7 @@ fn root_launch_spec(
         prompt: match path {
             // Written after launch, not compiled into argv (§6.1 step 8). On ACP the prompt is a
             // `session/prompt` frame and reaches argv on no agent.
-            RootPath::Duplex | RootPath::Acp => String::new(),
+            RootPath::Duplex | RootPath::Acp | RootPath::AppServer => String::new(),
             // A positional, and what the harness then does with it **differs by harness** —
             // stated rather than generalised, because marion compiles the same field twice and
             // gets two behaviours. Claude Code seeds its composer and waits for a return
@@ -1121,9 +1127,12 @@ fn root_launch_spec(
             // On ACP, under a canned provider the credential travels in the agent's own config
             // document (S23), never in this field.
             (Auth::Inherited, _) | (Auth::Canned, RootPath::Acp) => None,
-            (Auth::Canned, RootPath::Duplex | RootPath::LaunchOnly | RootPath::Terminal) => {
-                Some(token.clone())
-            }
+            // A thread server reads its provider key from the environment its row compiles, as the
+            // `LaunchOnly` rows do.
+            (
+                Auth::Canned,
+                RootPath::Duplex | RootPath::LaunchOnly | RootPath::Terminal | RootPath::AppServer,
+            ) => Some(token.clone()),
             // An endpoint node's key is the user's stored one, placed by `resolve_endpoint`.
             (Auth::Endpoint, _) => None,
         },
@@ -1375,6 +1384,13 @@ fn launch_inner(
                     tee_root_frame(events.as_ref(), &session, watcher, ev)
                 };
                 launch_acp(node, tmpdir, bound, &tee, &started)
+            }
+            // The same tee over the app-server driver's line seam.
+            RootPath::AppServer => {
+                let tee = |ev: duplex::StreamEvent<'_>| {
+                    tee_root_frame(events.as_ref(), &session, watcher, ev)
+                };
+                launch_app_server(node, tmpdir, bound, &tee, &started)
             }
             // The root's frames go to **two** places now, and they are different kinds of destination:
             // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
@@ -2305,16 +2321,7 @@ fn launch_acp(
     tee: duplex::StreamSink<'_>,
     on_started: &dyn Fn(i32),
 ) -> Result<RootOutcome, RootError> {
-    let on_line = |line: &str| {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            return;
-        }
-        match serde_json::from_str::<Value>(line) {
-            Ok(v) if v.is_object() => tee(duplex::StreamEvent::Frame(&v)),
-            _ => tee(duplex::StreamEvent::Unparsed(line)),
-        }
-    };
+    let on_line = |line: &str| tee_line(tee, line);
     let run = crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
         inv: &node.invocation,
         tmpdir,
@@ -2342,6 +2349,71 @@ fn launch_acp(
         bridge_unused: false,
         ended: None,
     })
+}
+
+/// The app-server root: its turns driven over the row's thread channel, every server line teed
+/// live to `tee`. No post-hoc [`assert_a_verb_was_answered`] is needed for readiness — the first
+/// turn waited for marion's MCP server to report ready — and the outcome is read exactly as a
+/// child's app-server stream is read.
+fn launch_app_server(
+    node: &RootNode,
+    tmpdir: &Path,
+    bound: StdDuration,
+    tee: duplex::StreamSink<'_>,
+    on_started: &dyn Fn(i32),
+) -> Result<RootOutcome, RootError> {
+    let adapter = adapter_for_type(node.harness, node.acp_agent.as_deref())?;
+    let channel = adapter
+        .spec()
+        .surfaces
+        .rpc()
+        .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
+    let opening = node
+        .session_declaration
+        .clone()
+        .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
+    let on_line = |line: &str| tee_line(tee, line);
+    let run = crate::app_server::run_app_server(crate::app_server::AppServerSpec {
+        inv: &node.invocation,
+        tmpdir,
+        channel,
+        opening,
+        // A root always declares marion's server (`root_launch_spec`'s `McpDeclaration::Marion`).
+        gate: Some(marion_harness::spec::MCP_ALIAS),
+        prompt: &node.prompt,
+        bound,
+        on_started,
+        on_line: Some(&on_line),
+        turns: node.turns.clone(),
+    })?;
+    let exit = crate::rpc::turn_exit(run.exit);
+    Ok(RootOutcome {
+        exit_code: exit.code,
+        transcript: json_frames(&run.stdout),
+        marion_calls: adapter.marion_calls(&run.stdout),
+        // A root has no contract, so its stream's own failure claims judge it (§9) — and a resume
+        // the server answered with another thread is the more specific claim.
+        failure: adapter
+            .resume_refusal(&run.stdout, node.resumed.as_deref())
+            .or_else(|| adapter.stream_failure(&run.stdout)),
+        stderr: run.stderr,
+        denied_permissions: vec![],
+        timed_out: run.exit.timed_out,
+        bridge_unused: false,
+        ended: None,
+    })
+}
+
+/// One server line to a [`duplex::StreamSink`]: a JSON object as a frame, anything else verbatim.
+fn tee_line(tee: duplex::StreamSink<'_>, line: &str) {
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() {
+        return;
+    }
+    match serde_json::from_str::<Value>(line) {
+        Ok(v) if v.is_object() => tee(duplex::StreamEvent::Frame(&v)),
+        _ => tee(duplex::StreamEvent::Unparsed(line)),
+    }
 }
 
 /// Whether the journal records a child of this root whose `Spawned` landed — a `spawn` the
@@ -4163,6 +4235,25 @@ mod tests {
                     "{name}: a built-in agent type reached the pane path without a run asking \
                      for one"
                 ),
+                RootPath::AppServer => {
+                    assert!(!in_argv, "{name}: an app-server prompt is a turn/start");
+                    assert!(
+                        node.ready_file.is_none(),
+                        "{name}: the server's startup notification is the gate, not a marker"
+                    );
+                    let opening = node
+                        .session_declaration
+                        .as_ref()
+                        .expect("an app-server root opens a thread");
+                    assert!(
+                        node.surfaces.control
+                            == marion_harness::ControlTransport::Typed(
+                                marion_harness::TypedKind::AppServer
+                            ),
+                        "{name}"
+                    );
+                    assert!(opening.get("method").is_some(), "{name}: {opening}");
+                }
                 RootPath::Acp => {
                     assert!(
                         !in_argv,

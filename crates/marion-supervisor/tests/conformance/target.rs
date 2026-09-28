@@ -142,6 +142,8 @@ pub struct Launch {
     pub session: Option<Value>,
     /// The file marion's bridge writes once MCP is up (the duplex gate), where the path has one.
     pub ready_file: Option<PathBuf>,
+    /// The row's JSON-RPC thread vocabulary, on an app-server row (`session` is then its opening).
+    pub rpc: Option<&'static marion_harness::rpc_channel::RpcChannel>,
 }
 
 /// What a probe may change in a launch before it is compiled.
@@ -270,5 +272,6 @@ pub fn compile(
         files: written,
         session,
         ready_file,
+        rpc: t.adapter.spec().surfaces.rpc(),
     })
 }
