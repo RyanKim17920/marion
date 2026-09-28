@@ -42,6 +42,7 @@ use marion_testsupport::{on_path, scratch, until_within};
 mod common;
 use common::cast::{cast_records, cast_text, resize_from};
 use common::client::Client;
+use common::native::termios_of;
 
 /// Every wait in this file is bounded by this and none is a verdict.
 const BOUND: Duration = Duration::from_secs(90);
@@ -234,12 +235,6 @@ impl Drop for Bed {
 // ---------------------------------------------------------------------------------------------
 // The operator's terminal, with the shipped facade on it
 // ---------------------------------------------------------------------------------------------
-
-/// The terminal's line discipline, read through a slave opened for the read and closed again.
-fn termios_of(master: &PtyMaster) -> String {
-    let probe: OwnedFd = master.open_slave().expect("termios probe slave");
-    format!("{:?}", rustix::termios::tcgetattr(probe.as_fd()).unwrap())
-}
 
 struct Operator {
     host: PtyHost,

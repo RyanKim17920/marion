@@ -13,7 +13,7 @@
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,6 +28,10 @@ use marion_supervisor::socket::{
     SocketPaths, nobody_is_serving, project_root, read_identity, socket_paths,
 };
 use marion_testsupport::{on_path, scratch, write_executable};
+
+mod common;
+
+use common::native::termios_of;
 
 #[cfg(target_os = "linux")]
 const TIOCSCTTY: usize = 0x540e;
@@ -77,13 +81,6 @@ impl Drop for StartedSupervisor {
             unsafe { kill(identity.pid, 9) };
         }
     }
-}
-
-/// The terminal's line discipline, read through a slave opened for the read and closed again, so
-/// no extra slave outlives the client (a lingering one would keep the master from seeing EOF).
-fn termios_of(master: &PtyMaster) -> String {
-    let probe: OwnedFd = master.open_slave().expect("termios probe slave");
-    format!("{:?}", rustix::termios::tcgetattr(probe.as_fd()).unwrap())
 }
 
 fn reap_with_watchdog(
