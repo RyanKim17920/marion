@@ -1516,20 +1516,46 @@ pub const AGENT_TYPES_FILE: &str = ".marion/agents.toml";
 /// is [`SpawnError::AgentTypesFile`] naming the path, so a mistyped row refuses every spawn
 /// against that tree rather than silently spawning the built-ins.
 pub fn agent_types(tree: &Path) -> Result<AgentTypes, SpawnError> {
-    let path = tree.join(AGENT_TYPES_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AgentTypes::builtins_only());
-        }
-        Err(e) => {
-            return Err(SpawnError::AgentTypesFile {
-                path,
-                error: e.to_string(),
-            });
-        }
+    match read_agent_types(tree)? {
+        Some((path, text)) => agent_types_text(path, &text),
+        None => Ok(AgentTypes::builtins_only()),
+    }
+}
+
+/// The type a **launch** runs: `name` resolved through the tree's table, and refused unless every
+/// command the row names has the operator's consent ([`crate::trust::require`]).
+///
+/// The one seam both launch paths — `run_spawn_watched` and `root::prepare_watched` — resolve
+/// through, so a repository's `acp:<command>` row cannot reach a process by any other route. The
+/// digest is of the very text parsed here, never of a second read.
+pub fn launch_type(tree: &Path, name: &str) -> Result<AgentType, SpawnError> {
+    let file = read_agent_types(tree)?;
+    let types = match &file {
+        Some((path, text)) => agent_types_text(path.clone(), text)?,
+        None => AgentTypes::builtins_only(),
     };
-    agent_types_text(path, &text)
+    let ty = types
+        .resolve(name)
+        .ok_or_else(|| SpawnError::UnknownAgentType(name.to_string()))?;
+    if let Some((path, text)) = &file
+        && types.user().iter().any(|u| u.name == ty.name)
+    {
+        crate::trust::require(path, text, &ty)?;
+    }
+    Ok(ty)
+}
+
+/// [`AGENT_TYPES_FILE`]'s path and text, or `None` where the tree has none.
+fn read_agent_types(tree: &Path) -> Result<Option<(PathBuf, String)>, SpawnError> {
+    let path = tree.join(AGENT_TYPES_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some((path, text))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(SpawnError::AgentTypesFile {
+            path,
+            error: e.to_string(),
+        }),
+    }
 }
 
 /// [`agent_types`]' checks over `text` as the contents of `path`, without reading it: so a writer
@@ -1617,9 +1643,7 @@ pub fn run_spawn_watched(
 ) -> Result<TaskContract, SpawnError> {
     // The tree's own table, read now: the file is the operator's and may have changed since the
     // last spawn, and a type it no longer defines is refused here, before the intent is journaled.
-    let agent_type = agent_types(&req.repo)?
-        .resolve(&req.agent_type)
-        .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
+    let agent_type = launch_type(&req.repo, &req.agent_type)?;
     // The type's standing instruction and marion's report instruction, once, here — and `req` is
     // the child's full request from this line on, so the four places that read its prompt read
     // one value.

@@ -54,6 +54,10 @@ pub enum SpawnError {
     /// a default).
     #[error("{path}: {error}")]
     AgentTypesFile { path: PathBuf, error: String },
+    /// The type runs a command its tree's `.marion/agents.toml` names, and the operator has not
+    /// allowed that file's current bytes (`marion trust allow`). Refused before the node exists.
+    #[error(transparent)]
+    Untrusted(#[from] crate::trust::TrustError),
     /// §6.1 step 2's depth and concurrency gates, refused.
     ///
     /// **A refusal, never a clamp and never a queue**, and the wrapped error names the bound *and*
