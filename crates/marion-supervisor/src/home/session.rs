@@ -48,8 +48,9 @@ impl Reporter {
     }
 }
 
-/// How often a missing supervisor is looked for again: the one wait with nothing to wake it,
-/// since no descriptor exists until a supervisor does.
+/// How often a missing supervisor is looked for again when its socket's directory could not be
+/// watched. Normally nothing is timed: the directory is watched ([`Session::socket_dir`]), and a
+/// supervisor binding its socket there is the entry change that wakes the screen to dial.
 const REDIAL: Duration = Duration::from_secs(1);
 /// How often the screen redraws while something on it moves with time — a running node's
 /// elapsed time and spinner, a harness still being checked — and how often a running selected
@@ -163,7 +164,15 @@ struct Session {
     places: Places,
     repo: PathBuf,
     state: PathBuf,
+    /// The project root §2 keys the supervisor on, resolved once: dialling again must not ask git
+    /// again.
+    key: PathBuf,
     socket: PathBuf,
+    /// The directory the supervisor's socket appears in (its nearest existing ancestor until it
+    /// exists), watched while no supervisor is there.
+    socket_dir: crate::wake::Watch,
+    /// The watch fired: look for a supervisor at the next pass.
+    socket_moved: bool,
     theme: Theme,
     sub: Option<Subscription>,
     last_dial: Option<Instant>,
@@ -195,6 +204,7 @@ impl Session {
         let socket = crate::socket::socket_paths(&opts.state, &key, crate::socket::own_uid())
             .socket()
             .to_path_buf();
+        let socket_dir = crate::wake::Watch::new(socket.parent().unwrap_or(&socket));
         let shown = match key.file_name().and_then(|f| f.to_str()) {
             Some(".git") => key.parent().unwrap_or(&key).to_path_buf(),
             _ => key.clone(),
@@ -221,7 +231,10 @@ impl Session {
             },
             repo: opts.repo.clone(),
             state: opts.state.clone(),
+            key,
             socket,
+            socket_dir,
+            socket_moved: false,
             theme: Theme::from_env(),
             sub: None,
             last_dial: None,
@@ -278,8 +291,17 @@ impl Session {
             if let Some(sub) = &self.sub {
                 fds.push(sub.fd());
             }
+            // While no supervisor is there, its socket's directory: a bind there wakes the dial.
+            let watching = self.sub.is_none() && self.socket_dir.fd().is_some();
+            if watching && let Some(dir) = self.socket_dir.fd() {
+                fds.push(dir);
+            }
             let ready = wake::wait(&fds, timeout).unwrap_or_else(|_| vec![false; fds.len()]);
             drop(fds);
+            if watching && ready.last().copied().unwrap_or(false) {
+                self.socket_dir.rearm();
+                self.socket_moved = true;
+            }
             if ready[1] {
                 if self.wake.drain()
                     && let Some(now) = marion_tui::guard::window_size(0)
@@ -291,7 +313,7 @@ impl Session {
                 }
                 self.reports();
             }
-            if ready.get(2).copied().unwrap_or(false) {
+            if self.sub.is_some() && ready.get(2).copied().unwrap_or(false) {
                 self.follow_forest();
             }
             if ready[0] {
@@ -325,10 +347,15 @@ impl Session {
             .animating()
             .then(|| self.next_tick.saturating_duration_since(now));
         let redial = self.sub.is_none().then(|| match self.last_dial {
-            Some(t) => REDIAL.saturating_sub(t.elapsed()),
             None => Duration::ZERO,
+            Some(_) if self.socket_moved => Duration::ZERO,
+            // Watched: nothing to time until the directory changes.
+            Some(_) if self.socket_dir.fd().is_some() => Duration::MAX,
+            Some(t) => REDIAL.saturating_sub(t.elapsed()),
         });
-        tick.into_iter().chain(redial).min()
+        tick.into_iter()
+            .chain(redial.filter(|r| *r != Duration::MAX))
+            .min()
     }
 
     /// What is due on the clock: a tick, and a look for a missing supervisor.
@@ -343,7 +370,12 @@ impl Session {
                 self.detail_stale |= self.home.tab == Tab::Watch;
             }
         }
-        if self.sub.is_none() && self.last_dial.is_none_or(|t| t.elapsed() >= REDIAL) {
+        let due = match self.last_dial {
+            None => true,
+            Some(_) if self.socket_moved => true,
+            Some(t) => self.socket_dir.fd().is_none() && t.elapsed() >= REDIAL,
+        };
+        if self.sub.is_none() && due {
             self.dial();
         }
     }
@@ -478,7 +510,8 @@ impl Session {
     /// Look for this project's supervisor, and subscribe to its forest when there is one.
     fn dial(&mut self) {
         self.last_dial = Some(Instant::now());
-        if let Ok(mut sub) = Subscription::open(&self.repo, &self.state) {
+        self.socket_moved = false;
+        if let Ok(mut sub) = Subscription::open_at(&self.key, &self.state) {
             if sub.nonblocking().is_err() {
                 return;
             }

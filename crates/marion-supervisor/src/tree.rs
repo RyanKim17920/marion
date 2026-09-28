@@ -355,8 +355,8 @@ pub fn list_line(node: &NodeSummary) -> String {
 
 /// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
 /// row should name the project and where a steer dials.
-fn dial(repo: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {
-    let key = crate::socket::project_root(repo);
+fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {
+    let key = key.to_path_buf();
     let paths = crate::socket::socket_paths(state_dir, &key, crate::socket::own_uid());
     if crate::socket::nobody_is_serving(&paths) {
         // One line. Why marion will not start a supervisor here is `run`'s doc comment.
@@ -457,7 +457,14 @@ impl Subscription {
     /// Dial this project's supervisor and subscribe. Refuses, as `marion tree` does, when nobody is
     /// serving: a supervisor started here would have an empty forest to show.
     pub fn open(repo: &Path, state_dir: &Path) -> Result<Subscription, Refusal> {
-        let (mut stream, shown, socket) = dial(repo, state_dir)?;
+        Self::open_at(&crate::socket::project_root(repo), state_dir)
+    }
+
+    /// [`Self::open`] for a caller that has already resolved the project root §2 keys on
+    /// (`socket::project_root`, which asks git), so a screen that dials again and again does not
+    /// start a `git` process each time.
+    pub fn open_at(project_root: &Path, state_dir: &Path) -> Result<Subscription, Refusal> {
+        let (mut stream, shown, socket) = dial(project_root, state_dir)?;
         let frame = Frame::Request(marion_core::proto::Request::new(
             RequestId::Number(1),
             Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
