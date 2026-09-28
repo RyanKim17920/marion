@@ -286,9 +286,9 @@ pub fn wait_readable(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> Vec<b
 /// A **file** made pollable: readable when the file is written, extended, created, removed or
 /// renamed — or, for a directory, when its entries change (one is created, removed or renamed).
 ///
-/// The target need not exist. Until it does the watch is on its parent directory, whose entries
-/// changing is how a creation shows; [`Self::rearm`] moves the watch onto the file once it exists,
-/// and back off it when it is removed or replaced. Where no mechanism is available (another
+/// The target need not exist, nor its directory. Until it does the watch is on its nearest
+/// existing ancestor, whose entries changing is how a creation shows; [`Self::rearm`] moves the
+/// watch down onto the file once it exists, and back off it when it is removed or replaced. Where no mechanism is available (another
 /// platform, or a descriptor limit) [`Self::fd`] is `None` and the caller's safety timeout is the
 /// whole of its wait — degraded latency, never a missed record.
 pub struct Watch {
@@ -328,6 +328,25 @@ impl Watch {
         }
     }
 }
+
+/// Where a watch for `target` must sit: the target itself once it exists, else its **nearest
+/// existing ancestor** — a node's `events.jsonl` can be followed before its agent directory is
+/// made, and the creation of each directory on the way down is an entry change in the one above,
+/// which moves the watch a level closer at the next re-arm.
+fn watch_point(target: &Path) -> Option<PathBuf> {
+    let mut at = target;
+    loop {
+        if at.exists() {
+            return Some(at.to_path_buf());
+        }
+        at = at.parent().filter(|p| !p.as_os_str().is_empty())?;
+    }
+}
+
+/// How many times one re-arm re-chooses its watch point before settling for the last choice. Each
+/// round is a directory created (or removed) under it mid-registration; past the limit the next
+/// event re-arms again.
+const REARM_LIMIT: usize = 8;
 
 /// A **child's exit** made pollable, without reaping it: readable once the process has exited.
 ///
@@ -693,13 +712,14 @@ mod imp {
     use rustix::event::kqueue::{Event, EventFilter, EventFlags, VnodeEvents, kevent, kqueue};
     use std::fs::File;
     use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     pub(super) struct Inner {
         kq: OwnedFd,
-        /// The open vnode being watched: the file itself, or its parent while it does not exist.
-        /// Closing it removes its registration, so replacing it is the whole of a re-arm.
-        watched: Option<(File, bool)>,
+        /// The open vnode being watched and the path it was opened at: the file itself, or its
+        /// nearest existing ancestor while it does not exist. Closing it removes its registration,
+        /// so replacing it is the whole of a re-arm.
+        watched: Option<(File, PathBuf)>,
     }
 
     impl Inner {
@@ -742,53 +762,54 @@ mod imp {
                     }
                 }
             }
-            let is_file = target.exists();
-            if !gone && matches!(self.watched, Some((_, watching_file)) if watching_file == is_file)
-            {
-                return;
-            }
-            self.watched = None;
-            let path = if is_file {
-                target
-            } else {
-                match target.parent() {
-                    Some(parent) => parent,
-                    None => return,
+            // Register, then look again: a directory created on the way down between choosing
+            // the watch point and registering on it raised its event before anyone listened, so
+            // the choice is re-made after every registration until it holds.
+            for _ in 0..super::REARM_LIMIT {
+                let want = super::watch_point(target);
+                if !gone && matches!((&self.watched, &want), (Some((_, at)), Some(w)) if at == w) {
+                    return;
                 }
-            };
-            let Ok(file) = File::open(path) else {
-                return;
-            };
-            let flags = if is_file {
-                VnodeEvents::WRITE
-                    | VnodeEvents::EXTEND
-                    | VnodeEvents::DELETE
-                    | VnodeEvents::RENAME
-                    | VnodeEvents::REVOKE
-            } else {
-                VnodeEvents::WRITE | VnodeEvents::DELETE | VnodeEvents::RENAME
-            };
-            let change = Event::new(
-                EventFilter::Vnode {
-                    vnode: file.as_raw_fd(),
-                    flags,
-                },
-                EventFlags::ADD | EventFlags::CLEAR,
-                std::ptr::null_mut(),
-            );
-            let mut none: Vec<Event> = Vec::new();
-            // SAFETY: `file` is kept in `watched` for as long as the registration exists.
-            if unsafe {
-                kevent(
-                    &self.kq,
-                    &[change],
-                    &mut none,
-                    Some(std::time::Duration::ZERO),
-                )
-            }
-            .is_ok()
-            {
-                self.watched = Some((file, is_file));
+                gone = false;
+                self.watched = None;
+                let Some(path) = want else {
+                    return;
+                };
+                let Ok(file) = File::open(&path) else {
+                    return;
+                };
+                let flags = if path == target {
+                    VnodeEvents::WRITE
+                        | VnodeEvents::EXTEND
+                        | VnodeEvents::DELETE
+                        | VnodeEvents::RENAME
+                        | VnodeEvents::REVOKE
+                } else {
+                    VnodeEvents::WRITE | VnodeEvents::DELETE | VnodeEvents::RENAME
+                };
+                let change = Event::new(
+                    EventFilter::Vnode {
+                        vnode: file.as_raw_fd(),
+                        flags,
+                    },
+                    EventFlags::ADD | EventFlags::CLEAR,
+                    std::ptr::null_mut(),
+                );
+                let mut none: Vec<Event> = Vec::new();
+                // SAFETY: `file` is kept in `watched` for as long as the registration exists.
+                if unsafe {
+                    kevent(
+                        &self.kq,
+                        &[change],
+                        &mut none,
+                        Some(std::time::Duration::ZERO),
+                    )
+                }
+                .is_err()
+                {
+                    return;
+                }
+                self.watched = Some((file, path));
             }
         }
     }
@@ -796,14 +817,15 @@ mod imp {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    //! inotify. One watch at a time: the file, or its parent directory while it does not exist.
+    //! inotify. One watch at a time: the file, or its nearest existing ancestor while it does not
+    //! exist.
     use rustix::fs::inotify;
     use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     pub(super) struct Inner {
         fd: OwnedFd,
-        watched: Option<(i32, bool)>,
+        watched: Option<(i32, PathBuf)>,
     }
 
     impl Inner {
@@ -829,46 +851,50 @@ mod imp {
                         | inotify::ReadFlags::IGNORED,
                 );
             }
-            let exists = target.exists();
-            if !gone && matches!(self.watched, Some((_, watching_file)) if watching_file == exists)
-            {
-                return;
-            }
-            if let Some((wd, _)) = self.watched.take() {
-                let _ = inotify::remove_watch(&self.fd, wd);
-            }
-            let added = if exists {
-                // `ATTRIB` for an unlink: a file someone still holds open (a lock) loses a link
-                // without being deleted, so `DELETE_SELF` would not fire.
-                let mut flags = inotify::WatchFlags::MODIFY
-                    | inotify::WatchFlags::ATTRIB
-                    | inotify::WatchFlags::DELETE_SELF
-                    | inotify::WatchFlags::MOVE_SELF;
-                // A directory's own `MODIFY` is not raised by its entries changing, as kqueue's
-                // `NOTE_WRITE` on a directory is: ask for the entry events too, so a watched
-                // directory means the same thing on both platforms.
-                if target.is_dir() {
-                    flags |= inotify::WatchFlags::CREATE
-                        | inotify::WatchFlags::DELETE
-                        | inotify::WatchFlags::MOVED_FROM
-                        | inotify::WatchFlags::MOVED_TO;
+            // Register, then look again — see the kqueue implementation.
+            for _ in 0..super::REARM_LIMIT {
+                let want = super::watch_point(target);
+                if !gone && matches!((&self.watched, &want), (Some((_, at)), Some(w)) if at == w) {
+                    return;
                 }
-                inotify::add_watch(&self.fd, target, flags).map(|wd| (wd, true))
-            } else if let Some(parent) = target.parent() {
-                inotify::add_watch(
-                    &self.fd,
-                    parent,
-                    inotify::WatchFlags::CREATE
-                        | inotify::WatchFlags::MOVED_TO
+                gone = false;
+                if let Some((wd, _)) = self.watched.take() {
+                    let _ = inotify::remove_watch(&self.fd, wd);
+                }
+                let Some(path) = want else {
+                    return;
+                };
+                let added = if path == target {
+                    // `ATTRIB` for an unlink: a file someone still holds open (a lock) loses a
+                    // link without being deleted, so `DELETE_SELF` would not fire.
+                    let mut flags = inotify::WatchFlags::MODIFY
+                        | inotify::WatchFlags::ATTRIB
                         | inotify::WatchFlags::DELETE_SELF
-                        | inotify::WatchFlags::MOVE_SELF,
-                )
-                .map(|wd| (wd, false))
-            } else {
-                return;
-            };
-            if let Ok(w) = added {
-                self.watched = Some(w);
+                        | inotify::WatchFlags::MOVE_SELF;
+                    // A directory's own `MODIFY` is not raised by its entries changing, as
+                    // kqueue's `NOTE_WRITE` on a directory is: ask for the entry events too, so a
+                    // watched directory means the same thing on both platforms.
+                    if target.is_dir() {
+                        flags |= inotify::WatchFlags::CREATE
+                            | inotify::WatchFlags::DELETE
+                            | inotify::WatchFlags::MOVED_FROM
+                            | inotify::WatchFlags::MOVED_TO;
+                    }
+                    inotify::add_watch(&self.fd, target, flags)
+                } else {
+                    inotify::add_watch(
+                        &self.fd,
+                        &path,
+                        inotify::WatchFlags::CREATE
+                            | inotify::WatchFlags::MOVED_TO
+                            | inotify::WatchFlags::DELETE_SELF
+                            | inotify::WatchFlags::MOVE_SELF,
+                    )
+                };
+                let Ok(wd) = added else {
+                    return;
+                };
+                self.watched = Some((wd, path));
             }
         }
     }
@@ -1181,6 +1207,24 @@ mod tests {
             wait_until(&[None, Some(pipe.fd())], Some(Instant::now() + BOUND)),
             vec![false, true]
         );
+    }
+
+    /// A node's stream can be followed before its agent directory exists: the watch starts on the
+    /// nearest ancestor there is and follows each creation down to the file.
+    #[test]
+    fn a_watch_whose_directories_do_not_exist_yet_follows_their_creation_down_to_the_file() {
+        let dir = scratch("wake-watch-deep");
+        let path = dir.join("agents").join("root").join("events.jsonl");
+        let mut watch = Watch::new(&path);
+        assert!(!readable(watch.fd(), Duration::ZERO));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(readable(watch.fd(), BOUND), "the first directory's creation shows");
+        watch.rearm();
+        marion_testsupport::append(&path, b"a\n");
+        assert!(readable(watch.fd(), BOUND), "and so, a level down, does the file's");
+        watch.rearm();
+        marion_testsupport::append(&path, b"b\n");
+        assert!(readable(watch.fd(), BOUND), "after which the file itself is watched");
     }
 
     #[test]
