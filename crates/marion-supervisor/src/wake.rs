@@ -302,6 +302,157 @@ impl Watch {
     }
 }
 
+/// A **child's exit** made pollable, without reaping it: readable once the process has exited.
+///
+/// kqueue `EVFILT_PROC` `NOTE_EXIT` on macOS and the BSDs, a pidfd on Linux. Neither consumes the
+/// wait status, so a caller that must sweep a still-pinned process group before reaping (a pty
+/// node) can wait on it exactly as a caller that reaps at once can.
+///
+/// **Register first, then look.** A process that is already gone when the watch is made may leave
+/// it unarmed (kqueue refuses a pid it cannot find) and never readable, so every waiter checks the
+/// exit itself after creating the watch and after every wake; the watch only decides how long the
+/// wait between checks is. [`Self::fd`] is `None` where no mechanism exists, and [`wait_until`]
+/// then re-checks at [`DEGRADED_RECHECK`].
+///
+/// The pid must be the caller's own unreaped child, so it cannot be reissued while watched.
+pub struct ProcExit {
+    inner: Option<proc_imp::Inner>,
+}
+
+impl std::fmt::Debug for ProcExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcExit")
+            .field("armed", &self.inner.is_some())
+            .finish()
+    }
+}
+
+impl ProcExit {
+    pub fn new(pid: i32) -> ProcExit {
+        ProcExit {
+            inner: proc_imp::Inner::new(pid),
+        }
+    }
+
+    /// The descriptor to include in a `poll`. `None` means "nothing will wake you".
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.inner.as_ref().map(|i| i.fd())
+    }
+}
+
+/// How often a wait re-checks when one of its sources has no descriptor: a platform with neither
+/// kqueue nor inotify/pidfd, a Linux older than pidfd (5.3), or a descriptor limit. **Degraded
+/// latency, never the normal path** — on macOS and on any current Linux every source marion waits
+/// on has a descriptor and a wait sleeps until its event or its deadline.
+pub const DEGRADED_RECHECK: Duration = Duration::from_millis(50);
+
+/// Block until one of `fds` is readable or `deadline` passes (`None`: no deadline), and say which
+/// were. A `None` entry is a source that could not be made pollable, and caps the wait at
+/// [`DEGRADED_RECHECK`] so that source is still looked at. Callers re-examine their state after
+/// every return, as with [`wait_readable`].
+pub fn wait_until(fds: &[Option<BorrowedFd<'_>>], deadline: Option<Instant>) -> Vec<bool> {
+    let mut timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+    if fds.iter().any(Option::is_none) {
+        timeout = Some(timeout.map_or(DEGRADED_RECHECK, |t| t.min(DEGRADED_RECHECK)));
+    }
+    let present: Vec<BorrowedFd<'_>> = fds.iter().flatten().copied().collect();
+    let mut ready = wait_readable(&present, timeout).into_iter();
+    fds.iter()
+        .map(|fd| fd.is_some() && ready.next().unwrap_or(false))
+        .collect()
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+mod proc_imp {
+    //! kqueue `EVFILT_PROC` `NOTE_EXIT`, one-shot: the kqueue is readable once the exit is pending
+    //! and stays readable, since nothing drains it.
+    use rustix::event::kqueue::{Event, EventFilter, EventFlags, ProcessEvents, kevent, kqueue};
+    use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+
+    pub(super) struct Inner {
+        kq: OwnedFd,
+    }
+
+    impl Inner {
+        pub(super) fn new(pid: i32) -> Option<Inner> {
+            let pid = rustix::process::Pid::from_raw(pid)?;
+            let kq = kqueue().ok()?;
+            let change = Event::new(
+                EventFilter::Proc {
+                    pid,
+                    flags: ProcessEvents::EXIT,
+                },
+                EventFlags::ADD | EventFlags::ONESHOT,
+                std::ptr::null_mut(),
+            );
+            let mut none: Vec<Event> = Vec::new();
+            // SAFETY: a process filter names a pid, not a descriptor, so there is no descriptor
+            // lifetime for the registration to outlive.
+            unsafe { kevent(&kq, &[change], &mut none, Some(std::time::Duration::ZERO)) }.ok()?;
+            Some(Inner { kq })
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            self.kq.as_fd()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod proc_imp {
+    //! A pidfd: readable once the process has exited, reaped or not.
+    use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+
+    pub(super) struct Inner {
+        fd: OwnedFd,
+    }
+
+    impl Inner {
+        pub(super) fn new(pid: i32) -> Option<Inner> {
+            let pid = rustix::process::Pid::from_raw(pid)?;
+            let fd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()?;
+            Some(Inner { fd })
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            self.fd.as_fd()
+        }
+    }
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_os = "linux"
+)))]
+mod proc_imp {
+    //! No process-exit mechanism: waiters re-check at [`super::DEGRADED_RECHECK`].
+    use std::os::fd::BorrowedFd;
+
+    pub(super) struct Inner(std::convert::Infallible);
+
+    impl Inner {
+        pub(super) fn new(_pid: i32) -> Option<Inner> {
+            None
+        }
+
+        pub(super) fn fd(&self) -> BorrowedFd<'_> {
+            match self.0 {}
+        }
+    }
+}
+
 #[cfg(any(
     target_os = "macos",
     target_os = "ios",
@@ -623,6 +774,58 @@ mod tests {
         assert!(
             readable(watch.fd(), BOUND),
             "after rearm the file itself is watched"
+        );
+    }
+
+    #[test]
+    fn a_proc_exit_fires_when_the_child_exits_and_leaves_it_unreaped() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "read _"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let exit = ProcExit::new(child.id() as i32);
+        assert!(!readable(exit.fd(), Duration::ZERO), "still running");
+        drop(child.stdin.take());
+        assert!(readable(exit.fd(), BOUND), "the exit makes it readable");
+        // Not reaped by the watch: the wait status is still there for the owner to take.
+        let pid = rustix::process::Pid::from_raw(child.id() as i32).unwrap();
+        let status = rustix::process::waitid(
+            rustix::process::WaitId::Pid(pid),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOHANG
+                | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .unwrap();
+        assert!(status.is_some(), "the zombie is still waitable");
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_proc_exit_made_after_the_child_exited_never_hides_the_exit() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id() as i32;
+        // A zombie by now; the exit must either show through the watch or leave it unarmed, which
+        // a waiter answers by checking the status itself. What it must never be is armed and mute.
+        std::thread::sleep(Duration::from_millis(50));
+        let exit = ProcExit::new(pid);
+        if exit.fd().is_some() {
+            assert!(readable(exit.fd(), BOUND));
+        }
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn wait_until_caps_an_unpollable_source_at_the_degraded_recheck() {
+        let start = Instant::now();
+        let ready = wait_until(&[None], Some(Instant::now() + BOUND));
+        assert_eq!(ready, vec![false]);
+        assert!(start.elapsed() < BOUND, "capped, not the whole deadline");
+        let pipe = Pipe::new().unwrap();
+        pipe.wake();
+        assert_eq!(
+            wait_until(&[None, Some(pipe.fd())], Some(Instant::now() + BOUND)),
+            vec![false, true]
         );
     }
 

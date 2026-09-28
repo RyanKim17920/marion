@@ -16,8 +16,6 @@ crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  tracked: effici
 crates/marion-supervisor/src/registry.rs:LiveRegistry::follow  waits on the journal write pipe and file watch; sleeps its interval only where neither exists (perf-wave1 05e8272)
 crates/marion-supervisor/src/pty.rs:POLL  tracked: efficiency waves (5 ms pty poll)
 crates/marion-supervisor/src/pty.rs:PtyMaster::write_all  tracked: efficiency waves (sleep-and-retry on a full pty)
-crates/marion-supervisor/src/root.rs:PANE_POLL  tracked: efficiency waves (25 ms pane-exit poll)
-crates/marion-supervisor/src/root.rs:wait_for_the_pane_to_end  tracked: efficiency waves (sleep(PANE_POLL) loop)
 crates/marion-supervisor/src/run.rs:DRAIN_POLL_MS  tracked: efficiency waves (20 ms drain poll)
 crates/marion-supervisor/src/run.rs:Drain::finish  tracked: efficiency waves (DRAIN_POLL_MS sleep loop)
 crates/marion-supervisor/src/run.rs:run_bounded_with  tracked: efficiency waves (try_wait + sleep loop on the child)

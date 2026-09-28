@@ -2643,6 +2643,8 @@ pub(crate) fn wait_for_the_pane_to_end(
     end: &mut dyn FnMut() -> bool,
 ) -> std::io::Result<bool> {
     let deadline = bound.map(|bound| std::time::Instant::now() + bound);
+    // Armed before the first look, so an exit between the look and the wait still wakes it.
+    let exit = host.child_pid().map(crate::wake::ProcExit::new);
     loop {
         if host.poll_exited_unreaped()? || end() {
             return Ok(false);
@@ -2650,12 +2652,9 @@ pub(crate) fn wait_for_the_pane_to_end(
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Ok(true);
         }
-        std::thread::sleep(PANE_POLL);
+        crate::wake::wait_until(&[exit.as_ref().and_then(|e| e.fd())], deadline);
     }
 }
-
-/// How often the launcher asks whether the node has exited. See [`launch_terminal`].
-const PANE_POLL: StdDuration = StdDuration::from_millis(25);
 
 /// Finish one advertised terminal without letting any fallible teardown step strand it live.
 ///
