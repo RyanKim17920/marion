@@ -574,6 +574,10 @@ fn terminal_of(agent_id: &AgentId, event: marion_core::proto::notify::Event) -> 
 /// itself, so what a caller receives is unchanged by the ownership move: the persisted copy stays
 /// whole (`worktree_reap.rs` pins that) and the copy that goes into a model's context stays
 /// bounded. Two paths to one tool result must not differ in how much of a narrative they carry.
+///
+/// **The file must be the contract of the task asked about.** The path is keyed on the task id, but
+/// what the caller is handed is the file's content, so a contract naming another task — a file
+/// copied or left over under the wrong name — is refused rather than reported as this task's.
 fn read_contract(
     project: &ProjectDir,
     agent_id: &AgentId,
@@ -584,17 +588,62 @@ fn read_contract(
         path: path.clone(),
         why: e.to_string(),
     })?;
-    serde_json::from_slice::<TaskContract>(&bytes)
-        .map(cap_for_return)
-        .map_err(|e| SpawnError::NoContract {
-            path,
+    let contract =
+        serde_json::from_slice::<TaskContract>(&bytes).map_err(|e| SpawnError::NoContract {
+            path: path.clone(),
             why: format!("marion wrote it and cannot read it back: {e}"),
-        })
+        })?;
+    if contract.task_id != *task_id {
+        return Err(SpawnError::NoContract {
+            path,
+            why: format!(
+                "it is the contract of task {}, not of task {}",
+                contract.task_id.0, task_id.0
+            ),
+        });
+    }
+    Ok(cap_for_return(contract))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A contract file is read only as the contract of the task it names.** One written under
+    /// this task's name but naming another is refused with both ids; the right one reads back.
+    ///
+    /// Mutation: drop the `task_id` comparison and the mismatched file is handed back as this
+    /// task's contract.
+    #[test]
+    fn a_contract_naming_another_task_is_refused_rather_than_read_as_this_one() {
+        let dir = marion_testsupport::scratch("courier-contract-task");
+        let project = ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        let contract = crate::bridge::contract_that_ran(crate::spawn::ChildOutcome {
+            exit_code: Some(0),
+            ..Default::default()
+        });
+        let agent_id = AgentId("019fbf94-0000-7000-8000-000000000001".into());
+        let write = |task: &TaskId| {
+            let path = project.agent(&agent_id).contract(task);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, serde_json::to_vec(&contract).unwrap()).unwrap();
+        };
+
+        write(&contract.task_id);
+        let read = read_contract(&project, &agent_id, &contract.task_id).expect("its own contract");
+        assert_eq!(read.task_id, contract.task_id);
+
+        let other = TaskId("019fbf94-0000-7000-8000-00000000beef".into());
+        write(&other);
+        let e = read_contract(&project, &agent_id, &other).expect_err("another task's contract");
+        let msg = e.to_string();
+        assert!(
+            matches!(e, SpawnError::NoContract { .. })
+                && msg.contains(&contract.task_id.0)
+                && msg.contains(&other.0),
+            "the refusal names both tasks: {msg}"
+        );
+    }
 
     /// **A dial that finds nothing is a refusal naming the socket, and it starts nothing.**
     ///

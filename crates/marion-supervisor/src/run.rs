@@ -4616,7 +4616,8 @@ mod tests {
         };
 
         let unchanged = root.join("wt-unchanged");
-        let base = crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false).unwrap();
+        let base =
+            crate::spawn::make_worktree(&repo, &unchanged, "marion/unchanged", false).unwrap();
         cleanup(&repo, &unchanged, "marion/unchanged", Some(&base));
         assert!(!unchanged.exists(), "the worktree is removed");
         assert!(
