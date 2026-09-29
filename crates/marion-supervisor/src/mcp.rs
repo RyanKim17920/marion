@@ -327,6 +327,15 @@ fn tool_spawn(
         .as_str()
         .unwrap_or("codex-impl")
         .to_string();
+    let top_level;
+    let args = match who {
+        Principal::TopLevel(t) => {
+            top_level = root_in_checkout(&t.repo, &agent_type, args)
+                .map_err(|e| bridge::tool_result(id, &e, true))?;
+            &top_level
+        }
+        Principal::Node => args,
+    };
     let (sock, project) = paths_or_refuse(who, id)?;
     let (caller, repo) = spawn_identity(who, id)?;
     // **§5.7's on-demand start, and only here.** See [`Principal::ensure_supervisor`] for
@@ -395,6 +404,46 @@ fn tool_spawn(
             )
         }),
     )
+}
+
+/// **A top-level `spawn` never puts a writer in the operator's checkout without being told to.**
+///
+/// A spawn from `marion mcp` is a root (§9): no parent owns a worktree or a contract for it, so it
+/// runs in the checkout at `repo` with nothing checked. For a child, silence means a worktree; a
+/// model that called `spawn` here expecting the same would have had its implementer edit the
+/// operator's own tree (live smoke, 2026-09-27). So a type that can change files is refused unless
+/// the call states `isolation: "shared-cwd"`, which is exactly what a root's workspace is; the
+/// statement is consumed here, because the supervisor refuses `isolation` on a root. A read-only
+/// type passes unchanged, and it is the way to a worktree: its children get one each, with a
+/// contract and verification.
+///
+/// An agent type this cannot resolve passes through for the supervisor to refuse in its own words.
+fn root_in_checkout(
+    repo: &std::path::Path,
+    agent_type: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let types = crate::run::agent_types(repo).map_err(|e| format!("marion: {e}"))?;
+    let writes = |name: &str| types.resolve(name).is_some_and(|t| t.writes_files());
+    let mut args = args.clone();
+    let acknowledged = args["isolation"].as_str() == Some(Isolation::SharedCwd.as_wire());
+    if acknowledged && let Some(o) = args.as_object_mut() {
+        o.remove("isolation");
+    }
+    if acknowledged || !writes(agent_type) {
+        return Ok(args);
+    }
+    let mut readers: Vec<&str> = types.names().into_iter().filter(|n| !writes(n)).collect();
+    readers.dedup();
+    Err(format!(
+        "marion: `{agent_type}` can change files, and a `spawn` from `marion mcp` creates a root: \
+         no parent owns a worktree or a contract for it, so it would run directly in the checkout at \
+         {} with nothing verified. Nothing was started. To run it there knowingly, state \
+         `isolation: \"shared-cwd\"`. For a worktree, a contract and verification, spawn a \
+         read-only type ({}) and have it spawn `{agent_type}` as its child.",
+        repo.display(),
+        readers.join(", ")
+    ))
 }
 
 /// **The one field the two surfaces differ in**, and the reason there are two of them. A node
@@ -1449,6 +1498,35 @@ fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A top-level writer is refused unless the call states the checkout; a reader passes.**
+    ///
+    /// Mutation: return `Ok(args)` unconditionally and the implementer runs in the operator's tree.
+    #[test]
+    fn a_top_level_writer_needs_the_checkout_stated_and_a_reader_does_not() {
+        let dir = marion_testsupport::scratch("mcp-root-in-checkout");
+        let spawn = serde_json::json!({"prompt": "p"});
+        let e = root_in_checkout(&dir, "codex-impl", &spawn).expect_err("a writer, unstated");
+        assert!(
+            e.contains("`codex-impl` can change files")
+                && e.contains(&dir.display().to_string())
+                && e.contains("isolation: \"shared-cwd\"")
+                && e.contains("claude-orchestrator"),
+            "the refusal names the type, the tree, the opt-in and a read-only way round: {e}"
+        );
+        let worktree = serde_json::json!({"prompt": "p", "isolation": "worktree"});
+        assert!(root_in_checkout(&dir, "codex-impl", &worktree).is_err());
+
+        let stated = serde_json::json!({"prompt": "p", "isolation": "shared-cwd"});
+        let sent = root_in_checkout(&dir, "codex-impl", &stated).expect("stated, so served");
+        assert_eq!(
+            sent, spawn,
+            "the statement is consumed, since a root takes no isolation"
+        );
+
+        let reader = root_in_checkout(&dir, "claude-orchestrator", &spawn).expect("a reader");
+        assert_eq!(reader, spawn);
+    }
 
     /// **`wait` answers a handle it does not recognise with a sentence, not by blocking.**
     ///

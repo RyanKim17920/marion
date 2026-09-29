@@ -291,6 +291,9 @@ fn spawn_args(background: bool) -> Value {
         "agent_type": "codex",
         "prompt": "block until the gate opens",
         "acceptance_criteria": ["the shim exits 0"],
+        // `codex` can change files, and a top-level spawn is a root in the checkout: stated, or
+        // refused (`mcp::root_in_checkout`).
+        "isolation": "shared-cwd",
         "timeout_secs": ROOT_TIMEOUT_SECS,
         "background": background,
     })
