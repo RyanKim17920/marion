@@ -63,6 +63,11 @@ pub struct StreamGrammar {
     /// carrying one, and a resume of such a node is refused rather than guessed. Read by
     /// [`session_id`], once per frame, by whoever owns the node's stream.
     pub session: Option<SessionId>,
+    /// Where the harness states the model that is actually running — read by [`model_in`]. The
+    /// model a launch *asked for* is what argv carries, and nothing at all when the harness's own
+    /// default runs; this is the answer from the other side. `None` where no frame was measured
+    /// naming it.
+    pub model: Option<ModelName>,
     /// Where the harness states the tokens the run spent — read by [`usage`]. `None` where no
     /// frame was measured carrying a token count, and the row says why beside it.
     pub usage: Option<UsageRule>,
@@ -244,6 +249,14 @@ pub fn session_by_title(lookup: &TitleLookup, listing: &str, title: &str) -> Opt
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
     })
+}
+
+/// Where a harness names the model it is running: the string at `path` in each unit of `at`. The
+/// latest unit that names one is the model the run is on.
+#[derive(Debug)]
+pub struct ModelName {
+    pub at: Where,
+    pub path: &'static str,
 }
 
 /// A set of JSON units inside a stream: frames of a shape, or elements of an array in them.
@@ -445,6 +458,27 @@ pub struct UsageRule {
     /// measured folding them into input with a non-zero write count to prove it.
     pub input_includes_cache: bool,
     pub fold: UsageFold,
+    /// Where a turn's requests state their counters **before** the unit that totals the turn, for
+    /// a run that ends mid-turn — killed, timed out — and so never reaches that unit. `None` where
+    /// the row's units arrive as the spend happens, or where no such frame was measured.
+    pub in_flight: Option<&'static InFlight>,
+}
+
+/// A row's in-flight counters: the units that carry one request's spend while its turn is still
+/// running, and where each names its request.
+///
+/// Measured on claude 2.1.283 (live smoke `s2`, 2026-09-27): every `assistant` frame carries its
+/// API message's `message.usage`, repeated once per content block under the same `message.id`, and
+/// the turn's `result` frame — the row's unit — totals them afterwards. A child killed at its
+/// timeout had written fourteen such messages and no `result`, and recorded no usage at all.
+#[derive(Debug)]
+pub struct InFlight {
+    /// The counters, read as a unit of the row's own is read. Only the counters are read: `fold`
+    /// is `Last` and `in_flight` is `None`, which the sweep asserts.
+    pub counters: UsageRule,
+    /// Each unit's request id. Units of one request repeat its counters, so the latest for an id
+    /// replaces the ones before it rather than adding to them.
+    pub id: &'static str,
 }
 
 /// A reasoning counter, and how it relates to the row's `output` counter. Either way the reading's
@@ -487,8 +521,14 @@ fn counter(unit: &Value, ptr: Option<&str>) -> u64 {
 /// The tokens `frames` say the run spent under `rule`. `None` when **no unit matched** — a stream
 /// that never reached its usage frame made no claim about spend, and zero would be one. A unit of
 /// zeros is `Some` of zero: a run that reported spending nothing did report.
+///
+/// The same fold the live [`UsageMeter`] performs, over a whole stream at once.
 pub fn usage(rule: &UsageRule, frames: &[Value]) -> Option<TokenUsage> {
-    fold_usage(rule, &usage_units(rule, frames))
+    let mut meter = UsageMeter::new(rule);
+    for frame in frames {
+        meter.observe(frame);
+    }
+    meter.usage()
 }
 
 /// Every usage unit in `frames` under `rule`, oldest first, each as the counts it states.
@@ -526,14 +566,6 @@ fn usage_units(rule: &UsageRule, frames: &[Value]) -> Vec<TokenUsage> {
         .collect()
 }
 
-/// The run's usage from its units under the row's fold. `None` for no units.
-fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
-    match rule.fold {
-        UsageFold::Last | UsageFold::Session => units.last().copied(),
-        UsageFold::Sum => units.iter().copied().reduce(|a, b| a + b),
-    }
-}
-
 /// **A node's usage, kept current frame by frame as its stream is recorded**, across every process
 /// the run takes.
 ///
@@ -549,11 +581,15 @@ fn fold_usage(rule: &UsageRule, units: &[TokenUsage]) -> Option<TokenUsage> {
 /// and `Session`; a `Last` unit totals a process whose turns it does not break down) — the latest
 /// [`MAX_RECORDED_TURNS`] only, which is what a sparkline draws and what the journal keeps.
 ///
+/// A row with an [`InFlight`] rule also counts the requests of a turn whose total has not arrived
+/// yet, so a run cut short mid-turn still records what it spent; the turn's total, when it comes,
+/// replaces them.
+///
 /// Bounded state: running folds and that window, never the units, so a long-lived node's meter
 /// does not grow.
 #[derive(Debug, Clone)]
-pub struct UsageMeter {
-    rule: &'static UsageRule,
+pub struct UsageMeter<'r> {
+    rule: &'r UsageRule,
     /// Every generation already ended, added (`Last` and `Sum`).
     ended: Option<TokenUsage>,
     /// The running generation folded under the rule — for a `Session` row, the latest total.
@@ -562,16 +598,23 @@ pub struct UsageMeter {
     baseline: Option<TokenUsage>,
     /// Each turn's total spend, oldest first, the latest [`MAX_RECORDED_TURNS`].
     turns: std::collections::VecDeque<u64>,
+    /// The running turn's requests before its total arrives ([`InFlight`]): the requests already
+    /// superseded by a later one, added, and the latest request's id and counters.
+    in_flight: (Option<TokenUsage>, Option<(String, TokenUsage)>),
+    /// In-flight spend of generations that ended before their turn's total arrived.
+    stranded: Option<TokenUsage>,
 }
 
-impl UsageMeter {
-    pub fn new(rule: &'static UsageRule) -> Self {
+impl<'r> UsageMeter<'r> {
+    pub fn new(rule: &'r UsageRule) -> Self {
         Self {
             rule,
             ended: None,
             current: None,
             baseline: None,
             turns: std::collections::VecDeque::new(),
+            in_flight: (None, None),
+            stranded: None,
         }
     }
 
@@ -589,6 +632,11 @@ impl UsageMeter {
     /// that is no usage unit changes nothing.
     pub fn observe(&mut self, frame: &Value) -> bool {
         let units = usage_units(self.rule, std::slice::from_ref(frame));
+        if units.is_empty() {
+            return self.observe_in_flight(frame);
+        }
+        // The turn's total has arrived, and it counts the requests the meter held for it.
+        self.in_flight = (None, None);
         for &unit in &units {
             let turn = match self.rule.fold {
                 UsageFold::Sum => Some(unit.total()),
@@ -612,6 +660,34 @@ impl UsageMeter {
         !units.is_empty()
     }
 
+    /// Fold one frame's in-flight counters in, under the row's [`InFlight`] rule.
+    fn observe_in_flight(&mut self, frame: &Value) -> bool {
+        let Some(rule) = self.rule.in_flight else {
+            return false;
+        };
+        let requests: Vec<(String, TokenUsage)> =
+            units(std::slice::from_ref(frame), &rule.counters.at)
+                .into_iter()
+                .zip(usage_units(&rule.counters, std::slice::from_ref(frame)))
+                .map(|(unit, counters)| (text(unit, rule.id).unwrap_or_default(), counters))
+                .collect();
+        for (id, counters) in &requests {
+            let (superseded, latest) = &mut self.in_flight;
+            match latest.take() {
+                Some((was, _)) if was == *id => {}
+                Some((_, older)) => *superseded = add_usage_claims(*superseded, Some(older)),
+                None => {}
+            }
+            *latest = Some((id.clone(), *counters));
+        }
+        !requests.is_empty()
+    }
+
+    /// The running turn's requests whose total has not arrived.
+    fn in_flight_total(&self) -> Option<TokenUsage> {
+        add_usage_claims(self.in_flight.0, self.in_flight.1.as_ref().map(|(_, u)| *u))
+    }
+
     /// Each turn's total spend this run, oldest first, the latest [`MAX_RECORDED_TURNS`]. Empty for
     /// a `Last` row, and for a run that took no turn yet.
     pub fn turns(&self) -> Vec<u64> {
@@ -625,15 +701,21 @@ impl UsageMeter {
         if self.rule.fold != UsageFold::Session {
             self.ended = add_usage_claims(self.ended, self.current.take());
         }
+        self.stranded = add_usage_claims(self.stranded, self.in_flight_total());
+        self.in_flight = (None, None);
     }
 
     /// Everything this run's stream says it spent so far. `None` when no unit was ever read — no
     /// claim, which is not a claim of zero.
     pub fn usage(&self) -> Option<TokenUsage> {
-        match (self.rule.fold, self.baseline) {
+        let totalled = match (self.rule.fold, self.baseline) {
             (UsageFold::Session, Some(before)) => self.current.map(|now| now.since(before)),
             _ => add_usage_claims(self.ended, self.current),
-        }
+        };
+        add_usage_claims(
+            add_usage_claims(totalled, self.stranded),
+            self.in_flight_total(),
+        )
     }
 }
 
@@ -926,6 +1008,13 @@ pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
 
 /// [`session_id`] under one [`SessionId`] rule, for a reader whose stream is not a row's grammar —
 /// ACP's `session/new` answer (`crate::acp::SESSION`).
+/// The model `frame` names under `m`, if it is a frame that names one.
+pub fn model_in(m: &ModelName, frame: &Value) -> Option<String> {
+    units(std::slice::from_ref(frame), &m.at)
+        .into_iter()
+        .find_map(|u| text(u, m.path).filter(|name| !name.trim().is_empty()))
+}
+
 pub fn session_in(s: &SessionId, frame: &Value) -> Option<String> {
     units(std::slice::from_ref(frame), &s.at)
         .into_iter()
@@ -1263,6 +1352,7 @@ mod tests {
         reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
+        in_flight: None,
     };
 
     fn done(input: u64, output: u64, cached: u64) -> Value {
@@ -1321,6 +1411,7 @@ mod tests {
         // Sum: each unit is one step's spend, and the run is all of them.
         let sum = UsageRule {
             fold: UsageFold::Sum,
+            in_flight: None,
             ..RULE
         };
         assert_eq!(usage(&sum, &frames), Some(tokens(40, 4, 6)));
@@ -1410,10 +1501,12 @@ mod tests {
     static LAST: UsageRule = RULE;
     static SUM: UsageRule = UsageRule {
         fold: UsageFold::Sum,
+        in_flight: None,
         ..RULE
     };
     static SESSION: UsageRule = UsageRule {
         fold: UsageFold::Session,
+        in_flight: None,
         ..RULE
     };
 
@@ -1474,6 +1567,84 @@ mod tests {
         assert_eq!(meter(&SUM), Some(tokens(45, 5, 6)));
     }
 
+    /// **A turn cut short still records what its requests spent.** Measured live (s2, 2026-09-27):
+    /// a claude child killed at its timeout had written fourteen `assistant` frames, each carrying
+    /// its request's `message.usage`, and no `result` — and recorded no usage at all. Units of one
+    /// request repeat its counters and count once; the turn's total, when it arrives, replaces the
+    /// requests it totals; a generation that ends mid-turn keeps what its requests spent.
+    #[test]
+    fn a_turn_cut_short_records_its_requests_and_a_total_replaces_them() {
+        let rule = crate::claude_code::STREAM.usage.as_ref().unwrap();
+        let assistant = |id: &str, input: u64, output: u64| {
+            serde_json::json!({"type": "assistant", "message": {"id": id, "usage": {
+                "input_tokens": input, "output_tokens": output,
+                "cache_read_input_tokens": 100, "cache_creation_input_tokens": 1}}})
+        };
+        let result = |input: u64, output: u64| {
+            serde_json::json!({"type": "result", "subtype": "success", "usage": {
+                "input_tokens": input, "output_tokens": output}})
+        };
+        let request = |input, output| TokenUsage {
+            input,
+            output,
+            cache_read: 100,
+            cache_write: 1,
+            reasoning: None,
+        };
+        let killed = [
+            assistant("msg_a", 10, 1),
+            assistant("msg_a", 10, 1),
+            assistant("msg_b", 20, 2),
+        ];
+        assert_eq!(
+            usage(rule, &killed),
+            Some(request(10, 1) + request(20, 2)),
+            "two requests, the first repeated per content block"
+        );
+        let mut finished = killed.to_vec();
+        finished.push(result(35, 4));
+        assert_eq!(
+            usage(rule, &finished),
+            Some(tokens(35, 4, 0)),
+            "the turn's total replaces its requests"
+        );
+        finished.push(assistant("msg_c", 7, 0));
+        assert_eq!(
+            usage(rule, &finished),
+            Some(tokens(35, 4, 0) + request(7, 0))
+        );
+
+        let mut m = UsageMeter::new(rule);
+        m.observe(&assistant("msg_a", 10, 1));
+        m.end_generation();
+        m.observe(&result(3, 3));
+        assert_eq!(
+            m.usage(),
+            Some(request(10, 1) + tokens(3, 3, 0)),
+            "a generation that ended mid-turn keeps what its request spent"
+        );
+        assert_eq!(
+            usage(crate::qwen::STREAM.usage.as_ref().unwrap(), &killed),
+            None,
+            "qwen writes zeros there, and reads none of it"
+        );
+    }
+
+    /// Every in-flight rule reads counters only: its own fold and in-flight fields are inert, and
+    /// stated as such so a reader cannot take them for behaviour.
+    #[test]
+    fn every_in_flight_rule_states_its_inert_fields_inertly() {
+        for h in marion_core::harness::Harness::ALL {
+            let Some(g) = crate::adapter::harness_spec(h).stream else {
+                continue;
+            };
+            if let Some(f) = g.usage.as_ref().and_then(|u| u.in_flight) {
+                assert_eq!(f.counters.fold, UsageFold::Last, "{h}");
+                assert!(f.counters.in_flight.is_none(), "{h}");
+            }
+        }
+    }
+
     /// **No unit is no claim, however many generations pass**; a generation that reported nothing
     /// adds nothing to one that did.
     #[test]
@@ -1520,6 +1691,7 @@ mod tests {
         // A Sum row adds the splits of its units as it adds their counters.
         let sum = UsageRule {
             fold: UsageFold::Sum,
+            in_flight: None,
             ..within
         };
         assert_eq!(

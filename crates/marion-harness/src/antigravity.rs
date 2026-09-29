@@ -31,8 +31,8 @@ use marion_core::harness::Harness;
 use serde_json::json;
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, Failure, Name, OnRefusedReport, Pairing, Reasoning, SessionId,
-    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
+    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -204,6 +204,15 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // agy has no canned route, so no provider fault was ever put in front of it.
     errors: &[],
     file_changes: None,
+    // The `init` frame names the model (s32: `init.model`).
+    model: Some(ModelName {
+        at: Where {
+            frame: &[Cond::Eq("/event", "init")],
+            each: None,
+            unit: &[],
+        },
+        path: "/init/model",
+    }),
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Eq("/event", "init")],
@@ -230,6 +239,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: Some(Reasoning::Within("/result/usage/thinking_tokens")),
         input_includes_cache: false,
         fold: UsageFold::Last,
+        in_flight: None,
     }),
     // Every step is a `step_update` revised in place by `step_index`, so a tool seen `ACTIVE` and
     // then `DONE` is one call; the model's words stream as `agent_response` steps' `text_delta`s

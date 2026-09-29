@@ -13,8 +13,8 @@ use marion_core::provider::Wire;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
-    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
+    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
@@ -309,6 +309,15 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // The first `stream-json` frame (`s12/README.md`): `init` carries `session_id`. Recorded even
     // though the row's `resume` is `None` — the id is a fact about the run, and what 0.53.0 cannot
     // take back on argv a later build may.
+    // The `init` frame names the model (`s12`, `conformance/gemini-0.53.0`).
+    model: Some(ModelName {
+        at: Where {
+            frame: &[Cond::Eq("/type", "init")],
+            each: None,
+            unit: &[],
+        },
+        path: "/model",
+    }),
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Eq("/type", "init")],
@@ -335,6 +344,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: None,
         input_includes_cache: true,
         fold: UsageFold::Last,
+        in_flight: None,
     }),
     // `tool_use` frames name every tool; the assistant's words arrive as `message` frames marked
     // `"delta":true` (`s12/README.md`), so consecutive ones are one message.

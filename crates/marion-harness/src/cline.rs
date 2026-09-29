@@ -298,6 +298,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     file_changes: None,
     // No frame carries the session id (s27 item 7): `hook_event.taskId` is a conversation id, and
     // the session id is a directory name.
+    // No stream frame was measured naming the model (`s27`).
+    model: None,
     session: None,
     // The terminal `run_result` frame (`s27/*.stdout.jsonl`): `aggregateUsage` is the whole run,
     // where `usage` beside it is only the last request's.
@@ -314,6 +316,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
+        in_flight: None,
     }),
     // A tool's `content_start` and a text block's `content_end`, which carries the finished text
     // (`s27/cline-report-ok.stdout.jsonl`).

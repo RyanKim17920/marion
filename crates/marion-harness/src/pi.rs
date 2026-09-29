@@ -30,8 +30,8 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing, SessionId,
-    StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
+    SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict, Where,
 };
 use crate::jsonl_channel::{Command, JsonlChannel};
 pub use crate::mcp_bridge::BridgeEnv;
@@ -357,6 +357,15 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     ],
     file_changes: None,
+    // Each `message_start` names the model that answers (`s34`: `message.model`).
+    model: Some(ModelName {
+        at: Where {
+            frame: &[Cond::Eq("/type", "message_start")],
+            each: None,
+            unit: &[],
+        },
+        path: "/message/model",
+    }),
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Eq("/type", "session")],
@@ -385,6 +394,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Sum,
+        in_flight: None,
     }),
     activity: Some(ActivityRule {
         calls: &[ToolUnit {

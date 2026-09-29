@@ -11,9 +11,9 @@ use marion_core::provider::{KeyHeader, Wire};
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    ActivityRule, CallShape, Cond, ErrorRule, Failure, Name, OnRefusedReport, Pairing,
-    RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule, Verdict,
-    Where,
+    ActivityRule, CallShape, Cond, ErrorRule, Failure, InFlight, ModelName, Name, OnRefusedReport,
+    Pairing, RateLimitRule, SessionId, StreamGrammar, TextUnit, ToolUnit, UsageFold, UsageRule,
+    Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -357,6 +357,51 @@ pub const SPEC: HarnessSpec = HarnessSpec {
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };
 
+/// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
+/// S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while
+/// `modelUsage` ran cumulative, so a node that took several turns sums them. `input_tokens`
+/// excludes both cache counters (Anthropic's convention). qwen reads its stream with this rule and
+/// was measured emitting the same shape without the cache-write key (`s25`); one result, so the sum
+/// is it.
+pub const USAGE: UsageRule = UsageRule {
+    at: Where {
+        frame: &[Cond::Eq("/type", "result")],
+        each: None,
+        unit: &[],
+    },
+    input: "/usage/input_tokens",
+    output: "/usage/output_tokens",
+    cache_read: Some("/usage/cache_read_input_tokens"),
+    cache_write: Some("/usage/cache_creation_input_tokens"),
+    reasoning: None,
+    input_includes_cache: false,
+    fold: UsageFold::Sum,
+    in_flight: None,
+};
+
+/// A turn's requests before its `result`: each `assistant` frame's `message.usage`, repeated per
+/// content block under one `message.id` (live smoke `s2` on 2.1.283, 2026-09-27, where a child killed
+/// at its timeout had written fourteen such messages and no `result`). Claude's only: qwen writes
+/// zeros there (`s25`), which would claim a spend of nothing.
+pub const IN_FLIGHT: InFlight = InFlight {
+    counters: UsageRule {
+        at: Where {
+            frame: &[Cond::Eq("/type", "assistant"), Cond::Has("/message/usage")],
+            each: None,
+            unit: &[],
+        },
+        input: "/message/usage/input_tokens",
+        output: "/message/usage/output_tokens",
+        cache_read: Some("/message/usage/cache_read_input_tokens"),
+        cache_write: Some("/message/usage/cache_creation_input_tokens"),
+        reasoning: None,
+        input_includes_cache: false,
+        fold: UsageFold::Last,
+        in_flight: None,
+    },
+    id: "/message/id",
+};
+
 /// How a `--output-format stream-json` stream is read (`tests/fixtures/s1/`, `s9/`).
 ///
 /// A call to marion is a `tool_use` block inside an `assistant` frame's `message.content[]`, and
@@ -500,6 +545,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     file_changes: None,
     // The first frame of every run (`s10/stream-*.jsonl`): `system`/`init` carries `session_id`,
     // the value `--resume` takes back.
+    // `system`/`init` names the model the run is on, the harness's own default included
+    // (`s9`: `claude-opus-5[1m]`; live smoke `s2`: `claude-haiku-4-5-20251001` for `--model haiku`).
+    model: Some(ModelName {
+        at: Where {
+            frame: &[Cond::Eq("/type", "system"), Cond::Eq("/subtype", "init")],
+            each: None,
+            unit: &[],
+        },
+        path: "/model",
+    }),
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Eq("/type", "system"), Cond::Eq("/subtype", "init")],
@@ -510,24 +565,11 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         resumes_in_place: false,
         by_title: None,
     }),
-    // Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:
-    // S31 `p0a/out/a` measured two stream-json turns reporting 10/5 each in `usage` while
-    // `modelUsage` ran cumulative, so a node that took several turns sums them. `input_tokens`
-    // excludes both cache counters (Anthropic's convention). qwen shares this row and was measured
-    // emitting the same shape without the cache-write key (`s25`); one result, so the sum is it.
+    // Each turn's `result` frame totals it (see [`USAGE`]), and until it arrives each `assistant`
+    // frame's `message.usage` states its request's spend (see [`IN_FLIGHT`]).
     usage: Some(UsageRule {
-        at: Where {
-            frame: &[Cond::Eq("/type", "result")],
-            each: None,
-            unit: &[],
-        },
-        input: "/usage/input_tokens",
-        output: "/usage/output_tokens",
-        cache_read: Some("/usage/cache_read_input_tokens"),
-        cache_write: Some("/usage/cache_creation_input_tokens"),
-        reasoning: None,
-        input_includes_cache: false,
-        fold: UsageFold::Sum,
+        in_flight: Some(&IN_FLIGHT),
+        ..USAGE
     }),
     // `assistant` frames' content blocks (`s9/can-use-tool-*.stdout.jsonl`): a `tool_use` block is
     // a call to any tool, a `text` block the model's words. qwen shares this row.

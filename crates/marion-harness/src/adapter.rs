@@ -574,6 +574,12 @@ pub trait HarnessAdapter {
         self.spec().stream?.usage.as_ref()
     }
 
+    /// Where this harness's stream names the model that is running — the row's
+    /// [`grammar::StreamGrammar::model`] — or `None` where no frame was measured naming it.
+    fn model_rule(&self) -> Option<&'static grammar::ModelName> {
+        self.spec().stream?.model.as_ref()
+    }
+
     /// The harness session `frame` names, if it is the frame that names one — read with the row's
     /// [`grammar::StreamGrammar::session`] rule. `None` for every other frame and for a row with
     /// no rule. The one question the supervisor's session watch asks, so no caller reads a row's
@@ -10916,6 +10922,58 @@ mod tests {
             if let ReadOnly::ScopeOnly { .. } = harness_spec(h).read_only {
                 assert!(!harness_spec(h).read_only.blocks_writes(), "{h}");
             }
+        }
+    }
+
+    /// **Every row states where its stream names the running model, from a measured frame, or
+    /// states that none does.** The frames are the fixtures' own, so a row cannot claim a place no
+    /// capture shows; the list is over every harness, so a new row has to choose.
+    #[test]
+    fn every_row_reads_its_running_model_from_its_measured_frame_or_states_none() {
+        use serde_json::json;
+        for h in Harness::ALL {
+            let a = launch_adapter(h).unwrap();
+            let frame = match h {
+                // s9, s10, live smoke s2
+                Harness::ClaudeCode | Harness::Qwen => json!({"type": "system", "subtype": "init",
+                    "session_id": "s", "model": "claude-haiku-4-5-20251001"}),
+                // s12
+                Harness::Gemini => json!({"type": "init", "session_id": "s",
+                    "model": "claude-haiku-4-5-20251001"}),
+                // s32
+                Harness::Antigravity => json!({"event": "init", "conversation_id": "c",
+                    "init": {"model": "claude-haiku-4-5-20251001"}}),
+                // s24
+                Harness::Copilot => json!({"type": "session.tools_updated",
+                    "data": {"model": "claude-haiku-4-5-20251001"}}),
+                // s34
+                Harness::Pi => json!({"type": "message_start", "message": {"role": "assistant",
+                    "model": "claude-haiku-4-5-20251001"}}),
+                Harness::Codex
+                | Harness::OpenCode
+                | Harness::Goose
+                | Harness::Cline
+                | Harness::Acp => {
+                    assert!(
+                        a.model_rule().is_none(),
+                        "{h}: no frame was measured naming it"
+                    );
+                    continue;
+                }
+            };
+            let rule = a
+                .model_rule()
+                .unwrap_or_else(|| panic!("{h} states a rule"));
+            assert_eq!(
+                grammar::model_in(rule, &frame).as_deref(),
+                Some("claude-haiku-4-5-20251001"),
+                "{h}"
+            );
+            assert_eq!(
+                grammar::model_in(rule, &json!({"type": "other", "model": "x"})),
+                None,
+                "{h}: only the measured frame names it"
+            );
         }
     }
 

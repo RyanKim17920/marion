@@ -195,7 +195,13 @@ pub struct EventSink {
     /// every path passes through this sink, so the node's usage costs no second read of its stream
     /// or its capture, and a capture cut short does not cut it short. `None` for a harness whose
     /// row states no usage rule.
-    usage: RefCell<Option<UsageMeter>>,
+    usage: RefCell<Option<UsageMeter<'static>>>,
+    /// The row's rule for the model its stream says is running, and the latest model it named —
+    /// read as each frame is recorded, for the reason [`Self::usage`] is.
+    model: (
+        Option<&'static marion_harness::grammar::ModelName>,
+        RefCell<Option<String>>,
+    ),
     /// Where the run's figure is published as it moves ([`Self::publishing_to`]).
     publish: Option<(AgentId, std::sync::Arc<crate::spending::Spending>)>,
 }
@@ -233,16 +239,19 @@ impl EventSink {
     /// The usage rule is the harness's own (`HarnessAdapter::usage_rule`), taken here so no
     /// launcher can forget it — the same argument as §5.2's rule in [`Self::record`].
     pub fn new(writer: EventWriter, harness: Harness, init_id: String) -> Self {
-        let usage = adapter_for(harness)
-            .ok()
+        let adapter = adapter_for(harness).ok();
+        let usage = adapter
+            .as_ref()
             .and_then(|a| a.usage_rule())
             .map(UsageMeter::new);
+        let model_rule = adapter.as_ref().and_then(|a| a.model_rule());
         Self {
             writer: RefCell::new(writer),
             harness,
             init_id,
             scrub: RefCell::new(Vec::new()),
             usage: RefCell::new(usage),
+            model: (model_rule, RefCell::new(None)),
             publish: None,
         }
     }
@@ -303,6 +312,12 @@ impl EventSink {
                 turns: m.turns(),
             })
             .unwrap_or_default()
+    }
+
+    /// The model the recorded stream last said was running, or `None` where it named none (or
+    /// the row reads no model).
+    pub fn model(&self) -> Option<String> {
+        self.model.1.borrow().clone()
     }
 
     /// Record one live [`StreamEvent`] — the body of the `duplex::DuplexSpec::sink` closure.
@@ -376,6 +391,11 @@ impl EventSink {
             (StreamEvent::Frame(json), Some(m)) => m.observe(json),
             _ => false,
         };
+        if let (StreamEvent::Frame(json), Some(rule)) = (&ev, self.model.0)
+            && let Some(name) = marion_harness::grammar::model_in(rule, json)
+        {
+            *self.model.1.borrow_mut() = Some(name);
+        }
         if let (true, Some((id, spending))) = (moved, &self.publish) {
             spending.publish(id, self.spent());
         }
@@ -1482,6 +1502,36 @@ mod tests {
             None,
             "copilot's row reads no token count"
         );
+    }
+
+    /// **The model a node ran is the one its stream names**, the latest naming winning, and a row
+    /// that reads no model names none.
+    #[test]
+    fn a_sink_keeps_the_model_its_nodes_stream_says_is_running() {
+        let dir = scratch("events-model");
+        let mut s = EventSink::new(
+            EventWriter::open_path(&dir.join("claude.jsonl"), &node()).unwrap(),
+            Harness::ClaudeCode,
+            "unused".into(),
+        );
+        assert_eq!(s.model(), None);
+        s.record_line(r#"{"type":"system","subtype":"init","model":"claude-haiku-4-5-20251001"}"#);
+        s.record_line(r#"{"type":"assistant","message":{"model":"ignored"}}"#);
+        assert_eq!(s.model().as_deref(), Some("claude-haiku-4-5-20251001"));
+        s.record_capture(r#"{"type":"system","subtype":"init","model":"claude-sonnet-5"}"#);
+        assert_eq!(
+            s.model().as_deref(),
+            Some("claude-sonnet-5"),
+            "the latest names it"
+        );
+
+        let codex = EventSink::new(
+            EventWriter::open_path(&dir.join("codex.jsonl"), &node()).unwrap(),
+            Harness::Codex,
+            "unused".into(),
+        );
+        codex.record_line(r#"{"type":"thread.started","model":"gpt"}"#);
+        assert_eq!(codex.model(), None, "codex's row reads no model");
     }
 
     /// A capture read after the process died is not a live observation, and §4.1 has an axis that

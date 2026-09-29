@@ -209,8 +209,10 @@ struct Node {
     /// then asserted nothing had been recorded would pass against an adapter that dropped the
     /// field, one that invented a value, and one that did neither.
     model: &'static str,
-    /// `TaskContract.child.model` when this harness is the **child**: the value the adapter
-    /// **compiled**, which is not always the value [`Node::model`] asked for.
+    /// `TaskContract.child.model` when this harness is the **child**: the model its stream names
+    /// where the row reads one — which the recorded model must contain, since claude resolves an
+    /// asked-for `haiku` to the full id it runs — else the value the adapter **compiled**, which is
+    /// not always the value [`Node::model`] asked for.
     ///
     /// The two are deliberately separate fields rather than one, because §6.7 makes the contract an
     /// audit record of what *ran* — so the only interesting case is the one where they differ, and
@@ -233,8 +235,9 @@ const CLAUDE: Node = Node {
     // Claude Code's `--model` is legitimately omissible, and these cells pass one anyway: an
     // omitted flag makes `child.model == None` true for two unrelated reasons at once — the
     // adapter carried the absence, or the adapter drops the field — and the contract cannot tell
-    // them apart. `compile_headless` carries `--model` through verbatim, so an asked-for `haiku`
-    // must come back as `haiku`. The canned provider ignores the value.
+    // them apart. `compile_headless` carries `--model` through verbatim, and the child's `init`
+    // frame names the id `haiku` resolved to, which is what the contract records. The canned
+    // provider ignores the value.
     model: "haiku",
     child_model: Some("haiku"),
     wire: "anthropic",
@@ -1050,11 +1053,16 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
         contract.child.harness, child.harness,
         "{cell}: the contract must name the harness that actually ran (read off the adapter)"
     );
-    assert_eq!(
-        contract.child.model.as_deref(),
-        child.child_model,
-        "{cell}: `child.model` records the COMPILED, harness-native value — codex carries none \
-         however loudly one was asked for"
+    assert!(
+        match (contract.child.model.as_deref(), child.child_model) {
+            (Some(got), Some(want)) => got.contains(want),
+            (got, want) => got == want,
+        },
+        "{cell}: `child.model` records the model the child's stream names where its row reads one, \
+         else the COMPILED, harness-native value — codex carries none however loudly one was asked \
+         for. got {:?}, want one naming {:?}",
+        contract.child.model,
+        child.child_model
     );
 
     // ---- 6: the requester is the root's own AgentId. --------------------------------------------

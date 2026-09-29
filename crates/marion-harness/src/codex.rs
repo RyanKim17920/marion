@@ -378,6 +378,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     }),
     // The first JSON frame of `codex exec --json` (`s7/exec-spawn-child.stream.jsonl`):
     // `thread.started` carries `thread_id`, the value `exec resume` takes back.
+    // No frame of `exec --json` names the model (`s4`, `s6`): the model is the launch's or the
+    // operator's configured default, and marion records what argv carried.
+    model: None,
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Eq("/type", "thread.started")],
@@ -407,6 +410,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: Some(Reasoning::Within("/usage/reasoning_output_tokens")),
         input_includes_cache: true,
         fold: UsageFold::Session,
+        in_flight: None,
     }),
     // Every item kind the captures show work as (`s6/exec-*.stream.jsonl`, `s7`): an MCP call on
     // any server, a shell command, a patch. Each appears as `item.started` then `item.completed`

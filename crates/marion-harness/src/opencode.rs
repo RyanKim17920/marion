@@ -363,6 +363,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
     // of any shape names the session `run --session` takes back — once the first response streams:
     // nothing is printed while the first request is in flight (s36 `held-first/`). A resume keeps
     // the id (S31 `p0b/opencode/db1`, `db2`: the same `sessionID` on every frame of both runs).
+    // No `run --format json` frame was measured naming the model (`s13`, `s36`).
+    model: None,
     session: Some(SessionId {
         at: Where {
             frame: &[Cond::Has("/sessionID")],
@@ -400,6 +402,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: Some(Reasoning::Beside("/part/tokens/reasoning")),
         input_includes_cache: false,
         fold: UsageFold::Sum,
+        in_flight: None,
     }),
     // A `tool_use` frame per finished call, any tool, and a `text` frame per finished text part
     // (`s13/README.md`). No call id is read: opencode emits each call once, terminal only.

@@ -1878,6 +1878,15 @@ pub fn run_spawn_watched(
         es.lifecycle(marion_core::event::Lifecycle::Opened);
         es.resumed_from(req.resume.as_ref().and_then(|r| r.usage));
     }
+    // From here every way out of this function records what the stream said the node spent — the
+    // contract path below does it before the terminal records, and every early return does it as
+    // it leaves. See [`SpendOnEveryEnd`].
+    let mut spend = SpendOnEveryEnd {
+        project: &env.project_dir,
+        agent_id: &agent_id,
+        events: events.as_ref(),
+        recorded: false,
+    };
     // The node's harness session, journaled the moment its stream names one — the handle a later
     // `node/resume` hands back. Beside `events` because both read the same live frames, and for
     // the same reason: a node killed mid-run never reaches a capture.
@@ -2477,7 +2486,15 @@ pub fn run_spawn_watched(
     // compiled, harness-native constraint". So this records what went on the wire — which is
     // `None` for codex, whose `exec` surface carries no model argument, even when the request or
     // the agent type named one.
-    contract.child.model = inv.model.clone();
+    //
+    // **Except where the stream names the model that ran**, which answers the one case argv cannot:
+    // a launch that named no model ran the harness's own default, and argv's `None` would record
+    // an absence about a model that did run (live smoke s2: claude's `init` said
+    // `claude-haiku-4-5-20251001` for `--model haiku`).
+    contract.child.model = events
+        .as_ref()
+        .and_then(|es| es.model())
+        .or_else(|| inv.model.clone());
     // Where an endpoint node's requests went, beside the model that went there.
     contract.child.provider = endpoint.as_ref().map(|e| e.provider.clone());
     contract.child.route = endpoint
@@ -2515,11 +2532,10 @@ pub fn run_spawn_watched(
     }
     // **What the node spent, from the stream as it was recorded** — every generation's, added —
     // into the contract, and into the journal's one record of it, before the terminal records.
-    let spent = events.as_ref().map(|es| es.spent()).unwrap_or_default();
+    let spent = spend.record();
     if let Some(completion) = contract.completion.as_mut() {
-        completion.usage = spent.usage;
+        completion.usage = spent;
     }
-    crate::journal::record_usage(&env.project_dir, &agent_id, spent);
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
@@ -2727,6 +2743,39 @@ fn select_workspace(
                 claim,
                 PrelaunchWorktree::none(),
             ))
+        }
+    }
+}
+
+/// **A child's spend reaches the journal on every way out of its run.**
+///
+/// Measured live (s2, 2026-09-27): a claude child killed at its 180 s timeout recorded no usage,
+/// and a run whose driver returns an error — a torn duplex stream, a process marion could not
+/// journal — left through a `?` before the one line that recorded it. Whatever the stream stated,
+/// every generation's, is written once: by [`Self::record`] on the contract path, before the
+/// terminal records, or on drop by any other exit.
+struct SpendOnEveryEnd<'a> {
+    project: &'a ProjectDir,
+    agent_id: &'a AgentId,
+    events: Option<&'a crate::events::EventSink>,
+    recorded: bool,
+}
+
+impl SpendOnEveryEnd<'_> {
+    /// Record the spend now and say what it was; the drop then records nothing more.
+    fn record(&mut self) -> Option<TokenUsage> {
+        self.recorded = true;
+        let spent = self.events.map(|es| es.spent()).unwrap_or_default();
+        let usage = spent.usage;
+        crate::journal::record_usage(self.project, self.agent_id, spent);
+        usage
+    }
+}
+
+impl Drop for SpendOnEveryEnd<'_> {
+    fn drop(&mut self) {
+        if !self.recorded {
+            self.record();
         }
     }
 }
@@ -3825,6 +3874,58 @@ mod tests {
         assert!(
             !marker.exists(),
             "a descendant survived the killed process group"
+        );
+    }
+
+    /// **A child that leaves its run early still records what it spent** — the spend the s2 claude
+    /// child lost at its timeout: an early return drops the guard, the guard writes the stream's
+    /// figure to the journal, and the contract path's own record is the only one when it runs.
+    #[test]
+    fn a_run_that_leaves_early_still_journals_what_its_stream_said_it_spent() {
+        let dir = scratch("spend-on-every-end");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        std::fs::create_dir_all(project.path()).unwrap();
+        let id = AgentId("n-spend".into());
+        let sink = crate::events::EventSink::new(
+            crate::events::EventWriter::open_path(&dir.join("events.jsonl"), &id).unwrap(),
+            Harness::ClaudeCode,
+            "unused".into(),
+        );
+        // A turn in flight: one request's counters and no `result`, as a killed child leaves it.
+        sink.record_line(
+            r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":12,"output_tokens":3}}}"#,
+        );
+        let usage_records = || {
+            std::fs::read_to_string(project.journal())
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("UsageRecorded"))
+                .count()
+        };
+        let leave_early = || -> Result<(), SpawnError> {
+            let _spend = SpendOnEveryEnd {
+                project: &project,
+                agent_id: &id,
+                events: Some(&sink),
+                recorded: false,
+            };
+            Err(SpawnError::NodeAborted("the driver failed".into()))
+        };
+        assert!(leave_early().is_err());
+        assert_eq!(usage_records(), 1, "the early return journaled the spend");
+
+        let mut spend = SpendOnEveryEnd {
+            project: &project,
+            agent_id: &id,
+            events: Some(&sink),
+            recorded: false,
+        };
+        assert_eq!(spend.record().map(|u| (u.input, u.output)), Some((12, 3)));
+        drop(spend);
+        assert_eq!(
+            usage_records(),
+            2,
+            "recorded once on the contract path, not again on drop"
         );
     }
 

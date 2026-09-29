@@ -60,6 +60,14 @@ const HOME_DIR: &str = "home";
 /// layer qwen reads and rewrites (it appends `"$version": 4`).
 pub const SETTINGS_FILE: &str = "settings.json";
 
+/// Claude Code's stream grammar, measured frame for frame on 0.23.0 (item 2), with Claude's own
+/// usage rule and **not** its in-flight counters: qwen's `assistant` frames carry `usage` of zeros
+/// (`s25`), so a run cut short mid-turn would claim to have spent nothing.
+pub const STREAM: crate::grammar::StreamGrammar = crate::grammar::StreamGrammar {
+    usage: Some(crate::claude_code::USAGE),
+    ..crate::claude_code::STREAM
+};
+
 /// Qwen Code's row. Measured against 0.23.0 on 2026-09-05 (`tests/fixtures/s25/`), every probe
 /// against a canned local OpenAI Chat Completions endpoint at $0.00.
 ///
@@ -138,7 +146,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // Claude Code's grammar, measured frame for frame on 0.23.0 (item 2): `system`/`init` with
     // `session_id`, `assistant` `tool_use` `{id, name, input}`, `user` `tool_result`
     // `{tool_use_id, is_error, content}`, `result` `{subtype, is_error}`.
-    stream: Some(&crate::claude_code::STREAM),
+    stream: Some(&STREAM),
     // Both measured in `tools[]` under `--core-tools`: `write_file` lands a file
     // (`qwen-write-then-report.stdout.jsonl`), `read_file` is one of the 28 defaults. `edit` and
     // `run_shell_command` are two more of those defaults (`qwen-baseline-deferred-mcp.stdout.jsonl`'s

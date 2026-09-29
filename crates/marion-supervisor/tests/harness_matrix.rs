@@ -76,7 +76,8 @@ struct Cell {
     script: Script,
     /// The harness the contract must name — read off the adapter that actually ran.
     expected_harness: Harness,
-    /// `TaskContract.child.model`: the **compiled** value, not the asked-for one.
+    /// `TaskContract.child.model`: the model the child's stream names where its row reads one (the
+    /// recorded model must contain this), else the **compiled** value — never the asked-for one.
     expected_model: Option<&'static str>,
     /// `TaskContract.allowed_tools`: §6.7's audit record of **the constraint this harness actually
     /// ran under**, in that harness's own vocabulary — §3.1's *"the compiled, harness-native
@@ -326,11 +327,16 @@ fn assert_cell(cell: &Cell, ev: &Evidence) {
         persisted.child.harness, harness,
         "{harness}: the contract must name the harness that actually ran (read off the adapter)"
     );
-    assert_eq!(
-        persisted.child.model.as_deref(),
-        cell.expected_model,
-        "{harness}: `child.model` records the COMPILED, harness-native value — codex carries none \
-         however loudly one was asked for"
+    assert!(
+        match (persisted.child.model.as_deref(), cell.expected_model) {
+            (Some(got), Some(want)) => got.contains(want),
+            (got, want) => got == want,
+        },
+        "{harness}: `child.model` records the model the child's stream names where its row reads \
+         one, else the COMPILED, harness-native value — codex carries none however loudly one was \
+         asked for. got {:?}, want one naming {:?}",
+        persisted.child.model,
+        cell.expected_model
     );
     assert_eq!(
         persisted.allowed_tools, cell.expected_allowed_tools,
@@ -437,7 +443,9 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
         model: None,
         script: claude_code_script(),
         expected_harness: Harness::ClaudeCode,
-        expected_model: None,
+        // No model asked for, and the `init` frame still names the harness's own default, which
+        // is what ran — an id marion pins no further than that it is claude's.
+        expected_model: Some("claude"),
         // A real per-tool allowlist: the literal contents of `--allowedTools`. `claude` declares no
         // tools, so marion's own verbs are the whole of it — `report`, and the delegation verbs a
         // child at depth 1 is granted below its type's bound (`agent_type::child_verbs`).

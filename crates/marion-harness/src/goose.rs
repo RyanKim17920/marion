@@ -311,6 +311,8 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     ],
     file_changes: None,
+    // No stream frame was measured naming the model (`s26`).
+    model: None,
     session: None,
     // The terminal `complete` frame (`s26/*.stdout.jsonl`) totals the run at the top level, with
     // `total_tokens` = input + output and the cache counters beside them.
@@ -327,6 +329,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         reasoning: None,
         input_includes_cache: false,
         fold: UsageFold::Last,
+        in_flight: None,
     }),
     // An assistant `message`'s content blocks (`s26/goose-report.stdout.jsonl`): `toolRequest` is a
     // call to any extension's tool, `text` the model's words.
