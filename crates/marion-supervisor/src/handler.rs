@@ -1687,6 +1687,9 @@ mod steer;
 /// `node/cancel`: freeze a subtree, abort it bottom-up, kill what outlives its grace.
 mod cancel;
 
+/// Token budgets: register each node's, and act on a line its spend crosses.
+mod budget;
+
 /// A [`Handle`](crate::serve::Handle) backed by a running registry.
 ///
 /// Descriptions still come only from the journal. Quit is the deliberately different half: it
@@ -1772,6 +1775,10 @@ pub struct RegistryHandle {
     /// moves it ([`crate::spending`]) — no file read and no timer. An ended node's figure is the
     /// journal's, which the registry already holds.
     spending: Arc<crate::spending::Spending>,
+    /// **Every running node's spend against its budget** ([`crate::budget`]), fed by
+    /// [`Self::spending`] as figures move; each line crossed is acted on by [`Self::budget_crossed`]
+    /// on the one enforcer thread an owning handle starts.
+    budgets: Arc<crate::budget::BudgetBook>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1956,34 +1963,51 @@ impl RegistryHandle {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })));
-        let spending = Arc::new(crate::spending::Spending::notifying(live.changes()));
-        Arc::new_cyclic(|me| RegistryHandle {
-            me: me.clone(),
-            live,
-            socket_path,
-            inboxes,
-            shared: Mutex::new(Shared::default()),
-            runtime,
-            nodes: Mutex::new(HashMap::new()),
-            ended: std::sync::Condvar::new(),
-            spawn_env,
-            panes: Mutex::new(Panes::default()),
-            pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),
-            pane_replacement: Mutex::new(()),
-            #[cfg(test)]
-            pane_listener_hook: Mutex::new(None),
-            #[cfg(test)]
-            pane_delivery_hook: Mutex::new(None),
-            #[cfg(test)]
-            pane_attach_selection_hook: Mutex::new(None),
-            spawn_decision: Mutex::new(()),
-            races: crate::race::Races::default(),
-            sent: Mutex::new(HashMap::new()),
-            spending,
-            quit: Mutex::new(()),
-            quit_waived_grace: AtomicBool::new(false),
-            stopped_reported: AtomicBool::new(false),
-            exiting: AtomicBool::new(false),
+        let budgets = Arc::new(crate::budget::BudgetBook::default());
+        // Only a handle that runs nodes enforces: a describing handle has nothing to cancel.
+        let spending = crate::spending::Spending::notifying(live.changes());
+        let (spending, crossed) = if spawn_env.is_some() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (
+                Arc::new(spending.enforcing(Arc::clone(&budgets), tx)),
+                Some(rx),
+            )
+        } else {
+            (Arc::new(spending), None)
+        };
+        Arc::new_cyclic(|me: &std::sync::Weak<RegistryHandle>| {
+            if let Some(rx) = crossed {
+                Self::enforce_budgets(me.clone(), rx);
+            }
+            RegistryHandle {
+                me: me.clone(),
+                live,
+                socket_path,
+                inboxes,
+                shared: Mutex::new(Shared::default()),
+                runtime,
+                nodes: Mutex::new(HashMap::new()),
+                ended: std::sync::Condvar::new(),
+                spawn_env,
+                panes: Mutex::new(Panes::default()),
+                pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),
+                pane_replacement: Mutex::new(()),
+                #[cfg(test)]
+                pane_listener_hook: Mutex::new(None),
+                #[cfg(test)]
+                pane_delivery_hook: Mutex::new(None),
+                #[cfg(test)]
+                pane_attach_selection_hook: Mutex::new(None),
+                spawn_decision: Mutex::new(()),
+                races: crate::race::Races::default(),
+                sent: Mutex::new(HashMap::new()),
+                spending,
+                budgets,
+                quit: Mutex::new(()),
+                quit_waived_grace: AtomicBool::new(false),
+                stopped_reported: AtomicBool::new(false),
+                exiting: AtomicBool::new(false),
+            }
         })
     }
 
@@ -3369,6 +3393,7 @@ impl RegistryHandle {
             node.pgid = (pgid > 0).then_some(pgid);
             node.started_at = Some(std::time::SystemTime::now());
         }
+        self.register_budget(agent_id);
     }
 
     /// `run_spawn` returned. **The entry is kept, not removed**: it is what tells a later caller

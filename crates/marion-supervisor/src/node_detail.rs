@@ -285,6 +285,9 @@ fn fold_messages(
                         format!("child {} ended {status}", child.0)
                     }
                     MessageSource::ReportRequested => "marion, asking for its report".to_string(),
+                    MessageSource::BudgetWarning { spent, limit, .. } => {
+                        format!("marion: budget {spent}/{limit}")
+                    }
                 };
                 by_node.entry(q.agent_id).or_default().push((
                     q.message_id,

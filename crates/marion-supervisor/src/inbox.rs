@@ -328,6 +328,12 @@ pub enum Source {
     },
     /// Marion itself, asking a child whose turn ended without a `report` to make one.
     ReportRequested,
+    /// Marion itself: the recipient's spend crossed its budget's warn line ([`crate::budget`]).
+    BudgetWarning {
+        scope: marion_core::budget::BudgetScope,
+        spent: u64,
+        limit: u64,
+    },
 }
 
 impl Source {
@@ -347,6 +353,15 @@ impl Source {
                 status: status.clone(),
             },
             Source::ReportRequested => MessageSource::ReportRequested,
+            Source::BudgetWarning {
+                scope,
+                spent,
+                limit,
+            } => MessageSource::BudgetWarning {
+                scope: *scope,
+                spent: *spent,
+                limit: *limit,
+            },
         }
     }
 }
@@ -425,6 +440,7 @@ pub fn render(msg: &Message) -> String {
             ..
         } => child_ended_text(agent_type, *root, &task_id.0, &msg.text),
         Source::ReportRequested => msg.text.clone(),
+        Source::BudgetWarning { .. } => msg.text.clone(),
     }
 }
 
@@ -434,6 +450,24 @@ pub const REPORT_REQUEST: &str = "marion: your turn ended without a call to mari
     tool, so whoever delegated this task has not heard what you did. Call `report` now, exactly \
     once, with a one-sentence `narrative` of all the work you did on this task (including any \
     since an earlier report) and the `result_commits` you made. Do not start new work.";
+
+/// **marion's warning that a node's budget is nearly spent** — what its next turn reads.
+pub fn budget_warning_text(
+    scope: marion_core::budget::BudgetScope,
+    spent: u64,
+    limit: u64,
+) -> String {
+    let whose = match scope {
+        marion_core::budget::BudgetScope::Node => "your token budget",
+        marion_core::budget::BudgetScope::Tree => {
+            "the token budget you share with the agents you spawned"
+        }
+    };
+    format!(
+        "marion: {spent} of {limit} tokens of {whose} are spent. At {limit} marion stops you and \
+         everything below you, keeping the work you committed: wrap up, commit, and report now."
+    )
+}
 
 /// **The announcement that a backgrounded node ended** — what the per-child bridge pushes over
 /// MCP today (`mcp.rs`'s `watch`) and what [`render`] makes of a [`Source::ChildEnded`], one text

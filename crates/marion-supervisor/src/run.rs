@@ -2915,6 +2915,21 @@ fn record_review(
 fn record_cancelled(contract: &mut TaskContract, by: Option<&marion_core::journal::CancelBy>) {
     if let Some(completion) = contract.completion.as_mut() {
         completion.status = ExitStatus::Cancelled;
+        // A budget that stopped the run is its cause, for a parent to read without parsing words.
+        if let Some(marion_core::journal::CancelBy::Budget {
+            owner,
+            scope,
+            spent,
+            limit,
+        }) = by
+        {
+            completion.failure_cause = Some(marion_core::contract::FailureCause::Budget {
+                owner: owner.clone(),
+                scope: *scope,
+                spent: *spent,
+                limit: *limit,
+            });
+        }
         let who = by.map_or_else(|| "the operator".to_string(), |b| b.describe());
         completion.exit.description = format!(
             "marion ended this node on a cancel by {who} (node/cancel, node/kill or session/quit \

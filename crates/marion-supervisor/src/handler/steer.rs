@@ -146,7 +146,7 @@ impl RegistryHandle {
     /// How a message reaches `agent`'s next turn: its harness's row, in the shape marion is
     /// running it in — interactive iff marion hosts a live terminal for it (a pane, or a native
     /// session's).
-    fn delivery_of(&self, agent: &AgentId, harness: Harness) -> TurnDelivery {
+    pub(super) fn delivery_of(&self, agent: &AgentId, harness: Harness) -> TurnDelivery {
         let shape = if lock(&self.panes).has_live(agent) {
             NodeShape::Interactive
         } else {

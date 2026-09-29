@@ -66,6 +66,12 @@ pub struct Spending {
     /// wake (a figure read only on request).
     wake: Option<std::sync::Arc<crate::wake::Signal>>,
     unannounced: std::sync::atomic::AtomicBool,
+    /// Where each moved figure is checked against the budgets ([`crate::budget`]), and where the
+    /// lines it crosses are sent to be acted on. `None` for a view that enforces nothing.
+    budgets: Option<(
+        std::sync::Arc<crate::budget::BudgetBook>,
+        std::sync::mpsc::Sender<crate::budget::Crossing>,
+    )>,
 }
 
 impl Spending {
@@ -78,16 +84,36 @@ impl Spending {
         }
     }
 
+    /// This map, with its moved figures also checked against `book` and each line crossed sent to
+    /// `crossed`.
+    pub fn enforcing(
+        self,
+        book: std::sync::Arc<crate::budget::BudgetBook>,
+        crossed: std::sync::mpsc::Sender<crate::budget::Crossing>,
+    ) -> Self {
+        Spending {
+            budgets: Some((book, crossed)),
+            ..self
+        }
+    }
+
     /// The run in progress of `id` now stands at `spent`. Called by the node's sink, on its reader
     /// thread, each time a frame moves the figure: a short lock, no I/O.
     pub fn publish(&self, id: &AgentId, spent: Spent) {
         use std::sync::atomic::Ordering::SeqCst;
+        let total = spent.usage.map_or(0, |u| u.total());
         if self.lock().insert(id.clone(), spent.clone()).as_ref() != Some(&spent) {
             self.version.fetch_add(1, SeqCst);
             if !self.unannounced.swap(true, SeqCst)
                 && let Some(wake) = &self.wake
             {
                 wake.notify();
+            }
+            if let Some((book, crossed)) = &self.budgets {
+                for c in book.observe(id, total) {
+                    // Acted on off this reader thread; a dropped receiver is a supervisor exiting.
+                    let _ = crossed.send(c);
+                }
             }
         }
     }
@@ -143,6 +169,39 @@ impl Spending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A figure that moves is checked against the budgets, and only a move is**: the line it
+    /// crosses is sent once, and publishing the same figure again sends nothing.
+    #[test]
+    fn a_published_figure_that_crosses_a_budget_line_sends_the_crossing() {
+        let book = std::sync::Arc::new(crate::budget::BudgetBook::default());
+        let id = AgentId("n".into());
+        book.register(
+            &id,
+            None,
+            Some(marion_core::budget::Budget {
+                tokens: Some(100),
+                ..Default::default()
+            }),
+            0,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = Spending::default().enforcing(book, tx);
+        let spent = |n| Spent {
+            usage: Some(tokens(n)),
+            turns: vec![],
+        };
+        s.publish(&id, spent(50));
+        assert!(rx.try_recv().is_err());
+        s.publish(&id, spent(120));
+        s.publish(&id, spent(120));
+        let c = rx.try_recv().expect("the limit crossed");
+        assert_eq!(
+            (c.level, c.spent),
+            (marion_core::budget::BudgetLevel::Stop, 120)
+        );
+        assert!(rx.try_recv().is_err(), "once");
+    }
 
     fn tokens(input: u64) -> TokenUsage {
         TokenUsage {

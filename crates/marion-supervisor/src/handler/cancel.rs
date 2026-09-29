@@ -569,6 +569,7 @@ mod tests {
                     RecordKind::KillIntent(k) => Some(("KillIntent", k.agent_id.0)),
                     RecordKind::KillConfirmed(k) => Some(("KillConfirmed", k.agent_id.0)),
                     RecordKind::Exited(e) => Some(("Exited", e.agent_id.0)),
+                    RecordKind::BudgetCrossed(b) => Some(("BudgetCrossed", b.agent_id.0)),
                     _ => None,
                 })
                 .collect()
@@ -621,6 +622,51 @@ mod tests {
                 by: CancelBy::Operator,
                 forced: false,
                 verb: "channel".into(),
+            })
+        );
+    }
+
+    /// **A spent budget cancels its owner and the subtree below it, attributed to the budget** —
+    /// the record of the line comes first, then the cancel the way `node/cancel` runs it. A warn
+    /// line journals the crossing and cancels nothing.
+    #[test]
+    fn a_spent_budget_cancels_its_owners_subtree_and_says_it_was_the_budget() {
+        use marion_core::budget::{BudgetLevel, BudgetScope};
+        let fx = Fx::new("cancel-budget");
+        fx.running("root", None, Harness::Pi, 101, true);
+        fx.running("child", Some(("root", 1)), Harness::Pi, 102, true);
+        fx.honours("root", Duration::from_millis(20));
+        fx.honours("child", Duration::from_millis(20));
+        let crossing = |level| crate::budget::Crossing {
+            owner: id("root"),
+            scope: BudgetScope::Tree,
+            level,
+            spent: 1_050,
+            limit: 1_000,
+        };
+
+        fx.handle.budget_crossed(crossing(BudgetLevel::Warn));
+        assert_eq!(fx.trail(), [("BudgetCrossed", "root".to_string())]);
+
+        fx.handle.budget_crossed(crossing(BudgetLevel::Stop));
+        let trail = fx.trail();
+        assert_eq!(trail[1], ("BudgetCrossed", "root".to_string()), "{trail:?}");
+        assert!(
+            trail[2..].contains(&("CancelRequested", "child".to_string()))
+                && trail[2..].contains(&("CancelRequested", "root".to_string())),
+            "{trail:?}"
+        );
+        assert_eq!(
+            fx.node("child").cancel.map(|c| c.by),
+            Some(CancelBy::Cascade { from: id("root") })
+        );
+        assert_eq!(
+            fx.node("root").cancel.map(|c| c.by),
+            Some(CancelBy::Budget {
+                owner: id("root"),
+                scope: BudgetScope::Tree,
+                spent: 1_050,
+                limit: 1_000,
             })
         );
     }

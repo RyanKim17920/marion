@@ -24,6 +24,7 @@ pub mod app_server;
 pub mod attach;
 pub mod background;
 pub mod bridge;
+pub mod budget;
 /// The operator's `env_passthrough`: variables they hand one agent type's nodes past the inherit
 /// filter, from their own user-level config.
 pub mod child_env;

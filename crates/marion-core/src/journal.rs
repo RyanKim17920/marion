@@ -720,6 +720,12 @@ pub enum MessageSource {
     /// Marion itself, asking a child that ended a turn without calling `report` to report — at
     /// most once per node (§7.6's grace turn).
     ReportRequested,
+    /// Marion itself, warning the recipient that its budget's warn line is crossed.
+    BudgetWarning {
+        scope: crate::budget::BudgetScope,
+        spent: u64,
+        limit: u64,
+    },
 }
 
 /// See [`RecordKind::MessageDelivered`].
