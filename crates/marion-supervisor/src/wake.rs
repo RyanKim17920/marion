@@ -12,10 +12,11 @@
 //! - [`Watch`] makes a **file** pollable: kqueue `EVFILT_VNODE` on macOS and the BSDs, inotify on
 //!   Linux. It is how a process learns that *another* process appended to a journal.
 //!
-//! **None of these is ever the only path to correctness.** Every loop that waits on one keeps a
-//! bounded safety timeout, so a wake that is lost — a platform without a watch, a file replaced
-//! under the watch, a descriptor limit — costs latency up to that bound and never a hang. What the
-//! wakes buy is that the bound can be seconds rather than milliseconds.
+//! **None of these is ever the only path to correctness.** Every wait through [`wait_until`] looks
+//! again after [`LOST_WAKE_BACKSTOP`] at the latest, deadline or none, so a wake that is lost — a
+//! race in a drain, a platform without a watch, a file replaced under the watch, a descriptor
+//! limit — costs latency up to that bound and never a hang. What the wakes buy is that the bound
+//! can be tens of seconds rather than milliseconds.
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
@@ -592,17 +593,37 @@ pub fn step_child(
 /// on has a descriptor and a wait sleeps until its event or its deadline.
 pub const DEGRADED_RECHECK: Duration = Duration::from_millis(50);
 
-/// Block until one of `fds` is readable or `deadline` passes (`None`: no deadline), and say which
-/// were. A `None` entry is a source that could not be made pollable, and caps the wait at
-/// [`DEGRADED_RECHECK`] so that source is still looked at. Callers re-examine their state after
-/// every return, as with [`wait_readable`].
-pub fn wait_until(fds: &[Option<BorrowedFd<'_>>], deadline: Option<Instant>) -> Vec<bool> {
-    let mut timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+/// The longest any [`wait_until`] sleeps before its caller looks again, deadline or none.
+///
+/// Every event path marion waits on is meant to be complete, and a wake is still lost now and then
+/// to a race nobody has found yet: the registry follower once slept forever over a halt its own
+/// drain had swallowed, which hung a supervisor's exit and a CI job with it. With this bound such a
+/// loss costs at most this much latency, and an idle waiter wakes once per bound to look again (an
+/// empty supervisor measured 0.0 -> 0.4 context switches/s for it, across all its waiting threads).
+pub const LOST_WAKE_BACKSTOP: Duration = Duration::from_secs(30);
+
+/// How long one [`wait_until`] may sleep: to its deadline, never past [`LOST_WAKE_BACKSTOP`], and
+/// no more than [`DEGRADED_RECHECK`] when a source has no descriptor.
+fn wait_budget(fds: &[Option<BorrowedFd<'_>>], deadline: Option<Instant>) -> Duration {
+    let mut budget = deadline.map_or(LOST_WAKE_BACKSTOP, |d| {
+        d.saturating_duration_since(Instant::now())
+            .min(LOST_WAKE_BACKSTOP)
+    });
     if fds.iter().any(Option::is_none) {
-        timeout = Some(timeout.map_or(DEGRADED_RECHECK, |t| t.min(DEGRADED_RECHECK)));
+        budget = budget.min(DEGRADED_RECHECK);
     }
+    budget
+}
+
+/// Block until one of `fds` is readable or `deadline` passes (`None`: no deadline of the caller's
+/// own), and say which were. A `None` entry is a source that could not be made pollable, and caps
+/// the wait at [`DEGRADED_RECHECK`] so that source is still looked at. No wait outlasts
+/// [`LOST_WAKE_BACKSTOP`]: callers re-examine their state after every return, as with
+/// [`wait_readable`], so an early return is a look that found nothing.
+pub fn wait_until(fds: &[Option<BorrowedFd<'_>>], deadline: Option<Instant>) -> Vec<bool> {
+    let timeout = wait_budget(fds, deadline);
     let present: Vec<BorrowedFd<'_>> = fds.iter().flatten().copied().collect();
-    let mut ready = wait_readable(&present, timeout).into_iter();
+    let mut ready = wait_readable(&present, Some(timeout)).into_iter();
     fds.iter()
         .map(|fd| fd.is_some() && ready.next().unwrap_or(false))
         .collect()
@@ -1194,6 +1215,25 @@ mod tests {
             assert!(readable(exit.fd(), BOUND));
         }
         child.wait().unwrap();
+    }
+
+    /// **No wait is unbounded**: a wait with no deadline, or one further off than the backstop,
+    /// sleeps at most [`LOST_WAKE_BACKSTOP`], so a lost wake costs latency and never a hang. A
+    /// nearer deadline, and a source with no descriptor, still bound it below that.
+    #[test]
+    fn every_wait_is_capped_at_the_lost_wake_backstop() {
+        let pipe = Pipe::new().unwrap();
+        let fds = [Some(pipe.fd())];
+        assert_eq!(wait_budget(&fds, None), LOST_WAKE_BACKSTOP);
+        let far = Instant::now() + LOST_WAKE_BACKSTOP * 10;
+        assert_eq!(wait_budget(&fds, Some(far)), LOST_WAKE_BACKSTOP);
+        let near = wait_budget(&fds, Some(Instant::now() + BOUND));
+        assert!(near <= BOUND && near > Duration::ZERO, "{near:?}");
+        assert_eq!(
+            wait_budget(&[None, Some(pipe.fd())], None),
+            DEGRADED_RECHECK
+        );
+        assert_eq!(wait_budget(&fds, Some(Instant::now())), Duration::ZERO);
     }
 
     #[test]

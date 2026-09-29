@@ -448,6 +448,13 @@ impl LiveRegistry {
     /// after it. The stop flag is waited on through its own descriptor, never through the append
     /// pipe, so a halt cannot be lost to a drain.
     pub fn follow(registry: Registry) -> Self {
+        Self::follow_with(registry, None)
+    }
+
+    /// [`Self::follow`], with `before_drain` run on the follower thread at the top of every pass,
+    /// just before the append pipe is drained — the instant a halt is easiest to lose. `None`
+    /// everywhere but a test that has to land a halt exactly there.
+    fn follow_with(registry: Registry, before_drain: Option<BeforeDrain>) -> Self {
         let path = registry.path().to_path_buf();
         let inner = Arc::new(Mutex::new(registry));
         let stop = Arc::new(crate::wake::Flag::new());
@@ -465,6 +472,9 @@ impl LiveRegistry {
             std::thread::spawn(move || {
                 let mut watch = crate::wake::Watch::new(&path);
                 loop {
+                    if let Some(hook) = &before_drain {
+                        hook(&stop);
+                    }
                     // Drain, then look. The stop flag has a descriptor of its own in the wait
                     // below, so a halt is never a wake this drain could swallow.
                     if let Some(wake) = &wake {
@@ -539,6 +549,9 @@ impl LiveRegistry {
         }
     }
 }
+
+/// [`LiveRegistry::follow_with`]'s test hook: handed the follower's stop flag.
+type BeforeDrain = Box<dyn Fn(&crate::wake::Flag) + Send>;
 
 impl Drop for LiveRegistry {
     /// A dropped handle must not leave a thread polling a file forever. `halt` is idempotent, so
@@ -1178,8 +1191,8 @@ mod tests {
         );
     }
 
-    /// How long a woken follower may take: far above a scheduler hiccup. The follower has no
-    /// safety poll, so only a wake explains a pickup within it.
+    /// How long a woken follower may take: far above a scheduler hiccup, and far below
+    /// [`crate::wake::LOST_WAKE_BACKSTOP`], so only a wake explains a pickup within it.
     const WAKE_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// Wait for `cond` on a follower. On failure the follower is leaked rather than dropped, so a
@@ -1237,6 +1250,109 @@ mod tests {
             "an in-process append waited for the safety poll",
         );
         live.stop();
+    }
+
+    /// **Stress: an append racing the follower's drain is never lost.** Each round appends from
+    /// another thread while a fresh follower drains and folds, and waits for every record within
+    /// a bound far below [`crate::wake::LOST_WAKE_BACKSTOP`], so only a wake explains a pass.
+    #[test]
+    fn a_follower_loses_no_append_to_a_racing_drain() {
+        const ROUNDS: usize = 100;
+        const PER_ROUND: usize = 3;
+        let dir = scratch("registry-wake-stress-append");
+        // One journal for every round: this process keeps one append handle per path for its life.
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        for round in 0..ROUNDS {
+            let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
+            let names: Vec<String> = (0..PER_ROUND).map(|i| format!("r{round}c{i}")).collect();
+            let appender = {
+                let (path, names) = (path.clone(), names.clone());
+                std::thread::spawn(move || {
+                    for name in &names {
+                        crate::journal::append_at(&path, intent(name, Some("root"))).unwrap();
+                    }
+                })
+            };
+            appender.join().unwrap();
+            let live = woken_within(
+                live,
+                |r| names.iter().all(|n| r.tree().get(&id(n)).is_some()),
+                &format!("round {round}: an in-process append was not picked up"),
+            );
+            live.stop();
+        }
+    }
+
+    /// **A halt that lands just before the follower drains its append pipe still ends it.** The
+    /// hook raises the stop flag exactly there on the first pass, the way [`LiveRegistry::stop`]
+    /// does; the follower must see it on that pass or be woken by the flag's own descriptor.
+    ///
+    /// Mutation: read the stop flag before the drain and leave its descriptor out of the wait (the
+    /// shape before the halt fix): the flag is read `false`, the halt lands after, nothing else
+    /// rings, and the join bound fails.
+    #[test]
+    fn a_halt_landing_just_before_the_drain_is_not_lost() {
+        let dir = scratch("registry-halt-before-drain");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        let first = std::sync::atomic::AtomicBool::new(true);
+        let live = LiveRegistry::follow_with(
+            Registry::boot_path(&path).unwrap(),
+            Some(Box::new(move |stop: &crate::wake::Flag| {
+                if first.swap(false, Ordering::SeqCst) {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            })),
+        );
+        let (stopped, joined) = std::sync::mpsc::channel();
+        let follower = live;
+        std::thread::spawn(move || {
+            // Only the flag raised inside the hook can end the follower here: join without
+            // raising it again, so a halt lost at the drain is a timeout below.
+            let mut follower = follower;
+            if let Some(t) = follower.thread.take() {
+                let _ = t.join();
+            }
+            let _ = stopped.send(());
+        });
+        assert!(
+            joined.recv_timeout(WAKE_BOUND).is_ok(),
+            "a halt raised just before the drain was lost; the follower still waits"
+        );
+    }
+
+    /// **Stress: a halt racing the follower's first drain, and an append ringing the same pipe, is
+    /// never lost.** Each round halts a follower the moment it is started, while another thread
+    /// appends. A lost halt fails the join bound; the follower is then leaked rather than joined,
+    /// so a regression reports instead of hanging the suite — and in production the backstop turns
+    /// the same loss into latency. The race's window is nanoseconds wide, so this is a net under
+    /// timing changes, not the proof: [`a_halt_landing_just_before_the_drain_is_not_lost`] lands
+    /// the halt in the window on purpose.
+    #[test]
+    fn a_follower_loses_no_halt_to_a_racing_drain() {
+        const ROUNDS: usize = 500;
+        let dir = scratch("registry-wake-stress-halt");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("root", None)));
+        for round in 0..ROUNDS {
+            let live = LiveRegistry::follow(Registry::boot_path(&path).unwrap());
+            let racer = {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    crate::journal::append_at(&path, intent(&format!("h{round}"), Some("root")))
+                        .unwrap();
+                })
+            };
+            let (stopped, joined) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = stopped.send(live.stop());
+            });
+            if joined.recv_timeout(WAKE_BOUND).is_err() {
+                panic!("round {round}: a halt racing an append was lost; the follower still waits");
+            }
+            racer.join().unwrap();
+        }
     }
 
     /// A project that has never run has no journal. The first record creates it, and that creation
