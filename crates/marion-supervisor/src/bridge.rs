@@ -495,6 +495,26 @@ fn tools_describing(agent_type_description: &str) -> Value {
             }
         },
         {
+            // **§2's `node/cancel`, from a node**, addressed as `steer` is and authorized the same
+            // way by the supervisor: only a node below the caller. A cancel ends each turn the way
+            // its harness allows and keeps the work it committed, so the child's contract (from
+            // `wait`) is still the answer, marked cancelled.
+            "name": "cancel",
+            "description": "Stop a running child agent of yours — or any agent below you — and \
+                            everything it spawned. Each is asked to end its turn the way its \
+                            harness allows, and killed only if it does not within its grace; \
+                            the work each committed is kept on its branch. The reply says how many agents ended and how many had \
+                            to be killed; `wait` on the task_id still returns the child's \
+                            contract, marked cancelled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": ID_DESCRIPTION}
+                },
+                "required": ["id"]
+            }
+        },
+        {
             "name": "report",
             "description": "Return your result to marion. Call this exactly once when the task \
                             is done. Your final assistant message is NOT the return value.",
@@ -1888,7 +1908,9 @@ mod tests {
         // `steer` sits after the survey: a caller looks at its children, then redirects one.
         assert_eq!(
             names,
-            vec!["spawn", "wait", "status", "list", "steer", "report"]
+            vec![
+                "spawn", "wait", "status", "list", "steer", "cancel", "report"
+            ]
         );
         let s = t.to_string();
         assert!(

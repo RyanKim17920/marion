@@ -116,7 +116,7 @@ pub use marion_harness::mcp_bridge::{
 ///
 /// The same five a child below its bound is granted (`agent_type::child_verbs`), so the root's
 /// delegation grant and a child's are one list.
-pub const ROOT_VERBS: [&str; 5] = marion_core::agent_type::DELEGATION_VERBS;
+pub const ROOT_VERBS: [&str; 6] = marion_core::agent_type::DELEGATION_VERBS;
 
 /// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
 /// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**
@@ -3815,16 +3815,17 @@ mod tests {
     fn the_root_allowlist_is_every_verb_an_m1_root_can_reach() {
         // Omitting a reachable verb denies a call that then blocks until the root's bound expires.
         // `steer` because a root may redirect its own descendants (§5.4), and the verb is declared.
+        // `cancel` because it may stop them, on the same authority.
         assert_eq!(
             ROOT_VERBS.to_vec(),
-            vec!["spawn", "status", "wait", "list", "steer"]
+            vec!["spawn", "status", "wait", "list", "steer", "cancel"]
         );
         assert!(
             !ROOT_VERBS.contains(&"report"),
             "report is rejected on a node without a contract, and a root has none"
         );
-        // And on Claude Code the adapter spells them to exactly the four strings the constant used
-        // to carry, so a claude root's `--allowedTools` is byte-identical to before the rename.
+        // And on Claude Code the adapter spells each `mcp__marion__<verb>`, the strings a claude
+        // root's `--allowedTools` carries.
         let claude = adapter_for(Harness::ClaudeCode).unwrap();
         assert_eq!(
             ROOT_VERBS
@@ -3836,7 +3837,8 @@ mod tests {
                 "mcp__marion__status",
                 "mcp__marion__wait",
                 "mcp__marion__list",
-                "mcp__marion__steer"
+                "mcp__marion__steer",
+                "mcp__marion__cancel"
             ]
         );
         // Whereas copilot, the other adapter that compiles this list, spells them its own way.
@@ -3960,7 +3962,7 @@ mod tests {
         );
         assert_eq!(
             allowed,
-            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,Read,Write,Edit,Bash",
+            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,mcp__marion__steer,mcp__marion__cancel,Read,Write,Edit,Bash",
             "permission must carry the same grant beside marion's own verbs, or the tool exists \
              and every call to it is refused (§11 items 22 and 24)"
         );

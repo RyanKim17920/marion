@@ -764,7 +764,8 @@ fn cancel_main(argv: &[String]) -> Result<ExitCode, Exit> {
     let ended = find_node(&args.agent_id, &repo, &state).and_then(|agent_id| {
         let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
         let answered = if force {
-            marion_supervisor::courier::kill(sock.socket(), &agent_id).map(|r| (r.state, Vec::new()))
+            marion_supervisor::courier::kill(sock.socket(), &agent_id)
+                .map(|r| (r.state, Vec::new()))
         } else {
             marion_supervisor::courier::cancel(sock.socket(), &agent_id).map(|r| (r.state, r.nodes))
         };
@@ -4890,7 +4891,7 @@ mod tests {
             );
         }
         let declared = mcp_tool_names();
-        assert_eq!(declared, ["spawn", "wait", "status", "list", "steer"]);
+        assert_eq!(declared, ["spawn", "wait", "status", "list", "steer", "cancel"]);
         let mcp = (cli::verb("mcp").unwrap().help)();
         assert!(mcp.contains(&declared.join(", ")), "{mcp}");
     }

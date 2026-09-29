@@ -587,7 +587,9 @@ fn tools_list_names_are_bare_and_in_the_pinned_order() {
         .collect();
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list", "steer", "report"],
+        vec![
+            "spawn", "wait", "status", "list", "steer", "cancel", "report"
+        ],
         "the order is pinned because it is what the model reads first"
     );
 

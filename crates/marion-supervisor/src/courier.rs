@@ -402,10 +402,20 @@ pub fn kill(socket: &Path, agent_id: &AgentId) -> Result<NodeKillResult, SpawnEr
 /// answer names every node ended and whether it had to be killed. A refusal is the supervisor's
 /// sentence, carried verbatim.
 pub fn cancel(socket: &Path, agent_id: &AgentId) -> Result<NodeCancelResult, SpawnError> {
+    cancel_as(socket, agent_id, None)
+}
+
+/// [`cancel`] as `caller` — a node ending one of its descendants, proved by its token — or as the
+/// operator where `caller` is `None`.
+pub fn cancel_as(
+    socket: &Path,
+    agent_id: &AgentId,
+    caller: Option<marion_core::proto::SpawnCaller>,
+) -> Result<NodeCancelResult, SpawnError> {
     match Conn::dial(socket)?.ask(
         Call::NodeCancel(NodeCancelParams {
             agent_id: agent_id.clone(),
-            caller: None,
+            caller,
         }),
         CANCEL_ANSWER_BOUND,
         &format!(

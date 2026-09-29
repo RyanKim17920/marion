@@ -276,6 +276,7 @@ fn handle_tool_call(
         "status" => tool_status(who, bg, id, args).unwrap_or_else(|refused| refused),
         "list" => tool_list(who, id).unwrap_or_else(|refused| refused),
         "steer" => tool_steer(who, bg, id, args).unwrap_or_else(|refused| refused),
+        "cancel" => tool_cancel(who, bg, id, args).unwrap_or_else(|refused| refused),
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
 }
@@ -993,25 +994,7 @@ fn tool_steer(
              next turn boundary. Nothing was queued.",
         ));
     };
-    let agent_id = match address(bg, args).map_err(|e| refuse(&e))? {
-        Some(Address::Task(task_id)) => match bg.node_of(&task_id) {
-            Some((agent_id, _)) => agent_id,
-            None => {
-                return Err(refuse(&format!(
-                    "marion: this bridge has no record of task_id {task_id:?}; it knows only the \
-                     handles its own `spawn` calls returned, in this process. Pass the child's \
-                     agent id from `list` as `id` instead. Nothing was queued."
-                )));
-            }
-        },
-        Some(Address::Agent(agent_id)) => agent_id,
-        None => {
-            return Err(refuse(
-                "marion: `steer` needs an `id`: the task_id from a `spawn` handle, or an agent id \
-                 that `list` shows. Nothing was queued.",
-            ));
-        }
-    };
+    let agent_id = node_address(bg, "steer", "Nothing was queued", args).map_err(|e| refuse(&e))?;
     let (sock, _) = paths_or_refuse(who, id)?;
     let (caller, _) = spawn_identity(who, id)?;
     match courier::steer(sock.socket(), &agent_id, message, caller) {
@@ -1022,6 +1005,77 @@ fn tool_steer(
         )),
         Err(e) => Err(refuse(&format!("marion: {e}"))),
     }
+}
+
+/// **Which node a `steer` or `cancel` names**: [`address`] resolved to the node — a task this
+/// bridge's own `spawn` returned, or an agent id `list` shows. `Err` is the refusal's sentence,
+/// ending with `nothing`, what the verb did not do.
+fn node_address(
+    bg: &background::Background,
+    verb: &str,
+    nothing: &str,
+    args: &serde_json::Value,
+) -> Result<AgentId, String> {
+    match address(bg, args)? {
+        Some(Address::Task(task_id)) => bg
+            .node_of(&task_id)
+            .map(|(agent_id, _)| agent_id)
+            .ok_or_else(|| {
+                format!(
+                    "marion: this bridge has no record of task_id {task_id:?}; it knows only the \
+                 handles its own `spawn` calls returned, in this process. Pass the child's \
+                 agent id from `list` as `id` instead. {nothing}."
+                )
+            }),
+        Some(Address::Agent(agent_id)) => Ok(agent_id),
+        None => Err(format!(
+            "marion: `{verb}` needs an `id`: the task_id from a `spawn` handle, or an agent id \
+             that `list` shows. {nothing}."
+        )),
+    }
+}
+
+/// **§2's `node/cancel`, from this surface**: a node cancels one below it, proved by its token; a
+/// top-level client cancels as the operator. The supervisor authorizes it, as it does `steer`.
+fn tool_cancel(
+    who: &Principal,
+    bg: &background::Background,
+    id: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let refuse = |text: &str| bridge::tool_result(id, text, true);
+    let agent_id =
+        node_address(bg, "cancel", "Nothing was cancelled", args).map_err(|e| refuse(&e))?;
+    let (sock, _) = paths_or_refuse(who, id)?;
+    let (caller, _) = spawn_identity(who, id)?;
+    match courier::cancel_as(sock.socket(), &agent_id, caller) {
+        Ok(r) => Ok(bridge::tool_result(
+            id,
+            &cancelled_text(&agent_id, &r.nodes),
+            false,
+        )),
+        Err(e) => Err(refuse(&format!("marion: {e}"))),
+    }
+}
+
+/// What a finished cancel tells the model: how many agents ended, and how many were killed.
+fn cancelled_text(
+    agent_id: &AgentId,
+    nodes: &[marion_core::proto::result::CancelledNode],
+) -> String {
+    let below = nodes.len().saturating_sub(1);
+    let forced = nodes.iter().filter(|n| n.forced).count();
+    let mut text = format!("marion: cancelled {}", crate::tree::short_id(&agent_id.0));
+    if below > 0 {
+        text.push_str(&format!(" and {below} agent(s) below it"));
+    }
+    if forced > 0 {
+        text.push_str(&format!(
+            "; {forced} did not stop within its grace and was killed"
+        ));
+    }
+    text.push_str(". `wait` on its task_id returns its contract, marked cancelled.");
+    text
 }
 
 /// **§5.4's `list`: discovery, filtered to what §5.4 authorizes this caller to see.**

@@ -454,6 +454,7 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
             "mcp__marion__wait",
             "mcp__marion__list",
             "mcp__marion__steer",
+            "mcp__marion__cancel",
         ],
         expected_wire: "anthropic",
     };
@@ -589,6 +590,7 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
             "allow-tool:marion(wait)",
             "allow-tool:marion(list)",
             "allow-tool:marion(steer)",
+            "allow-tool:marion(cancel)",
         ],
         expected_wire: "openai",
     };
@@ -716,6 +718,7 @@ fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
             "core-tools:mcp__marion__wait",
             "core-tools:mcp__marion__list",
             "core-tools:mcp__marion__steer",
+            "core-tools:mcp__marion__cancel",
         ],
         expected_wire: "openai",
     };
@@ -762,6 +765,7 @@ fn a_pi_child_reports_through_marions_bridge_over_the_openai_wire() {
             "tools:mcp__marion__wait",
             "tools:mcp__marion__list",
             "tools:mcp__marion__steer",
+            "tools:mcp__marion__cancel",
         ],
         expected_wire: "openai",
     };

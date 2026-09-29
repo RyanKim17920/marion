@@ -1880,7 +1880,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // a root, and listing it invited live roots to call it — `bridge::tools_list_result`).
     assert_eq!(
         names,
-        vec!["spawn", "wait", "status", "list", "steer"],
+        vec!["spawn", "wait", "status", "list", "steer", "cancel"],
         "the declared surface of a root, over a real handshake"
     );
     // Stated as a number as well as a list, because `ntools` is what the harness logs and what a
@@ -1888,7 +1888,7 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     // declarations gets wrong while keeping every name.
     assert_eq!(
         names.len(),
-        5,
+        6,
         "§9's ntools, as a real client would count it"
     );
 
@@ -2290,6 +2290,47 @@ fn a_parent_steers_its_child_by_handle_or_by_the_id_list_shows() {
     assert!(bridge.close().success());
 }
 
+/// **A parent cancels its child through the `cancel` tool, by handle**: the answer says it was
+/// cancelled, and `wait` on the same handle returns the child's contract, `Cancelled`. A second
+/// cancel of the ended child is refused in the supervisor's words.
+#[test]
+fn a_parent_cancels_its_child_by_handle_and_wait_returns_the_cancelled_contract() {
+    let fx = fixture("bg-cancel-tool");
+    let mut bridge = fx.bridge();
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    fx.await_children(1);
+    let child = fx
+        .children_of_root()
+        .pop()
+        .expect("the root spawned a child");
+
+    let cancelled = bridge.tool("cancel", json!({"id": &task_id}));
+    let text = text_of(&cancelled);
+    assert!(!is_error(&cancelled), "{cancelled}");
+    let short = marion_supervisor::tree::short_id(&child.0);
+    assert!(
+        text.starts_with(&format!("marion: cancelled {short}")),
+        "{text}"
+    );
+
+    let waited = text_of(&bridge.tool("wait", json!({"task_id": &task_id})));
+    let contract: Value = serde_json::from_str(common::mcp_result::contract_json(&waited))
+        .unwrap_or_else(|e| panic!("a contract: {e}: {waited}"));
+    assert_eq!(contract["completion"]["status"], "Cancelled", "{contract}");
+
+    let again = bridge.tool("cancel", json!({"agent_id": &child.0}));
+    assert!(
+        is_error(&again),
+        "an ended child is not cancelled twice: {again}"
+    );
+    let neither = bridge.tool("cancel", json!({}));
+    assert!(
+        is_error(&neither) && text_of(&neither).contains("needs an `id`"),
+        "{neither}"
+    );
+    assert!(bridge.close().success());
+}
+
 /// **`status` on a running child shows what it has been doing**, bounded: its last five tool
 /// calls, oldest first — the first of six is gone, and the one it reported twice is not doubled —
 /// each line at most 160 characters, and the last line it wrote, read from its `events.jsonl`
@@ -2519,7 +2560,9 @@ fn a_child_steering_its_parent_or_sibling_is_refused_verbatim() {
         assert!(is_error(&reply), "{reply}");
         let text = text_of(&reply);
         assert!(
-            text.starts_with("marion: a node may steer only a node below it in the tree (§5.4)"),
+            text.starts_with(
+                "marion: a node may steer or cancel only a node below it in the tree (§5.4)"
+            ),
             "the supervisor's sentence, verbatim: {text}"
         );
     }
