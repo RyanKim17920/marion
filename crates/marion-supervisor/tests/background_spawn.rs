@@ -110,6 +110,17 @@ const IDLE_GRACE: Duration = Duration::from_secs(600);
 /// must outlive the test from the children that must not.
 const ROOT_MARKER: &str = "MARION-BACKGROUND-SPAWN-ROOT-a41f";
 
+/// In a child's first prompt only: the shim's first turn says something and completes without
+/// calling `report` — and, given marion's request for one as its next turn, reports.
+const ASKED_MARKER: &str = "MARION-BACKGROUND-REPORT-ASKED-a41f";
+/// The same, except that given marion's request it still does not report.
+const QUIET_MARKER: &str = "MARION-BACKGROUND-REPORT-QUIET-a41f";
+/// Words of `inbox::REPORT_REQUEST`, which the later turn's text carries.
+const REQUEST_WORDS: &str = "has not heard what you did";
+const FIRST_WORDS: &str = "First turn: the work is done.";
+const SECOND_WORDS: &str = "Second turn: still just saying so.";
+const ASKED_NARRATIVE: &str = "Did the work and reported when marion asked.";
+
 /// A `codex` that blocks until the test says otherwise — the app-server shim
 /// (`common::app_server`), whose every turn runs this hook with the turn's text as `$1`.
 ///
@@ -149,6 +160,29 @@ case "$1" in
     if [ -e {slow_version} ]; then sleep {life_secs}; fi
     echo "codex-cli 0.146.0-marion-shim"; exit 0 ;;
 esac
+# **A child that ends its turn without reporting**: its first turn (the marker in its prompt) says
+# one thing and completes unreported. marion's request for a report arrives as a later turn on the
+# same server, where the ASKED one reports and the QUIET one only speaks again. Which child it is
+# rides a file named for the server's pid, since the later turn's text carries no marker.
+if [ -n "$MARION_SHIM_TURN" ]; then
+  kind=
+  case "$1" in
+    *{asked_marker}*) kind=asked ;;
+    *{quiet_marker}*) kind=quiet ;;
+  esac
+  if [ -n "$kind" ]; then
+    mkdir -p {kinds}; echo "$kind" > {kinds}/$PPID
+    printf '%s\n' {first_frame}; exit 0
+  fi
+  case "$1" in
+    *"{request_words}"*)
+      kind=$(cat {kinds}/$PPID 2>/dev/null)
+      if [ -n "$kind" ]; then
+        if [ "$kind" = asked ]; then printf '%s\n' {report_frame}; fi
+        printf '%s\n' {second_frame}; exit 0
+      fi ;;
+  esac
+fi
 # The root is told apart by its own argv and waits on its own gate: it must outlive every child,
 # because it is the caller whose `agent_id` and capability token every `spawn` in this file
 # presents. It writes no marker, so a test counting children counts children.
@@ -204,6 +238,20 @@ exit 0
         root_gate = common::shell_quote(root_gate),
         root_marker = ROOT_MARKER,
         work_marker = WORK_MARKER,
+        asked_marker = ASKED_MARKER,
+        quiet_marker = QUIET_MARKER,
+        request_words = REQUEST_WORDS,
+        kinds = common::shell_quote(&dir.join("report-kinds")),
+        report_frame = sh_word(
+            &json!({"method": "item/completed", "params": {"item": {
+            "id": "item_9", "type": "mcpToolCall", "server": "marion", "tool": "report",
+            "status": "completed", "error": null,
+            "arguments": {"narrative": ASKED_NARRATIVE, "result_commits": null},
+            "result": {"content": [{"type": "text", "text": "report recorded"}]}}}})
+            .to_string()
+        ),
+        first_frame = sh_word(&message_frame(FIRST_WORDS)),
+        second_frame = sh_word(&message_frame(SECOND_WORDS)),
         slow_version = common::shell_quote(slow_version),
         chatty = common::shell_quote(chatty),
         long = "x".repeat(300),
@@ -213,6 +261,17 @@ exit 0
     let written = common::app_server::fake_codex(dir, &script);
     debug_assert_eq!(written, bin);
     bin
+}
+
+/// An app-server `agentMessage` item saying `text`.
+fn message_frame(text: &str) -> String {
+    json!({"method": "item/completed", "params": {"item": {"id": "item_1", "type": "agentMessage", "text": text}}})
+        .to_string()
+}
+
+/// `s` as one single-quoted shell word.
+fn sh_word(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2351,6 +2410,82 @@ fn a_childs_end_the_parent_collected_with_wait_is_not_delivered_as_a_turn() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(bridge.close().success());
+}
+
+/// The contract a `wait` on a child spawned with `marker` returns, and the journal once it has.
+fn unreported_child(fx: &Fixture, marker: &str) -> (Value, String) {
+    let mut bridge = fx.bridge();
+    let mut args = spawn_args(true);
+    args["prompt"] = json!(format!("{marker}: do the work"));
+    let task_id = handle_task_id(&bridge.tool("spawn", args));
+    let reply = bridge.tool("wait", json!({"task_id": &task_id}));
+    let text = text_of(&reply);
+    let contract: Value = serde_json::from_str(common::mcp_result::contract_json(&text))
+        .unwrap_or_else(|e| panic!("a contract: {e}: {text}"));
+    assert!(bridge.close().success());
+    (contract, fx.journal_text())
+}
+
+/// `kind` records in a journal's text whose payload satisfies `keep`.
+fn journal_records(journal: &str, kind: &str, keep: impl Fn(&Value) -> bool) -> Vec<Value> {
+    journal
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["kind"].get(kind).cloned())
+        .filter(|p| keep(p))
+        .collect()
+}
+
+/// **A child that ends a turn without reporting is asked once, and its answer is its contract.**
+/// The shim's first turn says it is done and completes unreported; marion sends its one request for
+/// a report as the next turn over the same app-server (journaled as marion's), and that turn
+/// reports. Measured live first: two
+/// children in two runs did the work and never reported, and their parents were told nothing.
+#[test]
+fn a_child_that_stops_unreported_is_asked_once_and_its_report_is_the_contract() {
+    let fx = fixture("bg-report-asked");
+    let (contract, journal) = unreported_child(&fx, ASKED_MARKER);
+    let comp = &contract["completion"];
+    assert_eq!(comp["status"], "Ok", "{contract}");
+    assert_eq!(comp["narrative"]["value"], ASKED_NARRATIVE, "{contract}");
+    assert_eq!(comp["narrative_synthesized"], false);
+    let asked = journal_records(&journal, "MessageQueued", |q| {
+        q["source"] == "ReportRequested"
+    });
+    assert_eq!(asked.len(), 1, "asked exactly once: {journal}");
+    let carried = journal_records(&journal, "MessageDelivered", |d| {
+        d["message_id"] == asked[0]["message_id"]
+    });
+    assert_eq!(carried.len(), 1, "{journal}");
+    assert!(
+        carried[0]["via"]
+            .as_str()
+            .is_some_and(|v| v.starts_with("app-server")),
+        "over the child's own server, not a relaunch: {journal}"
+    );
+}
+
+/// **A child that still does not report is not asked twice**, and its contract says what it said
+/// last as marion's words: `Unreported`, the later turn's final message as the narrative,
+/// `narrative_synthesized: true`. No third turn is sent.
+#[test]
+fn a_child_that_never_reports_is_asked_once_and_its_last_words_are_marions_synthesis() {
+    let fx = fixture("bg-report-quiet");
+    let (contract, journal) = unreported_child(&fx, QUIET_MARKER);
+    let comp = &contract["completion"];
+    assert_eq!(comp["status"], "Unreported", "{contract}");
+    assert_eq!(comp["narrative"]["value"], SECOND_WORDS, "{contract}");
+    assert_eq!(comp["narrative_synthesized"], true);
+    let asked = journal_records(&journal, "MessageQueued", |q| {
+        q["source"] == "ReportRequested"
+    });
+    assert_eq!(asked.len(), 1, "asked exactly once: {journal}");
+    let delivered = journal_records(&journal, "MessageDelivered", |_| true);
+    assert_eq!(
+        delivered.len(),
+        1,
+        "the one request, and no third turn: {journal}"
+    );
 }
 
 /// **A node may steer only below itself.** A child's bridge — started from the declaration marion

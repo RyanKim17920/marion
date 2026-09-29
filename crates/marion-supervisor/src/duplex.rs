@@ -541,6 +541,9 @@ pub struct DuplexOutcome {
     pub timed_out: bool,
     /// marion ended the run on a frame [`DuplexSpec::stop_on`] named, for this reason.
     pub stopped: Option<String>,
+    /// Where in [`Self::stdout`] the last turn marion delivered begins — 0 until a second turn is
+    /// written. What the node wrote from here on is what it said in that turn.
+    pub last_turn_at: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -933,7 +936,8 @@ fn deliver(
 /// boundary where the next queued message is written as the next turn; an empty inbox that is
 /// still owed a background child's end is waited on (bounded by the wall clock's watchdog, whose
 /// kill ends stdout); and an empty inbox that seals ends the session. On a folding row a message
-/// queued mid-turn is written at once.
+/// queued mid-turn is written at once. A child's turn that ended without a report is asked once
+/// for it ([`crate::inbox::TurnFeed::ask_for_report`]) before the inbox may seal.
 fn drive(
     rx: &Receiver<Event>,
     stdin: &mut std::process::ChildStdin,
@@ -967,6 +971,7 @@ fn drive(
                             if !deliver(stdin, spec, feed, &msg, true) {
                                 return Ok(());
                             }
+                            outcome.last_turn_at = outcome.stdout.len();
                             unsettled = true;
                         }
                     }
@@ -999,11 +1004,21 @@ fn drive(
                 continue;
             }
         }
+        // §7.6's grace turn: a child whose last turn holds no report is asked once, as its next.
+        let time_left = abort_at.is_none_or(|at| Instant::now() < at);
+        feed.ask_for_report(
+            outcome
+                .stdout
+                .get(outcome.last_turn_at..)
+                .unwrap_or_default(),
+            time_left,
+        );
         match feed.source.take_or_seal() {
             Some(msg) => {
                 if !deliver(stdin, spec, feed, &msg, false) {
                     return Ok(());
                 }
+                outcome.last_turn_at = outcome.stdout.len();
                 running = true;
             }
             None if feed.source.held() => match next_before(rx, abort_at) {

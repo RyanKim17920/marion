@@ -561,6 +561,9 @@ fn prompt_session(
         let Some(feed) = turns else {
             return Ok(true);
         };
+        // §7.6's grace turn: a child whose last turn holds no report is asked once, as its next.
+        let since = agent.frames_since(agent.last_turn_line);
+        feed.ask_for_report(&since, Instant::now() < deadline);
         match feed.source.take_or_seal() {
             Some(msg) => {
                 last_id += 1;
@@ -600,9 +603,11 @@ fn send_turn(
     via: &str,
 ) -> bool {
     let text = crate::inbox::render(msg);
+    let before = agent.frame_count();
     match agent.write(&acp::prompt_request(id, session, &text)) {
         Ok(()) => {
             feed.source.delivered(&msg.id, via);
+            agent.last_turn_line = before;
             true
         }
         Err(e) => {

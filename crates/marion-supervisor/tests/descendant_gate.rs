@@ -387,15 +387,16 @@ fn an_opencode_child_that_stops_unreported_with_a_live_grandchild_is_held_until_
     assert_eq!(completion["reported_early"], json!(false), "{completion}");
     assert_eq!(completion["held_to_timeout"], json!(false), "{completion}");
     // Released by the grandchild's end as a message, not by the hold running dry: the end is the
-    // child's next turn, a relaunch the node's replay counts as its second generation.
+    // child's next turn, a relaunch the node's replay counts as its second generation. That turn
+    // still made no report, so marion asked once for one (§7.6's grace turn): the third, and last.
     let node = read_path(&bed.journal)
         .expect("the journal reads back")
         .get(&child)
         .cloned()
         .expect("the child");
     assert_eq!(
-        node.spawn_generation, 2,
-        "the grandchild's end resumed the held child"
+        node.spawn_generation, 3,
+        "the grandchild's end resumed the held child, then marion's one request for its report"
     );
 }
 

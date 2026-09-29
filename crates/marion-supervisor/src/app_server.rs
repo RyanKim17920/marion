@@ -484,6 +484,9 @@ impl Session<'_> {
             let Some(feed) = self.turns else {
                 return Ok(End::Finished);
             };
+            // §7.6's grace turn: a child whose last turn holds no report is asked once, as its next.
+            let since = node.frames_since(node.last_turn_line);
+            feed.ask_for_report(&since, Instant::now() < self.deadline);
             let msg = match carried.pop_front() {
                 Some(m) => m,
                 None => match feed.source.take_or_seal() {
@@ -508,12 +511,16 @@ impl Session<'_> {
             };
             let id = self.id();
             let text = crate::inbox::render(&msg);
+            let before = node.frame_count();
             match node.write(&self.c.turn_request(id, &self.thread, &text)) {
-                Ok(()) => pending.push(Pending {
-                    id,
-                    msg: Some(msg),
-                    steer: false,
-                }),
+                Ok(()) => {
+                    node.last_turn_line = before;
+                    pending.push(Pending {
+                        id,
+                        msg: Some(msg),
+                        steer: false,
+                    })
+                }
                 Err(e) => {
                     feed.source
                         .dropped(&msg.id, &format!("the server's stdin closed: {e}"));

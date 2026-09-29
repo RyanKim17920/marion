@@ -2267,6 +2267,8 @@ fn launch_only(
         let (message, resume) = match crate::continuation::boundary(
             turns.as_ref(),
             &stop,
+            // A root never reports (§9), so it is never asked to.
+            false,
             session.session().as_deref(),
             deadline,
             &mut gate,

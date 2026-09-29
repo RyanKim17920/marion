@@ -150,6 +150,10 @@ pub struct TurnFeed {
     /// How to tell a turn that reported from one that did not — a child's feed only, since a root
     /// never reports. `None` asks for nothing ([`Self::ask_for_report`]).
     pub reports: Option<ReportReader>,
+    /// How to tell a turn that ended on the harness's own failure claim (a usage limit, a refused
+    /// key) — which marion does not answer with a request for a report, as the relaunch lane does
+    /// not relaunch an involuntary stop. `None` reads no turn as failed.
+    pub failures: Option<ReportReader>,
 }
 
 impl TurnFeed {
@@ -164,6 +168,15 @@ impl TurnFeed {
             source,
             mid_turn,
             reports: None,
+            failures: None,
+        }
+    }
+
+    /// The same feed, able to tell a turn that failed ([`Self::failures`]).
+    pub fn reading_failures(self, failures: ReportReader) -> Self {
+        TurnFeed {
+            failures: Some(failures),
+            ..self
         }
     }
 
@@ -178,11 +191,17 @@ impl TurnFeed {
     /// **At the node's last boundary, one re-prompt for a report it never made** (§7.6's grace
     /// turn): `since` is what the node wrote since its last turn was delivered, and `time_left`
     /// whether its clock can carry one more. Queues marion's request when that stretch holds no
-    /// report and the node has not been asked before; the driver's `take_or_seal` then takes it
+    /// report or failure claim and the node has not been asked before; the driver's `take_or_seal` then takes it
     /// as the next turn, the way it takes a steer. `true` iff a request was queued.
     pub fn ask_for_report(&self, since: &str, time_left: bool) -> bool {
         match &self.reports {
-            Some(reported) if time_left && !reported(since) => self.source.request_report(),
+            Some(reported)
+                if time_left
+                    && !reported(since)
+                    && !self.failures.as_ref().is_some_and(|failed| failed(since)) =>
+            {
+                self.source.request_report()
+            }
             _ => false,
         }
     }
@@ -565,13 +584,15 @@ impl Inboxes {
 
     /// **Queue marion's request that `agent` report** ([`REPORT_REQUEST`]), journaled like any
     /// message and taken at the node's boundary like one. **At most once per node**: `false`,
-    /// and nothing queued, when it was asked before, or its inbox is sealed or absent.
+    /// and nothing queued, when it was asked before, or its inbox is sealed or absent — **or a
+    /// backgrounded child's end is still owed to it**: that end is its next turn, and asking now
+    /// would press it to report before its children are done (§7.6 holds first, then asks).
     pub fn request_report(&self, agent: &AgentId) -> bool {
         let port = {
             let mut boxes = self.lock();
             let Some(inbox) = boxes
                 .get_mut(agent)
-                .filter(|b| !b.sealed && !b.asked_for_report)
+                .filter(|b| !b.sealed && !b.asked_for_report && b.owed == 0)
             else {
                 return false;
             };
@@ -1201,6 +1222,12 @@ pub(crate) mod tests {
             "no inbox, nothing to ask through"
         );
         inboxes.open(&a);
+        inboxes.owe(&a);
+        assert!(
+            !inboxes.request_report(&a),
+            "a child's end is still owed: that is its next turn, not a request to report"
+        );
+        inboxes.release(&a);
         assert!(inboxes.request_report(&a));
         assert!(!inboxes.request_report(&a), "one re-prompt per node");
         let m = inboxes
@@ -1248,6 +1275,12 @@ pub(crate) mod tests {
         assert!(
             !feed("root", false).ask_for_report("nothing", true),
             "a root is never asked"
+        );
+        assert!(
+            !feed("limited", true)
+                .reading_failures(Arc::new(|since: &str| since.contains("LIMIT")))
+                .ask_for_report("… LIMIT …", true),
+            "a turn that ended on its own failure claim is not answered with a request"
         );
         let child = feed("child", true);
         assert!(child.ask_for_report("nothing", true));

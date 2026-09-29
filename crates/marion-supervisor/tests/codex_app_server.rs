@@ -362,15 +362,19 @@ fn a_steer_into_a_running_codex_child_is_read_in_the_next_request_of_the_same_tu
          same turn (request log: {})",
         bed.server.reqlog_path().display()
     );
+    // The steer, once, into the running turn; then marion's one request for the report the
+    // child's script never makes (§7.6's grace turn), as its next turn.
     assert_eq!(
         bed.delivered(&child),
-        ["app-server:mid-turn"],
-        "delivered once, into the running turn"
+        ["app-server:mid-turn", "app-server:next-turn"],
+        "the steer delivered once, into the running turn, then the report request"
     );
     let events = bed.events_of(&child);
+    // Two turns: the first, which took the steer, and marion's report request. The steer opened
+    // none of its own.
     assert_eq!(
         events.matches(r#""method":"turn/started""#).count(),
-        1,
+        2,
         "the steer opened no turn of its own:\n{events}"
     );
 }

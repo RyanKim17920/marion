@@ -1017,6 +1017,29 @@ struct ChildRun {
     /// credential the harness was retrying ([`marion_harness::HarnessAdapter::auth_refusal`]) —
     /// with the harness's words. `None` for a run that ended on its own or on its bound.
     stopped: Option<String>,
+    /// Where in `stdout` the process's last delivered turn begins: 0 for a process that took one
+    /// turn, later for a typed lane that took more. What the last turn said is from here on.
+    last_turn_at: usize,
+}
+
+impl ChildRun {
+    /// What the process wrote in its last turn ([`Self::last_turn_at`] onwards).
+    fn last_turn(&self) -> &str {
+        self.stdout.get(self.last_turn_at..).unwrap_or(&self.stdout)
+    }
+}
+
+/// **The final words of a turn that did not report**, for the contract to quote as marion's
+/// (`ChildOutcome::unreported_tail`) — `None` when `stretch` holds the report, or no words.
+fn unreported_tail(
+    adapter: &(dyn marion_harness::HarnessAdapter + Send + Sync),
+    stretch: &str,
+) -> Option<String> {
+    if adapter.reported(stretch) {
+        None
+    } else {
+        adapter.final_words(stretch)
+    }
 }
 
 /// **A run marion ended on a refused credential failed, and says so**: where the stream made no
@@ -1222,6 +1245,8 @@ fn launch_only_child(
         // there is no channel afterwards. An absence by construction, not an empty measurement.
         denied_permissions: vec![],
         stopped: stopped.into_inner(),
+        // One turn per process on this path: a next one is a new generation.
+        last_turn_at: 0,
     })
 }
 
@@ -1338,6 +1363,7 @@ fn duplex_child(inv: &Invocation, child: ChildDuplex<'_>) -> Result<ChildRun, Sp
         capture_truncated: false,
         denied_permissions: out.denied_permissions,
         stopped: out.stopped,
+        last_turn_at: out.last_turn_at,
     })
 }
 
@@ -1819,7 +1845,9 @@ pub fn run_spawn_watched(
     // `acp_agent`, and this is the seam where it becomes behaviour. `adapter_for` would hand back
     // the protocol row, which refuses to compile anything at all — an ACP type that resolved,
     // dispatched, and then failed at `compile`, which is the shape of the dispatch bug above.
-    let adapter = adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())?;
+    // Shared, so the child's inbox can read its reports the row's way (`TurnFeed::reports`).
+    let adapter: Arc<dyn marion_harness::HarnessAdapter + Send + Sync> =
+        adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())?.into();
     // §3.4, the same derivation `marion run` uses for a root: **branch on the surfaces, never on a
     // harness name.** Until this branch existed `run_spawn` drove every child as `LaunchOnly` —
     // correct for the three harnesses that declare it, and the reason a `claude` child took turn
@@ -1916,11 +1944,17 @@ pub fn run_spawn_watched(
     .with_profiles(&profiles);
     // The child's inbox, for the typed paths' turns after the first (duplex and ACP): a steer, or
     // the end of a child it backgrounded. A child is always headless (a pane belongs to a root).
+    // A child owes a report, so its feed can tell a turn that made one (§7.6's grace turn).
     let turns = observer.turn_source(&agent_id).map(|source| {
+        let (reads, fails) = (Arc::clone(&adapter), Arc::clone(&adapter));
         crate::inbox::TurnFeed::new(
             source,
             adapter.turn_delivery(marion_harness::spec::NodeShape::Headless),
         )
+        .reading_reports(Arc::new(move |stretch: &str| reads.reported(stretch)))
+        .reading_failures(Arc::new(move |stretch: &str| {
+            fails.stream_failure(stretch).is_some()
+        }))
     });
     // **The same inbox, on the lane whose next turn is a relaunch** (`crate::continuation`): a
     // `LaunchOnly` node whose row measured a resume that continues its session. Attached before
@@ -2148,6 +2182,7 @@ pub fn run_spawn_watched(
                 denied_permissions: vec![],
                 // ACP's reader is code, and no refused-credential frame was measured on it.
                 stopped: None,
+                last_turn_at: r.last_turn_at,
             })
             .map_err(SpawnError::from),
             // **codex over app-server**: the same driver as ACP under a thread vocabulary. The
@@ -2181,6 +2216,7 @@ pub fn run_spawn_watched(
                 // permission marion withheld from an operator, so nothing is recorded here.
                 denied_permissions: vec![],
                 stopped: r.stopped,
+                last_turn_at: r.last_turn_at,
             })
             .map_err(SpawnError::from),
             LaunchPath::Duplex => duplex_child(
@@ -2301,6 +2337,7 @@ pub fn run_spawn_watched(
     }
     let row = marion_harness::adapter::harness_spec(adapter.harness());
     let mut outcome = ChildOutcome::from_stream(parsed, run.exit, row.quiet_stderr(&run.stderr));
+    outcome.unreported_tail = unreported_tail(adapter.as_ref(), run.last_turn());
     note_stopped(&mut outcome, &run);
     // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
     // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
@@ -2338,6 +2375,7 @@ pub fn run_spawn_watched(
             let turn = crate::continuation::boundary(
                 continuation.as_ref(),
                 &outcome,
+                !adapter.reported(run.last_turn()),
                 session.session().as_deref(),
                 deadline,
                 &mut gate,
@@ -2421,6 +2459,7 @@ pub fn run_spawn_watched(
                 row.quiet_stderr(&next.stderr),
             );
             note_stopped(&mut later, &next);
+            later.unreported_tail = unreported_tail(adapter.as_ref(), next.last_turn());
             outcome = crate::continuation::fold(outcome, later);
             run = ChildRun {
                 capture_truncated: run.capture_truncated || next.capture_truncated,
@@ -4151,6 +4190,7 @@ mod tests {
             capture_truncated: false,
             denied_permissions: vec![],
             stopped: None,
+            last_turn_at: 0,
         };
         let wt = scratch("run-profile-policy");
         let next = |run: &ChildRun| {

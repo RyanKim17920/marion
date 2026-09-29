@@ -330,10 +330,12 @@ fn a_steer_into_a_running_pi_child_is_read_in_the_next_request_of_the_same_turn(
          same turn (request log: {})",
         bed.server.reqlog_path().display()
     );
+    // The steer, once, into the running turn; then, because this child never calls `report`,
+    // marion's one request for it as the next turn (§7.6's grace turn).
     assert_eq!(
         bed.delivered(&child),
-        ["jsonl-rpc:mid-turn"],
-        "delivered once, into the running turn"
+        ["jsonl-rpc:mid-turn", "jsonl-rpc:next-turn"],
+        "the steer delivered once, into the running turn, then the one report request"
     );
 }
 

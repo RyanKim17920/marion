@@ -14,7 +14,8 @@
 //! 2. **A message already waiting is the next turn** — one queued while the process ran.
 //! 3. **Otherwise the §7.6 gate runs**, and a hold is a wait for a message: one that arrives while
 //!    the node is held for its descendants (a child's end, a parent's steer) ends the hold and is
-//!    the next turn — §7.6 step 2's re-prompt (`descendant_gate::gate_or_woken`).
+//!    the next turn — §7.6 step 2's re-prompt (`descendant_gate::gate_or_woken`). A generation that
+//!    stopped without reporting is then asked once for its report, as the next turn.
 //! 4. **Once the gate settles, the inbox is taken or sealed in one step**, and while it is held
 //!    open for a message still owed ([`TurnSource::held`]) the driver waits for it on the node's
 //!    clock rather than seal — **unless the node reported early**: §7.6 accepts a staged report
@@ -101,12 +102,20 @@ pub(crate) type Gate<'a> =
 
 /// **One stop of the node's process, decided.** See the module docs for the order.
 ///
-/// `session` is what the node's stream named, `deadline` is the end of the node's own wall clock,
-/// and `gate` is §7.6's gate over the outcome so far. `turns` is `None` for a node with no inbox,
-/// which takes exactly the turn it was launched with.
+/// `unreported` says the generation that just stopped did not call `report`; `session` is what the
+/// node's stream named, `deadline` is the end of the node's own wall clock, and `gate` is §7.6's
+/// gate over the outcome so far. `turns` is `None` for a node with no inbox, which takes exactly
+/// the turn it was launched with.
+///
+/// **An unreported stop is asked once for its report** (§7.6's grace turn): once the gate settles
+/// with nothing waiting, and only where a next generation can carry the request — a session to
+/// relaunch under and time on the clock — marion's request is queued ([`TurnSource::
+/// request_report`]) and taken as the next turn like any message. The inbox asks a node at most
+/// once, so the next unreported stop is the last.
 pub(crate) fn boundary(
     turns: Option<&Turns>,
     outcome: &ChildOutcome,
+    unreported: bool,
     session: Option<&str>,
     deadline: Instant,
     gate: &mut Gate<'_>,
@@ -126,6 +135,12 @@ pub(crate) fn boundary(
             }) {
                 Waited::Woken(m) => m,
                 Waited::Settled(gated) => {
+                    if unreported
+                        && session.is_some()
+                        && !deadline.saturating_duration_since(Instant::now()).is_zero()
+                    {
+                        turns.source.request_report();
+                    }
                     let next = if gated.reported_early {
                         turns.source.take_next()
                     } else {
@@ -318,6 +333,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             Some("thread-1"),
             later(),
             &mut admitting(&mut runs),
@@ -340,6 +356,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             None,
             later(),
             &mut admitting(&mut runs),
@@ -367,6 +384,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             Some("s"),
             Instant::now(),
             &mut admitting(&mut runs),
@@ -377,6 +395,64 @@ mod tests {
             "{:?}",
             fx.dropped()
         );
+    }
+
+    /// **A stop whose last generation did not report is asked once for its report**, as the next
+    /// generation, after the gate settles and only with a session to relaunch under and time
+    /// left; the node is not asked twice, so its next unreported stop is its last.
+    #[test]
+    fn an_unreported_stop_is_asked_once_for_its_report_as_its_next_generation() {
+        let fx = fx();
+        let turns = fx.turns();
+        let mut runs = 0;
+        let t = boundary(
+            Some(&turns),
+            &stopped(),
+            true,
+            Some("thread-1"),
+            later(),
+            &mut admitting(&mut runs),
+        );
+        let Turn::Next { message, session } = t else {
+            panic!("an unreported stop takes one more turn: {t:?}")
+        };
+        assert_eq!(message.source, Source::ReportRequested);
+        assert_eq!(session, "thread-1");
+        assert_eq!(runs, 1, "the gate ran first");
+        let t = boundary(
+            Some(&turns),
+            &stopped(),
+            true,
+            Some("thread-1"),
+            later(),
+            &mut admitting(&mut runs),
+        );
+        assert!(matches!(t, Turn::Last(_)), "asked once: {t:?}");
+    }
+
+    /// Nothing is asked of a stop that cannot carry the request: no session to relaunch under,
+    /// a spent clock — nor of one whose last generation reported.
+    #[test]
+    fn no_report_is_asked_without_a_session_time_or_need() {
+        for (unreported, session, deadline) in [
+            (true, None, later()),
+            (true, Some("s"), Instant::now()),
+            (false, Some("s"), later()),
+        ] {
+            let fx = fx();
+            let turns = fx.turns();
+            let mut runs = 0;
+            let t = boundary(
+                Some(&turns),
+                &stopped(),
+                unreported,
+                session,
+                deadline,
+                &mut admitting(&mut runs),
+            );
+            assert!(matches!(t, Turn::Last(_)), "{t:?}");
+            assert!(fx.dropped().is_empty(), "nothing was queued to drop");
+        }
     }
 
     /// **A death takes no next turn** — not even one already waiting, which the node's close drops.
@@ -393,6 +469,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &died,
+            false,
             Some("s"),
             later(),
             &mut admitting(&mut runs),
@@ -435,7 +512,14 @@ mod tests {
             }
             panic!("the steer never woke the hold");
         };
-        let t = boundary(Some(&turns), &stopped(), Some("s"), later(), &mut gate);
+        let t = boundary(
+            Some(&turns),
+            &stopped(),
+            false,
+            Some("s"),
+            later(),
+            &mut gate,
+        );
         let Turn::Next { message, .. } = t else {
             panic!("{t:?}")
         };
@@ -461,6 +545,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             Some("s"),
             later(),
             &mut admitting(&mut runs),
@@ -484,6 +569,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             Some("s"),
             Instant::now() + Duration::from_millis(150),
             &mut admitting(&mut runs),
@@ -506,7 +592,14 @@ mod tests {
             })
         };
         let started = Instant::now();
-        let t = boundary(Some(&turns), &stopped(), Some("s"), later(), &mut early);
+        let t = boundary(
+            Some(&turns),
+            &stopped(),
+            false,
+            Some("s"),
+            later(),
+            &mut early,
+        );
         let Turn::Last(gated) = t else {
             panic!("{t:?}")
         };
@@ -523,6 +616,7 @@ mod tests {
         let t = boundary(
             Some(&turns),
             &stopped(),
+            false,
             Some("s"),
             later(),
             &mut admitting(&mut runs),

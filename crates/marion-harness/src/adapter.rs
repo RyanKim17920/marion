@@ -1402,7 +1402,9 @@ mod tests {
         let (first, steered) = (generation(1, 27), generation(27, 42));
         // The capture is `codex exec`'s, so it is read by the exec row's grammar; the row's own
         // (app-server) reading goes through the same two functions.
-        let exec = crate::codex::EXEC.stream.expect("the exec row reads a stream");
+        let exec = crate::codex::EXEC
+            .stream
+            .expect("the exec row reads a stream");
         let tool = adapter_for(Harness::Codex).unwrap().marion_tool_name("");
         let reported = |s: &str| grammar::parse_stream(exec, s, &tool).narrative.is_some();
         let final_words = |s: &str| grammar::last_said(exec.activity.as_ref()?, s);

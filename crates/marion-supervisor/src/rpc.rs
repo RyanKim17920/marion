@@ -109,6 +109,9 @@ pub struct RpcRun {
     /// marion ended the session on a frame the row reads as final — a refused credential no retry
     /// heals — for this reason. `None` on every session that ended any other way.
     pub stopped: Option<String>,
+    /// Where in [`Self::stdout`] the last prompt marion sent begins to be answered — 0 until a
+    /// second one is sent. What the server wrote from here on is what it said in that turn.
+    pub last_turn_at: usize,
 }
 
 /// A spawned server with its stdout read line by line and its stderr drained, so a server request
@@ -127,6 +130,9 @@ pub(crate) struct Driver<'a, P> {
     /// How far into the lines [`Self::classify`] has read. Requests are answered once and responses
     /// indexed once, however many times a wait wakes.
     cursor: usize,
+    /// How many lines preceded the last prompt marion sent after the first: the server's answer to
+    /// its latest turn is every line from here on.
+    pub last_turn_line: usize,
     /// `(id, frame)` for every response the server has sent. Kept because notifications arrive
     /// interleaved with, and before, the response they belong to (S21), so an answer that lands
     /// while marion waits on an earlier id must still be there when marion asks for it.
@@ -179,6 +185,7 @@ impl<'a, P: Peer> Driver<'a, P> {
             shared,
             stderr: Some(stderr),
             cursor: 0,
+            last_turn_line: 0,
             responses: Vec::new(),
             on_line,
             peer,
@@ -384,9 +391,11 @@ impl<'a, P: Peer> Driver<'a, P> {
                 timed_out: false,
             }
         };
+        let stdout = collected.join("\n");
         (
             RpcRun {
-                stdout: collected.join("\n"),
+                last_turn_at: line_offset(&stdout, self.last_turn_line),
+                stdout,
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit,
                 capture_truncated: !(stdout_complete && stderr_complete),
@@ -394,6 +403,17 @@ impl<'a, P: Peer> Driver<'a, P> {
             },
             collected.len(),
         )
+    }
+
+    /// How many lines the server has written so far.
+    pub fn frame_count(&self) -> usize {
+        self.shared.lock().lines.len()
+    }
+
+    /// Every line the server has written from line `from` on, as one stretch of its stream.
+    pub fn frames_since(&self, from: usize) -> String {
+        let feed = self.shared.lock();
+        feed.lines.get(from..).unwrap_or_default().join("\n")
     }
 
     /// Shut down and build a refusal out of what the server left behind. Its stderr is the only
@@ -452,4 +472,15 @@ pub fn turn_exit(exit: ChildExit) -> ChildExit {
         signal: None,
         timed_out: exit.timed_out,
     }
+}
+
+/// The byte offset in `text` at which its line `n` begins (0-based), or its length when it has
+/// fewer lines.
+fn line_offset(text: &str, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    text.match_indices('\n')
+        .nth(n - 1)
+        .map_or(text.len(), |(i, _)| i + 1)
 }
