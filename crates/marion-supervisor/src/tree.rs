@@ -442,6 +442,7 @@ impl JournalView {
             .nodes()
             .iter()
             .filter_map(|n| crate::handler::summarize_spent(n, false, &nothing_live).ok())
+            .map(stopped_with_its_supervisor)
             .collect()
     }
 
@@ -469,8 +470,24 @@ impl JournalView {
             None => Default::default(),
         };
         node.tokens = detail.usage.map(|u| u.total());
-        Ok((node, detail))
+        Ok((stopped_with_its_supervisor(node), detail))
     }
+}
+
+/// **A node the journal leaves live, read while nobody serves the project, stopped with its
+/// supervisor.** No process is owned for it any more, so it reads as §7.2's orphan — marion has no
+/// record of deciding its fate — with what happened and the one command that brings it back:
+/// `stopped (supervisor gone) — marion resume <id>`. A live-looking `running` line here would
+/// describe a node nothing is running.
+fn stopped_with_its_supervisor(mut node: NodeSummary) -> NodeSummary {
+    if !node.state.is_exited() && node.reap_state == ReapState::Live {
+        node.reap_state = ReapState::Orphaned;
+        node.attention = Some(format!(
+            "stopped (supervisor gone) — marion resume {}",
+            node.agent_id.0
+        ));
+    }
+    node
 }
 
 /// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
@@ -1203,6 +1220,30 @@ mod tests {
     /// [`NodeSummary::attention`] follows the state word in the attention reason (Home's row, `!`),
     /// takes the tree strip's note, and ends the `marion list` line — but only while the node is in
     /// a state the queue shows; an exited node's stale words are not repeated.
+    /// **Read with nobody serving, a node the journal left live stopped with its supervisor**, and
+    /// its line says so and names the resume; an exited node and a supervisor's own orphan keep
+    /// their lines.
+    ///
+    /// Mutation: return the node unchanged and the line says `running`.
+    #[test]
+    fn an_offline_live_node_reads_as_stopped_with_its_supervisor_and_names_its_resume() {
+        let running = NodeSummary {
+            state: NodeState::Running,
+            ..summary("01a0e64e-433f", Harness::Codex, false, None)
+        };
+        let line = list_line(&stopped_with_its_supervisor(running));
+        assert!(
+            line.contains(" orphaned ")
+                && line.ends_with(" — stopped (supervisor gone) — marion resume 01a0e64e-433f"),
+            "{line}"
+        );
+        let done = NodeSummary {
+            state: NodeState::Exited(marion_core::contract::ExitStatus::Ok),
+            ..summary("d", Harness::Codex, false, None)
+        };
+        assert_eq!(stopped_with_its_supervisor(done.clone()), done);
+    }
+
     #[test]
     fn attention_carries_the_supervisors_words_after_the_state_word() {
         use marion_core::node::BlockReason::BootDialog;
