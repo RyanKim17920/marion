@@ -830,8 +830,8 @@ fn assert_the_refused_root_exited(node: &Node, dir: &Path, run: &Run) {
         roots[0].spawn_aborted
     );
     assert!(
-        !run.stderr.contains("unattended at a permission gate")
-            && !run.stderr.contains("still running"),
+        !run.stderr.contains("nobody can approve a permission")
+            && !run.stderr.contains("still running in the background"),
         "{}: no node was left running:\n{}",
         node.harness,
         run.stderr
@@ -1017,8 +1017,8 @@ fn an_opencode_root_whose_spawn_started_an_unreported_child_delegated_and_exits_
         root.spawn_aborted
     );
     assert!(
-        !run.stderr.contains("unattended at a permission gate")
-            && !run.stderr.contains("still running"),
+        !run.stderr.contains("nobody can approve a permission")
+            && !run.stderr.contains("still running in the background"),
         "no node is left running, so none is disclosed as one:\n{}",
         run.stderr
     );

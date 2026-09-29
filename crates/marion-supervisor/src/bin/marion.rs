@@ -2112,24 +2112,25 @@ fn detach_report(
     outcome: &marion_core::proto::QuitOutcome,
 ) -> Option<(marion_core::proto::SupervisorDisposition, String)> {
     use std::fmt::Write as _;
-    let (supervisor, detached, gate_exposed, guidance, reaped) = match outcome {
+    // The wire's `guidance` names the protocol calls a client makes; a person is told marion's
+    // own commands instead, so it is not read here.
+    let (supervisor, detached, gate_exposed, reaped) = match outcome {
         marion_core::proto::QuitOutcome::Detached {
             detached,
             gate_exposed,
-            guidance,
             supervisor,
-        } => (supervisor, detached, gate_exposed, guidance, Vec::new()),
+            ..
+        } => (supervisor, detached, gate_exposed, Vec::new()),
         marion_core::proto::QuitOutcome::ReapedAndDetached {
             reaped,
             detached,
             gate_exposed,
-            guidance,
             supervisor,
+            ..
         } => (
             supervisor,
             detached,
             gate_exposed,
-            guidance,
             reaped.iter().map(|n| n.0.clone()).collect(),
         ),
         // A `Killed` outcome cannot arrive here: this guard only ever sends `DetachAll`.
@@ -2144,10 +2145,23 @@ fn detach_report(
     let mut out = String::new();
     match supervisor {
         marion_core::proto::SupervisorDisposition::Resident(reason) => {
+            let why = match reason {
+                marion_core::proto::ResidentReason::NonTerminalNode => "an agent is still running",
+                marion_core::proto::ResidentReason::BlockedNode => "an agent is waiting",
+                marion_core::proto::ResidentReason::SpawnOutstanding => {
+                    "an agent is still starting"
+                }
+                marion_core::proto::ResidentReason::UnconfirmedReapIntent => {
+                    "it has not finished tidying up an agent"
+                }
+                marion_core::proto::ResidentReason::RegistryStopped => {
+                    "it could not read the rest of its journal, so it keeps what it knows"
+                }
+            };
             let _ = writeln!(
                 out,
-                "marion: this project's supervisor is still running ({reason:?}); it holds work \
-                 this run did not finish, and the next marion will find it rather than start one"
+                "marion: this project's supervisor keeps running ({why}); the next marion will \
+                 find it rather than start one"
             );
         }
         marion_core::proto::SupervisorDisposition::Exiting => {
@@ -2168,23 +2182,20 @@ fn detach_report(
     if detached.is_empty() {
         let _ = writeln!(out, "marion: no node was left running.");
     } else {
-        // One line for the fleet — what is running, how to get back with marion's own verbs, and
-        // how to stop it without getting back — and a second only for the cost §7.3.2 says must be
-        // stated: nodes that can be denied at a permission gate while nobody is attached.
+        // One line for the fleet — what is running, and how to watch, open and stop it with
+        // marion's own commands — and a second only for the cost §7.3.2 says must be stated: nodes
+        // that will be refused any permission they ask for, since nobody can approve it.
         let _ = writeln!(
             out,
-            "marion: still running, detached: {}; `marion ls` to watch, `marion attach {}` for a \
-             pane node; to stop the fleet: {}",
+            "marion: still running in the background: {}; `marion ls` to watch, `marion attach \
+             {}` to open a pane agent, `marion cancel <id>` to stop one",
             names(detached),
             detached[0].0,
-            guidance.stop_fleet
         );
         if !gate_exposed.is_empty() {
             let _ = writeln!(
                 out,
-                "marion: unattended at a permission gate: {} — each one \
-                 that asks burns its bound and is denied, and the far side sees an is_error \
-                 tool_result rather than a question",
+                "marion: nobody can approve a permission for {}, so any they ask for is refused",
                 names(gate_exposed)
             );
         }
@@ -4871,17 +4882,18 @@ mod tests {
             ),
             "the caller's wait decision is the rendered fact, never a second match on the outcome"
         );
-        assert!(report.contains("NonTerminalNode"), "{report}");
+        assert!(report.contains("an agent is still running"), "{report}");
+        assert!(!report.contains("NonTerminalNode"), "{report}");
         assert!(
             report.contains("root, child"),
             "the nodes left running are named: {report}"
         );
         assert!(
-            report.contains("permission gate: child"),
+            report.contains("nobody can approve a permission for child"),
             "§7.3.2's stated cost of (b) names the exposed nodes: {report}"
         );
         assert!(
-            report.contains("denied"),
+            report.contains("refused"),
             "and says what that costs: {report}"
         );
         assert!(
@@ -4893,8 +4905,8 @@ mod tests {
             "how to get back: {report}"
         );
         assert!(
-            report.contains("to stop the fleet: Reconnect to /s/p/supervisor.sock"),
-            "and how to stop it without getting back: {report}"
+            report.contains("`marion cancel <id>`") && !report.contains("supervisor.sock"),
+            "and how to stop it, as a command rather than a protocol call: {report}"
         );
         assert_eq!(
             report.lines().count(),
@@ -4925,18 +4937,21 @@ mod tests {
             "disposition, then one line for the fleet: {report}"
         );
         let fleet = lines[1];
-        assert!(fleet.contains("still running, detached: root"), "{fleet}");
+        assert!(
+            fleet.contains("still running in the background: root"),
+            "{fleet}"
+        );
         assert!(fleet.contains("`marion ls`"), "how to get back: {fleet}");
         assert!(
             fleet.contains("`marion attach root`"),
             "how to get back: {fleet}"
         );
         assert!(
-            fleet.contains("/s/p/supervisor.sock"),
+            fleet.contains("`marion cancel <id>`"),
             "how to stop it without getting back: {fleet}"
         );
         assert!(
-            !report.contains("permission gate"),
+            !report.contains("nobody can approve"),
             "nothing is exposed: {report}"
         );
     }
@@ -4974,7 +4989,10 @@ mod tests {
         })
         .expect("a reap renders");
         assert!(reaped.contains("reaped and resumable: idle"), "{reaped}");
-        assert!(reaped.contains("still running, detached: busy"), "{reaped}");
+        assert!(
+            reaped.contains("still running in the background: busy"),
+            "{reaped}"
+        );
         for r in [&report, &reaped] {
             assert!(!r.contains('§'), "no design-doc section numbers: {r}");
         }

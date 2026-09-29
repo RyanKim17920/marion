@@ -575,7 +575,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         root_done.state
     );
     assert!(
-        !stderr.contains("no display plane") && !stderr.contains("unattended at a permission gate"),
+        !stderr.contains("no display plane") && !stderr.contains("nobody can approve a permission"),
         "a headless resume must neither try to attach nor detach from a running node:\n{stderr}"
     );
     assert!(

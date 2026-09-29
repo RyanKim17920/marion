@@ -4598,14 +4598,14 @@ impl RegistryHandle {
         let socket = &self.socket_path;
         DetachGuidance {
             reattach: format!(
-                "Reconnect to {} and call tree/subscribe. Until then, any named gate_exposed node \
-                 that reaches a permission request burns its bound and is denied unattended; the \
-                 far side receives an is_error:true tool_result (§7.3.2, §11 item 22, S9).",
+                "`marion ls` shows them again (a client: tree/subscribe on {}). A node named in \
+                 gate_exposed is refused any permission it asks for, since nobody can approve it; \
+                 it sees the refusal as an error result.",
                 socket.display()
             ),
             stop_fleet: format!(
-                "Reconnect to {} and call session/quit with KillTree confirmed against a fresh \
-                 tree/subscribe render.",
+                "`marion cancel <id>` stops one (a client: session/quit with KillTree on {}, \
+                 confirmed against a fresh tree/subscribe).",
                 socket.display()
             ),
         }
@@ -6505,8 +6505,9 @@ mod tests {
         assert_eq!(gate_exposed, [id("root")]);
         assert!(guidance.reattach.contains("tree/subscribe"));
         assert!(guidance.stop_fleet.contains("session/quit"));
-        assert!(guidance.reattach.contains("denied unattended"));
-        assert!(guidance.reattach.contains("is_error:true"));
+        assert!(guidance.reattach.contains("nobody can approve"));
+        assert!(guidance.stop_fleet.contains("marion cancel"));
+        assert!(!guidance.reattach.contains('§'));
         assert_eq!(
             supervisor,
             marion_core::proto::SupervisorDisposition::Resident(
@@ -11794,7 +11795,7 @@ mod tests {
                 paths.socket().to_path_buf(),
             );
             let guidance = handle.guidance();
-            let serving = format!("Reconnect to {} and call ", paths.socket().display());
+            let serving = format!(" on {}", paths.socket().display());
             for line in [guidance.reattach, guidance.stop_fleet] {
                 assert!(line.contains(&serving), "{line}");
                 assert!(!line.contains(&primary.display().to_string()), "{line}");
