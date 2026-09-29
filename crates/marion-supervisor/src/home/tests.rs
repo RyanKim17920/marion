@@ -1245,3 +1245,79 @@ fn an_endpoint_node_shows_its_provider_and_model_on_its_row_and_its_route_when_e
         Some("groq:llama-3.3-70b · translated")
     );
 }
+
+fn seat(
+    id: &str,
+    n: u8,
+    verdict: Option<marion_core::race::SeatVerdict>,
+    tokens: u64,
+) -> NodeSummary {
+    NodeSummary {
+        race: Some(marion_core::proto::model::RaceBadge {
+            race_id: marion_core::race::RaceId("019f0000-1a2b-7000-8000-00000000000a".into()),
+            seat: n,
+            verdict,
+        }),
+        tokens: Some(tokens),
+        ..node(id, Some("root"), NodeState::Exited(ExitStatus::Ok))
+    }
+}
+
+/// **A race's seats sit under one header row on Watch**, placed where their parent put them. The
+/// header sums the seats — their count, how many finished, their tokens so far — and names the
+/// winner once decided; each seat's row says its seat and verdict. The header is no node, so the
+/// cursor on it selects nothing to attach to.
+#[test]
+fn a_race_is_one_header_row_over_its_seats() {
+    use marion_core::race::SeatVerdict;
+    let mut h = home();
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, None, 100),
+        NodeSummary {
+            state: NodeState::Running,
+            ..seat("s2", 2, None, 50)
+        },
+    ]);
+    let f = view::frame(&h, &view::Places::default());
+    let ids: Vec<&str> = f.watch.rows.iter().map(|r| r.id.as_str()).collect();
+    let header = "race:019f0000-1a2b-7000-8000-00000000000a";
+    assert_eq!(ids, ["root", header, "s1", "s2"]);
+    let race = &f.watch.rows[1];
+    assert_eq!(race.harness, "race");
+    assert!(race.kind.contains("2 seats · 1 of 2 done"), "{}", race.kind);
+    assert_eq!(race.tokens, Some(150), "the seats' tokens, summed");
+    assert!(
+        f.watch.rows[2].kind.ends_with("· seat 1"),
+        "{}",
+        f.watch.rows[2].kind
+    );
+
+    h.set_nodes(vec![
+        node("root", None, NodeState::Running),
+        seat("s1", 1, Some(SeatVerdict::Failed), 100),
+        seat("s2", 2, Some(SeatVerdict::Won), 50),
+    ]);
+    let f = view::frame(&h, &view::Places::default());
+    assert!(
+        f.watch.rows[1].kind.contains("#2 codex won"),
+        "{}",
+        f.watch.rows[1].kind
+    );
+    assert!(
+        f.watch.rows[3].kind.ends_with("seat 2 ★ won"),
+        "{}",
+        f.watch.rows[3].kind
+    );
+    assert!(
+        f.watch.rows[2].kind.ends_with("seat 1 failed"),
+        "{}",
+        f.watch.rows[2].kind
+    );
+
+    // Down from root lands on the header, which is no node.
+    h.tab = Tab::Watch;
+    h.watch.tree.select(header);
+    assert!(h.selected().is_none());
+    assert_eq!(h.watch_default(), Effect::None);
+}

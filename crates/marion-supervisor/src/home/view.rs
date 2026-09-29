@@ -197,6 +197,13 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
         let Some((prefix, tnode)) = w.tree.row(i) else {
             break;
         };
+        if let Some(race) = crate::tree::race_of_row(&tnode.id) {
+            if i == w.tree.cursor() {
+                cursor = rows.len();
+            }
+            rows.push(race_row(prefix, tnode, race, &w.nodes));
+            continue;
+        }
         let Some(n) = w.nodes.iter().find(|n| n.agent_id.0 == tnode.id) else {
             continue;
         };
@@ -219,6 +226,9 @@ fn watch(home: &Home, now: std::time::SystemTime) -> WatchView {
                     .name
                     .clone()
                     .or_else(|| crate::tree::review_note(n))
+                    .or_else(|| {
+                        crate::tree::race_note(n).map(|seat| format!("{} · {seat}", kind_of(n)))
+                    })
                     .unwrap_or_else(|| kind_of(n));
                 match &n.endpoint {
                     Some(e) => format!("{kind} {}", e.label()).trim().to_string(),
@@ -293,6 +303,32 @@ fn ago(secs: u64) -> String {
 /// What the row says after the harness: the agent type with the harness's own name taken off —
 /// nothing for a plain type (`codex` on codex), `orchestrator` for `claude-orchestrator`, the whole
 /// type for a custom one.
+/// **A race's header row**, summed from its seats: no node stands behind it, so it has no harness,
+/// no elapsed time of its own and nothing to attach to. Its tokens are the seats' so far, live.
+fn race_row(
+    prefix: &str,
+    tnode: &marion_tui::tree::Node,
+    race: &str,
+    nodes: &[NodeSummary],
+) -> NodeRow {
+    let summary = crate::tree::RaceSummary::of(&marion_core::race::RaceId(race.to_string()), nodes);
+    NodeRow {
+        id: tnode.id.clone(),
+        prefix: prefix.to_string(),
+        harness: "race".into(),
+        kind: summary.label(),
+        short: short_id(race).to_string(),
+        tone: tnode.tone,
+        elapsed: String::new(),
+        tokens: summary.tokens,
+        doing: match &summary.decided {
+            Some(Some(winner)) => format!("{winner} won; every seat's branch is kept"),
+            Some(None) => "no seat won; every seat's branch is kept".into(),
+            None => format!("{} of {} seats finished", summary.ended, summary.seats),
+        },
+    }
+}
+
 fn kind_of(n: &NodeSummary) -> String {
     let harness = n.harness.cli_name().to_string();
     let t = n.agent_type.as_str();

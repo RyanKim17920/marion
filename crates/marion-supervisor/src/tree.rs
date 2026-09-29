@@ -140,9 +140,109 @@ pub fn label_of(node: &NodeSummary) -> String {
         Some(e) => format!("{name} {}", e.label()),
         None => name,
     };
-    match review_note(node) {
+    match review_note(node).or_else(|| race_note(node)) {
         Some(note) => format!("{label} · {note}"),
         None => label,
+    }
+}
+
+/// **What a seat row adds**: its seat, and once the race is decided, how it came out. `None` for a
+/// node in no race. The tree and Home Watch both say it through this.
+pub fn race_note(node: &NodeSummary) -> Option<String> {
+    use marion_core::race::SeatVerdict;
+    let badge = node.race.as_ref()?;
+    let seat = format!("seat {}", badge.seat);
+    Some(match badge.verdict {
+        None => seat,
+        Some(v) => {
+            let word = match v {
+                SeatVerdict::Won => "★ won",
+                SeatVerdict::Lost => "lost",
+                SeatVerdict::Failed => "failed",
+                SeatVerdict::Cancelled => "cancelled",
+                SeatVerdict::Unlaunched => "not started",
+            };
+            format!("{seat} {word}")
+        }
+    })
+}
+
+/// The tree id of a race's header row. Not an agent id: nothing is launched or attached by it, and
+/// [`race_of_row`] is how a view tells the two apart.
+pub fn race_row_id(race_id: &marion_core::race::RaceId) -> String {
+    format!("race:{}", race_id.0)
+}
+
+/// The race a tree row heads, if it is a race's header row.
+pub fn race_of_row(id: &str) -> Option<&str> {
+    id.strip_prefix("race:")
+}
+
+/// **A race, summed from its seats** — the header row's facts. A race has no node of its own, so
+/// everything here is read off the seats' summaries: how many, how many ended, the verdict once
+/// decided, and the tokens they have spent so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaceSummary {
+    pub race_id: marion_core::race::RaceId,
+    pub seats: usize,
+    pub ended: usize,
+    /// The winning seat's label, or `Some(None)` once decided with no winner.
+    pub decided: Option<Option<String>>,
+    pub tokens: Option<u64>,
+}
+
+impl RaceSummary {
+    pub fn of(race_id: &marion_core::race::RaceId, nodes: &[NodeSummary]) -> RaceSummary {
+        use marion_core::race::SeatVerdict;
+        let seats: Vec<&NodeSummary> = nodes
+            .iter()
+            .filter(|n| n.race.as_ref().is_some_and(|b| &b.race_id == race_id))
+            .collect();
+        let decided = seats
+            .iter()
+            .any(|n| n.race.as_ref().is_some_and(|b| b.verdict.is_some()))
+            .then(|| {
+                seats
+                    .iter()
+                    .find(|n| {
+                        n.race
+                            .as_ref()
+                            .is_some_and(|b| b.verdict == Some(SeatVerdict::Won))
+                    })
+                    .map(|n| {
+                        let seat = n.race.as_ref().map_or(0, |b| b.seat);
+                        format!("#{seat} {}", n.agent_type)
+                    })
+            });
+        let tokens = seats
+            .iter()
+            .filter_map(|n| n.tokens)
+            .fold(None, |sum: Option<u64>, t| Some(sum.unwrap_or(0) + t));
+        RaceSummary {
+            race_id: race_id.clone(),
+            seats: seats.len(),
+            ended: seats.iter().filter(|n| n.state.is_exited()).count(),
+            decided,
+            tokens,
+        }
+    }
+
+    /// The header row's label: the race, its seat count, and how far it has got.
+    pub fn label(&self) -> String {
+        let head = format!("race {} · {} seats", short_id(&self.race_id.0), self.seats);
+        match &self.decided {
+            Some(Some(winner)) => format!("{head} · {winner} won"),
+            Some(None) => format!("{head} · no winner"),
+            None => format!("{head} · {} of {} done", self.ended, self.seats),
+        }
+    }
+
+    pub fn tone(&self) -> Tone {
+        match &self.decided {
+            Some(Some(_)) => Tone::Done,
+            Some(None) => Tone::Failed,
+            None => Tone::Live,
+        }
     }
 }
 
@@ -305,11 +405,44 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
 
 /// Build the flattened tree from a snapshot, preserving the selection where the node survives.
 pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
-    let mut t = Tree::new(nodes.iter().map(row).collect());
+    let mut t = Tree::new(with_race_rows(nodes));
     if let Some(id) = keep {
         t.select(id);
     }
     t
+}
+
+/// Every node's row, with each race's seats gathered under one header row placed where its seats'
+/// shared parent put them. A race has no node of its own, so the header is made here, from the
+/// seats, and carries no actions.
+fn with_race_rows(nodes: &[NodeSummary]) -> Vec<tree::Node> {
+    let mut rows: Vec<tree::Node> = Vec::with_capacity(nodes.len());
+    let mut races: Vec<marion_core::race::RaceId> = Vec::new();
+    for n in nodes {
+        let mut r = row(n);
+        if let Some(badge) = &n.race {
+            if !races.contains(&badge.race_id) {
+                races.push(badge.race_id.clone());
+                let race = RaceSummary::of(&badge.race_id, nodes);
+                rows.push(tree::Node {
+                    id: race_row_id(&badge.race_id),
+                    parent: r.parent.clone(),
+                    label: race.label(),
+                    state: if race.decided.is_some() {
+                        "decided".into()
+                    } else {
+                        "racing".into()
+                    },
+                    tone: race.tone(),
+                    actions: Vec::new(),
+                    note: None,
+                });
+            }
+            r.parent = Some(race_row_id(&badge.race_id));
+        }
+        rows.push(r);
+    }
+    rows
 }
 
 /// Everything that can stop `marion tree` before it starts. See `attach.rs` for why this is a
