@@ -317,6 +317,20 @@ fn tool_spawn(
     // **First, and before the environment is even consulted**, because the answer does not
     // depend on it. Routed through `spawn_result` so a refusal reads like every other one
     // a `spawn` can return.
+    // A race names its candidates instead of one type, each held to the same rule a top-level
+    // spawn is (`race_in_checkout`).
+    if !string_list(&args["candidates"]).is_empty() || !args["race"].is_null() {
+        let top_level;
+        let args = match who {
+            Principal::TopLevel(t) => {
+                top_level = race_in_checkout(&t.repo, args)
+                    .map_err(|e| bridge::tool_result(id, &e, true))?;
+                &top_level
+            }
+            Principal::Node => args,
+        };
+        return tool_spawn_race(who, bg, id, args);
+    }
     // **Required, never defaulted**, as the schema says: a default would name one harness's type
     // for every caller that forgot to choose, and run it under a name nobody asked for.
     let Some(agent_type) = args["agent_type"].as_str().map(str::to_string) else {
@@ -453,6 +467,98 @@ fn root_in_checkout(
     ))
 }
 
+/// [`root_in_checkout`] for a race: a top-level race's seats are roots in the checkout too, so every
+/// candidate (`agent_type[:model]`) that can change files needs the checkout stated.
+fn race_in_checkout(
+    repo: &std::path::Path,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut sent = args.clone();
+    for candidate in string_list(&args["candidates"]) {
+        let agent_type = candidate.split(':').next().unwrap_or(&candidate);
+        sent = root_in_checkout(repo, agent_type, args)?;
+    }
+    Ok(sent)
+}
+
+/// **`spawn` with `candidates`: a race.** The supervisor starts one seat per candidate and decides
+/// the winner from the seats' own ends; this reads the decision (blocking) or hands back the race's
+/// id as the handle (`background`). The seats run whichever way, because `agent/spawn` answers once
+/// they exist.
+fn tool_spawn_race(
+    who: &Principal,
+    bg: &background::Background,
+    id: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let refuse = |why: String| bridge::tool_result(id, &format!("marion: {why}"), true);
+    let race = match &args["race"] {
+        serde_json::Value::Null => None,
+        v => Some(
+            serde_json::from_value::<marion_core::race::RawRacePolicy>(v.clone())
+                .map_err(|e| refuse(format!("`race` is not a race policy marion reads: {e}")))?,
+        ),
+    };
+    let (sock, project) = paths_or_refuse(who, id)?;
+    let (caller, repo) = spawn_identity(who, id)?;
+    who.ensure_supervisor()
+        .map_err(|e| bridge::tool_result(id, &e, true))?;
+    let mut params = spawn_params(
+        args["agent_type"].as_str().unwrap_or(""),
+        args,
+        caller,
+        repo,
+    );
+    params.candidates = string_list(&args["candidates"]);
+    params.race = race;
+    // A race's seats announce nothing to the parent one by one: the race is the answer.
+    params.notify_parent = false;
+    let spawned =
+        courier::spawn(sock.socket(), params).map_err(|e| refuse(format!("the race {e}")))?;
+    let Some(started) = spawned.race else {
+        return Err(refuse(
+            "this project's supervisor answered a race with a single node, so marion cannot say \
+             which race to wait on"
+                .into(),
+        ));
+    };
+    let bound = wait_bound(args["timeout_secs"].as_u64());
+    bg.hand_out_race(started.race_id.clone(), bound);
+    if args["background"].as_bool() == Some(true) {
+        return Ok(bridge::race_background_result(id, &started));
+    }
+    Ok(race_delivered(
+        bg,
+        id,
+        &sock,
+        &project,
+        &started.race_id,
+        bound,
+    ))
+}
+
+/// Wait for a race and render its decision, collecting the handle once it is decided.
+fn race_delivered(
+    bg: &background::Background,
+    id: &serde_json::Value,
+    sock: &SocketPaths,
+    project: &ProjectDir,
+    race_id: &marion_core::race::RaceId,
+    bound: Duration,
+) -> serde_json::Value {
+    match courier::await_race(sock.socket(), project, race_id, bound) {
+        Ok(courier::RaceDelivered::Decided(result)) => {
+            bg.race_collected(&race_id.0);
+            let (text, is_error) = bridge::race_text(project, &result);
+            bridge::tool_result(id, &text, is_error)
+        }
+        Ok(courier::RaceDelivered::StillRunning) => {
+            bridge::race_still_running(id, &race_id.0, bound.as_secs())
+        }
+        Err(e) => bridge::tool_result(id, &format!("marion: {e}"), true),
+    }
+}
+
 /// **The one field the two surfaces differ in**, and the reason there are two of them. A node
 /// names itself and proves it; a top-level client names nobody and names its repository instead,
 /// which is what makes the call a **root** (§5.4, `66c8d0e`).
@@ -585,6 +691,19 @@ enum Address {
     Agent(AgentId),
 }
 
+/// The race a `wait` or `status` names by its handle — `id`, or `task_id` as the handle's field
+/// is spelled — when this bridge started one under it. Checked before [`address`], which knows
+/// only node handles.
+fn race_of(
+    bg: &background::Background,
+    args: &serde_json::Value,
+) -> Option<(marion_core::race::RaceId, background::RaceWait)> {
+    ["id", "task_id"]
+        .into_iter()
+        .find_map(|k| args[k].as_str())
+        .and_then(|handle| bg.race(handle))
+}
+
 /// **Read a call's address.** `id` is the one parameter the schema declares: the task_id from a
 /// `spawn` handle, or a child's agent id — whole, the short id a tree row shows, or a unique start
 /// of it — resolved through this bridge's own table ([`background::Background::task_of`]); an id
@@ -627,6 +746,21 @@ fn tool_wait(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    if let Some((race_id, wait)) = race_of(bg, args) {
+        let background::RaceWait::Pending { bound } = wait else {
+            return Err(bridge::tool_result(
+                id,
+                &format!(
+                    "marion: race {} was already decided and its result returned by an \
+                     earlier `wait`; its scoreboard stays in races/{}.json.",
+                    race_id.0, race_id.0
+                ),
+                true,
+            ));
+        };
+        let (sock, project) = paths_or_refuse(who, id)?;
+        return Ok(race_delivered(bg, id, &sock, &project, &race_id, bound));
+    }
     let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
         Some(Address::Task(t)) => t,
         Some(Address::Agent(a)) => return Err(bridge::wait_unknown(id, &a.0)),
@@ -747,6 +881,17 @@ fn tool_status(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    if let Some((race_id, _)) = race_of(bg, args) {
+        let (sock, _) = paths_or_refuse(who, id)?;
+        return match courier::tree(sock.socket()) {
+            Ok(t) => Ok(bridge::tool_result(
+                id,
+                &race_status(&race_id, &t.nodes),
+                false,
+            )),
+            Err(e) => Err(bridge::tool_result(id, &format!("marion: {e}"), true)),
+        };
+    }
     let task_id = match address(bg, args).map_err(|e| bridge::tool_result(id, &e, true))? {
         Some(Address::Task(t)) => t,
         Some(Address::Agent(a)) => return Err(bridge::status_unknown(id, &a.0)),
@@ -786,6 +931,41 @@ fn tool_status(
         // marion's where the supervisor could not be reached at all. Neither is reworded.
         Err(e) => Err(bridge::tool_result(id, &format!("marion: {e}"), true)),
     }
+}
+
+/// One line per seat of `race_id` as the supervisor's tree holds it: its seat, agent type, state and
+/// verdict once the race is decided.
+fn race_status(
+    race_id: &marion_core::race::RaceId,
+    nodes: &[marion_core::proto::model::NodeSummary],
+) -> String {
+    let mut seats: Vec<_> = nodes
+        .iter()
+        .filter_map(|n| {
+            let b = n.race.as_ref().filter(|b| &b.race_id == race_id)?;
+            Some((b.seat, n, b.verdict))
+        })
+        .collect();
+    seats.sort_by_key(|(seat, ..)| *seat);
+    let mut out = format!("marion: race {}", race_id.0);
+    let decided = seats.iter().any(|(.., v)| v.is_some());
+    out.push_str(if decided {
+        " is decided"
+    } else {
+        " is running"
+    });
+    for (seat, n, verdict) in seats {
+        out.push_str(&format!(
+            "\n#{seat} {} {} — {}",
+            n.agent_type,
+            n.agent_id.0,
+            crate::tree::state_label(n.state, n.reap_state)
+        ));
+        if let Some(v) = verdict {
+            out.push_str(&format!(" ({v:?})"));
+        }
+    }
+    out
 }
 
 /// **`steer`: queue a message for a node below the caller** — §2's `node/steer` over the courier.
@@ -1604,6 +1784,73 @@ mod tests {
 
         let reader = root_in_checkout(&dir, "claude-orchestrator", &spawn).expect("a reader");
         assert_eq!(reader, spawn);
+    }
+
+    /// **A top-level race holds every seat to the same rule**: one writer among its candidates
+    /// needs the checkout stated, and a race of readers passes.
+    #[test]
+    fn a_top_level_race_with_a_writer_needs_the_checkout_stated() {
+        let dir = marion_testsupport::scratch("mcp-race-in-checkout");
+        let race = serde_json::json!({"candidates": ["claude-orchestrator", "codex-impl:gpt"]});
+        let e = race_in_checkout(&dir, &race).expect_err("a writer seat, unstated");
+        assert!(e.contains("codex-impl"), "{e}");
+        let mut stated = race.clone();
+        stated["isolation"] = serde_json::json!("shared-cwd");
+        assert!(race_in_checkout(&dir, &stated).is_ok());
+        let readers =
+            serde_json::json!({"candidates": ["claude-orchestrator", "codex-orchestrator"]});
+        assert!(race_in_checkout(&dir, &readers).is_ok());
+    }
+
+    /// **`status` on a race lists only that race's seats**, in seat order, with each verdict once
+    /// the race is decided.
+    #[test]
+    fn a_race_status_lists_its_own_seats_in_order() {
+        use marion_core::proto::model::{NodeSummary, RaceBadge};
+        let race = marion_core::race::RaceId("r-1".into());
+        let node = |id: &str, badge: Option<RaceBadge>| NodeSummary {
+            review_of: None,
+            review: None,
+            agent_id: AgentId(id.into()),
+            parent_id: None,
+            name: None,
+            agent_type: "claude".into(),
+            harness: marion_core::harness::Harness::ClaudeCode,
+            harness_version: None,
+            depth: 1,
+            state: marion_core::node::NodeState::Running,
+            reap_state: marion_core::node::ReapState::Live,
+            timeout: marion_core::encoding::Duration::from_secs(60),
+            pane: false,
+            started_at: None,
+            ended_at: None,
+            tokens: None,
+            attention: None,
+            endpoint: None,
+            race: badge,
+        };
+        let badge = |seat, verdict| RaceBadge {
+            race_id: race.clone(),
+            seat,
+            verdict,
+        };
+        let nodes = [
+            node(
+                "b",
+                Some(badge(2, Some(marion_core::race::SeatVerdict::Won))),
+            ),
+            node("x", None),
+            node(
+                "a",
+                Some(badge(1, Some(marion_core::race::SeatVerdict::Failed))),
+            ),
+        ];
+        let text = race_status(&race, &nodes);
+        assert!(text.starts_with("marion: race r-1 is decided"), "{text}");
+        let a = text.find("#1 claude a").expect("seat 1");
+        let b = text.find("#2 claude b").expect("seat 2");
+        assert!(a < b, "{text}");
+        assert!(text.contains("(Won)") && !text.contains(" x "), "{text}");
     }
 
     /// **`wait` answers a handle it does not recognise with a sentence, not by blocking.**

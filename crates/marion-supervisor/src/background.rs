@@ -112,6 +112,21 @@ pub enum Collected {
 #[derive(Default)]
 pub struct Background {
     handed: Mutex<Vec<Handed>>,
+    races: Mutex<Vec<HandedRace>>,
+}
+
+/// A race this bridge started: its handle is the race's id, and a `wait` on it is a wait for the
+/// decision rather than for one node.
+struct HandedRace {
+    race_id: marion_core::race::RaceId,
+    wait_bound: Duration,
+    collected: bool,
+}
+
+/// What a `wait` found for a race handle.
+pub enum RaceWait {
+    Pending { bound: Duration },
+    AlreadyCollected,
 }
 
 /// What a backgrounded `spawn` hands back — enough to `wait` on, and nothing that requires a
@@ -321,6 +336,46 @@ impl Background {
             .is_some_and(|h| h.collected.is_none() && h.waits == 0)
     }
 
+    /// Record a race's handle. The race's own seats are not rows here: the race is what the caller
+    /// waits on, and each seat's end is the supervisor's to weigh.
+    pub fn hand_out_race(&self, race_id: marion_core::race::RaceId, wait_bound: Duration) {
+        self.races
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(HandedRace {
+                race_id,
+                wait_bound,
+                collected: false,
+            });
+    }
+
+    /// The race a handle names, if it names one this bridge started.
+    pub fn race(&self, handle: &str) -> Option<(marion_core::race::RaceId, RaceWait)> {
+        let races = self.races.lock().unwrap_or_else(|e| e.into_inner());
+        let r = races.iter().find(|r| r.race_id.0 == handle)?;
+        let wait = if r.collected {
+            RaceWait::AlreadyCollected
+        } else {
+            RaceWait::Pending {
+                bound: r.wait_bound,
+            }
+        };
+        Some((r.race_id.clone(), wait))
+    }
+
+    /// A `wait` got this race's decision.
+    pub fn race_collected(&self, handle: &str) {
+        if let Some(r) = self
+            .races
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .find(|r| r.race_id.0 == handle)
+        {
+            r.collected = true;
+        }
+    }
+
     /// Remember *what* a `wait` collected, not merely that something was. See [`Collected`].
     ///
     /// **Only a `wait` that reached the node's terminal state collects.** One that expired against
@@ -355,6 +410,27 @@ impl Drop for Waiting<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A race handle is its race's id**, pending until a `wait` collects it, and never a node
+    /// row: `resolve` and `node_of` know nothing of it.
+    #[test]
+    fn a_race_handle_resolves_to_its_race_until_collected() {
+        let bg = Background::new();
+        let race = marion_core::race::RaceId("r-1".into());
+        bg.hand_out_race(race.clone(), Duration::from_secs(9));
+        assert!(matches!(
+            bg.race("r-1"),
+            Some((r, RaceWait::Pending { bound })) if r == race && bound == Duration::from_secs(9)
+        ));
+        assert!(bg.race("r-2").is_none());
+        assert!(matches!(bg.resolve("r-1"), Wait::Unknown));
+        assert!(bg.node_of("r-1").is_none());
+        bg.race_collected("r-1");
+        assert!(matches!(
+            bg.race("r-1"),
+            Some((_, RaceWait::AlreadyCollected))
+        ));
+    }
 
     fn hand(bg: &Background, task: &str) {
         bg.hand_out(

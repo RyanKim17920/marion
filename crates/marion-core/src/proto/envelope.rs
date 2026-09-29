@@ -185,6 +185,11 @@ impl ClientNotification {
 /// sent it. Keeping the two in one variant would have meant a supervisor accepting `node/pty` from
 /// a client — a client asserting what a node printed — which the outbound table's own doc rules
 /// out by saying the ordinal is *"assigned by the single reader of that master"*.
+///
+/// `Request` carries a [`crate::proto::Call`], whose `agent/spawn` params are the largest message
+/// marion has; like `Call` itself (`method.rs`), the frame is parsed and dispatched once per line,
+/// so it is not boxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Frame {

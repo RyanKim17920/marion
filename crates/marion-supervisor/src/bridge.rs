@@ -322,6 +322,25 @@ fn tools_describing(agent_type_description: &str) -> Value {
                     "timeout_secs": {"type": "integer"},
                     "allow_concurrent_writes": {"type": "boolean"},
                     "background": {"type": "boolean"},
+                    "candidates": {
+                        "type": "array", "items": {"type": "string"},
+                        "minItems": marion_core::race::MIN_SEATS,
+                        "maxItems": marion_core::race::MAX_SEATS,
+                        "description": "Race: run the task once per `agent_type[:model]`, each in \
+                                        its own worktree under the same `verification`, and \
+                                        return the winner's contract with a scoreboard. marion \
+                                        picks the winner from verification, then tokens, then \
+                                        time. Name `candidates` instead of `agent_type`."
+                    },
+                    "race": {
+                        "type": "object",
+                        "properties": {
+                            "first": {"type": "boolean"},
+                            "losers": {"type": "string", "enum": ["keep", "prune"]}
+                        },
+                        "description": "How a race with `candidates` is decided, over the \
+                                        tree's `[race]` table."
+                    },
                     "review_of": {
                         "type": "string",
                         "description": "An ended child's agent id: the spawn becomes a read-only \
@@ -331,7 +350,9 @@ fn tools_describing(agent_type_description: &str) -> Value {
                                         `acceptance_criteria`."
                     }
                 },
-                "required": ["agent_type", "prompt", "acceptance_criteria"]
+                // `agent_type` is required unless `candidates` names the seats of a race; the
+                // supervisor refuses a spawn that names both or neither.
+                "required": ["prompt", "acceptance_criteria"]
             }
         },
         {
@@ -1122,6 +1143,73 @@ pub fn background_result(
     )
 }
 
+/// **A decided race, as its requester reads it**: the winner's contract exactly as any child's is
+/// rendered ([`spawn_text`]), then the scoreboard of every seat. A race nobody won is an error
+/// result carrying the scoreboard, so the requester sees why each seat lost and every branch kept.
+pub fn race_text(
+    project: &marion_core::paths::ProjectDir,
+    result: &marion_core::race::RaceResult,
+) -> (String, bool) {
+    let board = format!("race {}:\n{}", result.race_id.0, result.scoreboard());
+    let Some(winner) = result.winner_row() else {
+        return (
+            format!(
+                "marion: no seat of race {} won, so there is no contract to return; every seat's \
+                 branch is kept.\n\n{board}",
+                result.race_id.0
+            ),
+            true,
+        );
+    };
+    let contract = match (&winner.agent_id, &winner.task_id) {
+        (Some(agent_id), Some(task_id)) => {
+            crate::courier::read_contract(project, agent_id, task_id)
+        }
+        _ => Err(SpawnError::NoContract {
+            path: project.path().join("races"),
+            why: "the winning seat's scoreboard row names no node or contract".into(),
+        }),
+    };
+    let (text, is_error) = spawn_text(&winner.agent_type, contract);
+    (format!("{text}\n\n{board}"), is_error)
+}
+
+/// A backgrounded race's handle: its id, which `wait` and `status` take as the `task_id`.
+pub fn race_background_result(
+    id: &Value,
+    started: &marion_core::proto::result::RaceStarted,
+) -> Value {
+    let running = started
+        .seats
+        .iter()
+        .filter(|s| s.agent_id.is_some())
+        .count();
+    tool_result(
+        id,
+        &format!(
+            "marion: the race is running in the background with {running} of {} seats started — \
+             this is a handle, not a result. When you need the winner, call `wait` with task_id \
+             {:?}; marion returns the winner's contract and the scoreboard, blocking only if the \
+             race is not decided yet. `status` with the same task_id shows each seat.",
+            started.seats.len(),
+            started.race_id.0,
+        ),
+        false,
+    )
+}
+
+/// A `wait` on a race that outlived its bound: the seats keep running and the handle stays valid.
+pub fn race_still_running(id: &Value, race_id: &str, secs: u64) -> Value {
+    tool_result(
+        id,
+        &format!(
+            "marion: race {race_id} is not decided after {secs} s of waiting; its seats keep \
+             running and the handle stays valid — call `wait` with task_id {race_id:?} again."
+        ),
+        true,
+    )
+}
+
 /// **`wait` against an id this bridge process has no row for.**
 ///
 /// A sentence rather than a code, and it has to say **which lookup happened**, because the lookup
@@ -1478,6 +1566,75 @@ mod tests {
             announcement_of("codex-impl", &refused),
             spawn_text_of("codex-impl", &refused).0
         );
+    }
+
+    fn decided(winner: Option<u8>) -> marion_core::race::RaceResult {
+        use marion_core::race::{DecidedBy, RaceId, RacePolicy, ScoreRow, SeatVerdict};
+        let row = |seat: u8, verdict| ScoreRow {
+            seat,
+            agent_type: "claude".into(),
+            model: Some(format!("m{seat}")),
+            harness: None,
+            agent_id: Some(marion_core::contract::AgentId(format!("a-{seat}"))),
+            task_id: Some(marion_core::contract::TaskId(format!("t-{seat}"))),
+            status: Some(ExitStatus::Ok),
+            verified: (u16::from(verdict == SeatVerdict::Won), 1),
+            tokens: None,
+            secs: None,
+            branch: None,
+            verdict,
+            pruned: false,
+        };
+        let verdict = |seat| {
+            if winner == Some(seat) {
+                SeatVerdict::Won
+            } else {
+                SeatVerdict::Failed
+            }
+        };
+        marion_core::race::RaceResult {
+            race_id: RaceId("r-1".into()),
+            requester: marion_core::contract::AgentId("root".into()),
+            policy: RacePolicy::default(),
+            winner,
+            decided_by: if winner.is_some() {
+                DecidedBy::Verification
+            } else {
+                DecidedBy::NoPass
+            },
+            seats: vec![row(1, verdict(1)), row(2, verdict(2))],
+        }
+    }
+
+    /// **A race nobody won is an error carrying the whole scoreboard**, and says every branch is
+    /// kept; it never reads a contract, since there is no winner's to read.
+    #[test]
+    fn a_race_nobody_won_is_an_error_with_its_scoreboard() {
+        let dir = marion_testsupport::scratch("bridge-race-nowin");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("s"), &dir.join("r"));
+        let (text, is_error) = race_text(&project, &decided(None));
+        assert!(is_error, "{text}");
+        assert!(text.contains("no seat of race r-1 won"), "{text}");
+        assert!(
+            text.contains("#1 claude:m1") && text.contains("#2 claude:m2"),
+            "{text}"
+        );
+        assert!(text.contains("decided by: no seat passed"), "{text}");
+    }
+
+    /// **A won race reads the winner's own contract**; one marion cannot read is said as that,
+    /// with the scoreboard still attached.
+    #[test]
+    fn a_won_race_returns_the_winners_contract_and_the_scoreboard() {
+        let dir = marion_testsupport::scratch("bridge-race-win");
+        let project = marion_core::paths::ProjectDir::new(&dir.join("s"), &dir.join("r"));
+        let (text, is_error) = race_text(&project, &decided(Some(2)));
+        assert!(is_error, "no contract file is on disk: {text}");
+        assert!(
+            text.contains("t-2"),
+            "the winner's contract was the one looked for: {text}"
+        );
+        assert!(text.contains("#2 claude:m2 ★ pass"), "{text}");
     }
 
     /// **A root's answer is an error exactly when the root did not finish — never because it has no

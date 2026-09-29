@@ -579,6 +579,66 @@ pub fn await_contract(
     }
 }
 
+/// What a wait on a race produced.
+#[derive(Debug)]
+pub enum RaceDelivered {
+    /// The race is decided and this is its scoreboard, read from `races/<race_id>.json`.
+    Decided(Box<marion_core::race::RaceResult>),
+    /// The bound expired with the race still open. Its seats keep running and the handle stays
+    /// valid, exactly as [`Delivered::StillRunning`] says of one child.
+    StillRunning,
+}
+
+/// **Wait for a race to be decided and hand back its scoreboard.**
+///
+/// A race is decided by the supervisor, which writes `races/<race_id>.json` and then journals
+/// `RaceDecided`; folding that record re-announces each seat's summary with its verdict on
+/// `tree/subscribe`. So the file is read first (a race decided before this call is answered from
+/// disk), then the tree is followed until a seat of this race carries a verdict, and the file is
+/// read again. Like [`await_contract`] this is a reader: it starts and stops nothing.
+pub fn await_race(
+    socket: &Path,
+    project: &ProjectDir,
+    race_id: &marion_core::race::RaceId,
+    bound: Duration,
+) -> Result<RaceDelivered, SpawnError> {
+    let read = || crate::race::read_result(project, race_id);
+    if let Some(r) = read() {
+        return Ok(RaceDelivered::Decided(Box::new(r)));
+    }
+    let decided_seat = |n: &marion_core::proto::model::NodeSummary| {
+        n.race
+            .as_ref()
+            .is_some_and(|b| &b.race_id == race_id && b.verdict.is_some())
+    };
+    let deadline = Instant::now() + bound;
+    let mut c = Conn::dial(socket)?;
+    c.bound(bound)?;
+    let sub = c.send(Call::TreeSubscribe(TreeSubscribeParams {}))?;
+    loop {
+        c.bound(deadline.saturating_duration_since(Instant::now()))?;
+        let seen = match c.next()? {
+            Next::Expired => return Ok(RaceDelivered::StillRunning),
+            Next::Frame(f) => match *f {
+                Frame::Response(r) if r.id == RequestId::Number(sub) => match r.outcome {
+                    Outcome::Error(e) => return Err(SpawnError::SupervisorRefused(e.message)),
+                    Outcome::Result(v) => serde_json::from_value::<TreeSubscribeResult>(v)
+                        .is_ok_and(|t| t.nodes.iter().any(decided_seat)),
+                },
+                Frame::Notification(n) => matches!(
+                    n.event,
+                    marion_core::proto::notify::Event::NodeAdded { ref node, .. }
+                        if decided_seat(node)
+                ),
+                _ => false,
+            },
+        };
+        if seen && let Some(r) = read() {
+            return Ok(RaceDelivered::Decided(Box::new(r)));
+        }
+    }
+}
+
 /// The node's own closing bookend, if this event is one.
 ///
 /// Filtered by `agent_id` because one connection can legitimately carry more: `tree/node-added` and
@@ -613,7 +673,7 @@ fn terminal_of(agent_id: &AgentId, event: marion_core::proto::notify::Event) -> 
 /// **The file must be the contract of the task asked about.** The path is keyed on the task id, but
 /// what the caller is handed is the file's content, so a contract naming another task — a file
 /// copied or left over under the wrong name — is refused rather than reported as this task's.
-fn read_contract(
+pub(crate) fn read_contract(
     project: &ProjectDir,
     agent_id: &AgentId,
     task_id: &TaskId,
@@ -677,6 +737,51 @@ mod tests {
                 && msg.contains(&contract.task_id.0)
                 && msg.contains(&other.0),
             "the refusal names both tasks: {msg}"
+        );
+    }
+
+    /// **A decided race is answered from its file**, before any dial: the socket here does not
+    /// exist, so reaching it would be a refusal.
+    #[test]
+    fn a_decided_race_is_read_from_disk_without_dialling() {
+        let dir = marion_testsupport::scratch("courier-race-decided");
+        let project = ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        let result = marion_core::race::RaceResult {
+            race_id: marion_core::race::RaceId("r-1".into()),
+            requester: AgentId("root".into()),
+            policy: marion_core::race::RacePolicy::default(),
+            winner: None,
+            decided_by: marion_core::race::DecidedBy::NoPass,
+            seats: vec![],
+        };
+        crate::race::write_result(&project, &result).unwrap();
+        let got = await_race(
+            &dir.join("absent.sock"),
+            &project,
+            &result.race_id,
+            Duration::from_secs(1),
+        )
+        .expect("read from disk, no dial");
+        let RaceDelivered::Decided(got) = got else {
+            panic!("{got:?}")
+        };
+        assert_eq!(*got, result);
+    }
+
+    /// An open race whose supervisor cannot be reached is that refusal, not a hang or a result.
+    #[test]
+    fn an_open_race_with_no_supervisor_is_refused() {
+        let dir = marion_testsupport::scratch("courier-race-open");
+        let project = ProjectDir::new(&dir.join("state"), &dir.join("repo"));
+        let got = await_race(
+            &dir.join("absent.sock"),
+            &project,
+            &marion_core::race::RaceId("r-1".into()),
+            Duration::from_secs(1),
+        );
+        assert!(
+            matches!(got, Err(SpawnError::SupervisorUnreachable { .. })),
+            "{got:?}"
         );
     }
 

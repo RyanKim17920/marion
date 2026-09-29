@@ -125,6 +125,18 @@ Paths outside the child's `writable_scope` are committed too and listed in the c
 the commit it started from. If the commit fails, the worktree is kept and the contract says
 where. A `shared-cwd` child writes straight into your directory, so there is nothing to merge.
 
+### Racing one task on several agents
+
+A node's `spawn` can name `candidates` instead of `agent_type`: two to eight `agent_type[:model]`
+strings, such as `["claude:sonnet", "codex", "opencode:openrouter:qwen/qwen3-coder"]`. marion runs
+the task once per candidate, each as an ordinary child in its own worktree under the same
+`verification` (which a race requires), and picks the winner itself: a seat that passed
+verification, then the fewest tokens, then the shortest time, then the lowest seat. The answer is
+the winner's contract with a scoreboard of every seat, and every seat keeps its branch. With
+`background: true` the handle is the race's id; `wait` returns the same answer and `status` lists
+the seats. The scoreboard is also kept in the project state as `races/<race_id>.json`. A race
+costs every seat's tokens.
+
 ## Agent types
 
 An agent type is a launch spec, not a persona: harness, model, tools, isolation, prompt,
