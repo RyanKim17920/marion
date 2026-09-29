@@ -60,6 +60,10 @@ COMMON = {
     "keybindings-help", "skill-creator", "frontend-design", "code-review", "general-purpose",
     "statusline-setup", "claude-code-guide", "deep-research", "design-sync", "codex-cli",
     "browser", "context-management",
+    # Harness built-in: qwen-code ships a `computer-use` feature and lists it among its own commands,
+    # and Claude Code's bundled `claude-api` skill names it in its description. An operator's MCP
+    # server of the same name is not what those captures carry.
+    "computer-use",
 }
 
 
