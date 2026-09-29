@@ -4,7 +4,7 @@
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session ceefc1b4-1864-424c-bc9f-3abbde9021cc ; activity mcp_marion_report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 09262e5d-c596-4af4-8548-7dbfcdc992a5 ; activity mcp_marion_report",
         "status": "PASS"
       },
       "P-approval": {

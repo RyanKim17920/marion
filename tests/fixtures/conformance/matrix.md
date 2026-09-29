@@ -123,7 +123,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: 0.155.1 (admitted in PINNED_HARNESSES); no-self-update pair check_for_update_on_startup=false carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"responses"}; exit 0; declaration route verified at compile; auth failure line: none
 - **P-tools** FAIL: first request lists `mcp__marion__report`: false; with the bridge 4 s slow and no gate of marion's, the first request came 1.2 s after the spawn and did NOT list marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0e4a9-cb57-76d2-9996-f5b18dc6aec0 ; activity report
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0ef50-1e8b-7af2-9b31-44686c3587ec ; activity report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("failed")), 0 permission ask(s) reached marion
 - **P-midturn** UNSUPPORTED: headless delivery is Continuation (a relaunch per turn, no mid-turn channel): S31 p0b/codex (0.147.0): `exec -C <cwd> resume <id>` continues the thread; the -c mcp_servers.marion.* redeclaration must ride every resume, and stdin is read once before the first request, never mid-run
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (exit 1); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
@@ -151,7 +151,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-version** PASS: 0.53.0 (admitted in PINNED_HARNESSES); no-self-update document keys carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"gemini"}; exit 0; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `mcp_marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 5.0 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10)]); session ceefc1b4-1864-424c-bc9f-3abbde9021cc ; activity mcp_marion_report
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 09262e5d-c596-4af4-8548-7dbfcdc992a5 ; activity mcp_marion_report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("error: Tool \"mcp_marion_report\" not found. Did you mean one of: \"update_topic\", \"list_directory\", \"grep_search\"?")), 0 permission ask(s) reached marion
 - **P-midturn** UNSUPPORTED: headless delivery None { note: "gemini's --resume takes `latest` or an index, not a session id, and S31 did not probe it; gemini 0.53 --acp refuses session/new (S31 p0a)" }
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
