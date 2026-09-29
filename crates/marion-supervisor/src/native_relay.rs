@@ -5749,8 +5749,12 @@ mod tests {
     /// the pump's `poll` returns at once, and the pump reports the worker's failure rather than the
     /// EOF it caused.
     ///
-    /// Mutation: drop the shutdown (the pump then waits on a silent socket and the elapsed bound
-    /// fails), or let the EOF message displace the worker's (the message assertion fails).
+    /// Causal, not timed: the server stays silent until the pump has returned, so nothing but the
+    /// worker's wake can end it. A generous backstop lets a broken wake fail rather than hang: the
+    /// server then hangs up by itself, and the test sees that it had to.
+    ///
+    /// Mutation: drop the shutdown (the pump waits for the backstop's hang-up and the backstop
+    /// assertion fails), or let the EOF message displace the worker's (the message assertion fails).
     #[test]
     fn a_keyboard_failure_wakes_the_pump_immediately_with_its_own_message() {
         struct FailingInput;
@@ -5760,17 +5764,16 @@ mod tests {
             }
         }
 
-        // How soon the wake must end the pump: the old poll interval, which the wake replaced.
-        const WAKE_BOUND: Duration = Duration::from_millis(50);
+        const BACKSTOP: Duration = Duration::from_secs(10);
         let (client, mut server) = UnixStream::pair().unwrap();
-        // The server completes the attach and then goes silent for far longer than that, so only
-        // a deliberate wake can end the pump early.
+        let (pumped, pump_returned) = std::sync::mpsc::channel::<()>();
+        // The server completes the attach and then says nothing until the pump has returned.
         let server_thread = std::thread::spawn(move || {
             complete_attach(&mut server);
-            std::thread::sleep(WAKE_BOUND * 10);
+            let gave_up = pump_returned.recv_timeout(BACKSTOP).is_err();
             drop(server);
+            gave_up
         });
-        let started = Instant::now();
         let mut session = RawPaneSession::open_for_test(
             client,
             AgentId("native".into()),
@@ -5780,17 +5783,17 @@ mod tests {
         )
         .unwrap();
         let error = session.pump().unwrap_err();
-        let elapsed = started.elapsed();
+        let _ = pumped.send(());
+        let gave_up = server_thread.join().unwrap();
+        assert!(
+            !gave_up,
+            "the pump ended only when the silent server hung up, not on the worker's stop: {error}"
+        );
         assert!(
             error.contains("sentinel terminal input failure"),
             "the pump reported something other than the keyboard failure: {error}"
         );
-        assert!(
-            elapsed < WAKE_BOUND,
-            "the pump was not woken by the worker's stop: {elapsed:?}"
-        );
         drop(session);
-        server_thread.join().unwrap();
     }
 
     /// The terminal output descriptor is nonblocking while the relay runs, and a TUI frame is a
