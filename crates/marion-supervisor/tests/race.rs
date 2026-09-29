@@ -102,31 +102,106 @@ fn race_params(caller: SpawnCaller) -> AgentSpawnParams {
     }
 }
 
-#[test]
-fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
-    if !marion_testsupport::harness_available("claude") {
-        return;
+/// Parks every request whose body names one of `markers` until released: the root, so it is still
+/// running (and so still wants its race) until the race is decided, and in the `first` test a seat
+/// that never finishes on its own.
+#[derive(Debug)]
+struct Parked {
+    markers: Vec<String>,
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl marion_provider::Hold for Parked {
+    fn wait_for(&self, _wire: Option<&str>, body: &serde_json::Value) {
+        let body = body.to_string();
+        if !self.markers.iter().any(|m| body.contains(m.as_str())) {
+            return;
+        }
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
     }
-    let dir = scratch("race-e2e");
+}
+
+impl Parked {
+    fn new(markers: &[&str]) -> std::sync::Arc<Parked> {
+        std::sync::Arc::new(Parked {
+            markers: markers.iter().map(|m| m.to_string()).collect(),
+            released: std::sync::Mutex::new(false),
+            wake: std::sync::Condvar::new(),
+        })
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+
+/// Releases the parked requests however the bed ends, so no provider thread is left waiting.
+struct Release(std::sync::Arc<Parked>);
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// Everything one race run leaves for its assertions: the bed stays up until this is dropped.
+struct Ran {
+    repo: std::path::PathBuf,
+    state: std::path::PathBuf,
+    project: ProjectDir,
+    root: AgentId,
+    c: Client,
+    started: marion_core::proto::result::RaceStarted,
+    result: marion_core::race::RaceResult,
+    // Dropped last: the supervisor stops before the provider goes.
+    _sup: Stopped,
+    _server: CannedServer,
+    /// Last of all: the directory every other field lives in.
+    _dir: marion_testsupport::Scratch,
+}
+
+struct Stopped(common::Supervisor);
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Start the canned provider and a supervisor, a root, and the race `params` asks for on the
+/// root's behalf; return once the race is decided. The root's turn is parked until then, so its
+/// race is never abandoned; so is every seat whose model is in `park`. `None` where claude is not
+/// installed.
+fn run_race(
+    tag: &str,
+    script: Script,
+    park: &[&str],
+    params: impl FnOnce(SpawnCaller) -> AgentSpawnParams,
+) -> Option<Ran> {
+    if !marion_testsupport::harness_available("claude") {
+        return None;
+    }
+    let dir = scratch(tag);
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
     let key = project_root(&repo);
     let project = ProjectDir::new(&state, &key);
-    let server = CannedServer::start(Config {
-        addr: ([127, 0, 0, 1], 0).into(),
-        reqlog: dir.join("provider-requests.jsonl"),
-        script: script(),
-    })
+    let parked = Parked::new(&[&[ROOT_MARKER], park].concat());
+    let release = Release(parked.clone());
+    let server = CannedServer::start_held(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: dir.join("provider-requests.jsonl"),
+            script,
+        },
+        Some(parked as std::sync::Arc<dyn marion_provider::Hold>),
+    )
     .expect("the canned provider binds");
-
-    struct Stopped(common::Supervisor);
-    impl Drop for Stopped {
-        fn drop(&mut self) {
-            self.0.stop();
-        }
-    }
-    let _sup = Stopped(common::Supervisor::start(
+    let sup = Stopped(common::Supervisor::start(
         &state,
         &key,
         &std::env::var("PATH").unwrap_or_default(),
@@ -143,7 +218,7 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
     watcher.read_bound(BOUND);
     watcher.tree();
 
-    let id = c.send(Call::AgentSpawn(race_params(SpawnCaller {
+    let id = c.send(Call::AgentSpawn(params(SpawnCaller {
         agent_id: root.clone(),
         node_token: Secret::new(token),
     })));
@@ -155,17 +230,6 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
         panic!("wrong result")
     };
     let started = spawned.race.expect("a race answers with its seats");
-    assert_eq!(started.seats.len(), 3);
-    assert!(
-        started
-            .seats
-            .iter()
-            .all(|s| s.agent_id.is_some() && s.refused.is_none()),
-        "every seat started: {:?}",
-        started.seats
-    );
-    assert_eq!(started.seats[1].candidate, "claude:race-model-two");
-
     // Any seat's verdict, not only a winner's: a race nobody won must fail below, naming its
     // scoreboard, rather than here as a timeout.
     let decided = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -184,6 +248,51 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
 
     let result = marion_supervisor::race::read_result(&project, &started.race_id)
         .expect("the scoreboard is on disk once the decision is announced");
+    drop(release);
+    Some(Ran {
+        repo,
+        state,
+        project,
+        root,
+        c,
+        started,
+        result,
+        _sup: sup,
+        _server: server,
+        _dir: dir,
+    })
+}
+
+#[test]
+fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
+    let Some(Ran {
+        repo,
+        state,
+        project,
+        root,
+        mut c,
+        started,
+        result,
+        // Named, never `..`: a field a pattern skips is dropped at once, and these hold the bed
+        // up. Bindings drop in reverse, so the supervisor stops before its directory goes.
+        _dir,
+        _server,
+        _sup,
+    }) = run_race("race-e2e", script(), &[], race_params)
+    else {
+        return;
+    };
+    assert_eq!(started.seats.len(), 3);
+    assert!(
+        started
+            .seats
+            .iter()
+            .all(|s| s.agent_id.is_some() && s.refused.is_none()),
+        "every seat started: {:?}",
+        started.seats
+    );
+    assert_eq!(started.seats[1].candidate, "claude:race-model-two");
+
     assert_eq!(result.winner, Some(2), "{}", result.scoreboard());
     assert_eq!(result.decided_by, DecidedBy::Verification);
     assert_eq!(
@@ -267,15 +376,6 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
             Box::new(|p| p.isolation = Some(marion_core::contract::Isolation::SharedCwd)),
         ),
         (
-            "not served yet",
-            Box::new(|p| {
-                p.race = Some(marion_core::race::RawRacePolicy {
-                    first: Some(true),
-                    ..Default::default()
-                })
-            }),
-        ),
-        (
             "max_concurrent_children",
             Box::new(|p| {
                 p.candidates = vec!["claude".into(); 5];
@@ -328,4 +428,89 @@ fn three_canned_seats_race_and_the_one_that_passes_verification_wins() {
         assert_eq!(badge.seat as usize, i + 1);
         assert_eq!(badge.race_id, started.race_id);
     }
+}
+
+/// The refs under `marion/` in `repo`.
+fn task_branches(repo: &std::path::Path) -> Vec<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["branch", "--list", "marion/*", "--format=%(refname:short)"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// **`losers: prune` deletes the losers' branches and only theirs**, once a winner is decided:
+/// the scoreboard marks what is actually gone, and the winner's branch stays to be merged.
+#[test]
+fn a_pruned_race_deletes_only_the_losers_branches() {
+    let Some(ran) = run_race("race-prune", script(), &[], |caller| AgentSpawnParams {
+        race: Some(marion_core::race::RawRacePolicy {
+            losers: Some(marion_core::race::Losers::Prune),
+            ..Default::default()
+        }),
+        ..race_params(caller)
+    }) else {
+        return;
+    };
+    let r = &ran.result;
+    assert_eq!(r.winner, Some(2), "{}", r.scoreboard());
+    let left = task_branches(&ran.repo);
+    for row in &r.seats {
+        let branch = row.branch.clone().expect("every seat's work landed");
+        if row.seat == 2 {
+            assert!(!row.pruned);
+            assert!(
+                left.contains(&branch),
+                "the winner's {branch} stays: {left:?}"
+            );
+        } else {
+            assert!(row.pruned, "{}", r.scoreboard());
+            assert!(
+                !left.contains(&branch),
+                "a loser's {branch} is gone: {left:?}"
+            );
+        }
+    }
+}
+
+/// **`first` stops the seats still running once one passes**, through marion's own stop: the held
+/// seat never answers, so it can end before its 120 s timeout only by being stopped, and a stop
+/// records it cancelled, never failed or timed out.
+#[test]
+fn a_first_race_stops_the_seats_still_running_once_one_passes() {
+    let ran = run_race("race-first", script(), &[MODELS[0]], |caller| {
+        AgentSpawnParams {
+            candidates: MODELS[..2].iter().map(|m| format!("claude:{m}")).collect(),
+            race: Some(marion_core::race::RawRacePolicy {
+                first: Some(true),
+                ..Default::default()
+            }),
+            ..race_params(caller)
+        }
+    });
+    let Some(ran) = ran else {
+        return;
+    };
+    let r = &ran.result;
+    assert_eq!(r.winner, Some(2), "{}", r.scoreboard());
+    assert_eq!(r.decided_by, DecidedBy::FirstPass, "{}", r.scoreboard());
+    assert_eq!(
+        r.seats[0].verdict,
+        SeatVerdict::Cancelled,
+        "the held seat was stopped: {}",
+        r.scoreboard()
+    );
+    let held = ran.started.seats[0]
+        .agent_id
+        .clone()
+        .expect("seat 1 started");
+    let stopped = records(&ran.project.journal())
+        .into_iter()
+        .any(|k| matches!(k, RecordKind::KillConfirmed(k) if k.agent_id == held));
+    assert!(stopped, "marion stopped the held seat itself");
 }

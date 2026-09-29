@@ -3347,7 +3347,7 @@ impl Drop for PrelaunchWorktree {
 
 /// The ref of a branch marion made for a task — exactly one segment under `marion/`, as
 /// [`select_workspace`] names it — or `None`, so cleanup can never be pointed at another branch.
-fn task_branch_ref(branch: &str) -> Option<String> {
+pub(crate) fn task_branch_ref(branch: &str) -> Option<String> {
     let task = branch.strip_prefix("marion/")?;
     let one_segment = !task.is_empty() && !task.contains('/') && !task.contains("..");
     one_segment.then(|| format!("refs/heads/{branch}"))

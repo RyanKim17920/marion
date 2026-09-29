@@ -3804,14 +3804,6 @@ impl RegistryHandle {
                 .over(types.race().clone()),
         )
         .map_err(|e| race_refused("race", e))?;
-        if policy.first || policy.losers == race::Losers::Prune {
-            return Err(RpcError::unimplemented(
-                "race",
-                "this build decides a race once every seat has finished and keeps every seat's \
-                 branch; `first` and `losers: prune` are not served yet.",
-                "race",
-            ));
-        }
         if let Some(c) = candidates
             .iter()
             .find(|c| types.resolve(&c.agent_type).is_none())
@@ -3975,8 +3967,31 @@ impl RegistryHandle {
             return;
         };
         match marion_core::race::step(&policy, &state) {
-            Step::Wait | Step::Stop(_) => self.races.end_drive(race_id),
-            Step::Decided(result) => self.decide_race(&env.project_dir, result),
+            Step::Wait => self.races.end_drive(race_id),
+            Step::Stop(seats) => {
+                let ids: Vec<AgentId> = race
+                    .seats
+                    .iter()
+                    .filter(|(seat, _)| seats.contains(seat))
+                    .map(|(_, id)| id.clone())
+                    .collect();
+                let why = if state.abandoned {
+                    StopReason::RaceAbandoned
+                } else {
+                    StopReason::RaceDecided
+                };
+                let told = self.races.to_stop(race_id, ids);
+                // Released before stopping: a stopped seat's own thread drives the race again
+                // once its end is filed, and that drive is what decides it.
+                self.races.end_drive(race_id);
+                for id in told {
+                    if !self.stop_node(&id, why) {
+                        // Not stoppable yet (still spawning): a later drive tries again.
+                        self.races.forget_stop(race_id, &id);
+                    }
+                }
+            }
+            Step::Decided(result) => self.decide_race(&env.project_dir, &env.project_root, result),
         }
     }
 
@@ -3985,8 +4000,15 @@ impl RegistryHandle {
     fn decide_race(
         &self,
         project: &marion_core::paths::ProjectDir,
-        result: marion_core::race::RaceResult,
+        repo: &std::path::Path,
+        mut result: marion_core::race::RaceResult,
     ) {
+        // Losers' branches go first, so the scoreboard records what is actually gone.
+        for seat in result.prunable() {
+            if let Some(row) = result.seats.iter_mut().find(|r| r.seat == seat) {
+                row.pruned = crate::race::prune_branch(repo, project, row);
+            }
+        }
         if let Err(e) = crate::race::write_result(project, &result) {
             // The race stays open and a later drive (another seat's end, the next boot) retries.
             eprintln!(
@@ -4005,6 +4027,32 @@ impl RegistryHandle {
             );
         }
         self.races.close(&result.race_id);
+    }
+
+    /// **The one seam through which marion stops a node it decided to stop itself** — a race's
+    /// loser once a first passer has won, a seat whose requester is gone. Today that is §6.7's kill,
+    /// through [`Self::kill_node`] exactly as `node/kill` does it and recorded as cancelled; a
+    /// graceful cancel can replace this body without touching its callers. `false` when the node
+    /// cannot be stopped yet (no recorded pid), or its own thread already saw it end.
+    fn stop_node(&self, agent_id: &AgentId, why: StopReason) -> bool {
+        let _decision = lock(&self.quit);
+        self.live.refresh();
+        let Some(node) = self.live.read(|r| r.tree().get(agent_id).cloned()) else {
+            return false;
+        };
+        if node.state.is_exited() {
+            return true;
+        }
+        let retire = node.reap_state == ReapState::ReapedIdle;
+        if !retire && (node.pid.is_none() || !self.claim_kill(agent_id)) {
+            return false;
+        }
+        if let Err(e) = self.kill_node(&node, KillBy::Stop(why)) {
+            eprintln!("marion: could not stop `{}`: {}", agent_id.0, e.message);
+            return false;
+        }
+        self.live.refresh();
+        true
     }
 
     /// **A restart re-drives every race its predecessor left open.** Decided now if every seat has
@@ -5655,6 +5703,17 @@ enum KillBy {
     QuitKillTree,
     /// §2's `node/kill`, for the one node it names.
     NodeKill,
+    /// marion's own decision, through [`RegistryHandle::stop_node`].
+    Stop(StopReason),
+}
+
+/// Why marion stops a node nobody asked it to stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopReason {
+    /// A `first` race has its winner; the seats still running have lost.
+    RaceDecided,
+    /// The race's requester ended, so no seat's result will be read.
+    RaceAbandoned,
 }
 
 impl KillBy {
@@ -5662,6 +5721,7 @@ impl KillBy {
         match self {
             KillBy::QuitKillTree => "session/quit",
             KillBy::NodeKill => "node/kill",
+            KillBy::Stop(_) => "race",
         }
     }
 
@@ -5669,6 +5729,12 @@ impl KillBy {
         match self {
             KillBy::QuitKillTree => "marion sent SIGKILL for confirmed session/quit KillTree",
             KillBy::NodeKill => "marion sent SIGKILL for the operator's node/kill",
+            KillBy::Stop(StopReason::RaceDecided) => {
+                "marion sent SIGKILL: its race was decided by an earlier seat"
+            }
+            KillBy::Stop(StopReason::RaceAbandoned) => {
+                "marion sent SIGKILL: the node that asked for its race has ended"
+            }
         }
     }
 
@@ -5680,6 +5746,9 @@ impl KillBy {
             }
             KillBy::NodeKill => {
                 "node/kill retired an already ReapedIdle node; no process existed to signal"
+            }
+            KillBy::Stop(_) => {
+                "a race retired an already ReapedIdle seat; no process existed to signal"
             }
         }
     }

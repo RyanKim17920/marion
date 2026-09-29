@@ -126,6 +126,13 @@ impl Races {
             .collect()
     }
 
+    /// A seat marked by [`Self::to_stop`] could not be stopped yet; a later drive may try again.
+    pub fn forget_stop(&self, race_id: &RaceId, agent_id: &AgentId) {
+        if let Some(o) = lock(&self.open).get_mut(race_id) {
+            o.stopped.remove(agent_id);
+        }
+    }
+
     /// The race is decided and its record written.
     pub fn close(&self, race_id: &RaceId) {
         lock(&self.open).remove(race_id);
@@ -254,6 +261,40 @@ pub fn outcome(c: &TaskContract) -> SeatOutcome {
                 u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
             }),
     }
+}
+
+/// **Delete a losing seat's branch, and nothing else.** Only the branch its own contract recorded,
+/// only one marion names a task branch (`marion/<task_id>`, one segment), and only while it still
+/// points at the commit that contract recorded: `update-ref -d <ref> <commit>` is git's
+/// compare-and-delete, so a branch someone moved since survives. `true` once it is gone.
+pub fn prune_branch(repo: &Path, project: &ProjectDir, row: &marion_core::race::ScoreRow) -> bool {
+    let (Some(agent_id), Some(task_id), Some(branch)) = (&row.agent_id, &row.task_id, &row.branch)
+    else {
+        return false;
+    };
+    let Some(completion) =
+        read_contract(&project.agent(agent_id).contract(task_id)).and_then(|c| c.completion)
+    else {
+        return false;
+    };
+    let (Some(recorded), Some(commit)) = (completion.branch, completion.commit) else {
+        return false;
+    };
+    let Some(task_ref) = crate::run::task_branch_ref(branch).filter(|_| &recorded == branch) else {
+        return false;
+    };
+    let _serialized = crate::spawn::repo_write_guard();
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(repo)
+        .args(["update-ref", "-d", &task_ref, &commit.0])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
+        .and_then(|mut c| c.wait())
+        .is_ok_and(|s| s.success())
 }
 
 /// `races/<race_id>.json`, replaced whole through [`crate::private_fs::write_atomic`] (owner-only,

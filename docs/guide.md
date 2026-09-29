@@ -132,7 +132,10 @@ strings, such as `["claude:sonnet", "codex", "opencode:openrouter:qwen/qwen3-cod
 the task once per candidate, each as an ordinary child in its own worktree under the same
 `verification` (which a race requires), and picks the winner itself: a seat that passed
 verification, then the fewest tokens, then the shortest time, then the lowest seat. The answer is
-the winner's contract with a scoreboard of every seat, and every seat keeps its branch. With
+the winner's contract with a scoreboard of every seat, and every seat keeps its branch unless
+`race: {"losers": "prune"}` asks marion to delete the losers' branches once a seat has won (a
+race nobody won keeps them all). `race: {"first": true}` takes the first seat to pass and stops
+the rest, recorded as cancelled; so does a race whose requester ends. With
 `background: true` the handle is the race's id; `wait` returns the same answer and `status` lists
 the seats. The scoreboard is also kept in the project state as `races/<race_id>.json`. A race
 costs every seat's tokens.
