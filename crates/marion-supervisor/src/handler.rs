@@ -3860,9 +3860,9 @@ impl RegistryHandle {
             // nothing to file the outcome under and nothing holding the supervisor open.
             if let Some(agent_id) = observer.identified_id() {
                 // The parent's owed announcement, before the outcome moves into the table.
-                if let Some(parent) = &observer.announce_to
-                    && observer.owes.load(std::sync::atomic::Ordering::SeqCst)
-                {
+                // Owed where the parent's inbox was open when this child started; where it was not,
+                // the parent had ended and the end goes to the nearest live ancestor.
+                if let Some(parent) = &observer.announce_to {
                     owner.announce_child_end(
                         parent,
                         steer::ChildEnd {
@@ -3871,6 +3871,7 @@ impl RegistryHandle {
                             task_id: &task_id,
                             outcome: &outcome,
                         },
+                        observer.owes.load(std::sync::atomic::Ordering::SeqCst),
                     );
                 }
                 owner.mark_finished(&agent_id, NodeOutcome::Child(Box::new(outcome)));

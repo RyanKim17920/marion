@@ -314,6 +314,9 @@ pub enum Source {
         agent_type: String,
         /// Whether the ended node is a root, which has no contract (§9) and is named as one.
         root: bool,
+        /// The ended node's own parent, where it ended first and this is its nearest live
+        /// ancestor hearing it instead; `None` for the parent itself.
+        relayed_for: Option<AgentId>,
     },
     /// Marion itself, asking a child whose turn ended without a `report` to make one.
     ReportRequested,
@@ -399,6 +402,12 @@ pub fn render(msg: &Message) -> String {
         Source::ChildEnded {
             task_id,
             agent_type,
+            relayed_for: Some(parent),
+            ..
+        } => relayed_end_text(agent_type, &parent.0, &task_id.0, &msg.text),
+        Source::ChildEnded {
+            task_id,
+            agent_type,
             root,
             ..
         } => child_ended_text(agent_type, *root, &task_id.0, &msg.text),
@@ -424,6 +433,18 @@ pub fn child_ended_text(agent_type: &str, root: bool, task_id: &str, body: &str)
     format!(
         "The {agent_type} {node} you backgrounded as task_id {task_id:?} has ended; a `wait` on \
          that task_id returns its whole result.\n\n{body}"
+    )
+}
+
+/// **A descendant's end, told to its nearest live ancestor** because the node that backgrounded it
+/// had already ended. The ancestor holds no handle for it, so the text points at `list`.
+pub fn relayed_end_text(agent_type: &str, parent: &str, task_id: &str, body: &str) -> String {
+    format!(
+        "The {agent_type} node that {} backgrounded as task_id {task_id:?} has ended. {} had \
+         already ended, so marion tells you, its nearest live ancestor; `list` shows the node.\n\n\
+         {body}",
+        crate::tree::short_id(parent),
+        crate::tree::short_id(parent),
     )
 }
 
@@ -1123,6 +1144,7 @@ pub(crate) mod tests {
             status: "completed".into(),
             agent_type: "codex".into(),
             root: false,
+            relayed_for: None,
         }
     }
 
@@ -1414,6 +1436,7 @@ pub(crate) mod tests {
             status: "completed".into(),
             agent_type: "codex-impl".into(),
             root: false,
+            relayed_for: None,
         }));
         assert_eq!(
             ended,

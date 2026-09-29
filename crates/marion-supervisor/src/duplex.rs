@@ -2208,6 +2208,7 @@ exit 0"#,
             status: "completed".into(),
             agent_type: "codex".into(),
             root: false,
+            relayed_for: None,
         };
         let script = format!(
             r#"( sleep 20; kill -9 $$ ) 2>/dev/null &

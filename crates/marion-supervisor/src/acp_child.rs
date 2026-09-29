@@ -1774,6 +1774,7 @@ exit 0"#,
             status: "completed".into(),
             agent_type: "claude".into(),
             root: false,
+            relayed_for: None,
         };
         let script = format!(
             r#"read -r prompt

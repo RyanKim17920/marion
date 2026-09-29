@@ -194,19 +194,8 @@ impl RegistryHandle {
     /// gets the bridge's push and nothing here, and a parent whose row has no strategy gets
     /// nothing. A parent that already ended is refused by its sealed inbox, which journals nothing
     /// — there is no queued message to resolve.
-    pub(crate) fn announce_child_end(&self, parent: &AgentId, end: ChildEnd<'_>) {
+    pub(crate) fn announce_child_end(&self, parent: &AgentId, end: ChildEnd<'_>, owed: bool) {
         self.live.refresh();
-        let harness = self
-            .live
-            .read(|r| r.tree().get(parent).and_then(|n| n.harness()));
-        let delivery = harness.map(|h| self.delivery_of(parent, h));
-        match delivery.map(announcement_route) {
-            Some(AnnouncementRoute::Inbox) => {}
-            _ => {
-                self.inboxes.release(parent);
-                return;
-            }
-        }
         let body = crate::bridge::announcement_of(end.agent_type, end.outcome);
         let status = match end.outcome {
             Ok(c) => c.completion.as_ref().map_or_else(
@@ -215,23 +204,71 @@ impl RegistryHandle {
             ),
             Err(_) => "failed".to_string(),
         };
-        let source = Source::ChildEnded {
+        let source = |relayed_for: Option<&AgentId>| Source::ChildEnded {
             child: end.child.clone(),
             task_id: end.task_id.clone(),
-            status,
+            status: status.clone(),
             agent_type: end.agent_type.to_string(),
             root: false,
+            relayed_for: relayed_for.cloned(),
         };
-        let delivery = delivery.expect("the inbox route has a delivery");
-        if let Err(r) = self.inboxes.announce(parent, delivery, source, body) {
-            // Not an error of the child's: the parent ended first, or the journal refused.
-            eprintln!(
-                "marion: `{}`'s end was not queued for its parent `{}`: {}",
-                end.child.0,
-                parent.0,
-                r.sentence()
-            );
+        if owed {
+            let Some(delivery) = self.inbox_delivery(parent) else {
+                // The parent's own lane pushes it, or nothing can: settle the debt, queue nothing.
+                self.inboxes.release(parent);
+                return;
+            };
+            match self
+                .inboxes
+                .announce(parent, delivery, source(None), body.clone())
+            {
+                Ok(_) => return,
+                // The parent ended first — it reported early and was not held for this.
+                Err(Refusal::Ended) => {}
+                Err(r) => {
+                    eprintln!(
+                        "marion: `{}`'s end was not queued for its parent `{}`: {}",
+                        end.child.0,
+                        parent.0,
+                        r.sentence()
+                    );
+                    return;
+                }
+            }
         }
+        // **The parent has ended, so its nearest live ancestor hears it** (§7.6: a node that
+        // reported early leaves its background descendants running). An ancestor owes this end
+        // nothing, so it is queued rather than announced against a debt. With no taker the end is
+        // where it always is — the child's `Exited` and contract on the journal.
+        let ancestors = self.live.read(|r| ancestors_of(r.tree(), parent));
+        for ancestor in &ancestors {
+            let Some(delivery) = self.inbox_delivery(ancestor) else {
+                continue;
+            };
+            if self
+                .inboxes
+                .enqueue(ancestor, delivery, source(Some(parent)), body.clone())
+                .is_ok()
+            {
+                return;
+            }
+        }
+        eprintln!(
+            "marion: `{}` ended after its parent `{}`, and no live ancestor takes turns from marion; \
+             its end is on the journal",
+            end.child.0, parent.0
+        );
+    }
+
+    /// How `agent` takes a queued message into its next turn, where its row takes one from the
+    /// inbox at all ([`announcement_route`]); `None` for a node the registry cannot name a harness
+    /// for, or whose row pushes or has no strategy.
+    fn inbox_delivery(&self, agent: &AgentId) -> Option<TurnDelivery> {
+        let harness = self
+            .live
+            .read(|r| r.tree().get(agent).and_then(|n| n.harness()))?;
+        let delivery = self.delivery_of(agent, harness);
+        (announcement_route(delivery) == AnnouncementRoute::Inbox).then_some(delivery)
     }
 
     /// The caller, if it proved to be a node this supervisor minted a token for **and** a strict
@@ -308,6 +345,21 @@ fn arrival(delivery: TurnDelivery, state: NodeState) -> &'static str {
 /// Whether `ancestor` appears on `target`'s `parent_id` chain — never `target` itself. An unknown
 /// target has no chain. `visited` makes termination a property of the loop rather than of the
 /// journal (§7.5 fixes a parent at its `SpawnIntent`, so a cycle cannot arise from marion's own).
+/// `node`'s ancestors, nearest first — its parent's parent onward is the caller's business. Stops
+/// at a cycle rather than loop, as [`is_strict_ancestor`] does.
+fn ancestors_of(tree: &Replay, node: &AgentId) -> Vec<AgentId> {
+    let mut chain: Vec<AgentId> = Vec::new();
+    let mut cur = tree.get(node).and_then(|n| n.parent_id().cloned());
+    while let Some(id) = cur {
+        if &id == node || chain.contains(&id) {
+            break;
+        }
+        cur = tree.get(&id).and_then(|n| n.parent_id().cloned());
+        chain.push(id);
+    }
+    chain
+}
+
 fn is_strict_ancestor(tree: &Replay, ancestor: &AgentId, target: &AgentId) -> bool {
     let mut visited = vec![target.clone()];
     let mut cur = tree.get(target).and_then(|n| n.parent_id().cloned());
@@ -688,6 +740,7 @@ mod tests {
                 task_id: &task,
                 outcome: &outcome,
             },
+            true,
         );
         assert_eq!(fx.handle.inboxes.queued(&id("root")), 1);
         for (who, token) in [
@@ -722,6 +775,7 @@ mod tests {
                 task_id: &task,
                 outcome: &outcome,
             },
+            true,
         );
         let m = fx.handle.inboxes.take_next(&id("root")).expect("queued");
         let announced = crate::bridge::announcement_of("type-child", &outcome);
@@ -787,8 +841,48 @@ mod tests {
                 task_id: &marion_core::contract::TaskId("t-2".into()),
                 outcome: &outcome,
             },
+            true,
         );
         assert!(fx.queued_records().is_empty());
+    }
+
+    /// **A child's end whose parent already ended goes to the nearest live ancestor** (§7.6: a
+    /// node that reported early leaves its background descendants running), worded as a relay and
+    /// journaled as the child's end.
+    ///
+    /// Mutation: drop the ancestor walk and the root is told nothing.
+    #[test]
+    fn a_childs_end_after_its_parent_ended_goes_to_the_nearest_live_ancestor() {
+        let (fx, _) = family("announce-relayed");
+        assert!(fx.handle.inboxes.owe(&id("child")));
+        fx.handle
+            .mark_finished(&id("child"), super::super::NodeOutcome::Root(Ok(())));
+        let outcome = Err(crate::spawn::SpawnError::NodeAborted("gone".into()));
+        let task = marion_core::contract::TaskId("t-3".into());
+        fx.handle.announce_child_end(
+            &id("child"),
+            super::ChildEnd {
+                child: &id("grand"),
+                agent_type: "type-grand",
+                task_id: &task,
+                outcome: &outcome,
+            },
+            true,
+        );
+        let m = fx.handle.inboxes.take_next(&id("root")).expect("relayed");
+        let announced = crate::bridge::announcement_of("type-grand", &outcome);
+        assert_eq!(
+            crate::inbox::render(&m),
+            crate::inbox::relayed_end_text("type-grand", "child", "t-3", &announced)
+        );
+        assert_eq!(
+            fx.queued_records()[0].source,
+            MessageSource::ChildEnded {
+                child: id("grand"),
+                task_id: task,
+                status: "failed".into(),
+            }
+        );
     }
 
     /// **A node's driver reaches exactly its own inbox through its owner** — what `node/steer`
