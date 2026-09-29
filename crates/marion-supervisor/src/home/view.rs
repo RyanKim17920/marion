@@ -734,7 +734,7 @@ pub const KEYS: &[(&str, &[KeyRow3])] = &[
             ("o", "shell in its workspace", ""),
             ("d", "what its branch changed", "git log -p HEAD..<branch>"),
             ("c", "copy the merge", "git merge --no-ff <branch>"),
-            ("!", "next that needs you", "marion list --attention"),
+            ("!", "next that needs you", "marion ls --attention"),
             ("J/K", "scroll its stream", ""),
         ],
     ),

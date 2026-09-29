@@ -556,7 +556,7 @@ fn help_view() -> HelpView {
                     k("s", "steer", "marion steer <id> <text>"),
                     k("x", "cancel", "marion cancel <id>"),
                     k("c", "copy the merge", "git merge --no-ff <branch>"),
-                    k("!", "next attention", "marion list --attention"),
+                    k("!", "next attention", "marion ls --attention"),
                 ],
             ),
             (

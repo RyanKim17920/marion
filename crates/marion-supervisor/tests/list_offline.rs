@@ -120,6 +120,28 @@ fn list_prints_the_finished_nodes_from_the_journal_without_a_supervisor() {
     assert_untouched(&state, &before);
 }
 
+/// **`marion ls --attention` is `marion list --attention`**, the verb the home screen's `!` names:
+/// the same lines by the same path, and a node id beside it is a usage error.
+#[test]
+fn ls_attention_prints_list_attentions_lines() {
+    let (_dir, repo, state, _fx) = bed("list-offline-attention");
+    let before = contents(&state);
+    let list = marion(&["list", "--attention"], &repo, &state);
+    let ls = marion(&["ls", "--attention"], &repo, &state);
+    assert!(
+        ls.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ls.stderr)
+    );
+    assert_eq!(ls.stdout, list.stdout);
+    assert!(
+        !marion(&["ls", "--attention", "x"], &repo, &state)
+            .status
+            .success()
+    );
+    assert_untouched(&state, &before);
+}
+
 #[test]
 fn ls_of_a_finished_node_prints_its_contract_from_the_journal_without_a_supervisor() {
     let (_dir, repo, state, fx) = bed("list-offline-ls");

@@ -16,7 +16,7 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
   s        steer                 $ marion steer <id> <text>
   x        cancel                $ marion cancel <id>
   c        copy the merge        $ git merge --no-ff <branch>
-  !        next attention        $ marion list --attention
+  !        next attention        $ marion ls --attention
 
   START
   enter    run                   $ marion run <type> --prompt <text>
@@ -37,7 +37,7 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
    79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenthispagequitat"
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtab?"
-  483  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
+  481  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tab?qentersxc!enter↑↓←→"
     2  Style::new().yellow().bg(Color::Reset)  "◐2"
