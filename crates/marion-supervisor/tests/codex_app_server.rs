@@ -481,6 +481,7 @@ fn a_timed_out_codex_child_is_interrupted_and_leaves_no_process_of_its_turn() {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        budget: None,
     };
     let caller = Caller::root(
         "root",

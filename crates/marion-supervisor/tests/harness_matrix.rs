@@ -181,6 +181,7 @@ fn drive(cell: &Cell) -> Evidence {
 
     let env = canned_env(&state, &repo, Some(server.base_url()));
     let req = SpawnRequest {
+        budget: None,
         review: None,
         agent_type: cell.agent_type.into(),
         prompt: "Add the matrix marker file under src/ and report back through marion.".into(),

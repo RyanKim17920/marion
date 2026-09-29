@@ -216,6 +216,7 @@ fn agent_spawn(paths: &SocketPaths, p: AgentSpawnParams) -> Result<serde_json::V
 fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
     AgentSpawnParams {
         wider_children: None,
+        budget_tokens: None,
         review_of: None,
         notify_parent: false,
         agent_type: "claude-orchestrator".into(),

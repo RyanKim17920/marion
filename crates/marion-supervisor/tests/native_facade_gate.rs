@@ -145,6 +145,7 @@ impl Bed {
     fn root_params(&self) -> AgentSpawnParams {
         AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "claude".into(),

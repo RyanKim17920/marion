@@ -78,6 +78,9 @@ struct Args {
     /// `--allow-wider-children`: nodes in this run's tree may start children with more authority
     /// than their own, each one journaled. See `root::RootSpec::wider_children`.
     wider_children: bool,
+    /// `--budget-tokens <n>`: the root's tree token budget — what it and everything it spawns may
+    /// spend together before marion cancels the tree ([`marion_core::budget`]).
+    budget_tokens: Option<u64>,
 }
 
 /// `marion attach|cancel <id> [--repo <path>] [--state-dir <path>]`: one agent, and which project.
@@ -857,6 +860,7 @@ fn parse_args(argv: &[String]) -> Result<Args, Exit> {
         detach: false,
         wider_children: false,
         profile: None,
+        budget_tokens: None,
     };
     while let Some(word) = words.next()? {
         match word {
@@ -902,6 +906,14 @@ fn apply_run_flag(
             let secs = words.value(flag, inline)?;
             args.timeout_secs = Some(secs.parse().map_err(|_| {
                 Exit::Usage(format!("--timeout takes whole seconds, not `{secs}`"))
+            })?);
+        }
+        "--budget-tokens" => {
+            let n = words.value(flag, inline)?;
+            args.budget_tokens = Some(n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+                Exit::Usage(format!(
+                    "--budget-tokens takes a positive whole number, not `{n}`"
+                ))
             })?);
         }
         _ => return Ok(false),
@@ -2981,6 +2993,7 @@ fn spawn_root(
             // The operator's own flag, and the only way it reaches the supervisor: no MCP tool and
             // no agent type sets it.
             wider_children: args.wider_children.then_some(true),
+            budget_tokens: args.budget_tokens,
             review_of: None,
             notify_parent: false,
             agent_type: args.agent_type.clone(),

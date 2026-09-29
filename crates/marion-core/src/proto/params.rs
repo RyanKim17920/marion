@@ -552,6 +552,12 @@ pub struct AgentSpawnParams {
     /// it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// **The new node's tree token budget**: tokens it and everything it spawns may spend
+    /// together ([`crate::budget`]). Replaces its agent type's tree limit, and is narrowed to what
+    /// the caller's nearest budgeted ancestor has left, so it can never grant more than the tree
+    /// above has. Skipped on the wire when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
     /// **A review of an ended node**: the spawn becomes a read-only reviewer of that node's work,
     /// placed under it in the tree, shown its task, report, verification and diff, and asked for
     /// findings. `prompt` is then marion's own review prompt, and a caller's is ignored in favour
@@ -663,6 +669,7 @@ mod tests {
         });
         rt!(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
@@ -685,6 +692,7 @@ mod tests {
         });
         rt!(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),
@@ -803,6 +811,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
                 wider_children: None,
+                budget_tokens: None,
                 review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),
@@ -829,6 +838,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
                 wider_children: None,
+                budget_tokens: None,
                 review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),

@@ -264,6 +264,11 @@ pub struct AgentType {
     /// Ceiling only. `spawn` may narrow it and never widen it (§5.4).
     pub scope_ceiling: Vec<Glob>,
     pub timeout: Duration,
+    /// The token budget every node of this type is spawned under (`.marion/agents.toml`'s
+    /// `budget = { tokens = …, tree_tokens = …, warn_pct = … }`, [`crate::budget`]). `None` — every
+    /// built-in — is no budget of its own; a `spawn` may still state a tree limit, and an
+    /// ancestor's tree budget still narrows it.
+    pub budget: Option<crate::budget::Budget>,
     pub max_depth: u32,
     pub max_concurrent_children: u32,
     /// Text the supervisor puts in front of every prompt a node of this type is given, once, at
@@ -375,6 +380,7 @@ impl AgentType {
             tools: Vec::new(),
             scope_ceiling: default_scope_ceiling(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            budget: None,
             max_depth: DEFAULT_MAX_DEPTH,
             max_concurrent_children: DEFAULT_MAX_CONCURRENT_CHILDREN,
             prompt_prefix: None,
@@ -953,6 +959,7 @@ struct FileRow {
     provider: Option<String>,
     credentials: Option<Vec<String>>,
     profile: Option<ProfileKey>,
+    budget: Option<crate::budget::Budget>,
 }
 
 /// `profile = "work"` or `profile = ["work", "personal"]`.
@@ -1119,6 +1126,7 @@ impl FileRow {
             approval_mode: self.approval_mode,
             provider: self.provider,
             profiles,
+            budget: self.budget.filter(|b| !b.is_unlimited()),
             ..AgentType::defaults(&self.name, &self.description, harness)
         })
     }
@@ -1136,8 +1144,8 @@ pub enum SpawnGateError {
 }
 
 /// marion's verbs for delegating and following what was delegated: create a child, then observe,
-/// collect, steer and cancel it. A root is granted all of them; a child is granted them while it may still
-/// create a child of its own ([`child_verbs`]).
+/// collect, steer and cancel it. A root is granted all of them; a child is granted them while it
+/// may still create a child of its own ([`child_verbs`]).
 pub const DELEGATION_VERBS: [&str; 6] = ["spawn", "status", "wait", "list", "steer", "cancel"];
 
 /// A child's return path, and the one verb every child is granted.
@@ -1840,6 +1848,30 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
         for name in builtin_names() {
             assert_eq!(builtin(name).unwrap().prompt_prefix, None, "{name}");
         }
+    }
+
+    /// **A row states its type's token budget**, and a key the budget does not have — a price —
+    /// is refused rather than ignored.
+    #[test]
+    fn a_row_states_a_token_budget_and_nothing_but_tokens() {
+        let types = AgentTypes::parse(
+            "[[agent]]\nname = \"capped\"\nharness = \"codex\"\ndescription = \"x\"\n\
+             budget = { tokens = 50000, tree_tokens = 200000, warn_pct = 90 }\n",
+        )
+        .expect("a budgeted row parses");
+        let b = types.resolve("capped").unwrap().budget.unwrap();
+        assert_eq!(
+            (b.tokens, b.tree_tokens, b.warn_pct),
+            (Some(50_000), Some(200_000), 90)
+        );
+        assert!(
+            AgentTypes::parse(
+                "[[agent]]\nname = \"priced\"\nharness = \"codex\"\ndescription = \"x\"\n\
+                 budget = { usd = 5 }\n",
+            )
+            .is_err()
+        );
+        assert_eq!(builtin("codex").unwrap().budget, None);
     }
 
     /// A user row may not take a built-in's name **or one of its aliases**: `codex` is an alias of

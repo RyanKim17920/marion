@@ -602,6 +602,9 @@ fn spawn_params(
 ) -> marion_core::proto::params::AgentSpawnParams {
     marion_core::proto::params::AgentSpawnParams {
         wider_children: None,
+        // The child's tree budget, as the caller stated it; the supervisor narrows it to what the
+        // caller's tree has left, so a node can never grant more than it was given.
+        budget_tokens: args["budget"]["tokens"].as_u64().filter(|n| *n > 0),
         // A parent asking for its child's review: the same spawn, the supervisor decides the rest.
         review_of: args["review_of"]
             .as_str()

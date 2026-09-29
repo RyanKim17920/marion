@@ -196,6 +196,7 @@ pub fn request(
         socket,
         marion_core::proto::params::AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: Some(target.clone()),
             notify_parent: false,
             candidates: vec![],

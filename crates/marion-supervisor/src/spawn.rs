@@ -42,6 +42,17 @@ pub enum SpawnError {
     Json(#[from] serde_json::Error),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// A token budget on a node whose harness's stream reports no spend: marion could not count
+    /// it, so it refuses rather than run a budget that would never trip. Refused before the node
+    /// exists.
+    #[error(
+        "spawn refused: this node would run under a token budget, and {harness}'s stream reports \
+         no token counts marion can read, so the budget could never be enforced. Spawn it without \
+         a budget — outside any budgeted tree — or on a harness that reports its usage."
+    )]
+    BudgetUnenforceable {
+        harness: marion_core::harness::Harness,
+    },
     /// The launch names a provider marion cannot point it at — unknown, logged out, no model, or
     /// no wire shared with the harness. Refused before the node exists.
     #[error("{0}")]

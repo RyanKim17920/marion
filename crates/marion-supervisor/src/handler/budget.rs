@@ -55,6 +55,23 @@ impl RegistryHandle {
         }
     }
 
+    /// **A new child's budget**: its type's, with the tree limit its spawn asked for, narrowed to
+    /// what the nearest tree budget at or above `parent` has left. An agent type the tree cannot
+    /// resolve has no budget here; the spawn itself refuses it.
+    pub(super) fn child_budget(
+        &self,
+        repo: &std::path::Path,
+        agent_type: &str,
+        asked: Option<u64>,
+        parent: &AgentId,
+    ) -> Option<marion_core::budget::Budget> {
+        let typed = crate::run::agent_types(repo)
+            .ok()
+            .and_then(|t| t.resolve(agent_type))
+            .and_then(|t| t.budget);
+        marion_core::budget::resolve(typed, asked, self.budgets.remaining_tree(parent))
+    }
+
     /// One line crossed: journal it, then warn the owner or cancel its subtree.
     pub(super) fn budget_crossed(&self, c: Crossing) {
         let record = RecordKind::BudgetCrossed(BudgetCrossed {
@@ -120,5 +137,47 @@ impl RegistryHandle {
                 r.sentence()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use marion_core::budget::Budget;
+
+    use super::*;
+    use crate::registry::{LiveRegistry, Registry};
+
+    /// **A child is given no more than its tree has left**: its spawn's tree limit is narrowed to
+    /// the nearest budgeted ancestor's remainder, and a child of an unbudgeted tree that asks for
+    /// nothing has no budget at all.
+    #[test]
+    fn a_childs_budget_is_narrowed_to_what_its_ancestors_tree_has_left() {
+        let dir = marion_testsupport::scratch("budget-child");
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot_path(&dir.join("journal.jsonl")).unwrap(),
+        ));
+        let h = RegistryHandle::new(live);
+        let root = AgentId("root".into());
+        let tree = Budget {
+            tree_tokens: Some(1_000),
+            ..Budget::default()
+        };
+        h.budgets.register(&root, None, Some(tree), 0);
+        h.budgets.observe(&root, 700);
+        let b = h.child_budget(&dir, "codex", Some(5_000), &root).unwrap();
+        assert_eq!(b.tree_tokens, Some(300), "5000 asked, 300 left above");
+        assert_eq!(
+            h.child_budget(&dir, "codex", None, &root)
+                .unwrap()
+                .tree_tokens,
+            Some(300),
+            "an unasked child inherits the remainder"
+        );
+        assert_eq!(
+            h.child_budget(&dir, "codex", None, &AgentId("elsewhere".into())),
+            None
+        );
     }
 }

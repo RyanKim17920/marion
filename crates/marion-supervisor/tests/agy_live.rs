@@ -65,6 +65,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         auth: marion_harness::Auth::Inherited,
     };
     let req = SpawnRequest {
+        budget: None,
         review: None,
         agent_type: "agy".into(),
         prompt: format!(

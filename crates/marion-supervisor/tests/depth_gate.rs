@@ -439,6 +439,7 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
         profile: None,
         candidates: vec![],
         race: None,
+        budget_tokens: None,
     }
 }
 

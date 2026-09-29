@@ -72,6 +72,22 @@ impl Budget {
     }
 }
 
+/// **A new node's budget**: its agent type's, with the tree limit its spawn asked for in place of
+/// the type's, narrowed to `ceiling` — what the nearest budgeted ancestor has left. `None` where no
+/// limit results.
+pub fn resolve(
+    typed: Option<Budget>,
+    asked_tree: Option<u64>,
+    ceiling: Option<u64>,
+) -> Option<Budget> {
+    let mut budget = typed.unwrap_or_default();
+    if asked_tree.is_some() {
+        budget.tree_tokens = asked_tree;
+    }
+    let budget = budget.clamped_to(ceiling);
+    (!budget.is_unlimited()).then_some(budget)
+}
+
 /// Which of a budget's two limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BudgetScope {
@@ -146,6 +162,27 @@ mod tests {
             Some(300),
             "an unlimited child inherits what its ancestor has left"
         );
+    }
+
+    #[test]
+    fn a_spawns_tree_limit_replaces_its_types_and_the_ceiling_narrows_both() {
+        let typed = Some(Budget {
+            tokens: Some(10),
+            tree_tokens: Some(100),
+            warn_pct: 50,
+        });
+        let r = resolve(typed, Some(60), Some(40)).unwrap();
+        assert_eq!(
+            (r.tokens, r.tree_tokens, r.warn_pct),
+            (Some(10), Some(40), 50)
+        );
+        assert_eq!(resolve(typed, None, None).unwrap().tree_tokens, Some(100));
+        assert_eq!(
+            resolve(None, None, None),
+            None,
+            "no limit anywhere is no budget"
+        );
+        assert_eq!(resolve(None, None, Some(7)).unwrap().tree_tokens, Some(7));
     }
 
     #[test]

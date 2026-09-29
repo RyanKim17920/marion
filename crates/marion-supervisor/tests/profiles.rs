@@ -346,6 +346,7 @@ fn root_token(root_argv: &Path) -> String {
 fn params() -> AgentSpawnParams {
     AgentSpawnParams {
         wider_children: None,
+        budget_tokens: None,
         review_of: None,
         agent_type: String::new(),
         prompt: String::new(),

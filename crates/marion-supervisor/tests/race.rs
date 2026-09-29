@@ -100,6 +100,7 @@ fn race_params(caller: SpawnCaller) -> AgentSpawnParams {
         profile: None,
         candidates: MODELS.iter().map(|m| format!("claude:{m}")).collect(),
         race: None,
+        budget_tokens: None,
     }
 }
 

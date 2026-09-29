@@ -60,6 +60,7 @@ fn request(repo: &Path) -> SpawnRequest {
         resume: None,
         verification: vec![],
         profile: None,
+        budget: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn root_spec(repo: &Path, state: &Path) -> RootSpec {
         resume: None,
         bound_secs: 20,
         profile: None,
+        budget: None,
     }
 }
 

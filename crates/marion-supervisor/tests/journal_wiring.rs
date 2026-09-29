@@ -963,6 +963,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     let contract = run_spawn(
         &env,
         &SpawnRequest {
+            budget: None,
             review: None,
             agent_type: "claude-orchestrator".into(),
             prompt: "Try the verb you were not given.".into(),

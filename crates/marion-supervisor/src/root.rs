@@ -306,6 +306,9 @@ pub struct RootSpec {
     /// children with more authority than their own, each one journaled. Or-ed with their user-level config
     /// when the root starts ([`crate::user_config`]); nothing in the repository can set it.
     pub wider_children: bool,
+    /// **The root's token budget, resolved** — its type's, with the tree limit `marion run
+    /// --budget-tokens` states — or on a resume the budget its intent recorded.
+    pub budget: Option<marion_core::budget::Budget>,
 }
 
 /// **Whether the operator started this root's session in a read-only mode**, as far as marion can
@@ -801,6 +804,7 @@ pub fn prepare_watched(
         other => other.map_err(RootError::Run),
     }?;
     snapshot.write(agent_dir.path()).map_err(RootError::Run)?;
+    crate::run::check_budget_enforceable(agent_type.harness, spec.budget.as_ref())?;
     // The type's standing instruction, once, exactly where `run_spawn_watched` applies it; `spec`
     // is the prefixed spec from this line on, so the node and the record read one prompt.
     let spec = &RootSpec {
@@ -960,7 +964,7 @@ pub fn prepare_watched(
     crate::journal::append(
         &project,
         RecordKind::SpawnIntent(SpawnIntent {
-            budget: None,
+            budget: spec.budget,
             review_of: None,
             agent_id: agent_id.clone(),
             parent_id: None,
@@ -3877,6 +3881,7 @@ mod tests {
     fn root_spec(dir: &Path, agent_type: &str) -> RootSpec {
         RootSpec {
             wider_children: false,
+            budget: None,
             agent_type: agent_type.into(),
             prompt: "delegate it".into(),
             native_launch: None,

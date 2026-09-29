@@ -102,6 +102,7 @@ fn trust_store_home() -> PathBuf {
 
 fn request(repo: &std::path::Path) -> SpawnRequest {
     SpawnRequest {
+        budget: None,
         review: None,
         agent_type: "reviewer".into(),
         prompt: PROMPT.into(),

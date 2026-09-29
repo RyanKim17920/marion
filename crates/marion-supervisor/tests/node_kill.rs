@@ -158,6 +158,7 @@ impl Bed {
     fn spawn_root(&self, marker: &str) -> AgentId {
         self.spawn(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex".into(),
@@ -186,6 +187,7 @@ impl Bed {
             .expect("declaration_of asserts the token is there");
         self.spawn(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),

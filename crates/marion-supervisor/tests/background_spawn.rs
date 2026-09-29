@@ -552,6 +552,7 @@ fn fixture(tag: &str) -> Fixture {
     let answered = supervisor
         .call(Call::AgentSpawn(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: CALLER_TYPE.into(),

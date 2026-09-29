@@ -243,6 +243,7 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
 
     let env = canned_env(&state, &repo, Some(server.base_url()));
     let req = SpawnRequest {
+        budget: None,
         review: None,
         agent_type: agent_type.into(),
         prompt: prompt.into(),

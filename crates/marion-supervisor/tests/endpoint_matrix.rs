@@ -133,6 +133,7 @@ fn tree(tag: &str, base_url: Option<String>) -> Tree {
 
 fn request(t: &Tree, agent_type: &str, model: &str) -> SpawnRequest {
     SpawnRequest {
+        budget: None,
         review: None,
         agent_type: agent_type.into(),
         prompt: "Report back through marion.".into(),
@@ -1061,6 +1062,7 @@ fn a_rate_limited_root_fails_over_to_the_next_stated_credential_before_its_first
         resume: None,
         bound_secs: 120,
         profile: None,
+        budget: None,
     })
     .expect("the endpoint root prepares");
     assert!(

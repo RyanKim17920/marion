@@ -115,6 +115,22 @@ pub fn effective_timeout(secs: u64) -> StdDuration {
     StdDuration::from_secs(secs.min(MAX_TIMEOUT_SECS))
 }
 
+/// **A budget is only as real as the spend marion can read**: refused on a harness whose row states
+/// no usage rule, before the node exists. The one check for a child and a root.
+pub(crate) fn check_budget_enforceable(
+    harness: marion_core::harness::Harness,
+    budget: Option<&marion_core::budget::Budget>,
+) -> Result<(), SpawnError> {
+    let counted = marion_harness::adapter_for(harness)
+        .ok()
+        .and_then(|a| a.usage_rule())
+        .is_some();
+    match budget {
+        Some(_) if !counted => Err(SpawnError::BudgetUnenforceable { harness }),
+        _ => Ok(()),
+    }
+}
+
 /// How long `program --version` may take before marion records the version as unknown.
 ///
 /// The probe is a second process marion starts on the spawn path, and until it was bounded it was
@@ -197,6 +213,9 @@ pub struct SpawnRequest {
     /// `profiles.toml`'s `[default]` — a spawn's own choice, or, on a resume, the profile the
     /// node's session was recorded under. `None` resolves as `profiles::resolve` says.
     pub profile: Option<String>,
+    /// **The node's token budget, resolved** by the caller ([`marion_core::budget::resolve`]) —
+    /// or, on a resume, the budget its intent recorded. Journaled on the intent.
+    pub budget: Option<marion_core::budget::Budget>,
     /// **A review, or ordinary work** — `Some` makes this child a reviewer of an ended node
     /// ([`crate::review`]): journaled as its intent's `review_of`, cut at the reviewed work,
     /// launched read-only under an empty writable scope, and its report read into findings.
@@ -1923,10 +1942,11 @@ pub fn run_spawn_watched(
     // intent is the only record naming the node before anything exists, so a child launched after
     // its intent was lost is invisible to a restart — the untracked live process this ordering
     // exists to prevent.
+    check_budget_enforceable(agent_type.harness, req.budget.as_ref())?;
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
-            budget: None,
+            budget: req.budget,
             review_of: req.review.as_ref().map(|t| t.agent_id.clone()),
             agent_id: agent_id.clone(),
             // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the
@@ -3826,6 +3846,7 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            budget: None,
         };
         let caller_wt = project.agent(&AgentId("caller".into())).worktree();
         std::fs::create_dir_all(caller_wt.parent().unwrap()).unwrap();
@@ -3912,6 +3933,7 @@ mod tests {
         let project = ProjectDir::new(&dir.join("state"), &repo);
         let task_id = TaskId("t-1".into());
         let mut req = SpawnRequest {
+            budget: None,
             review: None,
             race: None,
             agent_type: "claude".into(),
@@ -4361,6 +4383,33 @@ mod tests {
             usage_records(),
             2,
             "recorded once on the contract path, not again on drop"
+        );
+    }
+
+    /// **A budget is refused on a harness whose stream reports no spend**, and allowed on one that
+    /// does; no budget is never refused.
+    #[test]
+    fn a_budget_is_refused_where_marion_cannot_count_the_spend() {
+        let budget = marion_core::budget::Budget {
+            tree_tokens: Some(1_000),
+            ..Default::default()
+        };
+        let uncounted = marion_core::harness::Harness::ALL
+            .into_iter()
+            .find(|h| {
+                marion_harness::adapter_for(*h)
+                    .ok()
+                    .is_some_and(|a| a.usage_rule().is_none())
+            })
+            .expect("some row states no usage rule");
+        assert!(matches!(
+            check_budget_enforceable(uncounted, Some(&budget)),
+            Err(SpawnError::BudgetUnenforceable { .. })
+        ));
+        assert!(check_budget_enforceable(uncounted, None).is_ok());
+        assert!(
+            check_budget_enforceable(marion_core::harness::Harness::ClaudeCode, Some(&budget))
+                .is_ok()
         );
     }
 
@@ -4991,6 +5040,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            budget: None,
             review: None,
             race: None,
             agent_type: "codex".into(),
@@ -5154,6 +5204,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            budget: None,
             review: None,
             race: None,
             agent_type: "bare-acp".into(),
@@ -5377,6 +5428,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            budget: None,
             review: None,
             race: None,
             agent_type: "claude".into(),
@@ -5514,6 +5566,7 @@ mod tests {
             auth: Auth::Canned,
         };
         let req = SpawnRequest {
+            budget: None,
             review: None,
             race: None,
             agent_type: "claude".into(),
@@ -5832,6 +5885,7 @@ mod tests {
 
     fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {
         SpawnRequest {
+            budget: None,
             review: None,
             agent_type: agent_type.into(),
             prompt: "do the task".into(),

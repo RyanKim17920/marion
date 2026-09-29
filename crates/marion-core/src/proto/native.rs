@@ -909,6 +909,7 @@ mod tests {
         });
         let params = AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "t".into(),

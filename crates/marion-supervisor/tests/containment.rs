@@ -39,6 +39,7 @@ fn request(repo: &Path, agent_type: &str) -> SpawnRequest {
         resume: None,
         verification: vec![],
         profile: None,
+        budget: None,
     }
 }
 

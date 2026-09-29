@@ -238,6 +238,7 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
     let root = scratch(tag);
     let (repo, env) = live_env(&root);
     let req = SpawnRequest {
+        budget: None,
         review: None,
         agent_type: agent_type.into(),
         prompt: format!(

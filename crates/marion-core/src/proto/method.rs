@@ -504,6 +504,7 @@ mod tests {
                 // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
                     wider_children: None,
+                    budget_tokens: None,
                     review_of: None,
                     notify_parent: false,
                     no_change_record: None,

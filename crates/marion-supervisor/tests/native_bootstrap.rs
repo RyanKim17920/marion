@@ -702,6 +702,7 @@ mod enabled_launch {
         let mut client = crate::common::client::Client::dial(&paths);
         client.send(Call::AgentSpawn(AgentSpawnParams {
             wider_children: None,
+            budget_tokens: None,
             review_of: None,
             notify_parent: false,
             agent_type: "claude".into(),

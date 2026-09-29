@@ -1403,8 +1403,10 @@ fn child_request(
     agent_type: String,
     model: Option<String>,
     race: Option<marion_core::race::RaceSeat>,
+    budget: Option<marion_core::budget::Budget>,
 ) -> crate::run::SpawnRequest {
     crate::run::SpawnRequest {
+        budget,
         review: None,
         agent_type,
         prompt: p.prompt.clone(),
@@ -1868,6 +1870,8 @@ fn root_spec_from_spawn(
 ) -> crate::root::RootSpec {
     crate::root::RootSpec {
         wider_children: p.wider_children.unwrap_or(false),
+        // A root has no ancestor to narrow it: its type's budget and the tree limit it was run with.
+        budget: marion_core::budget::resolve(agent_type.budget, p.budget_tokens, None),
         agent_type: p.agent_type.clone(),
         prompt: p.prompt.clone(),
         native_launch: p.native_launch.as_deref().cloned(),
@@ -3899,7 +3903,15 @@ impl RegistryHandle {
             .map_err(gate_refusal)?;
 
         let task_id = mint_task_id()?;
-        let req = child_request(p, repo.clone(), p.agent_type.clone(), p.model.clone(), None);
+        let budget = self.child_budget(&repo, &p.agent_type, p.budget_tokens, &caller_id.agent_id);
+        let req = child_request(
+            p,
+            repo.clone(),
+            p.agent_type.clone(),
+            p.model.clone(),
+            None,
+            budget,
+        );
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
         self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
@@ -4101,6 +4113,12 @@ impl RegistryHandle {
                         race_id: race_id.clone(),
                         role: RaceRole::Candidate(seat),
                     }),
+                    self.child_budget(
+                        &repo,
+                        &candidate.agent_type,
+                        p.budget_tokens,
+                        &caller_id.agent_id,
+                    ),
                 );
                 let sent = sent_task(&req);
                 let (agent_id, state) = self.launch_child(
@@ -4436,6 +4454,7 @@ impl RegistryHandle {
             .map(str::to_string);
         let req = crate::run::SpawnRequest {
             race: None,
+            budget: self.child_budget(&repo, &reviewer, None, target),
             agent_type: reviewer,
             prompt: crate::review::prompt(&review, &contract),
             repo: repo.clone(),
@@ -5082,6 +5101,8 @@ impl RegistryHandle {
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let spec = crate::root::RootSpec {
             wider_children: false,
+            // A second life runs under the budget its first was spawned with.
+            budget: node.intent.as_ref().and_then(|i| i.budget),
             agent_type: node.agent_type().unwrap_or_default().to_string(),
             prompt: prompt.to_string(),
             native_launch: None,
@@ -5292,6 +5313,8 @@ impl RegistryHandle {
             .map(|target| self.reviewed(env, target).map(|r| r.review))
             .transpose()?;
         let req = crate::run::SpawnRequest {
+            // A second life runs under the budget its first was spawned with.
+            budget: node.intent.as_ref().and_then(|i| i.budget),
             review,
             agent_type: agent_type.name.clone(),
             prompt: prompt.to_string(),
@@ -12764,6 +12787,7 @@ mod tests {
         fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
                 wider_children: None,
+                budget_tokens: None,
                 review_of: None,
                 candidates: vec![],
                 race: None,
@@ -12799,6 +12823,49 @@ mod tests {
                 MethodResult::AgentSpawn(r) => Ok(r),
                 other => panic!("wrong result: {}", other.method().as_str()),
             }
+        }
+
+        /// **An owning handle acts on a budget line the moment a published figure crosses it**:
+        /// the spend a node's sink publishes reaches the book, and the enforcer thread journals the
+        /// crossing — woken by the figure, never by a poll.
+        ///
+        /// Mutation: build the handle's `Spending` without `enforcing` and nothing is journaled.
+        #[test]
+        fn a_published_spend_past_a_warn_line_is_journaled_by_the_enforcer() {
+            let fx = owning("owns-budget-warn", vec![]);
+            let n = id("n-budget");
+            fx.handle.budgets.register(
+                &n,
+                None,
+                Some(marion_core::budget::Budget {
+                    tokens: Some(100),
+                    ..Default::default()
+                }),
+                0,
+            );
+            fx.handle.spending.publish(
+                &n,
+                crate::spending::Spent {
+                    usage: Some(marion_core::contract::TokenUsage {
+                        input: 85,
+                        ..Default::default()
+                    }),
+                    turns: vec![],
+                },
+            );
+            let crossed = || {
+                std::fs::read_to_string(fx.project.journal())
+                    .unwrap_or_default()
+                    .contains("BudgetCrossed")
+            };
+            assert!(
+                marion_testsupport::until_within(
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_millis(10),
+                    crossed
+                ),
+                "the warn line was never journaled"
+            );
         }
 
         fn journal_len(fx: &Owning) -> usize {
