@@ -4176,7 +4176,7 @@ impl RegistryHandle {
             .ok()?
             .session_lookup()?;
         let spec = marion_harness::adapter::harness_spec(harness);
-        let (vars, args) = spec.updates.probe(spec.argv).ok()?;
+        let (vars, args) = marion_harness::probe::ProbeSwitch::bare(spec).ok()?;
         let cwd = resumable_root_cwd(&env.project_root);
         let fields = marion_harness::spec::Fields {
             cwd: cwd.clone(),

@@ -111,6 +111,29 @@ impl ProbeSwitch {
     }
 }
 
+/// A bare probe's share of a row's update switch ([`ProbeSwitch::bare`]): the variables it sets,
+/// and the arguments ahead of its own.
+pub type BareSwitch = (Vec<(String, String)>, Vec<String>);
+
+impl ProbeSwitch {
+    /// **This switch as a bare command carries it**, for a probe other than `--version` (a session
+    /// listing, a login status): the variables to set and the arguments ahead of the probe's own.
+    /// `Err` where a bare command cannot carry it — a settings document, which only a
+    /// [`VersionProbe`] writes — or where the row is refused ([`ProbeRefusal`]).
+    pub fn bare(spec: &HarnessSpec) -> Result<BareSwitch, String> {
+        match Self::for_row(spec).map_err(|e| e.to_string())? {
+            Self::Env { key, value } => Ok((vec![(key, value)], Vec::new())),
+            Self::Args(args) => Ok((Vec::new(), args)),
+            Self::Unneeded => Ok((Vec::new(), Vec::new())),
+            Self::Document { .. } => Err(
+                "the row's update switch is a settings document a bare probe cannot carry; not \
+                 probed"
+                    .into(),
+            ),
+        }
+    }
+}
+
 /// The row's override channel spelling one `pair`: the first `Field::Pairs` slot in its headless
 /// argv, else in its pane argv.
 fn pair_args(spec: &HarnessSpec, pair: &str) -> Option<Vec<String>> {

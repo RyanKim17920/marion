@@ -505,10 +505,9 @@ pub fn login_state(profile: &Profile) -> LoginState {
 }
 
 /// The row's no-self-update switch, as this harness's bare status probe carries it
-/// ([`marion_harness::spec::UpdatePolicy::probe`]). `Err` — and no probe — where it cannot.
-fn update_switch(harness: Harness) -> Result<marion_harness::spec::ProbeSwitch, String> {
-    let spec = harness_spec(harness);
-    spec.updates.probe(spec.argv)
+/// ([`marion_harness::probe::ProbeSwitch::bare`]). `Err` — and no probe — where it cannot.
+fn update_switch(harness: Harness) -> Result<marion_harness::probe::BareSwitch, String> {
+    marion_harness::probe::ProbeSwitch::bare(harness_spec(harness))
 }
 
 /// The probe's JSON object on stdout — pretty-printed on claude, so read whole.
