@@ -3310,6 +3310,42 @@ impl RegistryHandle {
         }
         Ok(())
     }
+    /// **A root has no contract to check**: `verification` or `writable_scope` on a spawn with no
+    /// `caller`.
+    ///
+    /// Both are checks a contract carries: a child's verification runs over its worktree and its
+    /// scope judges that worktree's diff. §9 gives a root no contract, so a root stating them would
+    /// run in the operator's checkout with nothing checked while the caller believed it had asked
+    /// for checks — the silent drop a live `marion mcp` session hit. Refused by name.
+    ///
+    /// `acceptance_criteria` is not refused: nothing checks it on a child either (it is the
+    /// caller's statement of done, which the child reports against), and `spawn`'s schema requires
+    /// it on every call, so refusing it would refuse every well-formed top-level spawn.
+    fn check_root_contract_fields(
+        p: &marion_core::proto::params::AgentSpawnParams,
+    ) -> Result<(), RpcError> {
+        if p.caller.is_some() {
+            return Ok(());
+        }
+        let stated = [
+            ("verification", p.verification.is_empty()),
+            ("writable_scope", p.writable_scope.is_empty()),
+        ];
+        let Some((field, _)) = stated.into_iter().find(|(_, empty)| !empty) else {
+            return Ok(());
+        };
+        Err(RpcError::refused(
+            field,
+            format!(
+                "a spawn without a `caller` creates a **root**, and §9 gives a root no contract: it \
+                 runs in the operator's own checkout, and nothing would check `{field}` against \
+                 it. Refused rather than dropped, because a caller told nothing would believe its \
+                 checks ran (§11 item 23). State it on a child spawn, whose worktree and contract \
+                 are what it is checked against."
+            ),
+            "§6.7, §9, §11 item 23",
+        ))
+    }
     /// **§9's change record is a root's**: `no_change_record` on a spawn with a `caller`.
     fn check_child_no_change_record(
         p: &marion_core::proto::params::AgentSpawnParams,
@@ -3369,6 +3405,7 @@ impl RegistryHandle {
         Self::check_caller_repo_pairing(p)?;
         Self::check_root_isolation(p)?;
         Self::check_root_allow_concurrent_writes(p)?;
+        Self::check_root_contract_fields(p)?;
         Self::check_child_no_change_record(p)?;
         Self::check_child_pane(p)?;
         crate::profiles::check_child_profile(p)?;
@@ -12184,6 +12221,8 @@ mod tests {
             AgentSpawnParams {
                 native_launch: None,
                 repo: Some(repo.to_path_buf()),
+                // A root has no contract, so no scope (`check_root_contract_fields`).
+                writable_scope: vec![],
                 ..params(None, secs)
             }
         }
@@ -12686,6 +12725,59 @@ mod tests {
                 e.message
             );
             assert_eq!(journal_len(&fx), before, "and nothing was created");
+        }
+
+        /// **A root that states a check is refused by name, before anything exists.** A root has no
+        /// contract (§9), so `verification` or `writable_scope` on it would be checks nobody ran;
+        /// each is refused alone, and a child keeps both.
+        ///
+        /// Mutation: drop the `check_root_contract_fields` call and the root is created with its
+        /// verification dropped.
+        #[test]
+        fn a_root_that_states_verification_or_scope_is_refused_by_name() {
+            let fx = owning("owns-root-contract", vec![]);
+            let root = |p: AgentSpawnParams| AgentSpawnParams {
+                repo: Some(fx.repo.clone()),
+                writable_scope: vec![],
+                ..p
+            };
+            let before = journal_len(&fx);
+            for (field, p) in [
+                (
+                    "verification",
+                    AgentSpawnParams {
+                        verification: vec!["cargo test".into()],
+                        ..root(params(None, 1))
+                    },
+                ),
+                (
+                    "writable_scope",
+                    AgentSpawnParams {
+                        writable_scope: vec!["src/**".into()],
+                        ..root(params(None, 1))
+                    },
+                ),
+            ] {
+                let e = spawn(&fx, p).expect_err("a root has no contract to check");
+                assert_eq!(e.kind(), Some(FailureKind::Refused), "{field}");
+                assert!(
+                    e.message.contains(&format!("`{field}`")),
+                    "the refusal names {field}: {}",
+                    e.message
+                );
+            }
+            assert_eq!(journal_len(&fx), before, "and nothing was created");
+            assert!(
+                RegistryHandle::check_root_contract_fields(&params(
+                    Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: "t".into(),
+                    }),
+                    1,
+                ))
+                .is_ok(),
+                "a child states them freely"
+            );
         }
 
         /// **Open question 3, decided and pinned: root creation is authorized by filesystem

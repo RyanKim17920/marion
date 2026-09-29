@@ -299,7 +299,7 @@ fn params(
         repo: repo.map(Path::to_path_buf),
         acceptance_criteria: vec![],
         verification: vec![],
-        writable_scope: vec!["src/**".into()],
+        writable_scope: vec![],
         timeout_secs: Some(timeout_secs),
         model: None,
         no_change_record: repo.map(|_| true),
