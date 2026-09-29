@@ -487,6 +487,7 @@ mod tests {
             owned: bool,
         ) -> String {
             self.write(RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 agent_id: id(agent),
                 parent_id: parent.map(|(p, _)| id(p)),
                 agent_type: format!("type-{agent}"),
@@ -828,6 +829,7 @@ mod tests {
 
         fx.running("root", None, Harness::Pi, 101, true);
         fx.write(RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             agent_id: id("spawning"),
             parent_id: Some(id("root")),
             agent_type: "type-spawning".into(),

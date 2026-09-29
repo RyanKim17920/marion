@@ -381,6 +381,7 @@ impl NativeNodeJournal {
     fn intent(&self, agent_type: &AgentType) -> Result<(), crate::journal::JournalError> {
         self.handle
             .journal_now(RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: self.agent_id.clone(),
                 parent_id: None,

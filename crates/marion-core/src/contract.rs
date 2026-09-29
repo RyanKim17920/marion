@@ -221,6 +221,14 @@ pub enum FailureCause {
     Auth { line: String },
     /// The vendor is overloaded or erroring (`overloaded_error`, a 529, a 5xx).
     Outage { line: String },
+    /// marion stopped the run: `owner`'s token budget on `scope` was spent ([`crate::budget`]).
+    /// Never retried, relaunched or failed over — the budget is the operator's decision.
+    Budget {
+        owner: AgentId,
+        scope: crate::budget::BudgetScope,
+        spent: u64,
+        limit: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

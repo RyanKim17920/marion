@@ -477,6 +477,7 @@ mod tests {
 
         fn intent(&self, agent: &str, parent: Option<&str>, harness: Harness) {
             self.write(RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id(agent),
                 parent_id: parent.map(id),

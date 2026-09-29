@@ -631,6 +631,7 @@ mod tests {
 
     fn intent(agent: &str, parent: Option<&str>) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: id(agent),
             parent_id: parent.map(id),

@@ -831,6 +831,7 @@ mod tests {
         let mut r = Replay::default();
         for (seq, kind) in [
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: AgentId("019f0000-0000-7000-8000-00000000000a".into()),
                 parent_id: None,
@@ -948,6 +949,7 @@ mod tests {
         let decided = AgentId("019f0000-0000-7000-8000-00000000000c".into());
         for (seq, kind) in [
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: decided.clone(),
                 parent_id: None,
@@ -1026,6 +1028,7 @@ mod tests {
             provenance: Provenance::marion(),
             src_seq: None,
             kind: RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: AgentId("019f0000-0000-7000-8000-00000000000b".into()),
                 parent_id: None,

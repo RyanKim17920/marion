@@ -1544,6 +1544,9 @@ mod tests {
                     Some(FailureCause::RateLimit { .. }) => Some(429),
                     Some(FailureCause::Outage { .. }) => Some(500),
                     Some(FailureCause::UsageLimit { .. }) => Some(0),
+                    Some(FailureCause::Budget { .. }) => {
+                        panic!("{sel}: a stream never states a budget")
+                    }
                     None => None,
                 };
                 let want = (!silent.contains(&(sel.as_str(), status))).then_some(status);

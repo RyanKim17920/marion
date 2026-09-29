@@ -6408,6 +6408,7 @@ mod tests {
     /// actually launched.
     fn intent(agent: &str, parent: Option<&str>, ty: &str, depth: u32) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: id(agent),
             parent_id: parent.map(id),
@@ -6770,6 +6771,7 @@ mod tests {
     fn an_unknown_type_projects_from_its_recorded_bound_and_not_otherwise() {
         let intent_with = |bound: Option<u64>| {
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id("r"),
                 parent_id: None,
@@ -6810,6 +6812,7 @@ mod tests {
             )
         };
         let intent = SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: id("r"),
             parent_id: None,
@@ -14375,6 +14378,7 @@ mod tests {
                 spawned("root"),
                 session("root", None),
                 RecordKind::SpawnIntent(SpawnIntent {
+                    budget: None,
                     review_of: None,
                     agent_id: id("child"),
                     parent_id: Some(id("root")),

@@ -382,6 +382,8 @@ impl ReplayedNode {
                 }
             }
             RecordKind::ContractPersisted(c) => self.fold_contract_persisted(c),
+            // An audit line: the cancel that follows a `Stop` is what changes the node.
+            RecordKind::BudgetCrossed(_) => {}
             RecordKind::PermissionDenied(d) => self.denied_permissions.push(d),
             RecordKind::WiderDelegation(d) => self.widened = d.axes,
             // Last record wins. A root is snapshotted twice in one run and journalled once, so a
@@ -950,6 +952,7 @@ mod tests {
         };
         vec![
             next(RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id("root"),
                 parent_id: None,
@@ -972,6 +975,7 @@ mod tests {
                 credential: None,
             })),
             next(RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id("child"),
                 parent_id: Some(id("root")),
@@ -1594,6 +1598,7 @@ mod tests {
             record(
                 0,
                 RecordKind::SpawnIntent(SpawnIntent {
+                    budget: None,
                     review_of: None,
                     agent_id: id("a"),
                     parent_id: None,
@@ -1690,6 +1695,7 @@ mod tests {
                 1_000,
                 0,
                 RecordKind::SpawnIntent(SpawnIntent {
+                    budget: None,
                     review_of: None,
                     agent_id: id("a"),
                     parent_id: None,
@@ -1899,6 +1905,7 @@ mod tests {
         let mut j = vec![record(
             0,
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id("root"),
                 parent_id: None,
@@ -2195,6 +2202,7 @@ mod tests {
     /// The `SpawnIntent` a session observation lands on: the journal side's own fixture.
     fn intent() -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: id("a-1"),
             parent_id: Some(id("root")),
@@ -2522,6 +2530,7 @@ mod tests {
                     race_id: race.clone(),
                     role: RaceRole::Candidate(n),
                 }),
+                budget: None,
             })
         };
         let opened = RecordKind::RaceOpened(RaceOpened {

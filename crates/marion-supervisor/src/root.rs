@@ -960,6 +960,7 @@ pub fn prepare_watched(
     crate::journal::append(
         &project,
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: agent_id.clone(),
             parent_id: None,

@@ -220,6 +220,10 @@ pub enum RecordKind {
     /// A race was decided; `races/<race_id>.json` is authoritative for its scoreboard. About no one
     /// node. Not a barrier: a lost record is re-derived, since a restart re-drives an open race.
     RaceDecided(RaceDecided),
+    /// A node's spend crossed a line of its budget ([`crate::budget`]): the warn line, which tells
+    /// the owner once, or the limit, which the [`Self::CancelRequested`] it precedes acts on. Not a
+    /// barrier: the cancel that follows a `Stop` is.
+    BudgetCrossed(BudgetCrossed),
 }
 
 impl RecordKind {
@@ -276,6 +280,7 @@ impl RecordKind {
             RecordKind::MessageDelivered(r) => Some(&r.agent_id),
             RecordKind::MessageDropped(r) => Some(&r.agent_id),
             RecordKind::ProfileFailover(r) => Some(&r.agent_id),
+            RecordKind::BudgetCrossed(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_)
             | RecordKind::RaceOpened(_)
             | RecordKind::RaceDecided(_) => None,
@@ -363,6 +368,14 @@ pub struct SpawnIntent {
     /// not a review is byte-identical to what the previous build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_of: Option<AgentId>,
+    /// **The node's token budget, as resolved at spawn** ([`crate::budget`]) — its tree limit
+    /// already narrowed to what its nearest budgeted ancestor had left. Recorded so a restart
+    /// enforces the budget the node was spawned under.
+    ///
+    /// **Additive**: absent on the wire when `None`, so an unbudgeted intent is byte-identical to
+    /// what the previous build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<crate::budget::Budget>,
 }
 
 /// See [`RecordKind::RaceOpened`]. Seat strings are capped at [`crate::race::CANDIDATE_CAP`] and
@@ -509,6 +522,13 @@ pub enum CancelBy {
     Node { caller: AgentId },
     /// The cancel of an ancestor reached this node: `from` is the node the cancel was asked of.
     Cascade { from: AgentId },
+    /// `owner`'s budget on `scope` was spent: `spent` tokens against a limit of `limit`.
+    Budget {
+        owner: AgentId,
+        scope: crate::budget::BudgetScope,
+        spent: u64,
+        limit: u64,
+    },
 }
 
 impl CancelBy {
@@ -518,6 +538,16 @@ impl CancelBy {
             CancelBy::Operator => "the operator".into(),
             CancelBy::Node { caller } => format!("its ancestor {}", caller.0),
             CancelBy::Cascade { from } => format!("the cancel of its ancestor {}", from.0),
+            CancelBy::Budget {
+                owner,
+                scope,
+                spent,
+                limit,
+            } => format!(
+                "the {} budget of {}: {spent} tokens spent against a limit of {limit}",
+                scope.word(),
+                owner.0
+            ),
         }
     }
 }
@@ -593,6 +623,17 @@ pub struct SessionObserved {
     /// writes exactly what earlier builds wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+}
+
+/// See [`RecordKind::BudgetCrossed`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetCrossed {
+    /// The node whose budget it is — for a tree limit, the ancestor whose subtree spent it.
+    pub agent_id: AgentId,
+    pub scope: crate::budget::BudgetScope,
+    pub level: crate::budget::BudgetLevel,
+    pub spent: u64,
+    pub limit: u64,
 }
 
 /// See [`RecordKind::ProfileFailover`].
@@ -755,6 +796,7 @@ mod tests {
 
     fn intent() -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: Some(AgentId("root".into())),
@@ -931,6 +973,36 @@ mod tests {
                 profile: None,
             }),
             RecordKind::SupervisorExited(SupervisorExited {}),
+            RecordKind::SpawnIntent(SpawnIntent {
+                budget: Some(crate::budget::Budget {
+                    tokens: Some(50_000),
+                    tree_tokens: Some(200_000),
+                    warn_pct: 90,
+                }),
+                ..match intent() {
+                    RecordKind::SpawnIntent(i) => i,
+                    _ => unreachable!(),
+                }
+            }),
+            RecordKind::BudgetCrossed(BudgetCrossed {
+                agent_id: AgentId("a-1".into()),
+                scope: crate::budget::BudgetScope::Tree,
+                level: crate::budget::BudgetLevel::Stop,
+                spent: 200_512,
+                limit: 200_000,
+            }),
+            RecordKind::CancelRequested(CancelRequested {
+                agent_id: AgentId("a-2".into()),
+                was: NodeState::Running,
+                by: CancelBy::Budget {
+                    owner: AgentId("a-1".into()),
+                    scope: crate::budget::BudgetScope::Tree,
+                    spent: 200_512,
+                    limit: 200_000,
+                },
+                verb: "none".into(),
+                grace: crate::encoding::Millis(std::time::Duration::ZERO),
+            }),
         ];
         let kinds = kinds.into_iter().chain(message_records());
         for kind in kinds {
@@ -946,6 +1018,7 @@ mod tests {
         let a = AgentId("a".into());
         assert!(
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: a.clone(),
                 parent_id: None,
@@ -1104,6 +1177,7 @@ mod tests {
     #[test]
     fn a_spawn_intent_carries_its_bound_and_omits_it_when_there_is_none() {
         let without = SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: None,
@@ -1123,6 +1197,7 @@ mod tests {
         );
 
         let with = SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: None,
@@ -1165,6 +1240,7 @@ mod tests {
     #[test]
     fn a_spawn_intent_carries_its_verification_and_omits_it_when_there_is_none() {
         let intent = |verification: Vec<String>| SpawnIntent {
+            budget: None,
             review_of: None,
             agent_id: AgentId("a-1".into()),
             parent_id: Some(AgentId("r-1".into())),
@@ -1211,6 +1287,7 @@ mod tests {
     #[test]
     fn a_spawn_intent_names_the_node_it_reviews_and_omits_it_otherwise() {
         let intent = |review_of: Option<AgentId>| SpawnIntent {
+            budget: None,
             review_of,
             race: None,
             agent_id: AgentId("a-2".into()),
@@ -1424,6 +1501,7 @@ mod tests {
                 race_id: race_id.clone(),
                 role: RaceRole::Candidate(3),
             }),
+            budget: None,
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(seat.clone())).unwrap();
         assert!(line.contains(r#""race":{"race_id":"019f0000-0000-7000-8000-00000000000a","role":{"Candidate":3}}"#), "{line}");

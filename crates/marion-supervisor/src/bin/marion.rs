@@ -4265,6 +4265,7 @@ mod tests {
                     0 => line(
                         1,
                         RecordKind::SpawnIntent(SpawnIntent {
+                            budget: None,
                             review_of: None,
                             agent_id: child.clone(),
                             parent_id: Some(root.clone()),
@@ -5232,6 +5233,7 @@ mod tests {
         let id = AgentId("root".into());
         let intent = |timeout_secs: Option<u64>| {
             RecordKind::SpawnIntent(SpawnIntent {
+                budget: None,
                 review_of: None,
                 agent_id: id.clone(),
                 parent_id: None,

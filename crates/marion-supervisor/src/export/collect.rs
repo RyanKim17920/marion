@@ -305,6 +305,12 @@ fn failure(node: &ReplayedNode, contract: Option<&TaskContract>) -> Option<Strin
                 FailureCause::RateLimit { line } => format!("rate limit: {line}"),
                 FailureCause::Auth { line } => format!("login refused: {line}"),
                 FailureCause::Outage { line } => format!("vendor outage: {line}"),
+                FailureCause::Budget {
+                    scope,
+                    spent,
+                    limit,
+                    ..
+                } => format!("{} budget spent: {spent} of {limit}", scope.word()),
             });
         }
         if c.status != ExitStatus::Ok {

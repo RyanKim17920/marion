@@ -8,6 +8,7 @@
 //! that one-directional dependency look like a peer relationship between two vocabularies.
 
 pub mod agent_type;
+pub mod budget;
 pub mod cap;
 pub mod contract;
 pub mod encoding;

@@ -180,6 +180,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::MessageDelivered(_) => "MessageDelivered",
             RecordKind::MessageDropped(_) => "MessageDropped",
             RecordKind::ProfileFailover(_) => "ProfileFailover",
+            RecordKind::BudgetCrossed(_) => "BudgetCrossed",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
             RecordKind::RaceOpened(_) => "RaceOpened",
             RecordKind::RaceDecided(_) => "RaceDecided",

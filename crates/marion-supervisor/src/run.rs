@@ -1926,6 +1926,7 @@ pub fn run_spawn_watched(
     crate::journal::append(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
+            budget: None,
             review_of: req.review.as_ref().map(|t| t.agent_id.clone()),
             agent_id: agent_id.clone(),
             // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the

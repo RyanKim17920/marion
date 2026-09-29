@@ -139,6 +139,7 @@ fn write_journal(p: &ProjectDir) {
             verification: Vec::new(),
             review_of: None,
             race: None,
+            budget: None,
         })
     };
     let spawned = |agent: &str, version: &str, model: &str, credential: Option<&str>| {
