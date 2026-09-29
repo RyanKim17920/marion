@@ -8,7 +8,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:codex-acp | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:copilot | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | acp:gemini | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| acp:opencode | OpenCode 1.18.32 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** | n/a |
+| acp:opencode | OpenCode 1.18.32 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | claude-code | 2.1.283 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
 | codex | 0.155.1 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | PASS | PASS | PASS | PASS |
@@ -82,7 +82,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
 - **P-tools** PASS: first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 8.0 s after the spawn and listed marion's tools
 - **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 311, output: 24, cache_read: 15, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f1b4c5bc8ffemJkn0W0wnPTvUz ; activity none (row: no activity rule)
-- **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion
+- **P-approval** UNSUPPORTED: granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised
 - **P-midturn** PASS: queued as its own turn (2 turn ends; requests [4]); 2 prompt answer(s)
 - **P-interrupt** PASS: the cancel ended the turn in 0.2 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
 - **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f1b4c000cffewMS6VHxBMuWzMM -> ses_f1b4c000cffewMS6VHxBMuWzMM; resume refusal: none

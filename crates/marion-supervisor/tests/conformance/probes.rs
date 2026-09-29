@@ -682,7 +682,16 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
         Approval::EnvVar { key, .. } => {
             Box::new(move |l: &mut Launch| l.inv.env.retain(|(k, _)| k != key))
         }
-        Approval::DeclarationKey { key, .. } => Box::new(move |l: &mut Launch| strip_key(l, key)),
+        // Where the harness's default already runs the tool, the ungranted case is an operator's
+        // config contesting it (the row's `contest`) with marion's key gone: that is the case the
+        // key exists for, and stripping it alone would pass whether or not the key works.
+        Approval::DeclarationKey { key, contest, .. } => Box::new(move |l: &mut Launch| {
+            let carriers = documents_with(l, key);
+            strip_key(l, key);
+            if let Some(c) = contest {
+                contest_documents(&carriers, c);
+            }
+        }),
         // No mode set is marion's own default for every built-in: the agent's own permission ask
         // then reaches marion, and marion answers it with the agent's allow option.
         Approval::SessionMode { .. } => Box::new(|_: &mut Launch| {}),
@@ -716,8 +725,14 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
         }
     };
     strip(&mut launch);
+    let contested = match approval {
+        Approval::DeclarationKey {
+            contest: Some(c), ..
+        } => format!("; operator config contesting it: {c}"),
+        _ => String::new(),
+    };
     s.log.note(format!(
-        "grant ({}) stripped: argv {:?}",
+        "grant ({}) stripped{contested}: argv {:?}",
         approval.kind(),
         launch.inv.args
     ));
@@ -751,10 +766,19 @@ fn p_approval(c: &mut Ctx<'_>) -> Outcome {
             .collect()
     });
     let session_mode = matches!(approval, Approval::SessionMode { .. });
+    if session_mode && asked.is_empty() && r.report == Some(CallOutcome::Answered) {
+        // The strategy's claim is that marion answers the agent's ask with the agent's own allow
+        // option; an agent that asked nothing never put that answer to the test.
+        return Outcome::unsupported(
+            P,
+            format!(
+                "granted: `report` answered {granted}; ungranted: `report` answered with no \
+                 permission ask reaching marion, so marion's answer to an ask was not exercised"
+            ),
+        );
+    }
     let ungranted_ok = if session_mode {
-        // The strategy's claim is that marion answers whatever the agent asks with the agent's
-        // own allow option: `report` is answered, asked or not.
-        r.report == Some(CallOutcome::Answered)
+        r.report == Some(CallOutcome::Answered) && !asked.is_empty()
     } else {
         r.report != Some(CallOutcome::Answered) || !asked.is_empty()
     };
@@ -793,6 +817,45 @@ fn strip_flag(args: &mut Vec<String>, flag: &str, takes_value: bool) {
 }
 
 /// Remove a declaration key from every document the launch wrote and from argv's override pairs.
+/// The JSON documents among the launch's files that carry `key` anywhere.
+fn documents_with(l: &Launch, key: &str) -> Vec<std::path::PathBuf> {
+    l.files
+        .iter()
+        .filter(|f| {
+            std::fs::read_to_string(f)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .is_some_and(|v| has_key(&v, key))
+        })
+        .cloned()
+        .collect()
+}
+
+fn has_key(v: &Value, key: &str) -> bool {
+    match v {
+        Value::Object(o) => o.contains_key(key) || o.values().any(|x| has_key(x, key)),
+        Value::Array(a) => a.iter().any(|x| has_key(x, key)),
+        _ => false,
+    }
+}
+
+/// Merge `contest`, a JSON object, into the top level of each document.
+fn contest_documents(files: &[std::path::PathBuf], contest: &str) {
+    let Ok(Value::Object(add)) = serde_json::from_str::<Value>(contest) else {
+        panic!("a row's contest is a JSON object: {contest}");
+    };
+    for f in files {
+        let Some(Value::Object(mut doc)) = std::fs::read_to_string(f)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        doc.extend(add.clone());
+        let _ = std::fs::write(f, Value::Object(doc).to_string());
+    }
+}
+
 fn strip_key(l: &mut Launch, key: &str) {
     for f in &l.files {
         let Ok(text) = std::fs::read_to_string(f) else {

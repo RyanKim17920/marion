@@ -200,6 +200,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // alike: without it every marion call is cancelled silently (S6).
     approval: Approval::DeclarationKey {
         key: "default_tools_approval_mode",
+        contest: None,
         note: "S6 on 0.146.0: without `default_tools_approval_mode = \"approve\"` every marion \
                tool call is cancelled and the run ends Unreported",
     },

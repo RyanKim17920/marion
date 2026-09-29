@@ -153,6 +153,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // body at exit 0 (S12). `--yolo` is the only other route, and an admin can veto it.
     approval: Approval::DeclarationKey {
         key: "trust",
+        contest: None,
         note: "S12 on 0.53.0: `trust: true` puts marion's tool in the request body; without it \
                the tool is omitted, no prompt, exit 0",
     },

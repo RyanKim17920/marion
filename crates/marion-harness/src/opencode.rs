@@ -235,9 +235,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `marion_*` and nothing else, never `OPENCODE_PERMISSION`, which would narrow every tool.
     approval: Approval::DeclarationKey {
         key: APPROVAL_KEY,
+        // opencode's own default is `allow`: the grant exists to override an operator's `ask`.
+        contest: Some(r#"{"permission":{"marion_*":"ask"}}"#),
         note: "s36 on 1.18.32: config `permission: {\"slow_report\": \"ask\"}` auto-rejects the \
                call headless at exit 0; an inline `permission: {\"slow_*\": \"allow\"}` merged \
-               over it lets it run",
+               over it lets it run. 2026-09-29 on 1.18.32 and 1.18.33 alike: with no \
+               `permission` block the call runs (opencode's default is allow), and \
+               `{\"marion_*\": \"ask\"}` with no grant rejects it headless",
     },
     // s38 (1.18.32): `edit` covers the `write` tool and `bash` must be denied too — `edit` alone let
     // `printf > file` land, and `write` is not a permission key at all.

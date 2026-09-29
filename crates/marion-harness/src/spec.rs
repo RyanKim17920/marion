@@ -639,6 +639,12 @@ pub enum Approval {
     /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
     DeclarationKey {
         key: &'static str,
+        /// The operator config the key exists to override, as a JSON object merged at the top of
+        /// the declaration document — where the harness's own default already runs marion's tool
+        /// unasked, stripping the key alone proves nothing, and this is what makes the grant
+        /// load-bearing (conformance's P-approval). `None` where the harness refuses the tool
+        /// by default without the key.
+        contest: Option<&'static str>,
         note: &'static str,
     },
     /// A launch-wide flag on argv — qwen's `--yolo`, cline's `--auto-approve`.

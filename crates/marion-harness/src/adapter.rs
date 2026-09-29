@@ -10605,10 +10605,18 @@ mod tests {
                             inv.args
                         );
                     }
-                    Approval::DeclarationKey { key, .. } => assert!(
-                        in_documents(key) || on_argv(key) || in_env(key),
-                        "{h} ({name}): marion's declaration must carry `{key}`"
-                    ),
+                    Approval::DeclarationKey { key, contest, .. } => {
+                        assert!(
+                            in_documents(key) || on_argv(key) || in_env(key),
+                            "{h} ({name}): marion's declaration must carry `{key}`"
+                        );
+                        // What an operator's config says that the key overrides: the same key.
+                        if let Some(c) = contest {
+                            let v: serde_json::Value = serde_json::from_str(c)
+                                .unwrap_or_else(|e| panic!("{h}: contest is not JSON: {e}"));
+                            assert!(v.get(key).is_some(), "{h}: contest must set `{key}`: {c}");
+                        }
+                    }
                     Approval::CliFlag { flag, .. } => assert!(
                         inv.args.iter().any(|a| a == flag),
                         "{h} ({name}): no `{flag}`: {:?}",

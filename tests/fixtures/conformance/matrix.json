@@ -297,9 +297,10 @@
           "status": "PASS"
         },
         "P-approval": {
-          "expected": "granted (session-mode), `report` is answered; ungranted, the harness asks or refuses",
-          "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion",
-          "status": "PASS"
+          "expected": "",
+          "observed": "granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised",
+          "reason": "granted: `report` answered true; ungranted: `report` answered with no permission ask reaching marion, so marion's answer to an ask was not exercised",
+          "status": "UNSUPPORTED"
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
