@@ -572,8 +572,9 @@ fn prompt_session(
                 }
                 pending.push(last_id);
             }
-            // Owed a background child's end: wait for the inbox, bounded by the wall clock.
-            None if feed.source.held() => loop {
+            // Owed a background child's end: wait for the inbox, bounded by the wall clock — unless
+            // the node reported, which concludes it (§7.6's reported-early exemption).
+            None if feed.source.held() && !feed.reported(&agent.frames_since(0)) => loop {
                 if agent.take_wake() {
                     break;
                 }
@@ -1807,5 +1808,37 @@ exit 0"#,
         assert_eq!(prompt_at(&second), (3, rendered(ended, "the contract")));
         assert_eq!(fx.delivered(), [(id, VIA_NEXT_TURN.to_string())]);
         assert!(fx.sealed());
+    }
+
+    /// **An agent that reported is not held for a child's end** (§7.6's reported-early
+    /// exemption): once its stream holds its report, the driver ends the session instead of
+    /// spending the node's clock on the owed end, which goes to its nearest live ancestor.
+    ///
+    /// Mutation: drop the `reported` guard and the session waits out its 20 s bound.
+    #[test]
+    fn an_agent_that_reported_is_not_held_for_an_owed_childs_end() {
+        let dir = scratch("acp-reported-early");
+        let fx = fed(MidTurn::Queue);
+        assert!(fx.inboxes.owe(&fx.agent));
+        let script = r#"read -r prompt
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"note":"REPORTED"}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}'
+read -r next
+exit 0"#;
+        let inv = fed_agent(&dir, script);
+        let reporting = Fed {
+            feed: fx
+                .feed
+                .clone()
+                .reading_reports(Arc::new(|stretch: &str| stretch.contains("REPORTED"))),
+            ..fx
+        };
+        let started = Instant::now();
+        let run = run_acp_child(reporting.spec(&inv)).expect("the session completes");
+        assert!(
+            !run.exit.timed_out,
+            "a reported agent is not held to its bound"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

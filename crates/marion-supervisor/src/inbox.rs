@@ -206,6 +206,14 @@ impl TurnFeed {
         }
     }
 
+    /// **Whether `stretch` holds the node's report**, read the row's way — `false` for a feed that
+    /// reads none. A driver that finds its inbox held only for an owed child's end asks this of
+    /// the node's whole stream: a node that reported has concluded (§7.6's reported-early
+    /// exemption), so it ends rather than wait, and the end goes to its nearest live ancestor.
+    pub fn reported(&self, stretch: &str) -> bool {
+        self.reports.as_ref().is_some_and(|r| r(stretch))
+    }
+
     /// A message that arrives mid-turn is written at once rather than held for the boundary.
     pub fn folds(&self) -> bool {
         self.mid_turn == MidTurn::Fold

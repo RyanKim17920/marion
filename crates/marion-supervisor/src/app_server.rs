@@ -491,8 +491,9 @@ impl Session<'_> {
                 Some(m) => m,
                 None => match feed.source.take_or_seal() {
                     Some(m) => m,
-                    // Owed a background child's end: wait for the inbox, bounded by the wall clock.
-                    None if feed.source.held() => {
+                    // Owed a background child's end: wait for the inbox, bounded by the wall clock —
+                    // unless the node reported, which concludes it (§7.6's reported-early exemption).
+                    None if feed.source.held() && !feed.reported(&node.frames_since(0)) => {
                         if node
                             .settle_until(self.deadline, |d| d.take_wake().then_some(()))
                             .is_none()

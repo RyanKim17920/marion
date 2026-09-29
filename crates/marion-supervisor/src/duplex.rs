@@ -929,6 +929,18 @@ fn deliver(
     }
 }
 
+/// Whether the node has reported, memoized in `memo` as (answer, stdout length read).
+fn concluded_by_report(
+    feed: &crate::inbox::TurnFeed,
+    outcome: &DuplexOutcome,
+    memo: &mut (bool, usize),
+) -> bool {
+    if !memo.0 && memo.1 != outcome.stdout.len() {
+        *memo = (feed.reported(&outcome.stdout), outcome.stdout.len());
+    }
+    memo.0
+}
+
 /// Drive the node from its first turn to its last, answering every inbound `control_request` on
 /// the way.
 ///
@@ -950,6 +962,9 @@ fn drive(
     let mut running = true;
     // A mid-turn write in the turn that just ended, which the node may yet run as a turn of its own.
     let mut unsettled = false;
+    // Whether the node's stream holds its report, and how much of it that was read over: a held
+    // boundary re-reads only a stream that grew, and a report once made stays made.
+    let mut concluded = (false, 0);
     loop {
         if running {
             let Some(event) = next_before(rx, abort_at) else {
@@ -1021,22 +1036,25 @@ fn drive(
                 outcome.last_turn_at = outcome.stdout.len();
                 running = true;
             }
-            None if feed.source.held() => match next_before(rx, abort_at) {
-                // A turn the node queued itself, starting late.
-                Some(Event::Line(line)) => {
-                    if handle_line(stdin, spec, outcome, &line)? == Seen::TurnStarted {
-                        running = true;
+            // Owed a background child's end — unless the node reported, which concludes it.
+            None if feed.source.held() && !concluded_by_report(feed, outcome, &mut concluded) => {
+                match next_before(rx, abort_at) {
+                    // A turn the node queued itself, starting late.
+                    Some(Event::Line(line)) => {
+                        if handle_line(stdin, spec, outcome, &line)? == Seen::TurnStarted {
+                            running = true;
+                        }
+                    }
+                    Some(Event::Wake) => {}
+                    Some(Event::Eof) => return Ok(()),
+                    // The clock ran out while the node was idle and held: there is no turn to abort,
+                    // and closing stdin ends the session.
+                    None => {
+                        outcome.timed_out = true;
+                        return Ok(());
                     }
                 }
-                Some(Event::Wake) => {}
-                Some(Event::Eof) => return Ok(()),
-                // The clock ran out while the node was idle and held: there is no turn to abort,
-                // and closing stdin ends the session.
-                None => {
-                    outcome.timed_out = true;
-                    return Ok(());
-                }
-            },
+            }
             None => return Ok(()),
         }
     }
@@ -2234,6 +2252,42 @@ exit 0"#,
         assert_eq!(user_text(&turn2), fx.rendered(ended, "the contract"));
         assert_eq!(fx.delivered(), [(id, "stream-json:next-turn".to_string())]);
         assert!(fx.sealed());
+    }
+
+    /// **A node that reported is not held for a child's end** (§7.6's reported-early exemption):
+    /// its report concludes it, so the driver ends the session at once rather than spend its clock
+    /// waiting, and the child's end goes to the nearest live ancestor instead.
+    ///
+    /// Mutation: drop the `concluded_by_report` guard and the node is held to its bound.
+    #[test]
+    fn a_node_that_reported_is_not_held_for_an_owed_childs_end() {
+        let dir = scratch("duplex-reported-early");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let fx = fed(MidTurn::Queue);
+        assert!(fx.inboxes.owe(&fx.agent));
+        let feed = fx
+            .feed
+            .clone()
+            .reading_reports(Arc::new(|stretch: &str| stretch.contains("REPORTED")));
+        let script = format!(
+            r#"( sleep 20; kill -9 $$ ) 2>/dev/null &
+read -r init
+printf '%s\n' '{INIT_REPLY}'
+read -r user
+printf '{{"type":"result","subtype":"success","result":"REPORTED"}}\n'
+read -r next
+exit 0"#
+        );
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &fed_spec(&marker, &feed, StdDuration::from_secs(15)),
+        )
+        .expect("the run returns");
+        assert!(!out.timed_out, "a reported node is not held to its bound");
+        assert!(started.elapsed() < StdDuration::from_secs(10));
+        assert_eq!(results(&out), ["REPORTED"]);
     }
 
     /// A hold is bounded by the node's wall clock: a child's end that never comes costs the node
