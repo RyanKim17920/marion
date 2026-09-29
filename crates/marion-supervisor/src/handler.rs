@@ -1366,6 +1366,57 @@ fn mint_task_id() -> Result<TaskId, RpcError> {
         })
 }
 
+/// A child's launch request from a spawn's terms, for one agent type and model: a plain spawn's
+/// own, or one seat's of a race.
+fn child_request(
+    p: &marion_core::proto::params::AgentSpawnParams,
+    repo: PathBuf,
+    agent_type: String,
+    model: Option<String>,
+    race: Option<marion_core::race::RaceSeat>,
+) -> crate::run::SpawnRequest {
+    crate::run::SpawnRequest {
+        review: None,
+        agent_type,
+        prompt: p.prompt.clone(),
+        repo,
+        acceptance_criteria: p.acceptance_criteria.clone(),
+        verification: p.verification.clone(),
+        race,
+        writable_scope: p.writable_scope.clone(),
+        // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
+        // carries `Option`; this is the one place that turns absence into a number, and
+        // `effective_timeout` clamps it exactly as it clamps a stated one.
+        timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+        model,
+        // **Absence resolved here, once.** §3.1's agent-type key defaults to `shared-cwd`;
+        // marion resolves an absent *`spawn` parameter* to `Worktree` instead, and
+        // `contract::Isolation` carries the argument: silence must not silently *remove*
+        // containment from every caller that names nothing.
+        isolation: p.isolation.unwrap_or(Isolation::Worktree),
+        // Absent is `false` — marion holds §6.6's guard. See `AgentSpawnParams`.
+        allow_concurrent_writes: p.allow_concurrent_writes.unwrap_or(false),
+        // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
+        // reconstructs this same request from the journal rather than from a caller.
+        resume: None,
+        profile: None,
+    }
+}
+
+/// The task as the child will receive it, resolved the way `run_spawn_watched` resolves it,
+/// before the request moves into the launch.
+fn sent_task(req: &crate::run::SpawnRequest) -> Option<marion_core::proto::result::TaskSent> {
+    let prompt = crate::run::agent_types(&req.repo)
+        .ok()
+        .and_then(|t| t.resolve(&req.agent_type))
+        .map(|t| crate::run::child_prompt(&t, &req.prompt))?;
+    Some(crate::node_detail::task_of(
+        &prompt,
+        req.acceptance_criteria.clone(),
+        req.verification.clone(),
+    ))
+}
+
 fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
     let own = crate::socket::own_uid();
     match peer {
@@ -1659,6 +1710,8 @@ pub struct RegistryHandle {
     /// [`Self::quit`] uses and for the same reason — it makes a read and the write derived from it
     /// one indivisible decision, not a throughput device.
     spawn_decision: Mutex<()>,
+    /// **The races this supervisor is driving**; empty, and silent, with none open.
+    races: crate::race::Races,
     /// **What this supervisor sent each child it started**, for `node/get` to show while the child
     /// runs: its contract file is written when it ends, and until then nothing on disk holds the
     /// prompt. In memory only, like [`NodeHandle`]; after the run the contract is the record.
@@ -1819,7 +1872,9 @@ impl RegistryHandle {
         env: crate::run::Env,
         socket_path: PathBuf,
     ) -> Arc<RegistryHandle> {
-        Self::build(live, socket_path, Arc::new(SystemQuitRuntime), Some(env))
+        let handle = Self::build(live, socket_path, Arc::new(SystemQuitRuntime), Some(env));
+        handle.redrive_open_races();
+        handle
     }
 
     fn journal_adjacent_socket(live: &LiveRegistry) -> PathBuf {
@@ -1868,6 +1923,7 @@ impl RegistryHandle {
             #[cfg(test)]
             pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
+            races: crate::race::Races::default(),
             sent: Mutex::new(HashMap::new()),
             spending,
             quit: Mutex::new(()),
@@ -3163,6 +3219,10 @@ impl RegistryHandle {
             agent_id,
             "the node ended before its next turn took the message",
         );
+        // A requester that ends abandons the races it asked for.
+        for race_id in self.races.requested_by(agent_id) {
+            self.drive_race(&race_id);
+        }
     }
 
     /// **Why a node this supervisor owns did not finish cleanly**, in one sentence.
@@ -3563,10 +3623,28 @@ impl RegistryHandle {
                 "§2",
             ));
         };
+        let racing = !p.candidates.is_empty() || p.race.is_some();
+        if racing && p.review_of.is_some() {
+            return Err(RpcError::refused(
+                "candidates",
+                "a review reads one finished node and a race runs one task on several; name \
+                 either `review_of` or `candidates`, not both.",
+                "race",
+            ));
+        }
         if let Some(target) = &p.review_of {
             return self.spawn_review(me, env, p, target, peer);
         }
         let Some(caller_id) = p.caller.as_ref() else {
+            if racing {
+                return Err(RpcError::refused(
+                    "candidates",
+                    "a race is asked for by a node, for its own task: its seats are that node's \
+                     children, each under a contract it reads back. A spawn with no `caller` \
+                     starts a root, which has no contract to race on.",
+                    "§9",
+                ));
+            }
             // **A client creating a root** — §11 item 28 step 6. Answered on its own path rather
             // than folded into the child one: `run_spawn` writes `parent_id: Some(caller)`
             // unconditionally, so serving a root through it would put a node in the tree whose
@@ -3574,6 +3652,9 @@ impl RegistryHandle {
             // its agent-dir layout, `ROOT_DEPTH`, §9's change record, `parent_id: None`.
             return self.spawn_root(me, env, p, peer);
         };
+        if racing {
+            return self.spawn_race(me, env, p, caller_id);
+        }
 
         // **Held from here to the child's durable intent, and no further.** See
         // [`Self::spawn_decision`]: the registry is a follower, so two callers that both evaluated
@@ -3581,25 +3662,7 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let caller = self.resolve_caller(caller_id)?;
-        // **The child's tree is its caller's tree**, read off the entry `resolve_caller` has just
-        // proved this caller owns. Not derived from `<project-hash>` — that is the git common dir
-        // shared by every linked worktree of this repository, so deriving it would branch a
-        // feature-worktree node's children off the main tree's HEAD. See [`NodeHandle::repo`].
-        let repo = lock(&self.nodes)
-            .get(&caller_id.agent_id)
-            .map(|n| n.repo.clone())
-            .ok_or_else(|| {
-                // Unreachable through `resolve_caller`, which compared this caller's token against
-                // this same table. Kept as a refusal rather than an `expect` because the lock is
-                // dropped and retaken between the two reads, and the honest answer to "the entry
-                // went away" is not a panic in a supervisor that owns other nodes.
-                RpcError::refused(
-                    &caller_id.agent_id.0,
-                    "this supervisor no longer owns that node, so it cannot say which tree a \
-                     child of it would branch from.",
-                    "§5.4",
-                )
-            })?;
+        let repo = self.caller_repo(caller_id)?;
         // §6.1 step 2, before every side effect — the same pure function `run_spawn` calls, run
         // here as well so the refusal arrives in the frame that asked for it rather than as a node
         // that was never going to start. Two call sites of one function, never two rules.
@@ -3607,31 +3670,7 @@ impl RegistryHandle {
             .map_err(gate_refusal)?;
 
         let task_id = mint_task_id()?;
-        let req = crate::run::SpawnRequest {
-            review: None,
-            agent_type: p.agent_type.clone(),
-            prompt: p.prompt.clone(),
-            repo: repo.clone(),
-            acceptance_criteria: p.acceptance_criteria.clone(),
-            verification: p.verification.clone(),
-            writable_scope: p.writable_scope.clone(),
-            // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
-            // carries `Option`; this is the one place that turns absence into a number, and
-            // `effective_timeout` clamps it exactly as it clamps a stated one.
-            timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
-            model: p.model.clone(),
-            // **Absence resolved here, once.** §3.1's agent-type key defaults to `shared-cwd`;
-            // marion resolves an absent *`spawn` parameter* to `Worktree` instead, and
-            // `contract::Isolation` carries the argument: silence must not silently *remove*
-            // containment from every caller that names nothing.
-            isolation: p.isolation.unwrap_or(Isolation::Worktree),
-            // Absent is `false` — marion holds §6.6's guard. See `AgentSpawnParams`.
-            allow_concurrent_writes: p.allow_concurrent_writes.unwrap_or(false),
-            // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
-            // reconstructs this same request from the journal rather than from a caller.
-            resume: None,
-            profile: None,
-        };
+        let req = child_request(p, repo.clone(), p.agent_type.clone(), p.model.clone(), None);
         // A background spawn's end is owed to its caller as a message (turn delivery).
         let announce_to = p.notify_parent.then(|| caller_id.agent_id.clone());
         self.start_child(me, env, req, task_id, caller, repo, decision, announce_to)
@@ -3654,22 +3693,10 @@ impl RegistryHandle {
         // Kept out of the thread's move, because the answer names it: the composing client reads
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
-        // The prompt as the child will receive it, resolved the way `run_spawn_watched` resolves
-        // it, before `req` moves into the launch.
-        let delivered = crate::run::agent_types(&req.repo)
-            .ok()
-            .and_then(|t| t.resolve(&req.agent_type))
-            .map(|t| crate::run::child_prompt(&t, &req.prompt));
-        let acceptance = req.acceptance_criteria.clone();
-        let verification = req.verification.clone();
+        let sent = sent_task(&req);
         let (agent_id, state) =
             self.launch_child(me, env, req, task_id, caller, repo, decision, announce_to)?;
-        if let Some(prompt) = delivered {
-            lock(&self.sent).insert(
-                agent_id.clone(),
-                crate::node_detail::task_of(&prompt, acceptance, verification),
-            );
-        }
+        self.remember_sent(&agent_id, sent);
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
@@ -3677,7 +3704,329 @@ impl RegistryHandle {
             // what lets the caller find the file when the run ends.
             task_id: Some(answered_task_id),
             note: None,
+            race: None,
         })
+    }
+
+    /// **The child's tree is its caller's tree**, read off the entry `resolve_caller` has just
+    /// proved this caller owns. Not derived from `<project-hash>` — that is the git common dir
+    /// shared by every linked worktree of this repository, so deriving it would branch a
+    /// feature-worktree node's children off the main tree's HEAD. See [`NodeHandle::repo`].
+    fn caller_repo(
+        &self,
+        caller_id: &marion_core::proto::SpawnCaller,
+    ) -> Result<PathBuf, RpcError> {
+        lock(&self.nodes)
+            .get(&caller_id.agent_id)
+            .map(|n| n.repo.clone())
+            .ok_or_else(|| {
+                // Unreachable through `resolve_caller`, which compared this caller's token against
+                // this same table. Kept as a refusal rather than an `expect` because the lock is
+                // dropped and retaken between the two reads, and the honest answer to "the entry
+                // went away" is not a panic in a supervisor that owns other nodes.
+                RpcError::refused(
+                    &caller_id.agent_id.0,
+                    "this supervisor no longer owns that node, so it cannot say which tree a \
+                     child of it would branch from.",
+                    "§5.4",
+                )
+            })
+    }
+
+    /// What `node/get` shows for a child this supervisor started, filed once the node has an id.
+    fn remember_sent(
+        &self,
+        agent_id: &AgentId,
+        sent: Option<marion_core::proto::result::TaskSent>,
+    ) {
+        if let Some(sent) = sent {
+            lock(&self.sent).insert(agent_id.clone(), sent);
+        }
+    }
+
+    /// **A race: one spawn, one seat per candidate**, each an ordinary child of the caller under
+    /// the same verification, tagged with the race and its seat. Everything that can refuse the
+    /// race — its shape, an unknown agent type, the caller's child bound for every seat at once —
+    /// refuses before anything is written; a seat whose launch then fails is reported as not
+    /// started and the rest run, and only a race with no seat started at all is refused.
+    ///
+    /// The spawn decision is held across every seat's intent, so another spawn cannot take the
+    /// room the gate counted for a later seat. The race is decided later, from the seats' own
+    /// ends ([`Self::drive_race`]); this answers once the seats exist.
+    fn spawn_race(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        p: &marion_core::proto::params::AgentSpawnParams,
+        caller_id: &marion_core::proto::SpawnCaller,
+    ) -> Result<marion_core::proto::result::AgentSpawnResult, RpcError> {
+        use marion_core::proto::result::{RaceStarted, SeatStarted};
+        use marion_core::race::{self, RacePolicy, RaceRole, RaceSeat};
+        let race_refused =
+            |subject: &str, e: race::RaceError| RpcError::refused(subject, e.to_string(), "race");
+        if !p.agent_type.is_empty() {
+            return Err(RpcError::refused(
+                "agent_type",
+                "a race names its seats in `candidates`, each `agent_type[:model]`; name either \
+                 one `agent_type` or the candidates, not both.",
+                "race",
+            ));
+        }
+        if p.model.is_some() {
+            return Err(RpcError::refused(
+                "model",
+                "each seat of a race names its own model, as `agent_type:model` in `candidates`.",
+                "race",
+            ));
+        }
+        if p.isolation == Some(Isolation::SharedCwd) {
+            return Err(RpcError::refused(
+                "isolation",
+                "every seat of a race runs in its own worktree, so the seats cannot write over \
+                 one another's work; `shared-cwd` would put them all in one directory.",
+                "race, §6.6",
+            ));
+        }
+        let candidates =
+            race::parse_candidates(&p.candidates).map_err(|e| race_refused("candidates", e))?;
+        race::check_race(p.verification.len()).map_err(|e| race_refused("verification", e))?;
+
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let caller = self.resolve_caller(caller_id)?;
+        let repo = self.caller_repo(caller_id)?;
+        let types = crate::run::agent_types(&repo)
+            .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?;
+        let policy = RacePolicy::try_from(
+            p.race
+                .clone()
+                .unwrap_or_default()
+                .over(types.race().clone()),
+        )
+        .map_err(|e| race_refused("race", e))?;
+        if policy.first || policy.losers == race::Losers::Prune {
+            return Err(RpcError::unimplemented(
+                "race",
+                "this build decides a race once every seat has finished and keeps every seat's \
+                 branch; `first` and `losers: prune` are not served yet.",
+                "race",
+            ));
+        }
+        if let Some(c) = candidates
+            .iter()
+            .find(|c| types.resolve(&c.agent_type).is_none())
+        {
+            return Err(RpcError::refused(
+                "candidates",
+                format!(
+                    "no agent type is named {:?}; known types are {}.",
+                    c.agent_type,
+                    types.names().join(", ")
+                ),
+                "§3.1",
+            ));
+        }
+        // Every seat is one more child of the caller, counted now: the gate passes only if the
+        // last seat would still fit.
+        let extra = u32::try_from(candidates.len() - 1).unwrap_or(u32::MAX);
+        agent_type::check_spawn_gates(
+            &caller.agent_type,
+            caller.depth,
+            caller.live_children.saturating_add(extra),
+        )
+        .map_err(gate_refusal)?;
+
+        let race_id = crate::run::entropy()
+            .map(|e| race::new_race_id(crate::run::unix_millis(), e))
+            .map_err(|e| {
+                RpcError::internal(format!(
+                    "marion could not mint a race id, so nothing was started: {e}"
+                ))
+            })?;
+        self.races.open(&race_id, &caller_id.agent_id);
+        // Before the first seat's intent, whose fsync makes this durable too.
+        if let Err(e) =
+            self.journal_append(RecordKind::RaceOpened(marion_core::journal::RaceOpened {
+                race_id: race_id.clone(),
+                parent_id: Some(caller_id.agent_id.clone()),
+                policy,
+                seats: candidates.clone(),
+            }))
+        {
+            self.races.close(&race_id);
+            return Err(RpcError::internal(format!(
+                "marion could not journal the race, so no seat was started: {e}"
+            )));
+        }
+
+        let mut seats = Vec::with_capacity(candidates.len());
+        let mut first: Option<(AgentId, NodeState, TaskId)> = None;
+        for (i, candidate) in candidates.iter().enumerate() {
+            let seat = u8::try_from(i + 1).unwrap_or(u8::MAX);
+            let mut started = SeatStarted {
+                seat,
+                candidate: candidate.label(),
+                agent_id: None,
+                task_id: None,
+                refused: None,
+            };
+            let launched = mint_task_id().and_then(|task_id| {
+                let req = child_request(
+                    p,
+                    repo.clone(),
+                    candidate.agent_type.clone(),
+                    candidate.model.clone(),
+                    Some(RaceSeat {
+                        race_id: race_id.clone(),
+                        role: RaceRole::Candidate(seat),
+                    }),
+                );
+                let sent = sent_task(&req);
+                let (agent_id, state) = self.launch_child(
+                    me.clone(),
+                    env.clone(),
+                    req,
+                    task_id.clone(),
+                    caller.clone(),
+                    repo.clone(),
+                    &decision,
+                    None,
+                )?;
+                self.remember_sent(&agent_id, sent);
+                Ok((agent_id, state, task_id))
+            });
+            match launched {
+                Ok((agent_id, state, task_id)) => {
+                    started.agent_id = Some(agent_id.clone());
+                    started.task_id = Some(task_id.clone());
+                    first.get_or_insert((agent_id, state, task_id));
+                }
+                Err(e) => started.refused = Some(e.to_string()),
+            }
+            seats.push(started);
+        }
+        drop(decision);
+        self.races.launched(&race_id);
+        // A seat may already have ended; and a race with no seat started is decided here.
+        self.drive_race(&race_id);
+        let Some((agent_id, state, task_id)) = first else {
+            let why = seats
+                .iter()
+                .filter_map(|s| {
+                    s.refused
+                        .as_deref()
+                        .map(|r| format!("{}: {r}", s.candidate))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(RpcError::refused(
+                "candidates",
+                format!("no seat of the race could be started — {why}"),
+                "race",
+            ));
+        };
+        Ok(marion_core::proto::result::AgentSpawnResult {
+            agent_id,
+            state,
+            task_id: Some(task_id),
+            // A seat is never a reviewer, so nothing about its write guard is owed.
+            note: None,
+            race: Some(RaceStarted { race_id, seats }),
+        })
+    }
+
+    /// **Step a race and do what the step says** — the one driver, called wherever a race can
+    /// change: a seat's thread after its end is filed, the spawn once every seat is started, the
+    /// requester's own end, and a restart's boot. Reads the state afresh from the journal and the
+    /// seats' contracts every time, so calling it twice, or after a restart, is always safe.
+    pub(crate) fn drive_race(&self, race_id: &marion_core::race::RaceId) {
+        use marion_core::race::Step;
+        let crate::race::Drive::Go { requester } = self.races.begin_drive(race_id) else {
+            return;
+        };
+        let Some(env) = self.spawn_env.as_ref() else {
+            self.races.end_drive(race_id);
+            return;
+        };
+        self.live.refresh();
+        // The race and its seats' nodes, copied out so the contract files are read after the
+        // registry lock is released.
+        let Some((race, nodes)) = self.live.read(|r| {
+            let race = r.tree().race(race_id)?.clone();
+            let nodes: Vec<_> = race
+                .seats
+                .iter()
+                .filter_map(|(_, id)| r.tree().get(id).cloned())
+                .collect();
+            Some((race, nodes))
+        }) else {
+            self.races.end_drive(race_id);
+            return;
+        };
+        let requester_running = self.owned_running(&requester) == Some(true);
+        let Some((policy, state)) = crate::race::gather(
+            &nodes,
+            &env.project_dir,
+            &race,
+            &requester,
+            requester_running,
+        ) else {
+            self.races.end_drive(race_id);
+            return;
+        };
+        match marion_core::race::step(&policy, &state) {
+            Step::Wait | Step::Stop(_) => self.races.end_drive(race_id),
+            Step::Decided(result) => self.decide_race(&env.project_dir, result),
+        }
+    }
+
+    /// Write a decided race: its scoreboard file first, then the journal record that says it is
+    /// decided, so a reader that sees the record finds the file.
+    fn decide_race(
+        &self,
+        project: &marion_core::paths::ProjectDir,
+        result: marion_core::race::RaceResult,
+    ) {
+        if let Err(e) = crate::race::write_result(project, &result) {
+            // The race stays open and a later drive (another seat's end, the next boot) retries.
+            eprintln!(
+                "marion: could not write race {}'s result, left open: {e}",
+                result.race_id.0
+            );
+            self.races.end_drive(&result.race_id);
+            return;
+        }
+        if let Err(e) = self.journal_now(RecordKind::RaceDecided(crate::race::decided_record(
+            &result,
+        ))) {
+            eprintln!(
+                "marion: could not journal race {}'s decision: {e}",
+                result.race_id.0
+            );
+        }
+        self.races.close(&result.race_id);
+    }
+
+    /// **A restart re-drives every race its predecessor left open.** Decided now if every seat has
+    /// ended; a seat marion lost counts as cancelled. Its requester is gone with the predecessor, so
+    /// the result is the record's, never delivered.
+    fn redrive_open_races(&self) {
+        let open: Vec<_> = self.live.read(|r| {
+            r.tree()
+                .races()
+                .iter()
+                .filter(|race| race.decided.is_none())
+                .filter_map(|race| {
+                    let parent = race.opened.as_ref()?.parent_id.clone()?;
+                    Some((race.race_id.clone(), parent))
+                })
+                .collect()
+        });
+        for (race_id, requester) in open {
+            self.races.open(&race_id, &requester);
+            self.races.launched(&race_id);
+            self.drive_race(&race_id);
+        }
     }
 
     /// **The node a review names, read and checked**: known, ended, a child with a contract that
@@ -3809,6 +4158,7 @@ impl RegistryHandle {
             .and_then(|t| crate::review::unguarded(t.harness))
             .map(str::to_string);
         let req = crate::run::SpawnRequest {
+            race: None,
             agent_type: reviewer,
             prompt: crate::review::prompt(&review, &contract),
             repo: repo.clone(),
@@ -3844,8 +4194,11 @@ impl RegistryHandle {
     /// serialization — held until the node's intent is durable and dropped here, not by the caller,
     /// so the window it covers is the same on both paths. Returns once the process exists, with the
     /// node's state as the journal has it.
+    ///
+    /// `decision` is the guard itself, or a borrow of it for a race: dropping a borrow releases
+    /// nothing, so the guard spans every seat's intent and the caller drops it after the last.
     #[allow(clippy::too_many_arguments)]
-    fn launch_child(
+    fn launch_child<Decision>(
         &self,
         me: Arc<RegistryHandle>,
         env: crate::run::Env,
@@ -3853,7 +4206,7 @@ impl RegistryHandle {
         task_id: TaskId,
         caller: crate::run::Caller,
         repo: PathBuf,
-        decision: std::sync::MutexGuard<'_, ()>,
+        decision: Decision,
         announce_to: Option<AgentId>,
     ) -> Result<(AgentId, NodeState), RpcError> {
         let (tx, progress) = std::sync::mpsc::channel();
@@ -3897,6 +4250,10 @@ impl RegistryHandle {
                     );
                 }
                 owner.mark_finished(&agent_id, NodeOutcome::Child(Box::new(outcome)));
+                // A seat's end may decide its race; its contract is on disk by now.
+                if let Some(seat) = &req.race {
+                    owner.drive_race(&seat.race_id);
+                }
             }
             // Sent last and unconditionally, so a launch that failed before either earlier moment
             // cannot leave the call waiting out `LAUNCH_BOUND` for something that will not come.
@@ -4029,6 +4386,7 @@ impl RegistryHandle {
             // [`NodeHandle::task_id`], which is `None` here for the same reason.
             task_id: None,
             note: None,
+            race: None,
         })
     }
 
@@ -4673,6 +5031,8 @@ impl RegistryHandle {
             }),
             // The account the session was recorded under, never a re-resolved one.
             profile: node.profile.clone(),
+            // A resumed seat keeps its seat.
+            race: node.intent.as_ref().and_then(|i| i.race.clone()),
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
         self.launch_child(me, env.clone(), req, task_id, caller, repo, decision, None)
@@ -12066,6 +12426,8 @@ mod tests {
         fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
                 review_of: None,
+                candidates: vec![],
+                race: None,
                 notify_parent: false,
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),

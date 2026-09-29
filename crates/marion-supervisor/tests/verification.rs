@@ -73,6 +73,7 @@ fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        race: None,
     }
 }
 

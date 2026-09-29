@@ -925,6 +925,8 @@ mod tests {
             isolation: None,
             allow_concurrent_writes: None,
             profile: None,
+            candidates: vec![],
+            race: None,
         };
 
         assert_eq!(

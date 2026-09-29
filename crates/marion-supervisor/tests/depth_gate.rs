@@ -434,6 +434,8 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
         isolation: None,
         allow_concurrent_writes: None,
         profile: None,
+        candidates: vec![],
+        race: None,
     }
 }
 

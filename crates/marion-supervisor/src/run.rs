@@ -156,6 +156,8 @@ pub struct SpawnRequest {
     /// §5.4's `verification`: shell lines, each run by `sh -c` in the child's workspace at its
     /// terminal transition (see [`run_verification`]). Any non-zero exit fails the contract.
     pub verification: Vec<String>,
+    /// The race this child is a seat of, recorded on its intent; `None` for every other spawn.
+    pub race: Option<marion_core::race::RaceSeat>,
     pub writable_scope: Vec<String>,
     pub timeout_secs: u64,
     /// The model to run the child on, in marion's request vocabulary. **Optional, with the agent
@@ -1795,7 +1797,9 @@ pub fn run_spawn_watched(
             depth: caller.depth + 1,
             // A child runs under a contract; §9's `None` is for a root.
             task_id: Some(task_id.clone()),
-            race: None,
+            // A seat keeps its seat across a resume: the resume rebuilds this request from the
+            // intent.
+            race: req.race.clone(),
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {
@@ -3582,6 +3586,7 @@ mod tests {
         let agent_type = builtin("codex").unwrap();
         let request = |from: &Path| SpawnRequest {
             review: None,
+            race: None,
             agent_type: "codex".into(),
             prompt: "test it".into(),
             repo: from.to_path_buf(),
@@ -3673,6 +3678,7 @@ mod tests {
         let task_id = TaskId("t-1".into());
         let mut req = SpawnRequest {
             review: None,
+            race: None,
             agent_type: "claude".into(),
             prompt: "carry on".into(),
             repo: repo.clone(),
@@ -4748,6 +4754,7 @@ mod tests {
         };
         let req = SpawnRequest {
             review: None,
+            race: None,
             agent_type: "codex".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -4897,6 +4904,7 @@ mod tests {
         };
         let req = SpawnRequest {
             review: None,
+            race: None,
             agent_type: "bare-acp".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -5104,6 +5112,7 @@ mod tests {
         };
         let req = SpawnRequest {
             review: None,
+            race: None,
             agent_type: "claude".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -5240,6 +5249,7 @@ mod tests {
         };
         let req = SpawnRequest {
             review: None,
+            race: None,
             agent_type: "claude".into(),
             prompt: "do the task".into(),
             repo: repo.clone(),
@@ -5571,6 +5581,7 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            race: None,
         }
     }
 

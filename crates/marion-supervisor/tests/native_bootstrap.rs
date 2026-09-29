@@ -722,6 +722,8 @@ mod enabled_launch {
             isolation: None,
             allow_concurrent_writes: None,
             profile: None,
+            candidates: vec![],
+            race: None,
         }));
 
         // `SpawnIntent` is journaled before the spawn's first side effect, so the child is in the

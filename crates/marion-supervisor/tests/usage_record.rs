@@ -90,6 +90,7 @@ fn a_childs_usage_lands_in_its_contract_and_one_journal_record_and_survives_repl
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            race: None,
         },
         &task,
         &Caller::root(

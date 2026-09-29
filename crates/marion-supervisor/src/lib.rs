@@ -123,6 +123,8 @@ pub mod provider_check;
 /// lives here and not in a client, because a client that held it would SIGHUP the agent by dying.
 pub mod pty;
 /// The projects and models the home screen remembers between runs.
+/// Races: the supervisor half of `marion_core::race`, driven from seat ends.
+pub mod race;
 pub mod recent;
 pub mod registry;
 /// §7.2's supervisor-restart marking: the `Live` → `Orphaned` judgement applied to a replayed

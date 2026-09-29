@@ -205,6 +205,8 @@ impl Client {
                 isolation: None,
                 allow_concurrent_writes: None,
                 profile: None,
+                candidates: vec![],
+                race: None,
             },
         ));
         let (_, outcome) = self.read_to_response(id);

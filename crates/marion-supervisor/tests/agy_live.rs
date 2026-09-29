@@ -81,6 +81,7 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        race: None,
     };
     let caller = Caller::root(
         "root",

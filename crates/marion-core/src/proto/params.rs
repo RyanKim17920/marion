@@ -393,6 +393,9 @@ pub struct SpawnCaller {
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnParams {
     /// §3.1's `name:` key — the agent type's identity, resolved through §3.1's precedence chain.
+    /// Empty (absent on the wire) only for a race, whose seats name their own types in
+    /// [`Self::candidates`]; the supervisor refuses a spawn that names both or neither.
+    #[serde(default)]
     pub agent_type: String,
     pub prompt: String,
     /// Byte-exact launch inputs captured by a native facade. Absent for legacy callers and all
@@ -439,6 +442,14 @@ pub struct AgentSpawnParams {
     /// Skipped on the wire when empty so the legacy frame stays byte for byte what it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification: Vec<String>,
+    /// **A race**: run the task once per `agent_type[:model]`, each seat its own child in its own
+    /// worktree under the same `verification`, and let marion pick the winner. Empty is a plain
+    /// spawn, and is skipped on the wire so every other frame is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<String>,
+    /// How a race is judged, over the tree's `[race]` table key by key. Only with `candidates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub race: Option<crate::race::RawRacePolicy>,
     /// §5.4's write ceiling for the child, as globs. Empty is not "write nothing": `run_spawn`
     /// reads it as `**`, still clipped by the agent type's own `scope_ceiling`.
     #[serde(default)]
@@ -642,6 +653,8 @@ mod tests {
             isolation: None,
             allow_concurrent_writes: None,
             profile: None,
+            candidates: vec![],
+            race: None,
         });
         rt!(AgentSpawnParams {
             review_of: None,
@@ -664,6 +677,8 @@ mod tests {
             isolation: None,
             allow_concurrent_writes: None,
             profile: None,
+            candidates: vec![],
+            race: None,
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -776,6 +791,8 @@ mod tests {
                 isolation: None,
                 allow_concurrent_writes: None,
                 profile: None,
+                candidates: vec![],
+                race: None,
             })
             .unwrap(),
             r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#
@@ -802,6 +819,8 @@ mod tests {
                 isolation: None,
                 allow_concurrent_writes: None,
                 profile: None,
+                candidates: vec![],
+                race: None,
             })
             .unwrap(),
             r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#

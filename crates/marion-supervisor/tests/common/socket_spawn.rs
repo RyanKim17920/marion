@@ -82,6 +82,8 @@ pub fn params(
 ) -> AgentSpawnParams {
     AgentSpawnParams {
         review_of: None,
+        race: None,
+        candidates: vec![],
         agent_type: agent_type.into(),
         prompt,
         native_launch: None,

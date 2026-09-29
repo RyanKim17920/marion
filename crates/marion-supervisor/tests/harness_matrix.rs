@@ -194,6 +194,7 @@ fn drive(cell: &Cell) -> Evidence {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        race: None,
     };
     // A root caller: depth 0, so §6.1 step 2's gates see a top-level `spawn` — the same thing
     // `marion run` hands the bridge. `claude` is marion's root type and its `max_depth` is the

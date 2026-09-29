@@ -2958,6 +2958,8 @@ fn spawn_root(
             // The operator's choice of login, where they stated one; the supervisor resolves the
             // agent type's and the default otherwise.
             profile: args.profile.clone(),
+            candidates: vec![],
+            race: None,
         },
     ))?;
     // Nothing can be notified before the first attach, so the sink here is unreachable — and it

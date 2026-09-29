@@ -309,8 +309,9 @@ pub struct SeatOutcome {
     pub tokens: Option<u64>,
     pub secs: Option<u64>,
     pub branch: Option<String>,
-    /// The order seats finished in, from 0. `first` reads it; nothing else does.
-    pub order: u32,
+    /// Sorts by when the seat finished — the supervisor uses its exit time in unix milliseconds.
+    /// `first` reads it; nothing else does.
+    pub order: u64,
 }
 
 impl SeatOutcome {
@@ -650,7 +651,7 @@ mod tests {
         verified: (u16, u16),
         tokens: Option<u64>,
         secs: Option<u64>,
-        order: u32,
+        order: u64,
     ) -> SeatRun {
         SeatRun::Finished(SeatOutcome {
             status,

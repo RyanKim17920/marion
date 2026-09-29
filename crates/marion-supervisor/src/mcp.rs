@@ -534,6 +534,8 @@ fn spawn_params(
         isolation: args["isolation"].as_str().and_then(Isolation::from_wire),
         allow_concurrent_writes: args["allow_concurrent_writes"].as_bool(),
         profile: None,
+        candidates: vec![],
+        race: None,
     }
 }
 

@@ -45,6 +45,7 @@ fn env_for(state: &Path, repo: &Path) -> Env {
 fn request(repo: &Path) -> SpawnRequest {
     SpawnRequest {
         review: None,
+        race: None,
         agent_type: "pwn".into(),
         prompt: "hello".into(),
         repo: repo.to_path_buf(),

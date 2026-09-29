@@ -572,6 +572,8 @@ fn fixture(tag: &str) -> Fixture {
             isolation: None,
             allow_concurrent_writes: None,
             profile: None,
+            candidates: vec![],
+            race: None,
         }))
         .expect("the root is created over the socket");
     let MethodResult::AgentSpawn(root) = Method::AgentSpawn

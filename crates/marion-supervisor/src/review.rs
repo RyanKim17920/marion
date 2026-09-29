@@ -197,6 +197,8 @@ pub fn request(
         marion_core::proto::params::AgentSpawnParams {
             review_of: Some(target.clone()),
             notify_parent: false,
+            candidates: vec![],
+            race: None,
             agent_type: agent_type.to_string(),
             prompt: String::new(),
             native_launch: None,

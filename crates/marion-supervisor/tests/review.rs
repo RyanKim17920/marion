@@ -90,6 +90,8 @@ fn script() -> Script {
 fn review_params(target: &str, repo: &std::path::Path) -> AgentSpawnParams {
     AgentSpawnParams {
         review_of: Some(AgentId(target.into())),
+        candidates: vec![],
+        race: None,
         notify_parent: false,
         agent_type: "claude".into(),
         prompt: String::new(),

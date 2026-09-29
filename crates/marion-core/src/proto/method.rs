@@ -157,6 +157,10 @@ impl Method {
 /// rather than serde's default externally-tagged `{"tree/subscribe":…}`. `params` is present on
 /// every variant, including the empty one, because an optional `params` key would give a
 /// dispatcher two spellings of "no arguments" to handle.
+///
+/// `agent/spawn`'s parameters are the large variant. Left unboxed for [`MethodResult`]'s reason:
+/// one of these exists per call in flight and is never stored in bulk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Call {
@@ -517,12 +521,15 @@ mod tests {
                     timeout_secs: Some(900),
                     model: Some("sonnet".into()),
                     profile: None,
+                    candidates: vec![],
+                    race: None,
                 }),
                 MethodResult::AgentSpawn(AgentSpawnResult {
                     agent_id: agent("a"),
                     state: NodeState::Spawning,
                     task_id: Some(crate::contract::TaskId("task-9f2c".into())),
                     note: None,
+                    race: None,
                 }),
             ),
             (

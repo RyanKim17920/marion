@@ -109,6 +109,7 @@ fn the_inner_run_spawns_one_opencode_child() {
         auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
+        race: None,
         agent_type: "opencode".into(),
         prompt: "Report back through marion.".into(),
         repo: repo.clone(),

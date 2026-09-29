@@ -1163,7 +1163,6 @@ mod tests {
         let child = NodeSummary {
             parent_id: Some(root.agent_id.clone()),
             state: NodeState::Exited(ExitStatus::Failed),
-            race: None,
             ..summary("kid", Harness::Codex, false, None)
         };
         assert_eq!(
@@ -1387,7 +1386,6 @@ mod tests {
             let n = NodeSummary {
                 state,
                 reap_state: reap,
-                race: None,
                 ..summary("x", Harness::Codex, false, None)
             };
             assert_eq!(attention_of(&n).as_deref(), want, "({state:?}, {reap:?})");

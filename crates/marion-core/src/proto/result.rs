@@ -370,6 +370,33 @@ pub struct AgentSpawnResult {
     /// wire when absent, so every other answer is byte for byte what it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// **A race's seats**, when the spawn named `candidates`. `agent_id` and `task_id` above are
+    /// then the first launched seat's; a client waits on the race by its id instead. Absent for
+    /// every other spawn, so its frame is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub race: Option<RaceStarted>,
+}
+
+/// The seats a race started with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceStarted {
+    pub race_id: crate::race::RaceId,
+    pub seats: Vec<SeatStarted>,
+}
+
+/// One seat as launched: its node and contract, or why it could not start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatStarted {
+    pub seat: u8,
+    /// `agent_type[:model]`, as asked.
+    pub candidate: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// marion's sentence for a seat that did not start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -526,12 +553,14 @@ mod tests {
             state: NodeState::Spawning,
             task_id: None,
             note: None,
+            race: None,
         });
         rt!(AgentSpawnResult {
             agent_id: AgentId("a".into()),
             state: NodeState::Spawning,
             task_id: Some(TaskId("task-1".into())),
             note: None,
+            race: None,
         });
         rt!(DoctorRunResult { reports: vec![] });
         rt!(SessionQuitResult {

@@ -468,6 +468,7 @@ fn a_timed_out_codex_child_is_interrupted_and_leaves_no_process_of_its_turn() {
     };
     let req = SpawnRequest {
         review: None,
+        race: None,
         agent_type: "codex".into(),
         prompt: "Start the long-running command and keep it running.".into(),
         repo: repo.clone(),

@@ -146,6 +146,7 @@ fn request(t: &Tree, agent_type: &str, model: &str) -> SpawnRequest {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        race: None,
     }
 }
 

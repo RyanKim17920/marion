@@ -189,6 +189,7 @@ pub fn compile(
         // A canned launch runs on no profile (`profiles::Launch::resolve` refuses every
         // non-inherited auth).
         profile: None,
+        race: None,
     };
     let mut spec = child_launch_spec(
         &env,

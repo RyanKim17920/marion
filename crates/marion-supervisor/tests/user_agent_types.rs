@@ -91,6 +91,7 @@ fn request(repo: &std::path::Path) -> SpawnRequest {
         resume: None,
         verification: vec![],
         profile: None,
+        race: None,
     }
 }
 

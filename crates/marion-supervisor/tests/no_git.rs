@@ -113,6 +113,7 @@ fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
         allow_concurrent_writes: false,
         resume: None,
         profile: None,
+        race: None,
     }
 }
 
