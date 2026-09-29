@@ -184,6 +184,33 @@ fn cancel_waits_for_y_and_anything_else_keeps_the_node() {
     );
 }
 
+/// **A second `x` on a node whose cancel is still in its grace asks to kill it** — the
+/// escalation for a harness ignoring its abort, `marion cancel --force` — and still only after a
+/// `y`.
+#[test]
+fn x_on_a_node_being_cancelled_asks_to_kill_it() {
+    let mut h = home();
+    h.tab = Tab::Watch;
+    let mut cancelling = node("root", None, NodeState::Running);
+    cancelling.cancel = Some(marion_core::proto::NodeCancel {
+        by: marion_core::journal::CancelBy::Operator,
+        forced: false,
+        had_abort: true,
+    });
+    h.set_nodes(vec![cancelling]);
+    assert_eq!(h.key(Key::Char('x')), Effect::None);
+    assert_eq!(h.key(Key::Char('y')), Effect::Kill(AgentId("root".into())));
+    assert_eq!(
+        Effect::Kill(AgentId("root".into())).argv(),
+        Some(vec![
+            "marion".into(),
+            "cancel".into(),
+            "root".into(),
+            "--force".into()
+        ])
+    );
+}
+
 /// **No destructive effect is reachable without a `y`**: every key on every tab, from a fresh
 /// state, is pressed once, and none returns a destructive effect.
 #[test]
@@ -408,7 +435,7 @@ fn stream_scrolls_back_and_follows_again() {
 }
 
 #[test]
-fn every_effect_has_its_command_and_only_cancel_is_destructive() {
+fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());
     let all = [
         Effect::Run {
@@ -420,6 +447,7 @@ fn every_effect_has_its_command_and_only_cancel_is_destructive() {
         Effect::Attach(id.clone()),
         Effect::Steer(id.clone(), "-x".into()),
         Effect::Cancel(id.clone()),
+        Effect::Kill(id.clone()),
         Effect::Resume(id.clone()),
         Effect::Shell("/w".into()),
         Effect::Diff("b".into()),
@@ -429,7 +457,11 @@ fn every_effect_has_its_command_and_only_cancel_is_destructive() {
     ];
     for e in &all {
         assert!(e.argv().is_some_and(|a| !a.is_empty()), "{e:?}");
-        assert_eq!(e.destructive(), matches!(e, Effect::Cancel(_)), "{e:?}");
+        assert_eq!(
+            e.destructive(),
+            matches!(e, Effect::Cancel(_) | Effect::Kill(_)),
+            "{e:?}"
+        );
     }
     assert_eq!(Effect::None.argv(), None);
     assert_eq!(Effect::Quit.argv(), None);

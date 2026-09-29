@@ -3,7 +3,7 @@
 
 use super::{AgentType, Effect, Field, Home, Mode};
 use crate::tree::{attention_of, short_id};
-use marion_core::contract::{ExitStatus, Workspace};
+use marion_core::contract::{AgentId, ExitStatus, Workspace};
 use marion_core::proto::NodeSummary;
 use marion_core::proto::result::{ActionKind, ActionLine, NodeDetail};
 use marion_tui::home::help::KeyRow;
@@ -906,16 +906,26 @@ fn input(home: &Home) -> Input {
             command: line(effect),
         },
         Mode::Confirm(effect) => {
+            let target = match effect {
+                Effect::Cancel(id) | Effect::Kill(id) => Some(id),
+                _ => None,
+            };
             let who = home
                 .watch
                 .nodes
                 .iter()
-                .find(|n| matches!(effect, Effect::Cancel(id) if *id == n.agent_id))
+                .find(|n| target == Some(&n.agent_id))
                 .map_or_else(String::new, |n| {
                     format!(" {} {}", n.agent_type, short_id(&n.agent_id.0))
                 });
+            let below = target.map_or(0, |id| live_below(&home.watch.nodes, id));
+            let question = match effect {
+                Effect::Kill(_) => format!("Kill{who} now? Its cancel is still waiting on it"),
+                _ if below > 0 => format!("Cancel{who} and the {below} below it?"),
+                _ => format!("Cancel{who}?"),
+            };
             Input::Confirm {
-                question: format!("Cancel{who}?"),
+                question,
                 command: line(effect),
             }
         }
@@ -960,4 +970,22 @@ fn input(home: &Home) -> Input {
             },
         },
     }
+}
+
+/// How many live nodes are below `id` — what a cancel of `id` ends with it.
+fn live_below(nodes: &[NodeSummary], id: &AgentId) -> usize {
+    let mut frontier = vec![id.clone()];
+    let mut count = 0;
+    while let Some(parent) = frontier.pop() {
+        for n in nodes
+            .iter()
+            .filter(|n| n.parent_id.as_ref() == Some(&parent))
+        {
+            frontier.push(n.agent_id.clone());
+            if !n.state.is_exited() {
+                count += 1;
+            }
+        }
+    }
+    count
 }

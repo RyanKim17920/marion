@@ -98,6 +98,8 @@ enum Report {
         line: String,
         root: Option<String>,
     },
+    /// A cancel or its escalation answered, in one line.
+    Ended(String),
 }
 
 /// Run the home screen until the operator quits.
@@ -433,10 +435,33 @@ impl Session {
                 );
                 None
             }
-            Effect::Cancel(id) => {
-                self.home.notice = Some(match crate::courier::kill(&self.socket, &id) {
-                    Ok(_) => format!("{} cancelled", crate::tree::short_id(&id.0)),
-                    Err(e) => format!("cancel refused: {e}"),
+            // **On a thread**: a cancel waits out each level's grace, which can be seconds, and the
+            // screen keeps drawing — the node's own summary shows it being cancelled meanwhile.
+            effect @ (Effect::Cancel(_) | Effect::Kill(_)) => {
+                let force = matches!(effect, Effect::Kill(_));
+                let (Effect::Cancel(id) | Effect::Kill(id)) = effect else {
+                    unreachable!("matched above")
+                };
+                let (socket, tx) = (self.socket.clone(), self.reporter.clone());
+                let short = crate::tree::short_id(&id.0).to_string();
+                self.home.notice = Some(if force {
+                    format!("killing {short}…")
+                } else {
+                    format!("cancelling {short}…")
+                });
+                std::thread::spawn(move || {
+                    let line = if force {
+                        match crate::courier::kill(&socket, &id) {
+                            Ok(_) => format!("{short} killed"),
+                            Err(e) => format!("kill refused: {e}"),
+                        }
+                    } else {
+                        match crate::courier::cancel(&socket, &id) {
+                            Ok(r) => cancelled_line(&short, &r.nodes),
+                            Err(e) => format!("cancel refused: {e}"),
+                        }
+                    };
+                    tx.send(Report::Ended(line));
                 });
                 None
             }
@@ -893,6 +918,7 @@ impl Session {
                         p.login = Some(login);
                     }
                 }
+                Report::Ended(line) => self.home.notice = Some(line),
                 Report::Ran { ok, line, root } => {
                     self.home.notice = Some(line);
                     if ok {
@@ -938,6 +964,20 @@ fn profile_harnesses() -> Vec<String> {
         .filter(|h| crate::profiles::carrier(*h).is_ok())
         .map(|h| crate::profiles::display_name(h).to_string())
         .collect()
+}
+
+/// What a finished cancel says: how many nodes it ended, and how many had to be killed.
+fn cancelled_line(short: &str, nodes: &[marion_core::proto::result::CancelledNode]) -> String {
+    let below = nodes.len().saturating_sub(1);
+    let forced = nodes.iter().filter(|n| n.forced).count();
+    let mut line = format!("{short} cancelled");
+    if below > 0 {
+        line.push_str(&format!(" with {below} below it"));
+    }
+    if forced > 0 {
+        line.push_str(&format!("; {forced} killed after their grace"));
+    }
+    line
 }
 
 /// The branch checked out at `dir`, read once when the screen opens; `None` outside git.

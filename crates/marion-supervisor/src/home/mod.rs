@@ -52,8 +52,12 @@ pub enum Effect {
     Attach(AgentId),
     /// `node/steer`, as the operator.
     Steer(AgentId, String),
-    /// `node/kill`. Destructive: only ever returned after a confirming `y`.
+    /// `node/cancel`: the node and everything below it, each turn ended the way its harness allows.
+    /// Destructive: only ever returned after a confirming `y`.
     Cancel(AgentId),
+    /// `node/kill` of a node already being cancelled — the cancel's escalation, for a harness that
+    /// is ignoring its abort. Destructive: after a `y`.
+    Kill(AgentId),
     /// Leave the screen, run `marion resume <id>`, come back.
     Resume(AgentId),
     /// Leave the screen, open the operator's `$SHELL` in this directory, come back.
@@ -128,6 +132,7 @@ impl Effect {
             // `--` so a message may begin with a dash and still be read as the message.
             Effect::Steer(id, text) => v(&["marion", "steer", &id.0, "--", text]),
             Effect::Cancel(id) => v(&["marion", "cancel", &id.0]),
+            Effect::Kill(id) => v(&["marion", "cancel", &id.0, "--force"]),
             Effect::Resume(id) => v(&["marion", "resume", &id.0]),
             Effect::Shell(dir) => {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
@@ -148,6 +153,7 @@ impl Effect {
         matches!(
             self,
             Effect::Cancel(_)
+                | Effect::Kill(_)
                 | Effect::Logout(_)
                 | Effect::ProfileRemove(_)
                 | Effect::WriteTypes { .. }
@@ -781,6 +787,10 @@ impl Home {
                 None => self.notice = Some("nothing selected".into()),
             },
             Key::Char('x') => match self.selected() {
+                // A second `x` on a node whose cancel is still waiting out its grace kills it now.
+                Some(n) if !n.state.is_exited() && n.cancel.is_some() => {
+                    self.mode = Mode::Confirm(Effect::Kill(n.agent_id.clone()))
+                }
                 Some(n) if !n.state.is_exited() => {
                     self.mode = Mode::Confirm(Effect::Cancel(n.agent_id.clone()))
                 }
