@@ -14701,6 +14701,21 @@ mod tests {
             )
             .expect_err("a node cannot silence the operator's notices");
             assert!(notices.message.contains("operator"), "{}", notices.message);
+            let workflow = call_on(
+                &fx,
+                conn,
+                Call::WorkflowRun(marion_core::proto::params::WorkflowRunParams {
+                    name: "ship".into(),
+                    inputs: Default::default(),
+                    repo: fx.repo.clone(),
+                }),
+            )
+            .expect_err("a node cannot start the operator's contracted nodes");
+            assert!(
+                workflow.message.contains("operator"),
+                "{}",
+                workflow.message
+            );
 
             let forged = call_on(
                 &fx,
