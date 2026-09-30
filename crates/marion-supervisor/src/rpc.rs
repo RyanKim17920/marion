@@ -266,9 +266,18 @@ impl<'a, P: Peer> Driver<'a, P> {
     }
 
     /// Block until there is an unread line, an inbox wake, EOF, or `until` — whichever is first —
-    /// capped at [`LIVENESS_TICK`].
-    pub fn wait_event(&self, until: Instant) {
+    /// capped at [`LIVENESS_TICK`]. Once stdout has ended nothing more can be read, so the wait is on
+    /// the server's exit instead ([`crate::wake::wait_bounded`]), never a return at once that would
+    /// make its caller's loop spin.
+    pub fn wait_event(&mut self, until: Instant) {
         let until = until.min(Instant::now() + LIVENESS_TICK);
+        if self.stdout_ended() {
+            crate::wake::wait_bounded(
+                &mut self.child,
+                until.saturating_duration_since(Instant::now()),
+            );
+            return;
+        }
         let mut feed = self.shared.lock();
         while feed.lines.len() <= self.cursor && !feed.woken && !feed.eof {
             let left = until.saturating_duration_since(Instant::now());
@@ -317,9 +326,20 @@ impl<'a, P: Peer> Driver<'a, P> {
     ) -> Option<T> {
         let mut gone: Option<Instant> = None;
         loop {
+            // Read before the classify: every line precedes EOF, so this pass sees all there is.
+            let ended = self.stdout_ended();
             self.classify();
             if let Some(v) = done(self) {
                 return Some(v);
+            }
+            if ended {
+                // No answer can arrive. Wait for the process itself, so a caller that reads its
+                // exit next sees it — a server closes stdout a moment before it goes.
+                crate::wake::wait_bounded(
+                    &mut self.child,
+                    deadline.saturating_duration_since(Instant::now()),
+                );
+                return None;
             }
             if matches!(self.child.try_wait(), Ok(Some(_))) {
                 match gone {
@@ -461,6 +481,11 @@ impl<'a, P: Peer> Driver<'a, P> {
         )
     }
 
+    /// Whether the server's stdout has ended: every line it will ever write has been read.
+    pub fn stdout_ended(&self) -> bool {
+        self.shared.lock().eof
+    }
+
     /// How many lines the server has written so far.
     pub fn frame_count(&self) -> usize {
         self.shared.lock().lines.len()
@@ -560,6 +585,79 @@ mod tests {
             out.push(l)
         });
         out
+    }
+
+    struct Mute;
+    impl Peer for Mute {
+        fn answer(&mut self, _request: &Value) -> Value {
+            Value::Null
+        }
+    }
+
+    fn sh(script: &str, cwd: &std::path::Path) -> Invocation {
+        Invocation {
+            inherit: None,
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: vec![],
+            env_remove: vec![],
+            cwd: cwd.to_path_buf(),
+            model: None,
+            session_mode: None,
+        }
+    }
+
+    /// CPU time this thread has used: a wait that spins shows up here, one that blocks does not.
+    fn thread_cpu() -> Duration {
+        #[repr(C)]
+        struct Timespec {
+            sec: i64,
+            nsec: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock: i32, tp: *mut Timespec) -> i32;
+        }
+        #[cfg(target_os = "macos")]
+        const CLOCK_THREAD_CPUTIME_ID: i32 = 16;
+        #[cfg(not(target_os = "macos"))]
+        const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+        let mut t = Timespec { sec: 0, nsec: 0 };
+        // SAFETY: `t` is a valid timespec for the call to fill.
+        assert_eq!(unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut t) }, 0);
+        Duration::new(t.sec as u64, t.nsec as u32)
+    }
+
+    /// **A server whose stdout has ended is waited on by its exit, not re-asked in a loop.** EOF
+    /// means no answer can arrive, so the wait blocks on the process until it goes or the deadline
+    /// passes, and the caller then sees its exit.
+    #[test]
+    fn a_server_that_closed_its_stdout_is_waited_on_without_spinning() {
+        let dir = marion_testsupport::scratch("rpc-eof");
+        // Closes stdout and lives on past the deadline; then one that exits a moment after.
+        for (script, exits) in [
+            ("exec 1>&-; sleep 3", false),
+            ("exec 1>&-; sleep 0.3", true),
+        ] {
+            let mut d = Driver::spawn(&sh(script, &dir), &dir, None, Mute).expect("sh");
+            let cpu = thread_cpu();
+            let started = Instant::now();
+            assert_eq!(
+                d.settle(1, Instant::now() + Duration::from_millis(1200)),
+                None
+            );
+            let (spent, took) = (thread_cpu() - cpu, started.elapsed());
+            assert!(
+                spent < Duration::from_millis(150),
+                "{script}: spun for {spent:?} of CPU"
+            );
+            assert_eq!(matches!(d.child.try_wait(), Ok(Some(_))), exits, "{script}");
+            if exits {
+                assert!(
+                    took < Duration::from_millis(1000),
+                    "{script}: waited {took:?}"
+                );
+            }
+        }
     }
 
     /// **A server's line is bounded**: one past `max` is dropped whole, however it arrives in
