@@ -392,6 +392,9 @@ pub struct Home {
     pub recent_models: Vec<(String, Vec<String>)>,
     /// One line for the operator: the last effect's answer, or why a key did nothing.
     pub notice: Option<String>,
+    /// The notice is an error that stays until Esc, rather than until the next key: a failed run's
+    /// reason is read after the keys that follow it, not before.
+    pub notice_sticky: bool,
     /// The tab help was opened from, and goes back to.
     pub help_from: Tab,
     /// Rows help is scrolled down, where it does not fit the screen.
@@ -414,6 +417,7 @@ impl Home {
             types: Vec::new(),
             recent_models: Vec::new(),
             notice: None,
+            notice_sticky: false,
             help_from: tab,
             help_scroll: 0,
         }
@@ -1188,6 +1192,23 @@ fn feed_items(old: &[NodeSummary], new: &[NodeSummary]) -> Vec<FeedItem> {
         }
     }
     out
+}
+
+/// **Why a `marion` command failed, in one line**: its own `marion: …` or `marion <verb>: …` refusal where it
+/// printed one, which names the cause, rather than the last line, which is the usage pointer
+/// (`` `marion run --help` shows how to use it ``); else the last line it printed.
+pub fn failure_line(stdout: &str, stderr: &str) -> String {
+    let lines = || stdout.lines().chain(stderr.lines()).map(str::trim);
+    lines()
+        .find(|l| {
+            l.starts_with("marion: ")
+                || l.strip_prefix("marion ")
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .is_some_and(|verb| verb.ends_with(':'))
+        })
+        .or_else(|| lines().rfind(|l| !l.is_empty()))
+        .unwrap_or("")
+        .to_string()
 }
 
 /// The largest prompt or steer the box takes: `node/steer`'s own bound.

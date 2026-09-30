@@ -604,6 +604,30 @@ fn help_shows_every_section_of_the_real_key_table_at_80x24() {
     assert_eq!(h.help_scroll, 0);
 }
 
+/// **A failed run's notice names the cause**: marion's own `marion <verb>: …` line, not the usage
+/// pointer printed after it; with no such line, the last thing printed.
+#[test]
+fn a_failed_runs_notice_is_its_marion_verb_line() {
+    let stderr = "marion run: no agent type named `codx`; `marion run --help` lists them\n\
+                  \n\
+                  `marion run --help` shows how to use it\n";
+    assert_eq!(
+        failure_line("", stderr),
+        "marion run: no agent type named `codx`; `marion run --help` lists them"
+    );
+    assert_eq!(
+        failure_line("", "marion: unknown agent type \"codx\"; known: claude\n"),
+        "marion: unknown agent type \"codx\"; known: claude"
+    );
+    assert_eq!(failure_line("", "boom\nlast words\n"), "last words");
+    assert_eq!(failure_line("", ""), "");
+    assert_eq!(
+        failure_line("marion is starting\n", "oops\n"),
+        "oops",
+        "prose that begins with marion is not a refusal"
+    );
+}
+
 #[test]
 fn every_effect_has_its_command_and_only_cancel_and_kill_are_destructive() {
     let id = AgentId("0199-abc".into());

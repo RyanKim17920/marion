@@ -381,7 +381,11 @@ impl Session {
     /// One key through the state machine, and its effect carried out. `Some` when it needs the
     /// whole terminal.
     fn key(&mut self, key: Key) -> Option<Handoff> {
-        self.home.notice = None;
+        // An error notice stays until Esc; any other notice goes with the next key.
+        if !self.home.notice_sticky || key == Key::Esc {
+            self.home.notice = None;
+            self.home.notice_sticky = false;
+        }
         let handoff = self.effect(key);
         if self.home.tab == Tab::Setup && !self.profiles_asked {
             self.load_profiles();
@@ -501,12 +505,7 @@ impl Session {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     let stderr = String::from_utf8_lossy(&out.stderr);
-                    let said = stdout
-                        .lines()
-                        .chain(stderr.lines())
-                        .rfind(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .to_string();
+                    let said = super::failure_line(&stdout, &stderr);
                     let root = started_root(&stdout).or_else(|| started_root(&stderr));
                     Report::Ran {
                         ok: out.status.success(),
@@ -926,7 +925,12 @@ impl Session {
                 }
                 Report::Ended(line) => self.home.notice = Some(line),
                 Report::Ran { ok, line, root } => {
-                    self.home.notice = Some(line);
+                    self.home.notice = Some(if ok {
+                        line
+                    } else {
+                        format!("{line} · esc dismisses")
+                    });
+                    self.home.notice_sticky = !ok;
                     if ok {
                         self.home.tab = Tab::Watch;
                         self.detail_stale = true;
