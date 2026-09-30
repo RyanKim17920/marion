@@ -1259,6 +1259,9 @@ pub enum When {
     /// Only under [`Auth::Endpoint`] — what a real third-party endpoint needs that marion's own
     /// canned one does not.
     Endpoint,
+    /// Only under [`Auth::Canned`] — where marion owns the whole environment and the provider is
+    /// its own local one, so nothing the node needs is on the network.
+    Canned,
     /// Only when the field carries a value. Claude Code blanks `ANTHROPIC_API_KEY` **beside** a
     /// token, and only beside one.
     Present(Field),
@@ -1483,6 +1486,7 @@ fn env_applies(when: When, f: &Fields) -> bool {
         When::Always => true,
         When::Overlay => f.auth.overlays(),
         When::Endpoint => f.auth == Auth::Endpoint,
+        When::Canned => f.auth == Auth::Canned,
         When::Present(field) => f.value(field).is_some(),
     }
 }

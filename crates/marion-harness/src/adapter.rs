@@ -2927,6 +2927,24 @@ mod tests {
         }
     }
 
+    /// **A canned pi node fetches nothing at startup, and only a canned one is told so**: pi's TUI
+    /// downloads `fd`/`rg` into a fresh agent dir unless `PI_OFFLINE` is set, and marion owns a
+    /// canned node's whole environment; the operator's own login keeps their pi as they run it.
+    #[test]
+    fn a_canned_pi_node_is_offline_and_a_live_one_is_not() {
+        let adapter = launch_adapter(Harness::Pi).unwrap();
+        let offline = |auth: Auth| -> Option<String> {
+            let spec = LaunchSpec { auth, ..pi_spec() };
+            let inv = adapter.compile(&spec, &ctx()).unwrap();
+            inv.env
+                .into_iter()
+                .find(|(k, _)| k == crate::pi::OFFLINE_ENV)
+                .map(|(_, v)| v)
+        };
+        assert_eq!(offline(Auth::Canned).as_deref(), Some("1"));
+        assert_eq!(offline(Auth::Inherited), None);
+    }
+
     /// **Endpoint overlays exactly what canned does**: the same isolation variables, the same
     /// documents at the same paths, the same MCP route — only where they point differs. A row that
     /// dropped an isolation variable under endpoint would run the operator's own harness config
@@ -2964,6 +2982,14 @@ mod tests {
                 .filter(|e| e.when == crate::spec::When::Endpoint)
                 .map(|e| e.key)
                 .collect();
+            // What only marion's own local provider allows (`When::Canned`), and so no endpoint.
+            let canned_only: Vec<&str> = adapter
+                .spec()
+                .env
+                .iter()
+                .filter(|e| e.when == crate::spec::When::Canned)
+                .map(|e| e.key)
+                .collect();
             if adapter.endpoint_wires().is_empty() {
                 assert!(
                     keys(&endpoint).is_err(),
@@ -2972,8 +2998,9 @@ mod tests {
                 continue;
             }
             match (keys(&canned), keys(&endpoint)) {
-                (Ok(c), Ok(mut e)) => {
+                (Ok(mut c), Ok(mut e)) => {
                     e.retain(|k| !endpoint_only.contains(&k.as_str()));
+                    c.retain(|k| !canned_only.contains(&k.as_str()));
                     assert_eq!(c, e, "{h}: env keys")
                 }
                 (Err(_), Err(_)) => continue,

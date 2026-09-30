@@ -21,6 +21,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this
@@ -262,6 +263,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this
@@ -392,6 +394,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this
@@ -522,6 +525,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this
@@ -652,6 +656,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this
@@ -782,6 +787,7 @@ args:
   /state/x/config/marion-pi.js
 env:
   PI_CODING_AGENT_DIR=/state/x/config/agent
+  PI_OFFLINE=1
   PI_SKIP_VERSION_CHECK=1
 file /state/x/config/marion-pi.js:
 // marion's MCP declaration for pi (`marion_harness::pi`). pi has no MCP client of its own; this

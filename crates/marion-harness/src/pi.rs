@@ -103,11 +103,24 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Flag("-e", Field::McpConfig),
     ],
     pane: None,
-    env: &[Env {
-        key: AGENT_DIR_ENV,
-        val: Val::Under(AGENT_DIR),
-        when: When::Overlay,
-    }],
+    env: &[
+        Env {
+            key: AGENT_DIR_ENV,
+            val: Val::Under(AGENT_DIR),
+            when: When::Overlay,
+        },
+        // pi's TUI fetches `fd` and `rg` from GitHub at startup when neither is on PATH or in its
+        // agent dir (0.99.1 `utils/tools-manager.js` `ensureTool`); a canned node's agent dir is
+        // fresh every time, so it would fetch both on every launch. `PI_OFFLINE` is the one switch
+        // `ensureTool` reads. Canned only: marion owns that environment and its provider is local,
+        // while an operator's own login keeps their pi as they run it. The fetched tools serve
+        // pi's `find`/`grep`, which no row offers; revisit if one ever does.
+        Env {
+            key: OFFLINE_ENV,
+            val: Val::Lit("1"),
+            when: When::Canned,
+        },
+    ],
     stream: Some(&RPC_STREAM),
     // `read`, and both built-ins that change a file: `write` creates, `edit` replaces text in an
     // existing file, and each is offered only when named (`pi-report.provider-request-1.json`).
@@ -527,6 +540,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// **Dropped under [`crate::Auth::Inherited`]**: relocating it is what hides the operator's own
 /// login.
 pub const AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+
+/// pi's switch that stops its startup fetch of `fd`/`rg` (`ensureTool`), set on canned nodes.
+pub const OFFLINE_ENV: &str = "PI_OFFLINE";
 
 /// The MCP server alias. The model-facing tool name is `mcp__<alias>__<tool>`.
 pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
