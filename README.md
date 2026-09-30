@@ -119,8 +119,8 @@ endpoints and where work lands.
 |---|---|---|---|
 | Claude Code (`claude`) | yes | yes | root, native session, ACP (2026-09-22, 2026-09-27) |
 | Codex (`codex`) | yes | yes | root, child, ACP (2026-09-22, 2026-09-27) |
-| opencode | yes | yes, in all three shapes | one ACP child on a free model (2026-09-22) |
-| pi | yes | yes | none |
+| opencode | yes | yes, in all three shapes | one ACP child on a free model (2026-09-22); a claude root's child and a root delegating to codex (2026-09-30) |
+| pi | yes | yes | a root delegating to codex (2026-09-30); as a child, blocked by the provider the same day |
 | Copilot CLI (`copilot`) | yes | yes | ACP child (2026-09-05), child (2026-09-22) |
 | Gemini CLI (`gemini`) | yes | yes | none: blocked by Google for individual accounts |
 | Qwen Code (`qwen`) | no | yes | none |

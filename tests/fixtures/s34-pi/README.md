@@ -89,3 +89,39 @@ length, built-in tool descriptions → their lengths, the key → `<KEY>` (it ap
     `TurnDelivery::bracketed_paste` (`OutputQuiet{1500}`). The native lane `marion pi` is enabled,
     and `native_facade_e2e` drives it in front of the operator's own pi. That run keeps the
     operator's extensions and adds marion's with `-e`.
+
+## Parity with claude and codex (2026-09-30, pi 0.99.1)
+
+Each cell against a **real `pi` binary** unless marked: **R** is a real-binary test on the canned
+provider (or a live run where named), **T** is unit-tested row data only, **—** had no test. Test
+names are under `crates/marion-supervisor/tests/it_live/` unless the conformance battery
+(`tests/fixtures/conformance/pi-0.99.1/`, probe names `P-*`) is named.
+
+| cell | before | after | evidence |
+|---|---|---|---|
+| spawn as a child | R | R | `cross_product::zzm/zzn/zzo_*`, `harness_matrix::a_pi_child_reports_*` |
+| parent: spawn and contract | R | R | `cross_product::zzp/zzq/zzr/zzs_*`; live s7 (pi root → codex) |
+| parent: wait, status | — | R | `pi_rpc::a_pi_parent_collects_its_background_child_with_status_and_wait` |
+| steer into a running node | R | R | `pi_rpc::a_steer_into_a_running_pi_child_*`; P-midturn |
+| report | R | R | `harness_matrix`; P-launch |
+| verification | — | R | `cross_product::zzt_claude_root_spawns_a_pi_child_that_verifies_*` |
+| worktree and landed branch | — | R | the same cell |
+| push delivery as a parent | R | R | `pi_rpc::a_background_childs_end_reaches_its_held_pi_parent_*` (`jsonl-rpc:next-turn`; the row has `Push::None`) |
+| mid-turn steer over `--mode rpc` | R | R | `pi_rpc`, P-midturn |
+| activity | T | R | P-activity; `marion run`'s console now reads a pi root's calls by the row (`bin/marion.rs` test) |
+| token usage | T | R | P-activity (usage folded, cache reads split) |
+| session id, resume after a supervisor restart | T | R | `restart_resume::a_lost_pi_child_resumes_its_own_session_*` (ignored by default, as its codex and opencode arcs are); P-resume (same id both lives) |
+| approval | T | R | P-approval (no grant, `report` answered) |
+| model | T | R | canned `--model` reaches `models.json` in every cell; live s7 on `google/gemini-3.1-flash-lite` |
+| no-self-update | T | R | P-version (`PI_SKIP_VERSION_CHECK=1` carried); 0.99.1 `dist/utils/version-check.js` still honours it |
+| doctor | T | T | `marion doctor --harness pi` reads the version and reports ready (run by hand; no test) |
+| timeout kill leaves no process tree | T (abort only) | R | `timeout_kill::a_timed_out_pi_child_leaves_no_surviving_tool_call_descendant`; P-interrupt |
+| OS sandbox escape | R | R | `os_sandbox_escape` pi cells |
+| race seat | — | R | `race::a_pi_seat_races_a_claude_seat_and_wins_by_verification` |
+| workflow step | — | R | `workflow::a_pi_step_takes_a_claude_plan_and_passes_its_verify` |
+| conformance battery | — (never ran) | R | every probe PASS but P-tui (no pane shape) |
+
+Still open: a live run of pi **as a child** that completes (the operator's providers refused or
+rate-limited every model, `tests/fixtures/live-oc-pi-2026-09-30/`); `RPC_STREAM`'s
+`resumes_in_place` stays `false` until a resume of an unknown id over `--mode rpc` is measured;
+the doctor cell has no test.
