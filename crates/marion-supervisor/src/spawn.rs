@@ -250,6 +250,16 @@ pub enum SpawnError {
         cwd = cwd.display()
     )]
     NotAGitRepo { cwd: PathBuf },
+    /// A resume's recorded tree is gone by the time its launch reaches it — removed after
+    /// `node/resume` checked it. Refused here too, so the second life never starts a process into a
+    /// directory that is not there.
+    #[error(
+        "resume refused: the node ran in {path}, and that tree no longer exists — a reap or a \
+         cleanup removed it. A harness resumes a session only from the tree that created it, so \
+         nothing was started.",
+        path = path.display()
+    )]
+    ResumeTreeGone { path: PathBuf },
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
     /// The spawn's `verification` lines are larger than the node's intent record may carry.

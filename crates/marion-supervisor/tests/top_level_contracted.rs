@@ -232,13 +232,9 @@ fn a_spawn_with_no_parent_that_asks_for_a_worktree_is_a_contracted_top_level_nod
     assert!(node.parent_id.is_none() && !node.is_root(), "{node:?}");
 
     // **A second life is asked for on the child path, as the operator's node again**, not refused
-    // as a node with no parent. This one finished and its worktree is gone once its end is filed,
-    // so the relaunch is refused for that, by name — a refusal only the child path reaches.
-    let worktree = bed.project.agent(&agent).path().join("worktree");
-    assert!(
-        marion_testsupport::until_within(BOUND, Duration::from_millis(20), || !worktree.exists()),
-        "the finished node's worktree is removed"
-    );
+    // as a node with no parent — and asked for **the instant its end is announced**, with no wait:
+    // `Exited` is broadcast only once its worktree is gone, so the relaunch is refused by name for
+    // that, never started into a tree that is being removed underneath it.
     let id = c.send(Call::NodeResume(NodeResumeParams {
         agent_id: agent.clone(),
         prompt: format!("{MARKER}: carry on."),

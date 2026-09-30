@@ -2946,6 +2946,25 @@ pub fn run_spawn_watched(
     if let Some(completion) = contract.completion.as_mut() {
         completion.usage = spent;
     }
+    // Only a tree marion made is marion's to remove. A `shared-cwd` child ran in the caller's own
+    // directory, and git refuses `worktree remove` only on the *main* working tree — so a caller in
+    // a linked worktree would have its checkout deleted by the cleanup of a child it lent it to.
+    // And not while it holds the only copy of work marion failed to commit.
+    //
+    // **Before the terminal record, never after it.** `Exited` is what every client is told the node
+    // ended by; a `node/resume` sent on that news found the tree still there, launched into it, and
+    // lost it to this removal mid-spawn. Removed first, the tree is gone by the time anyone hears
+    // the node is over, and the resume is refused by name instead.
+    if let Workspace::Worktree { path, branch } = &contract.workspace
+        && landed.may_reap()
+    {
+        cleanup(
+            &env.project_root,
+            path,
+            branch,
+            contract.base_commit.as_ref(),
+        );
+    }
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,
@@ -2977,20 +2996,6 @@ pub fn run_spawn_watched(
     // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this
     // guard would otherwise write would contradict them.
     resolution.armed = false;
-    // Only a tree marion made is marion's to remove. A `shared-cwd` child ran in the caller's own
-    // directory, and git refuses `worktree remove` only on the *main* working tree — so a caller in
-    // a linked worktree would have its checkout deleted by the cleanup of a child it lent it to.
-    // And not while it holds the only copy of work marion failed to commit.
-    if let Workspace::Worktree { path, branch } = &contract.workspace
-        && landed.may_reap()
-    {
-        cleanup(
-            &env.project_root,
-            path,
-            branch,
-            contract.base_commit.as_ref(),
-        );
-    }
     Ok(returned)
 }
 
@@ -3113,6 +3118,13 @@ fn select_workspace(
     // §6.6's occupancy claim is retaken for a `shared-cwd` node, because the claim died with the
     // supervisor that held it and the guarantee it makes has not changed.
     if let Some(r) = &req.resume {
+        // `node/resume` checked the tree, and a cleanup may have removed it since; checked again
+        // at the launch, so nothing is started into a directory that is not there.
+        if !r.workspace.path().is_dir() {
+            return Err(SpawnError::ResumeTreeGone {
+                path: r.workspace.path().to_path_buf(),
+            });
+        }
         let base = crate::spawn::head_commit(tree_in(project, project_root, r.workspace.path()));
         let claim = match &r.workspace {
             Workspace::SharedCwd { path }
@@ -4075,6 +4087,16 @@ mod tests {
         assert!(
             !project.agent(&agent_id).worktree().exists(),
             "and no second tree was cut under the agent dir"
+        );
+
+        // **Gone by the time the launch reaches it**: removed after `node/resume` looked, so the
+        // launch refuses it by name rather than starting a process in a directory that is not there.
+        std::fs::remove_dir_all(&first_life).unwrap();
+        let gone = select_workspace(&req, &agent_type, &project, &repo, &task_id, &agent_id)
+            .map(|(w, ..)| w);
+        assert!(
+            matches!(&gone, Err(SpawnError::ResumeTreeGone { path }) if path == &first_life),
+            "a resume into a removed tree is refused at the launch too: {gone:?}"
         );
     }
 
