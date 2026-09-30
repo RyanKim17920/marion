@@ -141,6 +141,9 @@ insta = "1"
 # named for the command people type rather than for the crate.
 [package.metadata.dist]
 dist = true
+# `marion` requires the `client` feature. It is a default feature, and this says so again for the
+# release build, so the archive keeps carrying both binaries even if the default ever changes.
+features = ["client"]
 formula = "marion"
 npm-package = "marion"
 
