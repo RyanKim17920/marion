@@ -60,6 +60,12 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// How much of a provider's error body is read, for its message.
 const ERROR_BODY: u64 = 64 * 1024;
 
+/// The longest line of a provider's event stream marion reads, and the most it reads of one
+/// stream in all. Far past any real answer; what they bound is a provider that never ends a line
+/// or never ends its stream, which would otherwise grow the gateway's memory without limit.
+const MAX_SSE_LINE: usize = 1024 * 1024;
+const MAX_STREAM: usize = 256 * 1024 * 1024;
+
 /// Gateways running in this process, and gateways ever started — what a test reads to prove a
 /// node's gateway ended with it.
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -696,10 +702,22 @@ fn relay(
     if a.content_type.contains("event-stream") {
         let mut data = String::new();
         let mut line = String::new();
+        let mut read = 0usize;
         loop {
             line.clear();
-            if body.read_line(&mut line)? == 0 {
+            let n = body
+                .by_ref()
+                .take(MAX_SSE_LINE as u64 + 1)
+                .read_line(&mut line)?;
+            if n == 0 {
                 break;
+            }
+            read += n;
+            if n > MAX_SSE_LINE || read > MAX_STREAM {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the provider's stream ran past what marion reads of one",
+                ));
             }
             let l = line.trim_end_matches(['\r', '\n']);
             if l.is_empty() {

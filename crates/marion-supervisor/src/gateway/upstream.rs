@@ -81,6 +81,12 @@ pub fn post(
         "-i",
         "--connect-timeout",
         "30",
+        // A provider that stops sending — under a byte a second for five minutes, past any pause
+        // a model thinks through with its stream open — is given up on, and its slot freed.
+        "--speed-limit",
+        "1",
+        "--speed-time",
+        "300",
         "-X",
         "POST",
         "-H",

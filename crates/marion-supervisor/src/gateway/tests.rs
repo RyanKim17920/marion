@@ -374,6 +374,50 @@ fn callers_that_dribble_are_dropped_at_the_deadline_and_free_their_permits() {
     drop(idle);
 }
 
+/// **A provider that never ends a line is given up on**, not read into memory without end: the
+/// gateway stops at its line cap, ends the request, and the provider's connection closes.
+/// Mutation: drop the cap and this request never returns while the provider keeps writing.
+#[test]
+fn a_provider_line_past_the_cap_ends_the_request() {
+    let provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gw = gateway_for(&format!("http://{}/v1", provider.local_addr().unwrap()));
+    let upstream = std::thread::spawn(move || {
+        let (mut s, _) = provider.accept().unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut head = [0u8; 4096];
+        let _ = s.read(&mut head);
+        let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: ");
+        let chunk = vec![b'a'; 64 * 1024];
+        // Until the gateway hangs up; a cap-less gateway would read this forever.
+        for _ in 0..1024 {
+            if s.write_all(&chunk).is_err() {
+                return true;
+            }
+        }
+        false
+    });
+    let addr = gw.addr.to_string();
+    let mut s = TcpStream::connect(&addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    let body = anthropic_turn(true, vec![]).to_string();
+    write!(
+        s,
+        "POST /v1/messages HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        gw.bearer().expose(),
+        body.len()
+    )
+    .unwrap();
+    s.read_to_end(&mut Vec::new())
+        .expect("the request ends rather than waiting on an endless line");
+    assert!(
+        upstream.join().unwrap(),
+        "the provider was hung up on before it wrote 64 MiB"
+    );
+}
+
 /// **A gateway dropped mid-request kills the curl it started**, though curl is blocked waiting on a
 /// provider that never answers: the drop returns well inside its drain bound and the provider sees
 /// its connection close. Mutation: hand the child over only after the head is read; the drop then
