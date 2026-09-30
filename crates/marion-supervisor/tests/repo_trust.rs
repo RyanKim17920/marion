@@ -5,7 +5,8 @@
 //! `run_spawn`, a root through `root::prepare` — against such a file, with a command that leaves a
 //! marker when it runs, and prove: refused with the exact `marion trust allow` command and no
 //! marker; run once allowed; refused again after an edit; refused under a store others can write;
-//! and that a type naming only built-in rows needs no trust at all.
+//! that a type naming only built-in rows needs no trust at all; and that a row widening its node
+//! without naming a command (a prompt prefix) needs the same trust.
 //!
 //! One `#[test]`, sequential: the trust store is found through `$XDG_DATA_HOME`, which this binary
 //! sets once before any thread or process exists, and the permission case changes that store.
@@ -211,4 +212,53 @@ fn a_repositorys_command_runs_only_while_its_exact_bytes_are_allowed() {
         !ran(&marker, Duration::from_millis(500)),
         "ran under a writable store"
     );
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    // A row naming no command but widening its node (here a prompt prefix) needs the same trust,
+    // and once allowed the contract records the prompt the child actually saw, prefix included.
+    let prefixed = fixture_repo(&root.join("prefixed"));
+    let file = prefixed.join(AGENT_TYPES_FILE);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "[[agent]]\nname = \"reviewer\"\nharness = \"opencode\"\ndescription = \"r\"\n\
+         model = \"marion/default\"\nprompt_prefix = \"Review only.\\n\\n\"\n",
+    )
+    .unwrap();
+    match launch_type(&prefixed, "reviewer") {
+        Err(e @ SpawnError::Untrusted(TrustError::Untrusted { .. })) => {
+            assert!(e.to_string().contains("prompt_prefix = "), "{e}")
+        }
+        other => panic!("expected an untrusted refusal, got {other:?}"),
+    }
+    let shown = allow(&prefixed, &store);
+    assert!(shown.contains("sets:    prompt_prefix = "), "{shown}");
+    launch_type(&prefixed, "reviewer").expect("an allowed widening row resolves");
+    // opencode, a `LaunchOnly` row: its prompt rides argv, so a dead endpoint and a bridge that
+    // does not exist still end in a contract.
+    if marion_testsupport::harness_available("opencode") {
+        let contract = run_spawn(
+            &env_for(&state, &prefixed),
+            &SpawnRequest {
+                agent_type: "reviewer".into(),
+                prompt: "do the task".into(),
+                repo: prefixed.clone(),
+                timeout_secs: 1,
+                ..request(&prefixed)
+            },
+            &TaskId("prefixed".into()),
+            &Caller::root(
+                "root",
+                marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+            ),
+        )
+        .expect("an opencode child against a dead endpoint still ends in a contract");
+        assert_eq!(
+            contract.instructions.value,
+            format!(
+                "Review only.\n\ndo the task\n\n{}",
+                marion_supervisor::bridge::REPORT_INSTRUCTION
+            )
+        );
+    }
 }

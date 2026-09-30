@@ -5991,44 +5991,6 @@ mod tests {
         );
     }
 
-    /// **The contract records the prompt the child actually saw**, prefix included: §6.7's audit
-    /// record names what marion did, and what marion did was hand the node the prefixed text.
-    #[test]
-    fn the_contract_records_the_prefixed_prompt() {
-        // opencode, a `LaunchOnly` row: its prompt rides argv, so a dead endpoint and a bridge that
-        // does not exist still end in a contract. (A codex child over app-server is refused by name
-        // before its first turn when marion's MCP server cannot start.)
-        if !marion_testsupport::harness_available("opencode") {
-            return;
-        }
-        let (_root, _state, repo, env) = spawn_env("prefixed-prompt");
-        let file = repo.join(AGENT_TYPES_FILE);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(
-            &file,
-            "[[agent]]\nname = \"reviewer\"\nharness = \"opencode\"\ndescription = \"r\"\n\
-             model = \"marion/default\"\nprompt_prefix = \"Review only.\\n\\n\"\n",
-        )
-        .unwrap();
-        let mut req = request("reviewer", None);
-        req.repo = repo;
-        req.timeout_secs = 1;
-        let contract = run_spawn(
-            &env,
-            &req,
-            &TaskId("prefixed".into()),
-            &Caller::root("root", builtin("claude").unwrap()),
-        )
-        .expect("an opencode child against a dead endpoint still ends in a contract");
-        assert_eq!(
-            contract.instructions.value,
-            format!(
-                "Review only.\n\ndo the task\n\n{}",
-                crate::bridge::REPORT_INSTRUCTION
-            )
-        );
-    }
-
     fn spawn_env(name: &str) -> (Scratch, PathBuf, PathBuf, Env) {
         let root = scratch(&format!("supervisor-{name}"));
         let repo = fixture_repo(&root);

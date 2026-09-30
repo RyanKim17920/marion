@@ -163,8 +163,10 @@ records the file's canonical path and sha256 in `$XDG_DATA_HOME/marion/trusted.t
 Until then, and again after any edit to the file, a spawn of that type is refused with the exact
 `marion trust allow` command; there is never a prompt, since an MCP spawn cannot consent.
 `marion trust deny [<file>]` forgets a file and `marion trust list` shows each one as trusted,
-edited or missing. Types on built-in harness rows, or on an ACP refinement row by its id
-(`acp:copilot`), need no trust.
+edited or missing. A row that names no command but widens what its node may do needs the same
+trust, and `allow` lists each such key: an `approval_mode` other than `default`, any tool but
+`read`, a `prompt_prefix`, a `provider`, `credentials` or a `profile`. Other types on built-in
+harness rows, or on an ACP refinement row by its id (`acp:copilot`), need no trust.
 
 A model's own `spawn`, from a node or from a `marion mcp` client, may name a free-form
 `acp:<command>` only when you have listed that exact command line in your user-level

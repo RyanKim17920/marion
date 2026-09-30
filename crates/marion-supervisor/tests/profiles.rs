@@ -217,6 +217,16 @@ fn bed(tag: &str, work_mode: &str, cwork_mode: &str) -> Bed {
     for d in [&state, &bin, &home, &config] {
         std::fs::create_dir_all(d).unwrap();
     }
+    // Rows that name profiles spend the operator's logins, so the file runs only once trusted;
+    // the operator's `marion trust allow`, into the bed's own store.
+    marion_supervisor::trust::run(
+        &["allow".into()],
+        &repo,
+        data.join("marion")
+            .join(marion_supervisor::trust::STORE_FILE),
+        &mut Vec::new(),
+    )
+    .expect("the bed's agent types are allowed");
     let log = dir.join("invocations.log");
     let gate = dir.join("gate");
     fake_claude(&bin, &log);

@@ -161,9 +161,11 @@ and never hides your credentials from the harness.
   supervisor's socket checks each caller's uid.
 - **A repository cannot redirect your keys.** Providers come only from your user-level config;
   a repository's `.marion/` is never read for them.
-- **A repository cannot run its own command without your consent.** A `.marion/agents.toml`
-  row with `harness = "acp:<command>"` runs only after `marion trust allow` has recorded the
-  file's exact bytes, and any edit revokes that. There is never a prompt.
+- **A repository cannot run its own command, or widen a node, without your consent.** A
+  `.marion/agents.toml` row with `harness = "acp:<command>"`, or one that sets an
+  authority-widening key (`approval_mode`, tools past `read`, `prompt_prefix`, `provider`,
+  `credentials`, `profile`), runs only after `marion trust allow` has recorded the file's exact
+  bytes, and any edit revokes that. There is never a prompt.
 - **A model cannot run a program by naming it.** A `spawn` from a node or an MCP client may name
   `acp:<command>` only for a command you listed in `~/.config/marion/acp.toml`; your own
   `marion run acp:<command>` needs no listing.

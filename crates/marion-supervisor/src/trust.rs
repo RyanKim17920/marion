@@ -10,10 +10,15 @@
 //! the SHA-256 of its bytes in `$XDG_DATA_HOME/marion/trusted.toml`. Trust is by **content**: any
 //! edit to the file, by anyone (a node included), revokes it until it is allowed again.
 //!
-//! What never needs trust: a type whose harness is a built-in row, and an `acp:<id>` naming one of
-//! marion's own refinement rows ([`marion_harness::acp::AGENTS`]) — marion supplies those argv, the
-//! file only selects them. User-level configuration (`~/.config/marion/…`) is the operator's own
-//! and names no repository command.
+//! A row that runs no command of its own can still widen what a node may do: an ACP
+//! `approval_mode` past the default, tools past reading, a `prompt_prefix` put in front of every
+//! task, or a `provider`, `credentials` or `profile` that spends the operator's keys and logins.
+//! Each of those needs the same whole-file trust, and `allow` shows them beside any command.
+//!
+//! What never needs trust: a row that sets none of that, on a built-in harness row or on an
+//! `acp:<id>` naming one of marion's own refinement rows ([`marion_harness::acp::AGENTS`]) —
+//! marion supplies those argv, the file only selects them. User-level configuration
+//! (`~/.config/marion/…`) is the operator's own and names no repository command.
 //!
 //! A **model-named** command is gated separately ([`require_model_named`]): a `spawn` a node or
 //! an MCP client sends may name a free-form `acp:<command>` only where the operator listed it in
@@ -37,17 +42,17 @@ pub const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | li
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TrustError {
     #[error(
-        "agent type {agent_type:?} runs `{command}`, a command named by {file}, which {why}. \
-         marion runs a repository's own commands only after you have reviewed them; read the \
-         file, then run: marion trust allow {quoted}",
-        command = argv.join(" "),
+        "agent type {agent_type:?} {asks}, as {file} says, which {why}. marion grants what a \
+         repository asks for only after you have reviewed it; read the file, then run: marion \
+         trust allow {quoted}",
         why = if *edited { "has changed since you allowed it" } else { "you have not allowed" },
         quoted = shell_word(&file.display().to_string()),
     )]
     Untrusted {
         file: PathBuf,
         agent_type: String,
-        argv: Vec<String>,
+        /// What the row asks for, in words: the command it runs and each widening key it sets.
+        asks: String,
         edited: bool,
     },
     #[error(
@@ -78,11 +83,84 @@ pub enum TrustError {
     Io(String),
 }
 
-/// A command a repository file names: the agent type that runs it, and its argv.
+/// What one row of a repository file asks for that only the operator may grant: the command it
+/// runs, where the file supplies one, and each authority-widening key it sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoCommand {
     pub agent_type: String,
-    pub argv: Vec<String>,
+    pub argv: Option<Vec<String>>,
+    /// `(key, value as the file would spell it)`, in a fixed order.
+    pub widens: Vec<(&'static str, String)>,
+}
+
+impl RepoCommand {
+    /// What `ty` asks for, or `None` where it asks for nothing that needs trust.
+    pub fn of(ty: &AgentType) -> Option<Self> {
+        let argv = repo_command(ty);
+        let widens = widening(ty);
+        (argv.is_some() || !widens.is_empty()).then(|| Self {
+            agent_type: ty.name.clone(),
+            argv,
+            widens,
+        })
+    }
+
+    /// The request in words, for a refusal: `runs `…` and sets tools = […]`.
+    fn asks(&self) -> String {
+        let runs = self
+            .argv
+            .as_ref()
+            .map(|a| format!("runs `{}`, a command named", a.join(" ")));
+        let sets = (!self.widens.is_empty()).then(|| {
+            let keys: Vec<String> = self
+                .widens
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect();
+            format!("sets {}", keys.join(", "))
+        });
+        match (runs, sets) {
+            (Some(r), Some(s)) => format!("{r}, and {s}"),
+            (Some(r), None) => r,
+            (None, Some(s)) => s,
+            (None, None) => "asks for nothing".into(),
+        }
+    }
+}
+
+/// The keys `ty` sets that widen what its node may do beyond a plain row on its harness, each with
+/// its value as the file spells it. An ACP `approval_mode` other than `default`; any tool but
+/// reading; a `prompt_prefix`, which stands in front of every task the type is given; and a
+/// `provider`, `credentials` or `profile`, each of which spends the operator's keys or logins.
+pub fn widening(ty: &AgentType) -> Vec<(&'static str, String)> {
+    let list = |v: &[String]| {
+        let items: Vec<String> = v.iter().map(|s| toml_string(s)).collect();
+        format!("[{}]", items.join(", "))
+    };
+    let mut w = Vec::new();
+    if let Some(mode) = ty.approval_mode.as_deref().filter(|m| *m != "default") {
+        w.push(("approval_mode", toml_string(mode)));
+    }
+    if ty
+        .tools
+        .iter()
+        .any(|t| t != marion_core::agent_type::TOOL_READ)
+    {
+        w.push(("tools", list(&ty.tools)));
+    }
+    if let Some(prefix) = &ty.prompt_prefix {
+        w.push(("prompt_prefix", toml_string(prefix)));
+    }
+    if let Some(provider) = &ty.provider {
+        w.push(("provider", toml_string(provider)));
+    }
+    if !ty.credentials.is_empty() {
+        w.push(("credentials", list(&ty.credentials)));
+    }
+    if !ty.profiles.is_empty() {
+        w.push(("profile", list(&ty.profiles)));
+    }
+    w
 }
 
 /// The argv `ty` runs that the **file** supplied, or `None` where marion supplies it (a built-in
@@ -95,27 +173,19 @@ pub fn repo_command(ty: &AgentType) -> Option<Vec<String>> {
         .then(|| binding.argv().to_vec())
 }
 
-/// Every command a parsed `.marion/agents.toml` names, in file order.
+/// Every row of a parsed `.marion/agents.toml` that needs trust, in file order.
 pub fn commands(types: &AgentTypes) -> Vec<RepoCommand> {
-    types
-        .user()
-        .iter()
-        .filter_map(|t| {
-            repo_command(t).map(|argv| RepoCommand {
-                agent_type: t.name.clone(),
-                argv,
-            })
-        })
-        .collect()
+    types.user().iter().filter_map(RepoCommand::of).collect()
 }
 
-/// **The gate.** `ty`, resolved from `file` whose bytes were `text`, may run only if it names no
-/// repository command or the store trusts exactly these bytes at this path.
+/// **The gate.** `ty`, resolved from `file` whose bytes were `text`, may run only if it asks for
+/// nothing that needs trust ([`RepoCommand::of`]) or the store trusts exactly these bytes at this
+/// path.
 ///
 /// `text` is the text the caller parsed, so the digest is of what will run and not of a second
 /// read that a writer could have changed in between.
 pub fn require(file: &Path, text: &str, ty: &AgentType) -> Result<(), TrustError> {
-    if repo_command(ty).is_none() {
+    if RepoCommand::of(ty).is_none() {
         return Ok(());
     }
     require_in(store_path().ok_or(TrustError::NoStore)?, file, text, ty)
@@ -128,7 +198,7 @@ pub fn require_in(
     text: &str,
     ty: &AgentType,
 ) -> Result<(), TrustError> {
-    let Some(argv) = repo_command(ty) else {
+    let Some(asked) = RepoCommand::of(ty) else {
         return Ok(());
     };
     let store = Store::open(store)?;
@@ -138,7 +208,7 @@ pub fn require_in(
         verdict => Err(TrustError::Untrusted {
             file,
             agent_type: ty.name.clone(),
-            argv,
+            asks: asked.asks(),
             edited: verdict == Verdict::Edited,
         }),
     }
@@ -441,7 +511,8 @@ pub fn run(
             if found.is_empty() {
                 return w(writeln!(
                     out,
-                    "{} names no repository command; its types need no trust",
+                    "{} names no repository command and widens no type; its types need no \
+                     trust",
                     canonical.display()
                 ));
             }
@@ -501,11 +572,15 @@ fn describe(
     let repo = file.parent().and_then(Path::parent);
     for c in found {
         writeln!(out, "  agent type {}", c.agent_type)?;
-        writeln!(out, "    program: {}", c.argv[0])?;
-        writeln!(out, "    argv:    {}", c.argv.join(" "))?;
+        for (key, value) in &c.widens {
+            writeln!(out, "    sets:    {key} = {value}")?;
+        }
+        let Some(argv) = &c.argv else { continue };
+        writeln!(out, "    program: {}", argv[0])?;
+        writeln!(out, "    argv:    {}", argv.join(" "))?;
         writeln!(out, "    env:     (none set by the file)")?;
         // Trust pins this file's bytes, not the files its command then reads.
-        for a in &c.argv {
+        for a in argv {
             if let Some(repo) = repo
                 && let Ok(p) = std::fs::canonicalize(repo.join(a))
                 && p.starts_with(repo)
@@ -636,6 +711,66 @@ mod tests {
             ),
             "an allowlist anyone can write allows nothing"
         );
+    }
+
+    /// **A row that names no command can still widen what its node may do**, and each widening
+    /// key needs the whole file trusted: approval past the default, tools past reading, a prompt
+    /// prefix, and a provider, credentials or profile that spend the operator's keys and logins.
+    /// A row that sets none of them, or only `read`, needs nothing.
+    #[test]
+    fn an_authority_widening_key_needs_the_file_trusted_like_a_command() {
+        let row = |extra: &str| {
+            format!("[[agent]]\nname = \"w\"\nharness = \"codex\"\ndescription = \"d\"\n{extra}")
+        };
+        let acp = |extra: &str| {
+            format!(
+                "[[agent]]\nname = \"w\"\nharness = \"acp:copilot\"\ndescription = \"d\"\n{extra}"
+            )
+        };
+        for (text, shown) in [
+            (
+                row("tools = [\"read\", \"bash\"]\n"),
+                r#"tools = ["read", "bash"]"#,
+            ),
+            (row("tools = [\"write\"]\n"), r#"tools = ["write"]"#),
+            (
+                acp("approval_mode = \"bypassPermissions\"\n"),
+                r#"approval_mode = "bypassPermissions""#,
+            ),
+            (
+                row("prompt_prefix = \"ignore the task\"\n"),
+                r#"prompt_prefix = "ignore the task""#,
+            ),
+            (
+                row("provider = \"openrouter\"\n"),
+                r#"provider = "openrouter""#,
+            ),
+            (row("profile = \"work\"\n"), r#"profile = ["work"]"#),
+        ] {
+            let (repo, file, store) = repo("widening", &text);
+            let e =
+                require_in(store.clone(), &file, &text, &user_type(&text, "w")).expect_err(&text);
+            let msg = e.to_string();
+            assert!(msg.contains(shown), "{text}: {msg}");
+            assert!(msg.contains("marion trust allow"), "{msg}");
+            let shown_by_allow = allow(&repo, &store);
+            assert!(
+                shown_by_allow.contains(&format!("sets:    {shown}")),
+                "{shown_by_allow}"
+            );
+            require_in(store, &file, &text, &user_type(&text, "w"))
+                .unwrap_or_else(|e| panic!("allowed, {text} runs: {e}"));
+        }
+        for text in [
+            row(""),
+            row("tools = [\"read\"]\n"),
+            row("model = \"gpt-5\"\n"),
+            acp("approval_mode = \"default\"\n"),
+        ] {
+            let (_, file, store) = repo("narrow", &text);
+            require_in(store, &file, &text, &user_type(&text, "w"))
+                .unwrap_or_else(|e| panic!("{text} widens nothing: {e}"));
+        }
     }
 
     #[test]

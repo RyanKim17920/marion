@@ -55,6 +55,7 @@ prompt_prefix = "You are a code reviewer. Do not modify files.\n\n"
 /// ended `unsupported call` three runs in four. An explicit model is the measured stable path,
 /// and here it is also the witness that a row's `model` reaches the launch.
 fn repo_with_reviewer(root: &std::path::Path) -> PathBuf {
+    let data = trust_store_home();
     let repo = fixture_repo(root);
     let file = repo.join(AGENT_TYPES_FILE);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -72,7 +73,31 @@ fn repo_with_reviewer(root: &std::path::Path) -> PathBuf {
             "agent types",
         ],
     );
+    // The row's `prompt_prefix` widens what its node is told, so the file runs only once trusted:
+    // the operator's `marion trust allow`, into this binary's own store.
+    marion_supervisor::trust::run(
+        &["allow".into()],
+        &repo,
+        data.join("marion")
+            .join(marion_supervisor::trust::STORE_FILE),
+        &mut Vec::new(),
+    )
+    .expect("the reviewer row is allowed");
     repo
+}
+
+/// This binary's trust store root, set as `XDG_DATA_HOME` exactly once and before any test reads
+/// the environment: every test calls this first, so the one write happens-before every read.
+fn trust_store_home() -> PathBuf {
+    static HOME: std::sync::OnceLock<marion_testsupport::Scratch> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let data = scratch("user-types-trust-data");
+        // SAFETY: inside the `OnceLock` every test enters before touching the environment, so no
+        // other thread of this binary reads it concurrently.
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.to_path_buf()) };
+        data
+    })
+    .to_path_buf()
 }
 
 fn request(repo: &std::path::Path) -> SpawnRequest {
@@ -115,6 +140,7 @@ fn journaled_intents(project: &ProjectDir) -> Vec<(String, Harness)> {
 
 #[test]
 fn a_user_defined_reviewer_runs_on_codex_and_is_journaled_under_its_own_name() {
+    trust_store_home();
     if !harness_available("codex") {
         return;
     }
@@ -190,6 +216,7 @@ fn a_user_defined_reviewer_runs_on_codex_and_is_journaled_under_its_own_name() {
 
 #[test]
 fn a_reviewer_whose_file_is_gone_is_an_unknown_type_and_nothing_is_journaled() {
+    trust_store_home();
     let root = scratch("user-types-gone");
     let repo = repo_with_reviewer(&root);
     std::fs::remove_file(repo.join(AGENT_TYPES_FILE)).unwrap();
@@ -224,6 +251,7 @@ fn a_reviewer_whose_file_is_gone_is_an_unknown_type_and_nothing_is_journaled() {
 /// path" reason, and the supervisor's `agent/spawn` answer carried nothing at all.
 #[test]
 fn a_row_granting_a_tool_codex_lacks_is_refused_by_name_before_any_process() {
+    trust_store_home();
     let root = scratch("user-types-no-read-tool");
     let repo = repo_with_reviewer(&root);
     std::fs::write(
