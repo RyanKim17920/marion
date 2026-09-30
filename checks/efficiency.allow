@@ -26,8 +26,6 @@ crates/marion-supervisor/src/duplex.rs:run_duplex  tracked: efficiency waves (re
 crates/marion-supervisor/src/descendant_gate.rs:HOLD_POLL  partial: a held node re-reads its subtree only when the registry changed (perf-wave1 95ec1bf); the 100 ms pause remains where no follower reads the journal
 crates/marion-supervisor/src/rpc.rs:Driver::settle_until  bounded: waits on the reader/inbox condvar; try_wait is the one non-event check, once per LIVENESS_TICK (2 s) while a node is live, for a server that died with its stdout still held
 crates/marion-supervisor/src/rpc.rs:LIVENESS_TICK  bounded: the safety bound on a condvar wait (2 s), never the ordinary path — see Driver::settle_until
-crates/marion-supervisor/src/rpc.rs:REAP_POLL  bounded: shutdown only, after SIGINT, inside INTERRUPT_GRACE (5 s)
-crates/marion-supervisor/src/rpc.rs:wait_bounded  bounded: shutdown only, after SIGINT, until INTERRUPT_GRACE (5 s)
 crates/marion-supervisor/src/acp_child.rs:prompt_session  bounded: the held-inbox wait blocks on the shared driver's condvar (rpc::Driver::wait_event); try_wait once per wake or LIVENESS_TICK (2 s)
 crates/marion-supervisor/src/native_relay.rs:POLL  tracked: efficiency waves (50 ms native relay tick)
 crates/marion-supervisor/src/native_relay.rs:RawPaneSession::start_keyboard  tracked: efficiency waves (keyboard thread sleep loop)

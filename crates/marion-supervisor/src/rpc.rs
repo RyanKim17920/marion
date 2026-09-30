@@ -50,9 +50,6 @@ const DEATH_GRACE: Duration = Duration::from_millis(250);
 /// safety bound, in seconds, and never the path an ordinary session takes.
 const LIVENESS_TICK: Duration = Duration::from_secs(2);
 
-/// How often the bounded shutdown wait re-reads the server's exit status.
-const REAP_POLL: Duration = Duration::from_millis(20);
-
 /// What marion does with the frames a server sends that are not answers to marion's requests.
 pub(crate) trait Peer {
     /// The reply to a request the server sent. Answered, never dropped: an unanswered request stops
@@ -330,7 +327,7 @@ impl<'a, P: Peer> Driver<'a, P> {
         if matches!(self.child.try_wait(), Ok(None)) {
             unsafe { kill(self.pid, SIGINT) };
         }
-        let status = wait_bounded(&mut self.child, INTERRUPT_GRACE);
+        let status = crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE);
         let ended_on = if status.is_some() { SIGINT } else { SIGKILL };
         if status.is_none() {
             kill_process_tree(self.pid);
@@ -415,23 +412,6 @@ impl<P> Drop for Driver<'_, P> {
         }
         // The group, for the reason `finish` sweeps it: the server's children hold its pipes.
         kill_process_tree(self.pid);
-    }
-}
-
-/// `Child::wait` with a ceiling. `None` is "still running at the deadline", a finding and not an
-/// error. Only ever on the shutdown path, where the server was just told to go.
-fn wait_bounded(child: &mut Child, budget: Duration) -> Option<std::process::ExitStatus> {
-    let deadline = Instant::now() + budget;
-    loop {
-        match child.try_wait() {
-            Ok(Some(s)) => return Some(s),
-            Ok(None) => {}
-            Err(_) => return None,
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(REAP_POLL);
     }
 }
 
