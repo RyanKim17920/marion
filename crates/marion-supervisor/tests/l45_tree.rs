@@ -118,10 +118,10 @@ fn forest() -> Vec<NodeSummary> {
         ),
         // An orphan: its parent is not in this snapshot (§4.2's compaction). It must still be a row.
         node(
-            "orphan-gemini",
+            "orphan-copilot",
             Some("compacted-away"),
-            Harness::Gemini,
-            Some("0.53.0"),
+            Harness::Copilot,
+            Some("1.0.83"),
             false,
             NodeState::Exited(marion_core::contract::ExitStatus::Ok),
         ),

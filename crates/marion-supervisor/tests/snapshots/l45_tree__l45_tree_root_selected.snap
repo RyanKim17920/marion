@@ -9,7 +9,7 @@ expression: "report(&tree, true)"
 ├ ● idle impl pane-claude
 └ ◐ blocked:permission impl opencode-1832
   └ ● spawning impl codex-unversioned
-✓ exited:ok impl orphan-gemini
+✓ exited:ok impl orphan-copilot
 
 
 
@@ -21,7 +21,7 @@ Style::new().fg(Color::Reset).bg(Color::Reset).reversed()  "● running impl roo
 Style::new().fg(Color::Reset).bg(Color::Reset)  "├ ● idle impl pane-claude"
 Style::new().fg(Color::Reset).bg(Color::Reset)  "└ ◐ blocked:permission impl opencode-1832"
 Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ ● spawning impl codex-unversioned"
-Style::new().fg(Color::Reset).bg(Color::Reset)  "✓ exited:ok impl orphan-gemini"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "✓ exited:ok impl orphan-copilot"
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
