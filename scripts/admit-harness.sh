@@ -10,18 +10,19 @@
 # that drives that harness against the new version and admit it WITH the evidence. This script does
 # the mechanical part and stops short of the commit:
 #
-#   1. adds each <version> to its <harness>'s `accepted` list in
-#      `marion_testsupport::PINNED_HARNESSES` (entry zero — the pin — is never touched);
+#   1. adds each <version> to its harness row's `verified` list in crates/marion-harness/src/ — the
+#      one list the test gate (`marion_testsupport::PINNED_HARNESSES`) and doctor both read
+#      (entry zero — the pin — is never touched);
 #   2. runs `cargo test -p marion-testsupport --lib` (the table's own sanity tests), then every
 #      integration suite under crates/marion-supervisor/tests that names one of the harnesses AND
 #      gates on a real one (`$gate`, below), plus the suites that walk every enabled native lane
 #      when a named harness's lane is on — sequentially, each bounded by MARION_ADMIT_BOUND
 #      seconds (default 1800); then the conformance battery for the named programs, against the
 #      committed tests/fixtures/conformance/matrix.json (a PASS cell that moved is RED);
-#   3. on all green, writes the dated observation comment above each `accepted` list, formats the
-#      file, and prints the MILESTONES "Verified harness facts" paragraph(s) and the commit message.
-#      On any red, restores the table exactly as it was and exits non-zero with the suite named
-#      and every panic line of its output.
+#   3. on all green, writes the dated observation comment above each entry's `accepted` line in
+#      PINNED_HARNESSES, formats the files, and prints the MILESTONES "Verified harness facts"
+#      paragraph(s) and the commit message. On any red, restores every file exactly as it was and
+#      exits non-zero with the suite named and every panic line of its output.
 #
 # Several pairs at once exist for one reason: `cross_product` drives every pinned harness in one
 # binary, so when two of them drift on the same day neither can be admitted alone — the other's
@@ -62,17 +63,27 @@ while [ $# -ge 2 ]; do
     shift 2
 done
 
-backup=$(mktemp) || exit 1
-cp "$table" "$backup" || exit 1
-restore() { cp "$backup" "$table"; rm -f "$backup"; }
+rows_dir="$here/crates/marion-harness/src"
+# The row file that runs <program>: the one whose spec says `program: Some("<program>")`.
+row_of() { grep -l "program: Some(\"$1\")," "$rows_dir"/*.rs | head -n 1; }
+backups=$(mktemp -d) || exit 1
+files="$table"
+for h in $(printf '%s' "$pairs" | awk '{print $1}'); do
+    row=$(row_of "$h")
+    [ -n "$row" ] || { echo "no harness row runs $h (in $rows_dir)" >&2; rm -rf "$backups"; exit 2; }
+    files="$files $row"
+done
+for f in $files; do cp "$f" "$backups/$(basename "$f")" || exit 1; done
+restore() { for f in $files; do cp "$backups/$(basename "$f")" "$f"; done; rm -rf "$backups"; }
 
 # --- 1. widen each entry ------------------------------------------------------------------------
-# Perl, because the `accepted` list may span lines (claude's does) and sed has no multi-line match
-# worth reading. The entry is `program: "<h>",` followed — comments between — by `accepted: &[...]`.
+# Perl, because the `verified` list may span lines (claude's does) and sed has no multi-line match
+# worth reading. The row is `program: Some("<h>"),` followed — comments between — by
+# `verified: &[...]`.
 widen() {
     ADMIT_HARNESS=$1 ADMIT_VERSION=$2 perl -0pi -e '
         my ($h, $v) = ($ENV{ADMIT_HARNESS}, $ENV{ADMIT_VERSION});
-        s{(program: "\Q$h\E",.*?accepted: &\[)([^\]]*)\]}{
+        s{(program: Some\("\Q$h\E"\),.*?verified: &\[)([^\]]*)\]}{
             my ($head, $list) = ($1, $2);
             if ($list =~ /"\Q$v\E"/) { $head . $list . "]" }
             else {
@@ -80,14 +91,14 @@ widen() {
                 $list .= "," unless $list =~ /,$/ || $list eq "";
                 $head . $list . " \"$v\"" . "]"
             }
-        }se or die "no accepted list found for $h\n";
-    ' "$table"
+        }se or die "no verified list found for $h\n";
+    ' "$(row_of "$h")"
 }
 printf '%s' "$pairs" | while read -r h v; do
     widen "$h" "$v" || exit 1
-    echo "admit-harness: $h $v added to PINNED_HARNESSES (not yet committed)"
+    echo "admit-harness: $h $v added to its row's verified versions (not yet committed)"
 done || { restore; exit 1; }
-rustfmt --edition 2024 --config skip_children=true "$table" || { restore; exit 1; }
+for f in $files; do rustfmt --edition 2024 --config skip_children=true "$f" || { restore; exit 1; }; done
 
 # --- 2. the suites that drive these harnesses ---------------------------------------------------
 # Named by grep, not by hand: a suite that mentions a harness as a whole word and gates on a real
@@ -179,29 +190,16 @@ annotate() {
     note=$(printf '%s' "$body" | fold -s -w 88 | sed 's/ *$//; s|^|        // |')
     ADMIT_HARNESS=$1 ADMIT_NOTE="$note" perl -0pi -e '
         my $h = $ENV{ADMIT_HARNESS};
-        s{(program: "\Q$h\E",.*?)(\n[ \t]*accepted: &\[)}{$1\n$ENV{ADMIT_NOTE}$2}s or die;
+        s{(program: "\Q$h\E",.*?)(\n[ \t]*accepted: )}{$1\n$ENV{ADMIT_NOTE}$2}s or die;
     ' "$table"
 }
 printf '%s' "$pairs" | while read -r h v; do annotate "$h" "$v" || exit 1; done || { restore; exit 1; }
 rustfmt --edition 2024 --config skip_children=true "$table" || { restore; exit 1; }
-rm -f "$backup"
-
-# --- 4. doctor's copy of the newest verified version ---------------------------------------------
-# `marion-supervisor doctor` notes a harness newer than the last verified version, and the shipped
-# binary cannot link this crate, so it carries a copy of each program's newest `accepted` entry
-# (`VERIFIED_HARNESSES`). A unit test fails when the two disagree; this keeps them agreeing.
-doctor="$here/crates/marion-supervisor/src/doctor.rs"
-printf '%s' "$pairs" | while read -r h v; do
-    ADMIT_HARNESS=$h ADMIT_VERSION=$v perl -0pi -e '
-        s{(\(Harness::\w+, "\Q$ENV{ADMIT_HARNESS}\E", ")[^"]*(")}{$1$ENV{ADMIT_VERSION}$2}
-            or die "no VERIFIED_HARNESSES entry for $ENV{ADMIT_HARNESS}\n";
-    ' "$doctor" || exit 1
-done || exit 1
+rm -rf "$backups"
 
 cat <<EOF
 
-admit-harness: all green. Not committed. Review:  git diff -- crates/marion-testsupport/src/lib.rs \
-    crates/marion-supervisor/src/doctor.rs
+admit-harness: all green. Not committed. Review:  git diff -- $files
 
 --- MILESTONES.md, "Verified harness facts", after the last admission paragraph -----------------
 EOF

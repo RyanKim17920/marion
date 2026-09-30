@@ -589,6 +589,7 @@ name = "marion-testsupport"
 version = "0.2.0"
 dependencies = [
  "marion-core",
+ "marion-harness",
  "proc-macro2",
  "quote",
  "serde_json",

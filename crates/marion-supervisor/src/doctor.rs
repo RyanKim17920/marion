@@ -1836,31 +1836,16 @@ fn probe_ctx() -> SpawnCtx {
     }
 }
 
-/// The newest version of each harness marion's own suite was last verified against:
-/// `(harness, program, version)`. **Not a second table** — it is the newest entry of
-/// `marion_testsupport::PINNED_HARNESSES` per program, which the shipped binary cannot link, and
-/// `tests::the_verified_versions_are_the_newest_the_pin_table_admits` fails the day the two
-/// disagree. Read only to *note* a newer installed version; it never blocks a run.
-const VERIFIED_HARNESSES: &[(Harness, &str, &str)] = &[
-    (Harness::ClaudeCode, "claude", "2.1.283"),
-    (Harness::Codex, "codex", "0.155.1"),
-    (Harness::Gemini, "gemini", "0.53.0"),
-    (Harness::OpenCode, "opencode", "1.18.33"),
-    (Harness::Copilot, "copilot", "1.0.83"),
-    (Harness::Goose, "goose", "1.52.0"),
-    (Harness::Cline, "cline", "3.0.61"),
-    (Harness::Qwen, "qwen", "0.23.0"),
-    (Harness::Antigravity, "agy", "1.2.8"),
-    (Harness::Pi, "pi", "0.80.2"),
-];
-
-/// The newest version marion verified `h` against, if it keeps one (an ACP agent's version is the
-/// agent's, and has no entry).
+/// The newest version marion verified `h` against — the newest of its row's
+/// [`marion_harness::spec::HarnessSpec::verified`], the list the test gate admits — if it keeps
+/// one (an ACP agent's version is the agent's, and has none). Read only to *note* a newer
+/// installed version; it never blocks a run.
 fn last_verified(h: Harness) -> Option<&'static str> {
-    VERIFIED_HARNESSES
+    marion_harness::adapter::harness_spec(h)
+        .verified
         .iter()
-        .find(|(v, _, _)| *v == h)
-        .map(|(_, _, version)| *version)
+        .copied()
+        .max_by(|a, b| cmp_versions(a, b))
 }
 
 /// Dotted versions, compared numerically part by part (`1.18.30` > `1.18.4`); a non-numeric part
@@ -1872,7 +1857,7 @@ fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// The closing verdict: one `ready:` line per harness (its node row; a pane row is the same
 /// binary) and one overall. A harness is ready when its binary answered with a version and, under
-/// `--adapter`, its micro-contract passed. A version newer than [`VERIFIED_HARNESSES`] is noted
+/// `--adapter`, its micro-contract passed. A version newer than the row's verified versions is noted
 /// and stays ready: harnesses update themselves, and marion keeps running on them.
 ///
 /// It opens with the machine's own checks (`crate::preflight`); any failed check makes the overall
@@ -2433,30 +2418,6 @@ mod tests {
             v.trim_end()
                 .ends_with("overall: ready: no (1 of 1 ready, 1 check failed)"),
             "{v}"
-        );
-    }
-
-    /// **The verified-versions table is the test suite's, not a second opinion.** Each entry must
-    /// be the newest version `marion_testsupport::PINNED_HARNESSES` admits for that program, so
-    /// `scripts/admit-harness.sh` widening the pin table without this one fails here.
-    #[test]
-    fn the_verified_versions_are_the_newest_the_pin_table_admits() {
-        for pinned in marion_testsupport::PINNED_HARNESSES {
-            let newest = pinned
-                .accepted
-                .iter()
-                .copied()
-                .max_by(|a, b| cmp_versions(a, b))
-                .unwrap();
-            let h = VERIFIED_HARNESSES
-                .iter()
-                .find(|(_, program, _)| *program == pinned.program)
-                .unwrap_or_else(|| panic!("{} is missing from VERIFIED_HARNESSES", pinned.program));
-            assert_eq!(h.2, newest, "{}", pinned.program);
-        }
-        assert_eq!(
-            VERIFIED_HARNESSES.len(),
-            marion_testsupport::PINNED_HARNESSES.len()
         );
     }
 

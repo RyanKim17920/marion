@@ -277,6 +277,9 @@ pub struct PinnedHarness {
     /// **The first entry is the pin** — the version README, MILESTONES and these tests' own doc
     /// comments name, and the one a failure message quotes as expected. The rest are versions
     /// since observed green, each with the observation beside it in [`PINNED_HARNESSES`].
+    ///
+    /// **The row's own list** (`HarnessSpec::verified`): the gate and doctor read one table, so an
+    /// admission cannot widen one and not the other.
     pub accepted: &'static [&'static str],
     /// Where the installer keeps releases side by side, so [`Shim`] can `exec` an admitted one
     /// while a newer release sits first on `PATH` — or that it keeps none.
@@ -651,10 +654,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // native_facade_spawn (1), no_git (5), node_attach (2), pane_attach (2),
         // permission_round_trip (9), restart_resume (0), timeout_kill (1), turn_delivery (2),
         // user_agent_types (3), verification (4), worktree_reap (11).
-        accepted: &[
-            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
-            "2.1.268", "2.1.269", "2.1.280", "2.1.283",
-        ],
+        accepted: marion_harness::claude_code::SPEC.verified,
     },
     PinnedHarness {
         program: "codex",
@@ -768,7 +768,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `-c model_catalog_json=<file>` with the entries' `supports_search_tool: false` restores
         // eager tools on 0.155.1: `mcp__marion` in `tools[]` for `gpt-5.5`, and the tools listed
         // in `exec`'s declaration for `gpt-5.6-sol`. marion does not pass that today.
-        accepted: &["0.146.0", "0.146.1", "0.147.0", "0.155.1"],
+        accepted: marion_harness::codex::SPEC.verified,
     },
     PinnedHarness {
         program: "gemini",
@@ -780,7 +780,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
             body: r#"{"general":{"enableAutoUpdate":false,"enableAutoUpdateNotification":false}}"#,
         }),
         // The version that omits MCP tools entirely without `trust: true`, silently.
-        accepted: &["0.53.0"],
+        accepted: marion_harness::gemini::SPEC.verified,
     },
     PinnedHarness {
         program: "opencode",
@@ -822,7 +822,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // (7), cross_product (65), depth_gate (5), endpoint_matrix (19), harness_matrix (9),
         // journal_wiring (18), native_facade_e2e (4), native_facade_spawn (2), node_tmpdir (2),
         // restart_resume (0), timeout_kill (3), turn_delivery (4), conformance (1).
-        accepted: &["1.17.3", "1.18.29", "1.18.30", "1.18.32", "1.18.33"],
+        accepted: marion_harness::opencode::SPEC.verified,
     },
     PinnedHarness {
         program: "copilot",
@@ -843,7 +843,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // the `success: false` + `error.message` shape an `isError` MCP result takes, and
         // `session.error` + `exitCode: 1` on a provider 500 after five retries. See
         // `marion_harness::copilot`.
-        accepted: &["1.0.83"],
+        accepted: marion_harness::copilot::SPEC.verified,
     },
     PinnedHarness {
         program: "goose",
@@ -877,7 +877,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // 1.52.0: observed green on Darwin 25.5.0, 2026-09-27, via scripts/admit-harness.sh
         // (goose 1.52.0 in one run): marion-testsupport (35), cross_product (57), depth_gate (4),
         // harness_matrix (8), journal_wiring (18).
-        accepted: &["1.49.0", "1.50.0", "1.51.0", "1.52.0"],
+        accepted: marion_harness::goose::SPEC.verified,
     },
     PinnedHarness {
         program: "cline",
@@ -899,7 +899,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // nothing under `~/.cline`, `content_end.output.isError` at exit 0, `run_result
         // finishReason: "error"` at exit 1 on a provider 500, and `--id` exiting 1 headless. See
         // `marion_harness::cline`.
-        accepted: &["3.0.61"],
+        accepted: marion_harness::cline::SPEC.verified,
     },
     PinnedHarness {
         program: "qwen",
@@ -921,7 +921,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // call, `is_error: true` at exit 0 for an MCP `isError`, 28 retries then `success` on a dead
         // provider, and `--resume <session_id>` replaying the session under the same `QWEN_HOME`
         // and cwd. See `marion_harness::qwen`.
-        accepted: &["0.23.0"],
+        accepted: marion_harness::qwen::SPEC.verified,
     },
     PinnedHarness {
         program: "agy",
@@ -935,7 +935,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // declaration, the lexicographic workspace order, headless auto-denial and the operator's
         // `permissions.allow` rule, `DONE` with no output on a denied call, `--conversation`
         // resume and the fresh conversation an unknown id starts. See `marion_harness::antigravity`.
-        accepted: &["1.2.8"],
+        accepted: marion_harness::antigravity::SPEC.verified,
     },
     PinnedHarness {
         program: "pi",
@@ -955,7 +955,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // faults as `stopReason: "error"` in the final `agent_end` at exit 0; per-message usage net
         // of cache reads; stdin read to EOF when it is not a terminal; `--session <id>` resuming
         // under the same agent dir and cwd. See `marion_harness::pi`.
-        accepted: &["0.80.2"],
+        accepted: marion_harness::pi::SPEC.verified,
     },
 ];
 
