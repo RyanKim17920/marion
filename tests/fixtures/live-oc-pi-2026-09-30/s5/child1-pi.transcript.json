@@ -1,0 +1,1253 @@
+[
+ {
+  "ts": "2026-09-30T19:20:08.645Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.740Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "subagent-async"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.756Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "mcp",
+   "statusText": "\u001b[38;2;138;190;183mMCP: 0/1 servers\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.760Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.760Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "processes-status"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.761Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "processes-dock"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.830Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "stash",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.834Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "powerline-top"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.834Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "powerline-secondary"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.834Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "powerline-bash-transcript"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.834Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "powerline-status"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.834Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "powerline-last-prompt"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.835Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "extmgr",
+   "statusText": "\u001b[38;2;102;102;102m47 pkgs · auto-update off\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.860Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m0 points / 0 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.893Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "boomerang",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.898Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "supervisor",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.898Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "supervisor"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.898Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "goal",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.945Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "message": "Piolium loaded. Run /piolium-help for usage and flags, or start auditing this repo with /piolium-balanced.",
+   "method": "notify",
+   "notifyType": "info",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.985Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "llm-wiki",
+   "statusText": "🧠 LLM Wiki (13 tools, observe + recall active)",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:21.989Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "llm-wiki-model",
+   "statusText": "🧠 wiki model: session model (gemini-3.5-flash)",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.011Z",
+  "key": "response",
+  "frame": {
+   "command": "get_state",
+   "data": {
+    "autoCompactionEnabled": true,
+    "followUpMode": "one-at-a-time",
+    "isCompacting": false,
+    "isStreaming": false,
+    "messageCount": 0,
+    "model": {
+     "api": "google-generative-ai",
+     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+     "contextWindow": 1048576,
+     "cost": {
+      "cacheRead": 0.15,
+      "cacheWrite": 0,
+      "input": 1.5,
+      "output": "<dropped: output of a call that read operator config>"
+     },
+     "id": "gemini-3.5-flash",
+     "input": [
+      "text",
+      "image"
+     ],
+     "maxTokens": 65536,
+     "name": "Gemini 3.5 Flash",
+     "provider": "google",
+     "reasoning": true,
+     "thinkingLevelMap": {
+      "off": null
+     }
+    },
+    "pendingMessageCount": 0,
+    "sessionFile": "<HOME>/.pi/agent/sessions/--private-var-folders-pc-6q59003d31s2tbymh3vtv1600000gn-T-marion-live-smoke.vzL9bF-s5-state-171bbfedf4c6-agents-<UUID>-worktree--/2026-09-30T19-20-10-025Z_01a0f3c2-9228-76b0-a614-243859b83e2a.jsonl",
+    "steeringMode": "one-at-a-time",
+    "thinkingLevel": "high"
+   },
+   "id": "marion-init-<UUID>",
+   "success": true,
+   "type": "response"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.024Z",
+  "key": "response",
+  "frame": {
+   "command": "prompt",
+   "success": true,
+   "type": "response"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.025Z",
+  "key": "agent_start",
+  "frame": {
+   "type": "agent_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.125Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "pi-plan-banner",
+   "widgetPlacement": "aboveEditor"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.289Z",
+  "key": "turn_start",
+  "frame": {
+   "type": "turn_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.294Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "content": [
+     {
+      "text": "Fix an off-by-one bug in the `last_n_lines` function in textutil.py. \n\nSteps:\n1. Read textutil.py and identify the off-by-one bug in last_n_lines\n2. Fix the bug\n3. Add a regression test to test_textutil.py that catches this bug\n4. Run tests with: python3 -m unittest -q\n5. Verify all tests pass\n\nMake the changes directly yourself. Do not delegate further.\n\nWhen you have finished, call the `report` …[180 more chars]",
+      "type": "text"
+     }
+    ],
+    "role": "user",
+    "timestamp": 1790796022020
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.294Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "content": [
+     {
+      "text": "Fix an off-by-one bug in the `last_n_lines` function in textutil.py. \n\nSteps:\n1. Read textutil.py and identify the off-by-one bug in last_n_lines\n2. Fix the bug\n3. Add a regression test to test_textutil.py that catches this bug\n4. Run tests with: python3 -m unittest -q\n5. Verify all tests pass\n\nMake the changes directly yourself. Do not delegate further.\n\nWhen you have finished, call the `report` …[180 more chars]",
+      "type": "text"
+     }
+    ],
+    "role": "user",
+    "timestamp": 1790796022020
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.295Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "content": "🧠 **LLM Wiki active.** Retrieval (inline): recall runs automatically each turn — use `wiki_search` to query and `read` to open pages. Capture (background + reported): `wiki_observe` for timestamped notes, `wiki_retro` for durable insights. All other wiki actions run in the background and report when done. Silence these notices with `llm-wiki.notices: false`.",
+    "customType": "wiki-session-notice",
+    "display": true,
+    "role": "custom",
+    "timestamp": 1790796021984
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.295Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "content": "🧠 **LLM Wiki active.** Retrieval (inline): recall runs automatically each turn — use `wiki_search` to query and `read` to open pages. Capture (background + reported): `wiki_observe` for timestamped notes, `wiki_retro` for durable insights. All other wiki actions run in the background and report when done. Silence these notices with `llm-wiki.notices: false`.",
+    "customType": "wiki-session-notice",
+    "display": true,
+    "role": "custom",
+    "timestamp": 1790796021984
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.295Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "content": "ORCHESTRATOR RULE REMINDERS:\n- DELEGATE TO SUBAGENTS: Do NOT read/edit files directly on the main thread (no read, write, edit tools). Proactively delegate.\n- CHAINING & PARALLEL: For sequential tasks, chain subagents. Run them directly without intermediate manual approval. For independent tasks (e.g. parallel search/build/test), spawn parallel subagents aggressively.\n- CODE INTELLIGENCE:\n  * Semb…[315 more chars]",
+    "customType": "orchestrator-rules",
+    "display": true,
+    "role": "custom",
+    "timestamp": 1790796022024
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:22.295Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "content": "ORCHESTRATOR RULE REMINDERS:\n- DELEGATE TO SUBAGENTS: Do NOT read/edit files directly on the main thread (no read, write, edit tools). Proactively delegate.\n- CHAINING & PARALLEL: For sequential tasks, chain subagents. Run them directly without intermediate manual approval. For independent tasks (e.g. parallel search/build/test), spawn parallel subagents aggressively.\n- CODE INTELLIGENCE:\n  * Semb…[315 more chars]",
+    "customType": "orchestrator-rules",
+    "display": true,
+    "role": "custom",
+    "timestamp": 1790796022024
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.153Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796022401,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.158Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796022401,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.162Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.214Z",
+  "key": "turn_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796022401,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "toolResults": [],
+   "type": "turn_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.218Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.220Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m2 points / 1 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.252Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m2 points / 1 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.260Z",
+  "key": "session_info_changed",
+  "frame": {
+   "name": "Fix an off-by-one bug in the `last_n_lines` function in textutil.py. Ste",
+   "type": "session_info_changed"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.261Z",
+  "key": "agent_end",
+  "frame": {
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "Fix an off-by-one bug in the `last_n_lines` function in textutil.py. \n\nSteps:\n1. Read textutil.py and identify the off-by-one bug in last_n_lines\n2. Fix the bug\n3. Add a regression test to test_textutil.py that catches this bug\n4. Run tests with: python3 -m unittest -q\n5. Verify all tests pass\n\nMake the changes directly yourself. Do not delegate further.\n\nWhen you have finished, call the `report` …[180 more chars]",
+       "type": "text"
+      }
+     ],
+     "role": "user",
+     "timestamp": 1790796022020
+    },
+    {
+     "content": "🧠 **LLM Wiki active.** Retrieval (inline): recall runs automatically each turn — use `wiki_search` to query and `read` to open pages. Capture (background + reported): `wiki_observe` for timestamped notes, `wiki_retro` for durable insights. All other wiki actions run in the background and report when done. Silence these notices with `llm-wiki.notices: false`.",
+     "customType": "wiki-session-notice",
+     "display": true,
+     "role": "custom",
+     "timestamp": 1790796021984
+    },
+    {
+     "content": "ORCHESTRATOR RULE REMINDERS:\n- DELEGATE TO SUBAGENTS: Do NOT read/edit files directly on the main thread (no read, write, edit tools). Proactively delegate.\n- CHAINING & PARALLEL: For sequential tasks, chain subagents. Run them directly without intermediate manual approval. For independent tasks (e.g. parallel search/build/test), spawn parallel subagents aggressively.\n- CODE INTELLIGENCE:\n  * Semb…[315 more chars]",
+     "customType": "orchestrator-rules",
+     "display": true,
+     "role": "custom",
+     "timestamp": 1790796022024
+    },
+    {
+     "api": "google-generative-ai",
+     "content": [],
+     "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+     "model": "gemini-3.5-flash",
+     "provider": "google",
+     "role": "assistant",
+     "stopReason": "error",
+     "timestamp": 1790796022401,
+     "usage": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "input": 0,
+       "output": 0,
+       "total": 0
+      },
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0
+     }
+    }
+   ],
+   "type": "agent_end",
+   "willRetry": true
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:25.261Z",
+  "key": "auto_retry_start",
+  "frame": {
+   "attempt": 1,
+   "delayMs": 2000,
+   "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+   "maxAttempts": 3,
+   "type": "auto_retry_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:27.263Z",
+  "key": "agent_start",
+  "frame": {
+   "type": "agent_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:27.386Z",
+  "key": "turn_start",
+  "frame": {
+   "type": "turn_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.420Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796027387,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.424Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796027387,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.428Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.488Z",
+  "key": "turn_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796027387,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "toolResults": [],
+   "type": "turn_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.492Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.492Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m3 points / 2 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.517Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m3 points / 2 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.518Z",
+  "key": "agent_end",
+  "frame": {
+   "messages": [
+    {
+     "api": "google-generative-ai",
+     "content": [],
+     "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+     "model": "gemini-3.5-flash",
+     "provider": "google",
+     "role": "assistant",
+     "stopReason": "error",
+     "timestamp": 1790796027387,
+     "usage": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "input": 0,
+       "output": 0,
+       "total": 0
+      },
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0
+     }
+    }
+   ],
+   "type": "agent_end",
+   "willRetry": true
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:28.518Z",
+  "key": "auto_retry_start",
+  "frame": {
+   "attempt": 2,
+   "delayMs": 4000,
+   "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+   "maxAttempts": 3,
+   "type": "auto_retry_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:32.520Z",
+  "key": "agent_start",
+  "frame": {
+   "type": "agent_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:32.660Z",
+  "key": "turn_start",
+  "frame": {
+   "type": "turn_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:48.969Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796032662,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:48.973Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796032662,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:48.977Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.044Z",
+  "key": "turn_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796032662,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "toolResults": [],
+   "type": "turn_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.049Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.059Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m4 points / 3 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.145Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m4 points / 3 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.150Z",
+  "key": "agent_end",
+  "frame": {
+   "messages": [
+    {
+     "api": "google-generative-ai",
+     "content": [],
+     "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+     "model": "gemini-3.5-flash",
+     "provider": "google",
+     "role": "assistant",
+     "stopReason": "error",
+     "timestamp": 1790796032662,
+     "usage": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "input": 0,
+       "output": 0,
+       "total": 0
+      },
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0
+     }
+    }
+   ],
+   "type": "agent_end",
+   "willRetry": true
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:49.150Z",
+  "key": "auto_retry_start",
+  "frame": {
+   "attempt": 3,
+   "delayMs": 8000,
+   "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+   "maxAttempts": 3,
+   "type": "auto_retry_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:57.152Z",
+  "key": "agent_start",
+  "frame": {
+   "type": "agent_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:20:57.306Z",
+  "key": "turn_start",
+  "frame": {
+   "type": "turn_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.881Z",
+  "key": "message_start",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796057307,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_start"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.888Z",
+  "key": "message_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796057307,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "type": "message_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.889Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.940Z",
+  "key": "turn_end",
+  "frame": {
+   "message": {
+    "api": "google-generative-ai",
+    "content": [],
+    "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+    "model": "gemini-3.5-flash",
+    "provider": "google",
+    "role": "assistant",
+    "stopReason": "error",
+    "timestamp": 1790796057307,
+    "usage": {
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "cost": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "input": 0,
+      "output": 0,
+      "total": 0
+     },
+     "input": 0,
+     "output": 0,
+     "totalTokens": 0
+    }
+   },
+   "toolResults": [],
+   "type": "turn_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.945Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "pi-lens-lsp",
+   "statusText": "\u001b[38;2;102;102;102mLSP Inactive\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.945Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m5 points / 4 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.972Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "rewind",
+   "statusText": "\u001b[38;2;102;102;102m◆ \u001b[39m\u001b[38;2;128;128;128m5 points / 4 snapshots\u001b[39m",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:01.972Z",
+  "key": "agent_end",
+  "frame": {
+   "messages": [
+    {
+     "api": "google-generative-ai",
+     "content": [],
+     "errorMessage": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+     "model": "gemini-3.5-flash",
+     "provider": "google",
+     "role": "assistant",
+     "stopReason": "error",
+     "timestamp": 1790796057307,
+     "usage": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "input": 0,
+       "output": 0,
+       "total": 0
+      },
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0
+     }
+    }
+   ],
+   "type": "agent_end",
+   "willRetry": false
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.015Z",
+  "key": "auto_retry_end",
+  "frame": {
+   "attempt": 3,
+   "finalError": "{\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}",
+   "success": false,
+   "type": "auto_retry_end"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.019Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "subagent-async"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.019Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "processes-status"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.020Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setWidget",
+   "type": "extension_ui_request",
+   "widgetKey": "processes-dock"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.020Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "boomerang",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.020Z",
+  "key": "extension_ui_request",
+  "frame": {
+   "id": "<UUID>",
+   "method": "setStatus",
+   "statusKey": "goal",
+   "type": "extension_ui_request"
+  }
+ },
+ {
+  "ts": "2026-09-30T19:21:02.331Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Failed",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "child exited with code 0; the child's stream reported: {\"error\":{\"message\":\"{\\n  \\\"error\\\": {\\n    \\\"code\\\": 503,\\n    \\\"message\\\": \\\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\\\",\\n    \\\"status\\\": \\\"UNAVAILABLE\\\"\\n  }\\n}\\n\",\"code\":503,\"status\":\"Service Unavailable\"}}; stderr: [orchestrator-hook] loaded ✓\n[pi-reflex] loaded ✓\nWa…[423 more chars]"
+     }
+    }
+   }
+  }
+ }
+]

@@ -1,0 +1,27 @@
+marion: root <UUID> (opencode) in <SCRATCH>/s6/state/532ff8e59976/agents/<UUID>
+frame     step_start
+frame     tool_use
+frame     tool_use
+frame     step_finish
+frame     step_start
+frame     tool_use
+frame     step_finish
+frame     step_start
+CHILD     codex started (codex, depth 1)
+CHILD     codex ended: done — child exited with code 0
+frame     tool_use
+frame     step_finish
+frame     step_start
+frame     tool_use
+frame     step_finish
+frame     step_start
+frame     tool_use
+frame     step_finish
+frame     step_start
+frame     tool_use
+frame     step_finish
+frame     step_start
+frame     text
+frame     step_finish
+marion: nothing holds this project's supervisor any more, so it is leaving and journaling that it did
+marion: no node was left running.

@@ -340,11 +340,11 @@ scenario s5 claude haiku pi \
 
 # The roots that are not claude or codex: each delegates to codex, on the model its operator names.
 scenario s6 opencode "${OPENCODE_MODEL:--}" codex \
-	"Delegate this to a codex agent: add a word_count(s) function to textutil.py that returns the number of whitespace-separated words in s, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to a codex agent (agent_type \"codex\"): add a word_count(s) function to textutil.py that returns the number of whitespace-separated words in s, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import word_count as w; assert w("a  b\nc") == 3, w("a  b\nc"); assert w("") == 0; assert w("   ") == 0'
 
 scenario s7 pi-orchestrator "${PI_MODEL:--}" codex \
-	"Delegate this to a codex agent: add a char_frequency(s) function to textutil.py that returns a dict mapping each character of s to how many times it occurs, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to a codex agent (agent_type \"codex\"): add a char_frequency(s) function to textutil.py that returns a dict mapping each character of s to how many times it occurs, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import char_frequency as f; assert f("aab") == {"a": 2, "b": 1}, f("aab"); assert f("") == {}'
 
 # ---- a workflow scenario ----------------------------------------------------------------------------

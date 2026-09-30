@@ -1,0 +1,59 @@
+{
+ "scenario": "s6",
+ "root": {
+  "harness": "opencode",
+  "version": "1.18.33",
+  "usage": {
+   "input": 104505,
+   "output": 1541,
+   "cache_read": 61349,
+   "cache_write": 0,
+   "reasoning": 1095,
+   "total": 167395
+  },
+  "cost_usd": null,
+  "exit": "Ok",
+  "marion_tools": []
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 1,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 29179,
+    "output": 716,
+    "cache_read": 237312,
+    "cache_write": 0,
+    "reasoning": 11,
+    "total": 267207
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "codex",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "Implemented word_count(s) using whitespace splitting and added seven unit tests, verified all nine tests pass with python3 -m unittest -q, and left the changes uncommitted because sandbox permissions blocked Git index writes.",
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 136,
+ "timed_out": false
+}

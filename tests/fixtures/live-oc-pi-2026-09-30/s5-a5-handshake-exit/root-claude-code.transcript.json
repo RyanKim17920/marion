@@ -1,0 +1,667 @@
+[
+ {
+  "ts": "2026-09-30T18:23:41.310Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:42.766Z",
+  "marion": {
+   "Withheld": {
+    "key": "control_response",
+    "bytes": 61318,
+    "reason": "§5.2: a launcher that sends `initialize` MUST NOT journal the reply verbatim — it is the session catalogue (S9: ~30 kB of commands, model prices, account.tokenSource and the CLI's pid)"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:42.812Z",
+  "key": "system",
+  "frame": {
+   "agents": "<10 entries dropped: operator catalogue>",
+   "analytics_disabled": false,
+   "apiKeySource": "none",
+   "capabilities": "<5 entries dropped: operator catalogue>",
+   "claude_code_version": "2.1.285",
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "fast_mode_state": "off",
+   "mcp_servers": "<1 entries dropped: operator catalogue>",
+   "memory_paths": "<1 entries dropped: operator catalogue>",
+   "messaging_socket_path": "/tmp/cc-socks/10830.sock",
+   "model": "claude-haiku-4-5-20251001",
+   "output_style": "default",
+   "per_turn_effort_active": false,
+   "permissionMode": "default",
+   "plugins": "<15 entries dropped: operator catalogue>",
+   "product_feedback_disabled": false,
+   "skills": "<114 entries dropped: operator catalogue>",
+   "slash_commands": "<161 entries dropped: operator catalogue>",
+   "subtype": "init",
+   "terminal_slash_commands": "<4 entries dropped: operator catalogue>",
+   "tools": "<10 entries dropped: operator catalogue>",
+   "type": "system",
+   "view_mode": "default"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:43.621Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 50,
+   "estimated_tokens_delta": 50,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:45.033Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 150,
+   "estimated_tokens_delta": 100,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:45.976Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 325,
+   "estimated_tokens_delta": 175,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:45.983Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "signature": "Eo4KCtABCBIYAipAmkyGNpImGjdNZC8yta4m24VlaBiFLih/W1orL2KcfMhRW0rNJ6J5Iy15/6wEP57+jbesd34TdGIuv3mZTRMiHzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okZDJhYTgyMjEtZTY3OS00MWRhLTg5MDktMmJlMDQyZjFiNmRhchBIJTw9f1P1X+a2HqtQ2HE0iAEBmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGxp/XVBrABAhIMLLVmWUMULAzj8x2jGgzf1NRSXqCeVlPKGMUiMIB8ppZ+FpZSgsc+tHiiI5UMDqnBkYkV7bfGrCGxs0tgBspBX/TjhMnYCKN8kScF0SrqB0tTD7vt…[1332 more chars]",
+      "thinking": "",
+      "type": "thinking"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6Eo1Q68RKCbnR5Vcfs",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 7031,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 7031,
+     "cache_read_input_tokens": 9364,
+     "inference_geo": "not_available",
+     "input_tokens": 10,
+     "output_tokens": 4,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6EngZdWg6VXgHPPEJM",
+   "timestamp": "2026-09-30T18:23:45.977Z",
+   "type": "assistant"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:48.383Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "caller": {
+       "type": "direct"
+      },
+      "id": "toolu_01X7QKAbqonUisuwqaSP7aeL",
+      "input": {
+       "acceptance_criteria": [
+        "The off-by-one bug in last_n_lines is fixed",
+        "A regression test is added to test_textutil.py",
+        "All tests pass with python3 -m unittest -q"
+       ],
+       "agent_type": "pi",
+       "model": "github-copilot/gemini-3.1-pro-preview",
+       "prompt": "Fix the off-by-one bug in the `last_n_lines` function in textutil.py, then add a regression test to test_textutil.py that would have caught this bug. \n\nSteps:\n1. Examine textutil.py to understand the current implementation of `last_n_lines`\n2. Identify the off-by-one bug\n3. Fix the bug\n4. Add a regression test to test_textutil.py that catches the bug\n5. Run the tests with `python3 -m unittest -q` …[109 more chars]"
+      },
+      "name": "mcp__marion__spawn",
+      "type": "tool_use"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6Eo1Q68RKCbnR5Vcfs",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 7031,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 7031,
+     "cache_read_input_tokens": 9364,
+     "inference_geo": "not_available",
+     "input_tokens": 10,
+     "output_tokens": 4,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6EngZdWg6VXgHPPEJM",
+   "timestamp": "2026-09-30T18:23:48.363Z",
+   "tool_use_meta": [
+    {
+     "display_name": "Spawn",
+     "id": "toolu_01X7QKAbqonUisuwqaSP7aeL",
+     "server_display_name": "marion"
+    }
+   ],
+   "type": "assistant",
+   "wire_tool_inputs": {
+    "toolu_01X7QKAbqonUisuwqaSP7aeL": {
+     "acceptance_criteria": [
+      "The off-by-one bug in last_n_lines is fixed",
+      "A regression test is added to test_textutil.py",
+      "All tests pass with python3 -m unittest -q"
+     ],
+     "agent_type": "pi",
+     "model": "github-copilot/gemini-3.1-pro-preview",
+     "prompt": "Fix the off-by-one bug in the `last_n_lines` function in textutil.py, then add a regression test to test_textutil.py that would have caught this bug. \n\nSteps:\n1. Examine textutil.py to understand the current implementation of `last_n_lines`\n2. Identify the off-by-one bug\n3. Fix the bug\n4. Add a regression test to test_textutil.py that catches the bug\n5. Run the tests with `python3 -m unittest -q` …[109 more chars]"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:23:48.405Z",
+  "key": "rate_limit_event",
+  "frame": {
+   "rate_limit_info": "<7 entries dropped: operator catalogue>",
+   "type": "rate_limit_event"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:18.420Z",
+  "key": "tool_progress",
+  "frame": {
+   "elapsed_time_seconds": 30,
+   "heartbeat": true,
+   "parent_tool_use_id": "toolu_01X7QKAbqonUisuwqaSP7aeL",
+   "tool_name": "mcp__marion__spawn",
+   "tool_use_id": "toolu_01X7QKAbqonUisuwqaSP7aeL-heartbeat-0",
+   "type": "tool_progress"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:37.232Z",
+  "key": "user",
+  "frame": {
+   "message": {
+    "content": [
+     {
+      "content": "marion: the pi child ran, and marion cannot hand you its contract — the child did not run to a contract: driving the child over its control plane: the node exited before answering marion's initialize control request",
+      "is_error": true,
+      "tool_use_id": "toolu_01X7QKAbqonUisuwqaSP7aeL",
+      "type": "tool_result"
+     }
+    ],
+    "role": "user"
+   },
+   "parent_tool_use_id": null,
+   "timestamp": "2026-09-30T18:24:37.212Z",
+   "tool_use_result": "Error: marion: the pi child ran, and marion cannot hand you its contract — the child did not run to a contract: driving the child over its control plane: the node exited before answering marion's initialize control request",
+   "type": "user"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:38.340Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 50,
+   "estimated_tokens_delta": 50,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:38.613Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 162,
+   "estimated_tokens_delta": 112,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:38.618Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "signature": "Ev4ECtABCBIYAipAX68I2y4FrJp/D+NEVs8SzjM4twM78HbjS4Ga+D+UeIOLjv/011NxCdF1quH6WrpkD/lEfWEZQwh8F4UVcag5wDIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okZDJhYTgyMjEtZTY3OS00MWRhLTg5MDktMmJlMDQyZjFiNmRhchBIJTw9f1P1X+a2HqtQ2HE0iAEBmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAHmp/XVBrABAhIMe42KaDvVz3CUhnKGGgzkhTkEeub27VIGpaoiMLNvkk/qzr1SGc0UEpoMiSBMgM+CMVJb0HFkacJ6El8cvmwmFJMqc0sJz5KBooMZ6SraAtldqJlv…[460 more chars]",
+      "thinking": "",
+      "type": "thinking"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6JojRf89CojG3oaiK9",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 703,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 703,
+     "cache_read_input_tokens": 16395,
+     "inference_geo": "not_available",
+     "input_tokens": 8,
+     "output_tokens": 4,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6JoP6LABYGNrVgW2Je",
+   "timestamp": "2026-09-30T18:24:38.613Z",
+   "type": "assistant"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:38.885Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "text": "Let me try with a standard agent instead:",
+      "type": "text"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6JojRf89CojG3oaiK9",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 703,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 703,
+     "cache_read_input_tokens": 16395,
+     "inference_geo": "not_available",
+     "input_tokens": 8,
+     "output_tokens": 4,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6JoP6LABYGNrVgW2Je",
+   "timestamp": "2026-09-30T18:24:38.883Z",
+   "type": "assistant"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:24:40.501Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "caller": {
+       "type": "direct"
+      },
+      "id": "toolu_011TVPPwRmz9BvdQENSxVP3A",
+      "input": {
+       "acceptance_criteria": [
+        "The off-by-one bug in last_n_lines is fixed",
+        "A regression test is added to test_textutil.py",
+        "All tests pass with python3 -m unittest -q"
+       ],
+       "agent_type": "claude",
+       "prompt": "Fix the off-by-one bug in the `last_n_lines` function in textutil.py, then add a regression test to test_textutil.py that would have caught this bug. \n\nSteps:\n1. Examine textutil.py to understand the current implementation of `last_n_lines`\n2. Identify the off-by-one bug\n3. Fix the bug\n4. Add a regression test to test_textutil.py that catches the bug\n5. Run the tests with `python3 -m unittest -q` …[109 more chars]"
+      },
+      "name": "mcp__marion__spawn",
+      "type": "tool_use"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6JojRf89CojG3oaiK9",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 703,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 703,
+     "cache_read_input_tokens": 16395,
+     "inference_geo": "not_available",
+     "input_tokens": 8,
+     "output_tokens": 4,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6JoP6LABYGNrVgW2Je",
+   "timestamp": "2026-09-30T18:24:40.494Z",
+   "tool_use_meta": [
+    {
+     "display_name": "Spawn",
+     "id": "toolu_011TVPPwRmz9BvdQENSxVP3A",
+     "server_display_name": "marion"
+    }
+   ],
+   "type": "assistant",
+   "wire_tool_inputs": {
+    "toolu_011TVPPwRmz9BvdQENSxVP3A": {
+     "acceptance_criteria": [
+      "The off-by-one bug in last_n_lines is fixed",
+      "A regression test is added to test_textutil.py",
+      "All tests pass with python3 -m unittest -q"
+     ],
+     "agent_type": "claude",
+     "prompt": "Fix the off-by-one bug in the `last_n_lines` function in textutil.py, then add a regression test to test_textutil.py that would have caught this bug. \n\nSteps:\n1. Examine textutil.py to understand the current implementation of `last_n_lines`\n2. Identify the off-by-one bug\n3. Fix the bug\n4. Add a regression test to test_textutil.py that catches the bug\n5. Run the tests with `python3 -m unittest -q` …[109 more chars]"
+    }
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:02.654Z",
+  "key": "user",
+  "frame": {
+   "message": {
+    "content": [
+     {
+      "content": [
+       {
+        "text": "marion: the claude-code child finished Ok — child exited with code 0 | claude · Ok · no verification declared · changed \"test_textutil.py\", \"textutil.py\" · changes on branch marion/c481-fix-the-off-by-one-bug (19b0d9ce67ab); merge with: git merge --no-ff marion/c481-fix-the-off-by-one-bug\n\nThe child's task contract follows between the markers. Every field the child wrote (its narrative, its report…[4769 more chars]",
+        "type": "text"
+       }
+      ],
+      "tool_use_id": "toolu_011TVPPwRmz9BvdQENSxVP3A",
+      "type": "tool_result"
+     }
+    ],
+    "role": "user"
+   },
+   "parent_tool_use_id": null,
+   "timestamp": "2026-09-30T18:25:02.647Z",
+   "tool_use_result": [
+    {
+     "text": "marion: the claude-code child finished Ok — child exited with code 0 | claude · Ok · no verification declared · changed \"test_textutil.py\", \"textutil.py\" · changes on branch marion/c481-fix-the-off-by-one-bug (19b0d9ce67ab); merge with: git merge --no-ff marion/c481-fix-the-off-by-one-bug\n\nThe child's task contract follows between the markers. Every field the child wrote (its narrative, its report…[4769 more chars]",
+     "type": "text"
+    }
+   ],
+   "type": "user"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:03.593Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 50,
+   "estimated_tokens_delta": 50,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:04.710Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 150,
+   "estimated_tokens_delta": 100,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:05.345Z",
+  "key": "system",
+  "frame": {
+   "estimated_tokens": 267,
+   "estimated_tokens_delta": 117,
+   "subtype": "thinking_tokens",
+   "type": "system"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:05.349Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "signature": "EqQICtABCBIYAipALUvQbQBrpNEP2Kl9zty/7Ok+mcF9G+PJqLw4XWmlM5fT86vyzr/mxMOOge8v5eRtDuo9tgXaIOWRsPyEm1qWFDIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okZDJhYTgyMjEtZTY3OS00MWRhLTg5MDktMmJlMDQyZjFiNmRhchBIJTw9f1P1X+a2HqtQ2HE0iAEBmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGBqPXVBrABAhIMH5JPPZLPMJQH2snGGgzX5yTmTFNoXD0qjjgiMO1JSmL7aCevyfj268hi2oHNfaelkZ5Z5glhNUwzQuF3Dbg4uzWfT3E8wbs4JyQYpCqABgQpG5Qs…[1020 more chars]",
+      "thinking": "",
+      "type": "thinking"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6LgPxFckCTy3uiiUCv",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 2386,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 2386,
+     "cache_read_input_tokens": 17098,
+     "inference_geo": "not_available",
+     "input_tokens": 8,
+     "output_tokens": 1,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6Lg3s6rHnJY1nsL7Ly",
+   "timestamp": "2026-09-30T18:25:05.345Z",
+   "type": "assistant"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:07.188Z",
+  "key": "assistant",
+  "frame": {
+   "message": {
+    "container": null,
+    "content": [
+     {
+      "text": "Done! The subagent fixed the off-by-one bug and added comprehensive regression tests. Here's what was done:\n\n**Bug Fix:** Changed `textutil.last_n_lines` from `lines[len(lines) - n - 1:]` to `lines[max(len(lines) - n, 0):]`. The original code returned n+1 lines and could wrap incorrectly when n exceeded the line count.\n\n**Regression Tests:** Added 6 test cases to `test_textutil.py` covering:\n- Exa…[281 more chars]",
+      "type": "text"
+     }
+    ],
+    "context_management": null,
+    "diagnostics": null,
+    "id": "msg_011Cfa6LgPxFckCTy3uiiUCv",
+    "input_transformations": [],
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 2386,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "cache_creation_input_tokens": 2386,
+     "cache_read_input_tokens": 17098,
+     "inference_geo": "not_available",
+     "input_tokens": 8,
+     "output_tokens": 1,
+     "service_tier": "standard"
+    }
+   },
+   "parent_tool_use_id": null,
+   "request_id": "req_011Cfa6Lg3s6rHnJY1nsL7Ly",
+   "timestamp": "2026-09-30T18:25:07.186Z",
+   "type": "assistant"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:07.198Z",
+  "key": "result",
+  "frame": {
+   "api_error_status": null,
+   "duration_api_ms": 13353,
+   "duration_ms": 84418,
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "fast_mode_state": "off",
+   "first_content_frame_ms": 504,
+   "is_error": false,
+   "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+     "cacheCreationInputTokens": 10120,
+     "cacheReadInputTokens": 42857,
+     "canonicalModel": "claude-haiku-4-5",
+     "contextWindow": 200000,
+     "costBasis": "list",
+     "costUSD": 0.0315467,
+     "inputTokens": 26,
+     "maxOutputTokens": 32000,
+     "outputTokens": 1399,
+     "provider": "firstParty",
+     "thinkingTokens": 583,
+     "webSearchRequests": 0
+    }
+   },
+   "num_turns": 3,
+   "permission_denials": [],
+   "queued_turn_count": 0,
+   "result": "Done! The subagent fixed the off-by-one bug and added comprehensive regression tests. Here's what was done:\n\n**Bug Fix:** Changed `textutil.last_n_lines` from `lines[len(lines) - n - 1:]` to `lines[max(len(lines) - n, 0):]`. The original code returned n+1 lines and could wrap incorrectly when n exceeded the line count.\n\n**Regression Tests:** Added 6 test cases to `test_textutil.py` covering:\n- Exa…[281 more chars]",
+   "result_index": 0,
+   "stop_reason": "end_turn",
+   "subagent_stats": {
+    "by_type": {},
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+     "parent": 0,
+     "system": 0,
+     "user": 0
+    },
+    "max_depth": 0,
+    "refused": {
+     "budget": 0,
+     "concurrency_limit": 0,
+     "depth_limit": 0
+    },
+    "requested": {
+     "background": 0,
+     "foreground": 0,
+     "unset": 0
+    },
+    "spawned": 0,
+    "spawned_by_subagents": 0,
+    "started_in_background": 0
+   },
+   "subtype": "success",
+   "terminal_reason": "completed",
+   "time_to_request_ms": 63,
+   "total_cost_usd": 0.0315467,
+   "ttft_ms": 3201,
+   "ttft_stream_ms": 503,
+   "type": "result",
+   "usage": {
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 10120,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 10120,
+    "cache_read_input_tokens": 42857,
+    "fallback_credit": null,
+    "inference_geo": "not_available",
+    "input_tokens": 26,
+    "iterations": [
+     {
+      "cache_creation": {
+       "ephemeral_1h_input_tokens": 2386,
+       "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 2386,
+      "cache_read_input_tokens": 17098,
+      "input_tokens": 8,
+      "output_tokens": 433,
+      "type": "message"
+     }
+    ],
+    "output_tokens": 1399,
+    "output_tokens_details": {
+     "thinking_tokens": 583
+    },
+    "server_tool_use": {
+     "web_fetch_requests": 0,
+     "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T18:25:07.930Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Ok",
+     "exit": {
+      "code": 0,
+      "signal": null,
+      "description": "root exited with code 0"
+     }
+    }
+   }
+  }
+ }
+]

@@ -1,0 +1,72 @@
+[
+ {
+  "ts": "2026-09-30T17:10:00.529Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T17:10:01.164Z",
+  "key": "",
+  "frame": {
+   "id": 0,
+   "jsonrpc": "2.0",
+   "result": {
+    "agentCapabilities": {
+     "loadSession": true,
+     "mcpCapabilities": {
+      "http": true,
+      "sse": true
+     },
+     "promptCapabilities": {
+      "embeddedContext": true,
+      "image": true
+     },
+     "sessionCapabilities": {
+      "close": {},
+      "fork": {},
+      "list": {},
+      "resume": {}
+     }
+    },
+    "agentInfo": {
+     "name": "OpenCode",
+     "version": "1.18.33"
+    },
+    "authMethods": [
+     {
+      "description": "Run `opencode auth login` in the terminal",
+      "id": "opencode-login",
+      "name": "Login with opencode"
+     }
+    ],
+    "protocolVersion": 1
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T17:10:02.433Z",
+  "key": "",
+  "frame": {
+   "id": 1,
+   "jsonrpc": "2.0",
+   "result": {
+    "configOptions": "<2 entries dropped: operator catalogue>"
+   }
+  }
+ },
+ {
+  "ts": "2026-09-30T17:10:02.535Z",
+  "key": "session/update",
+  "frame": {
+   "jsonrpc": "2.0",
+   "method": "session/update",
+   "params": {
+    "update": {
+     "availableCommands": "<28 entries dropped: operator catalogue>",
+     "sessionUpdate": "available_commands_update"
+    }
+   }
+  }
+ }
+]

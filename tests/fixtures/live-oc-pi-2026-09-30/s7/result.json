@@ -1,0 +1,82 @@
+{
+ "scenario": "s7",
+ "root": {
+  "harness": "pi",
+  "version": "0.80.2",
+  "usage": {
+   "input": 27948,
+   "output": 2460,
+   "cache_read": 0,
+   "cache_write": 0,
+   "reasoning": 0,
+   "total": 30408
+  },
+  "cost_usd": null,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 1,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 30508,
+    "output": 1043,
+    "cache_read": 323072,
+    "cache_write": 0,
+    "reasoning": 26,
+    "total": 354623
+   },
+   "cost_usd": null
+  }
+ ],
+ "child_harness_expected": "codex",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "Implemented typed char_frequency and added comprehensive edge-case tests, verified all 13 tests pass with python3 -m unittest -q, but the sandbox blocked committing the changes.",
+ "declared_verification": [
+  "codex -c check_for_update_on_startup=false sandbox -c sandbox_mode=\"workspace-write\" -- sh -c python3 -m unittest -q"
+ ],
+ "marion_evidence_exit_codes": [
+  0
+ ],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 137,
+ "timed_out": false
+}
