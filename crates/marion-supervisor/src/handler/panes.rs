@@ -7,8 +7,9 @@ use marion_core::node::{NodeState, ReapState};
 use marion_core::proto::result::NodeAttachResult;
 use marion_core::proto::{AttachMode, FailureKind, ReplayPoint, RpcError};
 
+use super::delivery::deliver_events;
 use super::summary::summarize;
-use super::{RegistryHandle, deliver_events, lock};
+use super::{RegistryHandle, lock};
 use crate::serve::{ConnId, Outbound};
 
 /// One client following one node's `events.jsonl`.
