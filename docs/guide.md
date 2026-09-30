@@ -251,7 +251,10 @@ one ended that way; a step that fails with nothing gated on it ends the run. Eac
 top-level agents in worktrees of their own, like `marion race`'s seats. A `race` step
 (`on = [...]`, `verify = [...]`, optionally `first` and `prune`) races its candidates, and the step
 after it builds on the winner's work: each step that changes files is cut at the commit of the
-last step before it that did.
+last step before it that did. A `review` step (`of = "<step>"`, optionally `on` for the reviewer and
+`max_rounds` up to 3) reviews that step's work read-only; blocking findings go to a fixer on the
+work's own agent type, cut at its commit, and the fix is reviewed again, until a round is clean
+(`clean`) or the last one still blocks (`blocked`). `{gate.findings}` is the last review's list.
 
 ```sh
 marion workflow list                      # every workflow, and whether it may run
@@ -260,7 +263,7 @@ marion workflow run ship --task "add rate limiting"  # watch it; exits 1 unless 
 ```
 
 A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent
-and verification command first; any edit revokes it. Review and land steps are coming.
+and verification command first; any edit revokes it. Land steps are coming.
 
 ## Sharing a run
 

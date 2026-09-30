@@ -210,8 +210,13 @@ pub enum StepKind {
         prune: bool,
     },
     /// A review of an earlier step's work; blocking findings are fixed and reviewed again, up to
-    /// `max_rounds` rounds in all.
-    Review { of: usize, max_rounds: u8 },
+    /// `max_rounds` rounds in all. `on` names the reviewer; unnamed, marion picks one from another
+    /// model family than the work's.
+    Review {
+        of: usize,
+        max_rounds: u8,
+        on: Option<Candidate>,
+    },
     /// The work of an earlier step, landed.
     Land { of: usize, mode: LandMode },
 }
@@ -330,7 +335,8 @@ impl StepKind {
         match self {
             StepKind::Agent { on, .. } => vec![on],
             StepKind::Parallel { on, .. } | StepKind::Race { on, .. } => on.iter().collect(),
-            StepKind::Review { .. } | StepKind::Land { .. } => Vec::new(),
+            StepKind::Review { on, .. } => on.iter().collect(),
+            StepKind::Land { .. } => Vec::new(),
         }
     }
 }
@@ -684,7 +690,7 @@ fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
         "agent" => &["on", "prompt", "read_only", "verify"],
         "parallel" => &["on", "prompt"],
         "race" => &["on", "prompt", "verify", "first", "prune"],
-        "review" => &["of", "max_rounds"],
+        "review" => &["of", "max_rounds", "on"],
         "land" => &["of", "mode"],
         _ => return None,
     })
@@ -825,7 +831,11 @@ fn step_kind(
                     ),
                 ));
             }
-            StepKind::Review { of, max_rounds }
+            StepKind::Review {
+                of,
+                max_rounds,
+                on: rs.on.as_ref().map(|_| one("on")).transpose()?,
+            }
         }
         "land" => StepKind::Land {
             of: branch_step("of")?,
@@ -1173,7 +1183,8 @@ mode = "ff"
             wf.steps[2].kind,
             StepKind::Review {
                 of: 1,
-                max_rounds: 3
+                max_rounds: 3,
+                on: None
             }
         );
         assert_eq!(

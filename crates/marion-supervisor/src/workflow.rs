@@ -130,60 +130,30 @@ fn ended(node: &ReplayedNode) -> bool {
 }
 
 /// **A step as the journal and its nodes' contracts have it**: decided, running, or not yet started
-/// — and, for one whose nodes have all ended but that no decision names yet, the verdict they
-/// earned, for the driver to journal.
+/// — or, where it is not decided yet, the verdict its nodes earned (for the driver to journal), or
+/// the next node a review step's round needs (for the driver to launch).
 pub enum Observed {
     State(StepState),
     Earned(StepVerdict),
+    Act(Act),
 }
 
-pub fn observe(
-    project: &ProjectDir,
-    wf: &Workflow,
-    run: &ReplayedWorkflow,
-    nodes: &[ReplayedNode],
-    races: &[ReplayedRace],
-    step: usize,
-) -> Observed {
-    let Ok(s) = u8::try_from(step) else {
-        return Observed::State(StepState::Pending);
-    };
-    if let Some(d) = run.decision(s) {
-        return Observed::State(StepState::Decided(d.verdict));
-    }
-    let launched: Vec<&ReplayedNode> = run
-        .step_nodes(s, 0)
-        .into_iter()
-        .filter_map(|id| nodes.iter().find(|n| &n.agent_id == id))
-        .collect();
-    if launched.is_empty() {
-        return Observed::State(StepState::Pending);
-    }
-    // A race step is decided by its race, which may stop a seat or wait for every one.
-    if matches!(wf.steps[step].kind, StepKind::Race { .. }) {
-        return match race_of(&launched, races).and_then(|r| r.decided.as_ref()) {
-            Some(d) => Observed::Earned(if d.winner.is_some() {
-                StepVerdict::Succeeded
-            } else {
-                StepVerdict::Failed
-            }),
-            None => Observed::State(StepState::Running { round: 0 }),
-        };
-    }
-    if launched.len() < expected_nodes(&wf.steps[step].kind) || !launched.iter().all(|n| ended(n)) {
-        return Observed::State(StepState::Running { round: 0 });
-    }
-    let all_ok = launched.iter().all(|n| {
-        contract_of(project, n)
-            .and_then(|c| c.completion)
-            .is_some_and(|c| c.status == ExitStatus::Ok)
-    });
-    Observed::Earned(if all_ok {
-        StepVerdict::Succeeded
-    } else {
-        StepVerdict::Failed
-    })
+/// A review step's next node, within the step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Act {
+    /// Review `target`'s work in `round` (0-based).
+    Review { round: u8, target: AgentId },
+    /// Fix what `reviewer` found in `target`'s work, in `round`.
+    Fix {
+        round: u8,
+        target: AgentId,
+        reviewer: AgentId,
+    },
 }
+
+/// A review step's reviewer in a round is its part 0; the fixer after it is part 1.
+pub const REVIEWER: u8 = 0;
+pub const FIXER: u8 = 1;
 
 /// The race a race step's seats belong to.
 fn race_of<'a>(seats: &[&ReplayedNode], races: &'a [ReplayedRace]) -> Option<&'a ReplayedRace> {
@@ -194,7 +164,7 @@ fn race_of<'a>(seats: &[&ReplayedNode], races: &'a [ReplayedRace]) -> Option<&'a
     races.iter().find(|r| &r.race_id == id)
 }
 
-/// How many nodes a step starts.
+/// How many nodes a step starts at once.
 pub fn expected_nodes(kind: &StepKind) -> usize {
     match kind {
         StepKind::Parallel { on, .. } => on.len(),
@@ -202,31 +172,19 @@ pub fn expected_nodes(kind: &StepKind) -> usize {
     }
 }
 
-/// The run's state for [`marion_core::workflow::next`], with every step whose nodes have ended but
-/// that is not yet decided counted as decided on what they earned — the caller journals those.
-pub fn state(
-    project: &ProjectDir,
-    wf: &Workflow,
-    run: &ReplayedWorkflow,
-    nodes: &[ReplayedNode],
-    races: &[ReplayedRace],
-) -> (WfState, Vec<(usize, StepVerdict)>) {
-    let mut state = WfState::new(wf);
-    let mut earned = Vec::new();
-    for i in 0..wf.steps.len() {
-        state.steps[i] = match observe(project, wf, run, nodes, races, i) {
-            Observed::State(s) => s,
-            Observed::Earned(v) => {
-                earned.push((i, v));
-                StepState::Decided(v)
-            }
-        };
-    }
-    (state, earned)
+/// Whether a step node ended with its contract `Ok`.
+fn succeeded(project: &ProjectDir, node: &ReplayedNode) -> bool {
+    contract_of(project, node)
+        .and_then(|c| c.completion)
+        .is_some_and(|c| c.status == ExitStatus::Ok)
 }
 
-/// **What a later step's prompt reads**: the run's inputs, and each earlier step's fields off its
-/// nodes' contracts.
+/// A run's state, the verdicts its steps earned undecided, and the review nodes it needs next:
+/// what [`RunValues::state`] answers.
+pub type Stepped = (WfState, Vec<(usize, StepVerdict)>, Vec<(usize, Act)>);
+
+/// **What one run is, read off the journal's fold and its step nodes' contracts** — the state its
+/// stepping needs, and the values a later step's prompt reads.
 pub struct RunValues<'a> {
     pub spec: &'a Spec,
     pub project: &'a ProjectDir,
@@ -236,33 +194,198 @@ pub struct RunValues<'a> {
 }
 
 impl RunValues<'_> {
-    /// The contracts a step's fields are read from: each of its nodes', or a race's winner's.
-    fn contracts(&self, step: usize) -> Vec<(AgentId, TaskContract)> {
-        let Ok(s) = u8::try_from(step) else {
-            return Vec::new();
-        };
-        let launched: Vec<&ReplayedNode> = self
-            .run
-            .step_nodes(s, 0)
-            .into_iter()
-            .filter_map(|id| self.nodes.iter().find(|n| &n.agent_id == id))
-            .collect();
-        let chosen: Vec<&ReplayedNode> = match self.spec.workflow.steps.get(step).map(|d| &d.kind) {
-            Some(StepKind::Race { .. }) => {
-                let winner = race_of(&launched, self.races)
-                    .and_then(|r| r.decided.as_ref())
-                    .and_then(|d| d.winner.clone());
-                launched
-                    .into_iter()
-                    .filter(|n| Some(&n.agent_id) == winner.as_ref())
-                    .collect()
+    fn node(&self, id: &AgentId) -> Option<&ReplayedNode> {
+        self.nodes.iter().find(|n| &n.agent_id == id)
+    }
+
+    /// Every node `step` launched, in intent order.
+    pub fn step_nodes(&self, step: usize) -> Vec<&ReplayedNode> {
+        self.run
+            .nodes
+            .iter()
+            .filter(|(seat, _)| usize::from(seat.step) == step)
+            .filter_map(|(_, id)| self.node(id))
+            .collect()
+    }
+
+    /// The node in `step`'s seat `(round, part)`.
+    fn seat(&self, step: usize, round: u8, part: u8) -> Option<&ReplayedNode> {
+        self.run
+            .nodes
+            .iter()
+            .find(|(s, _)| usize::from(s.step) == step && s.round == round && s.part == part)
+            .and_then(|(_, id)| self.node(id))
+    }
+
+    /// **The node whose work `step` stands for**: its one node, a race's winner, or a review's
+    /// latest fix that passed (else the work it reviewed).
+    pub fn work_node(&self, step: usize) -> Option<&ReplayedNode> {
+        match &self.spec.workflow.steps.get(step)?.kind {
+            StepKind::Agent { .. } => self.step_nodes(step).into_iter().next(),
+            StepKind::Race { .. } => {
+                let seats = self.step_nodes(step);
+                let winner = race_of(&seats, self.races)?
+                    .decided
+                    .as_ref()?
+                    .winner
+                    .clone()?;
+                self.node(&winner)
             }
-            _ => launched,
+            StepKind::Review { of, max_rounds, .. } => {
+                let mut work = self.work_node(*of)?;
+                for r in 0..*max_rounds {
+                    match self.seat(step, r, FIXER) {
+                        Some(fix) if ended(fix) && succeeded(self.project, fix) => work = fix,
+                        _ => break,
+                    }
+                }
+                Some(work)
+            }
+            StepKind::Parallel { .. } | StepKind::Land { .. } => None,
+        }
+    }
+
+    /// The contracts a step's fields are read from: each of a parallel step's nodes', or the one
+    /// node its work is ([`Self::work_node`]).
+    fn contracts(&self, step: usize) -> Vec<(AgentId, TaskContract)> {
+        let chosen: Vec<&ReplayedNode> = match self.spec.workflow.steps.get(step).map(|d| &d.kind) {
+            Some(StepKind::Parallel { .. }) => self.step_nodes(step),
+            Some(_) => self.work_node(step).into_iter().collect(),
+            None => Vec::new(),
         };
         chosen
             .into_iter()
             .filter_map(|n| contract_of(self.project, n).map(|c| (n.agent_id.clone(), c)))
             .collect()
+    }
+
+    /// The last findings a review step's reviewers reported, as a list.
+    fn findings(&self, step: usize) -> Option<String> {
+        let StepKind::Review { max_rounds, .. } = self.spec.workflow.steps.get(step)?.kind else {
+            return None;
+        };
+        let last = (0..max_rounds)
+            .rev()
+            .find_map(|r| self.seat(step, r, REVIEWER))?;
+        findings_text(&contract_of(self.project, last)?)
+    }
+
+    /// **A step as the journal and its nodes have it.**
+    pub fn observe(&self, step: usize) -> Observed {
+        let Ok(s) = u8::try_from(step) else {
+            return Observed::State(StepState::Pending);
+        };
+        if let Some(d) = self.run.decision(s) {
+            return Observed::State(StepState::Decided(d.verdict));
+        }
+        let running = Observed::State(StepState::Running { round: 0 });
+        let kind = &self.spec.workflow.steps[step].kind;
+        if let StepKind::Review { of, max_rounds, .. } = kind {
+            return self.observe_review(step, *of, *max_rounds);
+        }
+        let launched = self.step_nodes(step);
+        if launched.is_empty() {
+            return Observed::State(StepState::Pending);
+        }
+        // A race step is decided by its race, which may stop a seat or wait for every one.
+        if matches!(kind, StepKind::Race { .. }) {
+            return match race_of(&launched, self.races).and_then(|r| r.decided.as_ref()) {
+                Some(d) => Observed::Earned(if d.winner.is_some() {
+                    StepVerdict::Succeeded
+                } else {
+                    StepVerdict::Failed
+                }),
+                None => running,
+            };
+        }
+        if launched.len() < expected_nodes(kind) || !launched.iter().all(|n| ended(n)) {
+            return running;
+        }
+        Observed::Earned(if launched.iter().all(|n| succeeded(self.project, n)) {
+            StepVerdict::Succeeded
+        } else {
+            StepVerdict::Failed
+        })
+    }
+
+    /// A review step, round by round: each reviewer's decision (off its contract's tally), the
+    /// fixer after a blocking one, and the review of that fix — until one is clean, a fix fails, or
+    /// the last round still blocks.
+    fn observe_review(&self, step: usize, of: usize, max_rounds: u8) -> Observed {
+        let running = Observed::State(StepState::Running { round: 0 });
+        // Not started: nothing is known of the work it will review yet.
+        if self.step_nodes(step).is_empty() {
+            return Observed::State(StepState::Pending);
+        }
+        let Some(mut target) = self.work_node(of) else {
+            return Observed::Earned(StepVerdict::Failed);
+        };
+        for r in 0..max_rounds {
+            let Some(rev) = self.seat(step, r, REVIEWER) else {
+                return if r == 0 {
+                    Observed::State(StepState::Pending)
+                } else {
+                    Observed::Act(Act::Review {
+                        round: r,
+                        target: target.agent_id.clone(),
+                    })
+                };
+            };
+            if !ended(rev) {
+                return running;
+            }
+            let decision = rev
+                .contracts
+                .last()
+                .and_then(|c| c.review)
+                .map(|t| t.decision);
+            match decision {
+                Some(marion_core::review::Decision::Allow) => {
+                    return Observed::Earned(StepVerdict::Clean);
+                }
+                Some(marion_core::review::Decision::Block) if r + 1 == max_rounds => {
+                    return Observed::Earned(StepVerdict::Blocked);
+                }
+                Some(marion_core::review::Decision::Block) => match self.seat(step, r, FIXER) {
+                    None => {
+                        return Observed::Act(Act::Fix {
+                            round: r,
+                            target: target.agent_id.clone(),
+                            reviewer: rev.agent_id.clone(),
+                        });
+                    }
+                    Some(fix) if !ended(fix) => return running,
+                    Some(fix) if succeeded(self.project, fix) => target = fix,
+                    Some(_) => return Observed::Earned(StepVerdict::Failed),
+                },
+                // A reviewer whose report marion could not read decides nothing.
+                None => return Observed::Earned(StepVerdict::Failed),
+            }
+        }
+        Observed::Earned(StepVerdict::Blocked)
+    }
+
+    /// The run's state for [`marion_core::workflow::next`]: every step as it stands, the steps
+    /// whose nodes have earned a verdict no decision records yet (for the driver to journal), and
+    /// the review nodes a running review step needs next (for the driver to launch).
+    pub fn state(&self) -> Stepped {
+        let wf = &self.spec.workflow;
+        let mut state = WfState::new(wf);
+        let (mut earned, mut acts) = (Vec::new(), Vec::new());
+        for i in 0..wf.steps.len() {
+            state.steps[i] = match self.observe(i) {
+                Observed::State(s) => s,
+                Observed::Earned(v) => {
+                    earned.push((i, v));
+                    StepState::Decided(v)
+                }
+                Observed::Act(a) => {
+                    acts.push((i, a));
+                    StepState::Running { round: 0 }
+                }
+            };
+        }
+        (state, earned, acts)
     }
 
     /// **The commit a step builds on**: the work of the latest earlier step that left a branch and
@@ -277,12 +400,42 @@ impl RunValues<'_> {
             if !def.kind.makes_a_branch() || !passed {
                 return None;
             }
-            match self.contracts(i).as_slice() {
-                [(_, c)] => c.completion.as_ref()?.commit.clone(),
-                _ => None,
-            }
+            let work = self.work_node(i)?;
+            contract_of(self.project, work)?.completion?.commit
         })
     }
+}
+
+/// A reviewer's grounded findings as a list a fixer or a later prompt reads, blocking ones first.
+pub fn findings_text(reviewer: &TaskContract) -> Option<String> {
+    let findings = reviewer.completion.as_ref()?.findings.as_ref()?;
+    let mut lines: Vec<String> = findings
+        .findings
+        .iter()
+        .map(|f| {
+            format!(
+                "- [{:?}{}] {}{}: {}{}",
+                f.severity,
+                if f.grounded {
+                    ""
+                } else {
+                    ", not in the change"
+                },
+                f.file,
+                f.line.map(|l| format!(":{l}")).unwrap_or_default(),
+                f.claim,
+                if f.recommendation.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", f.recommendation)
+                }
+            )
+        })
+        .collect();
+    if !findings.summary.is_empty() {
+        lines.insert(0, findings.summary.clone());
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 impl Values for RunValues<'_> {
@@ -291,6 +444,9 @@ impl Values for RunValues<'_> {
     }
 
     fn field(&self, step: usize, field: Field) -> Option<String> {
+        if field == Field::Findings {
+            return self.findings(step);
+        }
         let contracts = self.contracts(step);
         let many = contracts.len() > 1;
         let parts: Vec<String> = contracts
@@ -307,7 +463,7 @@ impl Values for RunValues<'_> {
                             .collect::<Vec<_>>()
                             .join("\n")
                     }),
-                    Field::Findings => None,
+                    Field::Findings => return None,
                 }?;
                 Some(if many {
                     format!(
@@ -356,7 +512,11 @@ pub fn result(
                 id: step.id.clone(),
                 kind: step.kind.word().into(),
                 verdict: run.decision(s).map(|d| d.verdict),
-                nodes: run.step_nodes(s, 0).into_iter().cloned().collect(),
+                nodes: values
+                    .step_nodes(i)
+                    .into_iter()
+                    .map(|n| n.agent_id.clone())
+                    .collect(),
                 branch: step
                     .kind
                     .makes_a_branch()

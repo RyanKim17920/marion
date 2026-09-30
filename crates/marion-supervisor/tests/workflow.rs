@@ -34,7 +34,12 @@ fn node(marker: &str, writes: &[&str], narrative: &str) -> NodeScript {
         .expect("claude has an adapter");
     let mut turns: Vec<ScriptedCall> = writes
         .iter()
-        .map(|f| ScriptedCall::new("Write", json!({"file_path": f, "content": "work\n"})))
+        .map(|f| {
+            ScriptedCall::new(
+                "Write",
+                json!({"file_path": f, "content": format!("work by {marker}\n")}),
+            )
+        })
         .collect();
     turns.push(ScriptedCall::new(
         claude.marion_tool_name("report"),
@@ -517,4 +522,143 @@ verify = ["test -f ok"]
         .filter(|k| matches!(k, RecordKind::SpawnIntent(i) if i.race.is_some() && i.workflow.as_ref().is_some_and(|s| s.step == 0)))
         .count();
     assert_eq!(seats, 3, "each seat carries its race and its workflow step");
+}
+
+const REVIEWED_FILE: &str = "src/feature.txt";
+
+/// A reviewer's report as JSON: `block` with one high finding on the reviewed file, or `allow`.
+fn reviewer(marker: &str, block: bool) -> NodeScript {
+    let report = if block {
+        json!({
+            "verdict": "block",
+            "summary": "one problem",
+            "findings": [{
+                "severity": "high",
+                "file": REVIEWED_FILE,
+                "line": 1,
+                "claim": "the feature line is wrong",
+                "evidence": "line 1",
+                "recommendation": "write the right line"
+            }]
+        })
+    } else {
+        json!({"verdict": "allow", "summary": "fine", "findings": []})
+    };
+    node(marker, &[], &report.to_string())
+}
+
+/// The work, a reviewer that blocks it, a fixer, and a reviewer of the fix. Listed so the first
+/// marker a request carries is its own: a later request replays earlier task text.
+fn review_script(fix_passes: bool) -> Script {
+    Script {
+        nodes: vec![
+            // A review prompt quotes the reviewed node's report after "its report: ", which the
+            // reviewed node's own later turns never carry.
+            reviewer("its report: FIXED-9x", !fix_passes),
+            node("found blocking problems", &[REVIEWED_FILE], "FIXED-9x"),
+            reviewer("its report: WORK-1a", true),
+            node("WORKMARK", &[REVIEWED_FILE], "WORK-1a"),
+            node("AFTERMARK", &[], "noted"),
+        ],
+        ..Script::default()
+    }
+}
+
+fn reviewed_workflow(max_rounds: u8) -> String {
+    format!(
+        r#"schema = 1
+name = "reviewed"
+
+[[step]]
+id = "work"
+kind = "agent"
+on = "claude"
+prompt = "WORKMARK: write {REVIEWED_FILE}"
+
+[[step]]
+id = "gate"
+kind = "review"
+of = "work"
+on = "claude"
+max_rounds = {max_rounds}
+
+[[step]]
+id = "after"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "AFTERMARK: the review said\n{{gate.findings}}\non {{gate.branch}}"
+"#
+    )
+}
+
+/// **(c) A review blocks, the work is fixed, the fix is reviewed clean**, and the run goes on to
+/// the next step on the fixed branch: two review rounds, one fixer cut at the work's commit and
+/// told the grounded findings.
+#[test]
+fn a_blocking_review_is_fixed_and_reviewed_clean() {
+    let Some(bed) = bed("wf-review", review_script(true)) else {
+        return;
+    };
+    bed.user_workflow("reviewed", &reviewed_workflow(2));
+    let result = bed.run_to_close("reviewed", &[]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(
+        verdicts(&result),
+        [
+            Some(StepVerdict::Succeeded),
+            Some(StepVerdict::Clean),
+            Some(StepVerdict::Succeeded)
+        ]
+    );
+    assert_eq!(result.steps[1].nodes.len(), 3, "reviewer, fixer, reviewer");
+    let fix = bed.requests_with("found blocking problems");
+    assert!(
+        fix.iter().any(|r| r.contains("the feature line is wrong")),
+        "the fixer was told the grounded finding"
+    );
+    let after = bed.requests_with("AFTERMARK");
+    let fixed_branch = result.steps[1].branch.clone().expect("the fixed branch");
+    assert!(
+        after[0].contains(&fixed_branch),
+        "the next step names the fixed branch"
+    );
+}
+
+/// **(d) A review still blocking at its last round fails the run**, and `marion workflow run` says
+/// so with exit 1; nothing after it runs.
+#[test]
+fn a_review_still_blocking_at_its_last_round_fails_the_run() {
+    let Some(bed) = bed("wf-review-fail", review_script(false)) else {
+        return;
+    };
+    bed.user_workflow("reviewed", &reviewed_workflow(2));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+    cmd.args(["workflow", "run", "reviewed"])
+        .arg("--repo")
+        .arg(&bed.repo)
+        .arg("--state-dir")
+        .arg(&bed.state);
+    for (k, v) in [
+        ("XDG_CONFIG_HOME", &bed.config),
+        ("XDG_DATA_HOME", &bed.data),
+    ] {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("marion runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("blocked") && stdout.contains("failed"),
+        "{stdout}"
+    );
+    assert!(
+        bed.requests_with("AFTERMARK").is_empty(),
+        "nothing ran after the blocked review"
+    );
 }

@@ -276,9 +276,14 @@ pub fn describe(workflow: &Workflow) -> Vec<String> {
                 commands.extend(verify.iter().map(String::as_str));
                 format!("race on {}", labels(&on.iter().collect::<Vec<_>>()))
             }
-            StepKind::Review { of, max_rounds } => {
-                format!("review of {}, up to {max_rounds} round(s)", id(*of))
-            }
+            StepKind::Review { of, max_rounds, on } => format!(
+                "review of {} by {}, up to {max_rounds} round(s)",
+                id(*of),
+                on.as_ref().map_or_else(
+                    || "a reviewer from another model family".into(),
+                    |c| c.label()
+                )
+            ),
             StepKind::Land { of, mode } => format!(
                 "land {} {}",
                 id(*of),
