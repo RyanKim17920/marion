@@ -46,6 +46,27 @@ cargo test -p marion-supervisor --test it_live restart_resume:: -- --ignored
 A new suite goes in `tests/it_live/` or `tests/it_canned/` with a `mod <suite>;` line in that
 directory's `main.rs`, and reaches the shared bed as `crate::common`.
 
+### The `client` feature
+
+`marion-supervisor` builds two binaries from one library. The viewer's half of that library — the
+home screen, `marion attach`, the tree, the native facade's keyboard relay, the setup form's
+`agents.toml` editor — is behind its default `client` feature, together with the terminal emulator
+(`marion-term`), `marion-tui`, `ratatui` and `similar`. `marion` requires the feature;
+`marion-supervisor` does not use it. So the daemon, and the tests that only drive it, can skip that
+whole stack:
+
+```sh
+cargo build -p marion-supervisor --no-default-features --bin marion-supervisor
+cargo test -p marion-supervisor --no-default-features --lib --test endpoint_matrix
+```
+
+The test targets that need it say so with `required-features` in the crate's `Cargo.toml`:
+`it_canned`, `it_live` and `conformance` run the `marion` binary or read a pane through the emulator,
+and `l45_tree` snapshots the tree screen. Without `client` they are skipped rather than failed.
+Everything else — the default `cargo build`, `cargo install`, the release — has the feature on.
+A node's words (its label, short id, state) live in `node_label`, not `tree`, because the daemon
+names nodes too.
+
 ## When a pinned harness drifts
 
 The version gate is `marion_testsupport::PINNED_HARNESSES`. When a harness auto-updates, the
@@ -100,6 +121,7 @@ Before pushing, run what CI runs:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p marion-supervisor --no-default-features --all-targets -- -D warnings
 cargo test --workspace --lib
 scripts/three-axis.sh
 ```

@@ -45,7 +45,8 @@ marion doctor
 
 This installs `marion` and `marion-supervisor` side by side in `~/.cargo/bin`. Keep them
 together: `marion` starts the supervisor next to it. marion never updates itself; to upgrade,
-run the same command again.
+run the same command again. (`--no-default-features` would install only `marion-supervisor`:
+`marion` needs the crate's default `client` feature.)
 
 **Prebuilt binaries: available from the first release.** No packaged release has been cut yet,
 so none of these works today. Once one is, each installs the same archive (macOS and Linux,
