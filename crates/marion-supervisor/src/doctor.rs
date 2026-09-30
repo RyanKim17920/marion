@@ -1085,36 +1085,54 @@ fn shape_finding(
     )
 }
 
-/// A spawned ACP agent, with its stdout drained by a thread so a request can be answered while
-/// frames are still arriving.
+/// A spawned ACP agent on the shared JSON-RPC driver ([`crate::rpc::Driver`]): its stdout read
+/// line by line, its stderr drained, a response matched on its id.
 ///
 /// **Every exit from this struct kills the child.** An ACP agent is a long-lived stdio server that
 /// never closes stdout on its own — it is precisely the shape §8's leak check names — so a probe
-/// that returned early on a parse error would leave one running for the life of the machine.
-/// [`Drop`] is what makes that true on the error paths as well as the happy one; `finish` is the
-/// happy one, and reports what the kill took.
+/// that returned early on a parse error would leave one running for the life of the machine. The
+/// driver's `Drop` is what makes that true on the error paths as well as the happy one; `finish`
+/// is the happy one, and reports what the kill took.
 struct AcpChild {
-    child: std::process::Child,
-    pid: i32,
-    stdin: Option<std::process::ChildStdin>,
-    frames: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    /// Set by the stdout reader when the pipe closes: the agent has exited (or closed stdout), so
-    /// no answer can arrive and waiting out a budget would only delay the report.
-    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Rung by the stdout reader after every frame and at the close, so [`Self::response`] waits
-    /// on it rather than re-reading the frames on a timer. `None` only if no descriptor could be
-    /// had; the wait then re-checks at [`crate::wake::DEGRADED_RECHECK`].
-    wake: Option<std::sync::Arc<crate::wake::Pipe>>,
-    /// The agent's stderr, the last [`STDERR_TAIL`] lines of it — where an agent that exits at
-    /// startup says why (S33: `vtcode acp` "integration is disabled", `fast-agent-acp` "No model
-    /// configured").
-    stderr: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
-    /// The probe's own `TMPDIR`, removed after [`Drop`] has killed the agent.
+    driver: crate::rpc::Driver<'static, ProbeClient>,
+    /// What the driver's shutdown left: the agent's stderr, and whether SIGINT alone ended it.
+    /// Taken once, by whichever of [`Self::silence`] and [`Self::finish`] needs it first.
+    ended: Option<(String, bool)>,
+    /// The probe's own `TMPDIR`, removed after the driver has killed the agent (fields drop in
+    /// order).
     _tmp: NodeTmp,
 }
 
-/// How many trailing stderr lines an ACP probe keeps.
-const STDERR_TAIL: usize = 8;
+/// The probe's ACP client, which serves nothing: §8's probe is a contract test of the agent, and a
+/// `session/new` with no MCP servers asks it for no tool. What it asks anyway is **answered, not
+/// dropped** — a permission with ACP's own "no option taken" outcome, anything else with a JSON-RPC
+/// `-32601` — so the turn reports rather than stalls until its budget.
+struct ProbeClient;
+
+impl crate::rpc::Peer for ProbeClient {
+    fn answer(&mut self, request: &serde_json::Value) -> serde_json::Value {
+        let id = request
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        match request.get("method").and_then(serde_json::Value::as_str) {
+            Some("session/request_permission") => serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}
+            }),
+            method => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!(
+                        "marion doctor's probe client serves no {}",
+                        method.unwrap_or("method")
+                    ),
+                },
+            }),
+        }
+    }
+}
 
 /// A fresh private temp dir for one probe's process, for [`crate::node_tmp`]'s reason: a probe of
 /// a Bun-built harness unpacks its native libraries into `$TMPDIR` exactly as a node does. Unique
@@ -1128,84 +1146,31 @@ fn probe_tmp() -> std::io::Result<NodeTmp> {
 impl AcpChild {
     fn spawn(program: &Path, inv: &Invocation) -> std::io::Result<Self> {
         let tmp = probe_tmp()?;
-        let mut cmd = Command::new(program);
-        cmd.args(&inv.args)
-            .current_dir(&inv.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (k, v) in &inv.env {
-            cmd.env(k, v);
-        }
-        for k in inv
-            .env_remove
-            .iter()
-            .map(Into::into)
-            .chain(inv.inherited_removals())
-        {
-            cmd.env_remove::<std::ffi::OsString>(k);
-        }
-        cmd.env(marion_harness::TMPDIR_ENV, tmp.path());
-        let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
-        let pid = child.id() as i32;
-        let stdin = child.stdin.take();
-        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stderr = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-        let wake = crate::wake::Pipe::new().ok().map(std::sync::Arc::new);
-        if let Some(out) = child.stdout.take() {
-            let sink = std::sync::Arc::clone(&frames);
-            let done = std::sync::Arc::clone(&closed);
-            let ring = wake.clone();
-            // Detached: the reader ends when the pipe closes, which the kill in `Drop` guarantees.
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let ring = || {
-                    if let Some(ring) = &ring {
-                        ring.wake();
-                    }
-                };
-                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                    sink.lock().expect("frame sink").push(line);
-                    ring();
-                }
-                done.store(true, std::sync::atomic::Ordering::SeqCst);
-                ring();
-            });
-        }
-        if let Some(err) = child.stderr.take() {
-            let tail = std::sync::Arc::clone(&stderr);
-            // Drained, never left to fill: an agent blocked on a full stderr pipe answers nothing.
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
-                    let mut t = tail.lock().expect("stderr tail");
-                    if t.len() == STDERR_TAIL {
-                        t.pop_front();
-                    }
-                    t.push_back(line);
-                }
-            });
-        }
+        // The binary doctor resolved, not the row's bare name looked up again on `$PATH`.
+        let program = program.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a UTF-8 path", program.display()),
+            )
+        })?;
+        let inv = Invocation {
+            program: program.to_string(),
+            ..inv.clone()
+        };
+        let driver = crate::rpc::Driver::spawn(&inv, tmp.path(), None, ProbeClient)?;
         Ok(Self {
-            child,
-            pid,
-            stdin,
-            frames,
-            closed,
-            wake,
-            stderr,
+            driver,
+            ended: None,
             _tmp: tmp,
         })
     }
 
+    fn pid(&self) -> i32 {
+        self.driver.pid
+    }
+
     fn send(&mut self, frame: &serde_json::Value) -> bool {
-        use std::io::Write;
-        let Some(w) = self.stdin.as_mut() else {
-            return false;
-        };
-        // One line, no embedded newline: the transport is newline-delimited.
-        writeln!(w, "{frame}").and_then(|()| w.flush()).is_ok()
+        self.driver.write(frame).is_ok()
     }
 
     /// The response frame carrying `id`, or `None` if the budget elapsed first.
@@ -1214,47 +1179,22 @@ impl AcpChild {
     /// interleaved with, and arriving before, the response they belong to, so "the next line" is
     /// not the answer to anything.
     ///
-    /// Also `None`, at once, when the agent's stdout has closed with no such frame on it: nothing
-    /// more can arrive, and [`Self::silence`] then says so in the agent's own words.
-    fn response(&self, id: u64, budget: Duration) -> Option<String> {
-        let deadline = Instant::now() + budget;
-        while Instant::now() < deadline {
-            // Drain, then look: a frame after the drain rings again for the next wait.
-            if let Some(wake) = &self.wake {
-                wake.drain();
-            }
-            // Read before the scan, so a frame written just before the close is still seen.
-            let closed = self.closed.load(std::sync::atomic::Ordering::SeqCst);
-            let seen = self.frames.lock().expect("frame sink").clone();
-            for line in &seen {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                    continue;
-                };
-                if v.get("id").and_then(serde_json::Value::as_u64) == Some(id)
-                    && (v.get("result").is_some() || v.get("error").is_some())
-                {
-                    return Some(line.clone());
-                }
-            }
-            if closed {
-                return None;
-            }
-            crate::wake::wait_until(&[self.wake.as_ref().map(|w| w.fd())], Some(deadline));
-        }
-        None
+    /// Also `None` once the agent's stdout has closed with no such frame on it: nothing more can
+    /// arrive, and [`Self::silence`] then says so in the agent's own words.
+    fn response(&mut self, id: u64, budget: Duration) -> Option<String> {
+        self.driver.settle(id, Instant::now() + budget)
     }
 
     /// Why [`Self::response`] came back empty: the agent exited first — quoting the last thing it
     /// wrote to stderr, which is where an agent that refuses to start says why — or the budget ran
     /// out on a live one.
-    fn silence(&self, budget: Duration) -> String {
-        if !self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+    fn silence(&mut self, budget: Duration) -> String {
+        if !self.driver.stdout_ended() {
             return format!("no answer within {budget:?}");
         }
-        // The stderr reader may trail the stdout one by a moment; give it that moment.
-        std::thread::sleep(Duration::from_millis(100));
-        let tail = self.stderr.lock().expect("stderr tail");
-        match tail.iter().rev().find(|l| !l.trim().is_empty()) {
+        // The shutdown drains stderr to its end, so the last line is the agent's last word.
+        let (stderr, _) = self.end();
+        match stderr.lines().rev().find(|l| !l.trim().is_empty()) {
             Some(last) => format!(
                 "the agent exited before answering; its stderr ends: {}",
                 last.trim()
@@ -1264,29 +1204,22 @@ impl AcpChild {
     }
 
     fn stdout(&self) -> String {
-        self.frames.lock().expect("frame sink").join("\n")
+        self.driver.frames_since(0)
     }
 
     /// SIGINT, then SIGKILL. Returns whether the agent went away on the interrupt alone — §8's
     /// *"assert clean termination"*, which for a stdio server means it honoured the signal.
     fn finish(&mut self) -> bool {
-        self.stdin.take();
-        unsafe { kill(self.pid, SIGINT) };
-        if crate::wake::wait_bounded(&mut self.child, INTERRUPT_GRACE).is_some() {
-            return true;
-        }
-        unsafe { kill(self.pid, SIGKILL) };
-        let _ = self.child.wait();
-        false
+        self.end().1
     }
-}
 
-impl Drop for AcpChild {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            unsafe { kill(self.pid, SIGKILL) };
-            let _ = self.child.wait();
-        }
+    /// Shut the agent down once: stdin closed, SIGINT, its group killed after the grace. A
+    /// `SIGKILL` exit is the driver's escalation, so anything else went on the interrupt.
+    fn end(&mut self) -> &(String, bool) {
+        self.ended.get_or_insert_with(|| {
+            let (run, _) = self.driver.finish(false);
+            (run.stderr, run.exit.signal != Some(crate::rpc::SIGKILL))
+        })
     }
 }
 
@@ -1406,7 +1339,7 @@ fn acp_live_turn(
         Ok(c) => c,
         Err(e) => return not_spawned(&e),
     };
-    let pid = agent.pid;
+    let pid = agent.pid();
     let mut trailing = Vec::new();
 
     // `initialize`, then `session/new`, then the prompt. Each step reports itself and stops the
@@ -2575,6 +2508,25 @@ mod tests {
         );
     }
 
+    /// **The probe's client answers what an agent asks, and grants nothing.** A permission gets
+    /// ACP's "no option taken" outcome and anything else a `-32601`, each on the request's own id,
+    /// so an agent that asks mid-turn reports instead of stalling out the turn budget.
+    #[test]
+    fn the_probe_client_answers_every_request_and_grants_none() {
+        use crate::rpc::Peer;
+        let permission = ProbeClient.answer(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "session/request_permission", "params": {}
+        }));
+        assert_eq!(permission["id"], 7);
+        assert_eq!(permission["result"]["outcome"]["outcome"], "cancelled");
+        let read = ProbeClient.answer(&serde_json::json!({
+            "jsonrpc": "2.0", "id": "r", "method": "fs/read_text_file", "params": {"path": "/etc/hosts"}
+        }));
+        assert_eq!(read["id"], "r");
+        assert_eq!(read["error"]["code"], -32601);
+        assert!(read.get("result").is_none(), "{read}");
+    }
+
     /// **The leak guard, against a process that ignores SIGINT.**
     ///
     /// §8 names this shape exactly — *"a binary that hangs on interrupt and a version too old are
@@ -2606,20 +2558,17 @@ mod tests {
             session_mode: None,
         };
         // `finish` reports the escalation rather than swallowing it, and the process is gone.
-        fn ready(c: &AcpChild) {
+        fn ready(c: &mut AcpChild) {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline {
-                if !c.frames.lock().expect("frames").is_empty() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            panic!("the shell never announced its trap");
+            let announced = c
+                .driver
+                .settle_until(deadline, |d| (d.frame_count() > 0).then_some(()));
+            assert!(announced.is_some(), "the shell never announced its trap");
         }
 
         let mut child = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
-        let pid = child.pid;
-        ready(&child);
+        let pid = child.pid();
+        ready(&mut child);
         assert!(alive(pid), "the premise: it started");
         assert!(
             !child.finish(),
@@ -2628,9 +2577,9 @@ mod tests {
         assert!(!alive(pid), "pid {pid} outlived `finish`");
 
         // And the path that never reaches `finish` at all.
-        let dropped = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
-        let pid = dropped.pid;
-        ready(&dropped);
+        let mut dropped = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
+        let pid = dropped.pid();
+        ready(&mut dropped);
         assert!(alive(pid));
         drop(dropped);
         assert!(!alive(pid), "pid {pid} outlived the early return");
