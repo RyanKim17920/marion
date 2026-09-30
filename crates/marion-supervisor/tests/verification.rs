@@ -75,6 +75,8 @@ fn request(fx: &Fixture, verification: &[&str]) -> SpawnRequest {
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     }
 }
 

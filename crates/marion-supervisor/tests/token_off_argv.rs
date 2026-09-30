@@ -256,6 +256,8 @@ fn spawn_and_inspect(tag: &str, agent_type: &str, provider: &Provider) -> TaskCo
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let caller = Caller::root(
         "root",

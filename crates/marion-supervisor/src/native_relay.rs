@@ -4233,6 +4233,7 @@ mod tests {
             endpoint: None,
             race: None,
             cancel: None,
+            workflow: None,
         }
     }
 
@@ -4436,6 +4437,7 @@ mod tests {
                     endpoint: None,
                     race: None,
                     cancel: None,
+                    workflow: None,
                 },
                 mode: AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 0,

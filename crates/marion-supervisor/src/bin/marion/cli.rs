@@ -476,7 +476,7 @@ fn race_help() -> String {
 
 fn workflow_help() -> String {
     format!(
-        "usage: marion workflow list | show <name> | check <file> [--repo <path>]\n\
+        "usage: marion workflow list | show <name> | check <file> | run <name> [options]\n\
          \n\
          A workflow is a sequence of steps, each run on the agents it names: an agent, several at\n\
          once, a race, a review with fixes, and landing the result. It lives in the repository\n\
@@ -485,6 +485,9 @@ fn workflow_help() -> String {
          \x20 list          every workflow, where it is, and whether it may run\n\
          \x20 show <name>   what a workflow runs, step by step\n\
          \x20 check <file>  check a file and say what it would run\n\
+         \x20 run <name>    run it and print how each step ended; --input name=text gives an\n\
+         \x20               input (--task <text> is --input task=<text>), --detach returns once\n\
+         \x20               it has started. It exits 1 unless the run succeeds.\n\
          \n\
          A repository's workflow runs only after `marion trust allow <file>`, and any edit to\n\
          the file revokes that. Your own need no trust.\n\

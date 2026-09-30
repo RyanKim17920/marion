@@ -311,14 +311,14 @@ mod tests {
     /// asserts from the other side that the inbound table is disjoint from it. The count moves only
     /// when a genuine request method lands (`node/resume` took it to sixteen, `node/collected` to
     /// seventeen, `notify/claim` to eighteen, `session/hello` to nineteen, `notify/configure`
-    /// to twenty), never
+    /// to twenty, `workflow/run` to twenty-one), never
     /// because an `Input` name leaked in — which the loop below is what proves.
     #[test]
     fn the_inbound_table_is_not_part_of_the_request_surface() {
         assert_eq!(
             Method::ALL.len(),
-            20,
-            "§2's fifteen plus node/resume, node/collected, notify/claim, session/hello and notify/configure"
+            21,
+            "§2's fifteen plus node/resume, node/collected, notify/claim, session/hello, notify/configure and workflow/run"
         );
         for n in Input::METHODS {
             assert_eq!(

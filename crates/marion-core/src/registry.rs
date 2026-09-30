@@ -140,6 +140,11 @@ pub struct ReplayedNode {
     /// `None` for a node in no race and for a seat whose race is still open; which race and seat
     /// is the intent's [`SpawnIntent::race`].
     pub race_verdict: Option<SeatVerdict>,
+    /// **How the workflow step this node ran came out**, once a `WorkflowStepDecided` named it;
+    /// which run and step is the intent's [`SpawnIntent::workflow`].
+    pub workflow_verdict: Option<crate::workflow::StepVerdict>,
+    /// How the workflow run this node was a step of ended, once it closed.
+    pub workflow_closed: Option<crate::workflow::Outcome>,
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
@@ -223,6 +228,8 @@ impl ReplayedNode {
             root_change: None,
             root_grant: None,
             race_verdict: None,
+            workflow_verdict: None,
+            workflow_closed: None,
             records: 0,
             first_ts: None,
             state_ts: None,
@@ -728,9 +735,23 @@ impl Replay {
         match kind {
             RecordKind::WorkflowOpened(o) => self.workflow_mut(&o.wf_id).opened = Some(o.clone()),
             RecordKind::WorkflowStepDecided(d) => {
-                self.workflow_mut(&d.wf_id).decided.push(d.clone())
+                self.workflow_mut(&d.wf_id).decided.push(d.clone());
+                for id in &d.nodes {
+                    if let Some(i) = self.index.get(&id.0) {
+                        self.nodes[*i].workflow_verdict = Some(d.verdict);
+                    }
+                }
             }
-            RecordKind::WorkflowClosed(c) => self.workflow_mut(&c.wf_id).closed = Some(c.outcome),
+            RecordKind::WorkflowClosed(c) => {
+                let wf = self.workflow_mut(&c.wf_id);
+                wf.closed = Some(c.outcome);
+                let ids: Vec<AgentId> = wf.nodes.iter().map(|(_, a)| a.clone()).collect();
+                for id in ids {
+                    if let Some(i) = self.index.get(&id.0) {
+                        self.nodes[*i].workflow_closed = Some(c.outcome);
+                    }
+                }
+            }
             RecordKind::SpawnIntent(i) => {
                 if let Some(seat) = &i.workflow {
                     let wf = self.workflow_mut(&seat.wf_id);

@@ -2408,6 +2408,7 @@ mod tests {
             endpoint: None,
             race: None,
             cancel: None,
+            workflow: None,
         };
         let done = text(&status_result(
             &json!(1),

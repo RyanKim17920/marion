@@ -148,6 +148,8 @@ fn request(t: &Tree, agent_type: &str, model: &str) -> SpawnRequest {
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     }
 }
 

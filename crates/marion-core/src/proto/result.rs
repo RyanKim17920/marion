@@ -446,6 +446,14 @@ pub struct NotifyConfigureResult {
     pub enabled: bool,
 }
 
+/// `workflow/run`'s answer: the run's id, once it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunResult {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub name: String,
+    pub steps: u8,
+}
+
 /// `notify/claim`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotifyClaimResult {

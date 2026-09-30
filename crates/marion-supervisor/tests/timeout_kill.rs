@@ -258,6 +258,8 @@ fn a_timed_out_child_leaves_no_surviving_tool_call_descendant(
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let started = Instant::now();
     // A root caller (§6.1 step 2): depth 0, the same top-level `spawn` `marion run` produces.

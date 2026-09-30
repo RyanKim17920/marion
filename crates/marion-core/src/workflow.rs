@@ -1053,6 +1053,52 @@ pub fn next(wf: &Workflow, state: &WfState) -> Next {
     Next::Close(Outcome::Succeeded)
 }
 
+// ---------------------------------------------------------------------------------- the result
+
+/// **A closed run's scoreboard**, written to `workflows/<id>/result.json` before the run's close is
+/// journaled: each step, the nodes it ran, how it ended and where its work is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowResult {
+    pub wf_id: WorkflowId,
+    pub name: String,
+    pub outcome: Outcome,
+    pub steps: Vec<StepRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepRow {
+    pub id: String,
+    pub kind: String,
+    /// `None` for a step the run never reached.
+    pub verdict: Option<StepVerdict>,
+    pub nodes: Vec<crate::contract::AgentId>,
+    /// The branch the step's work landed on, where it left one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+impl WorkflowResult {
+    /// One line per step and the run's outcome, as `marion workflow run` prints it.
+    pub fn scoreboard(&self) -> String {
+        let mut out = String::new();
+        for (i, row) in self.steps.iter().enumerate() {
+            let verdict = row.verdict.map_or("not reached", StepVerdict::word);
+            out.push_str(&format!(
+                "{:>2} {:<12} {:<8} {verdict}",
+                i + 1,
+                row.id,
+                row.kind
+            ));
+            if let Some(b) = &row.branch {
+                out.push_str(&format!("  {b}"));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!("workflow {}: {}", self.name, self.outcome.word()));
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

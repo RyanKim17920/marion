@@ -990,6 +990,7 @@ mod tests {
             endpoint: None,
             race: None,
             cancel: None,
+            workflow: None,
         }
     }
 

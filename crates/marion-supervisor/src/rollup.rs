@@ -347,6 +347,7 @@ mod tests {
                 endpoint: None,
                 race: None,
                 widened: vec![],
+                workflow: None,
             }
         }
 

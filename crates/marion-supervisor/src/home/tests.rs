@@ -33,6 +33,7 @@ fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
         endpoint: None,
         race: None,
         cancel: None,
+        workflow: None,
     }
 }
 

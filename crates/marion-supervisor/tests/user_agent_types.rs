@@ -118,6 +118,8 @@ fn request(repo: &std::path::Path) -> SpawnRequest {
         verification: vec![],
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     }
 }
 

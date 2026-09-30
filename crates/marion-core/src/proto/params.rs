@@ -626,6 +626,20 @@ pub struct NotifyConfigureParams {
     pub enabled: bool,
 }
 
+/// `workflow/run` — **start a workflow run**: the workflow `name` as the tree at `repo` (or the
+/// operator's own configuration) defines it, with `inputs` for its declared inputs. The supervisor
+/// finds the file, checks it, requires a repository's to be trusted by its bytes, snapshots it into
+/// the run, and answers once the run is open. With no `caller` the operator asks, authorized by the
+/// socket's peer credentials, as a root spawn is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowRunParams {
+    pub name: String,
+    #[serde(default)]
+    pub inputs: std::collections::BTreeMap<String, String>,
+    pub repo: PathBuf,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -115,6 +115,8 @@ fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     }
 }
 

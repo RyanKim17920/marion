@@ -83,6 +83,8 @@ fn a_live_agy_child_writes_a_file_in_its_worktree_reports_and_passes_verificatio
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let caller = Caller::root(
         "root",

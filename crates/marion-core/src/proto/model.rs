@@ -133,6 +133,10 @@ pub struct NodeSummary {
     /// measures its subtree's spend against. `None` for an unbudgeted node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<crate::budget::Budget>,
+    /// The workflow step this node ran, how the step came out, and how the run ended. Absent for a
+    /// node no workflow started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowBadge>,
 }
 
 impl NodeSummary {
@@ -176,6 +180,24 @@ pub struct RaceBadge {
     /// `None` while the race is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<crate::race::SeatVerdict>,
+}
+
+/// [`NodeSummary::workflow`]: the workflow run and step a node ran, how the step came out and, once
+/// the run closed, how it ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowBadge {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub step: u8,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<crate::workflow::StepVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<crate::workflow::Outcome>,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 /// [`NodeSummary::cancel`].
@@ -809,6 +831,7 @@ mod tests {
             endpoint: None,
             race: None,
             cancel: None,
+            workflow: None,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(

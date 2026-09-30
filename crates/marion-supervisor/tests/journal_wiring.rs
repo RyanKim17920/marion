@@ -984,6 +984,8 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
             resume: None,
             profile: None,
             race: None,
+            read_only: false,
+            workflow: None,
         },
         &TaskId("denial-1".into()),
         // One level above the bound, so the child lands at its type's `max_depth`: the one depth

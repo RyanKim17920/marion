@@ -40,6 +40,8 @@ fn request(repo: &Path, agent_type: &str) -> SpawnRequest {
         verification: vec![],
         profile: None,
         budget: None,
+        read_only: false,
+        workflow: None,
     }
 }
 

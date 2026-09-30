@@ -61,6 +61,20 @@ impl Supervisor {
         base_url: &str,
         idle_grace: Duration,
     ) -> Self {
+        Self::start_with(state, key, path_env, base_url, idle_grace, &[])
+    }
+
+    /// [`Self::start`] with more environment for the supervisor: a bed's own
+    /// `XDG_CONFIG_HOME` / `XDG_DATA_HOME`, so what the supervisor reads of the operator's
+    /// configuration and trust store is the bed's.
+    pub fn start_with(
+        state: &Path,
+        key: &Path,
+        path_env: &str,
+        base_url: &str,
+        idle_grace: Duration,
+        extra: &[(&str, &Path)],
+    ) -> Self {
         let paths = socket_paths(state, key, own_uid());
         assert!(
             paths.overflow().is_none(),
@@ -87,6 +101,7 @@ impl Supervisor {
                 "--detached",
             ])
             .env("PATH", path_env)
+            .envs(extra.iter().map(|(k, v)| (*k, *v)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())

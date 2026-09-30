@@ -218,6 +218,47 @@ marion race --prompt "make the failing test pass" --on claude:sonnet,codex \
 
 It exits 1 when no seat passes. A `spawn` with `candidates` from `marion mcp` races the same way.
 
+### Workflows: a sequence of steps, each on the agents it names
+
+A workflow is a TOML file of steps, run in order: `.marion/workflows/<name>.toml` in the
+repository, or your own in `~/.config/marion/workflows/`.
+
+```toml
+schema = 1
+name = "ship"
+inputs = ["task"]
+
+[[step]]
+id = "plan"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "Plan: {input.task}"
+
+[[step]]
+id = "build"
+kind = "agent"
+on = "codex"
+prompt = "{input.task}\n\nThe plan:\n{plan.report}"
+verify = ["cargo test"]
+```
+
+An `agent` step runs one agent; a `parallel` step runs the same read-only task on several
+(`on = ["claude", "codex"]`) and its report is all of theirs. `{input.X}` is an input you pass, and
+`{step.report}`, `{step.branch}` or `{step.diffstat}` is what an earlier step left, handed to the
+next agent marked as another agent's output. `when = "build:failed"` runs a step only if an earlier
+one ended that way; a step that fails with nothing gated on it ends the run. Each step's agents are
+top-level agents in worktrees of their own, like `marion race`'s seats.
+
+```sh
+marion workflow list                      # every workflow, and whether it may run
+marion workflow check .marion/workflows/ship.toml   # what it would run
+marion workflow run ship --task "add rate limiting"  # watch it; exits 1 unless it succeeds
+```
+
+A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent
+and verification command first; any edit revokes it. Race, review and land steps are coming.
+
 ## Sharing a run
 
 `marion export <id>` writes a report of a node and everything under it — the tree, each node's task, steers, a condensed timeline of what it ran, its checks, what it reported, the branch it landed and the tokens it spent — as Markdown for a pull request or issue, or with `-o report.html` as one self-contained page (inline style, no script, a CSP that fetches nothing). Keys behind the tree's endpoint nodes, secret-named environment values, secret-shaped strings (`sk-…`, `ghp_…`, bearer tokens, PEM keys, long hex) and your home directory are scrubbed from every string and again from the rendered file; the root's own prompt is left out unless `--include-prompt`, and `-o` writes the file `0600`. It reads the journal and contracts directly and starts no supervisor. [`examples/run-report.md`](examples/run-report.md) is what it writes for the test fixture (and [`run-report.html`](examples/run-report.html) the page).

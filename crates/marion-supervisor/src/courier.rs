@@ -703,6 +703,80 @@ pub fn await_race(
     }
 }
 
+/// **Start a workflow run** — `workflow/run`. The answer names the run once it is open; a refusal is
+/// the supervisor's sentence, carried verbatim.
+pub fn workflow_run(
+    sock: &SocketPaths,
+    params: marion_core::proto::params::WorkflowRunParams,
+) -> Result<marion_core::proto::result::WorkflowRunResult, SpawnError> {
+    match Conn::dial(sock)?.ask(
+        Call::WorkflowRun(params),
+        SPAWN_ANSWER_BOUND,
+        &format!(
+            "it did not answer `workflow/run` within {} s; the journal says whether the run opened",
+            SPAWN_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::WorkflowRun(r) => Ok(r),
+        _ => Err(unreachable(
+            sock.socket(),
+            "it answered `workflow/run` with a result marion cannot read",
+        )),
+    }
+}
+
+/// What [`await_workflow`] found.
+pub enum WorkflowDelivered {
+    /// The run closed and this is its scoreboard, read from `workflows/<id>/result.json`.
+    Closed(Box<marion_core::workflow::WorkflowResult>),
+    /// The bound expired with the run still open; it keeps running.
+    StillRunning,
+}
+
+/// **Wait for a workflow run to close**, on the tree's own notifications: a step node's summary
+/// changes when the run closes, and the result file is on disk before that close is journaled.
+pub fn await_workflow(
+    sock: &SocketPaths,
+    project: &ProjectDir,
+    wf_id: &marion_core::workflow::WorkflowId,
+    bound: Duration,
+) -> Result<WorkflowDelivered, SpawnError> {
+    let read = || crate::workflow::read_result(project, wf_id);
+    if let Some(r) = read() {
+        return Ok(WorkflowDelivered::Closed(Box::new(r)));
+    }
+    let closed = |n: &marion_core::proto::model::NodeSummary| {
+        n.workflow
+            .as_ref()
+            .is_some_and(|b| &b.wf_id == wf_id && b.closed.is_some())
+    };
+    let deadline = Instant::now() + bound;
+    let mut c = Conn::dial(sock)?;
+    c.bound(bound)?;
+    let sub = c.send(Call::TreeSubscribe(TreeSubscribeParams {}))?;
+    loop {
+        c.bound(deadline.saturating_duration_since(Instant::now()))?;
+        let seen = match c.next()? {
+            Next::Expired => return Ok(WorkflowDelivered::StillRunning),
+            Next::Frame(f) => match *f {
+                Frame::Response(r) if r.id == RequestId::Number(sub) => match r.outcome {
+                    Outcome::Error(e) => return Err(SpawnError::SupervisorRefused(e.message)),
+                    Outcome::Result(v) => serde_json::from_value::<TreeSubscribeResult>(v)
+                        .is_ok_and(|t| t.nodes.iter().any(closed)),
+                },
+                Frame::Notification(n) => matches!(
+                    n.event,
+                    marion_core::proto::notify::Event::NodeAdded { ref node, .. } if closed(node)
+                ),
+                _ => false,
+            },
+        };
+        if seen && let Some(r) = read() {
+            return Ok(WorkflowDelivered::Closed(Box::new(r)));
+        }
+    }
+}
+
 /// The node's own closing bookend, if this event is one.
 ///
 /// Filtered by `agent_id` because one connection can legitimately carry more: `tree/node-added` and

@@ -291,6 +291,16 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
             }),
         changed: node.contracts.last().and_then(|c| c.changed),
         budget: intent.budget,
+        workflow: intent
+            .workflow
+            .as_ref()
+            .map(|seat| marion_core::proto::model::WorkflowBadge {
+                wf_id: seat.wf_id.clone(),
+                step: seat.step,
+                round: seat.round,
+                verdict: node.workflow_verdict,
+                closed: node.workflow_closed,
+            }),
     })
 }
 
@@ -367,6 +377,12 @@ struct Extra {
     cancel: Option<bool>,
     /// A contract's changed-file count lands with its record, after the exit.
     changed: Option<u32>,
+    /// A workflow step's verdict and its run's close land after the node's exit, with no change to
+    /// its state.
+    workflow: (
+        Option<marion_core::workflow::StepVerdict>,
+        Option<marion_core::workflow::Outcome>,
+    ),
 }
 
 impl Extra {
@@ -388,6 +404,7 @@ impl Extra {
             widened: !n.widened.is_empty(),
             cancel: n.cancel.as_ref().map(|c| c.forced),
             changed: n.contracts.last().and_then(|c| c.changed),
+            workflow: (n.workflow_verdict, n.workflow_closed),
         }
     }
 }
@@ -1439,6 +1456,8 @@ fn child_request(
         // reconstructs this same request from the journal rather than from a caller.
         resume: None,
         profile: None,
+        read_only: false,
+        workflow: None,
     }
 }
 
@@ -1745,6 +1764,7 @@ mod cancel;
 
 /// Token budgets: register each node's, and act on a line its spend crosses.
 mod budget;
+mod workflow;
 
 /// A [`Handle`](crate::serve::Handle) backed by a running registry.
 ///
@@ -1827,6 +1847,8 @@ pub struct RegistryHandle {
     operator_key: Result<Secret, String>,
     /// **The races this supervisor is driving**; empty, and silent, with none open.
     races: crate::race::Races,
+    /// Every workflow run this supervisor is stepping ([`crate::workflow`]).
+    workflows: crate::workflow::Workflows,
     /// **What this supervisor sent each child it started**, for `node/get` to show while the child
     /// runs: its contract file is written when it ends, and until then nothing on disk holds the
     /// prompt. In memory only, like [`NodeHandle`]; after the run the contract is the record.
@@ -2010,6 +2032,7 @@ impl RegistryHandle {
             Some(seed),
         );
         handle.redrive_open_races();
+        handle.redrive_open_workflows();
         handle
     }
 
@@ -2030,6 +2053,7 @@ impl RegistryHandle {
             Some(seed),
         );
         handle.redrive_open_races();
+        handle.redrive_open_workflows();
         handle
     }
 
@@ -2112,6 +2136,7 @@ impl RegistryHandle {
                 spawn_decision: Mutex::new(()),
                 operator_key,
                 races: crate::race::Races::default(),
+                workflows: crate::workflow::Workflows::default(),
                 sent: Mutex::new(HashMap::new()),
                 spending,
                 budgets,
@@ -4746,6 +4771,8 @@ impl RegistryHandle {
             resume: None,
             profile: None,
             review: Some(review),
+            read_only: false,
+            workflow: None,
         };
         // A parent that asked for its child's review in the background is owed its end.
         let announce_to = p
@@ -4836,6 +4863,10 @@ impl RegistryHandle {
                 // A seat's end may decide its race; its contract is on disk by now.
                 if let Some(seat) = &req.race {
                     owner.drive_race(&seat.race_id);
+                }
+                // And a workflow step's end may decide its step and start the next.
+                if let Some(seat) = &req.workflow {
+                    workflow::after_step_node(&owner, seat);
                 }
             } else if let Err(e) = &outcome {
                 let _ = observer.tx.send(Progress::Refused(e.to_string()));
@@ -5671,6 +5702,8 @@ impl RegistryHandle {
             profile: node.profile.clone(),
             // A resumed seat keeps its seat.
             race: node.intent.as_ref().and_then(|i| i.race.clone()),
+            read_only: false,
+            workflow: None,
         };
         // A resumed child answers the operator's `node/resume`, not a parent's `spawn`.
         self.launch_child(
@@ -6408,6 +6441,9 @@ impl Handle for RegistryHandle {
             Call::NotifyConfigure(p) => self
                 .notify_configure(p, out.peer())
                 .map(MethodResult::NotifyConfigure),
+            Call::WorkflowRun(p) => self
+                .workflow_run(p, out.peer())
+                .map(MethodResult::WorkflowRun),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),

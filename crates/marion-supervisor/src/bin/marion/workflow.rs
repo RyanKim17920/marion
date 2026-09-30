@@ -6,14 +6,18 @@ use std::process::ExitCode;
 
 use marion_supervisor::workflow_file::{self, LoadError, Source};
 
-use super::cli::{self, Exit, Place, Word, Words};
+use super::cli::{self, Backend, Exit, Place, Word, Words};
 
 /// What `marion workflow` was asked.
 #[derive(Debug, Default)]
 pub struct WorkflowArgs {
     pub verb: String,
     pub rest: Vec<String>,
+    /// `run`'s `--input k=v` (and `--task` for `task`), in order.
+    pub inputs: Vec<(String, String)>,
+    pub detach: bool,
     pub place: Place,
+    pub backend: Backend,
 }
 
 pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
@@ -22,6 +26,19 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
     while let Some(word) = words.next()? {
         match word {
             Word::Flag(f, v) if args.place.take(f, v, &mut words)? => {}
+            Word::Flag(f, v) if args.backend.take(f, v, &mut words)? => {}
+            Word::Flag("--input", v) => {
+                let kv = words.value("--input", v)?;
+                let Some((k, val)) = kv.split_once('=') else {
+                    return Err(Exit::Usage(format!("--input takes name=text, not `{kv}`")));
+                };
+                args.inputs.push((k.to_string(), val.to_string()));
+            }
+            Word::Flag("--task", v) => {
+                let task = words.value("--task", v)?;
+                args.inputs.push(("task".into(), task));
+            }
+            Word::Flag("--detach", v) => args.detach = cli::switch("--detach", v)?,
             Word::Flag(f, _) => return Err(cli::unknown(f)),
             Word::Plain(w) if args.verb.is_empty() => args.verb = w.to_string(),
             Word::Plain(w) => args.rest.push(w.to_string()),
@@ -38,10 +55,18 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
         "list" => want(0, "`marion workflow list` takes no name")?,
         "show" => want(1, "usage: marion workflow show <name>")?,
         "check" => want(1, "usage: marion workflow check <file>")?,
-        "" => return Err(Exit::Usage("say list, show <name> or check <file>".into())),
+        "run" => want(
+            1,
+            "usage: marion workflow run <name> [--input name=text]… [--detach]",
+        )?,
+        "" => {
+            return Err(Exit::Usage(
+                "say list, show <name>, check <file> or run <name>".into(),
+            ));
+        }
         other => {
             return Err(Exit::Usage(format!(
-                "`{other}` is not a workflow verb; try list, show or check"
+                "`{other}` is not a workflow verb; try list, show, check or run"
             )));
         }
     }
@@ -50,9 +75,12 @@ pub fn parse(argv: &[String]) -> Result<WorkflowArgs, Exit> {
 
 pub fn main(argv: &[String]) -> Result<ExitCode, Exit> {
     let args = parse(argv)?;
-    let Some((repo, _state)) = super::resolve_project(&args.place) else {
+    let Some((repo, state)) = super::resolve_project(&args.place) else {
         return Ok(ExitCode::FAILURE);
     };
+    if args.verb == "run" {
+        return Ok(run_workflow(&args, &repo, &state).unwrap_or_else(|code| code));
+    }
     let user = workflow_file::user_dir();
     let mut out = std::io::stdout().lock();
     Ok(run(&args, &repo, user.as_deref(), &mut out))
@@ -120,6 +148,79 @@ pub fn run(
         }
         "check" => describe_file(repo, Path::new(&args.rest[0]), &mut say),
         _ => ExitCode::from(2),
+    }
+}
+
+/// `marion workflow run`: start the run on this project's supervisor (starting one where none is
+/// listening), then watch it to its close and print its scoreboard — or, with `--detach`, return
+/// once it is open. The exit code is the run's outcome.
+fn run_workflow(args: &WorkflowArgs, repo: &Path, state: &Path) -> Result<ExitCode, ExitCode> {
+    use marion_supervisor::{courier, detach, socket};
+    let base_url = super::endpoint(&args.backend)?;
+    let key = socket::project_root(repo);
+    let sock = socket::socket_paths(state, &key, socket::own_uid());
+    let project = marion_core::paths::ProjectDir::new(state, &key);
+    let launch = detach::Launch {
+        program: super::supervisor_binary(),
+        state_dir: state.to_path_buf(),
+        project_root: key,
+        idle_grace: super::RUN_IDLE_GRACE,
+        auth: args.backend.auth(),
+        base_url,
+    };
+    // Held for as long as this command waits, so the supervisor has a client until the run ends.
+    let _held = detach::ensure_supervisor(&sock, &launch).map_err(|e| {
+        eprintln!(
+            "{}",
+            super::supervisor_unreachable(sock.socket(), &e.to_string())
+        );
+        ExitCode::FAILURE
+    })?;
+    let opened = courier::workflow_run(
+        &sock,
+        marion_core::proto::params::WorkflowRunParams {
+            name: args.rest[0].clone(),
+            inputs: args.inputs.iter().cloned().collect(),
+            repo: repo.to_path_buf(),
+        },
+    )
+    .map_err(|e| {
+        eprintln!("marion: {e}");
+        ExitCode::FAILURE
+    })?;
+    eprintln!(
+        "marion: workflow {} is running as {} ({} steps)",
+        opened.name, opened.wf_id.0, opened.steps
+    );
+    if args.detach {
+        eprintln!("marion: `marion ls` watches its steps");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let bound =
+        marion_supervisor::mcp::wait_bound(None).saturating_mul(u32::from(opened.steps.max(1)));
+    match courier::await_workflow(&sock, &project, &opened.wf_id, bound) {
+        Ok(courier::WorkflowDelivered::Closed(result)) => {
+            println!("{}", result.scoreboard());
+            Ok(
+                if result.outcome == marion_core::workflow::Outcome::Succeeded {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                },
+            )
+        }
+        Ok(courier::WorkflowDelivered::StillRunning) => {
+            eprintln!(
+                "marion: workflow {} is still running after {} s; `marion ls` watches it",
+                opened.wf_id.0,
+                bound.as_secs()
+            );
+            Ok(ExitCode::FAILURE)
+        }
+        Err(e) => {
+            eprintln!("marion: {e}");
+            Ok(ExitCode::FAILURE)
+        }
     }
 }
 

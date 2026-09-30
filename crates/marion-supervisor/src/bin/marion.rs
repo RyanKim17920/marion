@@ -5542,6 +5542,7 @@ mod tests {
             cancel: None,
             review_of: None,
             review: None,
+            workflow: None,
         };
         let completion = |diff| CompletionSummary {
             status: marion_core::contract::ExitStatus::Ok,

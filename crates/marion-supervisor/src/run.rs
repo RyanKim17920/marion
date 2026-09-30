@@ -221,6 +221,19 @@ pub struct SpawnRequest {
     /// launched read-only under an empty writable scope, and its report read into findings.
     /// `None` on every other spawn.
     pub review: Option<crate::review::Target>,
+    /// **A node that may change nothing**, with no review target: a workflow's read-only step. Held
+    /// read-only exactly as a reviewer is — no write tool, the row's read-only switch, an empty
+    /// writable scope — without a reviewed node to read.
+    pub read_only: bool,
+    /// The workflow step this node runs, journaled on its intent ([`SpawnIntent::workflow`]).
+    pub workflow: Option<marion_core::workflow::WorkflowSeat>,
+}
+
+impl SpawnRequest {
+    /// Whether this node may change nothing: a reviewer, or a read-only step.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only || self.review.is_some()
+    }
 }
 
 /// What a child's second life is reconstructed from — all of it read off the journal, none of it
@@ -1872,7 +1885,7 @@ fn node_authority(
     let granted = snapshot.granted_scope();
     let requested = match (
         granted,
-        req.writable_scope.is_empty() && req.review.is_none(),
+        req.writable_scope.is_empty() && !req.is_read_only(),
     ) {
         (Some(granted), true) => granted.to_vec(),
         _ => requested_scope(req),
@@ -1886,7 +1899,7 @@ fn node_authority(
     }
     // A reviewer runs read-only whatever its type, so that is the authority it is judged by.
     let mut child_authority = marion_harness::authority::Authority::of(agent_type);
-    if req.review.is_some() {
+    if req.is_read_only() {
         child_authority = child_authority.in_read_only_session();
     }
     let mut refused = marion_harness::authority::permits_between(
@@ -2062,7 +2075,7 @@ pub fn run_spawn_watched(
             // A seat keeps its seat across a resume: the resume rebuilds this request from the
             // intent.
             race: req.race.clone(),
-            workflow: None,
+            workflow: req.workflow.clone(),
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {
@@ -2474,7 +2487,7 @@ pub fn run_spawn_watched(
                 policy: crate::acp_child::ClientPolicy::for_node(
                     &inv.cwd,
                     &agent_type,
-                    req.review.is_some(),
+                    req.is_read_only(),
                 ),
             })
             .map(|r| ChildRun {
@@ -3069,9 +3082,10 @@ fn record_cancelled(contract: &mut TaskContract, by: Option<&marion_core::journa
 /// The scope a child asked for, in §5.4's vocabulary: an empty `writable_scope` is the whole
 /// workspace, not nothing.
 fn requested_scope(req: &SpawnRequest) -> Vec<Glob> {
-    // A reviewer may write nothing: an empty list matches no path, so every change it makes is a
-    // scope violation on its contract — the record every row's read-only switch backs up.
-    if req.review.is_some() {
+    // A reviewer (or a read-only step) may write nothing: an empty list matches no path, so every
+    // change it makes is a scope violation on its contract — the record every row's read-only
+    // switch backs up.
+    if req.is_read_only() {
         return Vec::new();
     }
     if req.writable_scope.is_empty() {
@@ -3361,7 +3375,7 @@ pub fn child_launch_spec(
         tools: agent_type
             .tools
             .iter()
-            .filter(|t| req.review.is_none() || t.as_str() != marion_core::agent_type::TOOL_WRITE)
+            .filter(|t| !req.is_read_only() || t.as_str() != marion_core::agent_type::TOOL_WRITE)
             .cloned()
             .collect(),
         // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
@@ -3430,7 +3444,7 @@ pub fn child_launch_spec(
         wire: None,
         provider: None,
         extra: Extras {
-            read_only: req.review.is_some(),
+            read_only: req.is_read_only(),
             acp_agent: agent_type.acp_agent.clone(),
             // The type's ACP session mode; any non-ACP adapter refuses a launch carrying one.
             approval_mode: agent_type.approval_mode.clone(),
@@ -3961,6 +3975,8 @@ mod tests {
             resume: None,
             profile: None,
             budget: None,
+            read_only: false,
+            workflow: None,
         };
         let caller_wt = project.agent(&AgentId("caller".into())).worktree();
         std::fs::create_dir_all(caller_wt.parent().unwrap()).unwrap();
@@ -4062,6 +4078,8 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            read_only: false,
+            workflow: None,
         };
         assert!(
             matches!(
@@ -5199,6 +5217,8 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            read_only: false,
+            workflow: None,
         };
         let observer = Counter(Mutex::default());
         let e = run_spawn_watched(
@@ -5363,6 +5383,8 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            read_only: false,
+            workflow: None,
         };
         let e = run_spawn_watched(
             &env,
@@ -5589,6 +5611,8 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            read_only: false,
+            workflow: None,
         };
 
         let result = run_spawn(
@@ -5725,6 +5749,8 @@ mod tests {
             allow_concurrent_writes: false,
             resume: None,
             profile: None,
+            read_only: false,
+            workflow: None,
         };
         let observer = Recorder {
             project: env.project_dir.clone(),
@@ -6046,6 +6072,8 @@ mod tests {
             resume: None,
             profile: None,
             race: None,
+            read_only: false,
+            workflow: None,
         }
     }
 

@@ -191,6 +191,8 @@ pub fn compile(
         // non-inherited auth).
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let mut spec = child_launch_spec(
         &env,

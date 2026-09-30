@@ -180,4 +180,5 @@ pub mod tree;
 /// The journal's first production reader: what a person watching a run learns about its
 /// children while it is still running.
 pub mod watch;
+pub mod workflow;
 pub mod workflow_file;

@@ -87,6 +87,8 @@ fn spawn_acp_child(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> 
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     // A root caller at depth 0, exactly what `marion run` hands the bridge.
     let caller = Caller::root(
@@ -216,6 +218,8 @@ fn a_real_copilot_acp_child_reports_through_the_argv_declared_bridge() {
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let caller = Caller::root(
         "root",
@@ -299,6 +303,8 @@ fn spawn_unknown_agent(name: &str, verification: Vec<String>) -> TaskContract {
         resume: None,
         profile: None,
         race: None,
+        read_only: false,
+        workflow: None,
     };
     let caller = Caller::root(
         "root",

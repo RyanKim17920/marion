@@ -92,6 +92,8 @@ fn a_childs_usage_lands_in_its_contract_and_one_journal_record_and_survives_repl
             resume: None,
             profile: None,
             race: None,
+            read_only: false,
+            workflow: None,
         },
         &task,
         &Caller::root(

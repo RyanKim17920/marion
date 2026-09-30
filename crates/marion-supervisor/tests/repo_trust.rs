@@ -61,6 +61,8 @@ fn request(repo: &Path) -> SpawnRequest {
         verification: vec![],
         profile: None,
         budget: None,
+        read_only: false,
+        workflow: None,
     }
 }
 
