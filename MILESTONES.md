@@ -781,6 +781,30 @@ gap before the first response (the id could be looked up by the `marion-<agent i
 node's own `OPENCODE_DB`); ACP opencode's reasoning tokens; and the ~30 s startup limit on a
 `session/new` server, which no key lifts.
 
+**pi parity with claude and codex, and live opencode and pi runs (2026-09-30, pi 0.99.1,
+opencode 1.18.33; `tests/fixtures/s34-pi/README.md`'s parity table,
+`tests/fixtures/live-oc-pi-2026-09-30/`).** Every pi cell that was unit-tested only or untested now
+has a real-binary test on the canned provider: a pi child that verifies, lands its branch and
+journals its session (`cross_product::zzt_*`); a pi parent that collects a background child with
+`status` and `wait` (`pi_rpc`); a lost pi child resumed after a supervisor SIGKILL
+(`restart_resume`); an expired pi child leaving no `bash` process (`timeout_kill`); a pi race seat
+(`race`) and a pi workflow step (`workflow`). pi never had a conformance row: the battery's duplex
+driver spoke only stream-json, so its `--mode rpc` launch never started; the driver now speaks the
+row's own `Dialect`, and pi passes every probe but P-tui. **Live, on the operator's logins:** an
+opencode child of a claude root, an opencode root delegating to codex, and a pi root delegating to
+codex each delegated, reported, passed verification on the landed branch (s3, s6, s7, on
+`google/gemini-3.1-flash-lite`). A pi child of a claude root did not complete: every model the
+operator's pi reaches was refused (`opencode-go` subscription lapsed, Copilot models unsupported)
+or rate-limited (Google free tier, with ~66 k tokens of the operator's own extensions in each
+request). **Bugs the live runs exposed, each fixed failing-first:** a child that failed after its
+process started never closed its event stream, so its parent's blocking `spawn` waited out its own
+wall clock (420 s; every early exit now writes `Aborted` with the error's sentence); a duplex node
+that exited before its handshake was reported without its stderr, which named the cause
+(`Error: Model "…" not found`); a child's stderr reached its contract and its parent with raw
+terminal escapes; a child that never started was listed as "still running in the background";
+and `marion run` showed an opencode or pi root's frames only by kind, never its `spawn` (the
+console now reads them by the row's activity rule).
+
 **agy — Google's Antigravity CLI — is a row (s32, 2026-09-22, agy 1.2.8, `tests/fixtures/s32/`,
 the operator's own keychain login, `gemini-3.6-flash-low`).** Measured headless: `-p <prompt>
 --output-format stream-json --model <slug>`; no ACP, no MCP-config flag. **Declaration:** `--add-dir
