@@ -262,7 +262,38 @@ pub fn parse(line: &str) -> Result<Request, Undecodable> {
 /// answered `report recorded`, `isError: false`, to a root — a receipt for a payload nothing
 /// stages, since there is no contract to stage it into.
 pub fn tools(types: &AgentTypes) -> Value {
-    tools_describing(&agent_type_description(types))
+    tools_describing(&agent_type_description(types), WORKFLOW_NAMES_UNLISTED)
+}
+
+/// `workflow`'s `name` where no project's workflows were read: the whole surface's declaration.
+const WORKFLOW_NAMES_UNLISTED: &str = "The name of a workflow this project defines and you may run: `marion workflow list` shows them.";
+
+/// The most workflow names `workflow`'s schema lists; the rest are counted.
+pub const MAX_OFFERED_WORKFLOWS: usize = 32;
+
+/// **What `workflow`'s `name` may be**, as a sentence for the client that reads the schema: the
+/// runnable workflows ([`crate::workflow_file::runnable_names`]), at most
+/// [`MAX_OFFERED_WORKFLOWS`] of them with the rest counted, so a tree with hundreds of files
+/// cannot flood the tool list.
+pub fn workflow_names_description(names: &[String]) -> String {
+    if names.is_empty() {
+        return "No workflow may run here yet: define one in .marion/workflows/ and trust it with \
+                `marion trust allow <file>`, or add your own under ~/.config/marion/workflows/."
+            .into();
+    }
+    let shown = names
+        .iter()
+        .take(MAX_OFFERED_WORKFLOWS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let more = names.len() - shown.len();
+    let mut s = format!("One of: {}.", shown.join(", "));
+    if more > 0 {
+        s.push_str(&format!(
+            " And {more} more: `marion workflow list` shows them all."
+        ));
+    }
+    s
 }
 
 /// What `spawn`'s `agent_type` may name, as a sentence for the node that reads the schema: every
@@ -285,7 +316,7 @@ pub fn agent_type_description(types: &AgentTypes) -> String {
 
 /// The tool list over one already-composed `agent_type` sentence — the seam [`tools_list_result`]
 /// uses to say why a tree's file was refused without inventing a type table to say it with.
-fn tools_describing(agent_type_description: &str) -> Value {
+fn tools_describing(agent_type_description: &str, workflow_names: &str) -> Value {
     json!([
         {
             "name": "spawn",
@@ -524,6 +555,28 @@ fn tools_describing(agent_type_description: &str) -> Value {
             }
         },
         {
+            "name": "workflow",
+            "description": "Run one of this project's workflows: a fixed sequence of agent, \
+                            parallel, race, review and land steps the operator wrote and trusted. \
+                            By default this blocks until the run closes and returns its final \
+                            step's contract with every step's verdict. With `background: true` it \
+                            returns the run's id at once; `wait`, `status` and `cancel` take that \
+                            id. Only the operator's own client may run a workflow.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": workflow_names},
+                    "inputs": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "The workflow's declared inputs, by name."
+                    },
+                    "background": {"type": "boolean"}
+                },
+                "required": ["name"]
+            }
+        },
+        {
             "name": "report",
             "description": "Return your result to marion. Call this exactly once when the task \
                             is done. Your final assistant message is NOT the return value.",
@@ -551,6 +604,9 @@ const ID_DESCRIPTION: &str = "The child: the task_id from the handle `spawn` ret
 /// verbatim, and `duplex` sees whatever the harness spells it as — which is the *adapter's* mapping
 /// (`HarnessAdapter::marion_tool_name`) applied to this, never a second literal.
 pub const REPORT: &str = "report";
+
+/// The operator's verb for running a workflow, offered to the operator's own client alone.
+pub const WORKFLOW: &str = "workflow";
 
 /// **The one sentence every child's prompt ends with**, appended by [`crate::run::child_prompt`].
 ///
@@ -650,6 +706,7 @@ pub fn tools_list_result(
     id: &Value,
     types: Result<&AgentTypes, &str>,
     offers_report: bool,
+    workflows: Option<&str>,
 ) -> Value {
     let description = match types {
         Ok(types) => agent_type_description(types),
@@ -658,9 +715,13 @@ pub fn tools_list_result(
             agent_type_description(&AgentTypes::builtins_only())
         ),
     };
-    let mut tools = tools_describing(&description);
-    if !offers_report && let Some(list) = tools.as_array_mut() {
-        list.retain(|t| t["name"] != REPORT);
+    let mut tools = tools_describing(&description, workflows.unwrap_or(WORKFLOW_NAMES_UNLISTED));
+    if let Some(list) = tools.as_array_mut() {
+        // A node is never offered `workflow`: running one is the operator's alone, and a listed
+        // verb is an invitation (see `report`). A node that calls it anyway is told why.
+        list.retain(|t| {
+            (offers_report || t["name"] != REPORT) && (workflows.is_some() || t["name"] != WORKFLOW)
+        });
     }
     json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools}})
 }
@@ -1237,6 +1298,57 @@ pub fn race_text(
     };
     let (text, is_error) = spawn_text(&winner.agent_type, contract);
     (format!("{text}\n\n{board}"), is_error)
+}
+
+/// **A closed workflow run, rendered once** — what a blocking `workflow` and its `wait` return: the
+/// final step's contract as a `spawn` would render it, then the run's id and scoreboard. An error
+/// unless the run succeeded.
+pub fn workflow_text(
+    project: &marion_core::paths::ProjectDir,
+    result: &marion_core::workflow::WorkflowResult,
+) -> (String, bool) {
+    let board = format!("workflow run {}:\n{}", result.wf_id.0, result.scoreboard());
+    let failed = result.outcome != marion_core::workflow::Outcome::Succeeded;
+    match result.final_work() {
+        Some(w) => {
+            let contract = crate::courier::read_contract(project, &w.agent_id, &w.task_id);
+            let (text, is_error) = spawn_text(&w.agent_type, contract);
+            (format!("{text}\n\n{board}"), is_error || failed)
+        }
+        None => (
+            format!("marion: no step of the run left a contract to return.\n\n{board}"),
+            true,
+        ),
+    }
+}
+
+/// A backgrounded workflow run's handle: its id, which `wait`, `status` and `cancel` take.
+pub fn workflow_background_result(
+    id: &Value,
+    started: &marion_core::proto::result::WorkflowRunResult,
+) -> Value {
+    tool_result(
+        id,
+        &format!(
+            "marion: workflow {} is running in the background as {:?} ({} steps) — this is a \
+             handle, not a result. Call `wait` with that id for its final contract and \
+             scoreboard, `status` to see its steps, `cancel` to stop it.",
+            started.name, started.wf_id.0, started.steps
+        ),
+        false,
+    )
+}
+
+/// A `wait` whose bound ran out before the run closed.
+pub fn workflow_still_running(id: &Value, wf_id: &str, secs: u64) -> Value {
+    tool_result(
+        id,
+        &format!(
+            "marion: workflow run {wf_id} has not closed after {secs} s of waiting; it keeps \
+             running and the id stays valid — call `wait` with id {wf_id:?} again."
+        ),
+        true,
+    )
 }
 
 /// A backgrounded race's handle: its id, which `wait` and `status` take as the `task_id`.
@@ -1916,10 +2028,11 @@ mod tests {
         // block on one child, then poll one child, then survey them all, then return your own
         // result. It is not the allowlist's order and does not have to be; the allowlist is a set.
         // `steer` sits after the survey: a caller looks at its children, then redirects one.
+        // `workflow` is the operator's: on the whole surface, and withheld from a node's list.
         assert_eq!(
             names,
             vec![
-                "spawn", "wait", "status", "list", "steer", "cancel", "report"
+                "spawn", "wait", "status", "list", "steer", "cancel", "workflow", "report"
             ]
         );
         let s = t.to_string();
@@ -2659,8 +2772,8 @@ mod tests {
         assert_eq!(a, b);
         let builtins = AgentTypes::builtins_only();
         assert_eq!(
-            tools_list_result(&json!(1), Ok(&builtins), true),
-            tools_list_result(&json!(1), Ok(&builtins), true)
+            tools_list_result(&json!(1), Ok(&builtins), true, None),
+            tools_list_result(&json!(1), Ok(&builtins), true, None)
         );
     }
 

@@ -1278,3 +1278,204 @@ fn a_run_cut_between_a_decision_and_the_next_launch_is_finished_by_the_next_supe
         "the check step launched once after the restart"
     );
 }
+
+/// **`marion mcp`, the operator's MCP client, over stdio**: JSON-RPC in, the next reply with an id
+/// out.
+struct McpClient {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    lines: std::sync::mpsc::Receiver<String>,
+    next_id: u64,
+}
+
+impl McpClient {
+    fn start(bed: &Bed) -> McpClient {
+        use std::io::BufRead;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+            .arg("mcp")
+            .arg("--repo")
+            .arg(&bed.repo)
+            .arg("--state-dir")
+            .arg(&bed.state)
+            .env("XDG_CONFIG_HOME", &bed.config)
+            .env("XDG_DATA_HOME", &bed.data)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("marion mcp starts");
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        let stdin = child.stdin.take();
+        let mut c = McpClient {
+            child,
+            stdin,
+            lines,
+            next_id: 1,
+        };
+        c.call("initialize", json!({}));
+        c
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        use std::io::Write;
+        let id = self.next_id;
+        self.next_id += 1;
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let w = self.stdin.as_mut().unwrap();
+        writeln!(w, "{frame}").unwrap();
+        w.flush().unwrap();
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(BOUND)
+                .unwrap_or_else(|_| panic!("no reply to {method}"));
+            let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if reply["id"] == json!(id) {
+                return reply;
+            }
+        }
+    }
+
+    /// A tool's text and whether it is an error.
+    fn tool(&mut self, name: &str, arguments: serde_json::Value) -> (String, bool) {
+        let r = self.call("tools/call", json!({"name": name, "arguments": arguments}));
+        (
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a tool answer carries text: {r}"))
+                .to_string(),
+            r["result"]["isError"] == json!(true),
+        )
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        self.stdin.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The run id a backgrounded `workflow` handed back: the quoted id after "as ".
+fn handle_of(text: &str) -> WorkflowId {
+    let after = text
+        .split(" as \"")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no handle: {text}"));
+    WorkflowId(after.split('"').next().unwrap().to_string())
+}
+
+const SOLO: &str = r#"schema = 1
+name = "solo"
+
+[[step]]
+id = "look"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "SOLOMARK: look"
+"#;
+
+/// **(9) The MCP `workflow` tool** lists the trusted workflows only, runs one to its close and
+/// returns its final contract with the scoreboard and the run's id, or backgrounds it behind the
+/// run's id, which `status` and `wait` resolve — once.
+#[test]
+fn the_mcp_workflow_tool_runs_a_trusted_workflow_blocking_or_in_the_background() {
+    let script = Script {
+        nodes: vec![node("SOLOMARK", &[], "looked: FINAL-7q")],
+        ..Script::default()
+    };
+    let Some(bed) = bed("wf-mcp", script) else {
+        return;
+    };
+    bed.user_workflow("solo", SOLO);
+    let repo_dir = marion_supervisor::workflow_file::repo_dir(&bed.repo);
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(
+        repo_dir.join("untrusted.toml"),
+        SOLO.replace("\"solo\"", "\"untrusted\""),
+    )
+    .unwrap();
+    let mut mcp = McpClient::start(&bed);
+
+    let listed = mcp.call("tools/list", json!({}));
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "workflow")
+        .cloned()
+        .unwrap_or_else(|| panic!("the operator's client is offered `workflow`: {listed}"));
+    let offered = tool.to_string();
+    assert!(offered.contains("solo"), "{offered}");
+    assert!(
+        !offered.contains("untrusted"),
+        "an untrusted workflow is not offered: {offered}"
+    );
+
+    let (text, is_error) = mcp.tool("workflow", json!({"name": "solo"}));
+    assert!(!is_error, "{text}");
+    assert!(text.contains("FINAL-7q"), "the final contract: {text}");
+    assert!(
+        text.contains("workflow solo: succeeded"),
+        "the scoreboard: {text}"
+    );
+
+    let (handed, is_error) = mcp.tool("workflow", json!({"name": "solo", "background": true}));
+    assert!(!is_error, "{handed}");
+    let wf = handle_of(&handed);
+    let (status, _) = mcp.tool("status", json!({"id": &wf.0}));
+    assert!(
+        status.contains(&wf.0) && status.contains("solo"),
+        "{status}"
+    );
+    let (waited, is_error) = mcp.tool("wait", json!({"id": &wf.0}));
+    assert!(!is_error, "{waited}");
+    assert!(
+        waited.contains("FINAL-7q") && waited.contains(&wf.0),
+        "{waited}"
+    );
+    let (again, is_error) = mcp.tool("wait", json!({"id": &wf.0}));
+    assert!(is_error && again.contains("already"), "{again}");
+
+    let (refused, is_error) = mcp.tool("workflow", json!({"name": "untrusted"}));
+    assert!(is_error && refused.contains("trust"), "{refused}");
+}
+
+/// **(9) `cancel` takes a workflow run's id** from the operator's MCP client, and the run's `wait`
+/// then returns it cancelled.
+#[test]
+fn the_mcp_cancel_tool_stops_a_backgrounded_workflow_run() {
+    let script = Script {
+        nodes: vec![node("SOLOMARK", &[], "looked")],
+        ..Script::default()
+    };
+    let hold = MarkerHold::new("SOLOMARK");
+    let Some(bed) = bed_held("wf-mcp-cancel", script, Some(hold.clone())) else {
+        return;
+    };
+    bed.user_workflow("solo", SOLO);
+    let mut mcp = McpClient::start(&bed);
+    let (handed, _) = mcp.tool("workflow", json!({"name": "solo", "background": true}));
+    let wf = handle_of(&handed);
+    hold.await_parked(1);
+    let (cancelled, is_error) = mcp.tool("cancel", json!({"id": &wf.0}));
+    hold.release();
+    assert!(!is_error, "{cancelled}");
+    assert!(cancelled.contains("cancelled"), "{cancelled}");
+    let (waited, is_error) = mcp.tool("wait", json!({"id": &wf.0}));
+    assert!(is_error, "a cancelled run is not a success: {waited}");
+    assert!(waited.contains("workflow solo: cancelled"), "{waited}");
+}

@@ -42,6 +42,19 @@ use crate::{background, bridge, courier, run, socket, spawn};
 /// Declared and refused rather than withheld, on `bridge::tools`' own grounds: an absent verb
 /// carries no sentence, so a client would read the absence as "marion has no `report`" and never
 /// learn that what it wanted is a *child's* report, which arrives on its own `spawn`.
+/// **Why a node may not run a workflow**, from either direction it might try.
+///
+/// A workflow's steps are the operator's own contracted nodes — top-level, each in its worktree,
+/// launched with the operator's authority — so a node that started one would start agents above
+/// itself: outside its subtree, its budget and its wall clock. Scoping a run under its caller
+/// instead would need every step's launch, budget split and cancel re-derived against that
+/// caller's authority; until that exists, the verb is the operator's alone, withheld from a node's
+/// list and refused here by name.
+const NODE_WORKFLOW: &str = "marion: `workflow` is the operator's — its steps run as the \
+     operator's own top-level agents, which no node may start above itself. Nothing ran. To \
+     delegate the same work, `spawn` the agents yourself: a race with `candidates`, a review with \
+     `review_of`.";
+
 const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path and this is not a \
      node — it is an MCP client marion did not start and holds no contract for, so there is nothing \
      a report could be recorded against. Nothing was staged. What you are probably after is the \
@@ -277,6 +290,7 @@ fn handle_tool_call(
         "list" => tool_list(who, id).unwrap_or_else(|refused| refused),
         "steer" => tool_steer(who, bg, id, args).unwrap_or_else(|refused| refused),
         "cancel" => tool_cancel(who, bg, id, args).unwrap_or_else(|refused| refused),
+        "workflow" => tool_workflow(who, bg, id, args).unwrap_or_else(|refused| refused),
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
 }
@@ -685,7 +699,7 @@ enum Address {
 fn race_of(
     bg: &background::Background,
     args: &serde_json::Value,
-) -> Option<(marion_core::race::RaceId, background::RaceWait)> {
+) -> Option<(marion_core::race::RaceId, background::GroupWait)> {
     ["id", "task_id"]
         .into_iter()
         .find_map(|k| args[k].as_str())
@@ -734,8 +748,23 @@ fn tool_wait(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    if let Some((wf_id, wait)) = workflow_of(bg, args) {
+        let background::GroupWait::Pending { bound } = wait else {
+            return Err(bridge::tool_result(
+                id,
+                &format!(
+                    "marion: workflow run {} already closed and its result was returned by an \
+                     earlier `wait`; it stays in workflows/{}/result.json.",
+                    wf_id.0, wf_id.0
+                ),
+                true,
+            ));
+        };
+        let (sock, project) = paths_or_refuse(who, id)?;
+        return Ok(workflow_delivered(bg, id, &sock, &project, &wf_id, bound));
+    }
     if let Some((race_id, wait)) = race_of(bg, args) {
-        let background::RaceWait::Pending { bound } = wait else {
+        let background::GroupWait::Pending { bound } = wait else {
             return Err(bridge::tool_result(
                 id,
                 &format!(
@@ -872,6 +901,17 @@ fn tool_status(
     id: &serde_json::Value,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    if let Some((wf_id, _)) = workflow_of(bg, args) {
+        let (sock, project) = paths_or_refuse(who, id)?;
+        return match courier::tree(&sock) {
+            Ok(t) => Ok(bridge::tool_result(
+                id,
+                &workflow_status(&project, &wf_id, &t.nodes),
+                false,
+            )),
+            Err(e) => Err(bridge::tool_result(id, &format!("marion: {e}"), true)),
+        };
+    }
     if let Some((race_id, _)) = race_of(bg, args) {
         let (sock, _) = paths_or_refuse(who, id)?;
         return match courier::tree(&sock) {
@@ -1028,6 +1068,31 @@ fn tool_cancel(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Value> {
     let refuse = |text: &str| bridge::tool_result(id, text, true);
+    if let Some(wf_id) = workflow_named(who, bg, args) {
+        if matches!(who, Principal::Node) {
+            return Err(refuse(NODE_WORKFLOW));
+        }
+        let (sock, _) = paths_or_refuse(who, id)?;
+        return match courier::workflow_cancel(
+            &sock,
+            marion_core::proto::params::WorkflowCancelParams {
+                wf_id: wf_id.clone(),
+                force: false,
+            },
+        ) {
+            Ok(r) => Ok(bridge::tool_result(
+                id,
+                &format!(
+                    "marion: workflow run {} is cancelled: it starts nothing more, and {} of its \
+                     agents ended, their work kept. `wait` with its id returns the run.",
+                    wf_id.0,
+                    r.nodes.len()
+                ),
+                false,
+            )),
+            Err(e) => Err(refuse(&format!("marion: {e}"))),
+        };
+    }
     let agent_id =
         node_address(bg, "cancel", "Nothing was cancelled", args).map_err(|e| refuse(&e))?;
     let (sock, _) = paths_or_refuse(who, id)?;
@@ -1040,6 +1105,162 @@ fn tool_cancel(
         )),
         Err(e) => Err(refuse(&format!("marion: {e}"))),
     }
+}
+
+/// The workflow run a `wait` or `status` names by its handle, when this bridge started one under it.
+fn workflow_of(
+    bg: &background::Background,
+    args: &serde_json::Value,
+) -> Option<(marion_core::workflow::WorkflowId, background::GroupWait)> {
+    ["id", "task_id"]
+        .into_iter()
+        .find_map(|k| args[k].as_str())
+        .and_then(|handle| bg.workflow(handle))
+}
+
+/// **The workflow run a `cancel` names**: one this bridge started, or any run of this project by its
+/// id — the operator's client may stop a run `marion workflow run` started.
+fn workflow_named(
+    who: &Principal,
+    bg: &background::Background,
+    args: &serde_json::Value,
+) -> Option<marion_core::workflow::WorkflowId> {
+    let handle = args["id"].as_str()?;
+    if let Some((wf_id, _)) = bg.workflow(handle) {
+        return Some(wf_id);
+    }
+    let (_, project) = who.paths().ok()?;
+    let wf_id = marion_core::workflow::WorkflowId(handle.to_string());
+    project.workflow(&wf_id).spec().exists().then_some(wf_id)
+}
+
+/// **`workflow`: run one of the project's workflows**, the operator's client alone. See
+/// [`NODE_WORKFLOW`] for why a node is refused. Blocks for the run's close and returns its final
+/// contract and scoreboard, or with `background` hands back the run's id.
+fn tool_workflow(
+    who: &Principal,
+    bg: &background::Background,
+    id: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let refuse = |why: &str| bridge::tool_result(id, &format!("marion: {why}"), true);
+    let Principal::TopLevel(t) = who else {
+        return Err(bridge::tool_result(id, NODE_WORKFLOW, true));
+    };
+    let Some(name) = args["name"].as_str().filter(|n| !n.is_empty()) else {
+        return Err(refuse(
+            "`workflow` needs a `name`: one of the workflows its schema lists. Nothing ran.",
+        ));
+    };
+    let inputs = match &args["inputs"] {
+        serde_json::Value::Null => Default::default(),
+        serde_json::Value::Object(m) => m
+            .iter()
+            .map(|(k, v)| {
+                v.as_str()
+                    .map(|v| (k.clone(), v.to_string()))
+                    .ok_or_else(|| refuse(&format!("input `{k}` must be text. Nothing ran.")))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(refuse(
+                "`inputs` is an object of text by input name. Nothing ran.",
+            ));
+        }
+    };
+    let (sock, project) = paths_or_refuse(who, id)?;
+    who.ensure_supervisor()
+        .map_err(|e| bridge::tool_result(id, &e, true))?;
+    let started = courier::workflow_run(
+        &sock,
+        marion_core::proto::params::WorkflowRunParams {
+            name: name.to_string(),
+            inputs,
+            repo: t.repo.clone(),
+        },
+    )
+    .map_err(|e| refuse(&e.to_string()))?;
+    let bound = wait_bound(None).saturating_mul(u32::from(started.steps.max(1)));
+    bg.hand_out_workflow(started.wf_id.clone(), bound);
+    if args["background"].as_bool() == Some(true) {
+        return Ok(bridge::workflow_background_result(id, &started));
+    }
+    Ok(workflow_delivered(
+        bg,
+        id,
+        &sock,
+        &project,
+        &started.wf_id,
+        bound,
+    ))
+}
+
+/// Wait for a workflow run to close and render it, collecting the handle once it has.
+fn workflow_delivered(
+    bg: &background::Background,
+    id: &serde_json::Value,
+    sock: &SocketPaths,
+    project: &ProjectDir,
+    wf_id: &marion_core::workflow::WorkflowId,
+    bound: Duration,
+) -> serde_json::Value {
+    match courier::await_workflow(sock, project, wf_id, bound) {
+        Ok(courier::WorkflowDelivered::Closed(result)) => {
+            bg.workflow_collected(&wf_id.0);
+            let (text, is_error) = bridge::workflow_text(project, &result);
+            bridge::tool_result(id, &text, is_error)
+        }
+        Ok(courier::WorkflowDelivered::StillRunning) => {
+            bridge::workflow_still_running(id, &wf_id.0, bound.as_secs())
+        }
+        Err(e) => bridge::tool_result(id, &format!("marion: {e}"), true),
+    }
+}
+
+/// **A workflow run as it stands**: its name and whether it has closed, then one line per step node
+/// the supervisor's tree holds — its step, agent type, id and state.
+fn workflow_status(
+    project: &ProjectDir,
+    wf_id: &marion_core::workflow::WorkflowId,
+    nodes: &[marion_core::proto::model::NodeSummary],
+) -> String {
+    let spec = crate::workflow::read_spec(project, wf_id);
+    let name = spec.as_ref().map_or("?", |s| s.workflow.name.as_str());
+    let mut out = match crate::workflow::read_result(project, wf_id) {
+        Some(r) => format!(
+            "marion: workflow {name} run {} closed {}",
+            wf_id.0,
+            r.outcome.word()
+        ),
+        None => format!("marion: workflow {name} run {} is running", wf_id.0),
+    };
+    let mut rows: Vec<_> = nodes
+        .iter()
+        .filter_map(|n| {
+            let b = n.workflow.as_ref().filter(|b| &b.wf_id == wf_id)?;
+            Some((b.step, b.round, n))
+        })
+        .collect();
+    rows.sort_by_key(|(step, round, _)| (*step, *round));
+    for (step, round, n) in rows {
+        let step_id = spec
+            .as_ref()
+            .and_then(|s| s.workflow.steps.get(usize::from(step)))
+            .map_or("?", |d| d.id.as_str());
+        out.push_str(&format!(
+            "\nstep {} {step_id}{} — {} {} — {}",
+            u16::from(step) + 1,
+            if round > 0 {
+                format!(" r{}", u16::from(round) + 1)
+            } else {
+                String::new()
+            },
+            n.agent_type,
+            n.agent_id.0,
+            crate::tree::state_label(n.state, n.reap_state)
+        ));
+    }
+    out
 }
 
 /// What a finished cancel tells the model: how many agents ended, and how many were killed.
@@ -1213,6 +1434,20 @@ fn report_refusal(depth: Option<String>) -> Option<String> {
 /// a node, has no contract to report against, and is never offered it — listing a tool that can
 /// only refuse is an invitation, as roots that called it showed. A call that arrives anyway is
 /// still refused by name.
+/// What `workflow`'s schema offers this surface: the runnable names to the operator's client, and
+/// nothing — the verb withheld — to a node ([`NODE_WORKFLOW`]).
+fn workflows_offered(who: &Principal) -> Option<String> {
+    match who {
+        Principal::Node => None,
+        Principal::TopLevel(t) => Some(bridge::workflow_names_description(
+            &crate::workflow_file::runnable_names(
+                &t.repo,
+                crate::workflow_file::user_dir().as_deref(),
+            ),
+        )),
+    }
+}
+
 fn report_offered(who: &Principal) -> bool {
     match who {
         Principal::TopLevel(_) => false,
@@ -1852,6 +2087,7 @@ fn answer(
                 &id,
                 tree_agent_types().as_ref().map_err(String::as_str),
                 report_offered(who),
+                workflows_offered(who).as_deref(),
             )),
             true,
         ),
@@ -2028,6 +2264,61 @@ mod tests {
         let schema =
             bridge::agent_type_description(&marion_core::agent_type::AgentTypes::builtins_only());
         assert!(!schema.contains("acp:<"), "{schema}");
+    }
+
+    /// **A node may not run a workflow, and is not offered one**: `workflow` is refused by name
+    /// before anything is dialed, and a node's `tools/list` does not carry it while the operator's
+    /// client's does, naming only what may run.
+    #[test]
+    fn a_node_is_neither_offered_nor_allowed_a_workflow() {
+        let bg = crate::background::Background::new();
+        let reply = handle_tool_call(
+            &Principal::Node,
+            &bg,
+            &serde_json::json!(1),
+            "workflow",
+            &serde_json::json!({"name": "ship"}),
+        );
+        assert_eq!(
+            reply["result"]["isError"],
+            serde_json::json!(true),
+            "{reply}"
+        );
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            text.contains("operator") && text.contains("Nothing ran"),
+            "{text}"
+        );
+
+        let types = marion_core::agent_type::AgentTypes::builtins_only();
+        let names = |listed: serde_json::Value| -> Vec<String> {
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let node = names(bridge::tools_list_result(
+            &serde_json::json!(1),
+            Ok(&types),
+            true,
+            None,
+        ));
+        assert!(!node.iter().any(|n| n == "workflow"), "{node:?}");
+        let offered = bridge::workflow_names_description(&["ship".into(), "plan".into()]);
+        let op =
+            bridge::tools_list_result(&serde_json::json!(1), Ok(&types), false, Some(&offered));
+        assert!(names(op.clone()).iter().any(|n| n == "workflow"));
+        assert!(op.to_string().contains("One of: ship, plan."), "{op}");
+        let many: Vec<String> = (0..40).map(|i| format!("w{i}")).collect();
+        let bounded = bridge::workflow_names_description(&many);
+        assert!(
+            !bounded.contains("w32") && bounded.contains("And 8 more"),
+            "{bounded}"
+        );
     }
 
     /// **`steer` names what it is missing before it dials anything**: a message, and exactly one

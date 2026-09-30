@@ -125,8 +125,11 @@ generation is per harness; see [Harness detail](#harness-detail).
 ## marion as an MCP server
 
 `marion mcp` serves marion's tools over stdio for any MCP client: `spawn`, `wait`, `status`,
-`list`, `steer`, and `report` (which answers only inside a child marion started, so a root sees
-five). Its `spawn` goes over the same socket `marion run` uses, so the result shows up in `marion
+`list`, `steer`, `cancel`, `workflow`, and `report` (which answers only inside a child marion
+started, so this client is not offered it). `workflow` runs one of the project's workflows that may
+run as it stands (see Workflows below), and only this, the operator's own client, is offered it:
+an agent marion started is refused, since a run's steps are top-level agents it could not start
+above itself. Its `spawn` goes over the same socket `marion run` uses, so the result shows up in `marion
 ls` like any other, at the top of the tree. An agent type that can change files, or a spawn that
 states `verification`, gets what a child gets: its own worktree on a `marion/` branch, the checks
 run there, and a contract to read back. `isolation: "shared-cwd"` runs it in your checkout

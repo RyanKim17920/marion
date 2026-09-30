@@ -44,6 +44,8 @@ fn mcp_tool_names() -> Vec<String> {
         &Value::Null,
         Ok(&AgentTypes::builtins_only()),
         false,
+        // The operator's client is offered `workflow`; which names it lists is not help's news.
+        Some(""),
     );
     listed["result"]["tools"]
         .as_array()
@@ -5106,7 +5108,9 @@ mod tests {
         let declared = mcp_tool_names();
         assert_eq!(
             declared,
-            ["spawn", "wait", "status", "list", "steer", "cancel"]
+            [
+                "spawn", "wait", "status", "list", "steer", "cancel", "workflow"
+            ]
         );
         let mcp = (cli::verb("mcp").unwrap().help)();
         assert!(mcp.contains(&declared.join(", ")), "{mcp}");

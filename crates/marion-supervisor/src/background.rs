@@ -113,6 +113,16 @@ pub enum Collected {
 pub struct Background {
     handed: Mutex<Vec<Handed>>,
     races: Mutex<Vec<HandedRace>>,
+    workflows: Mutex<Vec<HandedWorkflow>>,
+}
+
+/// A workflow run this bridge started: its handle is the run's id, and a `wait` on it is a wait
+/// for the run's close. The operator's client alone starts one, so nothing announces its close:
+/// the client asked, and `wait` answers.
+struct HandedWorkflow {
+    wf_id: marion_core::workflow::WorkflowId,
+    wait_bound: Duration,
+    collected: bool,
 }
 
 /// A race this bridge started: its handle is the race's id, and a `wait` on it is a wait for the
@@ -127,8 +137,8 @@ struct HandedRace {
     waits: usize,
 }
 
-/// What a `wait` found for a race handle.
-pub enum RaceWait {
+/// What a `wait` found for a race's or a workflow run's handle.
+pub enum GroupWait {
     Pending { bound: Duration },
     AlreadyCollected,
 }
@@ -403,17 +413,60 @@ impl Background {
     }
 
     /// The race a handle names, if it names one this bridge started.
-    pub fn race(&self, handle: &str) -> Option<(marion_core::race::RaceId, RaceWait)> {
+    pub fn race(&self, handle: &str) -> Option<(marion_core::race::RaceId, GroupWait)> {
         let races = self.races.lock().unwrap_or_else(|e| e.into_inner());
         let r = races.iter().find(|r| r.race_id.0 == handle)?;
         let wait = if r.collected {
-            RaceWait::AlreadyCollected
+            GroupWait::AlreadyCollected
         } else {
-            RaceWait::Pending {
+            GroupWait::Pending {
                 bound: r.wait_bound,
             }
         };
         Some((r.race_id.clone(), wait))
+    }
+
+    /// Record a workflow run's handle.
+    pub fn hand_out_workflow(
+        &self,
+        wf_id: marion_core::workflow::WorkflowId,
+        wait_bound: Duration,
+    ) {
+        self.workflows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(HandedWorkflow {
+                wf_id,
+                wait_bound,
+                collected: false,
+            });
+    }
+
+    /// The workflow run a handle names, if it names one this bridge started.
+    pub fn workflow(&self, handle: &str) -> Option<(marion_core::workflow::WorkflowId, GroupWait)> {
+        let runs = self.workflows.lock().unwrap_or_else(|e| e.into_inner());
+        let w = runs.iter().find(|w| w.wf_id.0 == handle)?;
+        let wait = if w.collected {
+            GroupWait::AlreadyCollected
+        } else {
+            GroupWait::Pending {
+                bound: w.wait_bound,
+            }
+        };
+        Some((w.wf_id.clone(), wait))
+    }
+
+    /// A `wait` got this run's result.
+    pub fn workflow_collected(&self, handle: &str) {
+        if let Some(w) = self
+            .workflows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .find(|w| w.wf_id.0 == handle)
+        {
+            w.collected = true;
+        }
     }
 
     /// A `wait` got this race's decision.
@@ -513,7 +566,7 @@ mod tests {
         bg.hand_out_race(race.clone(), Duration::from_secs(9));
         assert!(matches!(
             bg.race("r-1"),
-            Some((r, RaceWait::Pending { bound })) if r == race && bound == Duration::from_secs(9)
+            Some((r, GroupWait::Pending { bound })) if r == race && bound == Duration::from_secs(9)
         ));
         assert!(bg.race("r-2").is_none());
         assert!(matches!(bg.resolve("r-1"), Wait::Unknown));
@@ -521,7 +574,7 @@ mod tests {
         bg.race_collected("r-1");
         assert!(matches!(
             bg.race("r-1"),
-            Some((_, RaceWait::AlreadyCollected))
+            Some((_, GroupWait::AlreadyCollected))
         ));
     }
 

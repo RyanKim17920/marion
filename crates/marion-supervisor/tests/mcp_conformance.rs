@@ -585,6 +585,8 @@ fn tools_list_names_are_bare_and_in_the_pinned_order() {
         .iter()
         .map(|t| t["name"].as_str().expect("every tool is named"))
         .collect();
+    // `workflow` is absent by design: it is the operator's verb, withheld from a node's list and
+    // refused by name if a node calls it anyway.
     assert_eq!(
         names,
         vec![

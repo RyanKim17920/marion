@@ -121,6 +121,17 @@ pub fn all(tree: &Path, user: Option<&Path>) -> Vec<Found> {
     found
 }
 
+/// **The names of every workflow that may run as it stands**, sorted: each that [`load`] would
+/// load — the operator's own, and the repository's trusted by their current bytes. What the
+/// operator's MCP client is offered.
+pub fn runnable_names(tree: &Path, user: Option<&Path>) -> Vec<String> {
+    all(tree, user)
+        .into_iter()
+        .filter(|f| load(tree, user, &f.name).is_ok())
+        .map(|f| f.name)
+        .collect()
+}
+
 /// Why a workflow cannot run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LoadError {

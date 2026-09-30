@@ -1088,9 +1088,30 @@ pub struct StepRow {
     /// What the step said beyond its verdict ([`crate::journal::WorkflowStepDecided::note`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The node whose contract stands for the step's work, where one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<StepWork>,
+}
+
+/// A step's work, as the contract that records it: whose, which run, and on what agent type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepWork {
+    pub agent_id: crate::contract::AgentId,
+    pub task_id: crate::contract::TaskId,
+    pub agent_type: String,
 }
 
 impl WorkflowResult {
+    /// **The run's final contract**: the work of the last step that reached a verdict and has one
+    /// — what a caller asked the run for, as a single node's answer.
+    pub fn final_work(&self) -> Option<&StepWork> {
+        self.steps
+            .iter()
+            .rev()
+            .filter(|s| s.verdict.is_some())
+            .find_map(|s| s.work.as_ref())
+    }
+
     /// One line per step and the run's outcome, as `marion workflow run` prints it.
     pub fn scoreboard(&self) -> String {
         let mut out = String::new();

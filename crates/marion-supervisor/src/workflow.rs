@@ -565,6 +565,14 @@ pub fn result(
                     .then(|| values.field(i, Field::Branch))
                     .flatten(),
                 note: run.decision(s).and_then(|d| d.note.clone()),
+                work: values.work_node(i).and_then(|n| {
+                    let intent = n.intent.as_ref()?;
+                    Some(marion_core::workflow::StepWork {
+                        agent_id: n.agent_id.clone(),
+                        task_id: intent.task_id.clone()?,
+                        agent_type: intent.agent_type.clone(),
+                    })
+                }),
             }
         })
         .collect();
