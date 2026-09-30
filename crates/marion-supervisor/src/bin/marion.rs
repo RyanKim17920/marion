@@ -32,6 +32,8 @@ use cli::{Backend, Exit, Place, Word, Words};
 
 #[path = "marion/cli.rs"]
 mod cli;
+#[path = "marion/harness.rs"]
+mod harness;
 #[path = "marion/race.rs"]
 mod race;
 #[path = "marion/workflow.rs"]
@@ -2535,6 +2537,8 @@ impl SupervisorSession {
 fn main() -> ExitCode {
     // Before anything holds a secret: `marion login` reads a key, and every child inherits this.
     let _ = marion_supervisor::private_fs::forbid_core_dumps();
+    // Before anything parses an agent type or names a harness: the operator's own rows.
+    marion_supervisor::install_harness_rows();
     let native_facades = production_native_facades();
     dispatch_native_facade_or_legacy(
         std::env::args_os().skip(1),
@@ -3601,7 +3605,7 @@ mod tests {
         for v in cli::VERBS {
             assert_eq!(cli::verb(v.name).map(|found| found.name), Some(v.name));
         }
-        assert_eq!(cli::VERBS.len(), 17, "a command was added or dropped");
+        assert_eq!(cli::VERBS.len(), 18, "a command was added or dropped");
         assert_eq!(cli::verb("list").map(|v| v.name), Some("ls"));
         assert_eq!(cli::verb("tree").map(|v| v.name), Some("ls"));
         assert!(cli::verb("bogus").is_none());

@@ -68,6 +68,13 @@ pub const VERBS: &[Verb] = &[
         main: super::workflow::main,
     },
     Verb {
+        name: "harness",
+        aliases: &[],
+        summary: Some("list or check the harness rows your own files define"),
+        help: harness_help,
+        main: super::harness::main,
+    },
+    Verb {
         name: "attach",
         aliases: &[],
         summary: Some("open an agent's terminal"),
@@ -472,6 +479,19 @@ fn race_help() -> String {
          Ties go to fewer tokens, then less time, then the lower seat. It exits 1 when no seat\n\
          passes, and keeps every branch."
     )
+}
+
+fn harness_help() -> String {
+    "usage: marion harness list | check <file>\n\
+     \n\
+     A harness row is a TOML file that tells marion how to run a CLI it does not ship: its argv,\n\
+     environment, how marion's tools are declared to it, how it is kept from updating itself, and\n\
+     how a headless node is approved. Yours live in ~/.config/marion/harnesses/<name>.toml, owned\n\
+     by you and writable by no one else; every marion command loads them.\n\
+     \n\
+     \x20 list          every row file, and whether it loaded or why not\n\
+     \x20 check <file>  check one file as it would load, and say what it runs"
+        .into()
 }
 
 fn workflow_help() -> String {

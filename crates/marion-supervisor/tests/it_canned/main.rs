@@ -23,6 +23,7 @@ mod containment;
 mod descendant_rules;
 mod detached_spawn;
 mod detached_supervisor;
+mod harness_rows;
 mod home_e2e;
 mod journal;
 mod launch_only_root;

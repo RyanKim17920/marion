@@ -26,6 +26,8 @@ fn usage() -> ! {
 fn main() {
     // Before anything holds a secret. Advisory: a system that refuses the call still runs marion.
     let _ = marion_supervisor::private_fs::forbid_core_dumps();
+    // Every process — the supervisor, each node's bridge — knows the rows the CLI does.
+    marion_supervisor::install_harness_rows();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
         Some("--version" | "-V") => println!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),

@@ -496,6 +496,26 @@ against the canned provider, or for `status` and usage a reader held to a real c
 | an expired child leaves no tool process | — | yes | yes | yes | — |
 | marion's tools approved at launch | `--allowedTools` | declaration key | declaration key | answers the ask | declaration key |
 
+### A harness marion does not ship
+
+A CLI marion has no row for can be given one in a TOML file,
+`~/.config/marion/harnesses/<name>.toml`: its program and argv, its environment, how marion's tools
+are declared to it, how it is kept from updating itself, how a headless node is approved, how a
+second turn reaches it. `crates/marion-harness/tests/fixtures/rows/` holds two worked examples,
+row files that are the built-in `qwen` and `goose` rows byte for byte. Every marion command loads
+the directory; a file is refused, and the command says why on stderr, when it is not yours alone
+(owned by you, writable by no one else), when its name is one marion ships or has retired, when it
+states no `updates` policy, when an API key or the node token would ride argv, or when it breaks
+any invariant a built-in row is held to.
+
+```sh
+marion harness list                        # every row file, loaded or why not
+marion harness check ./mytool.toml         # check one as it would load, and say what it runs
+```
+
+A row file's stream is read by a built-in row's grammar (`stream = "builtin:goose"`); an agent
+type names the row's harness as it names any other (`harness = "mytool"`).
+
 ### ACP agents
 
 Any ACP agent runs through `acp:<command> [args…]`. These have a refinement row, probed on

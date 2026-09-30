@@ -182,3 +182,12 @@ pub mod tree;
 pub mod watch;
 pub mod workflow;
 pub mod workflow_file;
+
+/// **Load the operator's harness rows into this process** (`marion_harness::row_file`), once,
+/// and say on stderr which files were refused and why — never on stdout, which `marion mcp`
+/// speaks its protocol on.
+pub fn install_harness_rows() {
+    for e in &marion_harness::row_file::install_user_rows().refused {
+        eprintln!("marion: harness row not loaded: {e}");
+    }
+}
