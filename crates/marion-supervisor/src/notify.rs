@@ -106,13 +106,13 @@ impl Notice {
     fn of(node: &ReplayedNode, kind: NoticeKind) -> Notice {
         Notice {
             kind,
-            short: crate::tree::short_id(&node.agent_id.0).to_string(),
+            short: crate::node_label::short_id(&node.agent_id.0).to_string(),
             agent_type: node.agent_type().unwrap_or("node").to_string(),
             harness: node
                 .harness()
                 .map_or("unknown", marion_core::harness::Harness::cli_name)
                 .to_string(),
-            state: crate::tree::state_label(node.state, node.reap_state),
+            state: crate::node_label::state_label(node.state, node.reap_state),
         }
     }
 

@@ -3532,7 +3532,7 @@ pub fn child_launch_spec(
 /// ([`crate::spawn::checked_out_branch`]), so an old node's branch and a new one's are found the
 /// same way.
 pub(crate) fn worktree_branch(agent_id: &AgentId, prompt: &str) -> String {
-    let short = crate::tree::short_id(&agent_id.0);
+    let short = crate::node_label::short_id(&agent_id.0);
     match slug(prompt) {
         s if s.is_empty() => format!("marion/{short}"),
         s => format!("marion/{short}-{s}"),

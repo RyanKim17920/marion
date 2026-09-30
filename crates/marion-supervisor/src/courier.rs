@@ -477,7 +477,7 @@ impl Steered {
     /// supervisor that predates the field names no row, so the sentence promises no more than a
     /// turn boundary.
     pub fn sentence(&self) -> String {
-        let short = crate::tree::short_id(&self.agent_id.0);
+        let short = crate::node_label::short_id(&self.agent_id.0);
         let who = match &self.agent_type {
             Some(t) => format!("{t} {short}"),
             None => short.to_string(),

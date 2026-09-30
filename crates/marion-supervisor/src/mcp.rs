@@ -990,7 +990,7 @@ fn race_status(
             "\n#{seat} {} {} — {}",
             n.agent_type,
             n.agent_id.0,
-            crate::tree::state_label(n.state, n.reap_state)
+            crate::node_label::state_label(n.state, n.reap_state)
         ));
         if let Some(v) = verdict {
             out.push_str(&format!(" ({v:?})"));
@@ -1257,7 +1257,7 @@ fn workflow_status(
             },
             n.agent_type,
             n.agent_id.0,
-            crate::tree::state_label(n.state, n.reap_state)
+            crate::node_label::state_label(n.state, n.reap_state)
         ));
     }
     out
@@ -1270,7 +1270,10 @@ fn cancelled_text(
 ) -> String {
     let below = nodes.len().saturating_sub(1);
     let forced = nodes.iter().filter(|n| n.forced).count();
-    let mut text = format!("marion: cancelled {}", crate::tree::short_id(&agent_id.0));
+    let mut text = format!(
+        "marion: cancelled {}",
+        crate::node_label::short_id(&agent_id.0)
+    );
     if below > 0 {
         text.push_str(&format!(" and {below} agent(s) below it"));
     }

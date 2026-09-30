@@ -246,7 +246,7 @@ pub fn request(
 /// A finished reviewer's contract as the lines `marion review` prints: who reviewed, marion's
 /// decision and count, then one line per finding, most severe and grounded first.
 pub fn summary_lines(reviewer: &AgentId, contract: &TaskContract) -> Vec<String> {
-    let short = crate::tree::short_id(&reviewer.0);
+    let short = crate::node_label::short_id(&reviewer.0);
     let Some(c) = contract.completion.as_ref() else {
         return vec![format!(
             "review {short}: the reviewer's contract has no completion"

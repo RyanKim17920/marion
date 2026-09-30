@@ -110,6 +110,8 @@ pub(crate) mod native_relay;
 mod native_tty;
 /// `node/get`'s detail: task, activity, usage, workspace and completion, read beside the journal.
 pub mod node_detail;
+/// What a node is called — label, short id, state word — and which agent a typed id means.
+pub mod node_label;
 /// The open-file and process ceilings every node starts under.
 pub mod node_limits;
 /// A node's own `TMPDIR`, removed when its process is reaped.

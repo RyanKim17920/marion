@@ -314,7 +314,7 @@ impl Background {
     }
 
     /// **The handle an `id` names**: a `task_id` as itself, else the handle whose node
-    /// [`crate::tree::resolve_node`] picks out of this table — a whole agent id, the short id a
+    /// [`crate::node_label::resolve_node`] picks out of this table — a whole agent id, the short id a
     /// tree row shows, or a unique start of one. `Ok(None)` when it names no handle here; `Err`
     /// naming every candidate when it could be more than one.
     pub fn task_of(&self, id: &str) -> Result<Option<String>, String> {
@@ -322,7 +322,8 @@ impl Background {
         if handed.iter().any(|h| h.task_id.0 == id) {
             return Ok(Some(id.to_string()));
         }
-        let agent = crate::tree::resolve_node(id, handed.iter().map(|h| h.agent_id.0.as_str()))?;
+        let agent =
+            crate::node_label::resolve_node(id, handed.iter().map(|h| h.agent_id.0.as_str()))?;
         Ok(handed
             .iter()
             .find(|h| h.agent_id == agent)

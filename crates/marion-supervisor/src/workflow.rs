@@ -511,7 +511,7 @@ impl Values for RunValues<'_> {
                     format!(
                         "{} ({}):\n{text}",
                         c.child.harness,
-                        crate::tree::short_id(&id.0)
+                        crate::node_label::short_id(&id.0)
                     )
                 } else {
                     text

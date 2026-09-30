@@ -439,7 +439,7 @@ pub fn render(msg: &Message) -> String {
             agent_type,
         } => format!(
             "marion: message from your parent ({agent_type} {}): {}",
-            crate::tree::short_id(&agent_id.0),
+            crate::node_label::short_id(&agent_id.0),
             msg.text
         ),
         Source::ChildEnded {
@@ -515,8 +515,8 @@ pub fn relayed_end_text(agent_type: &str, parent: &str, task_id: &str, body: &st
         "The {agent_type} node that {} backgrounded as task_id {task_id:?} has ended. {} had \
          already ended, so marion tells you, its nearest live ancestor; `list` shows the node.\n\n\
          {body}",
-        crate::tree::short_id(parent),
-        crate::tree::short_id(parent),
+        crate::node_label::short_id(parent),
+        crate::node_label::short_id(parent),
     )
 }
 

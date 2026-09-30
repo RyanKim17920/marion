@@ -2,7 +2,7 @@
 //!
 //! The same readers the live views use, so a report and a watching operator see one tree: the
 //! journal through [`marion_core::registry::replay`], the target through
-//! [`crate::tree::resolve_id`] (a whole id or the short id a tree row shows), each node's steers
+//! [`crate::node_label::resolve_node`] (a whole id or the short id a tree row shows), each node's steers
 //! through [`crate::node_detail::messages_by_node`], its task through the contract `node/get`
 //! reads, and its activity through [`crate::activity::page`] — the very lines the Watch tab shows.
 //!
@@ -23,8 +23,8 @@ use marion_core::registry::{Replay, ReplayedNode};
 use super::model::{
     CheckLine, ExportOpts, HEAD_ACTIONS, NodeReport, Report, Timeline, TimelineMode,
 };
+use crate::node_label::short_id;
 use crate::rollup::{Own, Totals};
-use crate::tree::short_id;
 
 /// The most lines of a failing check's output a report keeps: the end, where the error is.
 const CHECK_OUTPUT_LINES: usize = 12;
@@ -65,7 +65,7 @@ pub fn collect(
         .iter()
         .filter(described)
         .map(|n| n.agent_id.0.as_str());
-    let id = crate::tree::resolve_node(target, known)?;
+    let id = crate::node_label::resolve_node(target, known)?;
     let root = replay
         .get(&id)
         .filter(described)
@@ -205,7 +205,7 @@ impl Walk<'_> {
         let (started, ended) = crate::handler::clock(node);
         let short = short_id(&node.agent_id.0).to_string();
         let label = crate::handler::summarize(node, false)
-            .map(|s| crate::tree::label_of(&s))
+            .map(|s| crate::node_label::label_of(&s))
             .unwrap_or_else(|_| format!("{agent_type} {short}"));
         let usage = node.usage.or(completion.and_then(|c| c.usage));
         let changed = completion.map(|c| c.changed_paths.len() + c.changed_paths_omitted);
@@ -217,7 +217,7 @@ impl Walk<'_> {
             harness: harness.cli_name(),
             agent_type,
             model: node.model.clone(),
-            status: crate::tree::state_label(node.state, node.reap_state),
+            status: crate::node_label::state_label(node.state, node.reap_state),
             task,
             task_withheld,
             steers: self

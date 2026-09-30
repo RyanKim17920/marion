@@ -88,9 +88,9 @@ pub struct Report {
 /// One node of the tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeReport {
-    /// The id a tree row shows ([`crate::tree::short_id`]).
+    /// The id a tree row shows ([`crate::node_label::short_id`]).
     pub short: String,
-    /// [`crate::tree::label_of`]: its name, else its agent type and short id.
+    /// [`crate::node_label::label_of`]: its name, else its agent type and short id.
     pub label: String,
     /// The parent's short id; `None` for the target.
     pub parent: Option<String>,
@@ -100,7 +100,7 @@ pub struct NodeReport {
     pub harness: String,
     pub agent_type: String,
     pub model: Option<String>,
-    /// [`crate::tree::state_label`]'s word, as the journal last recorded it.
+    /// [`crate::node_label::state_label`]'s word, as the journal last recorded it.
     pub status: String,
     /// What it was asked, as it received it.
     pub task: Option<TaskSent>,
