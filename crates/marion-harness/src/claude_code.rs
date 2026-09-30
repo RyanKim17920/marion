@@ -627,6 +627,9 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             kind: Some("/error"),
             words: &[],
         },
+        // qwen 0.24.7 (`qwen-0.24.7/p-errors-401.jsonl`) moved the provider error to an
+        // `error_during_execution` result, `is_error: true`, its words at `error.message` and no
+        // `result` at all, at exit 1.
         ErrorRule {
             at: Where {
                 frame: &[Cond::Eq("/type", "result"), Cond::Eq("/is_error", "true")],
@@ -635,7 +638,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
             },
             status: None,
             kind: None,
-            words: &["/result"],
+            words: &["/result", "/error/message"],
         },
         ErrorRule {
             at: Where {

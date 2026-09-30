@@ -1560,6 +1560,9 @@ mod tests {
         let silent: &[(&str, u16)] = &[
             ("acp:opencode", 429),
             ("acp:opencode", 500),
+            // cline 3.0.66 (conformance, 2026-09-30): five requests, still retrying at 45 s.
+            ("cline", 429),
+            ("cline", 500),
             ("opencode", 429),
             ("opencode", 500),
             ("qwen", 429),
@@ -1658,14 +1661,23 @@ mod tests {
     /// **Which frames end a run early is row data, and only an auth failure does**: on every row
     /// with a grammar, a frame of the measured 401 run reads as a refused credential, and no frame
     /// of the 429 or 500 runs does — those can recover inside the harness's own backoff.
+    ///
+    /// Rows whose measured 401 frame states no status are listed by name, with what happens
+    /// instead: a refusal needs the provider's 401 or 403, so none of their frames can be one.
     #[test]
     fn only_a_measured_auth_failure_frame_is_a_refused_credential() {
+        // cline 3.0.66 (conformance, 2026-09-30): the frame says `errorClass: "auth"` and the
+        // provider's sentence, no status; cline exits 1 within 1.5 s, and stderr's line reads Auth.
+        let statusless_401 = ["cline"];
         for (sel, dir, h) in p_errors_rows() {
             let adapter = adapter_for(h).unwrap();
             if adapter.spec().stream.is_none() {
                 continue;
             }
             for status in [401u16, 429, 500] {
+                if status == 401 && statusless_401.contains(&sel.as_str()) {
+                    continue;
+                }
                 let (stdout, _) = p_errors_run(&dir, status).unwrap();
                 let refusals: Vec<String> = crate::stream::json_frames(&stdout)
                     .iter()
@@ -9362,11 +9374,23 @@ mod tests {
                             in_documents(key) || on_argv(key) || in_env(key),
                             "{h} ({name}): marion's declaration must carry `{key}`"
                         );
-                        // What an operator's config says that the key overrides: the same key.
+                        // What an operator's config says that the key overrides: in a JSON document
+                        // the same key; in a TOML one (codex's) top-level `key = value` lines —
+                        // codex's key lives on marion's own server block, which no operator
+                        // writes, so what it overrides is their approval policy.
                         if let Some(c) = contest {
-                            let v: serde_json::Value = serde_json::from_str(c)
-                                .unwrap_or_else(|e| panic!("{h}: contest is not JSON: {e}"));
-                            assert!(v.get(key).is_some(), "{h}: contest must set `{key}`: {c}");
+                            match serde_json::from_str::<serde_json::Value>(c) {
+                                Ok(v) => assert!(
+                                    v.get(key).is_some(),
+                                    "{h}: contest must set `{key}`: {c}"
+                                ),
+                                Err(_) => assert!(
+                                    c.lines().all(|l| l.split_once('=').is_some_and(|(k, _)| {
+                                        !k.trim().is_empty() && !k.contains('[')
+                                    })),
+                                    "{h}: a contest is a JSON object or `key = value` lines: {c}"
+                                ),
+                            }
                         }
                     }
                     Approval::CliFlag { flag, .. } => assert!(
