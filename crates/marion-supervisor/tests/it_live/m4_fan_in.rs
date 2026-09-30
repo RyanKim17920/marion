@@ -385,9 +385,7 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
     // than at the start of the line as the children's bare `2.1.222 (Claude Code)` shape is below.
     let root_version = root_spawned["harness_version"].as_str().unwrap_or_default();
     assert!(
-        root_version
-            .split_whitespace()
-            .any(|token| accepted("codex").iter().any(|v| token.starts_with(v))),
+        marion_testsupport::reported_version_admitted("codex", root_version),
         "the root reported {root_version:?}, which is not one of the codex versions this suite \
          admits ({:?})",
         accepted("codex")
@@ -437,7 +435,7 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         let spawned = &records[only_index(&records, "Spawned", agent_id)]["kind"]["Spawned"];
         let version = spawned["harness_version"].as_str().unwrap_or_default();
         assert!(
-            accepted("claude").iter().any(|v| version.starts_with(v)),
+            marion_testsupport::reported_version_admitted("claude", version),
             "child {agent_id} reported {version:?}, which is not one of the claude versions this \
              suite admits ({:?})",
             accepted("claude")

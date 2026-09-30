@@ -1210,6 +1210,37 @@ fn gate_mode_from(value: Option<&str>) -> Result<GateMode, String> {
     }
 }
 
+/// **Whether a version a harness reported is one [`PINNED_HARNESSES`] admits for `program`**, read
+/// through the same gate as [`on_path`]: a token of `reported` that starts with an admitted version
+/// is admitted (`2.1.285 (Claude Code)`, `codex-cli 0.159.2`), and under `MARION_GATE=warn` an
+/// unadmitted one is announced and let through, as `on_path` lets the binary through. A test that
+/// checks a recorded `harness_version` asks this rather than the table directly, so the canary's
+/// warn run reaches its admission step instead of failing on the patch release it exists to find.
+pub fn reported_version_admitted(program: &str, reported: &str) -> bool {
+    let accepted = PINNED_HARNESSES
+        .iter()
+        .find(|p| p.program == program)
+        .unwrap_or_else(|| panic!("{program:?} is not pinned; see PINNED_HARNESSES"))
+        .accepted;
+    if reported_in(accepted, reported) {
+        return true;
+    }
+    match gate_mode() {
+        GateMode::Strict => false,
+        GateMode::Warn => {
+            warn_unadmitted_once(program, reported);
+            true
+        }
+    }
+}
+
+/// The table half of [`reported_version_admitted`], pure.
+fn reported_in(accepted: &[&str], reported: &str) -> bool {
+    reported
+        .split_whitespace()
+        .any(|token| accepted.iter().any(|v| token.starts_with(v)))
+}
+
 /// The banner `MARION_GATE=warn` prints for an unadmitted harness.
 fn unadmitted_warning(program: &str, found: &str, accepted: &[&str]) -> String {
     format!(
@@ -2422,6 +2453,17 @@ mod tests {
             .iter()
             .find(|p| p.program == program)
             .expect("pinned")
+    }
+
+    /// A reported version is admitted when one of its tokens starts with an admitted version:
+    /// claude's bare `2.1.285 (Claude Code)` and codex's `codex-cli 0.159.2` alike.
+    #[test]
+    fn a_reported_version_is_matched_per_token_against_the_admitted_list() {
+        let accepted = ["2.1.285", "0.159.2"];
+        assert!(reported_in(&accepted, "2.1.285 (Claude Code)"));
+        assert!(reported_in(&accepted, "codex-cli 0.159.2"));
+        assert!(!reported_in(&accepted, "2.1.286 (Claude Code)"));
+        assert!(!reported_in(&accepted, ""));
     }
 
     /// Strict unless `warn` is asked for by name; anything else is refused rather than guessed.
