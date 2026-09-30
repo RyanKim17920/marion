@@ -866,6 +866,12 @@ pub struct Server {
 
 type Conns = Arc<Mutex<HashMap<ConnId, std::os::unix::net::UnixStream>>>;
 
+/// **The most clients the main socket holds at once.** Each costs a reader and a writer thread, and
+/// every process of the operator's uid can connect, so the count is bounded: one more is closed at
+/// accept, before it costs anything. Far above a real fleet's use — a courier's connection lasts
+/// one errand, and only a waiting parent or a watching screen holds one open.
+pub const MAX_CLIENTS: usize = 256;
+
 impl Server {
     /// Start accepting. Returns as soon as the loop is running; the loop outlives this call and is
     /// ended by [`Self::stop`] or by dropping the returned value.
@@ -938,7 +944,20 @@ impl Server {
         native: Arc<NativeBootstrapService>,
         idle_grace: Duration,
     ) -> Server {
-        Self::start_serving(serving, handle, native, idle_grace)
+        Self::start_serving(serving, handle, native, idle_grace, MAX_CLIENTS)
+    }
+
+    /// [`Self::start`] with a client limit other than [`MAX_CLIENTS`], so a test can reach it.
+    #[cfg(test)]
+    fn start_with_client_limit(serving: Serving, handle: Arc<dyn Handle>, limit: usize) -> Server {
+        let expected_project = serving.canonical_project().to_path_buf();
+        Self::start_serving(
+            serving,
+            handle,
+            Arc::new(NativeBootstrapService::disabled(expected_project)),
+            DEFAULT_IDLE_GRACE,
+            limit,
+        )
     }
 
     fn start_serving(
@@ -946,6 +965,7 @@ impl Server {
         handle: Arc<dyn Handle>,
         native: Arc<NativeBootstrapService>,
         idle_grace: Duration,
+        max_clients: usize,
     ) -> Server {
         let stop = Arc::new(AtomicBool::new(false));
         let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
@@ -955,7 +975,16 @@ impl Server {
             let conns = Arc::clone(&conns);
             let wake = wake.clone();
             std::thread::spawn(move || {
-                accept_loop(serving, handle, native, stop, conns, idle_grace, wake)
+                accept_loop(
+                    serving,
+                    handle,
+                    native,
+                    stop,
+                    conns,
+                    idle_grace,
+                    wake,
+                    max_clients,
+                )
             })
         };
         Server {
@@ -1009,6 +1038,7 @@ impl Drop for Server {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn accept_loop(
     serving: Serving,
     handle: Arc<dyn Handle>,
@@ -1017,6 +1047,7 @@ fn accept_loop(
     conns: Conns,
     idle_grace: Duration,
     wake: Option<Arc<crate::wake::Pipe>>,
+    max_clients: usize,
 ) {
     let next = AtomicU64::new(1);
     let mut idle_since: Option<Instant> = None;
@@ -1036,7 +1067,16 @@ fn accept_loop(
         {
             break;
         }
-        accept_client(&serving, &handle, &stop, &conns, &next, &mut threads, &wake);
+        accept_client(
+            &serving,
+            &handle,
+            &stop,
+            &conns,
+            &next,
+            &mut threads,
+            &wake,
+            max_clients,
+        );
         if let Some(listener) = serving.native_bootstrap_listener() {
             accept_native(listener, &native, &conns, &next, &mut threads, &wake);
         }
@@ -1111,6 +1151,7 @@ fn idle_grace_elapsed(
 
 /// One non-blocking pass over the client socket: admit a connection onto its own thread. Nothing
 /// pending returns at once; the loop's `poll` is the wait.
+#[allow(clippy::too_many_arguments)]
 fn accept_client(
     serving: &Serving,
     handle: &Arc<dyn Handle>,
@@ -1119,8 +1160,11 @@ fn accept_client(
     next: &AtomicU64,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
     wake: &Option<Arc<crate::wake::Pipe>>,
+    max_clients: usize,
 ) {
     match serving.listener().accept() {
+        // Dropped, which closes it: the client reads end-of-stream before its first answer.
+        Ok(_) if lock(conns).len() >= max_clients => {}
         Ok((stream, _)) => {
             let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
             let _ = stream.set_nonblocking(false);
@@ -2674,6 +2718,48 @@ mod tests {
         let n = r.read_line(&mut line).expect("a frame arrives");
         assert!(n > 0, "the supervisor closed instead of answering");
         Frame::from_line(&line).expect("the supervisor emits well-formed frames")
+    }
+
+    /// **The main socket holds at most its limit of clients**: one more is closed at accept, before
+    /// it costs a thread, and a slot that frees is taken again.
+    #[test]
+    fn a_connection_past_the_limit_is_closed_and_a_freed_slot_is_reused() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ms-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let rec = Arc::new(Recorder::default());
+        let server =
+            Server::start_with_client_limit(serving, Arc::clone(&rec) as Arc<dyn Handle>, 2);
+        let answered = |s: &UnixStream| {
+            // A closed connection may refuse the write as well as the read; either is "not served".
+            let f = Frame::Request(Request::new(RequestId::Number(1), node_get("a")));
+            if (&*s).write_all(f.to_line().as_bytes()).is_err() {
+                return false;
+            }
+            let mut line = String::new();
+            std::io::BufReader::new(s.try_clone().unwrap())
+                .read_line(&mut line)
+                .map(|n| n > 0)
+                .unwrap_or(false)
+        };
+        let dial = || {
+            let s = UnixStream::connect(paths.socket()).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            s
+        };
+        let first = dial();
+        let second = dial();
+        assert!(answered(&first) && answered(&second), "two fit");
+        let third = dial();
+        assert!(!answered(&third), "the third is closed rather than served");
+        drop(first);
+        assert!(until(|| answered(&dial())), "a freed slot is served again");
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -121,7 +121,13 @@ fn read_line(stream: &mut UnixStream) -> Result<String, String> {
     let mut byte = [0u8; 1];
     loop {
         match stream.read(&mut byte) {
-            Ok(0) => return Err("the supervisor closed the connection before answering".into()),
+            Ok(0) => {
+                return Err(format!(
+                    "the supervisor closed the connection before answering; it closes one past \
+                     its limit of {} clients at once",
+                    crate::serve::MAX_CLIENTS
+                ));
+            }
             Ok(_) if byte[0] == b'\n' => break,
             Ok(_) => line.push(byte[0]),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
