@@ -175,6 +175,7 @@ fn script(root: &Node, child: &Node) -> Script {
     };
     let report = report_tool(child);
     match child.harness {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::ClaudeCode => {
             s.root_tool = report;
             s.root_tool_input = json!({ "narrative": NARRATIVE });

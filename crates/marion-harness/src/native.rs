@@ -362,10 +362,38 @@ pub fn native_adapter(harness: Harness) -> Option<&'static dyn NativeInjectionAd
             .map(|&h| SpecNativeAdapter::for_row(harness_spec(h)))
             .collect()
     });
-    let index = Harness::ALL.iter().position(|&h| h == harness)?;
+    let Some(index) = harness.builtin_index() else {
+        return named_native_adapter(harness);
+    };
     adapters[index]
         .as_ref()
         .map(|adapter| adapter as &'static dyn NativeInjectionAdapter)
+}
+
+/// [`native_adapter`] for a loaded row: built from its row once, and kept for the process, as the
+/// row is.
+fn named_native_adapter(harness: Harness) -> Option<&'static dyn NativeInjectionAdapter> {
+    type Built = (Harness, Option<&'static SpecNativeAdapter>);
+    static NAMED: std::sync::RwLock<Vec<Built>> = std::sync::RwLock::new(Vec::new());
+    let found = NAMED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(h, _)| *h == harness)
+        .map(|(_, a)| *a);
+    let adapter = match found {
+        Some(a) => a,
+        None => {
+            let built =
+                SpecNativeAdapter::for_row(harness_spec(harness)).map(|a| &*Box::leak(Box::new(a)));
+            NAMED
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((harness, built));
+            built
+        }
+    };
+    adapter.map(|a| a as &'static dyn NativeInjectionAdapter)
 }
 
 #[derive(Debug, thiserror::Error)]

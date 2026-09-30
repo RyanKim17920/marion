@@ -106,7 +106,7 @@ pub fn is_credential(name: &str) -> bool {
 /// Whether `name` is a variable some harness row's login reads — another vendor's key, token or
 /// login switch, to any harness but that one.
 pub fn is_foreign_login(name: &str) -> bool {
-    marion_core::harness::Harness::ALL.iter().any(|h| {
+    crate::adapter::every().iter().any(|h| {
         crate::adapter::harness_spec(*h)
             .login_env
             .login

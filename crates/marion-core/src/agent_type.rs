@@ -904,6 +904,7 @@ pub enum AgentTypesError {
 fn known_harnesses() -> String {
     Harness::ALL
         .iter()
+        .chain(Harness::loaded().iter())
         .map(|h| match (h.cli_name(), h.as_str()) {
             (typed, wire) if typed == wire => wire.to_string(),
             (typed, wire) => format!("{typed} (or {wire})"),

@@ -1007,7 +1007,7 @@ fn stored_profile(l: &crate::profiles::Listed) -> super::StoredProfile {
 
 /// The harnesses a profile can be added for, as the operator types them: every row with a carrier.
 fn profile_harnesses() -> Vec<String> {
-    marion_core::harness::Harness::ALL
+    marion_harness::adapter::every()
         .into_iter()
         .filter(|h| crate::profiles::carrier(*h).is_ok())
         .map(|h| crate::profiles::display_name(h).to_string())

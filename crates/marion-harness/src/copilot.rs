@@ -35,7 +35,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::Value;
 
-use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, Row};
+use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, Row, Serve};
 use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, ErrorRule, Failure, ModelName, Name, OnRefusedReport, Pairing,
@@ -717,7 +717,7 @@ impl HarnessAdapter for CopilotAdapter {
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(CopilotAdapter)),
+    serve: Serve::Code(|_| Ok(Box::new(CopilotAdapter))),
 };
 
 #[cfg(test)]

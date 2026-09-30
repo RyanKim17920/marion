@@ -261,6 +261,7 @@ fn script(node: &Node) -> Script {
     // The grandchild's half. If the gate fails to fire, this is what runs it to completion.
     let report = marion_tool(node, "report");
     match node.harness {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         // The Anthropic wire's two-step script *is* a child script once its tool is re-aimed:
         // `classify_root` finishes the run as soon as the transcript carries that call's result.
         Harness::ClaudeCode => {

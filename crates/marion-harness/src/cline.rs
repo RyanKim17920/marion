@@ -46,7 +46,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, Serve, SpawnCtx, declared_bridge,
 };
 use crate::env_filter::LoginEnv;
 use crate::grammar::{
@@ -584,7 +584,7 @@ impl HarnessAdapter for ClineAdapter {
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(ClineAdapter)),
+    serve: Serve::Code(|_| Ok(Box::new(ClineAdapter))),
 };
 
 #[cfg(test)]

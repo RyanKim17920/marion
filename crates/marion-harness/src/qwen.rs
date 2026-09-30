@@ -45,7 +45,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-use crate::adapter::{DataAdapter, Row};
+use crate::adapter::{DataAdapter, Row, Serve};
 use crate::env_filter::{EnvGrant, LoginEnv};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -413,7 +413,7 @@ pub const ADAPTER: DataAdapter = DataAdapter::of(&SPEC);
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(ADAPTER)),
+    serve: Serve::Data,
 };
 
 #[cfg(test)]

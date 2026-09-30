@@ -17,7 +17,7 @@ use marion_core::harness::Harness;
 use marion_core::provider::Wire;
 
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, Serve, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
@@ -1303,7 +1303,7 @@ impl HarnessAdapter for CodexAdapter {
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(CodexAdapter)),
+    serve: Serve::Code(|_| Ok(Box::new(CodexAdapter))),
 };
 
 #[cfg(test)]

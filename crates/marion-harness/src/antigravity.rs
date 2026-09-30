@@ -29,7 +29,9 @@
 use marion_core::agent_type;
 use marion_core::harness::Harness;
 
-use crate::adapter::{HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx};
+use crate::adapter::{
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, Serve, SpawnCtx,
+};
 use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
     ActivityRule, CallShape, Cond, Failure, ModelName, Name, OnRefusedReport, Pairing, Reasoning,
@@ -410,7 +412,7 @@ impl HarnessAdapter for AntigravityAdapter {
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(AntigravityAdapter)),
+    serve: Serve::Code(|_| Ok(Box::new(AntigravityAdapter))),
 };
 
 #[cfg(test)]

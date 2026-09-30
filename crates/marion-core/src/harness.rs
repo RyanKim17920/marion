@@ -10,12 +10,13 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::RwLock;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The harnesses marion knows how to name. Naming one is not the same as having an adapter for it
 /// — `marion_harness::adapter_for` is where "known" narrows to "implemented".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Harness {
     ClaudeCode,
     Codex,
@@ -49,11 +50,66 @@ pub enum Harness {
     /// That asymmetry is §3.3's, not an accident of spelling: for the other four marion knows the
     /// version before it launches anything, and for this one it does not.
     Acp,
+    /// **A harness a row file names** (`marion_harness::row_file`): no variant of its own, its
+    /// name interned once per process ([`Harness::named`]). One the journal names that this
+    /// process has not loaded still replays — it is only not launchable ([`Harness::is_loaded`]).
+    Named(NameId),
+}
+
+/// An interned row name ([`Harness::Named`]): an index into this process's append-only table of
+/// names. Comparable only within one process; what is written anywhere is the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NameId(u32);
+
+impl NameId {
+    /// The name this id was interned for.
+    fn name(self) -> &'static str {
+        NAMES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(self.0 as usize)
+            .map_or("unknown", |n| n.name)
+    }
+}
+
+/// One interned name, and whether a row by it is loaded.
+struct Interned {
+    name: &'static str,
+    loaded: bool,
+}
+
+/// Every name interned by this process, in order: leaked once each, never removed, so a
+/// [`NameId`] is valid for the process's life.
+static NAMES: RwLock<Vec<Interned>> = RwLock::new(Vec::new());
+
+/// **Whether `name` can be a row's name**: lowercase words of letters and digits joined by single
+/// dashes, starting with a letter — the spelling of every built-in, and a name no argv or path can
+/// bend.
+pub fn valid_row_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && !name.ends_with('-')
+        && !name.contains("--")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Why a row's name cannot be loaded ([`Harness::load`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NameRefused {
+    #[error("`{0}` is not a row name: lowercase letters, digits and single dashes, from a letter")]
+    Invalid(String),
+    #[error("`{0}` is a harness marion ships; a row file may not shadow it")]
+    BuiltIn(String),
+    #[error("`{0}` names a harness this build has retired")]
+    Retired(String),
+    #[error("a row named `{0}` is already loaded")]
+    Loaded(String),
 }
 
 impl Harness {
     /// The wire spelling. The one place the strings live.
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude-code",
             Harness::Codex => "codex",
@@ -65,20 +121,22 @@ impl Harness {
             Harness::Antigravity => "agy",
             Harness::Pi => "pi",
             Harness::Acp => "acp",
+            Harness::Named(id) => id.name(),
         }
     }
 
     /// The name a person types and reads: [`Self::as_str`], except `claude` for Claude Code, the
     /// spelling `marion claude` and the agent types use. Output meant for an operator (doctor's
     /// rows) says this; the wire, the journal and contracts keep [`Self::as_str`].
-    pub const fn cli_name(self) -> &'static str {
+    pub fn cli_name(self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude",
             other => other.as_str(),
         }
     }
 
-    /// Every harness marion can name — what `marion doctor` would list.
+    /// Every harness marion ships — the built-ins. A loaded row's is [`Self::loaded`]; both are
+    /// `marion_harness::adapter::every`.
     pub const ALL: [Harness; 10] = [
         Harness::ClaudeCode,
         Harness::Codex,
@@ -91,6 +149,108 @@ impl Harness {
         Harness::Pi,
         Harness::Acp,
     ];
+
+    /// **The harness `name` names**: a built-in by its wire or CLI spelling, else the interned
+    /// [`Harness::Named`] — loaded or not. `None` for a name no row could have.
+    pub fn named(name: &str) -> Option<Harness> {
+        if let Some(h) = builtin(name) {
+            return Some(h);
+        }
+        if !valid_row_name(name) {
+            return None;
+        }
+        let mut names = NAMES.write().unwrap_or_else(|e| e.into_inner());
+        let at = match names.iter().position(|n| n.name == name) {
+            Some(at) => at,
+            None => {
+                names.push(Interned {
+                    name: Box::leak(name.to_owned().into_boxed_str()),
+                    loaded: false,
+                });
+                names.len() - 1
+            }
+        };
+        Some(Harness::Named(NameId(u32::try_from(at).ok()?)))
+    }
+
+    /// **Mark a row by `name` loaded**, and answer its harness. Refuses a name a built-in (or its
+    /// CLI spelling) has, a retired one, an invalid one, and one already loaded: two files may not
+    /// both define a harness.
+    pub fn load(name: &str) -> Result<Harness, NameRefused> {
+        if builtin(name).is_some() {
+            return Err(NameRefused::BuiltIn(name.into()));
+        }
+        if RETIRED.contains(&name) {
+            return Err(NameRefused::Retired(name.into()));
+        }
+        let Some(Harness::Named(NameId(at))) = Harness::named(name) else {
+            return Err(NameRefused::Invalid(name.into()));
+        };
+        let mut names = NAMES.write().unwrap_or_else(|e| e.into_inner());
+        let entry = &mut names[at as usize];
+        if entry.loaded {
+            return Err(NameRefused::Loaded(name.into()));
+        }
+        entry.loaded = true;
+        Ok(Harness::Named(NameId(at)))
+    }
+
+    /// Whether a node of this harness can be launched by this process: every built-in, and a
+    /// named one whose row is loaded.
+    pub fn is_loaded(self) -> bool {
+        match self {
+            Harness::Named(NameId(at)) => NAMES
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(at as usize)
+                .is_some_and(|n| n.loaded),
+            _ => true,
+        }
+    }
+
+    /// The named harnesses this process has loaded rows for, by name.
+    pub fn loaded() -> Vec<Harness> {
+        let names = NAMES.read().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<(&'static str, Harness)> = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.loaded)
+            .filter_map(|(at, n)| Some((n.name, Harness::Named(NameId(u32::try_from(at).ok()?)))))
+            .collect();
+        out.sort_by_key(|(name, _)| *name);
+        out.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// Whether this harness is one marion ships, as opposed to one a row file names.
+    pub fn is_builtin(self) -> bool {
+        !matches!(self, Harness::Named(_))
+    }
+
+    /// This built-in's place in [`Harness::ALL`], or `None` for a named harness.
+    pub fn builtin_index(self) -> Option<usize> {
+        Harness::ALL.iter().position(|h| *h == self)
+    }
+}
+
+/// Ordered by name, so an order is the same in every process whatever was interned first.
+impl PartialOrd for Harness {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Harness {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+/// The built-in `s` names — its wire spelling, or `claude` for Claude Code.
+fn builtin(s: &str) -> Option<Harness> {
+    if s == "claude" {
+        return Some(Harness::ClaudeCode);
+    }
+    Harness::ALL.into_iter().find(|h| h.as_str() == s)
 }
 
 /// **Wire spellings of harnesses marion once launched and no longer has a row for.**
@@ -98,7 +258,8 @@ impl Harness {
 /// Not a harness: nothing parses to one, and an agent type naming one is refused like any other
 /// unknown name. It exists for the journal, which is append-only and outlives a retirement — a
 /// record written while the harness was supported still names it, and replay must keep that
-/// record rather than stop at it ([`crate::journal::decode`]).
+/// record rather than stop at it ([`crate::journal::decode`]). A row file may not take one of
+/// these names ([`Harness::load`]).
 ///
 /// `gemini`: Google's gemini CLI, retired upstream in favour of Antigravity (`agy`).
 pub const RETIRED: &[&str] = &["gemini"];
@@ -135,7 +296,7 @@ impl RecordedHarness {
     }
 
     /// The wire spelling, exactly as the file wrote it.
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             RecordedHarness::Known(h) => h.as_str(),
             RecordedHarness::Retired(s) => s,
@@ -203,23 +364,35 @@ impl<'de> Deserialize<'de> for RecordedHarness {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "unknown harness {0:?}; known harnesses are claude, codex, opencode, copilot, goose, cline, \
-     qwen, agy, pi, acp (claude-code is accepted for claude)"
+     qwen, agy, pi, acp (claude-code is accepted for claude){loaded}",
+    loaded = loaded_names()
 )]
 pub struct UnknownHarness(pub String);
 
+/// The loaded row names, for [`UnknownHarness`]'s sentence: `, and the loaded rows x, y` or
+/// nothing.
+fn loaded_names() -> String {
+    let names: Vec<&str> = Harness::loaded().into_iter().map(Harness::as_str).collect();
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(", and the loaded rows {}", names.join(", "))
+    }
+}
+
+/// **Strict**: a built-in, or a named harness whose row this process has loaded — what an agent
+/// type's `harness` key and a command line are parsed with.
 impl FromStr for Harness {
     type Err = UnknownHarness;
 
     /// The wire spelling, plus `claude` for Claude Code: the name a person types everywhere else
     /// (agent types, `marion claude`), accepted as input while the wire keeps `claude-code`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "claude" {
-            return Ok(Harness::ClaudeCode);
+        if let Some(h) = builtin(s) {
+            return Ok(h);
         }
-        Harness::ALL
-            .into_iter()
-            .find(|h| h.as_str() == s)
-            .ok_or_else(|| UnknownHarness(s.to_string()))
+        let loaded = Harness::loaded().into_iter().find(|h| h.as_str() == s);
+        loaded.ok_or_else(|| UnknownHarness(s.to_string()))
     }
 }
 
@@ -238,10 +411,17 @@ impl Serialize for Harness {
     }
 }
 
+/// **Lenient**: a built-in, or any row name, loaded or not — a journal a process with other rows
+/// wrote still replays, and a node of an unloaded row is only refused a launch. A retired name is
+/// still refused, so the journal reads that record as [`crate::journal::RecordKind::
+/// RetiredHarness`].
 impl<'de> Deserialize<'de> for Harness {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        s.parse().map_err(serde::de::Error::custom)
+        if RETIRED.contains(&s.as_str()) {
+            return Err(serde::de::Error::custom(UnknownHarness(s)));
+        }
+        Harness::named(&s).ok_or_else(|| serde::de::Error::custom(UnknownHarness(s)))
     }
 }
 
@@ -342,5 +522,75 @@ mod tests {
             "claude".parse::<RecordedHarness>(),
             Ok(RecordedHarness::Known(Harness::ClaudeCode))
         );
+    }
+
+    /// **A named harness round-trips through its name, loaded or not**: the journal of a process
+    /// that loaded a row replays in one that did not, and only a launch needs it loaded. A strict
+    /// parse accepts it once loaded; a retired name is refused either way.
+    #[test]
+    fn a_named_harness_round_trips_through_its_name_and_parses_once_loaded() {
+        let replayed: Harness = serde_json::from_str("\"tb8-replayed\"").unwrap();
+        assert!(!replayed.is_builtin() && !replayed.is_loaded());
+        assert_eq!(
+            serde_json::to_string(&replayed).unwrap(),
+            "\"tb8-replayed\""
+        );
+        assert_eq!(replayed.as_str(), "tb8-replayed");
+        assert!(
+            "tb8-replayed".parse::<Harness>().is_err(),
+            "not loaded, not parsed"
+        );
+        assert!(
+            serde_json::from_str::<Harness>("\"gemini\"").is_err(),
+            "retired"
+        );
+
+        let loaded = Harness::load("tb8-loaded").unwrap();
+        assert!(loaded.is_loaded());
+        assert_eq!("tb8-loaded".parse::<Harness>(), Ok(loaded));
+        assert_eq!(
+            Harness::named("tb8-loaded"),
+            Some(loaded),
+            "one id per name"
+        );
+        assert!(Harness::loaded().contains(&loaded));
+        assert!(
+            "tb8-nope"
+                .parse::<Harness>()
+                .unwrap_err()
+                .to_string()
+                .contains("tb8-loaded"),
+            "the error names the loaded rows"
+        );
+    }
+
+    /// **A row may not take a name marion ships, one it retired, one already loaded, or one no row
+    /// could have.**
+    #[test]
+    fn a_row_name_that_shadows_or_bends_is_refused() {
+        for (name, refused) in [
+            ("codex", NameRefused::BuiltIn("codex".into())),
+            ("claude", NameRefused::BuiltIn("claude".into())),
+            ("gemini", NameRefused::Retired("gemini".into())),
+            ("Goose2", NameRefused::Invalid("Goose2".into())),
+            ("../x", NameRefused::Invalid("../x".into())),
+            ("a--b", NameRefused::Invalid("a--b".into())),
+        ] {
+            assert_eq!(Harness::load(name), Err(refused), "{name}");
+        }
+        Harness::load("tb8-twice").unwrap();
+        assert_eq!(
+            Harness::load("tb8-twice"),
+            Err(NameRefused::Loaded("tb8-twice".into()))
+        );
+    }
+
+    /// **Order is by name**, so it cannot depend on which process interned what first.
+    #[test]
+    fn harnesses_order_by_name_whatever_was_interned_first() {
+        let z = Harness::named("tb8-zz").unwrap();
+        let a = Harness::named("tb8-aa").unwrap();
+        assert!(a < z);
+        assert!(Harness::Acp < a && Harness::Codex < Harness::Goose);
     }
 }

@@ -55,7 +55,13 @@ pub fn vocabulary(harness_rs: &syn::File) -> Vocabulary {
     for item in &harness_rs.items {
         match item {
             syn::Item::Enum(e) if e.ident == "Harness" => {
-                variants.extend(e.variants.iter().map(|v| v.ident.to_string()));
+                // Unit variants only: the open `Named(_)` variant names no vendor's harness.
+                variants.extend(
+                    e.variants
+                        .iter()
+                        .filter(|v| matches!(v.fields, syn::Fields::Unit))
+                        .map(|v| v.ident.to_string()),
+                );
             }
             syn::Item::Impl(imp) => {
                 for ii in &imp.items {

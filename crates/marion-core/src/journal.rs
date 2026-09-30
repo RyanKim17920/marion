@@ -1802,8 +1802,10 @@ mod tests {
             );
         }
         for bad in [
-            // A harness that never existed is corruption, not history.
+            // A name no retired harness had is not rescued as retired: a row's name decodes as its
+            // own record (below), and one no row could have is not a record.
             r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":null,"agent_type":"x","harness":"no-such","depth":0}}"#,
+            r#"{"SpawnIntent":{"agent_id":"g-1","parent_id":null,"agent_type":"x","harness":"No Such","depth":0}}"#,
             // A retired name where no harness belongs changes nothing.
             r#"{"Spawned":{"agent_id":"g-1","harness_version":"gemini","harness":"gemini"}}"#,
             // An intent missing its depth is not a record, retired or not.
@@ -1816,6 +1818,22 @@ mod tests {
             );
         }
         assert!(decode(line(r#"{"SpawnIntent":{"harness":"gemini"}}"#).as_bytes()).is_none());
+    }
+
+    /// **A record naming a row this process never loaded replays as its own record**, and writes
+    /// back byte for byte: a journal a process with other rows wrote is readable here, and only a
+    /// launch needs the row.
+    #[test]
+    fn a_record_naming_an_unloaded_row_round_trips_as_itself() {
+        let line = br#"{"writer":"w-1","seq":7,"ts":"2026-08-01T23:07:08.619Z","mono_ns":42,"provenance":{"source":"Marion","source_id":null,"observed_live":true,"authoritative":true,"completeness":"Complete","transformation":"Native"},"kind":{"SpawnIntent":{"agent_id":"n-1","parent_id":null,"agent_type":"goose2","harness":"tb8-goose2","depth":0}}}"#;
+        let r = decode(line).expect("an unloaded row's intent decodes");
+        let RecordKind::SpawnIntent(intent) = &r.kind else {
+            panic!("{:?}", r.kind)
+        };
+        assert_eq!(intent.harness.as_str(), "tb8-goose2");
+        assert!(!intent.harness.is_builtin() && !intent.harness.is_loaded());
+        let again = decode(&encode(&r).unwrap()).unwrap();
+        assert_eq!(again, r);
     }
 
     /// **`race` is additive too**: a seat's intent names its race and seat and round-trips, and

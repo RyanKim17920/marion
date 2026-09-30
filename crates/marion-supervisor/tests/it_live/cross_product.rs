@@ -423,6 +423,7 @@ fn script(root: &Node, child: &Node, verification: &[&str]) -> Script {
     };
     let report = report_tool(child);
     match child.harness {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         // The Anthropic wire's two-step script *is* a child script once its tool is re-aimed:
         // `classify_root` finishes the run as soon as the transcript carries that call's result.
         Harness::ClaudeCode => {

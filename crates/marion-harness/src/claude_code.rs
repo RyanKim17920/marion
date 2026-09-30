@@ -10,7 +10,7 @@ use marion_core::harness::Harness;
 use marion_core::provider::{KeyHeader, Wire};
 use serde_json::Value;
 
-use crate::adapter::{HarnessAdapter, Row};
+use crate::adapter::{HarnessAdapter, Row, Serve};
 use crate::caps::Capabilities;
 use crate::env_filter::{EnvGrant, LoginEnv};
 use crate::grammar::{
@@ -795,7 +795,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
 /// This row's entry in [`crate::adapter::ROWS`].
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |_| Ok(Box::new(ClaudeCodeAdapter)),
+    serve: Serve::Code(|_| Ok(Box::new(ClaudeCodeAdapter))),
 };
 
 #[cfg(test)]

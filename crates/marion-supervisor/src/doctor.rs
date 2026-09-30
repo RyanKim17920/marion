@@ -245,11 +245,12 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
     })
 }
 
-/// Probe, in the order [`Harness::ALL`] declares — one row per `(harness, version, surfaces)` key,
-/// so a harness with a pane surface contributes two.
+/// Probe, in the order [`marion_harness::adapter::every`] gives — the built-ins, then the loaded
+/// rows — one row per `(harness, version, surfaces)` key, so a harness with a pane surface
+/// contributes two.
 pub fn run(opts: &Options) -> Vec<Row> {
     sweep_stale_probe_dirs(&std::env::temp_dir());
-    Harness::ALL
+    marion_harness::adapter::every()
         .into_iter()
         .filter(|h| opts.harness.is_none_or(|only| only == *h))
         .flat_map(|h| probe(h, opts))

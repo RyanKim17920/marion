@@ -254,7 +254,7 @@ pub fn check_user(model: Option<&str>) -> Result<Vec<CredentialRow>, String> {
 /// Every harness × provider pair, as a launch would resolve it.
 pub fn matrix(registry: &Registry) -> Vec<MatrixCell> {
     let mut out = Vec::new();
-    for h in Harness::ALL {
+    for h in marion_harness::adapter::every() {
         let spec = marion_harness::adapter::harness_spec(h);
         let wires: Vec<Wire> = spec.wires.iter().map(|r| r.wire).collect();
         for p in registry.iter() {
@@ -350,7 +350,7 @@ pub fn render(rows: &[CredentialRow], matrix: &[MatrixCell]) -> String {
         }
     }
     for p in &providers {
-        let cells: Vec<String> = Harness::ALL
+        let cells: Vec<String> = marion_harness::adapter::every()
             .into_iter()
             .filter_map(|h| {
                 matrix

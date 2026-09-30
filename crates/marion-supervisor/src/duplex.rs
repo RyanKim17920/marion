@@ -350,7 +350,7 @@ pub const NO_ANSWERER: &str =
 /// forbids branching on a harness name, and the question being asked ("does this frame name
 /// marion's own `report`?") does not depend on which harness is asking.
 fn decided_permission(depth: u32, tool: &str) -> Option<&'static str> {
-    let is_report = marion_core::harness::Harness::ALL.iter().any(|h| {
+    let is_report = marion_harness::adapter::every().iter().any(|h| {
         marion_harness::adapter_for(*h)
             .is_ok_and(|a| a.marion_tool_name(crate::bridge::REPORT) == tool)
     });

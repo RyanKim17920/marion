@@ -297,7 +297,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), ProfileError> {
 /// program (`claude`).
 pub fn parse_harness(s: &str) -> Option<Harness> {
     s.parse::<Harness>().ok().or_else(|| {
-        Harness::ALL
+        marion_harness::adapter::every()
             .into_iter()
             .find(|h| harness_spec(*h).program == Some(s))
     })

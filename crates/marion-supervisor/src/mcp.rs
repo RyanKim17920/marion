@@ -1770,7 +1770,7 @@ fn push_for_node(types: &marion_core::agent_type::AgentTypes, agent_type: Option
 /// The pure half of [`push_for`] for a top-level client: the row whose measured
 /// `clientInfo.name` this is, else the protocol's own notification.
 fn push_for_client(client_name: Option<&str>) -> Push {
-    marion_core::Harness::ALL
+    marion_harness::adapter::every()
         .into_iter()
         .map(marion_harness::adapter::harness_spec)
         .find(|row| client_name.is_some() && row.client_name == client_name)

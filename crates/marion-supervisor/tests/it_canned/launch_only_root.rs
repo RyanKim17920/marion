@@ -158,6 +158,7 @@ const OPENCODE: Node = Node {
 fn reached_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::OpenCode => format!(
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"completed","input":{{}}}}}}}}"#,
             adapter.marion_tool_name("spawn")
@@ -282,6 +283,7 @@ fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String], prompt: &str) {
     let h = node.harness;
     match h {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::OpenCode => {
             assert_eq!(
                 args.first().map(String::as_str),
@@ -333,6 +335,7 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
     // The variable, and what sits under it: it names a **directory** whose layout beneath is the harness's own — which is why marion creates the
     // parents rather than writing straight into `config_dir`.
     let (var, beneath): (&str, &[&str]) = match h {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
         Harness::Copilot
         | Harness::Goose
@@ -668,6 +671,7 @@ fn a_root_runs_in_its_own_temp_dir_and_leaves_nothing_in_it() {
 fn refused_at_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
+        marion_core::Harness::Named(_) => unreachable!("these tests run built-in harnesses"),
         Harness::OpenCode => format!(
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")

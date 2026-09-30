@@ -279,6 +279,12 @@ pub struct SpawnCtx {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HarnessError {
+    /// A harness the journal or a type names whose row file this process has not loaded.
+    #[error(
+        "row `{0}` is not loaded: its file under ~/.config/marion/harnesses/ (or the repository's, \
+         trusted) is missing or refused; `marion harness check` says which"
+    )]
+    NotLoaded(String),
     /// marion's sandbox applies to this launch and could not be prepared: refused, never run
     /// looser than the containment marion labels it with.
     #[error(
@@ -1244,11 +1250,82 @@ impl HarnessAdapter for DataAdapter {
 /// Each row file states its own ([`crate::codex::ROW`], …); [`ROWS`] is the only list of them.
 pub struct Row {
     pub spec: &'static spec::HarnessSpec,
-    /// The adapter. `agent` is the launch's selector on a [`Spelling::PerAgent`] row, which binds
-    /// the adapter to that agent, and `None` there asks for the unbound protocol adapter; a row
-    /// with a fixed spelling has one adapter and ignores it.
-    pub adapter: fn(Option<&str>) -> Result<BoxedAdapter, HarnessError>,
+    /// What serves the row: its own adapter, or its data alone ([`Serve::Data`]).
+    pub serve: Serve,
 }
+
+/// **What serves a row.**
+#[derive(Clone, Copy)]
+pub enum Serve {
+    /// The row's own adapter, for the measured logic no row can hold. `agent` is the launch's
+    /// selector on a [`Spelling::PerAgent`] row, which binds the adapter to that agent, and `None`
+    /// there asks for the unbound protocol adapter; a row with a fixed spelling ignores it.
+    Code(fn(Option<&str>) -> Result<BoxedAdapter, HarnessError>),
+    /// The row's data alone ([`DataAdapter`]) — every row read from a file, and each built-in
+    /// whose every rule is data.
+    Data,
+}
+
+impl Row {
+    /// The adapter for this row, bound to `agent` where the row spells per agent.
+    pub fn adapter(&self, agent: Option<&str>) -> Result<BoxedAdapter, HarnessError> {
+        match self.serve {
+            Serve::Code(f) => f(agent),
+            Serve::Data => Ok(Box::new(DataAdapter::of(self.spec))),
+        }
+    }
+}
+
+/// The rows this process loaded from files ([`install`]), by harness. Append-only and leaked, like
+/// the names they are keyed by: a row is loaded once, at startup, and lives as long as the process.
+static LOADED: std::sync::RwLock<Vec<&'static Row>> = std::sync::RwLock::new(Vec::new());
+
+/// **Install a row read from a file**, so its harness launches like a built-in. The row's harness
+/// must be the named one [`Harness::load`] answered for it; installing twice is refused there.
+pub fn install(row: &'static Row) {
+    LOADED.write().unwrap_or_else(|e| e.into_inner()).push(row);
+}
+
+/// **Every harness this process can launch**: the built-ins in [`Harness::ALL`]'s order, then the
+/// loaded rows by name. What a sweep over "every harness" means once rows can come from files —
+/// doctor's rows, conformance's targets, the native facade's commands.
+pub fn every() -> Vec<Harness> {
+    Harness::ALL
+        .into_iter()
+        .chain(Harness::loaded())
+        .filter(|h| h.is_builtin() || loaded_row(*h).is_some())
+        .collect()
+}
+
+fn loaded_row(h: Harness) -> Option<&'static Row> {
+    LOADED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .copied()
+        .find(|r| r.spec.harness == h)
+}
+
+/// **What a harness this process has not loaded is answered with**: a row that launches nothing
+/// ([`adapter_for`] refuses it by name first) and, asked what its nodes can do, says the most — it
+/// writes without a grant — so no occupancy or review decision is made looser for a node marion
+/// cannot read the row of. The journal can name such a harness (a row loaded by another process);
+/// replay keeps its nodes, and nothing relaunches them here.
+static UNLOADED: Row = Row {
+    spec: &spec::HarnessSpec {
+        writes_without_grant: true,
+        vendor: None,
+        note: "a harness whose row file this process has not loaded (s-none: nothing measured \
+               here)",
+        ..acp::SPEC
+    },
+    serve: Serve::Code(|_| {
+        Err(HarnessError::MissingInput {
+            harness: Harness::Acp,
+            what: "a loaded row for this harness",
+        })
+    }),
+};
 
 /// **Every harness marion names, one row each, indexed by the [`Harness`] discriminant.** The
 /// assertion below makes a missing, extra or misplaced row a compile error rather than a fallback.
@@ -1265,18 +1342,18 @@ pub const ROWS: [Row; Harness::ALL.len()] = [
     acp::ROW,
 ];
 
-const _: () = {
-    let mut i = 0;
-    while i < ROWS.len() {
-        assert!(ROWS[i].spec.harness as usize == i);
-        assert!(Harness::ALL[i] as usize == i);
-        i += 1;
-    }
-};
-
-/// The row for a harness. **Every harness marion names has one** ([`ROWS`]).
+/// The row for a harness: a built-in's own ([`ROWS`]), a loaded row's ([`install`]), or, for a
+/// harness this process has not loaded, [`UNLOADED`] — which [`adapter_for`] refuses by name.
 pub fn row(h: Harness) -> &'static Row {
-    &ROWS[h as usize]
+    match h.builtin_index() {
+        Some(i) => &ROWS[i],
+        None => loaded_row(h).unwrap_or(&UNLOADED),
+    }
+}
+
+/// The refusal for a harness whose row this process has not loaded.
+fn not_loaded(h: Harness) -> HarnessError {
+    HarnessError::NotLoaded(h.as_str().to_string())
 }
 
 /// **Can a node of this agent type change files?** — §6.6's occupancy question: its type declares
@@ -1334,7 +1411,10 @@ pub fn adapter_for(h: Harness) -> Result<BoxedAdapter, HarnessError> {
     // harness name can answer — the surfaces, the declaration route, the ceiling — and
     // unlaunchable, because a harness name is not enough to say what a model will call marion's
     // verbs. See [`adapter_for_type`].
-    (row(h).adapter)(None)
+    if !h.is_builtin() && loaded_row(h).is_none() {
+        return Err(not_loaded(h));
+    }
+    row(h).adapter(None)
 }
 
 /// The adapter for a resolved **agent type**, which is what a launch actually has.
@@ -1346,6 +1426,9 @@ pub fn adapter_for(h: Harness) -> Result<BoxedAdapter, HarnessError> {
 /// rather than defaulted. A default here would run some other vendor's agent than the one the type
 /// asked for, which is the bug the whole `HarnessAdapter` seam exists to end.
 pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdapter, HarnessError> {
+    if !h.is_builtin() && loaded_row(h).is_none() {
+        return Err(not_loaded(h));
+    }
     let row = row(h);
     match (row.spec.spelling, acp_agent) {
         (Spelling::PerAgent, None) => Err(HarnessError::MissingInput {
@@ -1354,7 +1437,7 @@ pub fn adapter_for_type(h: Harness, acp_agent: Option<&str>) -> Result<BoxedAdap
                    marion may not choose one for the operator (§6.4). Name it in the agent type's \
                    `acp_agent` — a refinement row's id, or the agent's command",
         }),
-        (_, agent) => (row.adapter)(agent),
+        (_, agent) => row.adapter(agent),
     }
 }
 
@@ -1983,6 +2066,43 @@ mod tests {
             allowed_tools: vec!["marion-report".into()],
             ..codex_spec()
         }
+    }
+
+    /// **A loaded row launches like a built-in, and an unloaded name is refused by name.** A row
+    /// installed under its named harness is in [`every`], and its adapter compiles what its twin
+    /// built-in does; a harness the journal names but this process never loaded replays, is
+    /// answered with the most a node could do, and launches nothing.
+    #[test]
+    fn a_loaded_row_launches_like_a_built_in_and_an_unloaded_one_is_refused_by_name() {
+        let h = Harness::load("tb8-qwen-twin").unwrap();
+        let twin: &'static spec::HarnessSpec = Box::leak(Box::new(spec::HarnessSpec {
+            harness: h,
+            ..crate::qwen::SPEC
+        }));
+        install(Box::leak(Box::new(Row {
+            spec: twin,
+            serve: Serve::Data,
+        })));
+        assert!(every().contains(&h));
+        assert_eq!(harness_spec(h).harness, h);
+        let a = adapter_for(h).unwrap();
+        assert_eq!(a.harness(), h);
+        let launch = qwen_spec();
+        let ours = a.compile(&launch, &ctx()).unwrap();
+        let built_in = crate::qwen::ADAPTER.compile(&launch, &ctx()).unwrap();
+        assert_eq!(ours.args, built_in.args);
+        assert_eq!(ours.env, built_in.env);
+
+        let ghost = Harness::named("tb8-ghost").unwrap();
+        assert!(!every().contains(&ghost));
+        assert!(
+            matches!(adapter_for(ghost), Err(HarnessError::NotLoaded(n)) if n == "tb8-ghost"),
+            "an unloaded row launches nothing"
+        );
+        assert!(
+            harness_spec(ghost).writes_without_grant,
+            "and is assumed to write"
+        );
     }
 
     /// **A row whose one-token declaration cannot spell a launch refuses it by name**, from the
@@ -2984,6 +3104,7 @@ mod tests {
     /// spellings are incompatible).
     fn spec_for(h: Harness) -> LaunchSpec {
         match h {
+            Harness::Named(_) => unreachable!("a sweep over the built-ins"),
             Harness::ClaudeCode => claude_spec(),
             Harness::Codex => codex_spec(),
             Harness::OpenCode => opencode_spec(),
@@ -3113,6 +3234,7 @@ mod tests {
             let wires = launch_adapter(h).unwrap().endpoint_wires();
             let wires = wires.as_slice();
             let want: &[Wire] = match h {
+                Harness::Named(_) => unreachable!("a sweep over the built-ins"),
                 Harness::ClaudeCode => &[Wire::AnthropicMessages],
                 Harness::Codex => &[Wire::OpenAiResponses],
                 Harness::Copilot => &[Wire::OpenAiChat, Wire::AnthropicMessages],
@@ -5732,6 +5854,7 @@ mod tests {
             // Codex dispatches on the bare verb beside `server: "marion"`, not on the flat
             // code-mode identifier — the same wire fact `spawn_tool` records in the matrix.
             let stream = match h {
+                Harness::Named(_) => unreachable!("a sweep over the built-ins"),
                 Harness::ClaudeCode => format!(
                     r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{tool}","input":{args}}}]}}}}"#
                 ),
@@ -9278,6 +9401,7 @@ mod tests {
         for h in Harness::ALL {
             let a = launch_adapter(h).unwrap();
             let frame = match h {
+                Harness::Named(_) => unreachable!("a sweep over the built-ins"),
                 // s9, s10, live smoke s2
                 Harness::ClaudeCode | Harness::Qwen => json!({"type": "system", "subtype": "init",
                     "session_id": "s", "model": "claude-haiku-4-5-20251001"}),

@@ -50,7 +50,7 @@ use marion_core::harness::Harness;
 
 use crate::adapter::SESSION_NEW_ID;
 use crate::adapter::{
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, SpawnCtx, declared_bridge,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, Row, Serve, SpawnCtx, declared_bridge,
 };
 use crate::auth::Auth;
 use crate::caps::Capabilities;
@@ -2316,10 +2316,10 @@ impl HarnessAdapter for AcpAdapter {
 /// harness name alone — the unbound protocol adapter.
 pub const ROW: Row = Row {
     spec: &SPEC,
-    adapter: |agent| match agent {
+    serve: Serve::Code(|agent| match agent {
         Some(selector) => Ok(Box::new(AcpAdapter::resolve(selector)?)),
         None => Ok(Box::new(AcpAdapter::unbound())),
-    },
+    }),
 };
 
 #[cfg(test)]
