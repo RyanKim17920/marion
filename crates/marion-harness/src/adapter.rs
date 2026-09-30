@@ -3311,7 +3311,7 @@ mod tests {
     /// **An endpoint launch with no recipe for its wire is refused, never rendered half-aimed.**
     #[test]
     fn an_endpoint_launch_on_a_wire_the_row_cannot_render_is_refused() {
-        for wire in [None, Some(marion_core::provider::Wire::Gemini)] {
+        for wire in [None, Some(marion_core::provider::Wire::GenerateContent)] {
             let spec = LaunchSpec {
                 auth: Auth::Endpoint,
                 wire,
@@ -3334,7 +3334,7 @@ mod tests {
             let want: &[Wire] = match h {
                 Harness::ClaudeCode => &[Wire::AnthropicMessages],
                 Harness::Codex => &[Wire::OpenAiResponses],
-                Harness::Gemini => &[Wire::Gemini],
+                Harness::Gemini => &[Wire::GenerateContent],
                 Harness::Copilot => &[Wire::OpenAiChat, Wire::AnthropicMessages],
                 Harness::OpenCode | Harness::Goose | Harness::Cline | Harness::Qwen => {
                     &[Wire::OpenAiChat]

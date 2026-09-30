@@ -122,7 +122,7 @@ fn models_request(wire: Wire, base: &str, header: KeyHeader, key: &str) -> (Stri
             format!("{base}/v1/models"),
             format!("{key_line}\nanthropic-version: 2023-06-01"),
         ),
-        Wire::Gemini => (
+        Wire::GenerateContent => (
             format!("{base}/v1beta/models"),
             format!("x-goog-api-key: {key}"),
         ),
@@ -467,7 +467,12 @@ mod tests {
                 "Authorization: Bearer gsk"
             )
         );
-        let (u, h) = models_request(Wire::Gemini, "https://g.example", KeyHeader::Bearer, "k");
+        let (u, h) = models_request(
+            Wire::GenerateContent,
+            "https://g.example",
+            KeyHeader::Bearer,
+            "k",
+        );
         assert_eq!(
             (u.as_str(), h.as_str()),
             ("https://g.example/v1beta/models", "x-goog-api-key: k")

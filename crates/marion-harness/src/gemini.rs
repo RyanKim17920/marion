@@ -236,7 +236,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                folder trust before the composer",
     },
     wires: &[WireRecipe {
-        wire: Wire::Gemini,
+        wire: Wire::GenerateContent,
         env: &[],
         // The gemini wire carries its key in `x-goog-api-key` whatever the provider's row says;
         // Bearer is listed because it is the default every provider states.

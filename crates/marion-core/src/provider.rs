@@ -45,9 +45,10 @@ pub enum Wire {
     /// OpenAI Responses (`POST /responses`).
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
-    /// Google Gemini `generateContent`.
+    /// Google's `generateContent` API — the wire the gemini family is served on, by Google and by
+    /// gateways. Named for the API, not the harness; spelled `gemini` on the wire.
     #[serde(rename = "gemini")]
-    Gemini,
+    GenerateContent,
 }
 
 impl Wire {
@@ -55,7 +56,7 @@ impl Wire {
         Wire::AnthropicMessages,
         Wire::OpenAiChat,
         Wire::OpenAiResponses,
-        Wire::Gemini,
+        Wire::GenerateContent,
     ];
 
     /// The spelling a user types (`--wire`, `providers.toml`) and a record carries.
@@ -64,7 +65,7 @@ impl Wire {
             Wire::AnthropicMessages => "anthropic",
             Wire::OpenAiChat => "openai-chat",
             Wire::OpenAiResponses => "openai-responses",
-            Wire::Gemini => "gemini",
+            Wire::GenerateContent => "gemini",
         }
     }
 
@@ -220,7 +221,10 @@ pub const PROVIDERS: &[Provider] = &[
         name: "Google Gemini (AI Studio)",
         base_url: "https://generativelanguage.googleapis.com",
         wires: &[
-            (Wire::Gemini, "https://generativelanguage.googleapis.com"),
+            (
+                Wire::GenerateContent,
+                "https://generativelanguage.googleapis.com",
+            ),
             (
                 Wire::OpenAiChat,
                 "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -891,7 +895,7 @@ mod tests {
             or.base_for(Wire::AnthropicMessages),
             Some("https://openrouter.ai/api")
         );
-        assert_eq!(or.base_for(Wire::Gemini), None);
+        assert_eq!(or.base_for(Wire::GenerateContent), None);
         assert_eq!(or.auth, AuthKind::ApiKey);
     }
 
