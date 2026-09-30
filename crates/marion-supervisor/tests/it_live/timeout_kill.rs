@@ -18,6 +18,7 @@
 //!
 //! The same criterion runs on a **real `opencode run`** child, whose tool call is opencode's own
 //! `bash` running the same case-B script (s36's opencode parity work).
+//! And on a **real `pi --mode rpc`** child, whose `bash` runs it too.
 //!
 //! # Running it
 //!
@@ -25,7 +26,7 @@
 //! cargo test -p marion-supervisor --test it_live timeout_kill::
 //! ```
 //!
-//! It needs a real `codex` and `opencode` on `PATH` at versions
+//! It needs a real `codex`, `opencode` and `pi` on `PATH` at versions
 //! [`marion_testsupport::PINNED_HARNESSES`] accepts, and it is not `#[ignore]`d: like `cross_product`, a
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
@@ -189,6 +190,44 @@ fn a_timed_out_acp_opencode_child_leaves_no_surviving_tool_call_descendant() {
         Expiry::Driver,
         None,
         opencode_bash_script,
+    );
+}
+
+/// The prompt marker a pi child's canned turn is keyed on.
+const PI_MARKER: &str = "MARION-TIMEOUT-PI-3e90";
+
+/// **And on a real `pi --mode rpc` child.** Its one tool call is pi's own `bash` running case B's
+/// script. Its expiry is the JSONL channel's `abort`, which pi answers only once the in-flight call
+/// finishes (S34 `pi-rpc-abort-mid-tool`) and this one never does, then the group kill, and the
+/// `bash` tree must not outlive it.
+#[test]
+fn a_timed_out_pi_child_leaves_no_surviving_tool_call_descendant() {
+    assert!(
+        on_path("pi"),
+        "this cell drives a REAL pi child; put `pi` ({}) on PATH",
+        pinned_version("pi")
+    );
+    a_timed_out_child_leaves_no_surviving_tool_call_descendant(
+        "s7-timeout-pi",
+        "pi",
+        None,
+        &format!("{PI_MARKER}: Start the long-running command and keep it running."),
+        Expiry::Driver,
+        None,
+        |runaway, pidfile| Script {
+            nodes: vec![NodeScript {
+                marker: PI_MARKER.into(),
+                call_prefix: "pitimeout".into(),
+                turns: vec![ScriptedCall::new(
+                    "bash",
+                    serde_json::json!({
+                        "command": format!("/bin/sh {} {}", runaway.display(), pidfile.display()),
+                    }),
+                )],
+                final_text: "The command finished.".into(),
+            }],
+            ..Script::default()
+        },
     );
 }
 
