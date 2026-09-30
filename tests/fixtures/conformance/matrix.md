@@ -11,7 +11,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | acp:opencode | OpenCode 1.18.33 | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | PASS | **FAIL** | n/a |
 | acp:qwen | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | agy | unknown | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| claude-code | 2.1.285 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
+| claude-code | 2.1.286 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | **FAIL** |
 | cline | 3.0.66 | PASS | PASS | **FAIL** | PASS | PASS | n/a | PASS | n/a | **FAIL** | **FAIL** | n/a |
 | codex | 0.159.2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | copilot | 1.0.89 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | **FAIL** | PASS | n/a |
@@ -120,18 +120,18 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-errors** UNSUPPORTED: marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
-### claude-code 2.1.285
+### claude-code 2.1.286
 
-- **P-version** PASS: 2.1.285 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried
+- **P-version** PASS: 2.1.286 (admitted in PINNED_HARNESSES); no-self-update env DISABLE_AUTOUPDATER=1 carried
 - **P-launch** PASS: turn ended; provider asked for the marker true on {"anthropic"}; still running; declaration route verified at compile; auth failure line: none
-- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.4 s after the spawn and listed marion's tools
-- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 0d8d801f-771d-4c91-b46d-579c6fab2395 ; activity mcp__marion__report
+- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.6 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 934affe2-e7cf-4614-934b-af9daf81c40d ; activity mcp__marion__report
 - **P-approval** PASS: granted: `report` answered true; ungranted: `report` Some(Refused("marion denies `mcp__marion__report`: no operator answers a child's ask")), 1 permission ask(s) reached marion
 - **P-midturn** PASS: folded into the running turn (1 turn end; requests [4])
 - **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
-- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session f3d315d2-c2b0-4ff4-b11a-3e4c2fc1139d -> f3d315d2-c2b0-4ff4-b11a-3e4c2fc1139d; resume refusal: none
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 08f64076-23ab-434f-9cfa-281fdefd326e -> 08f64076-23ab-434f-9cfa-281fdefd326e; resume refusal: none
 - **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 143, left []
-- **P-errors** PASS: 401: still running after 45.2 s, 7 request(s), still running; cause Auth { line: "HTTP 401 authentication_failed" }; stream failure None; refused credential read off a frame: "HTTP 401 authentication_failed" | 429: still running after 45.8 s, 7 request(s), still running; cause RateLimit { line: "HTTP 429 rate_limit" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: "HTTP 500 server_error" }; stream failure None
+- **P-errors** PASS: 401: still running after 45.3 s, 7 request(s), still running; cause Auth { line: "HTTP 401 authentication_failed" }; stream failure None; refused credential read off a frame: "HTTP 401 authentication_failed" | 429: still running after 45.5 s, 7 request(s), still running; cause RateLimit { line: "HTTP 429 rate_limit" }; stream failure None | 500: still running after 45.4 s, 7 request(s), still running; cause Outage { line: "HTTP 500 server_error" }; stream failure None
 - **P-tui** FAIL: DECSET 2004 at boot: true; first screen ["  1  function greet() {", "  2 -  console.log(\"Hello, World!\");", "  2 +  console.log(\"Hello, Claude!\");", "  3  }", " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌", "  Syntax theme: Monokai Extended (ctrl+t to disable)"]; boot dialog none of the row's on the first screen; bracketed paste + CR submitted: NO; output quiet 1500 ms after the turn: false; `/mcp` screen names marion: false
 
 ### cline 3.0.66

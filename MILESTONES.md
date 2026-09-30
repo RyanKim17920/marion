@@ -1312,6 +1312,18 @@ new rows (cline, `acp:cline`, `acp:qwen`) and qwen P-lifecycle FAIL → PASS. ge
 admitted: the gemini CLI is retired upstream and its real-binary cells are ignored. The probes
 under `spikes/` were not re-run.
 
+**claude 2.1.286, admitted 2026-10-01 via `scripts/admit-harness.sh`.** A patch release a day after
+2.1.285; installed side by side in a scratch npm prefix. Green with only the entry widened:
+`marion-testsupport` (42), `endpoint_matrix` (24), `acp_child` (6), `agy_live` (1), `child_events`
+(1), `child_stream` (1), `client_run` (8), `codex_app_server` (4), `cross_product` (52),
+`depth_gate` (4), `harness_matrix` (8), `journal_wiring` (11), `m4_fan_in` (1),
+`native_facade_e2e` (4), `native_facade_spawn` (2), `no_git` (5), `node_attach` (2), `node_tmpdir`
+(2), `os_sandbox_escape` (6), `pane_attach` (2), `permission_round_trip` (9), `pi_rpc` (4), `race`
+(5), `restart_resume` (0), `review` (1), `timeout_kill` (4), `top_level_contracted` (5),
+`turn_delivery` (4), `usage_record` (1), `verification` (4), `workflow` (18), `worktree_reap` (12),
+`repo_trust` (1), `token_off_argv` (3), `user_agent_types` (3), `conformance` (1). The conformance
+cells moved only in their version column. The probes under `spikes/` were not re-run.
+
 **pi 0.99.1, admitted 2026-09-30.** npm's latest `@earendil-works/pi-coding-agent` moved from
 the pinned 0.80.2 to 0.99.1 (published 2026-09-29; the entry point is now `dist/bundle/cli.js`).
 It was installed side by side under the shim's own store, `<marion state>/harness-pins/pi/0.99.1`,

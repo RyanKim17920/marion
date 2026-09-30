@@ -666,6 +666,16 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // (4), repo_trust (1), restart_resume (0), review (1), timeout_kill (3), token_off_argv
         // (3), top_level_contracted (5), turn_delivery (4), usage_record (1), user_agent_types
         // (3), verification (4), workflow (17), worktree_reap (12), conformance (1).
+        // 2.1.286: observed green on Darwin 25.5.0, 2026-09-30, via scripts/admit-harness.sh
+        // (claude 2.1.286 in one run): marion-testsupport (42), endpoint_matrix (24), acp_child
+        // (6), agy_live (1), child_events (1), child_stream (1), client_run (8), codex_app_server
+        // (4), cross_product (52), depth_gate (4), harness_matrix (8), journal_wiring (11),
+        // m4_fan_in (1), native_facade_e2e (4), native_facade_spawn (2), no_git (5), node_attach
+        // (2), node_tmpdir (2), os_sandbox_escape (6), pane_attach (2), permission_round_trip
+        // (9), pi_rpc (4), race (5), restart_resume (0), review (1), timeout_kill (4),
+        // top_level_contracted (5), turn_delivery (4), usage_record (1), verification (4),
+        // workflow (18), worktree_reap (12), repo_trust (1), token_off_argv (3), user_agent_types
+        // (3), conformance (1).
         accepted: marion_harness::claude_code::SPEC.verified,
     },
     PinnedHarness {

@@ -140,6 +140,9 @@ the row's note, and the stripped-grant transcript `goose-1.52.0/p-approval-ungra
 because no launch is made; git history keeps it as the measurement behind the note. Read by the
 author: a version line and a summary, no host names or catalogue.
 
+**2026-10-01, claude 2.1.286 conformance.** Two tool-probe transcripts named one of the operator's
+installed plugins; it reads as the same-length `plugin01xxxxxxxxxxx`.
+
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
 `TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**
