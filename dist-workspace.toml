@@ -40,3 +40,7 @@ install-path = "CARGO_HOME"
 # Pull requests get `dist plan` only: it checks this file and the workflow agree without spending
 # four release builds on every push.
 pr-run-mode = "plan"
+# Every build job signs a SLSA build-provenance attestation for the archives it produced, so a
+# download can be checked with `gh attestation verify <file> --repo RyanKim17920/marion`.
+github-attestations = true
+
