@@ -2,7 +2,7 @@
 //! supervisor, every model call served by the canned provider (no paid tokens).
 //!
 //! pi's row selects `Surfaces::JsonlRpc` with its own vocabulary (`marion_harness::pi::RPC`), so a
-//! pi node is driven by the same typed-turn loop as a headless claude node, in pi's words. Three
+//! pi node is driven by the same typed-turn loop as a headless claude node, in pi's words. Four
 //! properties, each observed on the provider's own request log or on the node's own stream:
 //!
 //! 1. an operator's `node/steer` into a running pi **child**, written while one of its requests is
@@ -13,6 +13,7 @@
 //!    `TimedOut`;
 //! 3. a background child that ends while its pi parent is **held** reaches the parent in the same
 //!    process as its next turn, once, `jsonl-rpc:next-turn`.
+//! 4. a pi parent peeks at a background child with `status` and collects it with `wait`.
 //!
 //! ```sh
 //! cargo test -p marion-supervisor --test it_live pi_rpc::
@@ -492,4 +493,116 @@ fn a_background_childs_end_reaches_its_held_pi_parent_once_as_its_next_turn() {
         .matches(r#""type":"agent_start""#)
         .count();
     assert_eq!(starts, 2, "two turns of one pi process");
+}
+
+const WAIT_ROOT: &str = "MARION-PI-WAIT-ROOT-5e02";
+const WAIT_CHILD: &str = "MARION-PI-WAIT-CHILD-b8d1";
+const WAIT_NARRATIVE: &str = "MARION-PI-WAIT-NARRATIVE-0f4c";
+
+/// The `tool_execution_end` frames of `events`, by the tool they end: `(toolName, isError, text)`.
+fn tool_ends(events: &str) -> Vec<(String, bool, String)> {
+    events
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|e| e.pointer("/payload/Vendor/json").cloned())
+        .filter(|f| f["type"] == "tool_execution_end")
+        .map(|f| {
+            (
+                f["toolName"].as_str().unwrap_or_default().to_string(),
+                f["isError"].as_bool().unwrap_or(true),
+                f["result"]["content"].to_string(),
+            )
+        })
+        .collect()
+}
+
+/// **A pi parent backgrounds a child, peeks at it with `status`, and collects it with `wait`**:
+/// the three verbs a parent has, each through marion's extension. `status` and `wait` both answer
+/// without error, `wait` hands back the child's own report, and the end is journaled delivered
+/// once, by that `wait`, never pushed to the parent as a turn of its own.
+#[test]
+fn a_pi_parent_collects_its_background_child_with_status_and_wait() {
+    let Some(bed) = Bed::new(
+        "pi-wait",
+        vec![
+            NodeScript {
+                marker: WAIT_ROOT.into(),
+                call_prefix: "piwaitroot".into(),
+                turns: vec![
+                    ScriptedCall::new(
+                        "mcp__marion__spawn",
+                        json!({
+                            "agent_type": "pi-orchestrator",
+                            "prompt": format!("{WAIT_CHILD}: report back through marion."),
+                            "acceptance_criteria": [],
+                            "timeout_secs": 120,
+                            "background": true,
+                        }),
+                    ),
+                    // pi validates each call against its schema, which requires the id: the
+                    // handle's, read out of the spawn's answer as a model would.
+                    ScriptedCall::new(
+                        "mcp__marion__status",
+                        json!({"id": {marion_provider::HANDLE_KEY: 0}}),
+                    ),
+                    ScriptedCall::new(
+                        "mcp__marion__wait",
+                        json!({"id": {marion_provider::HANDLE_KEY: 0}}),
+                    ),
+                ],
+                final_text: "The child is done.".into(),
+            },
+            NodeScript {
+                marker: WAIT_CHILD.into(),
+                call_prefix: "piwaitchild".into(),
+                turns: vec![ScriptedCall::new(
+                    "mcp__marion__report",
+                    json!({"narrative": WAIT_NARRATIVE}),
+                )],
+                final_text: "Reported.".into(),
+            },
+        ],
+        Held::on(|_| false),
+    ) else {
+        return;
+    };
+    let run = bed.run(
+        "pi-orchestrator",
+        &format!("{WAIT_ROOT}: start one background child and wait for it."),
+    );
+    finish(run, run_bound(), &bed.dir.join("run.stderr"));
+
+    let root = bed.root().expect("the root's intent is journaled");
+    let ends = tool_ends(&bed.events_of(&root));
+    let names: Vec<&str> = ends.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "mcp__marion__spawn",
+            "mcp__marion__status",
+            "mcp__marion__wait"
+        ],
+        "{}",
+        bed.evidence()
+    );
+    for (name, is_error, text) in &ends {
+        assert!(!is_error, "{name} answered with an error: {text}");
+    }
+    assert!(
+        ends[2].2.contains(WAIT_NARRATIVE),
+        "wait hands back the child's own report: {}",
+        ends[2].2
+    );
+    assert_eq!(
+        bed.delivered(&root),
+        ["wait"],
+        "the end is delivered once, by the wait that collected it, and never pushed as a turn"
+    );
+    let child = bed.child().expect("the child's intent is journaled");
+    assert!(
+        bed.records().iter().any(|k| matches!(k,
+            RecordKind::Exited(e) if e.agent_id == child
+                && e.status == marion_core::contract::ExitStatus::Ok)),
+        "the child ended Ok"
+    );
 }
