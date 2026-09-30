@@ -529,9 +529,15 @@ fn identify(
             .zip(
                 probe_spec(opts.model.clone(), McpDeclaration::None, agent)
                     .map(|spec| child_shaped(adapter, spec))
-                    .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
+                    .and_then(|spec| match probe_launch(adapter, spec) {
+                        Ok(launch) => Some(launch),
+                        Err(e) => {
+                            notes.push(format!("initialize: FAILED — {e}"));
+                            None
+                        }
+                    }),
             )
-            .and_then(|(p, inv)| acp_handshake(p, &inv, agent, notes)),
+            .and_then(|(p, (inv, tmp))| acp_handshake(p, &inv, tmp, agent, notes)),
         None => None,
     };
     let version = match agent {
@@ -777,14 +783,17 @@ fn acp_live_turn_step(
         notes.push("live turn: NOT RUN — no spec could be built".into());
         return None;
     };
-    let inv = match adapter.compile(&spec, &probe_ctx()) {
-        Ok(i) => i,
+    let (inv, tmp) = match probe_launch(adapter, spec) {
+        Ok(l) => l,
         Err(e) => {
-            notes.push(format!("live turn: FAILED — compile: {e}"));
+            notes.push(format!("live turn: FAILED — {e}"));
             return Some(false);
         }
     };
-    Some(record_turn(acp_live_turn(a, program, &inv, notes), notes))
+    Some(record_turn(
+        acp_live_turn(a, program, &inv, tmp, notes),
+        notes,
+    ))
 }
 
 /// Step: the live turn, where the prompt rides argv. Returns `None` when the step could not run
@@ -816,14 +825,17 @@ fn argv_live_turn_step(
         );
         return None;
     };
-    let inv = match adapter.compile(&spec, &probe_ctx()) {
-        Ok(i) => i,
+    let (inv, tmp) = match probe_launch(adapter, spec) {
+        Ok(l) => l,
         Err(e) => {
-            notes.push(format!("live turn: FAILED — compile: {e}"));
+            notes.push(format!("live turn: FAILED — {e}"));
             return Some(false);
         }
     };
-    Some(record_turn(live_turn(adapter, program, &inv, notes), notes))
+    Some(record_turn(
+        live_turn(adapter, program, &inv, tmp, notes),
+        notes,
+    ))
 }
 
 /// Write a turn's findings into `notes` in §8's order and answer whether every one of them passed.
@@ -865,6 +877,7 @@ fn live_turn(
     adapter: &dyn HarnessAdapter,
     program: &Path,
     inv: &Invocation,
+    tmp: NodeTmp,
     notes: &mut Vec<String>,
 ) -> TurnOutcome {
     notes.push(format!(
@@ -872,11 +885,7 @@ fn live_turn(
         program.display(),
         inv.args.join(" ")
     ));
-    // Held to the end of the function, past `terminate` and the leak check.
-    let tmp = match probe_tmp() {
-        Ok(t) => t,
-        Err(e) => return not_spawned(&e),
-    };
+    // `tmp` is held to the end of the function, past `terminate` and the leak check.
     let mut cmd = Command::new(program);
     cmd.args(&inv.args)
         .current_dir(&inv.cwd)
@@ -1134,6 +1143,28 @@ impl crate::rpc::Peer for ProbeClient {
     }
 }
 
+/// **A launched probe's invocation, compiled inside its own directory**: a fresh [`probe_tmp`]
+/// that becomes the process's `TMPDIR`, and inside it the agent dir the spec names as its config
+/// dir, created — as a real node's agent dir exists before its launch. A row whose environment
+/// points under that dir (opencode's `OPENCODE_DB`) otherwise meets a directory that was never
+/// made: measured 2026-09-30, `opencode acp` on 1.18.33 exited `unable to open database file`
+/// before answering `initialize`, on a fresh HOME and in the canary alike. Both go when the
+/// returned [`NodeTmp`] drops, after the probe's process.
+fn probe_launch(
+    adapter: &dyn HarnessAdapter,
+    mut spec: LaunchSpec,
+) -> Result<(Invocation, NodeTmp), String> {
+    let tmp = probe_tmp().map_err(|e| format!("no private temp dir for the probe: {e}"))?;
+    let agent = tmp.path().join("agent");
+    std::fs::create_dir_all(&agent)
+        .map_err(|e| format!("could not create the probe's agent dir: {e}"))?;
+    spec.config_dir = agent;
+    let inv = adapter
+        .compile(&spec, &probe_ctx())
+        .map_err(|e| format!("compile: {e}"))?;
+    Ok((inv, tmp))
+}
+
 /// A fresh private temp dir for one probe's process, for [`crate::node_tmp`]'s reason: a probe of
 /// a Bun-built harness unpacks its native libraries into `$TMPDIR` exactly as a node does. Unique
 /// per probe, since one `doctor` run may probe several harnesses.
@@ -1144,8 +1175,7 @@ fn probe_tmp() -> std::io::Result<NodeTmp> {
 }
 
 impl AcpChild {
-    fn spawn(program: &Path, inv: &Invocation) -> std::io::Result<Self> {
-        let tmp = probe_tmp()?;
+    fn spawn(program: &Path, inv: &Invocation, tmp: NodeTmp) -> std::io::Result<Self> {
         // The binary doctor resolved, not the row's bare name looked up again on `$PATH`.
         let program = program.to_str().ok_or_else(|| {
             std::io::Error::new(
@@ -1240,11 +1270,12 @@ const SESSION_BUDGET: Duration = Duration::from_secs(60);
 fn acp_handshake(
     program: &Path,
     inv: &Invocation,
+    tmp: NodeTmp,
     binding: Option<&acp::Binding>,
     notes: &mut Vec<String>,
 ) -> Option<AgentHandshake> {
     let started = Instant::now();
-    let mut agent = match AcpChild::spawn(program, inv) {
+    let mut agent = match AcpChild::spawn(program, inv, tmp) {
         Ok(c) => c,
         Err(e) => {
             notes.push(format!("initialize: FAILED — spawn: {e}"));
@@ -1327,6 +1358,7 @@ fn acp_live_turn(
     agent_spec: &acp::Binding,
     program: &Path,
     inv: &Invocation,
+    tmp: NodeTmp,
     notes: &mut Vec<String>,
 ) -> TurnOutcome {
     notes.push(format!(
@@ -1335,7 +1367,7 @@ fn acp_live_turn(
         inv.args.join(" "),
         agent_spec.selector()
     ));
-    let mut agent = match AcpChild::spawn(program, inv) {
+    let mut agent = match AcpChild::spawn(program, inv, tmp) {
         Ok(c) => c,
         Err(e) => return not_spawned(&e),
     };
@@ -2036,6 +2068,7 @@ mod tests {
             &marion_harness::QwenAdapter,
             Path::new("/bin/sh"),
             &inv,
+            probe_tmp().unwrap(),
             &mut notes,
         );
         assert!(
@@ -2051,6 +2084,35 @@ mod tests {
             .position(|n| n.starts_with("response shape:"))
             .expect("the shape line is still reported");
         assert!(auth < shape, "the cause comes first: {notes:#?}");
+    }
+
+    /// The ACP opencode row, bound as doctor binds a table row.
+    fn opencode_acp() -> (Box<dyn HarnessAdapter>, acp::Binding) {
+        let binding = acp::Binding::refined(acp::OPENCODE);
+        let adapter = adapter_for_type(Harness::Acp, Some(binding.selector())).unwrap();
+        (adapter, binding)
+    }
+
+    /// **A launched probe's agent dir exists, inside its own temp dir, and goes with it** — so
+    /// `opencode acp`'s `OPENCODE_DB`, which the row puts under the config dir, can be opened.
+    /// Before, the dir was `$TMPDIR/marion-doctor`, which nothing made: on a fresh HOME opencode
+    /// 1.18.33 exited `unable to open database file` before answering `initialize`.
+    #[test]
+    fn a_launched_probes_agent_dir_exists_inside_its_own_temp_dir() {
+        let (adapter, binding) = opencode_acp();
+        let spec = probe_spec(None, McpDeclaration::None, Some(&binding)).unwrap();
+        let (inv, tmp) = probe_launch(&*adapter, child_shaped(&*adapter, spec)).unwrap();
+        let db = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_DB")
+            .map(|(_, v)| PathBuf::from(v))
+            .expect("the row names opencode's session store");
+        let dir = db.parent().unwrap().to_path_buf();
+        assert!(dir.is_dir(), "{} was never made", dir.display());
+        assert!(dir.starts_with(tmp.path()), "{}", dir.display());
+        drop(tmp);
+        assert!(!dir.exists(), "the probe's dir goes with it");
     }
 
     /// A probe's process gets a private `TMPDIR`, which is gone once the probe returns — a probe
@@ -2080,6 +2142,7 @@ mod tests {
             &marion_harness::QwenAdapter,
             Path::new("/bin/sh"),
             &inv,
+            probe_tmp().unwrap(),
             &mut Vec::new(),
         );
 
@@ -2571,7 +2634,8 @@ mod tests {
             assert!(announced.is_some(), "the shell never announced its trap");
         }
 
-        let mut child = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
+        let mut child =
+            AcpChild::spawn(Path::new("/bin/sh"), &inv, probe_tmp().unwrap()).expect("sh");
         let pid = child.pid();
         ready(&mut child);
         assert!(alive(pid), "the premise: it started");
@@ -2582,7 +2646,8 @@ mod tests {
         assert!(!alive(pid), "pid {pid} outlived `finish`");
 
         // And the path that never reaches `finish` at all.
-        let mut dropped = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
+        let mut dropped =
+            AcpChild::spawn(Path::new("/bin/sh"), &inv, probe_tmp().unwrap()).expect("sh");
         let pid = dropped.pid();
         ready(&mut dropped);
         assert!(alive(pid));
