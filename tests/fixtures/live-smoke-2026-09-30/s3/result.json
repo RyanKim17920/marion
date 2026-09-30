@@ -1,0 +1,73 @@
+{
+ "scenario": "s3",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "usage": {
+   "input": 26,
+   "output": 1318,
+   "cache_read": 44297,
+   "cache_write": 11382,
+   "reasoning": 0,
+   "total": 57023
+  },
+  "cost_usd": 0.0338097,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "opencode",
+   "agent_type": "opencode",
+   "depth": 1,
+   "version": "1.18.33",
+   "generations": 1,
+   "exit": "Failed",
+   "usage": null,
+   "cost_usd": null
+  },
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.285 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 8,
+    "output": 1167,
+    "cache_read": 45178,
+    "cache_write": 7666,
+    "reasoning": 0,
+    "total": 54019
+   },
+   "cost_usd": 0.0937356
+  }
+ ],
+ "child_harness_expected": "opencode",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": false,
+ "status": "Failed",
+ "failure_cause": {
+  "UsageLimit": {
+   "line": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\n* Quota"
+  }
+ },
+ "narrative": null,
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": false,
+ "changed_paths": [],
+ "scope_violations": [],
+ "verify": "none",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 107,
+ "timed_out": false
+}

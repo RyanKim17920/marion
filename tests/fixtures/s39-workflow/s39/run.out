@@ -1,0 +1,7 @@
+marion: workflow s39 is running as <UUID> (4 steps)
+ 1 plan         agent    succeeded
+ 2 build        race     succeeded  marion/5731-last-n-lines-in-textutil
+ 3 gate         review   clean  marion/5731-last-n-lines-in-textutil
+ 4 land         land     succeeded
+   changes on branch marion/5731-last-n-lines-in-textutil (1e6d31a2abb6); merge with: git merge --no-ff marion/5731-last-n-lines-in-textutil
+workflow s39: succeeded

@@ -1,0 +1,100 @@
+{
+  "scenario": "s39",
+  "workflow": true,
+  "wall_secs": 223,
+  "timed_out": false,
+  "exit": 0,
+  "outcome": "Succeeded",
+  "steps": [
+    {
+      "id": "plan",
+      "kind": "agent",
+      "verdict": "Succeeded",
+      "nodes": 1,
+      "note": null
+    },
+    {
+      "id": "build",
+      "kind": "race",
+      "verdict": "Succeeded",
+      "nodes": 3,
+      "note": null
+    },
+    {
+      "id": "gate",
+      "kind": "review",
+      "verdict": "Clean",
+      "nodes": 1,
+      "note": null
+    },
+    {
+      "id": "land",
+      "kind": "land",
+      "verdict": "Succeeded",
+      "nodes": 0,
+      "note": "changes on branch marion/5731-last-n-lines-in-textutil (1e6d31a2abb6); merge with: git merge --no-ff marion/5731-last-n-lines-in-textutil"
+    }
+  ],
+  "plan": [
+    "claude-code"
+  ],
+  "race_seats": [
+    "codex",
+    "opencode",
+    "pi"
+  ],
+  "winner": "codex",
+  "reviewers": [
+    "claude-code"
+  ],
+  "fixes": 0,
+  "reviewer_family_differs": true,
+  "landed": "changes on branch marion/5731-last-n-lines-in-textutil (1e6d31a2abb6); merge with: git merge --no-ff marion/5731-last-n-lines-in-textutil",
+  "branch": "marion/5731-last-n-lines-in-textutil",
+  "verify": "pass",
+  "verify_output": "----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+  "nodes": [
+    {
+      "harness": "claude-code",
+      "agent_type": "claude",
+      "exit": "Ok",
+      "tokens": 211564,
+      "cost_usd": 0.12503399999999998,
+      "tokens_from": "contract"
+    },
+    {
+      "harness": "codex",
+      "agent_type": "codex",
+      "exit": "Ok",
+      "tokens": 299492,
+      "cost_usd": null,
+      "tokens_from": "contract"
+    },
+    {
+      "harness": "opencode",
+      "agent_type": "opencode",
+      "exit": "Failed",
+      "tokens": null,
+      "cost_usd": null,
+      "tokens_from": "contract"
+    },
+    {
+      "harness": "pi",
+      "agent_type": "pi",
+      "exit": "Failed",
+      "tokens": 0,
+      "cost_usd": null,
+      "tokens_from": "contract"
+    },
+    {
+      "harness": "claude-code",
+      "agent_type": "claude",
+      "exit": "Ok",
+      "tokens": 43340,
+      "cost_usd": 0.15596559999999998,
+      "tokens_from": "contract"
+    }
+  ],
+  "tokens": 554396,
+  "unrecorded": 1
+}

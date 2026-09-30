@@ -1,0 +1,7 @@
+marion: workflow s39 is running as 01a0f2fc-464b-7688-bc61-92d3dc455f38 (4 steps)
+ 1 plan         agent    succeeded
+ 2 build        race     succeeded  marion/f1f7-last-n-lines-in-textutil
+ 3 gate         review   clean  marion/f1f7-last-n-lines-in-textutil
+ 4 land         land     succeeded
+   changes on branch marion/f1f7-last-n-lines-in-textutil (752d317c9bfb); merge with: git merge --no-ff marion/f1f7-last-n-lines-in-textutil
+workflow s39: succeeded

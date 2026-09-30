@@ -1,0 +1,2 @@
+steering <UUID> at +12s: Also handle empty input: average([]) must return 0.0 instead of raising. Add a test for it.
+marion: queued as m-34a2141d2137458b; reaches codex be16 at its next tool round, or as its next turn if none is running

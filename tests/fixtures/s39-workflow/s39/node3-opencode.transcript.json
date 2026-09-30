@@ -1,0 +1,56 @@
+[
+ {
+  "ts": "2026-09-30T18:01:19.176Z",
+  "marion": {
+   "Lifecycle": "Opened"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:03:40.098Z",
+  "key": "error",
+  "frame": {
+   "error": {
+    "data": {
+     "isRetryable": true,
+     "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\n* Quota exceeded f…[417 more chars]",
+     "metadata": {
+      "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
+     },
+     "responseBody": "{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, l…[2339 more chars]",
+     "responseHeaders": {
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+      "content-length": "2739",
+      "content-type": "text/event-stream",
+      "date": "Wed, 30 Sep 2026 18:03:40 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "server-timing": "gfet4t7; dur=91",
+      "vary": "Origin, X-Origin, Referer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      "x-xss-protection": "0"
+     },
+     "statusCode": 429
+    },
+    "name": "APIError"
+   },
+   "sessionID": "<SESSION>",
+   "timestamp": 1790791420094,
+   "type": "error"
+  }
+ },
+ {
+  "ts": "2026-09-30T18:03:42.834Z",
+  "marion": {
+   "Lifecycle": {
+    "Exited": {
+     "status": "Failed",
+     "exit": {
+      "code": 1,
+      "signal": null,
+      "description": "opencode hit its usage limit; child exited with code 1; the child's stream reported: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_co…[502 more chars]"
+     }
+    }
+   }
+  }
+ }
+]

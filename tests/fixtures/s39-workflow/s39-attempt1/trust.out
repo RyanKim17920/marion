@@ -1,0 +1,10 @@
+<SCRATCH>/s39/repo/.marion/workflows/s39.toml  sha256 1d0bfcb954dd2a85cb63d93f2d258eb21852d981b6cdbf0f24127aab4118bada
+  inputs: task
+  budget: 2400 s
+  step 1 plan: agent on claude:haiku (read-only)
+  step 2 build: race on codex, opencode, pi
+  step 3 gate: review of build by a reviewer from another model family, up to 3 round(s)
+  step 4 land: land gate on its branch
+  runs as verification: python3 -m unittest -q
+allowed. Any edit to <SCRATCH>/s39/repo/.marion/workflows/s39.toml revokes this until you allow it again.
+denied <SCRATCH>/s39/repo/.marion/workflows/s39.toml

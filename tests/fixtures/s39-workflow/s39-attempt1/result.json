@@ -1,0 +1,56 @@
+{
+  "scenario": "s39",
+  "workflow": true,
+  "wall_secs": 151,
+  "timed_out": false,
+  "exit": 0,
+  "outcome": "Succeeded",
+  "steps": [
+    {
+      "id": "plan",
+      "kind": "agent",
+      "verdict": "Succeeded",
+      "nodes": 1,
+      "note": null
+    },
+    {
+      "id": "build",
+      "kind": "race",
+      "verdict": "Succeeded",
+      "nodes": 3,
+      "note": null
+    },
+    {
+      "id": "gate",
+      "kind": "review",
+      "verdict": "Clean",
+      "nodes": 1,
+      "note": null
+    },
+    {
+      "id": "land",
+      "kind": "land",
+      "verdict": "Succeeded",
+      "nodes": 0,
+      "note": "changes on branch marion/f1f7-last-n-lines-in-textutil (752d317c9bfb); merge with: git merge --no-ff marion/f1f7-last-n-lines-in-textutil"
+    }
+  ],
+  "plan": [
+    "claude-code"
+  ],
+  "race_seats": [
+    "codex",
+    "opencode",
+    "pi"
+  ],
+  "winner": "codex",
+  "reviewers": [
+    "claude-code"
+  ],
+  "fixes": 0,
+  "reviewer_family_differs": true,
+  "landed": "changes on branch marion/f1f7-last-n-lines-in-textutil (752d317c9bfb); merge with: git merge --no-ff marion/f1f7-last-n-lines-in-textutil",
+  "branch": "marion/f1f7-last-n-lines-in-textutil",
+  "verify": "pass",
+  "verify_output": "----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n"
+}

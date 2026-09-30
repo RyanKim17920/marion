@@ -1,0 +1,30 @@
+schema = 1
+name = "s39"
+inputs = ["task"]
+budget = { wall = "40m" }
+
+[[step]]
+id = "plan"
+kind = "agent"
+on = "claude:haiku"
+read_only = true
+prompt = "Read the code and write a short plan for this task. Do not change any file.\n\nTask: {input.task}"
+
+[[step]]
+id = "build"
+kind = "race"
+on = ["codex", "opencode", "pi"]
+prompt = "{input.task}\n\nA plan another agent wrote:\n{plan.report}"
+verify = ["python3 -m unittest -q"]
+
+[[step]]
+id = "gate"
+kind = "review"
+of = "build"
+max_rounds = 3
+
+[[step]]
+id = "land"
+kind = "land"
+of = "gate"
+mode = "branch"

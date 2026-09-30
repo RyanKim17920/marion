@@ -1,0 +1,76 @@
+{
+ "scenario": "s1",
+ "root": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "usage": {
+   "input": 26,
+   "output": 1375,
+   "cache_read": 34209,
+   "cache_write": 20492,
+   "reasoning": 0,
+   "total": 56102
+  },
+  "cost_usd": 0.0513059,
+  "exit": "Ok",
+  "marion_tools": [
+   "mcp__marion__spawn",
+   "mcp__marion__spawn"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "codex",
+   "agent_type": "codex",
+   "depth": 1,
+   "version": "codex-cli 0.155.1",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 26980,
+    "output": 401,
+    "cache_read": 102144,
+    "cache_write": 0,
+    "reasoning": 69,
+    "total": 129525
+   },
+   "cost_usd": null
+  },
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.285 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 10,
+    "output": 1525,
+    "cache_read": 51925,
+    "cache_write": 13910,
+    "reasoning": 0,
+    "total": 67370
+   },
+   "cost_usd": 0.15220500000000003
+  }
+ ],
+ "child_harness_expected": "codex",
+ "child_harness_matches": true,
+ "child_model": null,
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "I could not implement word_count or its unit tests because command execution was rejected, so no files were changed and the test command was not run.",
+ "declared_verification": [],
+ "marion_evidence_exit_codes": [],
+ "branch_landed": false,
+ "changed_paths": [],
+ "scope_violations": [],
+ "verify": "none",
+ "steer": null,
+ "wider_children": false,
+ "steer_records": [],
+ "wall_secs": 65,
+ "timed_out": false
+}

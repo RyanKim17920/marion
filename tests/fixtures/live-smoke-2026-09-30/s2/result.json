@@ -1,0 +1,94 @@
+{
+ "scenario": "s2",
+ "root": {
+  "harness": "codex",
+  "version": "codex-cli 0.155.1",
+  "usage": {
+   "input": 32825,
+   "output": 1289,
+   "cache_read": 109952,
+   "cache_write": 0,
+   "reasoning": 66,
+   "total": 144066
+  },
+  "cost_usd": null,
+  "exit": "Ok",
+  "marion_tools": [
+   "spawn",
+   "spawn",
+   "wait",
+   "wait"
+  ]
+ },
+ "delegated": true,
+ "children": [
+  {
+   "harness": "claude-code",
+   "agent_type": "claude",
+   "depth": 1,
+   "version": "2.1.285 (Claude Code)",
+   "generations": 1,
+   "exit": "Ok",
+   "usage": {
+    "input": 74,
+    "output": 3655,
+    "cache_read": 156146,
+    "cache_write": 21507,
+    "reasoning": 0,
+    "total": 181382
+   },
+   "cost_usd": 0.07697760000000001
+  }
+ ],
+ "child_harness_expected": "claude",
+ "child_harness_matches": true,
+ "child_model": "claude-haiku-4-5-20251001",
+ "reported": true,
+ "status": "Ok",
+ "failure_cause": null,
+ "narrative": "Added char_frequency(s) function to textutil.py with 8 comprehensive unit tests covering empty input, repeated/case-sensitive/whitespace/Unicode characters; all 10 tests pass; committed to marion/dfe4-add-char-frequency-s-to branch.",
+ "declared_verification": [
+  "sh -c python3 -m unittest -q"
+ ],
+ "marion_evidence_exit_codes": [
+  0
+ ],
+ "branch_landed": true,
+ "changed_paths": [
+  "test_textutil.py",
+  "textutil.py"
+ ],
+ "scope_violations": [],
+ "verify": "pass",
+ "steer": null,
+ "wider_children": true,
+ "steer_records": [
+  {
+   "record": "MessageQueued",
+   "detail": {
+    "agent_id": "<UUID>",
+    "message_id": "m-419e56500e03ca7d",
+    "source": {
+     "ChildEnded": {
+      "child": "<UUID>",
+      "task_id": "<UUID>",
+      "status": "completed"
+     }
+    },
+    "len": 540,
+    "sha256": "dd4efc76c60779a04f28c1213bb1e53b2ae220ace265a21c91f24821f1948d7c"
+   }
+  },
+  {
+   "record": "MessageDelivered",
+   "detail": {
+    "agent_id": "<UUID>",
+    "message_id": "m-419e56500e03ca7d",
+    "via": "wait",
+    "note": "the node read this end itself (`wait` or `status`), so no turn carried it"
+   }
+  }
+ ],
+ "wall_secs": 88,
+ "timed_out": false
+}

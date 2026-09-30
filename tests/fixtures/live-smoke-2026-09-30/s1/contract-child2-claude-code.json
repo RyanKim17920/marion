@@ -1,0 +1,115 @@
+{
+ "task_id": "<UUID>",
+ "requester": "<UUID>",
+ "child": {
+  "harness": "claude-code",
+  "version": "2.1.285 (Claude Code)",
+  "model": "claude-opus-5-5[1m]"
+ },
+ "repo": {
+  "git_common_dir": "<SCRATCH>/s1/repo/.git",
+  "head_branch": null
+ },
+ "base_commit": "b8e4ee45ac5e926ef4a19988e1de522d70b9aa4d",
+ "workspace": {
+  "Worktree": {
+   "path": "<SCRATCH>/s1/state/b113cd88c166/agents/<UUID>/worktree",
+   "branch": "marion/4f35-add-a-word-count-s"
+  }
+ },
+ "instructions": {
+  "value": "Add a word_count(s) function to textutil.py that returns the number of whitespace-separated words in the input string s. Then add comprehensive unit tests in test_textutil.py to verify the function works correctly, including edge cases. The project's test command is `python3 -m unittest -q`.\n\nAfter implementing, run the test command to verify all tests pass.\n\nWhen you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.",
+  "truncated": false,
+  "original_bytes": 584
+ },
+ "acceptance_criteria": [
+  {
+   "value": "word_count function exists in textutil.py and correctly counts whitespace-separated words",
+   "truncated": false,
+   "original_bytes": 89
+  },
+  {
+   "value": "Unit tests exist in test_textutil.py covering normal cases and edge cases",
+   "truncated": false,
+   "original_bytes": 73
+  },
+  {
+   "value": "All tests pass when running python3 -m unittest -q",
+   "truncated": false,
+   "original_bytes": 50
+  }
+ ],
+ "allowed_tools": [
+  "mcp__marion__report",
+  "mcp__marion__spawn",
+  "mcp__marion__status",
+  "mcp__marion__wait",
+  "mcp__marion__list",
+  "mcp__marion__steer",
+  "mcp__marion__cancel",
+  "Read",
+  "Write",
+  "Edit",
+  "Bash"
+ ],
+ "scope_ceiling": [
+  "**"
+ ],
+ "scope_requested": [
+  "**"
+ ],
+ "timeout": 900,
+ "verification": [],
+ "timestamps": {
+  "spawned": "2026-09-30T14:21:41.557Z",
+  "first_output": null,
+  "reported": "2026-09-30T14:21:59.922Z",
+  "exited": "2026-09-30T14:21:59.922Z"
+ },
+ "completion": {
+  "status": "Ok",
+  "died_before_gate": false,
+  "reported_early": false,
+  "held_to_timeout": false,
+  "live_descendants_at_report": [],
+  "narrative": {
+   "value": "Added word_count(s) to textutil.py (len(s.split())) plus 10 edge-case unit tests in test_textutil.py covering empty/whitespace-only input, mixed/unicode whitespace, punctuation and non-ASCII words, and `python3 -m unittest -q` passes all 12 tests (note: the pre-existing last_n_lines has an unrelated off-by-one bug returning n+1 lines, left untouched).",
+   "truncated": false,
+   "original_bytes": 353
+  },
+  "narrative_synthesized": false,
+  "result_commits": [
+   "1536a57cf877847ddfca875a05fff0416f6c6928"
+  ],
+  "changed_paths": [
+   "test_textutil.py",
+   "textutil.py"
+  ],
+  "acceptance_criteria_omitted": 0,
+  "changed_paths_omitted": 0,
+  "result_commits_omitted": 0,
+  "scope_violations_omitted": 0,
+  "scope_enforced": true,
+  "scope_violations": [],
+  "diff": {
+   "value": "diff --git a/test_textutil.py b/test_textutil.py\nindex 4b5ccdb..56a26a3 100644\n--- a/test_textutil.py\n+++ b/test_textutil.py\n@@ -1,6 +1,6 @@\n import unittest\n \n-from textutil import count_lines\n+from textutil import count_lines, word_count\n \n \n class CountLinesTest(unittest.TestCase):\n@@ -11,5 +11,37 @@ class CountLinesTest(unittest.TestCase):\n         self.assertEqual(count_lines(\"\"), 0)\n \n \n+class WordCountTest(unittest.TestCase):\n+    def test_single_word(self):\n+        self.assertEqual(word_count(\"hello\"), 1)\n+\n+    def test_multiple_words(self):\n+        self.assertEqual(word_count(\"the quick brown fox\"), 4)\n+\n+    def test_empty(self):\n+        self.assertEqual(word_count(\"\"), 0)\n+\n+    def test_whitespace_only(self):\n+        self.assertEqual(word_count(\"   \\t\\n  \"), 0)\n+\n+    def test_leading_and_trailing_whitespace(self):\n+        self.assertEqual(word_count(\"  hello world  \"), 2)\n+\n+    def test_repeated_spaces_between_words(self):\n+        self.assertEqual(word_count(\"a    b     c\"), 3)\n+\n+    def test_mixed_whitespace(self):\n+        self.assertEqual(word_count(\"a\\tb\\nc\\r\\nd\\x0be\\x0cf\"), 6)\n+\n+    def test_unicode_whitespace(self):\n+        self.assertEqual(word_count(\"a\\u00a0b\\u2003c\"), 3)\n+\n+    def test_punctuation_stays_attached(self):\n+        self.assertEqual(word_count(\"hello, world! it's-fine.\"), 3)\n+\n+    def test_non_ascii_words(self):\n+        self.assertEqual(word_count(\"café naïve 日本語\"), 3)\n+\n+\n if __name__ == \"__main__\":\n     unittest.main()\ndiff --git a/textutil.py b/textutil.py\nindex 2f45d95..fb74424 100644\n--- a/textutil.py\n+++ b/textutil.py\n@@ -10,3 +10,8 @@ def last_n_lines(s, n):\n     \"\"\"Return the last n lines of s, oldest first.\"\"\"\n     lines = s.splitlines()\n     return lines[len(lines) - n - 1:]\n+\n+\n+def word_count(s):\n+    \"\"\"Return the number of whitespace-separated words in s.\"\"\"\n+    return len(s.split())\n",
+   "truncated": false,
+   "original_bytes": 1886
+  },
+  "evidence": [],
+  "evidence_omitted": 0,
+  "exit": {
+   "code": 0,
+   "signal": null,
+   "description": "child exited with code 0"
+  },
+  "branch": "marion/4f35-add-a-word-count-s",
+  "commit": "1536a57cf877847ddfca875a05fff0416f6c6928",
+  "usage": {
+   "input": 10,
+   "output": 1525,
+   "cache_read": 51925,
+   "cache_write": 13910
+  }
+ }
+}
