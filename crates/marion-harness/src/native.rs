@@ -415,7 +415,7 @@ fn validate_environment(
 }
 
 fn is_reserved_marion_name(name: &OsStr) -> bool {
-    name.as_encoded_bytes().starts_with(b"MARION_")
+    crate::invocation::is_marion_name(name)
 }
 
 pub fn validate_native_process_values(

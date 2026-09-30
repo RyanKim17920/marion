@@ -73,8 +73,8 @@ if [ -z "$ready" ]; then echo "stub: no MARION_READY_FILE in $cfg" >&2; exit 3; 
 
 # Corruption arriving *during* the run, which is the only way to reach it: the watch starts its
 # cursor at the journal's end, so anything already there is history it never reads.
-if [ -n "$MARION_TEST_JOURNAL_GARBAGE" ]; then
-  printf 'this complete line is not a journal record\n' >> "$MARION_TEST_JOURNAL_GARBAGE"
+if [ -n "$RUN_STREAM_JOURNAL_GARBAGE" ]; then
+  printf 'this complete line is not a journal record\n' >> "$RUN_STREAM_JOURNAL_GARBAGE"
 fi
 
 read init
@@ -373,9 +373,10 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
         ])
         .envs([
             ("PATH", path.as_str()),
-            // Read by the stub, which appends the bad line once the gate has opened.
+            // Read by the stub, which appends the bad line once the gate has opened. Not `MARION_*`:
+            // marion withholds its own inherited variables from every harness it starts.
             (
-                "MARION_TEST_JOURNAL_GARBAGE",
+                "RUN_STREAM_JOURNAL_GARBAGE",
                 journal.to_string_lossy().as_ref(),
             ),
         ])

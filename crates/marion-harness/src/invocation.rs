@@ -5,6 +5,7 @@
 //! with each other. Design §5.2 puts `Invocation` on the `HarnessAdapter` contract itself, so it
 //! belongs to neither.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// The variable every launch's private temp dir rides on — what Bun, Node and Python all read for
@@ -49,6 +50,10 @@ impl Invocation {
     /// unpacks its native libraries into `$TMPDIR` on every launch and never removes them — ~4.8 MB
     /// per opencode run, measured, which came to 7 GB in one day of test runs. It is set last,
     /// after the row's variables and a profile's removals, so neither can move it.
+    ///
+    /// **No inherited `MARION_` name reaches the harness** ([`inherited_marion_names`]): those are
+    /// marion's own plumbing — a parent node's token, the supervisor's state dir, a test's gate —
+    /// and the only ones a launch carries are the ones it set itself.
     pub fn command(&self, tmpdir: &Path) -> std::process::Command {
         let mut cmd = std::process::Command::new(&self.program);
         cmd.args(&self.args)
@@ -57,9 +62,28 @@ impl Invocation {
         for key in &self.env_remove {
             cmd.env_remove(key);
         }
+        for key in inherited_marion_names(std::env::vars_os().map(|(k, _)| k), &self.env) {
+            cmd.env_remove(key);
+        }
         cmd.env(TMPDIR_ENV, tmpdir);
         cmd
     }
+}
+
+/// Whether `name` is one of marion's own: every `MARION_` variable is marion's, never a harness's.
+pub fn is_marion_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"MARION_")
+}
+
+/// The `MARION_` names among `inherited` that `set` does not set — what a launch removes from the
+/// environment it would otherwise inherit.
+pub fn inherited_marion_names(
+    inherited: impl Iterator<Item = OsString>,
+    set: &[(String, String)],
+) -> Vec<OsString> {
+    inherited
+        .filter(|k| is_marion_name(k) && !set.iter().any(|(n, _)| OsStr::new(n) == k))
+        .collect()
 }
 
 /// **`env` prints its names, never its values.** The environment is the channel every credential
@@ -126,6 +150,26 @@ mod tests {
             set,
             vec![Some(std::ffi::OsStr::new("/state/agents/a-1/tmp"))],
             "set last, so neither a variable nor a profile's removal can move it"
+        );
+    }
+
+    /// **An inherited `MARION_` name never reaches a harness unless the launch set it itself**: a
+    /// parent node's token or the supervisor's state dir is removed, the launch's own bridge
+    /// variables stay, and nothing else is touched.
+    #[test]
+    fn inherited_marion_names_are_removed_unless_the_launch_sets_them() {
+        let inherited = [
+            "MARION_NODE_TOKEN",
+            "MARION_STATE_DIR",
+            "MARION_AGENT_ID",
+            "PATH",
+            "MARIONETTE",
+        ]
+        .map(OsString::from);
+        let set = vec![("MARION_AGENT_ID".to_string(), "child".to_string())];
+        assert_eq!(
+            inherited_marion_names(inherited.into_iter(), &set),
+            ["MARION_NODE_TOKEN", "MARION_STATE_DIR"].map(OsString::from)
         );
     }
 
