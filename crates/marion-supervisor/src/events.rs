@@ -678,6 +678,11 @@ impl Drop for EventWriter {
 /// Poll-driven and clock-free, like [`crate::registry::Registry`], so it is testable with no thread
 /// and no timer. Never fails and never panics: every way this can go wrong is a
 /// [`crate::registry::Status`].
+///
+/// How much of a file's start [`EventReader`] keeps to tell it from another file at the same inode
+/// number: the first frame's envelope, its ordinal and its timestamp.
+const HEAD_BYTES: usize = 128;
+
 pub struct EventReader {
     path: PathBuf,
     log: EventLog,
@@ -686,6 +691,10 @@ pub struct EventReader {
     /// The inode `offset` is into. A different one at the path is a rotation
     /// ([`EventWriter::rotate`]), and the old file is finished from its rotated name.
     ino: Option<u64>,
+    /// The first bytes of the file `offset` is into, as this reader read them ([`HEAD_BYTES`] at
+    /// most). An inode number can be reused once two rotations free it, so a file whose first
+    /// bytes differ is another file even at the same number.
+    head: Vec<u8>,
     status: crate::registry::Status,
     polls: u64,
     /// Whether the file has ever been opened. See [`Self::ever_written`].
@@ -747,6 +756,7 @@ impl EventReader {
                 path: path.to_path_buf(),
                 offset: consumed as u64,
                 ino,
+                head: bytes[..bytes.len().min(HEAD_BYTES)].to_vec(),
                 log,
                 status,
                 polls: 0,
@@ -850,13 +860,15 @@ impl EventReader {
         let was = self.ino?;
         let meta = std::fs::metadata(&self.path).ok()?;
         let now = meta.ino();
-        // The file only grows, so one shorter than the cursor at the same inode number is another
-        // file: two rotations can free the old inode and hand its number to the fresh file (ext4
-        // does), and the number alone would then hide the rotation — and every frame after it.
-        if now == was && meta.len() >= self.offset {
+        // Two rotations can free the old inode and hand its number to the fresh file (ext4 does),
+        // and the number alone would then hide the rotation — and every frame after it. The file
+        // only grows and its start never changes, so one shorter than the cursor, or one that
+        // begins with other bytes, is another file at the same number.
+        if now == was && meta.len() >= self.offset && self.same_head() {
             return None;
         }
         self.ino = Some(now);
+        self.head.clear();
         let mut tail = Vec::new();
         if let Ok(mut f) = File::open(rotated_path(&self.path))
             && f.metadata().is_ok_and(|m| m.ino() == was)
@@ -865,6 +877,18 @@ impl EventReader {
             let _ = f.read_to_end(&mut tail);
         }
         Some(tail)
+    }
+
+    /// Whether the file at the path still begins with [`Self::head`].
+    fn same_head(&self) -> bool {
+        use std::io::Read;
+        if self.head.is_empty() {
+            return true;
+        }
+        let mut start = vec![0u8; self.head.len()];
+        File::open(&self.path)
+            .and_then(|mut f| f.read_exact(&mut start))
+            .is_ok_and(|()| start == self.head)
     }
 
     /// The bytes past the cursor. `Ok(None)` is "nothing new".
@@ -919,6 +943,9 @@ impl EventReader {
             .map_err(|e| crate::registry::Status::Unreadable {
                 reason: format!("reading {}: {e}", self.path.display()),
             })?;
+        if self.offset == 0 && self.head.is_empty() {
+            self.head = buf[..buf.len().min(HEAD_BYTES)].to_vec();
+        }
         Ok(Some(buf))
     }
 }
@@ -1121,6 +1148,32 @@ mod tests {
             late.windows(2).all(|w| w[1] == w[0] + 1),
             "the rotated file then the fresh one, in order: {late:?}"
         );
+    }
+
+    /// **Another file at the same inode number is still another file.** Two rotations can hand the
+    /// old number to the fresh file (ext4 does); rewriting the path in place is that case on any
+    /// filesystem: a file with other first bytes, longer than the cursor, at the number the reader
+    /// knows. It is read as the rotation it is, not skipped as the file the reader was in.
+    #[test]
+    fn a_fresh_file_that_reuses_the_readers_inode_number_is_still_read() {
+        let dir = scratch("events-reused-inode");
+        let path = dir.join("events.jsonl");
+        let mut w = EventWriter::open_path(&path, &node()).unwrap();
+        w.append(frame("first")).unwrap();
+        let (mut reader, _) = EventReader::open_path(&path).unwrap();
+        let other = dir.join("fresh.jsonl");
+        let mut fresh = EventWriter::open_path(&other, &node()).unwrap();
+        for i in 0..5 {
+            fresh.append(frame(&format!("fresh-{i}"))).unwrap();
+        }
+        let before = std::fs::metadata(&path).unwrap();
+        // In place, so the inode number is the one the reader holds.
+        std::fs::write(&path, std::fs::read(&other).unwrap()).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
+        let mut out = Vec::new();
+        reader.poll(&mut out);
+        assert_eq!(seqs(&out).len(), 5, "{:?}", reader.status());
     }
 
     /// **A file rotated away twice between two polls is a reported gap**, never a silent one: the
