@@ -2128,6 +2128,50 @@ fn a_backgrounded_childs_end_reaches_the_parent_as_a_push_before_any_wait() {
     assert!(bridge.close().success());
 }
 
+/// **A backgrounded race's decision reaches a channel parent as a push, before any `wait`** — the
+/// same path a backgrounded child's end takes (interactive Claude Code, whose turns come over its
+/// MCP channel and not from marion's inbox). One frame for the race, never one per seat, naming the
+/// race's handle; a `wait` afterwards still returns the decision.
+#[test]
+fn a_backgrounded_races_decision_reaches_a_channel_parent_as_a_push_before_any_wait() {
+    let fx = fixture("bg-race-push");
+    let mut bridge = fx.bridge_typed("claude");
+    bridge.call(
+        "initialize",
+        json!({"protocolVersion": "2025-11-25", "clientInfo": {"name": "test", "version": "0"}}),
+    );
+    let handle = handle_task_id(&bridge.tool(
+        "spawn",
+        json!({
+            "candidates": ["codex-impl", "codex-impl"],
+            "prompt": "block until the gate opens",
+            "verification": ["true"],
+            "timeout_secs": CHILD_TIMEOUT_SECS,
+            "background": true,
+        }),
+    ));
+    fx.await_children(2);
+    fx.open_gate();
+    let push = bridge.next_frame("the race's own announcement");
+    assert!(
+        push.get("id").is_none(),
+        "a notification, not an answer: {push}"
+    );
+    assert_eq!(push["method"], "notifications/claude/channel", "{push}");
+    assert_eq!(push["params"]["meta"]["race_id"], handle, "{push}");
+    let content = push["params"]["content"].as_str().unwrap();
+    assert!(
+        content.contains("has been decided") && content.contains(&handle),
+        "the push announces the race's decision: {content}"
+    );
+    let waited = bridge.tool("wait", json!({"task_id": &handle}));
+    assert!(
+        text_of(&waited).contains(&format!("race {handle}")),
+        "a wait after the push still returns the decision: {waited}"
+    );
+    assert!(bridge.close().success());
+}
+
 /// The same child under a parent whose row is unmeasured (codex) is announced over MCP's own
 /// logging notification — the protocol's shape, declared under `capabilities.logging`.
 #[test]

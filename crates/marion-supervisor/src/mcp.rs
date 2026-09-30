@@ -747,6 +747,8 @@ fn tool_wait(
             ));
         };
         let (sock, project) = paths_or_refuse(who, id)?;
+        // Counted while it blocks, so a watcher does not push the decision this `wait` returns.
+        let _waiting = bg.race_waiting(&race_id.0);
         return Ok(race_delivered(
             who, bg, id, &sock, &project, &race_id, bound,
         ));
@@ -1576,6 +1578,50 @@ fn start_watchers(who: &Principal, bg: &Arc<background::Background>, push: Push)
                 }
             });
     }
+    // A race this node backgrounded is announced the same way, once, when it is decided: its seats
+    // announce nothing one by one.
+    for (race_id, bound) in bg.unwatched_races() {
+        let (sock, project, bg) = (sock.clone(), project.clone(), Arc::clone(bg));
+        let _ = std::thread::Builder::new()
+            .name(format!("marion-push-{}", race_id.0))
+            .spawn(move || {
+                let frame = watch_race(push, &project, &race_id, || {
+                    courier::await_race(&sock, &project, &race_id, bound)
+                });
+                if let Some(frame) = frame.filter(|_| bg.race_announceable(&race_id.0)) {
+                    emit(&std::io::stdout(), &frame);
+                }
+            });
+    }
+}
+
+/// **The frame a race's watcher pushes once the race is decided**: the decision as a `wait` on it
+/// would render it ([`bridge::race_text`]), worded as the inbox words it for a parent that takes
+/// its turns from marion ([`crate::inbox::race_decided_text`]), so the two read alike. `None`
+/// while it is undecided or nothing could be learnt. `awaiting` is the blocking read, injected so
+/// the frame can be tested without a supervisor.
+fn watch_race(
+    push: Push,
+    project: &ProjectDir,
+    race_id: &marion_core::race::RaceId,
+    awaiting: impl FnOnce() -> Result<courier::RaceDelivered, SpawnError>,
+) -> Option<serde_json::Value> {
+    if push == Push::None {
+        return None;
+    }
+    let Ok(courier::RaceDelivered::Decided(result)) = awaiting() else {
+        return None;
+    };
+    let (board, _) = bridge::race_text(project, &result);
+    bridge::push_frame(
+        push,
+        &crate::inbox::race_decided_text(&race_id.0, &board),
+        serde_json::json!({
+            "race_id": race_id.0,
+            "winner": result.winner.map(u32::from),
+            "status": "decided",
+        }),
+    )
 }
 
 /// **The frame one watcher pushes when the node it watched ends**, or `None` when there is

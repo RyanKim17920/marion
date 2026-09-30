@@ -121,6 +121,10 @@ struct HandedRace {
     race_id: marion_core::race::RaceId,
     wait_bound: Duration,
     collected: bool,
+    /// A watcher is announcing this race's decision ([`Background::unwatched_races`]).
+    watched: bool,
+    /// `wait`s on this race blocked right now ([`Background::race_waiting`]).
+    waits: usize,
 }
 
 /// What a `wait` found for a race handle.
@@ -346,7 +350,56 @@ impl Background {
                 race_id,
                 wait_bound,
                 collected: false,
+                watched: false,
+                waits: 0,
             });
+    }
+
+    /// **Every race no watcher is announcing yet — and from now on, each of them is**:
+    /// [`Self::unwatched`] for races, with the race's own wait bound.
+    pub fn unwatched_races(&self) -> Vec<(marion_core::race::RaceId, Duration)> {
+        self.races
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .filter(|r| !r.watched && !r.collected)
+            .map(|r| {
+                r.watched = true;
+                (r.race_id.clone(), r.wait_bound)
+            })
+            .collect()
+    }
+
+    /// [`Self::announceable`] for a race: no `wait` collected its decision and none is blocked on
+    /// it.
+    pub fn race_announceable(&self, handle: &str) -> bool {
+        self.races
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|r| r.race_id.0 == handle)
+            .is_some_and(|r| !r.collected && r.waits == 0)
+    }
+
+    /// A `wait` on a race is starting, until the guard drops ([`Self::waiting`] for a race).
+    pub fn race_waiting(&self, handle: &str) -> RaceWaiting<'_> {
+        self.race_waits(handle, |w| *w += 1);
+        RaceWaiting {
+            bg: self,
+            handle: handle.to_string(),
+        }
+    }
+
+    fn race_waits(&self, handle: &str, f: impl FnOnce(&mut usize)) {
+        if let Some(r) = self
+            .races
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .find(|r| r.race_id.0 == handle)
+        {
+            f(&mut r.waits);
+        }
     }
 
     /// The race a handle names, if it names one this bridge started.
@@ -388,6 +441,19 @@ impl Background {
     }
 }
 
+/// A `wait` in flight on one race, from [`Background::race_waiting`] until it drops.
+pub struct RaceWaiting<'a> {
+    bg: &'a Background,
+    handle: String,
+}
+
+impl Drop for RaceWaiting<'_> {
+    fn drop(&mut self) {
+        self.bg
+            .race_waits(&self.handle, |w| *w = w.saturating_sub(1));
+    }
+}
+
 /// A `wait` in flight on one handle, from [`Background::waiting`] until it drops.
 pub struct Waiting<'a> {
     bg: &'a Background,
@@ -410,6 +476,33 @@ impl Drop for Waiting<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A race is watched once and announced only as news**: the first sweep hands it out and
+    /// later ones do not, a blocked `wait` or a collected decision silences the push, and the
+    /// guard's drop restores it.
+    #[test]
+    fn a_race_is_watched_once_and_announced_only_while_nobody_waits_on_it() {
+        let bg = Background::new();
+        let race = marion_core::race::RaceId("r-1".into());
+        bg.hand_out_race(race.clone(), Duration::from_secs(5));
+        assert_eq!(
+            bg.unwatched_races(),
+            vec![(race.clone(), Duration::from_secs(5))]
+        );
+        assert!(bg.unwatched_races().is_empty(), "one watcher per race");
+        assert!(bg.race_announceable("r-1"));
+        {
+            let _waiting = bg.race_waiting("r-1");
+            assert!(!bg.race_announceable("r-1"), "a blocked wait returns it");
+        }
+        assert!(bg.race_announceable("r-1"));
+        bg.race_collected("r-1");
+        assert!(!bg.race_announceable("r-1"), "a wait already returned it");
+        assert!(
+            !bg.race_announceable("r-2"),
+            "a race this bridge never started"
+        );
+    }
 
     /// **A race handle is its race's id**, pending until a `wait` collects it, and never a node
     /// row: `resolve` and `node_of` know nothing of it.
