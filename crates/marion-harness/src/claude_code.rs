@@ -345,6 +345,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // behind, and marion never answers it: the answer would trust the operator's repository.
     boot_dialogs: BootDialogs {
         dialogs: &[
+            // 2.1.285, measured 2026-09-30 in a scratch `CLAUDE_CONFIG_DIR` (canned token, dead
+            // base URL): an unseeded config opens on the text-style picker, CR keeps its default
+            // (`Dark mode`) and shows the security notes, CR again reaches folder trust. A canned
+            // or endpoint launch seeds past both (`CONFIG_SEED`), so these are the fallback where
+            // the seed stops working; a live login with a fresh config shows them, and there the
+            // answer is the operator's. Recorded again on 2.1.301, 2026-10-16, the same way
+            // (`tests/fixtures/s37-boot-dialogs/claude-code-2.1.301-{text-style,security-notes}.raw`).
+            BootDialog {
+                needle: "Choose the text style that looks best with your terminal",
+                action: "run `claude` once in a terminal and finish its first-run setup (text style, security notes); claude keeps it in its config",
+                answer: DialogAnswer::Setup(b"\r"),
+                note: "2.1.285 first-run text-style picker, default `Dark mode`: CR keeps it and \
+                       shows the security notes",
+            },
+            BootDialog {
+                needle: "Security notes: 1. Claude can make mistakes.",
+                action: "run `claude` once in a terminal and finish its first-run setup (text style, security notes); claude keeps it in its config",
+                answer: DialogAnswer::Setup(b"\r"),
+                note: "2.1.285 first-run security notes, `Press Enter to continue`: CR goes on to \
+                       folder trust",
+            },
             BootDialog {
                 needle: "❯ No, exit Yes, I trust this folder",
                 action: "trust {repo} in claude once (run `claude` there and choose `Yes, I trust this folder`); worktrees inherit it",

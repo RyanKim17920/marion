@@ -29,10 +29,11 @@
 //! ([`marion_harness::spec::BootDialog`], read by the host as text drawn since anyone last typed).
 //! A TUI in a fresh directory opens on folder trust, and a paste typed into it answers it: claude
 //! 2.1.283's defaults to `No, exit`, so paste + CR quits the session; codex 0.155.1's swallows the
-//! paste. Where the row marks the dialog answerable **and** the host was licensed — the child runs
-//! in a worktree marion created ([`crate::pty::PtyHost::license_boot_dialog_answers`]) — the
-//! injector types the row's keys alone ([`Gate::Answer`]), once, and waits for the TUI to redraw
-//! and settle before pasting. Anywhere else, and for a dialog the row holds, it waits
+//! paste. Where the row marks the dialog answerable **and** the host was licensed — for folder
+//! trust, the child runs in a worktree marion created; for first-run setup, marion owns the
+//! harness config ([`crate::pty::PtyHost::license_boot_dialog_answers`], [`Answers`]) — the
+//! injector types the row's keys alone ([`Gate::Answer`]), once per dialog, and waits for the TUI
+//! to redraw and settle before pasting. Anywhere else, and for a dialog the row holds, it waits
 //! ([`Hold::BootDialog`]) for someone to dismiss it, and past the grace drops the message by name.
 //!
 //! # Asks (2026-10-16, `tests/fixtures/pane-asks/`)
@@ -198,7 +199,41 @@ impl PasteParams {
 pub struct Boot {
     pub settle: Duration,
     pub mark: BootSignal,
-    pub answer_dialogs: bool,
+    pub answer_dialogs: Answers,
+}
+
+/// **Which of a row's answerable dialogs marion may answer on this terminal**: folder trust
+/// ([`DialogAnswer::Keys`]) only in a workspace marion created where the answer stays out of the
+/// operator's config; first-run setup ([`DialogAnswer::Setup`]) wherever marion owns the config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Answers {
+    pub workspace: bool,
+    pub config: bool,
+}
+
+impl Answers {
+    pub const NONE: Answers = Answers {
+        workspace: false,
+        config: false,
+    };
+    pub const ALL: Answers = Answers {
+        workspace: true,
+        config: true,
+    };
+}
+
+/// What marion may answer now: what the host was licensed for, unless the dialog on the screen is
+/// one marion already answered — back after its keys, it is held. Each dialog is answered once, so
+/// a chain of setup screens is walked one answer each.
+pub fn licence(
+    granted: Answers,
+    showing: Option<&'static BootDialog>,
+    answered: &[&'static str],
+) -> Answers {
+    match showing {
+        Some(d) if answered.contains(&d.needle) => Answers::NONE,
+        _ => granted,
+    }
 }
 
 /// Marion's side of when a paste may be typed — not measured per row, because it is about the
@@ -304,7 +339,11 @@ pub fn gate(
         // Asked before the paste mode: the answer is keys, not a paste, and a dialog can be up
         // before the TUI turns bracketed paste on.
         (Some(d), _, Some(b)) => match d.answer {
-            DialogAnswer::Keys(_) if b.answer_dialogs => {
+            DialogAnswer::Keys(_) if b.answer_dialogs.workspace => {
+                *unready_since = None;
+                return Gate::Answer(d);
+            }
+            DialogAnswer::Setup(_) if b.answer_dialogs.config => {
                 *unready_since = None;
                 return Gate::Answer(d);
             }
@@ -501,8 +540,8 @@ impl Worker {
         let mut unready_since = None;
         // Until the first paste lands, the terminal must also have booted.
         let mut booted = false;
-        // A boot dialog is answered once: one that is back after marion's keys is held.
-        let mut answered = false;
+        // Each boot dialog is answered once: one that is back after marion's keys is held.
+        let mut answered: Vec<&'static str> = Vec::new();
         if let Some(host) = self.host.upgrade() {
             host.watch_dialogs(self.params.dialogs, self.params.asks);
         }
@@ -517,7 +556,11 @@ impl Worker {
             let boot = (!booted).then(|| Boot {
                 settle: self.params.settle,
                 mark: self.params.boot_mark,
-                answer_dialogs: !answered && host.answers_boot_dialogs(),
+                answer_dialogs: licence(
+                    host.answers_boot_dialogs(),
+                    host.input_state().boot_dialog,
+                    &answered,
+                ),
             });
             let decision = gate(
                 &host.input_state(),
@@ -543,7 +586,9 @@ impl Worker {
             next_look = Some(match &decision {
                 Gate::Wait(_, at) => *at,
                 Gate::Answer(dialog) => {
-                    answered |= self.answer(&host, &inboxes, &mut held, dialog, boot);
+                    if self.answer(&host, &inboxes, &mut held, dialog, boot) {
+                        answered.push(dialog.needle);
+                    }
                     // The TUI redraws after the keys; the next look waits for that as a boot.
                     Instant::now() + self.policy.recheck
                 }
@@ -601,7 +646,7 @@ impl Worker {
         dialog: &'static BootDialog,
         boot: Option<Boot>,
     ) -> bool {
-        let DialogAnswer::Keys(keys) = dialog.answer else {
+        let Some(keys) = dialog.answer.keys() else {
             return false;
         };
         let label = format!("marion: boot dialog answered: {}", dialog.needle);

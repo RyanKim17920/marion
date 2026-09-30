@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::FailureCause;
 use marion_harness::grammar;
-use marion_harness::spec::{
-    Approval, DialogAnswer, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy,
-};
+use marion_harness::spec::{Approval, HarnessSpec, MidTurn, NodeShape, TurnDelivery, UpdatePolicy};
 use marion_harness::stream::{CallOutcome, ChildExit, json_frames};
 use marion_supervisor::duplex::LaunchPath;
 use serde_json::{Value, json};
@@ -1593,29 +1591,37 @@ pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
             .find(|d| text.contains(d.needle))
     };
     let dialog = on_screen(&first_screen);
-    // What the screen showed after the row's keys, where it was one of the row's dialogs.
+    // What the screen showed after the row's keys, where it was one of the row's dialogs. A chain
+    // (claude's first-run setup, then folder trust) is walked one answer per dialog, as the paste
+    // driver walks it; a dialog back after its own keys stops the walk.
     let mut then = None;
-    let answered = match dialog.map(|d| d.answer) {
-        None => true,
-        Some(DialogAnswer::Keys(keys)) => {
-            let mut before = 0;
-            tty.wait(Duration::ZERO, |b, _| {
-                before = b.len();
-                true
-            });
-            tty.write(keys);
-            // The redraw first, then its quiet: the first screen was already quiet.
-            tty.wait(Duration::from_secs(20), |b, _| b.len() > before);
-            tty.quiet(quiet, Duration::from_secs(20));
-            let after: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
-            s.log.w(
-                "note",
-                &json!({"screen after the row's dialog keys": after}),
-            );
-            then = on_screen(&after);
-            then.is_none()
+    let mut seen: Vec<&str> = Vec::new();
+    let mut current = dialog;
+    let answered = loop {
+        let Some(d) = current else { break true };
+        let Some(keys) = d.answer.keys() else {
+            break false;
+        };
+        if seen.contains(&d.needle) || seen.len() >= 4 {
+            break false;
         }
-        Some(DialogAnswer::Hold) => false,
+        seen.push(d.needle);
+        let mut before = 0;
+        tty.wait(Duration::ZERO, |b, _| {
+            before = b.len();
+            true
+        });
+        tty.write(keys);
+        // The redraw first, then its quiet: the first screen was already quiet.
+        tty.wait(Duration::from_secs(20), |b, _| b.len() > before);
+        tty.quiet(quiet, Duration::from_secs(20));
+        let after: Vec<String> = tty.screen().iter().map(|l| s.log.scrub().text(l)).collect();
+        s.log.w(
+            "note",
+            &json!({"screen after the row's dialog keys": after}),
+        );
+        then = on_screen(&after);
+        current = then;
     };
     let paste = |text: &str| {
         tty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
@@ -1660,10 +1666,9 @@ pub fn p_tui(c: &mut Ctx<'_>) -> Outcome {
             Some(d) => format!(
                 "{:?} ({}) {}",
                 d.needle,
-                match d.answer {
-                    DialogAnswer::Keys(k) =>
-                        format!("answered with {:?}", String::from_utf8_lossy(k)),
-                    DialogAnswer::Hold => "held by the row".into(),
+                match d.answer.keys() {
+                    Some(k) => format!("answered with {:?}", String::from_utf8_lossy(k)),
+                    None => "held by the row".into(),
                 },
                 match then {
                     _ if answered => "and dismissed".to_string(),

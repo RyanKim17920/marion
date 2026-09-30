@@ -8891,7 +8891,7 @@ mod tests {
     /// `CLAUDE_CONFIG_DIR` overlay row. Each fails.
     #[test]
     fn marion_answers_a_boot_dialog_only_where_the_answer_stays_out_of_operator_config() {
-        use crate::spec::{DialogAnswer, Remembers};
+        use crate::spec::Remembers;
         for h in Harness::ALL {
             let row = harness_spec(h);
             let remembers = row.boot_dialogs.remembers;
@@ -8899,7 +8899,7 @@ mod tests {
                 .boot_dialogs
                 .dialogs
                 .iter()
-                .any(|d| matches!(d.answer, DialogAnswer::Keys(_)));
+                .any(|d| d.answer.keys().is_some());
             if !answers {
                 assert_eq!(remembers, Remembers::Nothing, "{h}: answers no dialog");
             }

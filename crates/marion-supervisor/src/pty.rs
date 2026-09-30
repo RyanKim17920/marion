@@ -2540,10 +2540,9 @@ pub struct PtyHost {
     /// operator keystroke can land between "the composer is empty" and marion's paste, nor between
     /// the paste and its submit.
     typing: Mutex<input::Typing>,
-    /// **Marion may answer this terminal's boot dialogs** — set by the launcher, before the host
-    /// is published, only where the child runs in a worktree marion created for it
-    /// ([`Self::license_boot_dialog_answers`]).
-    answers_boot_dialogs: AtomicBool,
+    /// **Which of this terminal's boot dialogs marion may answer** — set by the launcher, before
+    /// the host is published ([`Self::license_boot_dialog_answers`]).
+    answers_boot_dialogs: Mutex<crate::paste::Answers>,
     /// What the paste driver's first message waits on, where it is a boot dialog marion does not
     /// answer ([`DialogHold`]) — read by the pane's launcher, which journals it and ends the node
     /// past the grace.
@@ -2774,7 +2773,7 @@ impl PtyHost {
             master,
             shared,
             typing: Mutex::new(input::Typing::default()),
-            answers_boot_dialogs: AtomicBool::new(false),
+            answers_boot_dialogs: Mutex::new(crate::paste::Answers::NONE),
             dialog_hold: Mutex::new(DialogHold::Clear),
             child: Mutex::new(None),
             reader: Mutex::new(reader),
@@ -3539,16 +3538,23 @@ impl PtyHost {
         &self.shared.dialogs_changed
     }
 
-    /// **The child runs in a workspace marion created**, so its answerable boot dialogs are marion's
-    /// to answer ([`marion_harness::spec::DialogAnswer::Keys`]). Called by the launcher before the
-    /// host is published; never by default, because an operator's own directory is the operator's
-    /// to trust.
-    pub fn license_boot_dialog_answers(&self) {
-        self.answers_boot_dialogs.store(true, Ordering::SeqCst);
+    /// **Which of the child's answerable boot dialogs are marion's to answer**: folder trust
+    /// ([`marion_harness::spec::DialogAnswer::Keys`]) where it runs in a workspace marion created,
+    /// first-run setup ([`marion_harness::spec::DialogAnswer::Setup`]) where marion owns the
+    /// harness config. Called by the launcher before the host is published; none by default,
+    /// because an operator's own directory and config are the operator's.
+    pub fn license_boot_dialog_answers(&self, answers: crate::paste::Answers) {
+        *self
+            .answers_boot_dialogs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = answers;
     }
 
-    pub fn answers_boot_dialogs(&self) -> bool {
-        self.answers_boot_dialogs.load(Ordering::SeqCst)
+    pub fn answers_boot_dialogs(&self) -> crate::paste::Answers {
+        *self
+            .answers_boot_dialogs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// The paste driver says what its first message waits on ([`DialogHold`]).

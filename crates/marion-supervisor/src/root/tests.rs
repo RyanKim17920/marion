@@ -1931,9 +1931,13 @@ fn a_launch_only_root_that_answered_without_marion_is_ok_with_a_note() {
 /// marion ended is `Failed` with that description whatever its exit code.
 #[test]
 fn a_held_boot_dialog_names_its_action_and_ends_the_node_with_it() {
-    let dialog = marion_harness::adapter::harness_spec(Harness::ClaudeCode)
+    // Folder trust, which names the repository; claude's first-run setup screens come first.
+    let dialog = *marion_harness::adapter::harness_spec(Harness::ClaudeCode)
         .boot_dialogs
-        .dialogs[0];
+        .dialogs
+        .iter()
+        .find(|d| d.needle.contains("I trust this folder"))
+        .expect("claude's row holds folder trust");
     let held = dialog_held("claude", &dialog, "/work/repo");
     assert!(
         held.starts_with("claude is waiting on its boot dialog"),

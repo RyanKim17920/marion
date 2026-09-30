@@ -644,7 +644,8 @@ pub struct BootDialogs {
     /// every paste waits while one is up, for as long as it is up, and marion never answers one:
     /// each is [`DialogAnswer::Hold`], and the node needs its operator meanwhile.
     pub asks: &'static [BootDialog],
-    /// Where the TUI keeps an answer marion gives with a dialog's [`DialogAnswer::Keys`].
+    /// Where the TUI keeps an answer marion gives with a dialog's [`DialogAnswer::Keys`] or
+    /// [`DialogAnswer::Setup`].
     pub remembers: Remembers,
     pub note: &'static str,
 }
@@ -713,10 +714,26 @@ pub enum DialogAnswer {
     /// operator's own directory) the dialog is the operator's, and the paste waits as for
     /// [`DialogAnswer::Hold`].
     Keys(&'static [u8]),
+    /// **First-run setup**: harness UI state the TUI keeps in its own config (claude's text style),
+    /// nothing about the directory. Answered with these keys wherever marion owns that config — a
+    /// canned or endpoint launch, whose home the overlay moved onto marion's scratch
+    /// ([`Remembers::marion_may_answer`]), in any directory — and held on a live login, where the
+    /// answer would be written into the operator's own config.
+    Setup(&'static [u8]),
     /// Never answered by marion: a login or a consent screen, or a dialog whose answer was not
     /// measured. The paste waits for someone else to dismiss it, and is dropped by name past the
     /// grace.
     Hold,
+}
+
+impl DialogAnswer {
+    /// The keys marion may type, where it answers at all.
+    pub const fn keys(self) -> Option<&'static [u8]> {
+        match self {
+            DialogAnswer::Keys(k) | DialogAnswer::Setup(k) => Some(k),
+            DialogAnswer::Hold => None,
+        }
+    }
 }
 
 /// **What marks a TUI whose composer submits**, before marion's first paste into it: the boot

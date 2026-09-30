@@ -1315,6 +1315,7 @@ impl BootDialogDto {
             action: leak(self.action),
             answer: match self.answer {
                 DialogAnswerDto::Keys(k) => DialogAnswer::Keys(leak(k).as_bytes()),
+                DialogAnswerDto::Setup(k) => DialogAnswer::Setup(leak(k).as_bytes()),
                 DialogAnswerDto::Hold => DialogAnswer::Hold,
             },
             note: leak(self.note),
@@ -1326,6 +1327,7 @@ impl BootDialogDto {
 #[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case")]
 pub enum DialogAnswerDto {
     Keys(String),
+    Setup(String),
     Hold,
 }
 

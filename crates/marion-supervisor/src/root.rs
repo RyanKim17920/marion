@@ -2929,12 +2929,14 @@ fn launch_terminal(
     // worktree claude and codex key trust on the main repository, so answering there would trust
     // the operator's repository for good. Before `opened`, so the paste driver that publication
     // starts reads it.
+    // First-run setup is harness UI state in its config, so where marion owns that config it is
+    // marion's to answer in any directory.
     let dialogs = marion_harness::adapter::harness_spec(node.harness).boot_dialogs;
-    if inv.cwd.starts_with(node.agent_dir.worktree())
-        && dialogs.remembers.marion_may_answer(node.auth)
-    {
-        host.license_boot_dialog_answers();
-    }
+    let config = dialogs.remembers.marion_may_answer(node.auth);
+    host.license_boot_dialog_answers(crate::paste::Answers {
+        workspace: config && inv.cwd.starts_with(node.agent_dir.worktree()),
+        config,
+    });
     // Read for whether the node needs its operator, message or none: a pane started on its task
     // can sit on a dialog with nothing queued for it.
     host.watch_dialogs(dialogs.dialogs, dialogs.asks);

@@ -101,14 +101,14 @@ const SETTLE: Duration = Duration::from_millis(1500);
 const BOOT: Option<Boot> = Some(Boot {
     settle: SETTLE,
     mark: BootSignal::FirstDraw,
-    answer_dialogs: false,
+    answer_dialogs: Answers::NONE,
 });
 
 /// [`BOOT`], for a row whose boot mark is its window title.
 const WINDOW_TITLE: Option<Boot> = Some(Boot {
     settle: SETTLE,
     mark: BootSignal::WindowTitle,
-    answer_dialogs: false,
+    answer_dialogs: Answers::NONE,
 });
 
 /// The measured claude dialog, answerable, and the marker-free fallback the row holds on.
@@ -125,6 +125,13 @@ const TRUST_HELD: BootDialog = BootDialog {
     note: "test: the same dialog, selection unmeasured",
 };
 const CLAUDE_LIKE: &[BootDialog] = &[TRUST, TRUST_HELD];
+/// A first-run setup screen: harness UI state kept in its config, not about the directory.
+const THEME: BootDialog = BootDialog {
+    needle: "Choose the text style that looks best with your terminal",
+    action: "finish claude's first-run setup once",
+    answer: DialogAnswer::Setup(b"\r"),
+    note: "test: claude-like theme picker",
+};
 
 fn showing(d: &'static BootDialog) -> crate::pty::InputState {
     crate::pty::InputState {
@@ -181,7 +188,7 @@ fn an_answerable_dialog_is_answered_only_in_marions_own_workspace() {
     let marions = Some(Boot {
         settle: SETTLE,
         mark: BootSignal::FirstDraw,
-        answer_dialogs: true,
+        answer_dialogs: Answers::ALL,
     });
     assert_eq!(
         gate(&showing(&TRUST), now, &p, marions, &mut None),
@@ -563,7 +570,7 @@ impl Bed {
                 .expect("the host starts"),
         );
         if marions_workspace {
-            host.license_boot_dialog_answers();
+            host.license_boot_dialog_answers(Answers::ALL);
         }
         let records = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&records);
@@ -1302,4 +1309,80 @@ fn a_steer_waits_out_an_approval_prompt_and_never_answers_it() {
             RecordKind::MessageDelivered(_)
         ));
     }
+}
+
+/// **A setup dialog is answered wherever marion owns the harness config** — canned or endpoint,
+/// in any directory — and held on the operator's own (a live login), while folder trust still
+/// needs marion's own workspace as well.
+#[test]
+fn a_setup_dialog_is_answered_wherever_marion_owns_the_config() {
+    let now = Instant::now();
+    let p = policy();
+    let own_config = Some(Boot {
+        settle: SETTLE,
+        mark: BootSignal::FirstDraw,
+        answer_dialogs: Answers {
+            workspace: false,
+            config: true,
+        },
+    });
+    assert_eq!(
+        gate(&showing(&THEME), now, &p, own_config, &mut None),
+        Gate::Answer(&THEME)
+    );
+    assert_eq!(
+        gate(&showing(&TRUST), now, &p, own_config, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck),
+        "folder trust is answered only in marion's own workspace"
+    );
+    assert_eq!(
+        gate(&showing(&THEME), now, &p, BOOT, &mut None),
+        Gate::Wait(Hold::BootDialog, now + p.recheck),
+        "on the operator's own config it is held"
+    );
+}
+
+/// **Each dialog is answered once**: a chain of setup screens is walked one answer each, and a
+/// dialog back after marion's keys is held.
+#[test]
+fn each_boot_dialog_is_answered_once_and_a_chain_is_walked() {
+    let granted = Answers::ALL;
+    assert_eq!(licence(granted, Some(&THEME), &[]), granted);
+    assert_eq!(
+        licence(granted, Some(&TRUST), &[THEME.needle]),
+        granted,
+        "the next screen in the chain is answered"
+    );
+    assert_eq!(
+        licence(granted, Some(&THEME), &[THEME.needle]),
+        Answers::NONE,
+        "the same dialog back after marion's keys is held"
+    );
+    assert_eq!(licence(Answers::NONE, Some(&THEME), &[]), Answers::NONE);
+}
+
+const CLAUDE_FIRST_RUN: &[BootDialog] = &[THEME, TRUST, TRUST_HELD];
+
+/// **A fresh claude-like config is walked through its first-run chain**, one answer per screen:
+/// the text-style picker with its setup keys, then folder trust with its own, then the paste.
+#[test]
+fn a_first_run_chain_is_answered_one_screen_at_a_time_before_the_paste() {
+    let mut bed = Bed::booting("paste-dialog-chain", fast(), CLAUDE_FIRST_RUN, true);
+    bed.node_writes(b"\x1b[2J\x1b[HChoose the text style that looks best with your terminal");
+    let id = bed.steer("after the chain");
+    assert_eq!(bed.read_slave(1), b"\r", "the setup screen's keys");
+    bed.node_writes(CLAUDE_TRUST_SCREEN);
+    assert_eq!(
+        bed.read_slave(4),
+        b"\x1b[B\r",
+        "the next dialog in the chain is answered too"
+    );
+    bed.await_decision(|d| matches!(d, Gate::Wait(Hold::Booting, _)));
+    bed.node_writes(b"\x1b[2J\x1b[H> ");
+    let want = expected_paste("after the chain");
+    assert_eq!(bed.read_slave(want.len()), want);
+    assert!(matches!(
+        bed.resolution(&id),
+        RecordKind::MessageDelivered(_)
+    ));
 }

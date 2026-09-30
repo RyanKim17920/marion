@@ -138,7 +138,7 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
                 format!("{:?} states no note or no action", d.needle),
             );
         }
-        if matches!(d.answer, DialogAnswer::Keys(k) if k.is_empty()) {
+        if d.answer.keys().is_some_and(<[u8]>::is_empty) {
             fault(
                 "boot_dialogs",
                 format!("{:?} answers with nothing", d.needle),
@@ -154,10 +154,7 @@ pub fn validate(row: &HarnessSpec) -> Vec<RowFault> {
             );
         }
     }
-    if dialogs
-        .dialogs
-        .iter()
-        .any(|d| matches!(d.answer, DialogAnswer::Keys(_)))
+    if dialogs.dialogs.iter().any(|d| d.answer.keys().is_some())
         && dialogs
             .dialogs
             .last()
