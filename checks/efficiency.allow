@@ -17,7 +17,6 @@ crates/marion-supervisor/src/detach.rs:ensure_supervisor_within  bounded: the DI
 crates/marion-supervisor/src/socket.rs:acquire_within  bounded: a stage 3 that finds the lock held re-asks every 2 ms until the holder binds or START_DEADLINE; a holder dying before it binds only releases a flock, which no file watch reports
 crates/marion-supervisor/src/native_bootstrap.rs:exchange_native_claim  bounded: one claim exchange under LAUNCH_RESULT_TIMEOUT, then reset to blocking
 crates/marion-supervisor/src/bin/marion.rs:SupervisorSession::request_detach_all  bounded: one request/response under SUPERVISOR_REPLY_WAIT
-crates/marion-supervisor/src/wake.rs:poll_until  bounded one-shot wait: the one sleep-until-deadline loop, for a child's exit or a file nothing can wake on; every caller passes its own budget (ready file, INTERRUPT_GRACE, SUPERVISOR_EXIT_WAIT)
 crates/marion-supervisor/src/kill.rs:observe_dead  bounded one-shot wait: reads a killed process's state with backoff (1 ms doubling to OBSERVE_PAUSE_MAX) until it is gone or the kill deadline passes, so the kill confirmation is earned; never runs idle
 
 # --- home-polish (2026-09-27): the event-driven home loop ---------------------------------------
