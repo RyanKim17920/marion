@@ -1,0 +1,132 @@
+# goose, as a row file: the twin of the built-in `goose` row (`crates/marion-harness/src/goose.rs`),
+# held to it byte for byte by `row_file::tests`. The one-token declaration is a command-line body,
+# split on whitespace, so a bridge path with a space in it is refused by name, as the built-in is.
+schema = 1
+name = "goose-twin"
+kind = "cli"
+program = "goose"
+note = """S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
+           with --with-builtin developer as the one availability unit, the --with-extension token \
+           as the declaration route with the bridge's environment inherited; harness_matrix's \
+           goose cell runs this row end to end"""
+writes-without-grant = false
+surfaces = "launch-only"
+stream = "builtin:goose"
+spelling = "server-double-underscore-tool"
+tools = [
+  ["write", "write"],
+  ["edit", "edit"],
+  ["bash", "shell"],
+]
+argv = [
+  { lit = "run" },
+  { flag = ["-t", "prompt"] },
+  { lit = "--output-format" },
+  { lit = "stream-json" },
+  { lit = "-q" },
+  { lit = "--no-session" },
+  { lit = "--no-profile" },
+  { flag = ["--with-builtin", "mode"] },
+  { flag = ["--with-extension", "mcp-config"] },
+]
+env = [
+  { key = "HOME", val = { under = "home" }, when = "overlay" },
+  { key = "XDG_CONFIG_HOME", val = { under = "home/.config" }, when = "overlay" },
+  { key = "XDG_DATA_HOME", val = { under = "home/.local/share" }, when = "overlay" },
+  { key = "XDG_STATE_HOME", val = { under = "home/.local/state" }, when = "overlay" },
+  { key = "XDG_CACHE_HOME", val = { under = "home/.cache" }, when = "overlay" },
+  { key = "GOOSE_PROVIDER", val = { lit = "openai" }, when = "overlay" },
+  { key = "GOOSE_MODEL", val = { field = "model" }, when = "always" },
+  { key = "OPENAI_HOST", val = { field = "base-url" }, when = "overlay" },
+  { key = "OPENAI_BASE_PATH", val = { lit = "chat/completions" }, when = "overlay" },
+  { key = "OPENAI_API_KEY", val = { field = "api-key" }, when = "overlay" },
+  { key = "GOOSE_MODE", val = { lit = "auto" }, when = "always" },
+]
+constraint = { mode = { prefix = "with-builtin:", default = "none" } }
+axes = { mode = { mode = "developer", when-any = ["write", "edit", "shell", "tree", "read_image"] } }
+containment = "tools-only"
+os-sandbox = { wrap = { writes = [{ home = ".local/state/goose" }] } }
+
+[version]
+verified = ["1.49.0", "1.50.0", "1.51.0", "1.52.0"]
+
+[mcp]
+canned = { argv = "marion:" }
+live = { argv = "marion:" }
+
+[declaration.argv-inline]
+flag = "--with-extension"
+key = "marion:"
+body = { command-line = { head = "marion:", split-on-whitespace = true } }
+
+[login-env]
+any-provider = true
+
+[token]
+canned = { inherited-env = """s26 on 1.49.0: the `--with-extension` child inherits the process environment \
+               (`goose-env-inherit.mcp.jsonl`)""" }
+live = { inherited-env = """s26 on 1.49.0: the `--with-extension` child inherits the process environment \
+               (`goose-env-inherit.mcp.jsonl`)""" }
+
+[updates]
+never = """1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
+               strings, no `GOOSE_*` update variable; `goose update` is explicit only"""
+
+[boot.measured]
+cpu-ms = 200
+note = """flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 5 nodes: 0.12 s."""
+
+[approval.env-var]
+key = "GOOSE_MODE"
+value = "auto"
+scope = """every tool the node is offered, which under --no-profile is marion's and the \
+                declared builtins"""
+note = """S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest; chat \
+               withholds every call; auto runs them. S37 on 1.52.0 (s37-goose-mode): unset, a \
+               fresh config runs marion's tool and a granted write unasked, so the grant is not \
+               load-bearing on a canned node; `GOOSE_MODE: approve` in the operator's config.yaml \
+               aborts a headless run at exit 1 and the env overrides it, so it is on a live one"""
+
+[read-only.tools-axis]
+verified = true
+note = """s38 on 1.52.0: without `--with-builtin developer` a scripted `write` is refused \
+               (`Tool 'write' was not advertised for this model turn`), no file"""
+
+[delivery]
+headless = { none = """S31 p0b/goose (1.51.0): `run --resume -n <name>` continues a session by a name \
+                   the caller chooses, which needs this row's --no-session dropped; until it is, \
+                   there is no second turn""" }
+interactive = { none = """goose's TUI was not measured (S31), and its native lane ships disabled""" }
+
+[abort]
+headless = { none = """launch-only: no channel after launch, and SIGINT mid-turn is unmeasured""" }
+interactive = { none = """no interactive shape marion can type into was measured, so a cancel kills the \
+                   node""" }
+
+[boot-dialogs]
+remembers = "nothing"
+note = """goose's TUI was not measured"""
+
+[[wires]]
+wire = "openai-chat"
+keys = ["bearer-by-overlay"]
+note = """Chat Completions: `GOOSE_PROVIDER=openai` with `OPENAI_HOST`."""
+
+[[requires]]
+modes = "overlay"
+need = "base-url"
+why = """a canned node needs a provider base URL: without OPENAI_HOST the openai provider \
+                   posts to the vendor's own endpoint"""
+
+[[requires]]
+modes = "overlay"
+need = "model"
+why = """an explicit model is mandatory: GOOSE_MODEL is how the openai provider is told what \
+                   to name, it has no default, and marion will not guess one"""
+
+[[requires]]
+modes = "inherited"
+need = { model-other-than = "marion-canned" }
+why = """that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real model (-m <model>), or none to use the harness's \
+                   own default"""

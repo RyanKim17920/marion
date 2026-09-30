@@ -1,0 +1,150 @@
+# qwen, as a row file: the twin of the built-in `qwen` row (`crates/marion-harness/src/qwen.rs`),
+# held to it byte for byte by `row_file::tests`. What a user row for a qwen-shaped harness looks
+# like, key by key; the grammar its stream is read by is the built-in's.
+schema = 1
+name = "qwen-twin"
+kind = "cli"
+program = "qwen"
+note = """S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
+           provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
+           combination that offers the declared names, --mcp-config inline as the declaration \
+           route in both modes, --resume <session_id>; harness_matrix's qwen cell runs this row \
+           end to end"""
+writes-without-grant = false
+surfaces = "launch-only"
+stream = "builtin:qwen"
+spelling = "mcp-double-underscore"
+tools = [
+  ["read", "read_file"],
+  ["write", "write_file"],
+  ["edit", "edit"],
+  ["bash", "run_shell_command"],
+]
+argv = [
+  "resume",
+  { lit = "--yolo" },
+  { lit = "--core-tools" },
+  { items = "tools" },
+  { lit = "--exclude-tools" },
+  { lit = "agent" },
+  { lit = "enter_worktree" },
+  { lit = "exit_worktree" },
+  { lit = "get_goal" },
+  { lit = "list_agents" },
+  { lit = "record_artifact" },
+  { lit = "report_findings" },
+  { lit = "send_message" },
+  { lit = "skill" },
+  { lit = "task_stop" },
+  { lit = "tool_search" },
+  { lit = "update_goal" },
+  { flag = ["--mcp-config", "mcp-config"] },
+  { flag = ["-p", "prompt"] },
+  { lit = "--output-format" },
+  { lit = "stream-json" },
+]
+env = [
+  { key = "QWEN_HOME", val = { under = "home" }, when = "overlay" },
+  { key = "OPENAI_BASE_URL", val = { field = "base-url" }, when = "overlay" },
+  { key = "OPENAI_API_KEY", val = { field = "api-key" }, when = "overlay" },
+  { key = "OPENAI_MODEL", val = { field = "model" }, when = "always" },
+  { key = "QWEN_CODE_LEGACY_MCP_BLOCKING", val = { lit = "1" }, when = "always" },
+  { key = "QWEN_CODE_SUPPRESS_YOLO_WARNING", val = { lit = "1" }, when = "always" },
+]
+resume = { flag = "--resume" }
+constraint = { allowed = { prefix = "core-tools:" } }
+axes = { one-list = { refuse-empty = """a launch must name at least one tool: `--core-tools` with no names is silently no \
+             allowlist, and the model would be offered every built-in (s25 item 16)""" } }
+containment = "tools-only"
+os-sandbox = { wrap = { writes = [] } }
+
+[version]
+verified = ["0.23.0", "0.24.7"]
+
+[mcp]
+canned = "document"
+live = { argv = "mcpServers" }
+
+[declaration.argv-inline]
+flag = "--mcp-config"
+key = "mcpServers"
+body = { mcp-servers = {} }
+
+[[files]]
+path = "home/settings.json"
+modes = "overlay"
+base = '{"memory":{"enableManagedAutoMemory":false}}'
+servers = {}
+pretty = true
+
+[login-env]
+any-provider = false
+login = [
+  { pattern = "OPENAI_API_KEY" },
+  { pattern = "OPENAI_BASE_URL" },
+  { pattern = "DASHSCOPE_API_KEY" },
+]
+
+[token]
+canned = "declaration"
+live = { inherited-env = """qwen 0.23.0 (2026-09-27, stub MCP server declared by `--mcp-config` with no \
+                   `env`): the server's environment is qwen's own, `MARION_NODE_TOKEN` included""" }
+
+[updates.env]
+key = "QWEN_CODE_SKIP_UPDATE_CHECK_ONCE"
+value = "true"
+note = """0.23.0 bundle: the update check returns on `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE === \
+               \"true\"` at every launch"""
+
+[boot.measured]
+cpu-ms = 900
+note = """flake-hunt, 2026-09-28, at the pinned release: the most CPU (user + system, `ps` sampled every 0.5 s) a canned `cross_product` node of this harness had spent when its first provider request was logged, over 7 nodes: 0.07 s in `node qwen` plus 0.79 s in the `node --expose-gc` it relaunches itself under."""
+
+[approval.cli-flag]
+flag = "--yolo"
+scope = """every tool --core-tools offers, which is marion's verbs and the declared builtins"""
+note = """s25 on 0.23.0: without --yolo the report call is declined at exit 0"""
+
+[read-only.tools-axis]
+verified = true
+note = """s38 on 0.23.0: `--core-tools` without `write_file` refuses a scripted `write_file` \
+               and `run_shell_command` (`not listed in the active core tools allowlist`), under \
+               `--yolo`; no file"""
+
+[delivery]
+headless = { continuation = """S31 p0b/qwen (0.23.0): `--resume <session_id> -p …` continues the session""" }
+interactive = { none = """qwen's TUI was not measured (S31 probed codex, opencode, copilot and claude), \
+                   and its native lane ships disabled""" }
+
+[abort]
+headless = { none = """launch-only: no channel after launch, and SIGINT mid-turn is unmeasured""" }
+interactive = { none = """no interactive shape marion can type into was measured, so a cancel kills the \
+                   node""" }
+
+[boot-dialogs]
+remembers = "nothing"
+note = """qwen's TUI was not measured"""
+
+[[wires]]
+wire = "openai-chat"
+keys = ["bearer-by-overlay"]
+note = """Chat Completions, through `OPENAI_BASE_URL`."""
+
+[[requires]]
+modes = "overlay"
+need = "base-url"
+why = """a canned node needs a provider base URL: without OPENAI_BASE_URL the provider posts \
+                   to the vendor's own endpoint"""
+
+[[requires]]
+modes = "overlay"
+need = "model"
+why = """an explicit model is mandatory: OPENAI_MODEL is how the provider is told what to \
+                   name, and marion will not guess one"""
+
+[[requires]]
+modes = "inherited"
+need = { model-other-than = "marion-canned" }
+why = """that model name belongs to marion's canned test provider, which a run on your own \
+                   login does not use. Pass a real model (-m <model>), or none to use the harness's \
+                   own default"""

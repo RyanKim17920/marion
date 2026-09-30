@@ -32,6 +32,7 @@ pub mod pi;
 pub mod probe;
 pub mod profile;
 pub mod qwen;
+pub mod row_file;
 pub mod rpc_channel;
 pub mod spec;
 pub mod stream;

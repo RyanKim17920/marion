@@ -12,6 +12,8 @@ crates/marion-supervisor/src/root.rs:record_the_roots_change  safe: writes root-
 crates/marion-core/src/contract.rs:CredentialFailover  from/to are credential ids (`provider:label`), never keys; the contract records which credential ran, by id
 crates/marion-supervisor/src/provider_check.rs:CredentialRow  `id` is a credential id (`provider:label`); the row never holds the key, which goes to curl on stdin only
 crates/marion-harness/src/spec.rs:KeyRecipe  `note` is the row's measurement prose; the recipe names header spellings, never a key
+crates/marion-harness/src/row_file.rs:KeyRecipeDto  a row file's KeyRecipe as TOML states it: `note` is measurement prose; the recipe names header spellings, never a key
+crates/marion-harness/src/row_file.rs:TokenCarrierDto  a row file's TokenCarrier as TOML states it: each variant's string is the measurement note of where the node token rides, never the token
 crates/marion-harness/src/adapter.rs:render_row  formats the header's *name* ("Authorization: Bearer" / "x-api-key") into a refusal; no key is in scope
 
 
