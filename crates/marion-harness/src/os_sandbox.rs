@@ -93,6 +93,42 @@ pub enum WritePath {
     TmpUserProject(&'static str),
 }
 
+impl WritePath {
+    /// Where this path is for a node whose home is `home` and whose working directory is `cwd`.
+    pub fn resolve(self, home: &std::path::Path, cwd: &std::path::Path) -> std::path::PathBuf {
+        match self {
+            WritePath::Home(rel) => home.join(rel),
+            WritePath::HomeProject(rel) => home.join(rel).join(project_key(cwd)),
+            WritePath::TmpUserProject(prefix) => std::path::PathBuf::from("/tmp")
+                .join(format!("{prefix}-{}", own_uid()))
+                .join(project_key(cwd)),
+        }
+    }
+}
+
+/// **A row's own paths on the operator's own login**, resolved against `home` and `cwd` without
+/// touching the disk: the directories (its paths for every auth, then its [`Live`] ones) and its
+/// single files. What an admission run checks its `$HOME` diff against.
+pub fn live_paths(
+    rule: OsSandboxRule,
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let (writes, live): (&[WritePath], Live) = match rule {
+        OsSandboxRule::Wrap { writes, live } | OsSandboxRule::ReplaceOwn { writes, live, .. } => {
+            (writes, live)
+        }
+        OsSandboxRule::Unsupported { .. } => return (Vec::new(), Vec::new()),
+    };
+    let dirs = writes
+        .iter()
+        .chain(live.writes)
+        .map(|w| w.resolve(home, cwd))
+        .collect();
+    let files = live.files.iter().map(|f| home.join(f)).collect();
+    (dirs, files)
+}
+
 /// What this host offers marion's sandbox, probed once per process ([`support`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Support {
@@ -280,13 +316,7 @@ impl SandboxPlan {
             dirs.push(canonical(&admin)?);
         }
         for w in writes.iter().chain(live_writes) {
-            let path = match w {
-                WritePath::Home(rel) => home.join(rel),
-                WritePath::HomeProject(rel) => home.join(rel).join(project_key(&cwd)),
-                WritePath::TmpUserProject(prefix) => PathBuf::from("/tmp")
-                    .join(format!("{prefix}-{}", own_uid()))
-                    .join(project_key(&cwd)),
-            };
+            let path = w.resolve(&home, &cwd);
             std::fs::create_dir_all(&path)
                 .map_err(|e| format!("could not create {}: {e}", path.display()))?;
             dirs.push(canonical(&path)?);
@@ -743,6 +773,29 @@ mod tests {
         assert!(!plan.dirs().iter().any(|d| d.ends_with("sessions")));
         let p = SandboxPlan::seatbelt_profile(2, 1);
         assert!(p.contains("(literal (param \"F0\"))"), "{p}");
+    }
+
+    /// **A row's live paths resolve without touching the disk**: every-auth paths first, then its
+    /// session paths, and its single files apart.
+    #[test]
+    fn a_rows_live_paths_resolve_against_home_and_cwd() {
+        let rule = OsSandboxRule::Wrap {
+            writes: &[WritePath::HomeProject(".h/projects")],
+            live: MEASURED,
+        };
+        let (dirs, files) = live_paths(
+            rule,
+            std::path::Path::new("/home/op"),
+            std::path::Path::new("/w/x"),
+        );
+        assert_eq!(
+            dirs,
+            [
+                std::path::PathBuf::from("/home/op/.h/projects/-w-x"),
+                "/home/op/.h/sessions".into()
+            ]
+        );
+        assert_eq!(files, [std::path::PathBuf::from("/home/op/.h/auth.json")]);
     }
 
     /// **A single file is writable, and its directory is not**: the process may rewrite the file,
