@@ -1479,3 +1479,81 @@ fn the_mcp_cancel_tool_stops_a_backgrounded_workflow_run() {
     assert!(is_error, "a cancelled run is not a success: {waited}");
     assert!(waited.contains("workflow solo: cancelled"), "{waited}");
 }
+
+/// **A pi step takes a claude plan and lands verified work**: pi's row as a workflow step. The
+/// plan's report reaches the pi step's prompt, the step writes through pi's own `write` and reports
+/// through marion's extension, and its `verify` passes on its branch.
+#[test]
+fn a_pi_step_takes_a_claude_plan_and_passes_its_verify() {
+    if !marion_testsupport::harness_available("pi") {
+        return;
+    }
+    let pi =
+        marion_harness::adapter_for(marion_core::harness::Harness::Pi).expect("pi has an adapter");
+    let script = Script {
+        nodes: vec![
+            node("PIPLANMARK", &[], "the plan is PLAN-2c9: add ok"),
+            NodeScript {
+                marker: "PIIMPLMARK".into(),
+                call_prefix: "piimpl".into(),
+                turns: vec![
+                    ScriptedCall::new("write", json!({"path": "ok", "content": "pi work\n"})),
+                    ScriptedCall::new(
+                        pi.marion_tool_name("report"),
+                        json!({"narrative": "wrote ok"}),
+                    ),
+                ],
+                final_text: "Done.".into(),
+            },
+        ],
+        ..Script::default()
+    };
+    let Some(bed) = bed("wf-pi", script) else {
+        return;
+    };
+    bed.user_workflow(
+        "pi-ship",
+        r#"schema = 1
+name = "pi-ship"
+inputs = ["task"]
+
+[[step]]
+id = "plan"
+kind = "agent"
+on = "claude"
+read_only = true
+prompt = "PIPLANMARK: plan {input.task}"
+
+[[step]]
+id = "impl"
+kind = "agent"
+on = "pi"
+prompt = "PIIMPLMARK: do it.\nPlan:\n{plan.report}"
+verify = ["test -f ok"]
+"#,
+    );
+    let result = bed.run_to_close("pi-ship", &[("task", "the ok file")]);
+    assert_eq!(
+        result.outcome,
+        RunOutcome::Succeeded,
+        "{}",
+        result.scoreboard()
+    );
+    assert_eq!(
+        verdicts(&result),
+        [Some(StepVerdict::Succeeded), Some(StepVerdict::Succeeded)]
+    );
+    let pi_requests = bed.requests_with("PIIMPLMARK");
+    assert!(!pi_requests.is_empty(), "the pi step ran");
+    assert!(
+        pi_requests[0].contains("PLAN-2c9"),
+        "the plan's report reached the pi step's prompt: {}",
+        pi_requests[0].chars().take(600).collect::<String>()
+    );
+    let intents = bed.step_intents(1);
+    assert_eq!(
+        intents.iter().map(|i| i.harness).collect::<Vec<_>>(),
+        [marion_core::harness::Harness::Pi],
+        "the second step ran on pi"
+    );
+}
