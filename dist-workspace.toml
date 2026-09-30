@@ -44,3 +44,12 @@ pr-run-mode = "plan"
 # download can be checked with `gh attestation verify <file> --repo RyanKim17920/marion`.
 github-attestations = true
 
+# Every action release.yml uses, pinned to the full commit its tag named when it was resolved
+# (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, dereferencing an annotated tag). A tag can be
+# moved; a commit cannot. `dist generate` writes these into the workflow in place of the tag.
+# Bump one by resolving the new tag the same way and regenerating.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0
+"actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" # v7.0.1
+"actions/download-artifact" = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" # v8.0.1
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6" # v4.2.2
