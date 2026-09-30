@@ -4,7 +4,7 @@
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f2ff-9290-7052-a407-417718144414 ; activity report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f44b-9c9d-7942-ad85-d6c4059a9df9 ; activity report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,7 +14,7 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 6.2 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" | 429: ended after 0.2 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 24.8 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+        "observed": "401: ended after 7.0 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\" | 429: ended after 0.3 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 25.1 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
         "status": "PASS"
       },
       "P-interrupt": {
@@ -39,7 +39,7 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f2ff-eade-7163-a6e2-911625ae9670 -> 01a0f2ff-eade-7163-a6e2-911625ae9670; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f44b-e1f9-7203-a860-c8f45c44308b -> 01a0f44b-e1f9-7203-a860-c8f45c44308b; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {

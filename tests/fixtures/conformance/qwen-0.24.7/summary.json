@@ -4,7 +4,7 @@
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 740422a5-33ed-418a-9385-dd6d0e7b627c ; activity mcp__marion__report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ec6be2d0-8daa-493f-a0e4-5597e8eed775 ; activity mcp__marion__report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,7 +14,7 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 0.6 s, 1 request(s), exit 1; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"error_during_execution\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
+        "observed": "401: ended after 1.0 s, 1 request(s), exit 1; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"error_during_execution\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
         "status": "FAIL"
       },
       "P-interrupt": {
@@ -40,12 +40,12 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session 8e6b9045-37b0-4aad-ad6b-981fae2deca7 -> 8e6b9045-37b0-4aad-ad6b-981fae2deca7; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session ff0a0907-a733-455c-8601-8702bc1d3b31 -> ff0a0907-a733-455c-8601-8702bc1d3b31; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
         "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 5.0 s after the spawn and listed marion's tools",
         "status": "PASS"
       },
       "P-tui": {

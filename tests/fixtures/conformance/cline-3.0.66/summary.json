@@ -14,12 +14,12 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 1.5 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T15:50:37.730Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+        "observed": "401: ended after 1.4 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T22:07:31.456Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
         "status": "FAIL"
       },
       "P-interrupt": {
         "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-        "observed": "the cancel ended the turn in 0.0 s (signal 2); 3 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+        "observed": "the cancel ended the turn in 0.1 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
         "status": "PASS"
       },
       "P-launch": {
@@ -29,7 +29,7 @@
       },
       "P-lifecycle": {
         "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84954, \"<NPM_PREFIX>/lib/node_modules/cline/bin/.cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (85706, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: still running, left [(43210, \"cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (43452, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
         "status": "FAIL"
       },
       "P-midturn": {
@@ -46,7 +46,7 @@
       },
       "P-tools": {
         "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 9.0 s after the spawn and did NOT list marion's tools",
+        "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 10.0 s after the spawn and did NOT list marion's tools",
         "status": "FAIL"
       },
       "P-tui": {

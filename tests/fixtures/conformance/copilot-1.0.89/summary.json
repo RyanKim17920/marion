@@ -4,7 +4,7 @@
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session 686df913-4388-4a90-9831-6bdc4b967006 ; activity marion-report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session bf2d6ec4-e99f-4512-8dde-8bded0cdd28b ; activity marion-report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,7 +14,7 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 2.6 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:62009/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY, COPILOT_PROVIDER_API_KEY_COMMAND, or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 17.2 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 16.59 seconds) Last error: 500 internal server error\")",
+        "observed": "401: ended after 2.8 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:50217/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY, COPILOT_PROVIDER_API_KEY_COMMAND, or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 14.9 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 14.00 seconds) Last error: 500 internal server error\")",
         "status": "PASS"
       },
       "P-interrupt": {
@@ -29,7 +29,7 @@
       },
       "P-lifecycle": {
         "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(63844, \"<NPM_PREFIX>/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,marion-spawn,marion-status,marion-wait,marion-list,marion-steer,marion-cancel,view,create,edit,apply_patch,bash --allow-tool=marion(report) --allow-tool=marion(spawn) --allow-tool=marion(status) --allow-tool=marion(wait) --allow-tool=marion(list) --allow-tool=marion(steer) --allow-tool=marion(cancel) --allow-tool=write --allow-tool=shell --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (63996, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+        "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(11936, \"<NPM_PREFIX>/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,marion-spawn,marion-status,marion-wait,marion-list,marion-steer,marion-cancel,view,create,edit,apply_patch,bash --allow-tool=marion(report) --allow-tool=marion(spawn) --allow-tool=marion(status) --allow-tool=marion(wait) --allow-tool=marion(list) --allow-tool=marion(steer) --allow-tool=marion(cancel) --allow-tool=write --allow-tool=shell --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (12946, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
         "status": "FAIL"
       },
       "P-midturn": {
@@ -40,12 +40,12 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session 8dc9ea99-47a1-420e-afc9-687cdc896954 -> 8dc9ea99-47a1-420e-afc9-687cdc896954; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 6466ab16-62b2-42fe-aed4-472c6b1408a7 -> 6466ab16-62b2-42fe-aed4-472c6b1408a7; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
         "expected": "`marion-report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools",
+        "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.9 s after the spawn and listed marion's tools",
         "status": "PASS"
       },
       "P-tui": {

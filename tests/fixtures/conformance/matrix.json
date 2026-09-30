@@ -288,12 +288,84 @@
       },
       "version": "unknown"
     },
+    "acp:goose": {
+      "fixtures": "acp-goose-unknown",
+      "probes": {
+        "P-activity": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-approval": {
+          "expected": "",
+          "observed": "P-activity did not run, so the granted case is unknown",
+          "reason": "P-activity did not run, so the granted case is unknown",
+          "status": "UNSUPPORTED"
+        },
+        "P-errors": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-interrupt": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-launch": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-lifecycle": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-midturn": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-resume": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tools": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        },
+        "P-tui": {
+          "expected": "",
+          "observed": "the row has no pane shape (`pane: None`)",
+          "reason": "the row has no pane shape (`pane: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-version": {
+          "expected": "",
+          "observed": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "reason": "marion will not compile a canned launch: compile: acp: ACP names no provider, base URL or credential at any point in its handshake, and marion has never measured a way to point this particular agent at one. Run it without --canned, on your own login, or pick an agent whose canned recipe is measured",
+          "status": "UNSUPPORTED"
+        }
+      },
+      "version": "unknown"
+    },
     "acp:opencode": {
       "fixtures": "acp-opencode-1.18.33",
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f104f5bf6ffe0Qhdvl53hzpIPD ; activity none (row: no activity rule)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 90, output: 20, cache_read: 10, cache_write: 0, reasoning: Some(5) } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session ses_f0bb0732bffenYE4H1e8o2LSN4 ; activity none (row: no activity rule)",
           "status": "PASS"
         },
         "P-approval": {
@@ -304,7 +376,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 1.9 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 46.0 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 46.1 s, 8 request(s), still running; cause none said; stream failure None",
+          "observed": "401: ended after 1.9 s, 2 request(s), still running; cause Auth { line: \"Internal error: Incorrect API key provided: dummy.\" }; stream failure Some(\"Internal error: Incorrect API key provided: dummy.\"); no frame reads as a refused credential; prompt answer {\"code\":-32603,\"data\":{\"errorName\":\"APIError\",\"service\":\"session\"},\"message\":\"Internal error: Incorrect API key provided: dummy.\"} | 429: still running after 46.0 s, 8 request(s), still running; cause none said; stream failure None | 500: still running after 46.4 s, 8 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
@@ -329,12 +401,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session ses_f104f3880ffeshepQvdjE9xqY1 -> ses_f104f3880ffeshepQvdjE9xqY1; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session ses_f0bb04ad4ffeGuEfFYv8ruFFRM -> ses_f0bb04ad4ffeGuEfFYv8ruFFRM; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools",
+          "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.5 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -428,8 +500,8 @@
       "probes": {
         "P-activity": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-approval": {
@@ -446,20 +518,20 @@
         },
         "P-interrupt": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-launch": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-lifecycle": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-midturn": {
@@ -470,14 +542,14 @@
         },
         "P-resume": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-tools": {
           "expected": "",
-          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
-          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned provider route: it runs only on the operator's own login, so launch it live (marion run --live)",
+          "observed": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
+          "reason": "marion will not compile a canned launch: compile: agy: agy has no canned or endpoint provider route: it runs only on the operator's own login, so launch it without --canned or a provider",
           "status": "UNSUPPORTED"
         },
         "P-tui": {
@@ -571,12 +643,12 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 1.5 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T15:50:37.730Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+          "observed": "401: ended after 1.4 s, 1 request(s), exit 1; cause Auth { line: \"{\\\"ts\\\":\\\"2026-09-30T22:07:31.456Z\\\",\\\"type\\\":\\\"error\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\"}\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); no frame reads as a refused credential | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-          "observed": "the cancel ended the turn in 0.0 s (signal 2); 3 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "observed": "the cancel ended the turn in 0.1 s (exit 0); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
           "status": "PASS"
         },
         "P-launch": {
@@ -586,7 +658,7 @@
         },
         "P-lifecycle": {
           "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(84954, \"<NPM_PREFIX>/lib/node_modules/cline/bin/.cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (85706, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: still running, left [(43210, \"cline --json -c <SCRATCH>/cline/p-lifecycle-sigterm/repo --config <SCRATCH>/cline/p-lifecycle-sigterm/node/cfg --data-dir <SCRATCH>/cline/p-lifecycle-sigterm/node/data --auto-approve true -m marion-canned CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is.\"), (43452, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
           "status": "FAIL"
         },
         "P-midturn": {
@@ -603,7 +675,7 @@
         },
         "P-tools": {
           "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 9.0 s after the spawn and did NOT list marion's tools",
+          "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 10.0 s after the spawn and did NOT list marion's tools",
           "status": "FAIL"
         },
         "P-tui": {
@@ -625,7 +697,7 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f2ff-9290-7052-a407-417718144414 ; activity report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 322, output: 27, cache_read: 15, cache_write: 0, reasoning: Some(0) } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f44b-9c9d-7942-ad85-d6c4059a9df9 ; activity report",
           "status": "PASS"
         },
         "P-approval": {
@@ -635,7 +707,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 6.2 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:61841/v1/responses\" | 429: ended after 0.2 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 24.8 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
+          "observed": "401: ended after 7.0 s, 6 request(s), still running; cause Auth { line: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\" }; stream failure Some(\"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\"); refused credential read off a frame: \"unexpected status 401 Unauthorized: Incorrect API key provided: dummy., url: http://127.0.0.1:55430/v1/responses\" | 429: ended after 0.3 s, 1 request(s), still running; cause RateLimit { line: \"exceeded retry limit, last status: 429 Too Many Requests\" }; stream failure Some(\"exceeded retry limit, last status: 429 Too Many Requests\") | 500: ended after 25.1 s, 30 request(s), still running; cause Outage { line: \"We’re currently experiencing high demand, which may cause temporary errors.\" }; stream failure Some(\"We’re currently experiencing high demand, which may cause temporary errors.\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -660,7 +732,7 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f2ff-eade-7163-a6e2-911625ae9670 -> 01a0f2ff-eade-7163-a6e2-911625ae9670; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f44b-e1f9-7203-a860-c8f45c44308b -> 01a0f44b-e1f9-7203-a860-c8f45c44308b; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
@@ -686,7 +758,7 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session 686df913-4388-4a90-9831-6bdc4b967006 ; activity marion-report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage none (row: no usage rule) (provider sent [(111, 10, 5), (211, 17, 10)]); session bf2d6ec4-e99f-4512-8dde-8bded0cdd28b ; activity marion-report",
           "status": "PASS"
         },
         "P-approval": {
@@ -696,7 +768,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 2.6 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:62009/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY, COPILOT_PROVIDER_API_KEY_COMMAND, or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 17.2 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 16.59 seconds) Last error: 500 internal server error\")",
+          "observed": "401: ended after 2.8 s, 3 request(s), exit 1; cause Auth { line: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"Authentication failed with provider at http://127.0.0.1:50217/v1 (HTTP 401).\\n  Check your COPILOT_PROVIDER_API_KEY, COPILOT_PROVIDER_API_KEY_COMMAND, or COPILOT_PROVIDER_BEARER_TOKEN.\"); refused credential read off a frame: \"{\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: ******.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: still running after 45.0 s, 5 request(s), still running; cause RateLimit { line: \"{\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure None | 500: ended after 14.9 s, 6 request(s), exit 1; cause Outage { line: \"{\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"Failed to get response from the AI model; retried 5 times (total retry wait time: 14.00 seconds) Last error: 500 internal server error\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -711,7 +783,7 @@
         },
         "P-lifecycle": {
           "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
-          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(63844, \"<NPM_PREFIX>/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,marion-spawn,marion-status,marion-wait,marion-list,marion-steer,marion-cancel,view,create,edit,apply_patch,bash --allow-tool=marion(report) --allow-tool=marion(spawn) --allow-tool=marion(status) --allow-tool=marion(wait) --allow-tool=marion(list) --allow-tool=marion(steer) --allow-tool=marion(cancel) --allow-tool=write --allow-tool=shell --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (63996, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
+          "observed": "turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left [(11936, \"<NPM_PREFIX>/node_modules/@github/copilot-darwin-arm64/copilot -p CONFLIFETERM: follow the conformance script.\\\\012\\\\012When you have finished, call the `report` tool of the marion MCP server exactly once, with a one-sentence `narrative` of what you did. Your final message is not returned to whoever delegated this task; only that report is. --output-format json -C <SCRATCH>/copilot/p-lifecycle-sigterm/repo --disable-builtin-mcps --no-custom-instructions --model marion-canned --available-tools=marion-report,marion-spawn,marion-status,marion-wait,marion-list,marion-steer,marion-cancel,view,create,edit,apply_patch,bash --allow-tool=marion(report) --allow-tool=marion(spawn) --allow-tool=marion(status) --allow-tool=marion(wait) --allow-tool=marion(list) --allow-tool=marion(steer) --allow-tool=marion(cancel) --allow-tool=write --allow-tool=shell --additional-mcp-config @<SCRATCH>/copilot/p-lifecycle-sigterm/node/mcp.json\"), (12946, \"<WORKTREE>/target/debug/marion-supervisor mcp\")]",
           "status": "FAIL"
         },
         "P-midturn": {
@@ -722,12 +794,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 8dc9ea99-47a1-420e-afc9-687cdc896954 -> 8dc9ea99-47a1-420e-afc9-687cdc896954; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 6466ab16-62b2-42fe-aed4-472c6b1408a7 -> 6466ab16-62b2-42fe-aed4-472c6b1408a7; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`marion-report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools",
+          "observed": "first request lists `marion-report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.9 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -749,18 +821,17 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 547, output: 41, cache_read: 25, cache_write: 0 } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session none (row: no session rule) ; activity marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 747, output: 81, cache_read: 45, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10), (311, 24, 15)]); session none (row: no session rule) ; activity marion__report",
           "status": "PASS"
         },
         "P-approval": {
-          "expected": "",
-          "observed": "the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)",
-          "reason": "the row declares approve-all: every tool runs without asking (auto runs every tool the node is offered, which under --no-profile is marion's and the declared builtins, unasked. S26 on 1.49.0: GOOSE_MODE=approve aborts at exit 1 after the toolRequest and chat withholds every call. S37 on 1.52.0 (s37-goose-mode): unset, a fresh config runs marion's tool and a granted write unasked, and conformance's P-approval ran `report` with the variable stripped, so no grant of marion's is load-bearing. The row's env states GOOSE_MODE=auto because `GOOSE_MODE: approve` in the operator's config.yaml aborts a headless run at exit 1 and the env overrides it)",
-          "status": "UNSUPPORTED"
+          "expected": "granted (env-var), `report` is answered; ungranted, the harness asks or refuses",
+          "observed": "granted: `report` answered true; ungranted: `report` Some(Answered), 0 permission ask(s) reached marion — the grant is NOT load-bearing: the harness ran marion's tool without it",
+          "status": "FAIL"
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 0.2 s, 2 request(s), exit 1; cause Auth { line: \"Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\" }; stream failure Some(\"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\"); refused credential read off a frame: \"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:55440/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\" | 429: ended after 7.9 s, 7 request(s), exit 0; cause RateLimit { line: \"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\") | 500: ended after 6.8 s, 7 request(s), exit 0; cause Outage { line: \"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:55553/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\")",
+          "observed": "401: ended after 0.1 s, 2 request(s), exit 1; cause Auth { line: \"Error: Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:54401/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\" }; stream failure Some(\"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:54401/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\"); refused credential read off a frame: \"Ran into this error: Authentication error: Authentication failed for http://127.0.0.1:54401/v1/chat/completions. Status: 401 Unauthorized. Response: Incorrect API key provided: dummy..\\n\\nPlease retry if you think this is a transient or recoverable error.\" | 429: ended after 7.4 s, 8 request(s), exit 0; cause RateLimit { line: \"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Rate limit exceeded: rate limit exceeded.\\n\\nPlease retry if you think this is a transient or recoverable error.\") | 500: ended after 6.1 s, 7 request(s), exit 0; cause Outage { line: \"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:54410/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\" }; stream failure Some(\"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:54410/v1/chat/completions: internal server error.\\n\\nPlease retry if you think this is a transient or recoverable error.\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -792,7 +863,7 @@
         },
         "P-tools": {
           "expected": "`marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.4 s after the spawn and listed marion's tools",
+          "observed": "first request lists `marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.3 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -814,7 +885,7 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f105151b8ffeDcjqtXFcXxHjs2 ; activity marion_report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: Some(10) } (provider sent [(111, 10, 5), (211, 17, 10)]); session ses_f0bb24977ffe5wqmIEBdyRcZnc ; activity marion_report",
           "status": "PASS"
         },
         "P-approval": {
@@ -824,12 +895,12 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 1.7 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
+          "observed": "401: ended after 2.4 s, 1 request(s), exit 1; cause Auth { line: \"Incorrect API key provided: dummy.\" }; stream failure Some(\"Incorrect API key provided: dummy.\"); refused credential read off a frame: \"Incorrect API key provided: dummy.\" | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
           "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
-          "observed": "the cancel did not end the turn within 10 s; 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "observed": "the cancel ended the turn in 0.0 s (signal 2); 0 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
           "status": "PASS"
         },
         "P-launch": {
@@ -850,12 +921,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session ses_f10511328ffe6tDD3F9gPmr4TX -> ses_f10511328ffe6tDD3F9gPmr4TX; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session ses_f0bb2306effedWXL2kvkHpjaS5 -> ses_f0bb2306effedWXL2kvkHpjaS5; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`marion_report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 5.9 s after the spawn and listed marion's tools",
+          "observed": "first request lists `marion_report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 6.0 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -877,7 +948,7 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f32b-cd60-74cc-9278-2c4a4264d22d ; activity mcp__marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f45f-abdf-73a0-96ea-f4242d614c15 ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -887,7 +958,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 0.3 s, 1 request(s), still running; cause Auth { line: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\"); refused credential read off a frame: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: ended after 14.3 s, 4 request(s), still running; cause RateLimit { line: \"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure Some(\"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\") | 500: ended after 14.4 s, 4 request(s), still running; cause Outage { line: \"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\")",
+          "observed": "401: ended after 0.4 s, 1 request(s), still running; cause Auth { line: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\"); refused credential read off a frame: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: ended after 14.5 s, 4 request(s), still running; cause RateLimit { line: \"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure Some(\"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\") | 500: ended after 14.8 s, 4 request(s), still running; cause Outage { line: \"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\")",
           "status": "PASS"
         },
         "P-interrupt": {
@@ -912,12 +983,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f32c-1260-7216-8cb9-e3549c58620c -> 01a0f32c-1260-7216-8cb9-e3549c58620c; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f45f-f44c-739b-8835-bad2b5da2b6e -> 01a0f45f-f44c-739b-8835-bad2b5da2b6e; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {
@@ -939,7 +1010,7 @@
       "probes": {
         "P-activity": {
           "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 740422a5-33ed-418a-9385-dd6d0e7b627c ; activity mcp__marion__report",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 200, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session ec6be2d0-8daa-493f-a0e4-5597e8eed775 ; activity mcp__marion__report",
           "status": "PASS"
         },
         "P-approval": {
@@ -949,7 +1020,7 @@
         },
         "P-errors": {
           "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-          "observed": "401: ended after 0.6 s, 1 request(s), exit 1; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"error_during_execution\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
+          "observed": "401: ended after 1.0 s, 1 request(s), exit 1; cause Auth { line: \"[API Error: 401 Incorrect API key provided: dummy.]\" }; stream failure Some(\"error_during_execution\"); refused credential read off a frame: \"[API Error: 401 Incorrect API key provided: dummy.]\" | 429: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 20 request(s), still running; cause none said; stream failure None",
           "status": "FAIL"
         },
         "P-interrupt": {
@@ -975,12 +1046,12 @@
         },
         "P-resume": {
           "expected": "the row's resume spelling continues the killed session with its history",
-          "observed": "second life ended; its request carries the first life's prompt: true; session 8e6b9045-37b0-4aad-ad6b-981fae2deca7 -> 8e6b9045-37b0-4aad-ad6b-981fae2deca7; resume refusal: none",
+          "observed": "second life ended; its request carries the first life's prompt: true; session ff0a0907-a733-455c-8601-8702bc1d3b31 -> ff0a0907-a733-455c-8601-8702bc1d3b31; resume refusal: none",
           "status": "PASS"
         },
         "P-tools": {
           "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 5.0 s after the spawn and listed marion's tools",
           "status": "PASS"
         },
         "P-tui": {

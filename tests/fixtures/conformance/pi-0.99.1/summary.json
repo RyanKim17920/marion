@@ -4,7 +4,7 @@
     "probes": {
       "P-activity": {
         "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
-        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f32b-cd60-74cc-9278-2c4a4264d22d ; activity mcp__marion__report",
+        "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f45f-abdf-73a0-96ea-f4242d614c15 ; activity mcp__marion__report",
         "status": "PASS"
       },
       "P-approval": {
@@ -14,7 +14,7 @@
       },
       "P-errors": {
         "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
-        "observed": "401: ended after 0.3 s, 1 request(s), still running; cause Auth { line: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\"); refused credential read off a frame: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: ended after 14.3 s, 4 request(s), still running; cause RateLimit { line: \"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure Some(\"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\") | 500: ended after 14.4 s, 4 request(s), still running; cause Outage { line: \"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\")",
+        "observed": "401: ended after 0.4 s, 1 request(s), still running; cause Auth { line: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\"); refused credential read off a frame: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: ended after 14.5 s, 4 request(s), still running; cause RateLimit { line: \"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure Some(\"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\") | 500: ended after 14.8 s, 4 request(s), still running; cause Outage { line: \"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\")",
         "status": "PASS"
       },
       "P-interrupt": {
@@ -39,12 +39,12 @@
       },
       "P-resume": {
         "expected": "the row's resume spelling continues the killed session with its history",
-        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f32c-1260-7216-8cb9-e3549c58620c -> 01a0f32c-1260-7216-8cb9-e3549c58620c; resume refusal: none",
+        "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f45f-f44c-739b-8835-bad2b5da2b6e -> 01a0f45f-f44c-739b-8835-bad2b5da2b6e; resume refusal: none",
         "status": "PASS"
       },
       "P-tools": {
         "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
-        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+        "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.7 s after the spawn and listed marion's tools",
         "status": "PASS"
       },
       "P-tui": {
