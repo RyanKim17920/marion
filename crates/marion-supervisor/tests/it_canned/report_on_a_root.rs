@@ -11,8 +11,8 @@
 //!   and the refusal below stays for a root that calls it anyway;
 //! * `root::ROOT_VERBS` omits it, but that is the **permission** axis, and only the Claude
 //!   Code adapter compiles a per-tool permission list at all (`run.rs`'s note on `check_spawn_gates`
-//!   — codex, gemini and opencode compile none);
-//! * so on the three `LaunchOnly` harnesses a root's `report` arrived at `marion-supervisor mcp` and
+//!   — codex and opencode compile none);
+//! * so on the `LaunchOnly` harnesses a root's `report` arrived at `marion-supervisor mcp` and
 //!   was answered `report recorded`, `isError: false`. The payload was discarded — nothing stages a
 //!   root's report, because there is no contract to stage it into — and the root was told it had
 //!   succeeded. A root that reports instead of delegating therefore exits `Ok` having done nothing,
@@ -21,10 +21,10 @@
 //! # Why this drives the bridge binary rather than a harness
 //!
 //! The refusal lives at the **execution** point (`main::handle_tool_call`), which is the one place
-//! all four harnesses share: a `LaunchOnly` harness's node speaks JSON-RPC to this binary over
+//! every harness shares: a `LaunchOnly` harness's node speaks JSON-RPC to this binary over
 //! stdio, and the request written below is byte-for-byte what such a node's MCP client sends. Going
 //! through a real `codex` would test codex's MCP client on top of the rule, at three times the cost,
-//! and would leave gemini and opencode uncovered unless it were done three times over.
+//! and would leave the other harnesses uncovered unless it were done once per harness.
 //!
 //! The node's depth rides the per-server `env` block marion wrote into the declaration
 //! (`marion_harness::adapter`'s own test sweeps `Harness::ALL` for `MARION_DEPTH`), which is why it

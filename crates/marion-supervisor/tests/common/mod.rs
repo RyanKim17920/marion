@@ -190,7 +190,7 @@ impl Supervisor {
 /// that uses it if `bridge_env_pairs` ever drops `MARION_NODE_TOKEN`.
 ///
 /// The declaration is whichever document that node's adapter generated — codex's `config.toml`, a
-/// claude `.mcp.json`, gemini's or opencode's JSON — so the scan below accepts both spellings a
+/// claude `.mcp.json`, opencode's JSON — so the scan below accepts both spellings a
 /// key/value pair takes across them (`K = "v"` and `"K": "v"`) and nothing else. Parsed by hand
 /// rather than with a TOML *and* a JSON dependency, and narrowly: only keys marion itself defines,
 /// only double-quoted values.

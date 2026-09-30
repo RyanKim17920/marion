@@ -118,7 +118,7 @@ impl Scrub {
         if let Ok(home) = std::env::var("HOME") {
             pairs.push((home, "<HOME>"));
         }
-        // A harness's own temp files (gemini's error reports) name the per-user temp dir.
+        // A harness's own temp files (error reports) name the per-user temp dir.
         let tmp = std::env::temp_dir();
         for t in [Some(tmp.clone()), tmp.canonicalize().ok()]
             .into_iter()

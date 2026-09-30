@@ -1,9 +1,9 @@
 //! `marion run` on a **`LaunchOnly` root** (design §3.4, §6.1 step 8, §9), end to end through the
-//! real `marion` binary, for the **`LaunchOnly` harnesses gemini and opencode**. codex was the third
-//! until its headless row moved to `codex app-server` (S36), a typed surface whose readiness is
+//! real `marion` binary, for the **`LaunchOnly` harness opencode**. gemini was a second until its
+//! row was retired with the upstream CLI, and codex a third until its headless row moved to `codex app-server` (S36), a typed surface whose readiness is
 //! gated before the turn; `tests/codex_app_server.rs` drives it.
 //!
-//! Three properties, and each one is asserted for gemini and opencode separately:
+//! Three properties, each asserted per harness:
 //!
 //! 1. a root whose turn never reached marion's bridge **and produced no answer** (no frame, a
 //!    non-zero exit, or a failure in its stream) **fails loudly, naming the cause** — it does
@@ -21,21 +21,20 @@
 //! `claude-code` is deliberately absent: it is the **duplex** root path (`root_path` dispatches on
 //! `surfaces().control`), where the prompt is a frame written after launch and readiness is gated
 //! *before* the turn instead of asserted after it. It has no post-hoc bridge assertion to test here
-//! at all, and neither has codex's app-server. The two here are
-//! `launch_only_with_protocol_events()` and take this path.
+//! at all, and neither has codex's app-server. The harness here is
+//! `launch_only_with_protocol_events()` and takes this path.
 //!
 //! None of the three properties is harness-specific — every one of them is `root::launch_only`
-//! behaviour, and that function is the same code for both — but **the evidence each property
-//! rests on is not**. Each harness spells its stream, its argv and its configuration channel its
+//! behaviour, and that function is the same code for every harness — but **the evidence each
+//! property rests on is not**. Each harness spells its stream, its argv and its configuration channel its
 //! own way:
 //!
 //! | | argv | one marion call, in-stream | where marion's declaration lands |
 //! |---|---|---|---|
-//! | gemini | `-m <model> --output-format stream-json -p <prompt>` | `tool_use` → `tool_name: "mcp_marion_spawn"` | `$GEMINI_CLI_SYSTEM_SETTINGS_PATH` |
 //! | opencode | `run --pure --format json --title … -m <model> <prompt>` | `tool_use` → `part.tool: "marion_spawn"` | `$XDG_CONFIG_HOME/opencode/opencode.json` |
 //!
-//! That is exactly the shape that breaks for one harness while the other keeps passing, so each is its own
-//! `#[test]`, named for its harness. A loop would report the first failure and hide the other two —
+//! That is exactly the shape that breaks for one harness while another keeps passing, so each is its
+//! own `#[test]`, named for its harness. A loop would report the first failure and hide the other two —
 //! the line `cross_product.rs` and `depth_gate.rs` take, for the same reason, and the [`Node`] table
 //! below is theirs.
 //!
@@ -47,12 +46,12 @@
 //! streams no real CLI will produce on demand (one that reaches nothing, and one that never exits).
 //!
 //! **The stub does not hide the per-harness argv differences; it is how they are measured.** Each
-//! stub is named for its own harness (`gemini`, `opencode`) and reached through `PATH`, so
+//! stub is named for its own harness (`opencode`) and reached through `PATH`, so
 //! the argv and env marion compiled are exercised verbatim rather than restated here: the stub
 //! records what it was given and the test reads it back, against that harness's own launch shape.
 //!
 //! What a stub cannot witness is the other half — whether the real CLI *accepts* that argv and that
-//! configuration document. `cross_product.rs` covers that for both of these harnesses as roots,
+//! configuration document. `cross_product.rs` covers that for these harnesses as roots,
 //! against real binaries.
 
 use std::path::{Path, PathBuf};
@@ -139,14 +138,6 @@ struct Node {
     /// `--model`, and what the **compiled** argv must then carry.
     model: Option<&'static str>,
 }
-
-const GEMINI: Node = Node {
-    agent_type: "gemini-orchestrator",
-    harness: Harness::Gemini,
-    program: "gemini",
-    // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
-    model: Some("gemini-2.5-flash"),
-};
 
 const OPENCODE: Node = Node {
     agent_type: "opencode",
@@ -553,11 +544,6 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
 }
 
 #[test]
-fn a_gemini_root_that_never_reached_the_bridge_fails_loudly_instead_of_exiting_zero() {
-    a_silent_root_is_refused(&GEMINI, "silent-gemini");
-}
-
-#[test]
 fn an_opencode_root_that_never_reached_the_bridge_fails_loudly_instead_of_exiting_zero() {
     a_silent_root_is_refused(&OPENCODE, "silent-opencode");
 }
@@ -649,11 +635,6 @@ fn a_root_that_called_marion_succeeds(node: &Node, name: &str) {
         node.harness,
         run.stdout
     );
-}
-
-#[test]
-fn a_gemini_root_succeeds_once_one_marion_call_appears_in_its_stream() {
-    a_root_that_called_marion_succeeds(&GEMINI, "reached-gemini");
 }
 
 #[test]
@@ -835,11 +816,6 @@ fn assert_the_refused_root_exited(node: &Node, dir: &Path, run: &Run) {
         "{}: nothing outlives the run, the supervisor included: {survivors:?}",
         node.harness
     );
-}
-
-#[test]
-fn a_gemini_root_whose_only_marion_call_was_refused_is_not_a_success() {
-    a_root_whose_only_call_was_refused_is_not_a_success(&GEMINI, "refused-gemini");
 }
 
 #[test]
@@ -1165,11 +1141,6 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
         "{}: the root's descendants outlived the group kill — the S7 class of failure: {survivors:?}",
         node.harness
     );
-}
-
-#[test]
-fn a_gemini_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it_dead() {
-    a_hanging_root_is_killed_with_its_group(&GEMINI, "bound-gemini");
 }
 
 #[test]

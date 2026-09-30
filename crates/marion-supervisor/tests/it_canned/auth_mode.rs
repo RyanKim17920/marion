@@ -1,6 +1,6 @@
-//! **What `--base-url` does under real auth, on each of the four harnesses.**
+//! **What `--base-url` does under real auth, on each of the three harnesses.**
 //!
-//! Every assertion here is a *measurement of what marion does today*. Four of them pin an adapter
+//! Every assertion here is a *measurement of what marion does today*. Three of them pin an adapter
 //! behaviour that is still wrong in itself, labelled `CURRENT BEHAVIOUR, NOT DESIRED` at the
 //! assertion with the message stating what the right answer would look like — so a fix has a
 //! starting point, and so this file fails loudly when one lands rather than encoding the drop as
@@ -22,7 +22,7 @@
 //! honouring is the reversible direction — the `background` and `verification` precedent in
 //! `spawn::SpawnError` — and honouring a gateway can land later against a stated claim.
 //!
-//! # Why the four adapter pins stay
+//! # Why the three adapter pins stay
 //!
 //! They now describe a state **unreachable through the CLI**, and that is exactly why they are
 //! worth keeping: the adapters themselves are unchanged, and each still silently drops a base URL
@@ -48,19 +48,18 @@ use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
 use marion_harness::{
-    Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, Invocation,
-    LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx,
+    Auth, ClaudeCodeAdapter, CodexAdapter, Extras, HarnessAdapter, Invocation, LaunchSpec,
+    McpDeclaration, OpenCodeAdapter, SpawnCtx,
 };
 
 /// The endpoint an operator would actually pass: **non-loopback and https**, so it survives every
 /// gate marion does have. `resolve_base_url` accepts it (a loopback one is refused under real auth,
-/// which is a different and working path), and `gemini::base_url_is_acceptable` accepts it (plain
-/// http off-loopback is refused, again a different and working path). Nothing between the flag and
-/// the adapter objects to this URL — it is simply not used.
+/// which is a different and working path). Nothing between the flag and the adapter objects to this
+/// URL — it is simply not used.
 const GATEWAY: &str = "https://gateway.corp.example/v1";
 
 /// The needle, without the `/v1` the adapters variously strip: Claude Code's
-/// `anthropic_base_url` and gemini's `google_base_url` both drop the suffix, so a search for the
+/// `anthropic_base_url` drops the suffix, so a search for the
 /// full URL could pass by missing a value that *is* there.
 const GATEWAY_HOST: &str = "gateway.corp.example";
 
@@ -197,40 +196,6 @@ fn claude_code_drops_a_gateway_base_url_under_real_auth() {
     );
 }
 
-/// **CURRENT BEHAVIOUR, NOT DESIRED.** `gemini::compile_prompt` pushes `GOOGLE_GEMINI_BASE_URL`
-/// inside `if spec.auth == Auth::Canned`, so the endpoint is gated on the **mode** and not only on
-/// the value. The adapter above it also validates the URL first
-/// (`gemini::base_url_is_acceptable`) — so a live run can be *refused* for a malformed gateway it
-/// would then have ignored anyway.
-#[test]
-fn gemini_drops_a_gateway_base_url_under_real_auth() {
-    let canned = GeminiAdapter
-        .compile(&canned_spec_with_gateway(Some("gemini-2.5-flash")), &ctx())
-        .expect("the canned spec compiles");
-    assert_eq!(
-        env_value(&canned, "GOOGLE_GEMINI_BASE_URL"),
-        Some("https://gateway.corp.example"),
-        "negative control: under --canned this adapter does carry the base URL it was handed"
-    );
-
-    let live = GeminiAdapter
-        .compile(&live_spec_with_gateway(Some("gemini-2.5-flash")), &ctx())
-        .expect("the live spec compiles");
-    assert_eq!(
-        env_value(&live, "GOOGLE_GEMINI_BASE_URL"),
-        None,
-        "CURRENT BEHAVIOUR, NOT DESIRED: {GATEWAY} passed every gate this adapter has — \
-         non-loopback, https, accepted by base_url_is_acceptable — and was then discarded by the \
-         `if spec.auth == Auth::Canned` around the push, so the CLI resolves Google directly with \
-         the operator's own login. `bin/marion.rs` now refuses the flag before it reaches here, so \
-         this is defence in depth; the absurdity it pins is local and unfixed either way, since \
-         this adapter still validates an endpoint it will then ignore. The right answer if it is \
-         ever honoured is to push GOOGLE_GEMINI_BASE_URL under Inherited too. When that lands, \
-         invert this assertion. Compiled env: {:?}",
-        live.env
-    );
-}
-
 /// **CURRENT BEHAVIOUR, NOT DESIRED.** `CodexAdapter::config_files` returns early on
 /// `spec.auth == Auth::Inherited` before the `base_url` is even read, so no `model_providers` block
 /// is generated and codex falls back to its own default provider. The early return is right about
@@ -339,7 +304,7 @@ fn the_gateway_reaches_the_child_bridge_declaration_and_is_dropped_there_instead
 // **Neither half spells the token itself.** Two halves that meet at a hand-typed `"inherited"`
 // drift silently: rename the spelling on one side and both tests keep passing while the hop
 // breaks. So every needle below is *built* from `Auth::Inherited.as_wire()`, which is the same
-// function all four adapters serialise through, and the reading half calls `auth_from_env` with
+// function all three adapters serialise through, and the reading half calls `auth_from_env` with
 // that same value — one source, both ends. `the_wire_spelling_round_trips` ties the last knot; see
 // its comment for what is genuinely unpinned today.
 //
@@ -350,9 +315,9 @@ fn the_gateway_reaches_the_child_bridge_declaration_and_is_dropped_there_instead
 // reporting it. The design names the class "endpoint-as-mode conflation": the mode is a *stated*
 // decision, never inferred from a URL's presence or absence.
 //
-// Four routes, four tests, never a loop: the declaration is a JSON document on claude, repeated
-// `-c` argv on codex, a settings JSON on gemini and a JSON-in-an-env-var on opencode. A fix to
-// one is not a fix to the others, and a loop would hide three failures behind the first.
+// Three routes, three tests, never a loop: the declaration is a JSON document on claude, repeated
+// `-c` argv on codex and a JSON-in-an-env-var on opencode. A fix to one is not a fix to the
+// others, and a loop would hide two failures behind the first.
 // ---------------------------------------------------------------------------------------------
 
 /// A live root, as `marion run <type>` builds one: real auth and **no endpoint at all**, since
@@ -368,7 +333,7 @@ fn live_spec_without_endpoint(model: Option<&str>) -> LaunchSpec {
 ///
 /// `Auth::as_wire` and `Auth::from_wire` are two *independent* match tables sitting next to each
 /// other in `adapter.rs`, and nothing in the workspace asserted they are inverses. Every writer
-/// goes through the first (`claude_code`, `codex`, `gemini` and `opencode` all serialise
+/// goes through the first (`claude_code`, `codex` and `opencode` all serialise
 /// `auth.as_wire()`) and the only reader goes through the second (`main::auth_from_env`), so an
 /// edit to one table alone breaks the hop — and does it in the *silent* direction, since
 /// `from_wire` failing to recognise a value falls back to `Canned` rather than refusing.
@@ -392,14 +357,14 @@ fn the_wire_spelling_round_trips_so_the_two_halves_cannot_drift_apart() {
 
 /// The `MARION_AUTH=inherited` needle in one route's own quoting, assembled from the two names
 /// that are actually load-bearing rather than typed out: `root::AUTH_ENV` is the constant
-/// `main::spawn_env` reads the variable by, and `as_wire` is the function all four adapters
+/// `main::spawn_env` reads the variable by, and `as_wire` is the function all three adapters
 /// serialise the mode through. Only the *quoting* differs per route, and that is the caller's.
 fn auth_needle(quote: fn(&str, &str) -> String) -> String {
     quote(marion_supervisor::root::AUTH_ENV, Auth::Inherited.as_wire())
 }
 
-/// A pretty-printed `serde_json` object member, which is how claude's `--mcp-config` document and
-/// gemini's settings document both carry it.
+/// A pretty-printed `serde_json` object member, which is how claude's `--mcp-config` document
+/// carries it.
 fn json_member(k: &str, v: &str) -> String {
     format!("\"{k}\": \"{v}\"")
 }
@@ -442,16 +407,6 @@ fn a_live_codex_root_declares_its_child_inherited() {
     // the inner quotes arrive escaped.
     let needle = auth_needle(|k, v| format!("{k}=\\\"{v}\\\""));
     assert_declares_inherited_and_no_endpoint("codex", &blob, &needle);
-}
-
-/// The route: the system-settings JSON that `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names.
-#[test]
-fn a_live_gemini_root_declares_its_child_inherited() {
-    let (_, blob) = everything_the_node_is_told(
-        &GeminiAdapter,
-        &live_spec_without_endpoint(Some("gemini-2.5-flash")),
-    );
-    assert_declares_inherited_and_no_endpoint("gemini", &blob, &auth_needle(json_member));
 }
 
 /// The route: `OPENCODE_CONFIG_CONTENT`, a JSON document inline in the child's environment.

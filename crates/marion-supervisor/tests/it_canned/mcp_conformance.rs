@@ -567,8 +567,8 @@ fn tools_before_initialize_are_refused_rather_than_served() {
 
 /// **`tools/list` names are bare, in the pinned order, and contain no harness spelling.**
 ///
-/// §5.4's per-harness-spelling rule: Claude Code renders these as `mcp__marion__spawn`, gemini as
-/// `mcp_marion_spawn`, opencode as `marionmcp_spawn` (s13). None of those spellings belongs on the
+/// §5.4's per-harness-spelling rule: Claude Code renders these as `mcp__marion__spawn`, copilot as
+/// `marion-spawn`, opencode as `marionmcp_spawn` (s13). None of those spellings belongs on the
 /// wire, and a prefix leaking into the declaration would be invisible to any test that only checked
 /// membership.
 #[test]
@@ -994,7 +994,7 @@ fn tools_list_carries_the_agent_types_files_own_refusal() {
     let listed = tools_list_for_tree(
         "agent-types-broken",
         "[[agent]]\nname = \"reviewer\"\nharness = \"codex\"\ndescription = \"r\"\n\
-         [[agent]]\nname = \"reviewer\"\nharness = \"gemini\"\ndescription = \"r\"\n",
+         [[agent]]\nname = \"reviewer\"\nharness = \"claude\"\ndescription = \"r\"\n",
     );
     let description = spawn_agent_type_description(&listed);
     assert!(
