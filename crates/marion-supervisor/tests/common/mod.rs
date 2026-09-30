@@ -16,11 +16,15 @@ pub mod app_server;
 pub mod boot;
 pub mod canned;
 pub mod cap_rules;
+// `cast` replays through the terminal emulator and `run` drives the `marion` binary: both are the
+// `client` feature's, and a test binary built without it has neither.
+#[cfg(feature = "client")]
 pub mod cast;
 pub mod client;
 pub mod journal;
 pub mod mcp_result;
 pub mod native;
+#[cfg(feature = "client")]
 pub mod run;
 pub mod script;
 pub mod socket_spawn;

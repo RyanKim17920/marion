@@ -11,6 +11,12 @@
 //! binary needs them. Keeping them in one crate is what makes that true today: `marion run` and
 //! `marion-supervisor mcp` call the *same* `run::run_spawn`, not two copies that could drift while
 //! the socket is not yet there to force agreement.
+//!
+//! The viewer's half — [`home`], [`attach`], [`tree`], the native facade's keyboard relay, and the
+//! setup form that edits `.marion/agents.toml` — is behind the default `client` feature, with the
+//! terminal emulator and TUI stack it draws with. `marion` requires it; `marion-supervisor` never
+//! uses it, so `--no-default-features` builds the daemon without them. What both halves name a
+//! node by is [`node_label`], not `tree`.
 
 /// §5.4's `background`, honoured: the handles this bridge has handed out, and which node each one
 /// is about. Since §11 item 28 step 5 it owns no child and runs no thread.
@@ -21,6 +27,7 @@ pub mod acp_child;
 /// `events.jsonl` through its row's stream grammar.
 pub mod activity;
 pub mod app_server;
+#[cfg(feature = "client")]
 pub mod attach;
 pub mod background;
 pub mod bridge;
@@ -66,6 +73,7 @@ pub mod gitcmd;
 /// projection of a replayed node into something a client can be told.
 pub mod handler;
 /// The home screen bare `marion` opens: Start, Watch, Setup and help.
+#[cfg(feature = "client")]
 pub mod home;
 /// Turn delivery's queue: one inbox per node, the renderer every message arrives through, and the
 /// journal records that audit it.
@@ -94,6 +102,7 @@ pub mod native_intent;
 pub(crate) mod native_launch;
 /// Transparent pane-v1 relay for an authenticated native facade claim.
 #[cfg(all(
+    feature = "client",
     target_has_atomic = "32",
     any(
         all(
@@ -118,6 +127,7 @@ pub mod node_limits;
 pub(crate) mod node_tmp;
 pub mod notify;
 pub mod operator_key;
+#[cfg(feature = "client")]
 mod pane_client;
 /// Turn delivery into an interactive node: a bracketed paste into its pty.
 pub mod paste;
@@ -178,6 +188,7 @@ pub mod wake;
 
 /// `marion tree` — §5.6's tree pane, and the half of §9's M5 clause 3 that decides what to grey.
 /// The drawing is `marion_tui::tree`; the deciding is here, through `doctor::capabilities_at`.
+#[cfg(feature = "client")]
 pub mod tree;
 /// The journal's first production reader: what a person watching a run learns about its
 /// children while it is still running.

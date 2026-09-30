@@ -88,8 +88,10 @@ use summary::{Told, collect, project};
 
 pub use broadcast::read_point;
 pub(crate) use launch::mint_token;
+pub(crate) use summary::clock;
+#[cfg(feature = "client")]
+pub(crate) use summary::summarize_spent;
 pub use summary::{Unprojectable, summarize};
-pub(crate) use summary::{clock, summarize_spent};
 
 #[cfg(test)]
 use crate::registry::Registry;

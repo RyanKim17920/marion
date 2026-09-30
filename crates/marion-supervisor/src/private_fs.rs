@@ -81,6 +81,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// [`write_atomic`] for a document that lives in the operator's repository rather than marion's
 /// state (`.marion/agents.toml`): the same replacement, with the umask's modes, because the file is
 /// the project's and holds no secret.
+#[cfg(any(test, feature = "client"))]
 pub(crate) fn write_atomic_shared(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

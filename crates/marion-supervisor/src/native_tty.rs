@@ -4,12 +4,14 @@ use std::io::{stdin, stdout};
 use std::os::fd::{AsFd, OwnedFd};
 
 use marion_core::proto::TerminalGeometryV1;
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl, fstat};
+#[cfg(any(test, feature = "client"))]
+use rustix::fs::fcntl_setfl;
+use rustix::fs::{OFlags, fcntl_getfl, fstat};
 use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Pid, getpgid, getpgrp, getsid};
-use rustix::termios::{
-    OptionalActions, Termios, isatty, tcgetattr, tcgetpgrp, tcgetsid, tcgetwinsize, tcsetattr,
-};
+#[cfg(any(test, feature = "client"))]
+use rustix::termios::{OptionalActions, tcsetattr};
+use rustix::termios::{Termios, isatty, tcgetattr, tcgetpgrp, tcgetsid, tcgetwinsize};
 
 use crate::native_bootstrap::{
     BootstrapError, DirectNativeRequestContext, NativeBootstrapClient,
@@ -25,6 +27,7 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
+#[cfg(any(test, feature = "client"))]
 fn set_terminal_attr(
     fd: std::os::fd::BorrowedFd<'_>,
     termios: &Termios,
@@ -36,6 +39,7 @@ fn set_terminal_attr(
     tcsetattr(fd, OptionalActions::Now, termios)
 }
 
+#[cfg(any(test, feature = "client"))]
 fn set_status_flags(
     fd: std::os::fd::BorrowedFd<'_>,
     flags: OFlags,
@@ -112,6 +116,7 @@ pub(crate) struct ClientTtyWitness {
 
 /// The retained client terminal in raw relay mode. Its baseline is the one captured before native
 /// bootstrap and descriptor passing, not a second observation made after the handoff.
+#[cfg(any(test, feature = "client"))]
 pub(crate) struct NativeRelayTerminal {
     stdin: OwnedFd,
     stdout: OwnedFd,
@@ -120,6 +125,7 @@ pub(crate) struct NativeRelayTerminal {
     armed: bool,
 }
 
+#[cfg(any(test, feature = "client"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeRelayTerminalState {
     Raw,
@@ -127,6 +133,7 @@ enum NativeRelayTerminalState {
     RestorePending,
 }
 
+#[cfg(any(test, feature = "client"))]
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("restoring native terminal state failed: {0}")]
 pub(crate) struct NativeTtyRestoreError(rustix::io::Errno);
@@ -162,8 +169,16 @@ pub(crate) enum NativeTtyError {
     InvalidDescriptorRoles,
     #[error("the authenticated peer pid was invalid")]
     InvalidPeer,
+    #[cfg_attr(
+        not(any(test, feature = "client")),
+        allow(dead_code, reason = "raised by the client-only native relay")
+    )]
     #[error("terminal restoration is pending before raw-mode re-entry")]
     RestorationPending,
+    #[cfg_attr(
+        not(any(test, feature = "client")),
+        allow(dead_code, reason = "raised by the client-only native relay")
+    )]
     #[error(
         "terminal relay entry failed: {entry}; cleanup stage `terminal restoration` also failed: {cleanup}"
     )]
@@ -211,6 +226,7 @@ fn descriptor_roles_allow(stdin_flags: OFlags, stdout_flags: OFlags) -> bool {
         )
 }
 
+#[cfg(any(test, feature = "client"))]
 fn retry_interrupted(
     mut operation: impl FnMut() -> Result<(), rustix::io::Errno>,
 ) -> Result<(), rustix::io::Errno> {
@@ -405,6 +421,7 @@ impl ClientTtyWitness {
         self.stdout.as_fd()
     }
 
+    #[cfg(any(test, feature = "client"))]
     pub(crate) fn enter_native_relay(self) -> Result<NativeRelayTerminal, NativeTtyError> {
         NativeRelayTerminal::enter(self)
     }
@@ -419,6 +436,7 @@ impl ClientTtyWitness {
     }
 }
 
+#[cfg(any(test, feature = "client"))]
 impl NativeRelayTerminal {
     fn enter(witness: ClientTtyWitness) -> Result<Self, NativeTtyError> {
         let ClientTtyWitness {
@@ -519,13 +537,14 @@ impl NativeRelayTerminal {
     }
 }
 
+#[cfg(any(test, feature = "client"))]
 impl Drop for NativeRelayTerminal {
     fn drop(&mut self) {
         let _ = self.restore_result();
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 pub(crate) mod test_support;
 
 #[cfg(test)]

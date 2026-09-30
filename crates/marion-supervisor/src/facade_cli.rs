@@ -102,6 +102,7 @@ pub(crate) fn build_native_launch_v2(
 /// terminal — raw mode, signal ownership, the passive cleanup bytes — is undone inside
 /// `native_relay::run` before it returns, so the message below is written to a **restored**
 /// terminal: a refusal printed into raw mode would be one the operator could not read.
+#[cfg(feature = "client")]
 pub fn relay_native_facade(handoff: NativeFacadeHandoff) -> ExitCode {
     match crate::native_relay::run(handoff) {
         Ok(crate::native_relay::RelayExit::Ended) => ExitCode::SUCCESS,

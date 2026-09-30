@@ -81,10 +81,9 @@ use rustix::io::fcntl_getfd;
 use rustix::io::{FdFlags, fcntl_setfd};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
-use rustix::net::{
-    RecvFlags as SocketRecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, recv, send,
-    sendmsg,
-};
+#[cfg(any(test, feature = "client"))]
+use rustix::net::{RecvFlags as SocketRecvFlags, recv};
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, send, sendmsg};
 
 use marion_core::contract::AgentId;
 use marion_core::ids::{UUID_LEN, is_uuid_v7};
@@ -260,6 +259,10 @@ impl NativeBootstrapClientSession {
 pub struct NativeFacadeHandoff {
     receipt: NativeLaunchReceipt,
     tty: ClientTtyWitness,
+    #[cfg_attr(
+        not(feature = "client"),
+        allow(dead_code, reason = "read by the client-only native claim")
+    )]
     stream: UnixStream,
 }
 
@@ -269,6 +272,7 @@ impl NativeFacadeHandoff {
         (self.receipt, self.tty)
     }
 
+    #[cfg(feature = "client")]
     pub(crate) fn claim(mut self) -> Result<ClaimedNativeFacade, BootstrapError> {
         exchange_native_claim(&mut self.stream, &self.receipt, |stream| {
             stream.set_read_timeout(None)?;
@@ -286,6 +290,7 @@ impl NativeFacadeHandoff {
     }
 }
 
+#[cfg(any(test, feature = "client"))]
 fn exchange_native_claim(
     stream: &mut UnixStream,
     receipt: &NativeLaunchReceipt,
@@ -311,12 +316,14 @@ fn exchange_native_claim(
     Ok(())
 }
 
+#[cfg(any(test, feature = "client"))]
 fn native_claim_request_bytes(receipt: &NativeLaunchReceipt) -> Result<Vec<u8>, BootstrapError> {
     let mut claim = Vec::with_capacity(CLAIM_MESSAGE.len() + 2 + UUID_LEN + 32);
     write_native_claim_request(&mut claim, receipt)?;
     Ok(claim)
 }
 
+#[cfg(any(test, feature = "client"))]
 fn wait_native_claim_io(
     stream: &UnixStream,
     flags: rustix::event::PollFlags,
@@ -341,6 +348,7 @@ fn wait_native_claim_io(
     }
 }
 
+#[cfg(any(test, feature = "client"))]
 fn send_native_claim_before(
     stream: &UnixStream,
     claim: &[u8],
@@ -370,6 +378,7 @@ fn send_native_claim_before(
     Ok(())
 }
 
+#[cfg(any(test, feature = "client"))]
 fn recv_native_claim_status_before(
     stream: &UnixStream,
     deadline: Instant,
@@ -389,12 +398,14 @@ fn recv_native_claim_status_before(
     }
 }
 
+#[cfg(feature = "client")]
 pub(crate) struct ClaimedNativeFacade {
     agent_id: AgentId,
     tty: ClientTtyWitness,
     stream: UnixStream,
 }
 
+#[cfg(feature = "client")]
 impl ClaimedNativeFacade {
     pub(crate) fn into_parts(self) -> (AgentId, ClientTtyWitness, UnixStream) {
         (self.agent_id, self.tty, self.stream)
@@ -2236,6 +2247,7 @@ struct NativeClaimRequest {
     ticket: NativeLaunchTicket,
 }
 
+#[cfg(any(test, feature = "client"))]
 fn write_native_claim_request(
     stream: &mut impl Write,
     receipt: &NativeLaunchReceipt,

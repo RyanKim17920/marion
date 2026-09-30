@@ -19,16 +19,51 @@ path = "src/lib.rs"
 name = "marion-supervisor"
 path = "src/main.rs"
 
+# `client` is the viewer's half of this crate: the home screen, `marion attach`, the tree, the
+# native facade's keyboard relay, and setup's agents.toml editor — everything that draws a terminal
+# or edits the operator's file in place, and so everything that needs a terminal emulator and a TUI
+# stack. The daemon uses none of it. On by default, so `cargo build`, `cargo install` and the dist
+# release build both binaries exactly as before; `--no-default-features` builds the daemon (and the
+# test targets that only drive it) without compiling alacritty, ratatui or the TUI at all.
+[features]
+default = ["client"]
+client = ["dep:base64", "dep:marion-term", "dep:marion-tui", "dep:ratatui", "dep:similar"]
+
 # The user-facing command (§10). One crate, two binaries: M1 has no socket between them, so
 # sharing `run_spawn` by linkage is what keeps `marion run` and `marion-supervisor mcp` from
 # drifting. The split lands with M2's detached supervisor.
 [[bin]]
 name = "marion"
 path = "src/bin/marion.rs"
+required-features = ["client"]
+
+# The test targets that need the client half: each runs the `marion` binary
+# (`CARGO_BIN_EXE_marion`), drives a screen, or reads a pane through the terminal emulator. Every
+# other target — the lib's and the daemon's unit tests, `endpoint_matrix`, `repo_trust`,
+# `token_off_argv`, `user_agent_types` — builds and runs with `--no-default-features` too.
+[[test]]
+name = "conformance"
+path = "tests/conformance/main.rs"
+required-features = ["client"]
+
+[[test]]
+name = "it_canned"
+path = "tests/it_canned/main.rs"
+required-features = ["client"]
+
+[[test]]
+name = "it_live"
+path = "tests/it_live/main.rs"
+required-features = ["client"]
+
+[[test]]
+name = "l45_tree"
+path = "tests/l45_tree.rs"
+required-features = ["client"]
 
 [dependencies]
 # The home screen's copy-to-clipboard: OSC 52 carries its text base64-encoded.
-base64.workspace = true
+base64 = { workspace = true, optional = true }
 blake3 = "1"
 getrandom = "0.4"
 marion-core = { path = "../marion-core" }
@@ -43,23 +78,24 @@ marion-harness = { path = "../marion-harness" }
 # no handler is built against this; see `registry.rs` for what the registry deliberately does *not*
 # answer yet (`NodeSummary`, `AttachMode`) and why each would require fabricating a fact the journal
 # does not carry.
-marion-tui = { path = "../marion-tui" }
+marion-tui = { path = "../marion-tui", optional = true }
 # The grid `marion attach` renders into (§9's M3 criterion C2). Not a widening of what the
 # supervisor parses: `attach.rs` is the *client* half of this crate, the same binary by linkage for
 # the same reason `marion run` and the bridge share `run_spawn`, and nothing on the supervisor side
 # constructs a `Term` — the supervisor ships bytes (§5.3), and the emulator lives on the viewer's
 # side of that seam.
-marion-term = { path = "../marion-term" }
+marion-term = { path = "../marion-term", optional = true }
 # For `marion_tui::ScreenBackend` alone — a `Terminal` has to be constructed somewhere, and this is
 # the crate with the loop that draws. `default-features = false` for the same reason `marion-tui`
 # and `marion-term` take it that way: none of the four shipped backends is wanted, and the one
 # marion uses is its own.
-ratatui = { version = "0.30", default-features = false }
+ratatui = { version = "0.30", default-features = false, optional = true }
 rustix = { version = "1", features = ["event", "fs", "net", "process", "termios"] }
 # Setup's agent-type form: `.marion/agents.toml` is edited in place so the operator's comments and
 # layout survive, and the change is shown as a line diff before it is written. Both were already in
-# the build (through `toml` and `insta`).
-similar = "2"
+# the build (through `toml` and `insta`). `toml_edit` is not `client`-only: `trust` quotes the
+# strings its refusals name with it, on the daemon's side.
+similar = { version = "2", optional = true }
 toml_edit = "0.22"
 # `profiles::ProfilesFile` reads `$XDG_CONFIG_HOME/marion/profiles.toml`, with the parser
 # `.marion/agents.toml` is read with.
@@ -78,6 +114,11 @@ security-framework = { version = "3", default-features = false }
 # assert on directly.
 [dev-dependencies]
 marion-provider = { path = "../marion-provider" }
+
+# `native_bootstrap`'s descriptor-passing tests make pipes; the crate itself never does, so the
+# feature is asked for here rather than on the dependency the daemon links. Until `client` became
+# optional it arrived unasked, through the TUI's own `rustix`.
+rustix = { version = "1", features = ["pipe"] }
 
 # A **dev**-dependency for the same reason and by the same rule: nothing in it belongs inside the
 # shipped `marion` command — it kills processes by pid, removes directories on drop, and shells out
