@@ -1491,10 +1491,7 @@ impl<W: Write> RawPaneSession<W> {
                 .map_err(|error| format!("a pre-Ready native frame did not decode: {error}"))?;
             match frame {
                 Frame::Notification(note)
-                    if matches!(&note.event,
-                        Event::NodePaneFrame(frame) if frame.agent_id == self.id)
-                        || matches!(&note.event,
-                            Event::NodePty { agent_id, .. } if agent_id == &self.id) =>
+                    if crate::pane_client::pane_event_targets(&self.id, &note.event) =>
                 {
                     return Err(format!(
                         "the supervisor sent node `{}` a pane frame before native Ready",

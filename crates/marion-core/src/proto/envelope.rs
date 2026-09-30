@@ -182,9 +182,9 @@ impl ClientNotification {
 ///
 /// **Four variants, not three, and the fourth is a direction rather than a kind.** A notification
 /// is an id-less frame either way; what [`Frame::Input`] adds is that the *name* says which end
-/// sent it. Keeping the two in one variant would have meant a supervisor accepting `node/pty` from
-/// a client — a client asserting what a node printed — which the outbound table's own doc rules
-/// out by saying the ordinal is *"assigned by the single reader of that master"*.
+/// sent it. Keeping the two in one variant would have meant a supervisor accepting
+/// `node/pane-frame` from a client — a client asserting what a node printed, when only the
+/// supervisor's single reader of that master may number what it read.
 ///
 /// `Request` carries a [`crate::proto::Call`], whose `agent/spawn` params are the largest message
 /// marion has; like `Call` itself (`method.rs`), the frame is parsed and dispatched once per line,
@@ -656,7 +656,7 @@ mod tests {
         .unwrap();
         assert_eq!(pane_ready, Frame::Input(input_pane_ready()));
         let outbound = Frame::from_line(
-            r#"{"jsonrpc":"2.0","method":"node/pty","params":{"agent_id":"a","seq":0,"mono_ns":0,"bytes":"x"}}"#,
+            r#"{"jsonrpc":"2.0","method":"node/state","params":{"agent_id":"a","state":"Idle","reap_state":"Live","ts":"2026-08-01T23:07:08.619Z"}}"#,
         )
         .unwrap();
         assert!(
@@ -670,20 +670,29 @@ mod tests {
         assert!(matches!(pane_frame, Frame::Notification(_)));
     }
 
-    /// **The retired legacy keystroke is an unknown name, refused by name.** `node/pty-write` was
-    /// the legacy pane stream's input and nothing sends it any more; an old client's frame is
-    /// the ordinary unknown-notification error, not a keystroke and not a malformed event.
+    /// **The retired legacy pane stream is two unknown names, refused by name.** `node/pty` and
+    /// `node/pty-write` were its output and input and nothing sends either any more; an old peer's
+    /// frame is the ordinary unknown-notification error, not a keystroke and not a malformed event.
     #[test]
-    fn a_legacy_pty_write_is_refused_as_an_unknown_notification() {
-        let e = Frame::from_line(
-            r#"{"jsonrpc":"2.0","method":"node/pty-write","params":{"agent_id":"a","bytes":"q"}}"#,
-        )
-        .unwrap_err();
-        assert_eq!(e.code, crate::proto::error::METHOD_NOT_FOUND, "{e}");
-        assert!(
-            e.message.contains("no such notification: node/pty-write"),
-            "{e}"
-        );
+    fn the_legacy_pty_stream_is_refused_as_unknown_notifications() {
+        for (line, method) in [
+            (
+                r#"{"jsonrpc":"2.0","method":"node/pty-write","params":{"agent_id":"a","bytes":"q"}}"#,
+                "node/pty-write",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","method":"node/pty","params":{"agent_id":"a","seq":0,"mono_ns":0,"bytes":"x"}}"#,
+                "node/pty",
+            ),
+        ] {
+            let e = Frame::from_line(line).unwrap_err();
+            assert_eq!(e.code, crate::proto::error::METHOD_NOT_FOUND, "{e}");
+            assert!(
+                e.message
+                    .contains(&format!("no such notification: {method}")),
+                "{e}"
+            );
+        }
     }
 
     /// A keystroke carries no `id`, and a client that gave it one would be waiting for an answer

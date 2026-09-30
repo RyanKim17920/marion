@@ -12,8 +12,8 @@
 //!
 //! # Bytes on the wire, not grid cells
 //!
-//! What crosses to a client is [`marion_core::proto::Event::NodePty`] — the raw byte stream, as text. The
-//! grid is a **derived per-viewer object**: two clients on one node may have different window
+//! What crosses to a client is [`marion_core::proto::Event::NodePaneFrame`] — the raw byte stream,
+//! byte-exact. The grid is a **derived per-viewer object**: two clients on one node may have different window
 //! sizes, different scrollback positions and different ideas of what is on screen, and a supervisor
 //! that shipped cells would have to pick one. §5.3's emulator (`marion-term`) runs on the viewer's
 //! side of that seam.
@@ -1193,101 +1193,6 @@ struct ControlGate {
     input_delivery_wait_signal: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
-struct LegacyListeners {
-    state: Mutex<LegacyListenerState>,
-    drained: Condvar,
-    #[cfg(test)]
-    delivery_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-}
-
-struct LegacyListenerState {
-    open: bool,
-    delivering: usize,
-    listeners: Vec<Outbound>,
-}
-
-impl LegacyListeners {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(LegacyListenerState {
-                open: true,
-                delivering: 0,
-                listeners: Vec::new(),
-            }),
-            drained: Condvar::new(),
-            #[cfg(test)]
-            delivery_hook: Mutex::new(None),
-        }
-    }
-
-    fn add(&self, out: Outbound) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.open {
-            state.listeners.push(out);
-        }
-    }
-
-    fn remove(&self, conn: ConnId) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .listeners
-            .retain(|out| out.conn() != conn);
-    }
-
-    fn begin_delivery(&self) -> Option<Vec<Outbound>> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.open {
-            return None;
-        }
-        state.delivering += 1;
-        Some(state.listeners.clone())
-    }
-
-    fn finish_delivery(&self, alive: &[ConnId]) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.listeners.retain(|out| alive.contains(&out.conn()));
-        state.delivering -= 1;
-        if state.delivering == 0 {
-            self.drained.notify_all();
-        }
-    }
-
-    fn close_and_clear(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.open = false;
-        while state.delivering != 0 {
-            state = self.drained.wait(state).unwrap_or_else(|e| e.into_inner());
-        }
-        state.listeners.clear();
-    }
-
-    fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .listeners
-            .len()
-    }
-
-    #[cfg(test)]
-    fn set_delivery_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
-        *self.delivery_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
-    }
-
-    fn observe_delivery(&self) {
-        #[cfg(test)]
-        if let Some(hook) = self
-            .delivery_hook
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            hook();
-        }
-    }
-}
-
 impl ControlGate {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -1565,11 +1470,8 @@ struct Shared {
     /// linearization point for every durable PTY fact; no global registry or control-gate lock is
     /// ever held while its `sync_data` runs.
     recorders: Mutex<Recorders>,
-    /// Clients receiving [`Event::NodePty`]. **Listeners, not owners** — see the module doc.
-    listeners: LegacyListeners,
     /// The one connection allowed to type. See [`WriteLease`].
     writer: Arc<WriterSlot>,
-    seq: AtomicU64,
     probes: AtomicU64,
     bytes: Arc<AtomicU64>,
     splice: splice::PtySplice,
@@ -2572,35 +2474,6 @@ impl Shared {
             error,
         });
     }
-
-    fn emit(&self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let mono_ns = {
-            let recorders = self.recorders.lock().unwrap_or_else(|e| e.into_inner());
-            recorders.cast.origin.elapsed().as_nanos() as u64
-        };
-        let Some(listeners) = self.listeners.begin_delivery() else {
-            return;
-        };
-        self.listeners.observe_delivery();
-        let alive = listeners
-            .iter()
-            .filter_map(|listener| {
-                listener
-                    .notify(Event::NodePty {
-                        agent_id: self.agent_id.clone(),
-                        seq,
-                        mono_ns,
-                        bytes: text.to_string(),
-                    })
-                    .then_some(listener.conn())
-            })
-            .collect::<Vec<_>>();
-        self.listeners.finish_delivery(&alive);
-    }
 }
 
 fn pane_frame(agent_id: &AgentId, record: splice::DisplayRecord) -> PaneFrameV1 {
@@ -2811,9 +2684,7 @@ impl PtyHost {
                 #[cfg(test)]
                 next_durable_failure: None,
             }),
-            listeners: LegacyListeners::new(),
             writer: Arc::new(Mutex::new(None)),
-            seq: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             bytes: Arc::new(AtomicU64::new(0)),
             splice: splice::PtySplice::new_with_initial_resize(
@@ -3242,31 +3113,6 @@ impl PtyHost {
             .unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
-    /// The ordinal the next [`Event::NodePty`] will carry.
-    pub fn next_seq(&self) -> u64 {
-        self.shared.seq.load(Ordering::SeqCst)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn emit_for_test(&self, text: &str) {
-        self.shared.emit(text);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_legacy_delivery_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
-        self.shared.listeners.set_delivery_hook(hook);
-    }
-
-    /// Subscribe a client. It receives bytes from **now**; replay is I4's problem.
-    ///
-    /// (A note for I4, since it is the thing a reader will get wrong: a bare tail of `pty.cast` is
-    /// always wrong for Claude Code, which enters the alternate screen at byte 67 of the session
-    /// and never leaves it. A replay that starts anywhere after that byte hands the emulator a
-    /// stream whose buffer state it cannot know.)
-    pub fn listen(&self, out: Outbound) {
-        self.shared.listeners.add(out);
-    }
-
     /// Reserve the exact retained prefix now, but deliberately send nothing until the caller has
     /// received the attach response and returns the advertised token.
     pub fn begin_pane_replay(
@@ -3295,18 +3141,11 @@ impl PtyHost {
         }
         let pending_since = self.shared.pane_now();
         // Entropy is the only external fallible operation. Do it before taking any state lock so
-        // a failure leaves the connection's existing legacy or pane subscription byte-for-byte
-        // unchanged.
+        // a failure leaves the connection's existing pane subscription byte-for-byte unchanged.
         let mut token = [0u8; 32];
         getrandom::fill(&mut token).map_err(|_| PaneReplayReservationError::Entropy)?;
-        // Commit order: legacy listeners, pane registry, then splice. Emitters release the splice
-        // lock before consulting the pane registry, so no reverse nested acquisition exists.
-        let mut listeners = self
-            .shared
-            .listeners
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Commit order: pane registry, then splice. Emitters release the splice lock before
+        // consulting the pane registry, so no reverse nested acquisition exists.
         let mut streams = self
             .shared
             .pane_streams
@@ -3338,9 +3177,6 @@ impl PtyHost {
         if let Some(existing) = streams.slots.remove(&conn) {
             existing.cancellation.cancel();
         }
-        listeners
-            .listeners
-            .retain(|listener| listener.conn() != conn);
         streams.slots.insert(
             conn,
             PaneSlot {
@@ -3437,7 +3273,7 @@ impl PtyHost {
     }
 
     /// Permanently disable this host's pane stream registrations and cancel every delivery that
-    /// was already in flight. The pty, cast, legacy listeners, and write lease are untouched.
+    /// was already in flight. The pty, cast, and write lease are untouched.
     pub fn invalidate_pane_streams(&self) {
         #[cfg(test)]
         if let Some(hook) = self
@@ -3451,15 +3287,12 @@ impl PtyHost {
         self.shared.invalidate_pane_streams();
     }
 
-    /// Drop a connection's listener.
+    /// Drop a connection's pane subscription.
     ///
-    /// The fan-out already self-prunes — [`Shared::emit`] retains only listeners whose `notify`
-    /// succeeded — so this is not what keeps a *dead* client off the list. It is what keeps a
-    /// **live** one off it: a client that detached from this node and is still connected for
-    /// another would otherwise go on being sent bytes for a pane it is no longer drawing, and the
-    /// self-pruning cannot see the difference because those sends succeed.
+    /// This is what keeps a **live** client off the stream: a client that detached from this node
+    /// and is still connected for another would otherwise go on being sent bytes for a pane it is
+    /// no longer drawing, because those sends succeed.
     pub fn unlisten(&self, conn: ConnId) {
-        self.shared.listeners.remove(conn);
         let mut streams = self
             .shared
             .pane_streams
@@ -3482,12 +3315,15 @@ impl PtyHost {
         self.shared.fail_pane_connection(conn, error);
     }
 
-    pub fn listeners(&self) -> usize {
-        self.shared.listeners.len()
-    }
-
-    pub(crate) fn clear_legacy_listeners(&self) {
-        self.shared.listeners.close_and_clear();
+    /// How many connections hold a pane-stream slot on this host, in any phase.
+    #[cfg(test)]
+    pub(crate) fn pane_subscriptions(&self) -> usize {
+        self.shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .slots
+            .len()
     }
 
     /// Claim the write half for `conn`.
@@ -4312,7 +4148,8 @@ fn keep_reading_after_would_block(
 /// capped. See [`keep_reading_after_would_block`].
 const EMPTY_WAKE_LIMIT: u32 = 3;
 
-/// Publish whatever partial UTF-8 the stream ended mid-sequence on, once the loop is over.
+/// Record whatever partial UTF-8 the stream ended mid-sequence on in the cast, once the loop is
+/// over.
 fn flush_utf8_tail(shared: &Shared, utf8: &mut Utf8Stream) {
     let tail = utf8.finish();
     if tail.is_empty() {
@@ -4323,8 +4160,6 @@ fn flush_utf8_tail(shared: &Shared, utf8: &mut Utf8Stream) {
         recorders.note_cast_failure("output tail", &error);
         eprintln!("marion: pty.cast write failed: {error}");
     }
-    drop(recorders);
-    shared.emit(&tail);
 }
 
 /// **Hands the resize job back when the reader leaves, however it leaves.**
@@ -4389,9 +4224,6 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
     // Published last: tests and diagnostics use this counter as the completion witness for the
     // whole recording step, not merely for the kernel read returning.
     shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
-    if text.is_empty() {
-        return;
-    }
     // **`pty.cast` only. Never `events.jsonl`.** See the module doc's sibling argument in
     // `no_pty_byte_reaches_events_jsonl`: §3.4 said terminal bytes land in `events.jsonl` as
     // `Payload::Raw`, and three things say otherwise — `Payload::Raw`'s own doc defines it as
@@ -4402,7 +4234,6 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
     if let Some(error) = cast_failure {
         eprintln!("marion: pty.cast write failed: {error}");
     }
-    shared.emit(&text);
 }
 
 /// How many reads the drain below will make before resizing anyway.

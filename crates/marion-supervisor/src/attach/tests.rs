@@ -668,7 +668,7 @@ fn pane_v1_consumes_binary_output_dense_resize_and_end_in_order() {
 }
 
 #[test]
-fn pane_v1_rejects_sequence_gaps_duplicates_and_legacy_pty() {
+fn pane_v1_rejects_sequence_gaps_and_duplicates() {
     for seq in [0, 2] {
         let (stream, _peer) = UnixStream::pair().unwrap();
         let (v, _sink) = view(80, 24);
@@ -685,25 +685,6 @@ fn pane_v1_rejects_sequence_gaps_duplicates_and_legacy_pty() {
             .unwrap_err();
         assert!(error.contains("not dense"));
     }
-    let (stream, _peer) = UnixStream::pair().unwrap();
-    let (v, _sink) = view(80, 24);
-    let mut session = bare_session(
-        stream,
-        PaneStream::V1 {
-            next_seq: 0,
-            cut: 0,
-        },
-        Some(v),
-    );
-    let error = session
-        .consume_pane_event(Event::NodePty {
-            agent_id: AgentId("root".into()),
-            seq: 0,
-            mono_ns: 0,
-            bytes: "wrong stream".into(),
-        })
-        .unwrap_err();
-    assert!(error.contains("mixed legacy"));
 }
 
 #[test]

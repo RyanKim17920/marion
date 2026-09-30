@@ -110,6 +110,9 @@ where
 #[serde(deny_unknown_fields)]
 pub struct NodeAttachParams {
     pub agent_id: AgentId,
+    /// The display plane, asked for. Present, the attach also reserves the node's byte-exact pane
+    /// replay and, if it is free, its write half. Absent, the attach is the node's event stream
+    /// alone: no pane frame is sent and no write half is taken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_stream: Option<PaneStreamCapabilityV1>,
 }

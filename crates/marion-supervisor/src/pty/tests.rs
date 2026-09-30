@@ -46,6 +46,37 @@ unsafe extern "C" {
 }
 
 /// Does a process exist? `kill(pid, 0)` asks without sending anything.
+/// Subscribe `conn` to `host`'s pane stream the way an attach does: reserve, then Ready.
+fn subscribe(host: &PtyHost, conn: crate::serve::ConnId) -> crate::serve::Captured {
+    let (out, rx) = crate::serve::capture(conn);
+    let descriptor = host
+        .begin_pane_replay(conn, out)
+        .expect("the pane replay is reserved");
+    host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    rx
+}
+
+/// Every `Output` frame queued on `rx` so far, as `(seq, bytes)`.
+fn pane_outputs(rx: &crate::serve::Captured) -> Vec<(u64, Vec<u8>)> {
+    rx.try_iter()
+        .filter_map(|line| {
+            let frame = Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
+            match frame {
+                Frame::Notification(note) => match note.event {
+                    Event::NodePaneFrame(frame) => match frame.frame {
+                        PaneFrameKindV1::Output { bytes } => {
+                            Some((frame.seq, bytes.as_bytes().to_vec()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 performs the permission and existence check and delivers nothing.
     unsafe { kill(pid, 0) == 0 }
@@ -928,19 +959,26 @@ fn the_supervisor_and_not_the_client_holds_the_master() {
     host.adopt(child);
 
     // Client A attaches and hears something.
-    let (a, a_rx) = crate::serve::capture(crate::serve::ConnId(1));
-    host.listen(a);
+    let a_conn = crate::serve::ConnId(1);
+    let a_rx = subscribe(&host, a_conn);
+    let mut a_seen = Vec::new();
     assert!(
-        until(|| a_rx.try_recv().is_ok()),
-        "client A never received a node/pty frame"
+        until(|| {
+            a_seen.extend(pane_outputs(&a_rx));
+            !a_seen.is_empty()
+        }),
+        "client A never received a node/pane-frame output"
     );
 
-    // Client A is SIGKILLed: its queue's receiver goes away.
-    let seq_at_death = host.next_seq();
+    // Client A is SIGKILLed: its queue's receiver goes away, and the serve loop's departure
+    // drops its subscription.
+    let seq_at_death = a_seen.last().map(|(seq, _)| *seq).unwrap();
     drop(a_rx);
-    assert!(
-        until(|| host.listeners() == 0),
-        "the dead listener was never garbage-collected"
+    host.unlisten(a_conn);
+    assert_eq!(
+        host.pane_subscriptions(),
+        0,
+        "the dead client stayed subscribed"
     );
 
     // (i) the node is untouched.
@@ -949,32 +987,27 @@ fn the_supervisor_and_not_the_client_holds_the_master() {
         "the child died when its client did — the master was in the wrong process"
     );
 
-    // (ii) a second client receives *fresh* bytes, not a replay of a corpse.
-    let (b, b_rx) = crate::serve::capture(crate::serve::ConnId(2));
-    host.listen(b);
-    let mut got = None;
+    // (ii) a second client receives *fresh* bytes: its replay catches up, and output the node
+    // wrote after A died follows it.
+    let b_rx = subscribe(&host, crate::serve::ConnId(2));
+    let mut b_seen = Vec::new();
     assert!(
         until(|| {
-            match b_rx.try_recv() {
-                Ok(frame) => {
-                    got = Some(frame);
-                    true
-                }
-                Err(_) => false,
-            }
+            b_seen.extend(pane_outputs(&b_rx));
+            b_seen.iter().any(|(seq, _)| *seq > seq_at_death)
         }),
-        "client B received nothing after client A died (child {}alive)",
+        "client B received nothing written after client A died (child {}alive)",
         if alive(pid) { "" } else { "not " }
     );
-    let frame: serde_json::Value =
-        serde_json::from_slice(&got.unwrap()).expect("a JSON-RPC notification");
-    assert_eq!(frame["method"], "node/pty");
+    let fresh = b_seen
+        .iter()
+        .filter(|(seq, _)| *seq > seq_at_death)
+        .flat_map(|(_, bytes)| bytes.iter().copied())
+        .collect::<Vec<_>>();
     assert!(
-        frame["params"]["seq"].as_u64().unwrap() >= seq_at_death,
-        "B was handed an ordinal from before A died, so this is replay and not a live stream: \
-         {frame}"
+        String::from_utf8_lossy(&fresh).contains("tick"),
+        "B's fresh output is not the node's: {fresh:?}"
     );
-    assert!(frame["params"]["bytes"].as_str().unwrap().contains("tick"));
 
     host.shutdown().unwrap();
     assert!(!alive(pid) || until(|| !alive(pid)), "the child was reaped");
@@ -1992,11 +2025,11 @@ fn retained_replay_larger_than_the_outbound_queue_does_not_depart_a_healthy_clie
     let first = rx
         .try_recv()
         .expect("the writer pulls the first replay frame");
-    assert!(out.notify(Event::NodePty {
+    assert!(out.notify(Event::NodeState {
         agent_id: AgentId("sentinel".into()),
-        seq: 0,
-        mono_ns: 0,
-        bytes: "ordinary".into(),
+        state: marion_core::node::NodeState::Idle,
+        reap_state: marion_core::node::ReapState::Live,
+        ts: marion_core::encoding::SystemTime::from_unix_millis(0),
     }));
     let frames = std::iter::once(first)
         .chain(rx.try_iter())
@@ -2010,9 +2043,7 @@ fn retained_replay_larger_than_the_outbound_queue_does_not_depart_a_healthy_clie
         };
         match &note.event {
             Event::NodePaneFrame(frame) => pane.push(frame),
-            Event::NodePty {
-                agent_id, bytes, ..
-            } if agent_id.0 == "sentinel" && bytes == "ordinary" => sentinel_at = Some(at),
+            Event::NodeState { agent_id, .. } if agent_id.0 == "sentinel" => sentinel_at = Some(at),
             other => panic!("unexpected captured event: {other:?}"),
         }
     }
@@ -2532,8 +2563,8 @@ fn pending_pane_replays_expire_lazily_on_begin_and_exact_ready() {
     );
 }
 
-/// A host-wide retention failure visibly fails every negotiated pane stream, while legacy live
-/// output and the PTY itself continue. The production change that must make this fail is latching
+/// A host-wide retention failure visibly fails every negotiated pane stream, while the PTY itself
+/// continues. The production change that must make this fail is latching
 /// the splice error and cancelling slots without waking their connections.
 #[test]
 fn global_pane_retention_failure_departs_only_opted_in_connections() {
@@ -2544,10 +2575,8 @@ fn global_pane_retention_failure_departs_only_opted_in_connections() {
     );
     let pending_conn = crate::serve::ConnId(1_102);
     let ready_conn = crate::serve::ConnId(1_103);
-    let legacy_conn = crate::serve::ConnId(1_104);
     let (pending_out, pending_rx) = crate::serve::capture(pending_conn);
     let (ready_out, ready_rx) = crate::serve::capture(ready_conn);
-    let (legacy_out, legacy_rx) = crate::serve::capture(legacy_conn);
     let _pending = lb
         .host
         .begin_pane_replay(pending_conn, pending_out.clone())
@@ -2566,7 +2595,6 @@ fn global_pane_retention_failure_departs_only_opted_in_connections() {
                     && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
     ));
     assert!(ready_rx.try_iter().next().is_none());
-    lb.host.listen(legacy_out.clone());
 
     lb.host.shared.retain_output(b"too large");
 
@@ -2582,29 +2610,25 @@ fn global_pane_retention_failure_departs_only_opted_in_connections() {
             out.departed()
         );
     }
-    assert_eq!(legacy_out.departed(), None);
-    lb.host.shared.emit("legacy-continues");
-    assert!(legacy_rx.try_recv().is_ok(), "legacy live output stopped");
     assert!(pending_rx.try_iter().next().is_none());
     assert!(ready_rx.try_iter().next().is_none());
+    let later_conn = crate::serve::ConnId(1_105);
+    let (later_out, _later_rx) = crate::serve::capture(later_conn);
     assert!(
-        lb.host
-            .begin_pane_replay(crate::serve::ConnId(1_105), legacy_out)
-            .is_none(),
+        lb.host.begin_pane_replay(later_conn, later_out).is_none(),
         "failed retention minted a future exact replay"
     );
+    lb.child_writes(b"still-read");
     lb.hang_up();
 }
 
 #[test]
-fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
+fn pty_retention_overflow_latches_without_blocking_the_cast() {
     let mut lb = Loopback::with_splice_limits(
         "pty-retention-overflow",
         WinSize::new(80, 24),
         super::splice::SpliceLimits::testing(3, 8),
     );
-    let (listener, rx) = crate::serve::capture(crate::serve::ConnId(91));
-    lb.host.listen(listener);
 
     lb.child_writes(b"ok");
     lb.child_writes(b"\xffboom");
@@ -2622,26 +2646,6 @@ fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
         Some(first_error.as_str())
     );
     assert_eq!(lb.host.retention_snapshot(), frozen);
-    // **Wait on the frames, not on the counter.** `Shared::emit` bumps `seq` *before* it fans the
-    // event out to the listeners, so `next_seq() == 3` says only that the third write entered
-    // `emit` — under scheduling pressure the third frame can still be unsent when a drain that
-    // trusted the counter reads the channel, and the run fails on a missing `later`. The delivered
-    // frames are the event this test is actually about, so accumulate them until they say what the
-    // third write says.
-    let mut live = String::new();
-    let delivered = until(|| {
-        for frame in rx.try_iter() {
-            let frame: serde_json::Value = serde_json::from_slice(&frame).unwrap();
-            assert_eq!(frame["method"], "node/pty");
-            live.push_str(frame["params"]["bytes"].as_str().unwrap());
-        }
-        live == "ok\u{fffd}boomlater"
-    });
-    assert!(
-        delivered,
-        "live output stopped after retention failed: {live:?}"
-    );
-    assert_eq!(lb.host.next_seq(), 3);
 
     lb.hang_up();
     lb.host.shutdown().unwrap();
@@ -2651,7 +2655,10 @@ fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
         .filter(|(_, code, _)| code == "o")
         .map(|(_, _, data)| data.as_str())
         .collect();
-    assert_eq!(cast_output, live);
+    assert_eq!(
+        cast_output, "ok\u{fffd}boomlater",
+        "the cast stopped recording after retention failed"
+    );
     assert_eq!(lb.host.retention_snapshot(), frozen);
 }
 
@@ -3281,7 +3288,7 @@ fn a_lease_from_another_node_cannot_be_used_to_type_into_this_one() {
         .expect("a's own lease");
 }
 
-/// Listening stays fan-out. The lease constrains **input** and must not have quietly made the
+/// Reading stays fan-out. The lease constrains **input** and must not have quietly made the
 /// read side exclusive too, which would break every second viewer of a node.
 #[test]
 fn leasing_the_write_half_does_not_make_reading_exclusive() {
@@ -3290,12 +3297,10 @@ fn leasing_the_write_half_does_not_make_reading_exclusive() {
         .host
         .lease_writer(crate::serve::ConnId(1))
         .expect("writer");
-    let (a, _a_rx) = crate::serve::capture(crate::serve::ConnId(1));
-    let (b, _b_rx) = crate::serve::capture(crate::serve::ConnId(2));
-    lb.host.listen(a);
-    lb.host.listen(b);
+    let _a_rx = subscribe(&lb.host, crate::serve::ConnId(1));
+    let _b_rx = subscribe(&lb.host, crate::serve::ConnId(2));
     assert_eq!(
-        lb.host.listeners(),
+        lb.host.pane_subscriptions(),
         2,
         "a read-only second attacher must still receive the stream"
     );

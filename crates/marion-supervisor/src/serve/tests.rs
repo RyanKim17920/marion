@@ -60,12 +60,15 @@ fn departed_connection_drops_a_flow_after_its_current_frame() {
         let _probe = &probe;
         let seq = seen.fetch_add(1, Ordering::SeqCst);
         flow_out.depart(Departure::Eof);
-        Some(Frame::Notification(Notification::new(Event::NodePty {
-            agent_id: marion_core::contract::AgentId("flow".into()),
-            seq,
-            mono_ns: 0,
-            bytes: "paced".into(),
-        })))
+        Some(Frame::Notification(Notification::new(
+            Event::NodePaneFrame(marion_core::proto::PaneFrameV1::new(
+                marion_core::contract::AgentId("flow".into()),
+                seq,
+                marion_core::proto::PaneFrameKindV1::Output {
+                    bytes: marion_core::proto::OpaquePaneBytesV1::new(b"paced"),
+                },
+            )),
+        )))
     }));
 
     assert!(
@@ -811,12 +814,15 @@ fn a_nonreading_peer_times_out_one_flow_frame_and_releases_it() {
     let payload = "x".repeat(8 * 1024 * 1024);
     assert!(out.start_flow(move || {
         let _probe = &probe;
-        Some(Frame::Notification(Notification::new(Event::NodePty {
-            agent_id: AgentId("blocked-flow".into()),
-            seq: 0,
-            mono_ns: 0,
-            bytes: payload.clone(),
-        })))
+        Some(Frame::Notification(Notification::new(
+            Event::NodePaneFrame(marion_core::proto::PaneFrameV1::new(
+                AgentId("blocked-flow".into()),
+                0,
+                marion_core::proto::PaneFrameKindV1::Output {
+                    bytes: marion_core::proto::OpaquePaneBytesV1::new(payload.as_bytes()),
+                },
+            )),
+        )))
     }));
 
     let departure = gone_rx

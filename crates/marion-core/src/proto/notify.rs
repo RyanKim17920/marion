@@ -110,8 +110,8 @@ pub enum Event {
         payload: serde_json::Value,
     },
 
-    /// **Raw terminal bytes from a node's pty**, for a client attached to a node with a display
-    /// plane (§5.3, §3.4).
+    /// One byte-exact record from the replayable pane stream, for a client attached to a node
+    /// with a display plane over pane-stream v1 (§5.3, §3.4). `seq` is dense from zero.
     ///
     /// **Bytes, not grid cells.** The grid is a derived *per-viewer* object: two clients on one node
     /// may have different window sizes, different scrollback offsets and different alternate-screen
@@ -125,28 +125,7 @@ pub enum Event {
     /// mid-escape-sequence pty read is not; `EventReader::open_path` reads the whole file on every
     /// attach, so folding a terminal stream in would make every attach to every node pay for
     /// megabytes of escape sequences; and `event.rs:40` states that `mono_ns` exists to **align**
-    /// the two streams, which is a statement that there are two. The recording lives in `pty.cast`,
-    /// and `mono_ns` here is the same monotonic origin `events.jsonl` uses for that node.
-    ///
-    /// **`bytes` is a JSON string, asciicast-style, not base64 or hex.** Measured: all five
-    /// committed captures in `tests/fixtures/s2/` are valid UTF-8 end to end. The 23 U+FFFD across
-    /// nine regions in the `.cast` files are a *capture-host* defect — `extract.py` decoded each
-    /// read chunk independently — exactly as `NOTES.txt` records. So a producer **MUST** buffer an
-    /// incomplete trailing UTF-8 sequence across reads, which is S11's *"a `read()` is not a
-    /// frame"* MUST in a third guise; `marion_supervisor::pty::Utf8Stream` is that buffer.
-    ///
-    /// `seq` is this pty stream's own dense ordinal, assigned by the single reader of that master.
-    /// It is **not** `agent_seq`: the two streams are separate files with separate writers, and
-    /// numbering them together would imply an ordering between them that no lock provides.
-    #[serde(rename = "node/pty")]
-    NodePty {
-        agent_id: AgentId,
-        seq: u64,
-        mono_ns: u64,
-        bytes: String,
-    },
-
-    /// One byte-exact record from the replayable pane stream. `seq` is dense from zero.
+    /// the two streams, which is a statement that there are two.
     #[serde(rename = "node/pane-frame")]
     NodePaneFrame(PaneFrameV1),
 
@@ -203,7 +182,6 @@ impl Event {
             Event::NodeAdded { .. } => "tree/node-added",
             Event::NodeState { .. } => "node/state",
             Event::NodeEvent { .. } => "node/event",
-            Event::NodePty { .. } => "node/pty",
             Event::NodePaneFrame(_) => "node/pane-frame",
             Event::PermissionRequest { .. } => "permission/request",
             Event::ElicitationRequest { .. } => "elicitation/request",
@@ -214,11 +192,10 @@ impl Event {
 
     /// Every notification method name. Used by the frame reader to reject an unknown one by name
     /// rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 9] = [
+    pub const METHODS: [&'static str; 8] = [
         "tree/node-added",
         "node/state",
         "node/event",
-        "node/pty",
         "node/pane-frame",
         "permission/request",
         "elicitation/request",
@@ -291,14 +268,6 @@ mod tests {
                 },
                 src_seq: Some(SrcSeq::Predecessor(EventId("uuid-0".into()))),
                 payload: serde_json::json!({"type": "assistant"}),
-            },
-            Event::NodePty {
-                agent_id: AgentId("a".into()),
-                seq: 3,
-                mono_ns: 1_234_567,
-                // A box-drawing glyph and an ESC, because those are the two things a naive
-                // encoding gets wrong: the first is multibyte, the second is a control character.
-                bytes: "\u{1b}[?1049h\u{256d}".into(),
             },
             Event::NodePaneFrame(PaneFrameV1::new(
                 AgentId("a".into()),
@@ -383,28 +352,6 @@ mod tests {
             .unwrap(),
             r#"{"method":"supervisor/exiting","params":{"ts":"2026-08-01T23:07:08.619Z","held_by":"SpawnOutstanding"}}"#
         );
-    }
-
-    /// The terminal stream is text on the wire, and the escape characters survive the round trip.
-    ///
-    /// Not base64 and not hex: `tests/fixtures/s2/NOTES.txt` records that all five committed
-    /// captures are valid UTF-8, and an encoding a human cannot read in a packet dump costs a third
-    /// of the bytes' size for nothing. The `\u001b` spelling is what `serde_json` produces for ESC
-    /// and what the committed `.cast` files carry.
-    #[test]
-    fn pty_bytes_ride_as_a_json_string_with_escapes_intact() {
-        let e = Event::NodePty {
-            agent_id: AgentId("a".into()),
-            seq: 0,
-            mono_ns: 0,
-            bytes: "\u{1b}[2J\u{2500}".into(),
-        };
-        let s = serde_json::to_string(&e).unwrap();
-        assert!(s.contains(r#""bytes":"\u001b[2J"#), "{s}");
-        assert!(!s.contains("base64"), "{s}");
-        assert_eq!(serde_json::from_str::<Event>(&s).unwrap(), e);
-        // And `seq` is dense from zero, so it is never skipped the way `src_seq` is.
-        assert!(s.contains(r#""seq":0"#), "{s}");
     }
 
     /// **`agent_seq` is never omitted, and zero is a real ordinal.**

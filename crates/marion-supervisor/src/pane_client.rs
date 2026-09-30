@@ -15,16 +15,13 @@ pub(crate) struct DecodedPaneV1 {
     pub(crate) action: PaneV1Action,
 }
 
-/// Whether an event carries display-plane bytes for `id`, on either pane protocol.
+/// Whether an event carries display-plane bytes for `id`.
 ///
-/// Both clients need this before their attach response has named a protocol, which is exactly
-/// when they cannot yet decode a frame: the question is only whose display plane it belongs to.
+/// Both clients need this before their attach response has advertised the Ready boundary, which
+/// is exactly when they cannot yet decode a frame: the question is only whose display plane it
+/// belongs to.
 pub(crate) fn pane_event_targets(id: &AgentId, event: &Event) -> bool {
-    match event {
-        Event::NodePaneFrame(frame) => frame.agent_id == *id,
-        Event::NodePty { agent_id, .. } => agent_id == id,
-        _ => false,
-    }
+    matches!(event, Event::NodePaneFrame(frame) if frame.agent_id == *id)
 }
 
 /// Validate and decode one event from an already-negotiated pane-v1 stream.
@@ -63,10 +60,6 @@ pub(crate) fn decode_pane_v1_event(
                 action,
             })
         }
-        Event::NodePty { agent_id, .. } if agent_id == *id => Err(format!(
-            "the supervisor mixed legacy node/pty into node `{}`'s negotiated pane-v1 stream",
-            id.0
-        )),
         // Journal state may precede the retained tail; only End terminates display bytes.
         Event::NodeState { agent_id, .. } if agent_id == *id => Ok(DecodedPaneV1 {
             next_seq,
@@ -129,21 +122,6 @@ mod tests {
             early_end.contains("before the advertised replay cut 4"),
             "{early_end}"
         );
-
-        let legacy = decode_pane_v1_event(
-            &id,
-            1,
-            0,
-            Event::NodePty {
-                agent_id: id.clone(),
-                seq: 0,
-                mono_ns: 0,
-                bytes: "legacy".into(),
-            },
-        )
-        .err()
-        .expect("legacy PTY must be rejected after pane-v1 negotiation");
-        assert!(legacy.contains("mixed legacy"), "{legacy}");
 
         let foreign = decode_pane_v1_event(
             &id,

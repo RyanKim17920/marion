@@ -473,7 +473,6 @@ impl RegistryHandle {
 
     fn retire_pane_hosts(hosts: Vec<Arc<crate::pty::PtyHost>>) {
         for host in hosts {
-            host.clear_legacy_listeners();
             host.invalidate_pane_streams();
         }
     }
@@ -560,6 +559,10 @@ impl RegistryHandle {
     /// writers, no ordering between them — and dropping the cursor on the strength of the journal
     /// would lose precisely the record that separates a node that finished from one cut mid-turn.
     /// A cursor on a file nobody will append to costs one `stat` per tick and delivers nothing.
+    ///
+    /// **The display plane is attached only when asked for.** With `pane_stream_v1` the attach
+    /// also reserves the node's pane replay and, if it is free, its write half. Without it the
+    /// answer's `pane` is `None` and no write half is taken: the attach is the event stream alone.
     pub(super) fn node_attach(
         &self,
         id: &AgentId,
@@ -624,8 +627,8 @@ impl RegistryHandle {
         let point = reader.read_point();
         let mode = attach_mode(state, reap_state, point);
         // A versioned pane reservation is the first side effect. If its bounded cursor, entropy,
-        // or retained generation is unavailable, no NodeEvent, cursor, listener, or lease has
-        // moved. It must never silently downgrade to the lossy legacy stream.
+        // or retained generation is unavailable, no NodeEvent, cursor, or lease has moved. It
+        // must never silently downgrade to an attach without the pane.
         let (mut reserved_pane, reserved_host) = if pane_stream_v1 {
             self.attach_pane_v1(id, out)?
         } else {
@@ -661,13 +664,10 @@ impl RegistryHandle {
         });
         // The loop's next pass reads the new cursor, and learns whether it has a deadline now.
         self.live.changes().notify();
-        // Legacy keeps its historical NodeEvent-before-NodePty ordering. V1 already reserved a
-        // paced cursor, but sends no pane frame until the response has advertised its exact token.
-        let pane = if pane_stream_v1 {
-            reserved_pane
-        } else {
-            self.attach_pane(id, out)
-        };
+        // V1 already reserved a paced cursor, but sends no pane frame until the response has
+        // advertised its exact token. An attach that did not ask for the pane is the event stream
+        // alone: no pane, no write half.
+        let pane = reserved_pane;
         summary.pane = pane.is_some();
         Ok(NodeAttachResult {
             node: summary,
@@ -776,72 +776,19 @@ impl RegistryHandle {
 
     /// The **display plane's** half of `node/attach` (§5.3), or `None` for a node with no pty.
     ///
-    /// Three things happen here and they are deliberately one step, in this order:
+    /// Three things happen here and they are deliberately one step, under the registry lock:
     ///
-    /// 1. **Listen first.** Registering the byte fan-out before claiming the keyboard means the
-    ///    client that *is* refused the write half still sees the node — a read-only attach is the
-    ///    point of the refusal, not a consolation for it. Doing it the other way round would leave
-    ///    a window in which this client could type and not yet see the echo.
+    /// 1. **Reserve the replay first.** The pane-v1 slot is what the connection will read, and
+    ///    the client that *is* refused the write half still sees the node — a read-only attach is
+    ///    the point of the refusal, not a consolation for it.
     /// 2. **Claim the write half, once.** `lease_writer` refuses the second caller by name; the
     ///    lease is parked under this connection so it is released by `gone` dropping it, which is
     ///    what makes a crashed client's node writable again with no cleanup code anywhere.
     /// 3. **Report the pty's current size**, because it is not the client's: the master was sized
     ///    before the child existed, by a supervisor that could not know what terminal would
-    ///    eventually attach. A client that rendered without asking would render somebody else's
-    ///    geometry.
+    ///    eventually attach.
     ///
-    /// **Re-attaching from the same connection does not re-lease.** `lease_writer` refuses a
-    /// connection that already holds the slot rather than issuing a second lease, so the answer to
-    /// a second `node/attach` from a writer is `writable: true` with the lease it already had —
-    /// two live leases for one connection would each clear the slot on drop, and the first drop
-    /// would silently open the node to a third client.
-    pub(super) fn attach_pane(
-        &self,
-        id: &AgentId,
-        out: &Outbound,
-    ) -> Option<marion_core::proto::result::PaneAttach> {
-        self.prune_completed_panes();
-        // Held through listener and lease commit. `forget_pane` cannot invalidate a host between
-        // those two halves, and neither host operation performs a delivery callback while this
-        // global registry lock is held.
-        let mut panes = lock(&self.panes);
-        let host = panes.hosts.get(id)?.live_host().cloned()?;
-        host.unlisten(out.conn());
-        host.listen(out.clone());
-        #[cfg(test)]
-        if let Some(hook) = lock(&self.pane_listener_hook).take() {
-            hook();
-        }
-        // The size the master really has, not the size it was asked for: `PtyMaster::size` reads
-        // `TIOCGWINSZ` back, so a client is told what the child will see rather than what marion
-        // intended it to see.
-        let size = host
-            .master()
-            .size()
-            .unwrap_or_else(|_| host.master().intended_size());
-        let native_reserved = panes
-            .native_launches
-            .as_ref()
-            .is_some_and(|launches| launches.has_pending(id));
-        // A pending native launch is a write half already promised to a claimant that has not
-        // arrived: read-only, but the node is running, so it is `Elsewhere` and not `Ended`.
-        let write_half = if native_reserved {
-            PaneWriteHalf::Elsewhere(None)
-        } else {
-            Self::take_write_half(&mut panes, &host, id, out.conn())
-        };
-        let mut pane = marion_core::proto::result::PaneAttach {
-            cols: size.cols,
-            rows: size.rows,
-            writable: false,
-            held_by: None,
-            ended: false,
-            pane_ready: None,
-        };
-        write_half.describe(&mut pane);
-        Some(pane)
-    }
-
+    /// **Re-attaching from the same connection does not re-lease**: see [`Self::take_write_half`].
     pub(super) fn attach_pane_v1(
         &self,
         id: &AgentId,
@@ -985,7 +932,6 @@ impl RegistryHandle {
         drop(revoked_leases);
         let old = old.expect("an existing generation was replaced above");
         let old_host = Arc::clone(old.host());
-        old_host.clear_legacy_listeners();
         old_host.invalidate_pane_streams();
         drop(old);
 
@@ -1001,7 +947,6 @@ impl RegistryHandle {
             matching
         };
         if !published {
-            replacement.clear_legacy_listeners();
             replacement.invalidate_pane_streams();
         }
         published
@@ -1169,7 +1114,7 @@ impl RegistryHandle {
     /// reader drain. A stale close callback cannot transition a replacement host with the same id.
     pub fn closing_pane(&self, id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
         // Serialize with same-id publication. A replacement briefly occupies `Replacing(new)`
-        // while the old generation's admitted legacy deliveries drain; a fast new child may exit
+        // while the old generation's pane streams are invalidated; a fast new child may exit
         // in that interval. Waiting here ensures its Closing transition happens after publication
         // instead of being discarded and later overwritten by Live.
         let _replacement = lock(&self.pane_replacement);
@@ -1197,7 +1142,7 @@ impl RegistryHandle {
         charged_bytes: usize,
     ) {
         let now = self.pane_now();
-        let (completed, victims) = {
+        let victims = {
             let mut panes = lock(&self.panes);
             let matching = matches!(panes.hosts.get(id), Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host));
             if !matching {
@@ -1208,11 +1153,8 @@ impl RegistryHandle {
             if !completed && let Some(refused) = panes.remove(id) {
                 victims.push(Arc::clone(refused.host()));
             }
-            (completed, victims)
+            victims
         };
-        if completed {
-            host.clear_legacy_listeners();
-        }
         Self::retire_pane_hosts(victims);
     }
 
@@ -1235,7 +1177,6 @@ impl RegistryHandle {
                 None
             }
         };
-        host.clear_legacy_listeners();
         host.invalidate_pane_streams();
         drop(removed);
     }
@@ -1254,7 +1195,6 @@ impl RegistryHandle {
             host
         };
         if let Some(host) = host {
-            host.clear_legacy_listeners();
             host.invalidate_pane_streams();
         }
     }

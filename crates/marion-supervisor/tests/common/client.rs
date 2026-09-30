@@ -110,9 +110,8 @@ impl Client {
         s
     }
 
-    /// `node/attach` **leases the write half** (§7.3.1). A suite whose real client holds it —
-    /// `pane_attach.rs` — must never call this: it would be competing with the process under test
-    /// for the keyboard.
+    /// `node/attach` without the pane stream: the node's event stream alone. It takes no write
+    /// half and subscribes to no pane frames.
     pub fn attach(
         &mut self,
         agent: &AgentId,

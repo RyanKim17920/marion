@@ -3119,7 +3119,7 @@ fn native_claimant(conn: ConnId) -> crate::native_bootstrap::NativeClaimant {
 }
 
 #[test]
-fn pending_native_reservation_gates_both_attach_modes_until_atomic_ticket_claim() {
+fn pending_native_reservation_gates_the_pane_attach_until_atomic_ticket_claim() {
     let w = Wired::new("handler-native-writer-priority");
     let host = unregistered_pane(&w, "root", "sleep 30");
     let launches = Arc::new(
@@ -3143,22 +3143,15 @@ fn pending_native_reservation_gates_both_attach_modes_until_atomic_ticket_claim(
             .publish_pending_native_launch(pending.receipt())
             .unwrap();
 
-    for pane_stream_v1 in [false, true] {
-        let (out, _rx) = crate::serve::capture(ConnId(601 + u64::from(pane_stream_v1)));
-        let attach = if pane_stream_v1 {
-            w.fx.handle
-                .attach_pane_v1(&id("root"), &out)
-                .unwrap()
-                .0
-                .expect("pane exists")
-        } else {
-            w.fx.handle
-                .attach_pane(&id("root"), &out)
-                .expect("pane exists")
-        };
-        assert!(!attach.writable);
-        assert_eq!(host.writer(), None);
-    }
+    let (out, _rx) = crate::serve::capture(ConnId(602));
+    let attach =
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("pane exists");
+    assert!(!attach.writable);
+    assert_eq!(host.writer(), None);
 
     let claim =
         w.fx.handle
@@ -3297,7 +3290,9 @@ fn blocked_native_claim_ack_does_not_block_an_unrelated_pane_attach() {
     let attach = std::thread::spawn(move || {
         let (out, _rx) = crate::serve::capture(ConnId(721));
         let writable = attach_handle
-            .attach_pane(&id("other"), &out)
+            .attach_pane_v1(&id("other"), &out)
+            .unwrap()
+            .0
             .expect("unrelated pane stays visible")
             .writable;
         attach_done_tx.send(writable).unwrap();
@@ -3414,7 +3409,7 @@ fn a_forged_pane_ready_before_advertisement_is_inert() {
     let w = Wired::new("handler-pane-ready-dark");
     let host = pane(&w, "root", "sleep 30");
     assert_eq!(w.fx.handle.panes(), 1);
-    assert_eq!(host.listeners(), 0);
+    assert_eq!(host.pane_subscriptions(), 0);
     assert_eq!(w.fx.handle.attachments(), 0);
     assert_eq!(w.fx.handle.subscribers(), 0);
 
@@ -3439,7 +3434,7 @@ fn a_forged_pane_ready_before_advertisement_is_inert() {
     );
     assert!(matches!(next_frame(&mut r), Frame::Response(_)));
     assert_eq!(w.fx.handle.panes(), 1);
-    assert_eq!(host.listeners(), 0);
+    assert_eq!(host.pane_subscriptions(), 0);
     assert_eq!(w.fx.handle.attachments(), 0);
     assert_eq!(w.fx.handle.subscribers(), 0);
 }
@@ -3947,7 +3942,14 @@ fn a_resize_cloned_before_close_cannot_run_after_shutdown() {
     let host = pane(&w, "root", "sleep 30");
     let conn = ConnId(1_108);
     let (out, _captured) = crate::serve::capture(conn);
-    assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+    assert!(
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("the live pane is attachable")
+            .writable
+    );
 
     let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -4211,11 +4213,11 @@ fn unresolved_input_delivery_cannot_be_published_as_completed() {
     assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
 }
 
-/// Legacy pane presence means a live, attachable terminal—not retained replay state. The
+/// Projected pane presence means a live, attachable terminal—not retained replay state. The
 /// production change that must make this fail is projecting every `Panes` key: Closing and
-/// Completed then advertise `pane: true` while legacy attach returns no pane or listener.
+/// Completed then advertise `pane: true` on `node/get`, though only a v1 attach can reach them.
 #[test]
-fn only_live_panes_are_visible_on_legacy_projection_and_attach() {
+fn only_live_panes_are_projected_and_ended_ones_attach_only_over_v1() {
     let w = Wired::new("handler-pane-live-projection");
     let host = pane(&w, "root", "sleep 30");
     say(&events_of(&w.fx, "root"), "root", &["ready"]);
@@ -4232,7 +4234,6 @@ fn only_live_panes_are_visible_on_legacy_projection_and_attach() {
             .unwrap();
     assert!(!closing.node.pane);
     assert!(closing.pane.is_none());
-    assert_eq!(host.listeners(), 0, "Closing installed a dead listener");
 
     let closing_v1_conn = ConnId(1_204);
     let (closing_v1_out, closing_v1_rx) = crate::serve::capture(closing_v1_conn);
@@ -4299,7 +4300,6 @@ fn only_live_panes_are_visible_on_legacy_projection_and_attach() {
             .unwrap();
     assert!(!completed.node.pane);
     assert!(completed.pane.is_none());
-    assert_eq!(host.listeners(), 0, "Completed installed a dead listener");
 
     let (completed_v1_out, _completed_v1_rx) = crate::serve::capture(ConnId(1_205));
     let completed_v1 =
@@ -4383,75 +4383,10 @@ fn ready_pane_v1_subscription_survives_same_host_completion() {
     host.unlisten(conn);
 }
 
-#[test]
-fn completed_commit_preserves_final_legacy_tail_then_clears_listener() {
-    let w = Wired::new("handler-pane-completed-legacy-tail");
-    let host = pane(&w, "root", "sleep 0.05; printf 'final-tail'");
-    let conn = ConnId(1_126);
-    let (out, rx) = crate::serve::capture(conn);
-    host.listen(out);
-    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-    let release_rx = std::sync::Mutex::new(release_rx);
-    let first = AtomicBool::new(true);
-    host.set_legacy_delivery_hook(Box::new(move || {
-        if first.swap(false, Ordering::SeqCst) {
-            reached_tx.send(()).expect("the assertion side is alive");
-            release_rx
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("the final legacy delivery was not released");
-        }
-    }));
-    reached_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("the final tail never reserved its legacy delivery");
-
-    w.fx.handle.closing_pane(&id("root"), &host);
-    assert_eq!(
-        host.listeners(),
-        1,
-        "Closing cleared the listener before the reader drained its final tail"
-    );
-    release_tx.send(()).unwrap();
-    assert!(until(|| host.bytes_read() >= b"final-tail".len() as u64));
-    host.shutdown().unwrap();
-    let mut tail = String::new();
-    assert!(
-        until(|| {
-            tail.extend(rx.try_iter().filter_map(|line| {
-                let frame = Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
-                match frame {
-                    Frame::Notification(note) => match note.event {
-                        Event::NodePty { bytes, .. } => Some(bytes),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }));
-            tail == "final-tail"
-        }),
-        "shutdown joined before the final legacy tail was observable: {tail:?}"
-    );
-
-    let charge = host.completed_replay_charge().unwrap();
-    w.fx.handle.completed_pane(&id("root"), &host, charge);
-    assert_eq!(host.listeners(), 0, "Completed retained a legacy listener");
-
-    // `emit_for_test` delivers synchronously; an empty queue immediately afterwards is the
-    // causal refusal, with no scheduler delay standing in for correctness.
-    host.emit_for_test("post-completion");
-    assert!(
-        rx.try_recv().is_err(),
-        "a completed pane kept delivering legacy NodePty frames"
-    );
-}
-
 /// The response's `node.pane` bit describes the exact attach committed by this call, not a
 /// registry snapshot from before event replay. The production change that must make this fail
-/// is summarizing first and selecting the pane later: Closing in that seam yields
-/// `node.pane=true` alongside `pane=None`.
+/// is summarizing first and selecting the pane later: Closing in that seam must still yield a
+/// `node.pane` that agrees with `pane`.
 #[test]
 fn node_attach_summary_matches_the_post_replay_pane_selection() {
     let w = Wired::new("handler-pane-attach-selection");
@@ -4474,7 +4409,7 @@ fn node_attach_summary_matches_the_post_replay_pane_selection() {
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     let attaching = std::thread::spawn(move || {
         result_tx
-            .send(handle.node_attach(&id("root"), false, &out))
+            .send(handle.node_attach(&id("root"), true, &out))
             .expect("the assertion side is alive");
     });
     reached_rx
@@ -4501,7 +4436,7 @@ fn node_attach_summary_matches_the_post_replay_pane_selection() {
         frames.first(),
         Some(Frame::Notification(note)) if matches!(note.event, Event::NodeEvent { .. })
     ));
-    assert_eq!(host.listeners(), 0, "Closing gained a legacy listener");
+    host.unlisten(conn);
     host.shutdown().unwrap();
 }
 
@@ -4528,7 +4463,7 @@ fn pane_v1_attach_refuses_a_replaced_generation_at_final_selection() {
     assert_eq!(error.kind(), Some(FailureKind::Conflict));
     assert_eq!(w.fx.handle.attachments(), 0);
     assert_eq!(old.writer(), None);
-    assert_eq!(old.listeners(), 0);
+    assert_eq!(old.pane_subscriptions(), 0);
     old.shutdown().unwrap();
     let current = lock(&w.fx.handle.panes)
         .hosts
@@ -4637,7 +4572,7 @@ fn failed_pane_v1_reservation_has_no_attach_side_effects() {
     assert_eq!(error.kind(), Some(FailureKind::Internal));
     assert_eq!(w.fx.handle.attachments(), 0);
     assert_eq!(host.writer(), None);
-    assert_eq!(host.listeners(), 0);
+    assert_eq!(host.pane_subscriptions(), 0);
     assert!(captured.try_iter().next().is_none());
     host.shutdown().unwrap();
 }
@@ -4652,8 +4587,15 @@ fn replacing_a_pane_revokes_the_old_generation_outside_the_registry_lock() {
     let old = pane(&w, "root", "printf 'old-prefix'; sleep 30");
     assert!(until(|| old.bytes_read() >= b"old-prefix".len() as u64));
     let conn = ConnId(1_113);
-    let (out, _legacy_rx) = crate::serve::capture(conn);
-    assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+    let (out, _rx) = crate::serve::capture(conn);
+    assert!(
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("the live pane is attachable")
+            .writable
+    );
     let replay_conn = ConnId(1_114);
     let (replay_out, replay_rx) = crate::serve::capture(replay_conn);
     let descriptor = old
@@ -4690,9 +4632,9 @@ fn replacing_a_pane_revokes_the_old_generation_outside_the_registry_lock() {
         "the old lease resized the replacement"
     );
     assert_eq!(
-        old.listeners(),
+        old.pane_subscriptions(),
         0,
-        "old legacy listener survived replacement"
+        "an old pane subscription survived replacement"
     );
     assert_eq!(old.writer(), None, "old writer lease survived replacement");
     old.pane_ready(replay_conn, &descriptor.token, descriptor.cut);
@@ -4702,7 +4644,12 @@ fn replacing_a_pane_revokes_the_old_generation_outside_the_registry_lock() {
     );
     assert!(old.begin_pane_replay(replay_conn, replay_out).is_none());
 
-    let attached = w.fx.handle.attach_pane(&id("root"), &out).unwrap();
+    let attached =
+        w.fx.handle
+            .attach_pane_v1(&id("root"), &out)
+            .unwrap()
+            .0
+            .expect("the replacement is attachable");
     assert!(attached.writable, "replacement did not issue a fresh lease");
     assert_eq!(replacement.writer(), Some(conn));
     w.fx.handle.forget_pane(&id("root"));
@@ -4710,32 +4657,29 @@ fn replacing_a_pane_revokes_the_old_generation_outside_the_registry_lock() {
     replacement.shutdown().unwrap();
 }
 
-/// Replacement has one strict legacy cut: no old NodePty delivery can emerge after the new
-/// Live generation is visible. The production change that must make this fail is publishing
-/// the map swap before synchronizing old listener delivery, or allowing same-Arc lifecycle
+/// Replacement has one strict cut: the new Live generation is not visible until the old one's
+/// pane streams are invalidated. The production change that must make this fail is publishing
+/// the map swap before invalidating the old generation, or allowing same-Arc lifecycle
 /// regression from Closing/Completed back to Live.
 #[test]
-fn replacement_cuts_old_legacy_delivery_before_publishing_new_live_generation() {
+fn replacement_invalidates_the_old_generation_before_publishing_the_new_one() {
     let w = Wired::new("handler-pane-replacement-cutoff");
     let old = pane(&w, "root", "sleep 30");
-    let (old_out, old_rx) = crate::serve::capture(ConnId(1_115));
-    old.listen(old_out);
+    let old_conn = ConnId(1_115);
+    let (old_out, _old_rx) = crate::serve::capture(old_conn);
+    old.begin_pane_replay(old_conn, old_out.clone())
+        .expect("the old generation is replayable");
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let release_rx = std::sync::Mutex::new(release_rx);
-    old.set_legacy_delivery_hook(Box::new(move || {
+    old.set_invalidation_hook(Box::new(move || {
         entered_tx.send(()).expect("the assertion side is alive");
         release_rx
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("old delivery was not released");
+            .expect("old invalidation was not released");
     }));
-    let emitting_old = Arc::clone(&old);
-    let emit = std::thread::spawn(move || emitting_old.emit_for_test("old-after-cut"));
-    entered_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("old delivery did not reach the cutoff seam");
 
     let replacement = unregistered_pane(&w, "root", "sleep 30");
     let registering = Arc::clone(&w.fx.handle);
@@ -4745,21 +4689,23 @@ fn replacement_cuts_old_legacy_delivery_before_publishing_new_live_generation() 
         registering.register_pane(&id("root"), registering_host);
         registered_tx.send(()).expect("the assertion side is alive");
     });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("replacement did not invalidate the old generation");
     assert!(
-        until(|| {
-            matches!(
-                lock(&w.fx.handle.panes).hosts.get(&id("root")),
-                Some(PaneEntry::Replacing(current)) if Arc::ptr_eq(current, &replacement)
-            )
-        }),
+        matches!(
+            lock(&w.fx.handle.panes).hosts.get(&id("root")),
+            Some(PaneEntry::Replacing(current)) if Arc::ptr_eq(current, &replacement)
+        ),
         "replacement did not enter its non-live cutoff phase"
     );
     assert!(
         !lock(&w.fx.handle.panes).has_live(&id("root")),
-        "replacement became Live before old delivery was cut"
+        "replacement became Live before the old generation was cut"
     );
-    release_tx.send(()).expect("the emitter is alive");
-    emit.join().unwrap();
+    release_tx
+        .send(())
+        .expect("the registering thread is alive");
     registered_rx
         .recv_timeout(std::time::Duration::from_secs(2))
         .expect("replacement was not published after cutoff");
@@ -4771,16 +4717,18 @@ fn replacement_cuts_old_legacy_delivery_before_publishing_new_live_generation() 
             .is_some_and(|entry| Arc::ptr_eq(entry.host(), &replacement)),
         "replacement was not published"
     );
-    let before_cut = old_rx.try_iter().collect::<Vec<_>>();
     assert_eq!(
-        before_cut.len(),
-        1,
-        "the one delivery reserved before cutoff completes before publication"
+        old.pane_subscriptions(),
+        0,
+        "the old generation kept a pane subscription past publication"
     );
-    old.emit_for_test("old-definitely-after-cut");
     assert!(
-        old_rx.try_iter().next().is_none(),
-        "old NodePty was admitted after replacement visibility"
+        matches!(
+            old_out.departed(),
+            Some(crate::serve::Departure::PaneReplayEvicted { .. })
+        ),
+        "the old generation's subscriber was not told its stream ended: {:?}",
+        old_out.departed()
     );
 
     w.fx.handle.closing_pane(&id("root"), &replacement);
@@ -4791,43 +4739,39 @@ fn replacement_cuts_old_legacy_delivery_before_publishing_new_live_generation() 
         "same Arc resurrected Closing as Live"
     );
 
-    let (forgotten_out, _forgotten_rx) = crate::serve::capture(ConnId(1_116));
-    replacement.listen(forgotten_out);
+    let forgotten_conn = ConnId(1_116);
+    let (forgotten_out, _forgotten_rx) = crate::serve::capture(forgotten_conn);
+    replacement
+        .begin_pane_replay(forgotten_conn, forgotten_out)
+        .expect("the closing replacement is replayable");
     w.fx.handle.failed_pane(&id("root"), &replacement);
     assert_eq!(
-        replacement.listeners(),
+        replacement.pane_subscriptions(),
         0,
-        "failed cleanup retained listeners"
+        "failed cleanup retained pane subscriptions"
     );
     old.shutdown().unwrap();
     replacement.shutdown().unwrap();
 }
 
 /// A replacement child may exit while publication is waiting for the old generation's
-/// admitted legacy delivery. Closing must wait for that publication transaction and then seal
+/// invalidation. Closing must wait for that publication transaction and then seal
 /// the new host; returning early from `Replacing(new)` would resurrect the dead child as Live.
 #[test]
 fn closing_a_replacement_waits_for_its_generation_to_publish() {
     let w = Wired::new("handler-pane-replacement-close-race");
     let old = pane(&w, "root", "sleep 30");
-    let (old_out, _old_rx) = crate::serve::capture(ConnId(1_208));
-    old.listen(old_out);
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let release_rx = std::sync::Mutex::new(release_rx);
-    old.set_legacy_delivery_hook(Box::new(move || {
+    old.set_invalidation_hook(Box::new(move || {
         entered_tx.send(()).expect("the assertion side is alive");
         release_rx
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("old delivery was not released");
+            .expect("old invalidation was not released");
     }));
-    let emitting = Arc::clone(&old);
-    let emit = std::thread::spawn(move || emitting.emit_for_test("reserved"));
-    entered_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("old delivery did not enter");
 
     let replacement = unregistered_pane(&w, "root", "sleep 30");
     let registering = Arc::clone(&w.fx.handle);
@@ -4835,6 +4779,9 @@ fn closing_a_replacement_waits_for_its_generation_to_publish() {
     let register = std::thread::spawn(move || {
         registering.register_pane(&id("root"), registering_host);
     });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("old invalidation did not enter");
     assert!(until(|| {
         matches!(
             lock(&w.fx.handle.panes).hosts.get(&id("root")),
@@ -4856,7 +4803,6 @@ fn closing_a_replacement_waits_for_its_generation_to_publish() {
         "Closing returned while the replacement transaction was still Replacing"
     );
     release_tx.send(()).unwrap();
-    emit.join().unwrap();
     register.join().unwrap();
     closed_rx
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -4871,87 +4817,52 @@ fn closing_a_replacement_waits_for_its_generation_to_publish() {
     replacement.shutdown().unwrap();
 }
 
-/// Dark wire behavior cannot accidentally depend on the internal replay engine being enabled.
-/// Legacy live attach remains available and advertises no cursor even after replay invalidation.
+/// **An attach that did not ask for the pane is the event stream alone.** It gets no pane, takes
+/// no write half and subscribes to no pane frames, even on a live pty whose replay engine is
+/// disabled — and so never consults that engine at all. The production change that must make this
+/// fail is serving a pane, or taking the lease, for an attach without `pane_stream`.
 #[test]
-fn dark_pane_attach_does_not_consult_internal_replay_state() {
-    let w = Wired::new("handler-pane-dark-internal-state");
+fn an_events_only_attach_takes_no_pane_and_no_write_half() {
+    let w = Wired::new("handler-pane-events-only");
     let host = pane(&w, "root", "sleep 30");
+    say(&events_of(&w.fx, "root"), "root", &["event-only"]);
     host.invalidate_pane_streams();
     let conn = ConnId(104);
     let (out, rx) = crate::serve::capture(conn);
     let attached =
         w.fx.handle
             .node_attach(&id("root"), false, &out)
-            .expect("legacy attach does not consult replay state");
-    let pane = attached.pane.expect("the pty remains attachable");
+            .expect("an events-only attach does not consult replay state");
 
-    assert!(pane.pane_ready.is_none());
-    assert_eq!(host.listeners(), 1);
-    assert_eq!(host.writer(), Some(conn));
+    assert!(attached.pane.is_none(), "an events-only attach got a pane");
     assert!(
-        rx.try_iter().next().is_none(),
-        "dark attach cannot emit replay or pane frames"
+        !attached.node.pane,
+        "the summary claims a pane this attach did not get"
     );
-    host.unlisten(conn);
-    host.shutdown().unwrap();
-}
-
-/// Legacy attach has always replayed the durable node stream before making live PTY bytes
-/// observable. Force a PTY emit at the listener-install seam so the queue order, not timing,
-/// proves that contract.
-#[test]
-fn legacy_attach_enqueues_replayed_node_events_before_concurrent_pty_output() {
-    let w = Wired::new("handler-pane-legacy-order");
-    say(&events_of(&w.fx, "root"), "root", &["event-first"]);
-    let host = pane(&w, "root", "sleep 30");
-    let conn = ConnId(106);
-    let (out, captured) = crate::serve::capture(conn);
-    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-    let release_rx = std::sync::Mutex::new(release_rx);
-    *lock(&w.fx.handle.pane_listener_hook) = Some(Box::new(move || {
-        reached_tx
-            .send(())
-            .expect("the deterministic assertion side is alive");
-        release_rx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("the deterministic listener hook was not released");
-    }));
-
-    std::thread::scope(|scope| {
-        let handle = Arc::clone(&w.fx.handle);
-        let out = out.clone();
-        let attaching = scope.spawn(move || handle.node_attach(&id("root"), false, &out));
-        reached_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("attach reached the listener-install seam");
-        host.emit_for_test("pty-second");
-        release_tx.send(()).expect("the attach worker is alive");
-        attaching.join().unwrap().unwrap();
-    });
-    let order = captured
+    assert_eq!(
+        host.writer(),
+        None,
+        "an events-only attach took the write half"
+    );
+    assert_eq!(host.pane_subscriptions(), 0);
+    assert_eq!(w.fx.handle.attachments(), 1, "the event stream is followed");
+    let events = rx
         .try_iter()
-        .map(|bytes| Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
-        .filter_map(|frame| match frame {
-            Frame::Notification(note) => Some(match note.event {
-                Event::NodeEvent { .. } => "event",
-                Event::NodePty { .. } => "pty",
-                _ => "other",
-            }),
-            _ => None,
-        })
+        .map(|line| Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap())
         .collect::<Vec<_>>();
-    host.unlisten(conn);
+    assert!(
+        !events.is_empty()
+            && events.iter().all(|frame| matches!(
+                frame,
+                Frame::Notification(note) if matches!(note.event, Event::NodeEvent { .. })
+            )),
+        "an events-only attach must carry the replay and no pane frame: {events:?}"
+    );
     host.shutdown().unwrap();
-
-    assert_eq!(order, ["event", "pty"]);
 }
 
-/// Explicit pane-v1 reserves a response-first replay and does not install the legacy listener.
-/// No pane frame may precede the response; the exact advertised Ready activates sequence zero.
+/// Explicit pane-v1 reserves a response-first replay. No pane frame may precede the response; the
+/// exact advertised Ready activates sequence zero.
 #[test]
 fn pane_stream_capability_reserves_response_first_replay() {
     let w = Wired::new("handler-pane-wire-active");
@@ -4985,7 +4896,6 @@ fn pane_stream_capability_reserves_response_first_replay() {
         .pane_ready
         .expect("explicit v1 advertises the reserved replay");
     assert_eq!((pane.cols, pane.rows), (100, 40));
-    assert_eq!(host.listeners(), 0, "opt-in installed a legacy listener");
     assert!(
         before_response
             .iter()
@@ -5634,11 +5544,11 @@ fn a_negotiated_clients_first_opaque_keystroke_reaches_the_child() {
     }
 }
 
-/// `node/pane-write` is negotiated protocol, not an alternate spelling for legacy input. A
-/// legacy writer has a keyboard lease but no pane stream slot; forged opaque bytes must reach
-/// neither the master nor silence, so the exact legacy socket is visibly closed.
+/// `node/pane-write` is negotiated protocol. An events-only attach has neither a keyboard lease
+/// nor a pane stream slot; forged opaque bytes must reach neither the master nor silence, so the
+/// exact socket is visibly closed.
 #[test]
-fn legacy_attach_cannot_forge_opaque_pane_input() {
+fn an_events_only_attach_cannot_forge_opaque_pane_input() {
     use std::io::BufRead;
 
     let w = Wired::new("handler-pane-forged-opaque");
@@ -5654,8 +5564,8 @@ fn legacy_attach_cannot_forge_opaque_pane_input() {
     assert!(
         attached_ok(attach(&mut client, &mut reader, "root", 1).1)
             .pane
-            .expect("the pane is live")
-            .writable
+            .is_none(),
+        "an events-only attach was given the pane"
     );
 
     write_keys(&mut client, "root", b"forged\r");
@@ -5671,9 +5581,10 @@ fn legacy_attach_cannot_forge_opaque_pane_input() {
         0,
         "unnegotiated opaque input was ignored instead of visibly refused"
     );
-    assert!(
-        until(|| host.writer().is_none()),
-        "gone did not release the forged sender's lease"
+    assert_eq!(
+        host.writer(),
+        None,
+        "an events-only attach held the write half"
     );
     assert!(
         !received.exists() || std::fs::read(&received).unwrap().is_empty(),

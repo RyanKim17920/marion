@@ -183,8 +183,9 @@ pub struct DiffStat {
 ///
 /// `pane` is the **display plane's** half of the same attach, and it is `Option` because most
 /// nodes have none: §3.4 implements `DisplayPlane` iff `display == NativePty`, and a headless node
-/// attached to over this method is answered with a replay and nothing else. `None` is therefore a
-/// fact about the node, not a failure of the attach.
+/// attached to over this method is answered with a replay and nothing else. It is also `None` for
+/// an attach that did not ask for the pane stream, which is the event stream alone. `None` is
+/// therefore a fact about the node or the request, not a failure of the attach.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeAttachResult {
     pub node: NodeSummary,

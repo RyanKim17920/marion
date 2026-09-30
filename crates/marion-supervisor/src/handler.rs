@@ -391,8 +391,6 @@ pub struct RegistryHandle {
     /// Serializes same-id replacement cleanup without holding the global pane registry lock.
     pane_replacement: Mutex<()>,
     #[cfg(test)]
-    pane_listener_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    #[cfg(test)]
     pane_delivery_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     pane_attach_selection_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -594,8 +592,6 @@ impl RegistryHandle {
                 panes: Mutex::new(Panes::default()),
                 pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),
                 pane_replacement: Mutex::new(()),
-                #[cfg(test)]
-                pane_listener_hook: Mutex::new(None),
                 #[cfg(test)]
                 pane_delivery_hook: Mutex::new(None),
                 #[cfg(test)]
@@ -1042,8 +1038,8 @@ impl Handle for RegistryHandle {
         // The display plane's half of the same invariant, and it is the half §7.3.1 is really
         // about: a client that was SIGKILLed while holding a node's keyboard must not leave that
         // node permanently read-only. Dropping the leases releases the writer slots — `WriteLease`
-        // does it on `Drop`, so there is no cleanup here to forget — and `unlisten` stops the byte
-        // fan-out to a channel nobody is drawing. **The node is not touched**: its process, its
+        // does it on `Drop`, so there is no cleanup here to forget — and `unlisten` ends the pane
+        // subscription of a channel nobody is drawing. **The node is not touched**: its process, its
         // pty, its recording and its size are exactly as they were.
         let mut panes = lock(&self.panes);
         panes.leases.remove(&conn);

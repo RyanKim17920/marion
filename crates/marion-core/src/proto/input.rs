@@ -328,13 +328,15 @@ mod tests {
         assert!(!Event::METHODS.contains(&"node/pane-ready"));
     }
 
-    /// **The retired UTF-8 keystroke name is in no table.** `node/pty-write` was the legacy pane
-    /// stream's input; marion's client and supervisor ship as a pair and nothing sends it, so it
-    /// must now be refused by the frame reader as the unknown name it is.
+    /// **The retired legacy pane stream's names are in no table.** `node/pty` and
+    /// `node/pty-write` were its output and input; marion's client and supervisor ship as a pair
+    /// and nothing sends either, so the frame reader must refuse them as the unknown names they are.
     #[test]
-    fn the_retired_legacy_keystroke_name_is_in_no_table() {
-        assert!(!Input::METHODS.contains(&"node/pty-write"));
-        assert!(!Event::METHODS.contains(&"node/pty-write"));
-        assert_eq!(Method::from_wire("node/pty-write"), None);
+    fn the_retired_legacy_pty_names_are_in_no_table() {
+        for retired in ["node/pty", "node/pty-write"] {
+            assert!(!Input::METHODS.contains(&retired));
+            assert!(!Event::METHODS.contains(&retired));
+            assert_eq!(Method::from_wire(retired), None);
+        }
     }
 }
