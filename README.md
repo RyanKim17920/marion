@@ -181,9 +181,19 @@ and never hides your credentials from the harness.
 - **A model cannot run a program by naming it.** A `spawn` from a node or an MCP client may name
   `acp:<command>` only for a command you listed in `~/.config/marion/acp.toml`; your own
   `marion run acp:<command>` needs no listing.
+- **Canned and endpoint nodes run in marion's own sandbox.** A node writes only its workspace,
+  its `TMPDIR`, its agent dir and the few paths its harness measured it needs (macOS Seatbelt
+  through `sandbox-exec`; Linux Landlock ABI 2 or later). Reads, commands and the network are
+  unchanged. This covers claude, codex, gemini, opencode, copilot, goose, qwen and pi; cline,
+  ACP agents and agy are not yet measured under it. Nodes on your own login keep running
+  unsandboxed for now, because a harness writing its real home could plant a hook your next
+  session runs. `marion doctor` says whether this host can sandbox nodes, and
+  `MARION_SANDBOX=off` turns it off, which also drops the containment it gives.
 - **An agent never starts one with more authority than its own.** marion compares the two on
   every axis before the child exists: a parent that cannot write or run commands cannot start
-  one that can, a sandboxed agent (codex) cannot start one with no sandbox (claude and the rest),
+  one that can, a sandboxed agent cannot start one with no sandbox (codex is always sandboxed,
+  and every row above is on a canned or endpoint tree; so a codex may start a claude child
+  there, but not on your own login),
   a child cannot take an approval mode its parent lacks, and its writable scope stays inside its
   parent's. The built-in `*-orchestrator` planners are the one exception on writing: they write
   nothing themselves and exist to start implementers, still bounded by containment, scope and
