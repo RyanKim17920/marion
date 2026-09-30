@@ -183,11 +183,75 @@ pub mod watch;
 pub mod workflow;
 pub mod workflow_file;
 
-/// **Load the operator's harness rows into this process** (`marion_harness::row_file`), once,
-/// and say on stderr which files were refused and why — never on stdout, which `marion mcp`
-/// speaks its protocol on.
+/// **Load the harness rows this process can use** (`marion_harness::row_file`): the operator's
+/// own, then the repository's this process works in ([`current_repo`]) — and say on stderr which
+/// files were refused and why, never on stdout, which `marion mcp` speaks its protocol on.
 pub fn install_harness_rows() {
     for e in &marion_harness::row_file::install_user_rows().refused {
         eprintln!("marion: harness row not loaded: {e}");
     }
+    if let Some(repo) = current_repo() {
+        for e in install_repo_rows(&repo).refused {
+            eprintln!("marion: harness row not loaded: {e}");
+        }
+    }
+}
+
+/// The repository this process works in: `$MARION_REPO` where it is a node's bridge, else the
+/// nearest directory at or above the current one holding a `.git`.
+pub fn current_repo() -> Option<std::path::PathBuf> {
+    std::env::var_os(marion_harness::mcp_bridge::REPO_ENV)
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir().ok().and_then(|d| {
+                d.ancestors()
+                    .find(|a| a.join(".git").exists())
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+}
+
+/// What loading one repository's rows did: the harnesses loaded, and each refusal in words.
+#[derive(Debug, Clone, Default)]
+pub struct RepoRows {
+    pub loaded: Vec<(marion_core::Harness, std::path::PathBuf)>,
+    pub refused: Vec<String>,
+}
+
+/// **Load `repo`'s harness rows** — each only if its bytes are trusted ([`trust::require_row`])
+/// and no row of the operator's already has its name — once per repository per process, after the
+/// operator's own; the same answer on every later call.
+pub fn install_repo_rows(repo: &std::path::Path) -> RepoRows {
+    use marion_harness::row_file;
+    type Done = Vec<(std::path::PathBuf, RepoRows)>;
+    static DONE: std::sync::Mutex<Done> = std::sync::Mutex::new(Vec::new());
+    let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, rows)) = done.iter().find(|(k, _)| *k == key) {
+        return rows.clone();
+    }
+    let mut loaded = row_file::install_user_rows().loaded.clone();
+    let mut out = RepoRows::default();
+    for path in row_file::row_files(&row_file::repo_dir(repo)) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                out.refused.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        if let Err(e) = trust::require_row(&path, &text) {
+            out.refused.push(e.to_string());
+            continue;
+        }
+        match row_file::install_one(&path, &text, &loaded) {
+            Ok(h) => {
+                loaded.push((h, path.clone()));
+                out.loaded.push((h, path));
+            }
+            Err(e) => out.refused.push(e.to_string()),
+        }
+    }
+    done.push((key, out.clone()));
+    out
 }

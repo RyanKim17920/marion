@@ -111,3 +111,111 @@ fn check_names_what_a_row_runs_or_the_key_it_breaks() {
         "{stderr}"
     );
 }
+
+/// `marion <args>` in `cwd`, with its own config and data homes (the trust store is under data).
+fn marion_in(
+    cwd: &Path,
+    config: &Path,
+    data: &Path,
+    args: &[&str],
+) -> (Option<i32>, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args(args)
+        .current_dir(cwd)
+        .env("XDG_CONFIG_HOME", config)
+        .env("XDG_DATA_HOME", data)
+        .output()
+        .expect("marion runs");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// **A repository's row loads only once its bytes are trusted**, through the one trust store:
+/// untrusted it is refused with the allow command, `marion trust allow` shows what it runs and
+/// trusts it, an edit revokes it, and a row of the operator's own by the same name wins with the
+/// refusal naming both files.
+#[test]
+fn a_repository_row_loads_only_once_its_bytes_are_trusted() {
+    let dir = scratch("harness-rows-repo");
+    let repo = marion_testsupport::fixture_repo(&dir);
+    let (config, data) = (dir.join("config"), dir.join("data"));
+    std::fs::create_dir_all(&data).unwrap();
+    let text = goose_twin().replace("name = \"goose-twin\"", "name = \"goose-repo\"");
+    let file = row(
+        &repo.join(".marion").join("harnesses"),
+        "goose-repo",
+        &text,
+        0o600,
+    );
+    let list = || marion_in(&repo, &config, &data, &["harness", "list"]);
+
+    let (_, stdout, stderr) = list();
+    assert!(stdout.contains("is not one you have allowed"), "{stdout}");
+    assert!(
+        stderr.contains("marion trust allow"),
+        "every command says how: {stderr}"
+    );
+
+    let (code, shown, err) = marion_in(
+        &repo,
+        &config,
+        &data,
+        &["trust", "allow", file.to_str().unwrap()],
+    );
+    assert_eq!(code, Some(0), "{shown}\n{err}");
+    for want in [
+        "program: goose",
+        "env: HOME",
+        "GOOSE_MODE",
+        "updates: Never",
+        "allowed.",
+    ] {
+        assert!(
+            shown.contains(want),
+            "`trust allow` shows {want:?}: {shown}"
+        );
+    }
+    let (_, stdout, _) = list();
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("goose-repo") && l.contains("(trusted)")),
+        "{stdout}"
+    );
+
+    std::fs::write(&file, format!("{text}\n# edited\n")).unwrap();
+    let (_, stdout, _) = list();
+    assert!(
+        stdout.contains("has changed since you allowed it"),
+        "{stdout}"
+    );
+
+    // The operator's own row by that name wins over the repository's, trusted or not.
+    std::fs::write(&file, &text).unwrap();
+    marion_in(
+        &repo,
+        &config,
+        &data,
+        &["trust", "allow", file.to_str().unwrap()],
+    );
+    let mine = row(
+        &config.join("marion").join("harnesses"),
+        "goose-repo",
+        &text,
+        0o600,
+    );
+    let (_, stdout, _) = list();
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("goose-repo") && l.contains("loaded") && !l.contains("trusted")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("already defined by") && stdout.contains(&mine.display().to_string()),
+        "{stdout}"
+    );
+}

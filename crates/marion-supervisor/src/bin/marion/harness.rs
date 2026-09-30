@@ -23,11 +23,18 @@ pub fn main(argv: &[String]) -> Result<ExitCode, Exit> {
     }
 }
 
-/// Every row file in the operator's directory: loaded, or refused and why.
+/// Every row file in the operator's directory and this repository's: loaded, or refused and why.
 fn list(out: &mut dyn std::io::Write) -> ExitCode {
     let installed = row_file::install_user_rows();
+    let repo = marion_supervisor::current_repo()
+        .map(|r| marion_supervisor::install_repo_rows(&r))
+        .unwrap_or_default();
     let dir = row_file::user_dir();
-    if installed.loaded.is_empty() && installed.refused.is_empty() {
+    if installed.loaded.is_empty()
+        && installed.refused.is_empty()
+        && repo.loaded.is_empty()
+        && repo.refused.is_empty()
+    {
         let _ = writeln!(
             out,
             "no harness rows; add one as {}/<name>.toml",
@@ -44,6 +51,17 @@ fn list(out: &mut dyn std::io::Write) -> ExitCode {
     for e in &installed.refused {
         let name = e.path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
         let _ = writeln!(out, "{name:<16} refused  {e}");
+    }
+    for (h, path) in &repo.loaded {
+        let _ = writeln!(
+            out,
+            "{:<16} loaded   {} (trusted)",
+            h.as_str(),
+            path.display()
+        );
+    }
+    for e in &repo.refused {
+        let _ = writeln!(out, "{:<16} refused  {e}", "(repository)");
     }
     ExitCode::SUCCESS
 }

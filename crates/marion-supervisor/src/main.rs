@@ -33,6 +33,23 @@ fn main() {
         Some("--version" | "-V") => println!("marion-supervisor {}", env!("CARGO_PKG_VERSION")),
         Some("mcp") => mcp::serve_stdio(mcp::Principal::Node),
         Some(detach::SERVE) => {
+            // The project this supervisor serves is its own argument, not its cwd: its repository's
+            // rows are the ones its nodes' agent types can name.
+            if let Some(key) = argv
+                .iter()
+                .position(|a| a == "--project-root")
+                .and_then(|i| argv.get(i + 1))
+            {
+                let key = std::path::Path::new(key);
+                let repo = if key.file_name().is_some_and(|n| n == ".git") {
+                    key.parent().unwrap_or(key)
+                } else {
+                    key
+                };
+                for e in marion_supervisor::install_repo_rows(repo).refused {
+                    eprintln!("marion-supervisor: harness row not loaded: {e}");
+                }
+            }
             let program = std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into());
             if let Err(e) = detach::run_serve(program, &argv[1..]) {
                 // The one place a supervisor stage can speak. Stages 1 and 2 inherit the launcher's

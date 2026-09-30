@@ -516,6 +516,11 @@ marion harness check ./mytool.toml         # check one as it would load, and say
 A row file's stream is read by a built-in row's grammar (`stream = "builtin:goose"`); an agent
 type names the row's harness as it names any other (`harness = "mytool"`).
 
+A repository can carry rows too, in `.marion/harnesses/<name>.toml`. marion loads one only after
+`marion trust allow <file>`, which shows the program, its argv and environment, the approval and the
+update policy, and trusts those exact bytes; any edit revokes it, as for agent types and workflows.
+Your own row by the same name wins, and the repository's is refused naming both files.
+
 ### ACP agents
 
 Any ACP agent runs through `acp:<command> [args…]`. These have a refinement row, probed on

@@ -87,7 +87,18 @@ fn refused(path: &Path, fault: impl Into<String>) -> RowFileError {
 pub fn build(path: &Path, harness: Harness) -> Result<&'static HarnessSpec, RowFileError> {
     owned_by_user_alone(path)?;
     let text = std::fs::read_to_string(path).map_err(|e| refused(path, e.to_string()))?;
-    let dto = parse(path, &text)?;
+    build_from(path, &text, harness)
+}
+
+/// [`build`] over `text`, the file's bytes as already read — so a caller that judged those bytes
+/// (a repository row's trust, by their digest) builds exactly what it judged.
+pub fn build_from(
+    path: &Path,
+    text: &str,
+    harness: Harness,
+) -> Result<&'static HarnessSpec, RowFileError> {
+    owned_by_user_alone(path)?;
+    let dto = parse(path, text)?;
     let spec = dto.into_spec(harness).map_err(|faults| RowFileError {
         path: path.to_path_buf(),
         faults,
@@ -225,8 +236,22 @@ pub fn install_user_rows() -> &'static Installed {
 /// [`install_user_rows`] over `dir`, for a test with a directory of its own.
 pub fn install_dir(dir: &Path) -> Installed {
     let mut out = Installed::default();
+    for path in row_files(dir) {
+        let installed = std::fs::read_to_string(&path)
+            .map_err(|e| refused(&path, e.to_string()))
+            .and_then(|text| install_one(&path, &text, &out.loaded));
+        match installed {
+            Ok(h) => out.loaded.push((h, path)),
+            Err(e) => out.refused.push(e),
+        }
+    }
+    out
+}
+
+/// The `*.toml` files in `dir`, sorted; none where it does not exist.
+pub fn row_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
+        return Vec::new();
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -234,31 +259,71 @@ pub fn install_dir(dir: &Path) -> Installed {
         .filter(|p| p.extension().is_some_and(|x| x == "toml"))
         .collect();
     files.sort();
-    for path in files {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let harness = match Harness::load(&stem) {
-            Ok(h) => h,
-            Err(e) => {
-                out.refused.push(refused(&path, format!("name: {e}")));
-                continue;
-            }
-        };
-        match build(&path, harness) {
-            Ok(spec) => {
-                crate::adapter::install(Box::leak(Box::new(Row {
-                    spec,
-                    serve: Serve::Data,
-                })));
-                out.loaded.push((harness, path));
-            }
-            Err(e) => out.refused.push(e),
-        }
+    files
+}
+
+/// **Build the row in `path` from `text` and install it**, unless a row by its name is already
+/// among `loaded` (from another file: two files may not define one harness, and the refusal names
+/// both) or a built-in's. The name is loaded only once its row builds, so a refused file leaves no
+/// name that parses to nothing.
+pub fn install_one(
+    path: &Path,
+    text: &str,
+    loaded: &[(Harness, PathBuf)],
+) -> Result<Harness, RowFileError> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if let Some((_, other)) = loaded.iter().find(|(h, _)| h.as_str() == stem) {
+        return Err(refused(
+            path,
+            format!("name: `{stem}` is already defined by {}", other.display()),
+        ));
     }
-    out
+    // Refused before a byte is built where the name cannot be a row's.
+    let harness = match Harness::named(stem) {
+        Some(h) if !h.is_builtin() && !marion_core::harness::RETIRED.contains(&stem) => h,
+        _ => {
+            let why = Harness::load(stem).map_or_else(|e| e.to_string(), |_| String::new());
+            return Err(refused(path, format!("name: {why}")));
+        }
+    };
+    let spec = build_from(path, text, harness)?;
+    Harness::load(stem).map_err(|e| refused(path, format!("name: {e}")))?;
+    crate::adapter::install(Box::leak(Box::new(Row {
+        spec,
+        serve: Serve::Data,
+    })));
+    Ok(harness)
+}
+
+/// Where a repository's rows live: `<repo>/.marion/harnesses/`.
+pub fn repo_dir(repo: &Path) -> PathBuf {
+    repo.join(".marion").join("harnesses")
+}
+
+/// Whether `path` is a repository's row file: `.marion/harnesses/<name>.toml`.
+pub fn is_repo_row(path: &Path) -> bool {
+    path.extension().is_some_and(|x| x == "toml")
+        && path
+            .parent()
+            .is_some_and(|d| d.ends_with(Path::new(".marion").join("harnesses")))
+}
+
+/// **What a row runs, in lines a person reads before trusting it**: the program and its argv as
+/// the row writes them, the environment it sets, how a headless node is approved and how the
+/// harness is kept from updating itself.
+pub fn describe(spec: &HarnessSpec) -> Vec<String> {
+    let argv: Vec<String> = spec.argv.iter().map(|a| format!("{a:?}")).collect();
+    let env: Vec<&str> = spec.env.iter().map(|e| e.key).collect();
+    vec![
+        format!("program: {}", spec.program.unwrap_or("?")),
+        format!("argv: {}", argv.join(" ")),
+        format!("env: {}", env.join(" ")),
+        format!("approval: {:?}", spec.approval),
+        format!("updates: {:?}", spec.updates),
+    ]
 }
 
 // ---------------------------------------------------------------------------------- leaking

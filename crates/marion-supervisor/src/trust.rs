@@ -37,7 +37,8 @@ pub const STORE_FILE: &str = "trusted.toml";
 
 pub const USAGE: &str = "usage: marion trust allow [<file>] | deny [<file>] | list\n\
     \x20 <file> defaults to the nearest .marion/agents.toml at or above the current directory; a\n\
-    \x20 .marion/workflows/<name>.toml is a workflow, and allow shows what it runs";
+    \x20 .marion/workflows/<name>.toml is a workflow and a .marion/harnesses/<name>.toml a harness\n\
+    \x20 row, and allow shows what each runs";
 
 /// Why a repository command was not run, or the trust store could not be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -77,6 +78,14 @@ pub enum TrustError {
         quoted = shell_word(&file.display().to_string()),
     )]
     UntrustedWorkflow { file: PathBuf, edited: bool },
+    #[error(
+        "the harness row {file} {why}; it names a program marion would start, so marion loads a \
+         repository's row only after you have reviewed it. Read it (`marion harness check {quoted}` \
+         says what it runs), then run: marion trust allow {quoted}",
+        why = if *edited { "has changed since you allowed it" } else { "is not one you have allowed" },
+        quoted = shell_word(&file.display().to_string()),
+    )]
+    UntrustedRow { file: PathBuf, edited: bool },
     #[error(
         "the trust store {path} is refused: {why}. It decides which repository commands marion \
          runs, so only you may be able to write it; fix it with `chmod 600 {path}` (and \
@@ -236,6 +245,25 @@ pub fn require_workflow_in(store: PathBuf, file: &Path, text: &str) -> Result<()
     match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
         Verdict::Trusted => Ok(()),
         verdict => Err(TrustError::UntrustedWorkflow {
+            file,
+            edited: verdict == Verdict::Edited,
+        }),
+    }
+}
+
+/// **A repository's harness row runs only once its bytes are trusted**: `text` is the file as read,
+/// and the verdict is on its digest, so an edit — by a person or by a node — revokes it.
+pub fn require_row(file: &Path, text: &str) -> Result<(), TrustError> {
+    require_row_in(store_path().ok_or(TrustError::NoStore)?, file, text)
+}
+
+/// [`require_row`] against the store at `store`.
+pub fn require_row_in(store: PathBuf, file: &Path, text: &str) -> Result<(), TrustError> {
+    let store = Store::open(store)?;
+    let file = canonical(file)?;
+    match store.verdict(&file, &crate::inbox::sha256_hex(text.as_bytes())) {
+        Verdict::Trusted => Ok(()),
+        verdict => Err(TrustError::UntrustedRow {
             file,
             edited: verdict == Verdict::Edited,
         }),
@@ -599,6 +627,9 @@ pub fn run(
             if crate::workflow_file::is_repo_workflow(&canonical) {
                 return allow_workflow(&canonical, &text, store, out);
             }
+            if marion_harness::row_file::is_repo_row(&canonical) {
+                return allow_row(&canonical, &text, store, out);
+            }
             let types = crate::run::agent_types_text(canonical.clone(), &text)
                 .map_err(|e| Some(e.to_string()))?;
             let found = commands(&types);
@@ -680,6 +711,39 @@ fn allow_workflow(
     let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
     w(writeln!(out, "{}  sha256 {sha256}", file.display()))?;
     for line in crate::workflow_file::describe(&workflow) {
+        w(writeln!(out, "  {line}"))?;
+    }
+    let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;
+    store.allow(file.to_path_buf(), sha256);
+    store.save().map_err(|e| Some(e.to_string()))?;
+    w(writeln!(
+        out,
+        "allowed. Any edit to {} revokes this until you allow it again.",
+        file.display()
+    ))
+}
+
+/// `allow` on a repository's harness row: built from the bytes read, exactly as a load builds it,
+/// refused with its faults if it would not load, shown, then trusted by the digest of those bytes.
+fn allow_row(
+    file: &Path,
+    text: &str,
+    store: PathBuf,
+    out: &mut dyn std::io::Write,
+) -> Result<(), Option<String>> {
+    use marion_harness::row_file;
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let harness = marion_core::Harness::named(stem)
+        .filter(|h| !h.is_builtin())
+        .ok_or_else(|| Some(format!("{}: `{stem}` is not a row name", file.display())))?;
+    let spec = row_file::build_from(file, text, harness).map_err(|e| Some(e.to_string()))?;
+    let sha256 = crate::inbox::sha256_hex(text.as_bytes());
+    let w = |r: std::io::Result<()>| r.map_err(|e| Some(e.to_string()));
+    w(writeln!(out, "{}  sha256 {sha256}", file.display()))?;
+    for line in row_file::describe(spec) {
         w(writeln!(out, "  {line}"))?;
     }
     let mut store = Store::edit(store).map_err(|e| Some(e.to_string()))?;
