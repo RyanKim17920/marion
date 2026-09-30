@@ -47,6 +47,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read the code and nothing else. No step pushes, comments or publishes, and the checkout keeps no
+# credential behind for a build script or test to find.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -56,14 +61,16 @@ jobs:
     name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       # rustup reads rust-toolchain.toml (1.94.0, with rustfmt and clippy), so this job and a
       # developer's machine run the same clippy. They do not lint the same code: this job is the
       # only place `#[cfg(target_os = "linux")]` bodies are compiled at all, so a lint inside one
       # is invisible to `cargo clippy` on macOS and lands here first. That is not a toolchain
       # difference and pinning harder would not have caught it.
       - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Harness generality, efficiency and security over every shipped source file, against the
@@ -86,9 +93,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Several suites shell out to `git` inside a scratch repository they create. A runner has no
       # committer identity of its own.
