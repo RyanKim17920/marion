@@ -19,6 +19,7 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 | gemini | 0.53.0 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | n/a | **FAIL** | PASS | n/a |
 | goose | 1.52.0 | PASS | PASS | PASS | PASS | **FAIL** | n/a | PASS | n/a | PASS | PASS | n/a |
 | opencode | 1.18.33 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
+| pi | 0.99.1 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | n/a |
 | qwen | 0.24.7 | PASS | PASS | PASS | PASS | PASS | n/a | PASS | PASS | PASS | **FAIL** | n/a |
 
 ## Findings per cell
@@ -231,6 +232,20 @@ Written by `crates/marion-supervisor/tests/conformance` (`scripts/conformance.sh
 - **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session ses_f10511328ffe6tDD3F9gPmr4TX -> ses_f10511328ffe6tDD3F9gPmr4TX; resume refusal: none
 - **P-lifecycle** PASS: turn end: exit 0, left []; SIGTERM mid-turn: signal 15, left []
 - **P-errors** FAIL: 401: ended after 1.7 s, 1 request(s), exit 1; cause Auth { line: "Incorrect API key provided: dummy." }; stream failure Some("Incorrect API key provided: dummy."); refused credential read off a frame: "Incorrect API key provided: dummy." | 429: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None | 500: still running after 45.0 s, 5 request(s), still running; cause none said; stream failure None
+- **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
+
+### pi 0.99.1
+
+- **P-version** PASS: 0.99.1 (admitted in PINNED_HARNESSES); no-self-update env PI_SKIP_VERSION_CHECK=1 carried
+- **P-launch** PASS: turn ended; provider asked for the marker true on {"openai"}; still running; declaration route verified at compile; auth failure line: none
+- **P-tools** PASS: first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools
+- **P-activity** PASS: turn ended; report Some(Answered); narrative Some("conformance CONFACTIVITY"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f32b-cd60-74cc-9278-2c4a4264d22d ; activity mcp__marion__report
+- **P-approval** PASS: `report` answered with no grant: true (S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's verb reaches the bridge with no prompt)
+- **P-midturn** PASS: folded into the running turn (1 turn end; requests [3])
+- **P-interrupt** PASS: the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []
+- **P-resume** PASS: second life ended; its request carries the first life's prompt: true; session 01a0f32c-1260-7216-8cb9-e3549c58620c -> 01a0f32c-1260-7216-8cb9-e3549c58620c; resume refusal: none
+- **P-lifecycle** PASS: idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 143, left []
+- **P-errors** PASS: 401: ended after 0.3 s, 1 request(s), still running; cause Auth { line: "401: {\"code\":\"invalid_api_key\",\"message\":\"Incorrect API key provided: dummy.\",\"type\":\"invalid_request_error\"}" }; stream failure Some("401: {\"code\":\"invalid_api_key\",\"message\":\"Incorrect API key provided: dummy.\",\"type\":\"invalid_request_error\"}"); refused credential read off a frame: "401: {\"code\":\"invalid_api_key\",\"message\":\"Incorrect API key provided: dummy.\",\"type\":\"invalid_request_error\"}" | 429: ended after 14.3 s, 4 request(s), still running; cause RateLimit { line: "429: {\"code\":\"rate_limit_exceeded\",\"message\":\"rate limit exceeded\",\"type\":\"rate_limit_exceeded\"}" }; stream failure Some("429: {\"code\":\"rate_limit_exceeded\",\"message\":\"rate limit exceeded\",\"type\":\"rate_limit_exceeded\"}") | 500: ended after 14.4 s, 4 request(s), still running; cause Outage { line: "500: {\"code\":null,\"message\":\"internal server error\",\"type\":\"server_error\"}" }; stream failure Some("500: {\"code\":null,\"message\":\"internal server error\",\"type\":\"server_error\"}")
 - **P-tui** UNSUPPORTED: the row has no pane shape (`pane: None`)
 
 ### qwen 0.24.7

@@ -85,7 +85,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("pi"),
     // Runs any vendor's model.
     vendor: None,
-    verified: &["0.80.2"],
+    verified: &["0.80.2", "0.99.1"],
     argv: &[
         Arg::Lit("--mode"),
         Arg::Lit("rpc"),

@@ -1007,6 +1007,68 @@
       },
       "version": "1.18.33"
     },
+    "pi": {
+      "fixtures": "pi-0.99.1",
+      "probes": {
+        "P-activity": {
+          "expected": "the row's reader finds `report` answered, its narrative, and every unit the row says the stream carries (usage, session id, activity)",
+          "observed": "turn ended; report Some(Answered); narrative Some(\"conformance CONFACTIVITY\"); usage TokenUsage { input: 180, output: 40, cache_read: 20, cache_write: 0, reasoning: None } (provider sent [(111, 10, 5), (211, 17, 10)]); session 01a0f32b-cd60-74cc-9278-2c4a4264d22d ; activity mcp__marion__report",
+          "status": "PASS"
+        },
+        "P-approval": {
+          "expected": "the harness asks nothing headless for an MCP tool (row: approval none)",
+          "observed": "`report` answered with no grant: true (S34 on 0.80.2: pi asks nothing headless; a tool named in --tools runs, and marion's verb reaches the bridge with no prompt)",
+          "status": "PASS"
+        },
+        "P-errors": {
+          "expected": "a 401 classifies as Auth, a 429 as RateLimit and a 500 as Outage, from the harness's stderr and its row's error rules (the classifier marion's contracts use, API-key billing)",
+          "observed": "401: ended after 0.3 s, 1 request(s), still running; cause Auth { line: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" }; stream failure Some(\"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\"); refused credential read off a frame: \"401: {\\\"code\\\":\\\"invalid_api_key\\\",\\\"message\\\":\\\"Incorrect API key provided: dummy.\\\",\\\"type\\\":\\\"invalid_request_error\\\"}\" | 429: ended after 14.3 s, 4 request(s), still running; cause RateLimit { line: \"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\" }; stream failure Some(\"429: {\\\"code\\\":\\\"rate_limit_exceeded\\\",\\\"message\\\":\\\"rate limit exceeded\\\",\\\"type\\\":\\\"rate_limit_exceeded\\\"}\") | 500: ended after 14.4 s, 4 request(s), still running; cause Outage { line: \"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\" }; stream failure Some(\"500: {\\\"code\\\":null,\\\"message\\\":\\\"internal server error\\\",\\\"type\\\":\\\"server_error\\\"}\")",
+          "status": "PASS"
+        },
+        "P-interrupt": {
+          "expected": "the surface's cancel ends the turn; marion's kill sweep leaves no process behind",
+          "observed": "the cancel ended the turn in 0.0 s (still running); 1 descendant(s) alive after it; marion's kill sweep confirmed the node dead and left []",
+          "status": "PASS"
+        },
+        "P-launch": {
+          "expected": "the headless launch (surfaces JsonlRpc(JsonlChannel { id: \"id\", reply: [Eq(\"/type\", \"response\")], handshake: Command { fields: [(\"type\", \"get_state\")], text: None }, prompt: Command { fields: [(\"type\", \"prompt\")], text: Some(\"message\") }, steer: Command { fields: [(\"type\", \"prompt\"), (\"streamingBehavior\", \"steer\")], text: Some(\"message\") }, abort: Command { fields: [(\"type\", \"abort\")], text: None }, turn_started: [Eq(\"/type\", \"agent_start\")], turn_ended: [Eq(\"/type\", \"agent_end\"), Eq(\"/willRetry\", \"false\")], note: \"S34 pi-rpc-steer-mid-tool and pi-rpc-abort-mid-tool on 0.80.2 (spikes/s34/pi_rpc.py)\" })) takes one canned turn and ends it, with marion's declaration on the route Document",
+          "observed": "turn ended; provider asked for the marker true on {\"openai\"}; still running; declaration route verified at compile; auth failure line: none",
+          "status": "PASS"
+        },
+        "P-lifecycle": {
+          "expected": "exit 0 at stdin EOF or turn end; SIGTERM ends the harness; nothing it started outlives it",
+          "observed": "idle stdin EOF: exit 0, left []; SIGTERM mid-turn: exit 143, left []",
+          "status": "PASS"
+        },
+        "P-midturn": {
+          "expected": "row Fold: the write is folded into the running turn or queued as the next; nothing is dropped and every prompt is answered",
+          "observed": "folded into the running turn (1 turn end; requests [3])",
+          "status": "PASS"
+        },
+        "P-resume": {
+          "expected": "the row's resume spelling continues the killed session with its history",
+          "observed": "second life ended; its request carries the first life's prompt: true; session 01a0f32c-1260-7216-8cb9-e3549c58620c -> 01a0f32c-1260-7216-8cb9-e3549c58620c; resume refusal: none",
+          "status": "PASS"
+        },
+        "P-tools": {
+          "expected": "`mcp__marion__report` is in the first model request; a slow MCP server is waited for, or marion gates the first prompt itself",
+          "observed": "first request lists `mcp__marion__report`: true; with the bridge 4 s slow and no gate of marion's, the first request came 4.8 s after the spawn and listed marion's tools",
+          "status": "PASS"
+        },
+        "P-tui": {
+          "expected": "",
+          "observed": "the row has no pane shape (`pane: None`)",
+          "reason": "the row has no pane shape (`pane: None`)",
+          "status": "UNSUPPORTED"
+        },
+        "P-version": {
+          "expected": "a version is read, and the row's no-self-update switch is in the compiled launch",
+          "observed": "0.99.1 (admitted in PINNED_HARNESSES); no-self-update env PI_SKIP_VERSION_CHECK=1 carried",
+          "status": "PASS"
+        }
+      },
+      "version": "0.99.1"
+    },
     "qwen": {
       "fixtures": "qwen-0.24.7",
       "probes": {
