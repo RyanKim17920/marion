@@ -416,7 +416,9 @@ mod tests {
     fn an_orphan_reparented_to_pid_one_in_the_nodes_session_is_killed_with_the_node() {
         let dir = marion_testsupport::scratch("kill-session-orphan");
         let recorded = dir.join("orphan.pid");
-        let mut root = Command::new("sh");
+        // bash, not sh: dash (Debian's sh) turns job control off without a terminal, and its
+        // background job then stays in the node's own group.
+        let mut root = Command::new("bash");
         root.args([
             "-c",
             &format!(
@@ -439,7 +441,11 @@ mod tests {
                 .parse()
                 .ok()?;
             let l = crate::procid::lineage(p)?;
-            (l.ppid == 1 && l.pgid != pid).then_some(p)
+            // Reparented out of the node: to pid 1, or to a subreaper (a CI runner, systemd --user)
+            // — either way no ancestry walk from the node reaches it any more.
+            let under_node = l.ppid == pid
+                || crate::procid::lineage(l.ppid).is_some_and(|parent| parent.ppid == pid);
+            (!under_node && l.pgid != pid).then_some(p)
         };
         assert!(
             marion_testsupport::until(|| orphan().is_some()),

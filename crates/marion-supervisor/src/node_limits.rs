@@ -106,7 +106,8 @@ mod tests {
     /// **A node starts under the ceilings**, as the node's own shell reads them.
     #[test]
     fn a_node_reads_its_ceilings_as_its_own_hard_limits() {
-        let mut probe = Command::new("sh");
+        // bash, not sh: dash (Debian's sh) spells the process limit `-p`, and has no `-u`.
+        let mut probe = Command::new("bash");
         probe.args(["-c", "ulimit -Hn; ulimit -Hu"]);
         let out = apply_to(
             &mut probe,
