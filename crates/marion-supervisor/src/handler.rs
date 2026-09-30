@@ -3303,6 +3303,21 @@ impl RegistryHandle {
             .is_some_and(|n| matches!(n.ending, Ending::CancelRequested(_)))
     }
 
+    /// **A node being cancelled spawns nothing** — no child and no race seat. Its subtree was
+    /// frozen under [`Self::spawn_decision`], which the caller holds, and a child started now would
+    /// outlive the cancel that was meant to end it.
+    fn refuse_if_cancelling(&self, caller_id: &SpawnCaller) -> Result<(), RpcError> {
+        if self.cancelling(&caller_id.agent_id) {
+            return Err(RpcError::refused(
+                "caller",
+                "the calling node is being cancelled, so it may not spawn: its turn is being ended \
+                 and everything below it with it.",
+                "§6.7",
+            ));
+        }
+        Ok(())
+    }
+
     /// **Who ended the node, if marion did**, settling nothing: see
     /// [`crate::run::SpawnObserver::ended_by`]. A kill is always the operator's — only an operator
     /// may call `node/kill` or confirm a KillTree.
@@ -3885,16 +3900,7 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let caller = self.resolve_caller(caller_id)?;
-        // A node being cancelled spawns nothing: its subtree was frozen under this same lock, and
-        // a child started now would outlive the cancel that was meant to end it.
-        if self.cancelling(&caller_id.agent_id) {
-            return Err(RpcError::refused(
-                "caller",
-                "the calling node is being cancelled, so it may not spawn: its turn is being ended \
-                 and everything below it with it.",
-                "§6.7",
-            ));
-        }
+        self.refuse_if_cancelling(caller_id)?;
         let repo = self.caller_repo(caller_id)?;
         // §6.1 step 2, before every side effect — the same pure function `run_spawn` calls, run
         // here as well so the refusal arrives in the frame that asked for it rather than as a node
@@ -4035,6 +4041,7 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let caller = self.resolve_caller(caller_id)?;
+        self.refuse_if_cancelling(caller_id)?;
         let repo = self.caller_repo(caller_id)?;
         let types = crate::run::agent_types(&repo)
             .map_err(|e| RpcError::refused("agent_type", e.to_string(), "§3.1"))?;

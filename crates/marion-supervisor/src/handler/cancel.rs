@@ -792,6 +792,49 @@ mod tests {
         assert_eq!(fx.node("root").cancel.unwrap().by, CancelBy::Operator);
     }
 
+    /// **A cancelling node spawns nothing**: the one check `agent/spawn` makes for a child and for
+    /// a race's seats refuses it for as long as the cancel runs.
+    #[test]
+    fn a_cancelling_node_may_not_spawn_a_child_or_a_race() {
+        let fx = Fx::new("cancel-spawn");
+        let token = fx.running("root", None, Harness::Pi, 101, true);
+        let caller = SpawnCaller {
+            agent_id: id("root"),
+            node_token: token.into(),
+        };
+        fx.handle
+            .refuse_if_cancelling(&caller)
+            .expect("a running node may spawn");
+        assert!(
+            fx.handle
+                .inboxes
+                .attach_port(&id("root"), Arc::new(Ignores))
+        );
+        std::thread::scope(|s| {
+            let cancel = s.spawn(|| fx.cancel("root", None));
+            while !fx.handle.cancelling(&id("root")) {
+                std::thread::yield_now();
+            }
+            let e = fx
+                .handle
+                .refuse_if_cancelling(&caller)
+                .expect_err("a cancelling node may not spawn");
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+            // End the cancel now rather than after its grace.
+            let out = crate::serve::sink(ConnId(8));
+            fx.handle
+                .call(
+                    ConnId(8),
+                    &Call::NodeKill(marion_core::proto::params::NodeKillParams {
+                        agent_id: id("root"),
+                    }),
+                    &out,
+                )
+                .expect("the kill escalates");
+            cancel.join().unwrap().expect("cancelled");
+        });
+    }
+
     /// **A queued steer is dropped by the cancel and a later one refused**; a cancelling node may
     /// not spawn.
     #[test]
