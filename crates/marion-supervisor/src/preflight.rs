@@ -252,8 +252,9 @@ fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
             Level::Ok,
             format!(
                 "node sandbox: {}; canned and endpoint nodes of the rows measured under it write \
-                 only their workspace, TMPDIR and agent dir",
-                s.describe()
+                 only their workspace, TMPDIR and agent dir; {}",
+                s.describe(),
+                marion_harness::os_sandbox::ON_OWN_LOGIN
             ),
         );
     }
@@ -261,8 +262,9 @@ fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
         Level::Warn,
         format!(
             "node sandbox {}. Nodes run as before: a node on a harness with no sandbox of its own \
-             writes as you, and a sandboxed node still cannot start one",
-            s.describe()
+             writes as you, and a sandboxed node still cannot start one. {}",
+            s.describe(),
+            marion_harness::os_sandbox::ON_OWN_LOGIN
         ),
     )
 }
@@ -426,6 +428,10 @@ mod tests {
             assert!(
                 !text.contains("  "),
                 "one sentence, no source indentation: {text}"
+            );
+            assert!(
+                text.contains("on your own login, each harness runs in its own permission mode"),
+                "says what governs a node on the operator's own login: {text}"
             );
         }
     }

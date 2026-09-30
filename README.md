@@ -185,9 +185,10 @@ and never hides your credentials from the harness.
   its `TMPDIR`, its agent dir and the few paths its harness measured it needs (macOS Seatbelt
   through `sandbox-exec`; Linux Landlock ABI 2 or later). Reads, commands and the network are
   unchanged. This covers claude, codex, gemini, opencode, copilot, goose, qwen and pi; cline,
-  ACP agents and agy are not yet measured under it. Nodes on your own login keep running
-  unsandboxed for now, because a harness writing its real home could plant a hook your next
-  session runs. `marion doctor` says whether this host can sandbox nodes, and
+  ACP agents and agy are not yet measured under it. On your own login a node runs exactly as its
+  harness normally does, in that harness's own permission or auto mode; marion adds no sandbox
+  there, since the home and the login are yours. `marion doctor` says whether this host can
+  sandbox nodes, and
   `MARION_SANDBOX=off` turns it off, which also drops the containment it gives.
 - **An agent never starts one with more authority than its own.** marion compares the two on
   every axis before the child exists: a parent that cannot write or run commands cannot start

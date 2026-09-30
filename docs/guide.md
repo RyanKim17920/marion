@@ -159,6 +159,14 @@ not `claude` or any other harness whose shell runs as you. A refusal names the a
 allow it. marion reads a session's mode from the flags it was launched with; a mode switched to
 inside the session (claude's shift-tab) or set in the harness's own config is not visible to it.
 
+**Where marion's own sandbox applies.** On a canned or endpoint tree, where marion owns the
+environment, a node on claude, codex, gemini, opencode, copilot, goose, qwen or pi runs under
+marion's OS sandbox and writes only its workspace, its `TMPDIR` and its agent dir; such a node
+counts as contained, so a codex agent may start any of them there. On your own login a node runs
+exactly as its harness normally does, in its own permission or auto mode, with nothing of marion's
+layered on, and the rules above stand as written: only codex counts as sandboxed. `marion doctor`
+says both, and `MARION_SANDBOX=off` turns marion's sandbox off everywhere.
+
 To let agents start wider ones, opt in for one run with `marion run --allow-wider-children`, or
 for every run in `~/.config/marion/config.toml`:
 
