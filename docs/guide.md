@@ -214,8 +214,10 @@ shell: each harness row names the variables its login reads (claude's `ANTHROPIC
 Bedrock `AWS_*` when `CLAUDE_CODE_USE_BEDROCK` is set, copilot's `GH_TOKEN`, and so on), and every
 other key, token or secret (`AWS_*`, `GH_TOKEN`, `NPM_TOKEN`, `SSH_AUTH_SOCK`, `KUBECONFIG`,
 another vendor's `*_API_KEY`) is withheld. opencode, goose, cline, pi and ACP agents keep every
-provider key. A canned or endpoint node inherits no credential at all. To hand an agent type a
-variable anyway, list it in your own `$XDG_CONFIG_HOME/marion/env.toml`:
+provider key. A canned or endpoint node inherits no credential at all. Your own `marion <harness>`
+session is not a node: it keeps your whole environment, as running the harness directly would; the
+nodes it spawns are filtered. To hand an agent type's nodes a variable anyway, list it in your own
+`$XDG_CONFIG_HOME/marion/env.toml`:
 
 ```toml
 [passthrough]

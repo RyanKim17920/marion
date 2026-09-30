@@ -252,20 +252,16 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
                     .map_err(native_command_error)?,
             })
             .map_err(native_command_error)?;
-        // The session runs on the operator's own login, so that login's variables pass; no other
-        // credential of theirs reaches the harness or the shell commands its model runs, unless
-        // the lane's agent type passes it through.
-        let filter = marion_harness::env_filter::InheritFilter {
-            login: marion_harness::adapter::harness_spec(agent_type.harness).login_env,
-            auth: marion_harness::Auth::Inherited,
-            passthrough: crate::child_env::passthrough(&agent_type.name)
-                .map_err(native_command_error)?,
-        };
+        // **The operator's own interactive session, whole**: it must behave as running the harness
+        // directly would, so the client's environment passes untouched — `SSH_AUTH_SOCK`, a
+        // `GH_TOKEN` and all — minus only inherited `MARION_` names (`assemble_native`) and what
+        // marion injects. The inherit filter (`marion_harness::env_filter`) is for the nodes marion
+        // launches on someone's behalf, this session's children included, never for the session.
         let mut prepared = assemble_native(
             NativeProcessBase {
                 program,
                 user_argv: context.opaque_tail().to_vec(),
-                env: filter.filter(environment.to_vec()),
+                env: environment.to_vec(),
                 cwd,
                 geometry,
             },
@@ -978,6 +974,76 @@ mod tests {
             crate::native_bootstrap::NATIVE_WIRE_VERSION,
         )
         .with_environment(environment)
+    }
+
+    /// **A native session is the operator's own, whole**: their `SSH_AUTH_SOCK`, `GH_TOKEN` and
+    /// cloud keys reach it exactly as running the harness directly would, and only a forged
+    /// `MARION_` name is dropped. The nodes it spawns are launched through a compiled invocation,
+    /// whose inherit filter withholds those very variables (`every_row_states_its_login_env_and_
+    /// every_launch_filters_what_it_inherits` pins that every launch carries it).
+    ///
+    /// Mutation: filter the session's base environment. It fails.
+    #[test]
+    fn a_native_session_keeps_the_operators_environment_and_its_children_do_not() {
+        let work = marion_testsupport::scratch("native-factory-env");
+        let (bin, _) = fixture_executable(&work);
+        let project = work.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let env = factory_env(&work);
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let operator = [
+            ("SSH_AUTH_SOCK", "/private/tmp/ssh-agent.sock"),
+            ("GH_TOKEN", "ghp_operator_session"),
+            ("AWS_SECRET_ACCESS_KEY", "aws-operator-session"),
+            ("MARION_NODE_TOKEN", "forged"),
+        ];
+        let mut environment = vec![(OsString::from("PATH"), bin.as_os_str().to_owned())];
+        environment.extend(
+            operator
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+        );
+        let prepared = ProductionNativeCommandFactory::new(env, fixture_adapter)
+            .prepare(
+                &selected,
+                &atlas_context(&project, vec![], environment),
+                NativeTerminalGeometry {
+                    cols: 80,
+                    rows: 24,
+                    xpixel: 0,
+                    ypixel: 0,
+                },
+                &fixture_claim(&AgentId("native-env".into())),
+            )
+            .expect("the fixture facade assembles");
+        let value = |k: &str| {
+            prepared
+                .invocation
+                .env
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        for (k, v) in &operator[..3] {
+            assert_eq!(value(k).as_deref(), Some(*v), "the session keeps {k}");
+        }
+        assert_ne!(value("MARION_NODE_TOKEN").as_deref(), Some("forged"));
+
+        // What a child of this session is launched with: every harness's compiled invocation
+        // carries the filter, and on the operator's own login it withholds the SSH agent (and a
+        // GitHub token everywhere but copilot, whose own login it is).
+        for h in marion_core::harness::Harness::ALL {
+            let child = marion_harness::env_filter::InheritFilter {
+                login: marion_harness::adapter::harness_spec(h).login_env,
+                auth: marion_harness::Auth::Inherited,
+                passthrough: vec![],
+            };
+            assert!(
+                child.withholds("SSH_AUTH_SOCK", &|_| false),
+                "{h}'s child inherits the SSH agent"
+            );
+        }
     }
 
     /// Mutation: run the vendor in the canonical project (§2's key, `<repo>/.git`) instead of
