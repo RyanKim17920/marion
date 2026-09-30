@@ -21,9 +21,8 @@
 //! error path cannot leak it. [`parse_key`] is the one way a typed or piped key becomes one.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use marion_core::provider::{CredentialId, Registry};
 
@@ -113,11 +112,16 @@ pub fn config_dir() -> Result<PathBuf, CredentialError> {
     }
 }
 
+/// Whether [`default_store`] is the Keychain: macOS, and [`STORE_ENV`] does not say `file`.
+pub fn keychain_in_use() -> bool {
+    cfg!(target_os = "macos") && !std::env::var(STORE_ENV).is_ok_and(|v| v.trim() == "file")
+}
+
 /// The store `marion login` and a launch both use: the file backend where [`STORE_ENV`] says
 /// `file` or the platform has no Keychain, the Keychain otherwise.
 pub fn default_store() -> Result<Box<dyn CredentialStore>, CredentialError> {
-    let forced_file = std::env::var(STORE_ENV).is_ok_and(|v| v.trim() == "file");
-    if cfg!(target_os = "macos") && !forced_file {
+    #[cfg(target_os = "macos")]
+    if keychain_in_use() {
         return Ok(Box::new(Keychain::system()));
     }
     Ok(Box::new(FileStore::at(
@@ -332,137 +336,169 @@ impl CredentialStore for FileStore {
     }
 }
 
-/// The macOS login Keychain, through `/usr/bin/security`: service [`KEYCHAIN_SERVICE`], account
-/// the provider id.
+/// **The macOS login Keychain, read and written in-process** through Security.framework: service
+/// [`KEYCHAIN_SERVICE`], account the credential id.
+///
+/// In-process because the Keychain trusts the *application* that creates an item. Created by
+/// `/usr/bin/security`, an item trusted that tool, and any process of the operator's — a model's
+/// shell included — could run `security find-generic-password -w` and read the key without a
+/// prompt. Created by marion, it trusts marion: marion reads silently and anything else is asked.
+/// An unsigned build is identified by its code hash, so the first read after an upgrade shows one
+/// "marion wants to access" dialog (Always Allow ends it); a Developer-ID-signed release keeps the
+/// identity across upgrades.
+///
+/// [`Keychain::put`] deletes before it adds, so a re-stored item is created by marion and trusts
+/// it alone, and records the id in [`KEYCHAIN_OWNED_FILE`]: an id the store holds that is not
+/// recorded there was stored by the `security` tool, and `marion doctor` names it
+/// ([`unowned_keychain_ids`]) with the command that re-stores it.
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
 pub struct Keychain {
-    program: PathBuf,
+    /// Where the ids marion itself created are recorded; `None` records nothing (a test's).
+    owned: Option<PathBuf>,
 }
 
-/// `security`'s exit status for "the specified item could not be found".
-const ERR_ITEM_NOT_FOUND: i32 = 44;
+/// The ids whose Keychain items marion created itself, under the user-level config dir (ids only,
+/// never a key).
+pub const KEYCHAIN_OWNED_FILE: &str = "keychain-owned.json";
 
+/// `errSecItemNotFound`.
+#[cfg(target_os = "macos")]
+const ERR_ITEM_NOT_FOUND: i32 = -25300;
+
+#[cfg(target_os = "macos")]
 impl Keychain {
     pub fn system() -> Self {
         Keychain {
-            program: PathBuf::from("/usr/bin/security"),
+            owned: config_dir().ok().map(|d| d.join(KEYCHAIN_OWNED_FILE)),
         }
     }
 
-    fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(i32, String), CredentialError> {
-        let mut cmd = Command::new(&self.program);
-        cmd.args(args)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            // Never shown: on `-i` it could echo the command line back.
-            .stderr(Stdio::null());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| CredentialError::Keychain(format!("cannot run security: {e}")))?;
-        if let Some(input) = stdin {
-            let mut pipe = child.stdin.take().expect("piped");
-            pipe.write_all(input.as_bytes())
-                .map_err(|e| CredentialError::Keychain(e.to_string()))?;
+    fn err(what: &str, e: security_framework::base::Error) -> CredentialError {
+        CredentialError::Keychain(format!("{what}: {e}"))
+    }
+
+    fn record(&self, id: &str, owned: bool) -> Result<(), CredentialError> {
+        let Some(path) = &self.owned else {
+            return Ok(());
+        };
+        let mut ids = read_owned(path)?;
+        ids.retain(|i| i != id);
+        if owned {
+            ids.push(id.to_string());
         }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| CredentialError::Keychain(e.to_string()))?;
-        let code = out.status.code().unwrap_or(-1);
-        Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
+        let doc = serde_json::json!({ "owned": ids });
+        crate::private_fs::write_atomic(path, format!("{doc:#}\n").as_bytes())
+            .map_err(|e| CredentialError::Keychain(format!("{}: {e}", path.display())))
     }
 }
 
+/// The ids recorded in `path`; an absent file is none.
+fn read_owned(path: &Path) -> Result<Vec<String>, CredentialError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(CredentialError::Keychain(format!(
+                "{}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| CredentialError::Keychain(format!("{}: {e}", path.display())))?;
+    Ok(doc["owned"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect())
+}
+
+/// The credential ids `logins` lists whose Keychain item marion did not create itself — stored by
+/// the `security` tool before marion wrote its own items, so still readable by any process of the
+/// operator's without a prompt. Empty wherever the file store is in use.
+pub fn unowned_keychain_ids(
+    logins: &[CredentialId],
+    owned_file: &Path,
+) -> Result<Vec<String>, CredentialError> {
+    let owned = read_owned(owned_file)?;
+    Ok(logins
+        .iter()
+        .map(|id| id.to_string())
+        .filter(|id| !owned.contains(id))
+        .collect())
+}
+
+/// The command that re-stores `id` as marion's own item: read through the tool the old item
+/// trusts, stored in-process.
+pub fn restore_command(id: &str) -> String {
+    format!(
+        "security find-generic-password -s {KEYCHAIN_SERVICE} -a {id} -w | marion login {id} --stdin"
+    )
+}
+
+#[cfg(target_os = "macos")]
 impl CredentialStore for Keychain {
     fn get(&self, provider: &str) -> Result<Option<Secret>, CredentialError> {
         check_provider(provider)?;
-        let (code, out) = self.run(
-            &[
-                "find-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                provider,
-                "-w",
-            ],
-            None,
-        )?;
-        match code {
-            0 => parse_key(out.trim_end_matches('\n')).map(Some),
-            ERR_ITEM_NOT_FOUND => Ok(None),
-            c => Err(CredentialError::Keychain(format!(
-                "find-generic-password exited {c}"
-            ))),
+        match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, provider) {
+            Ok(bytes) => {
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| CredentialError::Keychain("the item is not UTF-8".into()))?;
+                parse_key(&text).map(Some)
+            }
+            Err(e) if e.code() == ERR_ITEM_NOT_FOUND => Ok(None),
+            Err(e) => Err(Self::err("reading the item", e)),
         }
     }
 
-    /// `find-generic-password` without `-w`: the item's attributes only, never its password.
+    /// The item's attributes only, never its password: no access check, so no prompt.
     fn has(&self, provider: &str) -> Result<bool, CredentialError> {
         check_provider(provider)?;
-        let (code, _) = self.run(
-            &[
-                "find-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                provider,
-            ],
-            None,
-        )?;
-        match code {
-            0 => Ok(true),
-            ERR_ITEM_NOT_FOUND => Ok(false),
-            c => Err(CredentialError::Keychain(format!(
-                "find-generic-password exited {c}"
-            ))),
+        let found = security_framework::item::ItemSearchOptions::new()
+            .class(security_framework::item::ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .account(provider)
+            .load_attributes(true)
+            .search();
+        match found {
+            Ok(items) => Ok(!items.is_empty()),
+            Err(e) if e.code() == ERR_ITEM_NOT_FOUND => Ok(false),
+            Err(e) => Err(Self::err("looking the item up", e)),
         }
     }
 
     fn put(&self, provider: &str, key: &Secret) -> Result<(), CredentialError> {
         check_provider(provider)?;
-        // Both tokens are validated to a character set `security -i`'s tokenizer passes through
-        // unquoted, and the line travels on stdin, never argv.
-        let line = format!(
-            "add-generic-password -U -s {KEYCHAIN_SERVICE} -a {provider} -w {}\n",
-            key.expose()
-        );
-        let (code, _) = self.run(&["-i"], Some(&line))?;
-        if code != 0 {
-            return Err(CredentialError::Keychain(format!(
-                "add-generic-password exited {code}"
-            )));
+        // Delete first, so the item is created by marion and trusts marion alone: an update would
+        // keep whatever access list the old item had.
+        match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, provider) {
+            Ok(()) => {}
+            Err(e) if e.code() == ERR_ITEM_NOT_FOUND => {}
+            Err(e) => return Err(Self::err("replacing the old item", e)),
         }
-        // `-i` exits 0 even when the command inside it failed; read the item back to know.
-        match self.get(provider)? {
-            Some(k) if k == *key => Ok(()),
-            _ => Err(CredentialError::Keychain(
-                "the item was not stored".to_string(),
-            )),
-        }
+        security_framework::passwords::set_generic_password(
+            KEYCHAIN_SERVICE,
+            provider,
+            key.expose().as_bytes(),
+        )
+        .map_err(|e| Self::err("storing the item", e))?;
+        self.record(provider, true)
     }
 
     fn delete(&self, provider: &str) -> Result<bool, CredentialError> {
         check_provider(provider)?;
-        let (code, _) = self.run(
-            &[
-                "delete-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                provider,
-            ],
-            None,
-        )?;
-        match code {
-            0 => Ok(true),
-            ERR_ITEM_NOT_FOUND => Ok(false),
-            c => Err(CredentialError::Keychain(format!(
-                "delete-generic-password exited {c}"
-            ))),
-        }
+        let gone = match security_framework::passwords::delete_generic_password(
+            KEYCHAIN_SERVICE,
+            provider,
+        ) {
+            Ok(()) => true,
+            Err(e) if e.code() == ERR_ITEM_NOT_FOUND => false,
+            Err(e) => return Err(Self::err("deleting the item", e)),
+        };
+        self.record(provider, false)?;
+        Ok(gone)
     }
 
     fn describe(&self) -> String {
@@ -598,14 +634,39 @@ mod tests {
         assert_eq!(reg.custom().count(), 0);
     }
 
+    /// An id the store lists that marion did not create itself is named, with the command that
+    /// re-stores it as marion's own item; ids marion created are not.
+    #[test]
+    fn an_item_the_security_tool_stored_is_named_with_its_restore_command() {
+        let dir = tmp("keychain-owned");
+        std::fs::create_dir_all(&dir).unwrap();
+        let owned = dir.join(KEYCHAIN_OWNED_FILE);
+        let ids: Vec<CredentialId> = ["openrouter", "openai:work"]
+            .iter()
+            .map(|i| CredentialId::parse(i).unwrap())
+            .collect();
+        assert_eq!(
+            unowned_keychain_ids(&ids, &owned).unwrap(),
+            ["openrouter", "openai:work"]
+        );
+        std::fs::write(&owned, r#"{"owned":["openrouter"]}"#).unwrap();
+        assert_eq!(unowned_keychain_ids(&ids, &owned).unwrap(), ["openai:work"]);
+        assert_eq!(
+            restore_command("openai:work"),
+            "security find-generic-password -s marion -a openai:work -w | marion login openai:work \
+             --stdin"
+        );
+    }
+
     /// Touches the real login Keychain, so it runs only when asked for by name.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_keychain_round_trips_when_explicitly_enabled() {
         if std::env::var("MARION_KEYCHAIN_TEST").as_deref() != Ok("1") {
             eprintln!("skipped: set MARION_KEYCHAIN_TEST=1 to exercise the macOS Keychain");
             return;
         }
-        let kc = Keychain::system();
+        let kc = Keychain { owned: None };
         let id = format!("marion-keychain-test-{}", std::process::id());
         let key = parse_key("sk-keychain-test-value").unwrap();
         kc.put(&id, &key).unwrap();

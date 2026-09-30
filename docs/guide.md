@@ -236,9 +236,15 @@ marion logout openrouter
 marion run opencode --prompt "…" --model openrouter:qwen/qwen3-coder
 ```
 
-A key goes into the macOS Keychain (service `marion`, passed to `security` on stdin, never argv)
-or, elsewhere or with `MARION_CREDENTIAL_STORE=file`, into a `0600` file in a `0700` directory
-under `$XDG_CONFIG_HOME/marion/`. It is never printed. `login custom` adds an OpenAI-, Anthropic-
+A key goes into the macOS Keychain (service `marion`) or, elsewhere or with
+`MARION_CREDENTIAL_STORE=file`, into a `0600` file in a `0700` directory under
+`$XDG_CONFIG_HOME/marion/`. It is never printed. marion writes and reads its Keychain items itself,
+so each item trusts marion alone: any other program that asks for the key, `security` included,
+gets a Keychain prompt rather than the key. Until marion releases are Developer-ID signed, each
+upgrade is a new binary to the Keychain, so the first read after one shows a single "marion wants
+to access" prompt; Always Allow ends it. Keys stored by an older marion were created by `security`
+and any program of yours can still read them silently; `marion doctor` names each one with the
+command that re-stores it as marion's own. `login custom` adds an OpenAI-, Anthropic-
 or Gemini-compatible endpoint (`--wire anthropic|openai-chat|openai-responses|gemini`, comma
 separated for several; `--auth none` for a keyless local server) to the user-level
 `providers.toml`; a repository's `.marion/` is never read for providers. `providers.toml`'s

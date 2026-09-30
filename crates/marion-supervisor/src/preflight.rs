@@ -79,6 +79,10 @@ pub struct Facts {
     pub socket: Option<socket::SocketPaths>,
     /// `git --version`, when git runs.
     pub git: Option<String>,
+    /// Keychain credential ids marion did not create itself (`credentials::unowned_keychain_ids`):
+    /// stored by the `security` tool, so readable by any of the operator's processes. Empty where
+    /// the file store is in use.
+    pub keychain_unowned: Vec<String>,
 }
 
 /// Read the facts from this process and machine.
@@ -123,12 +127,32 @@ pub fn gather() -> Facts {
         state_writable,
         socket,
         git,
+        keychain_unowned: keychain_unowned(),
     }
+}
+
+/// See [`Facts::keychain_unowned`]; any error reading the index is no finding, since `doctor` is
+/// not where a broken index is diagnosed (`marion login --list` names it).
+fn keychain_unowned() -> Vec<String> {
+    if !crate::credentials::keychain_in_use() {
+        return Vec::new();
+    }
+    let (Ok(dir), Ok(logins)) = (
+        crate::credentials::config_dir(),
+        crate::credentials::Logins::user().and_then(|l| l.all()),
+    ) else {
+        return Vec::new();
+    };
+    crate::credentials::unowned_keychain_ids(
+        &logins,
+        &dir.join(crate::credentials::KEYCHAIN_OWNED_FILE),
+    )
+    .unwrap_or_default()
 }
 
 /// The findings, in the order a person should fix them.
 pub fn checks(f: &Facts) -> Vec<Check> {
-    vec![
+    let mut all = vec![
         binaries(f),
         os(&f.os),
         state(f),
@@ -141,7 +165,25 @@ pub fn checks(f: &Facts) -> Vec<Check> {
                  branch marion/<id>), and a root with file tools needs a git repository",
             ),
         },
-    ]
+    ];
+    if !f.keychain_unowned.is_empty() {
+        let commands: Vec<String> = f
+            .keychain_unowned
+            .iter()
+            .map(|id| format!("    {}", crate::credentials::restore_command(id)))
+            .collect();
+        all.push(Check::new(
+            Level::Warn,
+            format!(
+                "{} key(s) in the macOS Keychain were stored by the `security` tool, so any \
+                 process of yours can read them without a prompt; re-store each as marion's own \
+                 item (one Keychain prompt, then only marion reads it):\n{}",
+                f.keychain_unowned.len(),
+                commands.join("\n")
+            ),
+        ));
+    }
+    all
 }
 
 /// The version word out of `<name> <version>`.
@@ -331,7 +373,28 @@ mod tests {
                 501,
             )),
             git: Some("git version 2.50.0".into()),
+            keychain_unowned: vec![],
         }
+    }
+
+    /// A Keychain key the `security` tool stored is a warning naming the command that re-stores
+    /// it; none is no line at all.
+    #[test]
+    fn a_key_the_security_tool_stored_is_a_warning_with_its_restore_command() {
+        assert_eq!(checks(&facts()).len(), 5);
+        let f = Facts {
+            keychain_unowned: vec!["openrouter".into()],
+            ..facts()
+        };
+        let all = checks(&f);
+        let last = all.last().unwrap();
+        assert_eq!(last.level, Level::Warn);
+        assert!(
+            last.text
+                .contains("security find-generic-password -s marion -a openrouter -w | marion login openrouter --stdin"),
+            "{}",
+            last.text
+        );
     }
 
     fn levels(f: &Facts) -> Vec<Level> {

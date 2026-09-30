@@ -67,6 +67,12 @@ sha2 = "0.11"
 # `.marion/agents.toml` is read with.
 toml.workspace = true
 
+# The macOS Keychain, read and written in-process so the item's access list trusts marion itself
+# and not `/usr/bin/security`, which any same-user process can run (`credentials::Keychain`).
+# macOS only: every other target builds without it.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", default-features = false }
+
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the
 # canned provider into the user-facing `marion` binary would put a fake-model server inside the
 # shipped command, and §5.5 keeps the provider a separate component precisely so the real endpoint
