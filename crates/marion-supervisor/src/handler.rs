@@ -14437,6 +14437,15 @@ mod tests {
             let root = call_on(&fx, conn, Call::AgentSpawn(params(None, 1)))
                 .expect_err("a node cannot start a root");
             assert!(root.message.contains("operator"), "{}", root.message);
+            let notices = call_on(
+                &fx,
+                conn,
+                Call::NotifyConfigure(marion_core::proto::params::NotifyConfigureParams {
+                    enabled: false,
+                }),
+            )
+            .expect_err("a node cannot silence the operator's notices");
+            assert!(notices.message.contains("operator"), "{}", notices.message);
 
             let forged = call_on(
                 &fx,
