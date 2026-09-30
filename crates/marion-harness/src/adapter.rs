@@ -9045,25 +9045,26 @@ mod tests {
     fn every_row_states_its_push_strategy_and_renders_its_argv_only_into_interactive_shapes() {
         use crate::spec::{MCP_ALIAS, Push};
 
+        let channel = Push::Channel(&crate::claude_code::CHANNEL);
         assert_eq!(
-            Push::ClaudeChannel.argv(),
+            channel.argv(),
             ["--dangerously-load-development-channels", "server:marion"],
             "the measured flag, byte for byte"
         );
         assert_eq!(
-            Push::ClaudeChannel.argv()[1],
+            channel.argv()[1],
             format!("server:{MCP_ALIAS}"),
             "the channel is keyed by the server name every declaration uses"
         );
         assert!(Push::McpLog.argv().is_empty() && Push::None.argv().is_empty());
-        assert_eq!(harness_spec(Harness::ClaudeCode).push, Push::ClaudeChannel);
+        assert_eq!(harness_spec(Harness::ClaudeCode).push, channel);
         assert_eq!(harness_spec(Harness::Acp).push, Push::None);
 
         let document_dir = PathBuf::from("/state/agents/019f-root");
         for h in Harness::ALL {
             let row = harness_spec(h);
             let tokens: Vec<String> = row.push.argv().iter().map(|s| s.to_string()).collect();
-            if row.push == Push::ClaudeChannel {
+            if matches!(row.push, Push::Channel(_)) {
                 assert!(
                     row.client_name.is_some(),
                     "{h}: a row that pushes over the channel must name the client it serves"
@@ -9243,7 +9244,7 @@ mod tests {
                         "{h} {shape:?}: a continuation is a headless relaunch by resume"
                     ),
                     TurnDelivery::McpChannel { .. } => assert!(
-                        !headless && row.push == Push::ClaudeChannel,
+                        !headless && matches!(row.push, Push::Channel(_)),
                         "{h} {shape:?}: the channel is Claude Code's, and interactive only"
                     ),
                     TurnDelivery::TerminalPaste { submit, .. } => {

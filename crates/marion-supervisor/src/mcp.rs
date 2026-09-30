@@ -2930,9 +2930,12 @@ mod tests {
         });
         let (wait_text, _) = bridge::spawn_text("codex-impl", Ok(contract.clone()));
         let announced = bridge::announcement_of("codex-impl", &Ok(contract.clone()));
-        let frame = watch(Push::ClaudeChannel, &target("t-1"), &project(), || {
-            Ok(courier::Delivered::Contract(Box::new(contract)))
-        })
+        let frame = watch(
+            Push::Channel(&marion_harness::claude_code::CHANNEL),
+            &target("t-1"),
+            &project(),
+            || Ok(courier::Delivered::Contract(Box::new(contract))),
+        )
         .expect("a terminal outcome is pushed");
 
         let mut out: Vec<u8> = Vec::new();
@@ -3002,18 +3005,24 @@ mod tests {
     fn an_expired_watch_pushes_nothing() {
         use marion_harness::spec::Push;
         assert!(
-            watch(Push::ClaudeChannel, &target("t-1"), &project(), || Ok(
-                courier::Delivered::StillRunning
-            ))
+            watch(
+                Push::Channel(&marion_harness::claude_code::CHANNEL),
+                &target("t-1"),
+                &project(),
+                || Ok(courier::Delivered::StillRunning)
+            )
             .is_none()
         );
         assert!(
-            watch(Push::ClaudeChannel, &target("t-1"), &project(), || Err(
-                SpawnError::SupervisorUnreachable {
+            watch(
+                Push::Channel(&marion_harness::claude_code::CHANNEL),
+                &target("t-1"),
+                &project(),
+                || Err(SpawnError::SupervisorUnreachable {
                     socket: "/nowhere".into(),
                     why: "refused".into(),
-                }
-            ))
+                })
+            )
             .is_none()
         );
         assert!(
@@ -3035,14 +3044,17 @@ mod tests {
         let builtins = marion_core::agent_type::AgentTypes::builtins_only();
         assert_eq!(
             push_for_node(&builtins, Some("claude")),
-            Push::ClaudeChannel
+            Push::Channel(&marion_harness::claude_code::CHANNEL)
         );
         assert_eq!(push_for_node(&builtins, Some("codex-impl")), Push::McpLog);
         assert_eq!(push_for_node(&builtins, Some("acp:opencode")), Push::None);
         assert_eq!(push_for_node(&builtins, Some("no-such-type")), Push::None);
         assert_eq!(push_for_node(&builtins, Some("")), Push::None);
         assert_eq!(push_for_node(&builtins, None), Push::None);
-        assert_eq!(push_for_client(Some("claude-code")), Push::ClaudeChannel);
+        assert_eq!(
+            push_for_client(Some("claude-code")),
+            Push::Channel(&marion_harness::claude_code::CHANNEL)
+        );
         assert_eq!(push_for_client(Some("codex-mcp-client")), Push::McpLog);
         assert_eq!(push_for_client(None), Push::McpLog);
     }
@@ -3062,7 +3074,10 @@ mod tests {
             push_for_node(&types, Some("reviewer")),
             push_for_node(&types, Some("claude")),
         );
-        assert_eq!(push_for_node(&types, Some("reviewer")), Push::ClaudeChannel);
+        assert_eq!(
+            push_for_node(&types, Some("reviewer")),
+            Push::Channel(&marion_harness::claude_code::CHANNEL)
+        );
         assert_eq!(
             push_for_node(
                 &marion_core::agent_type::AgentTypes::builtins_only(),

@@ -25,9 +25,9 @@ pub use crate::mcp_bridge::{
 use crate::profile::{ProfileCarrier, Status as ProfileStatus};
 use crate::spec::{
     AbortVerb, Aborts, Advertised, Approval, Arg, AxesRule, Body, BootDialog, BootDialogs,
-    Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration, McpRoute,
-    McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers, Resume,
-    Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
+    ChannelPush, Constraint, Deliveries, DialogAnswer, Env, Field, HarnessSpec, LiveDeclaration,
+    McpRoute, McpRoutes, McpServers, MidTurn, ModelForm, Push, ReadOnly, Readiness, Remembers,
+    Resume, Spelling, Surfaces, TokenCarriers, ToolSpelling, TurnDelivery, UpdatePolicy, Val, When,
     WireRecipe,
 };
 use crate::surfaces::TypedKind;
@@ -63,6 +63,24 @@ pub fn mcp_config_document(b: &BridgeEnv) -> String {
 /// two tool axes (`tests/fixtures/s14/`); every flag below carries its reason in the doc of the
 /// hand-written compile it was transcribed from, and those reasons are repeated here only where
 /// the *shape* is the surprising part.
+/// Claude Code's `notifications/claude/channel`, **measured on 2.1.268**: the harness injects the
+/// frame's `content` as a new user turn (`<channel source="marion" k="v">…</channel>`,
+/// `isMeta: true`) and the model reacts within ~2 s — *only* in interactive mode, and *only* when
+/// started with `--dangerously-load-development-channels server:marion`. A bare `--channels
+/// server:marion` is accepted as a flag and refused by the research-preview allowlist, dropping
+/// the event silently. A full-screen "Loading development channels" dialog appears once at
+/// startup, default option 1 = accept. In `-p` mode the event is never enqueued at all, which is
+/// why the headless shape never carries the flag: it is variadic and would only swallow a trailing
+/// positional prompt. The server must declare `capabilities.experimental["claude/channel"]`, and
+/// every `meta` key must be identifier-shaped, since each becomes a tag attribute. The flag's
+/// value names marion's server as every declaration does (the sweep pins it against
+/// [`crate::spec::MCP_ALIAS`]).
+pub const CHANNEL: ChannelPush = ChannelPush {
+    method: "notifications/claude/channel",
+    capability: "claude/channel",
+    argv: &["--dangerously-load-development-channels", "server:marion"],
+};
+
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::ClaudeCode,
     surfaces: Surfaces::Headless(TypedKind::StreamJson),
@@ -253,8 +271,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // turn in the interactive session when claude is started with the development-channels flag
     // (one full-screen warning dialog at startup; default accepts). `-p` never enqueues it, so
     // the headless row above carries no flag. The name is what 2.1.268 sends in `initialize`'s
-    // `clientInfo.name`.
-    push: Push::ClaudeChannel,
+    // `clientInfo.name`. See [`CHANNEL`].
+    push: Push::Channel(&CHANNEL),
     // `--allowedTools` is the list 2.1.220 checks a call against; marion's verbs are on it, and a
     // call to anything off it asks over `--permission-prompt-tool stdio` (S9).
     approval: Approval::AllowedToolsArg {

@@ -431,18 +431,10 @@ pub const BEARER_BY_OVERLAY: KeyRecipe = KeyRecipe {
 /// where each row's [`Self::argv`] lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Push {
-    /// Claude Code's `notifications/claude/channel`, **measured on 2.1.268**: the harness injects
-    /// the frame's `content` as a new user turn (`<channel source="marion" k="v">…</channel>`,
-    /// `isMeta: true`) and the model reacts within ~2 s — *only* in interactive mode, and *only*
-    /// when started with `--dangerously-load-development-channels server:marion`. A bare
-    /// `--channels server:marion` is accepted as a flag and refused by the research-preview
-    /// allowlist, dropping the event silently. A full-screen "Loading development channels"
-    /// dialog appears once at startup, default option 1 = accept. In `-p` mode the event is never
-    /// enqueued at all, which is why the headless shape never carries [`Self::argv`]: the flag
-    /// is variadic and would only swallow a trailing positional prompt. The server must declare
-    /// `capabilities.experimental["claude/channel"]`, and every `meta` key must be
-    /// identifier-shaped, since each becomes a tag attribute.
-    ClaudeChannel,
+    /// A harness's own **channel notification**, measured on its row ([`ChannelPush`]): the frame
+    /// the harness injects as a new user turn, the capability the server must declare for it to be
+    /// delivered, and the launch flag an interactive launch needs. Never on a headless launch.
+    Channel(&'static ChannelPush),
     /// MCP's own `notifications/message` (logging), under `capabilities.logging`. **Unmeasured**
     /// on every row that carries it: it is what the protocol lets any server send, and what a
     /// client may show, log or drop. No launch flag.
@@ -454,15 +446,25 @@ pub enum Push {
     None,
 }
 
-/// [`Push::ClaudeChannel`]'s launch flag; its value names marion's server as every declaration
-/// does (the sweep pins it against [`MCP_ALIAS`], which a `const` string cannot be spliced into).
-const CLAUDE_CHANNEL_ARGV: &[&str] = &["--dangerously-load-development-channels", "server:marion"];
+/// **A harness's channel notification, as its row measured it** — [`Push::Channel`]'s data. The
+/// frame is `{"method": method, "params": {"content": …, "meta": …}}`; the harness reads each
+/// `meta` key as an attribute, so the keys are identifier-shaped.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChannelPush {
+    /// The notification's method.
+    pub method: &'static str,
+    /// The key the server declares under `capabilities.experimental`; a harness drops the
+    /// notification from a server that did not.
+    pub capability: &'static str,
+    /// The flag that makes an **interactive** launch deliver it.
+    pub argv: &'static [&'static str],
+}
 
 impl Push {
     /// The argv that enables this push on an **interactive** launch — or nothing.
     pub const fn argv(self) -> &'static [&'static str] {
         match self {
-            Push::ClaudeChannel => CLAUDE_CHANNEL_ARGV,
+            Push::Channel(c) => c.argv,
             Push::McpLog | Push::None => &[],
         }
     }
@@ -512,7 +514,7 @@ pub enum TurnDelivery {
     /// grammar with the message as the prompt, after the previous process exited.
     Continuation { note: &'static str },
     /// Claude Code's `notifications/claude/channel`, pushed on the MCP pipe marion's bridge holds
-    /// ([`Push::ClaudeChannel`]); the harness folds or queues it itself.
+    /// ([`Push::Channel`]); the harness folds or queues it itself.
     McpChannel { note: &'static str },
     /// Typed into the node's terminal: `ESC[200~` + text + `ESC[201~` (always bracketed — codex
     /// turns an unbracketed burst's CR into a newline), then `submit` after `submit_delay_ms`,

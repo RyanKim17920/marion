@@ -597,13 +597,17 @@ pub fn authorization_refusal(depth: u32, verb: &str) -> Option<&'static str> {
 /// read. See [`negotiate_protocol_version`] for the rule.
 ///
 /// `push` is how this bridge will announce a backgrounded child's end, and the capability that
-/// carries it is declared here or the client never delivers it: Claude Code (2.1.268) drops a
-/// `notifications/claude/channel` from a server that did not offer
-/// `experimental["claude/channel"]`, and MCP's logging notification is declared under `logging`.
+/// carries it is declared here or the client never delivers it: a channel under the row's own
+/// `experimental` key (a harness drops the notification from a server that did not offer it), and
+/// MCP's logging notification under `logging`.
 pub fn initialize_result(id: &Value, offered: Option<&str>, push: Push) -> Value {
     let mut capabilities = json!({"tools": {}});
     match push {
-        Push::ClaudeChannel => capabilities["experimental"] = json!({"claude/channel": {}}),
+        Push::Channel(c) => {
+            let mut declared = serde_json::Map::new();
+            declared.insert(c.capability.to_string(), json!({}));
+            capabilities["experimental"] = Value::Object(declared);
+        }
         Push::McpLog => capabilities["logging"] = json!({}),
         Push::None => {}
     }
@@ -623,10 +627,7 @@ pub fn initialize_result(id: &Value, offered: Option<&str>, push: Push) -> Value
 /// of the `<channel>` tag, so keys are identifier-shaped.
 pub fn push_frame(push: Push, text: &str, meta: Value) -> Option<Value> {
     let (method, params) = match push {
-        Push::ClaudeChannel => (
-            "notifications/claude/channel",
-            json!({"content": text, "meta": meta}),
-        ),
+        Push::Channel(c) => (c.method, json!({"content": text, "meta": meta})),
         Push::McpLog => (
             "notifications/message",
             json!({"level": "info", "logger": "marion", "data": {"text": text, "meta": meta}}),
@@ -2756,14 +2757,18 @@ mod tests {
         use marion_harness::spec::Push;
         let caps =
             |push| initialize_result(&json!(0), None, push)["result"]["capabilities"].clone();
-        let channel = caps(Push::ClaudeChannel);
+        let channel = caps(Push::Channel(&marion_harness::claude_code::CHANNEL));
         assert_eq!(channel["experimental"]["claude/channel"], json!({}));
         assert!(channel.get("logging").is_none(), "{channel}");
         let log = caps(Push::McpLog);
         assert_eq!(log["logging"], json!({}));
         assert!(log.get("experimental").is_none(), "{log}");
         assert_eq!(caps(Push::None), json!({"tools": {}}));
-        for push in [Push::ClaudeChannel, Push::McpLog, Push::None] {
+        for push in [
+            Push::Channel(&marion_harness::claude_code::CHANNEL),
+            Push::McpLog,
+            Push::None,
+        ] {
             assert_eq!(
                 caps(push)["tools"],
                 json!({}),
@@ -2799,7 +2804,12 @@ mod tests {
     fn a_push_frame_is_a_notification_in_the_shape_the_row_names() {
         use marion_harness::spec::Push;
         let meta = json!({"task_id": "t-1", "agent_type": "codex-impl", "status": "completed"});
-        let channel = push_frame(Push::ClaudeChannel, "the text", meta.clone()).unwrap();
+        let channel = push_frame(
+            Push::Channel(&marion_harness::claude_code::CHANNEL),
+            "the text",
+            meta.clone(),
+        )
+        .unwrap();
         assert!(channel.get("id").is_none(), "{channel}");
         assert_eq!(channel["jsonrpc"], "2.0");
         assert_eq!(channel["method"], "notifications/claude/channel");
