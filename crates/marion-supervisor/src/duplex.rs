@@ -601,6 +601,7 @@ pub fn run_duplex(
         // reach nothing. With no wall clock there is no kill and nothing to address.
         crate::kill::lead_own_session(command);
     }
+    crate::node_limits::apply(command);
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;
     // **Before one byte reaches the node.** §6.1 step 7's confirmation is the caller's to write and

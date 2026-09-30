@@ -672,7 +672,8 @@ fn run_bounded_with(
     on_started: Option<&dyn Fn(i32)>,
     on_line: Option<LineHook<'_>>,
 ) -> Result<CommandOutput, SpawnError> {
-    crate::kill::lead_own_session(command)
+    crate::kill::lead_own_session(command);
+    crate::node_limits::apply(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -4285,6 +4286,26 @@ mod tests {
         assert!(
             verification_evidence(&cut_short, &cmds).is_empty(),
             "marion's own timeout kill is the one exit that skips"
+        );
+    }
+
+    /// **A node starts under the operator's ceilings** ([`crate::node_limits`]), read as the node's
+    /// own hard limit on open files.
+    #[test]
+    fn a_node_starts_under_the_open_file_ceiling() {
+        let out = run_bounded(
+            SysCommand::new("sh").args(["-c", "ulimit -Hn"]),
+            StdDuration::from_secs(30),
+        )
+        .unwrap();
+        let ceiling = crate::user_config::node_limits()
+            .unwrap_or_default()
+            .open_files;
+        let inherited = rustix::process::getrlimit(rustix::process::Resource::Nofile).maximum;
+        let expected = inherited.map_or(ceiling, |m| m.min(ceiling));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            expected.to_string()
         );
     }
 

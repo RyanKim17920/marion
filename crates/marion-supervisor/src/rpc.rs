@@ -210,6 +210,7 @@ impl<'a, P: Peer> Driver<'a, P> {
         // deadlock. `kill_process_tree` refuses marion's own pgid, so without a group (and a session)
         // of its own the sweep would have nothing it may address.
         crate::kill::lead_own_session(&mut cmd);
+        crate::node_limits::apply(&mut cmd);
         let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
         let pid = child.id() as i32;
         let stdin = child.stdin.take();

@@ -632,6 +632,7 @@ pub fn spawn_pty(
     let ctty_fd = ctty_fd_for(stdin);
     attach_slave_streams(command, stdin, slave);
     install_ctty_pre_exec(command, ctty_fd);
+    crate::node_limits::apply(command);
 
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;

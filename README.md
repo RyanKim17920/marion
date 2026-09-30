@@ -166,6 +166,10 @@ and never hides your credentials from the harness.
   answering permission requests are yours alone. The key is a file of your own user, so a node
   running with no OS sandbox could still read it; the supervisor therefore also refuses the key
   from any process running inside a live node's process tree.
+- **A runaway node meets a ceiling.** Every node starts with at most 8192 open files and a
+  4096-process cap on your user (`RLIMIT_NPROC`), never raised above what you already have.
+  Raise them under `[limits]` (`max_open_files`, `max_processes`) in
+  `~/.config/marion/config.toml`.
 - **A repository cannot redirect your keys.** Providers come only from your user-level config;
   a repository's `.marion/` is never read for them.
 - **A repository cannot run its own command, or widen a node, without your consent.** A
