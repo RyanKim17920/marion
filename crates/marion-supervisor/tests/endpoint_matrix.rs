@@ -227,13 +227,12 @@ use common::canned::canned_env;
 const MODEL: &str = "endpoint-model-7";
 const NARRATIVE: &str = "Reported back through marion from an endpoint node.";
 
-/// How the harness presents the key: `Authorization: Bearer <key>`, the Anthropic SDK's
-/// `x-api-key: <key>`, or the Gemini wire's `x-goog-api-key: <key>`.
+/// How the harness presents the key: `Authorization: Bearer <key>` or the Anthropic SDK's
+/// `x-api-key: <key>`.
 #[derive(Clone, Copy)]
 enum Presents {
     Bearer,
     XApiKey,
-    GoogApiKey,
 }
 
 struct Cell {
@@ -360,7 +359,6 @@ fn assert_endpoint_cell(cell: &Cell, ev: &Evidence) {
     let (header, value) = match cell.presents {
         Presents::Bearer => ("authorization", fingerprint(&format!("Bearer {KEY}"))),
         Presents::XApiKey => ("x-api-key", fingerprint(KEY)),
-        Presents::GoogApiKey => ("x-goog-api-key", fingerprint(KEY)),
     };
     for r in &ev.requests {
         // claude 2.1.283 opens with `HEAD /api/hello` against the base URL, a reachability probe
@@ -1290,7 +1288,7 @@ fn doctor_providers_on_the_command_line_prints_ids_and_the_matrix_and_no_key() {
     }
 }
 
-// ---- the remaining rows with an endpoint recipe: gemini, goose, cline, qwen ----------------------
+// ---- the remaining rows with an endpoint recipe: goose, cline, qwen ------------------------------
 
 /// A cell of `agent_type` on `canned-test` over one of the OpenAI-compatible Chat recipes, with
 /// marion's report under the harness's own tool spelling.
@@ -1308,30 +1306,6 @@ fn chat_cell(agent_type: &'static str, report_tool: &str) -> Cell {
         wire: "openai",
         route: "native",
     }
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn a_gemini_child_runs_on_the_users_provider_over_the_gemini_wire() {
-    assert!(
-        on_path("gemini"),
-        "put `gemini` ({}) on PATH",
-        pinned_version("gemini")
-    );
-    let cell = Cell {
-        presents: Presents::GoogApiKey,
-        provider: "canned-test",
-        agent_type: "gemini",
-        script: Script {
-            gemini_report_tool: "mcp_marion_report".into(),
-            gemini_report_args: json!({ "narrative": NARRATIVE }),
-            ..Script::default()
-        },
-        compiled_model: MODEL,
-        wire: "gemini",
-        route: "native",
-    };
-    assert_endpoint_cell(&cell, &drive(&cell));
 }
 
 #[test]

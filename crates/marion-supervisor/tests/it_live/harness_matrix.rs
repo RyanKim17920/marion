@@ -17,8 +17,7 @@
 //!    `exec` surface carries no model argument however loudly one was asked for;
 //! 4. `contract.allowed_tools` is the **constraint that harness actually ran under**, in that
 //!    harness's own vocabulary (§3.1) — a per-tool allowlist on Claude Code, a sandbox mode on
-//!    codex, an approval mode on gemini, and on opencode an explicit record that marion compiled
-//!    no constraint at all. The third field of the same kind as (2) and (3), and the last of the
+//!    codex, and on opencode an explicit record that marion compiled no constraint at all. The third field of the same kind as (2) and (3), and the last of the
 //!    three to stop being a constant: it was `["apply_patch", "shell"]` on every harness, which
 //!    named tools three of them have never had;
 //! 5. the provider's request log shows **that harness's wire**. This is what makes (2) more than a
@@ -32,7 +31,8 @@
 //! cargo test -p marion-supervisor --test it_live harness_matrix::
 //! ```
 //!
-//! It needs real `claude`, `codex`, `gemini`, `opencode` and `copilot` on `PATH`, **at the versions
+//! It needs real `claude`, `codex`, `opencode` and `copilot` (and each other row's binary for its
+//! cell) on `PATH`, **at the versions
 //! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source of truth, and the
 //! gate refuses a binary of the right name at an unrecognised version rather than reporting a
 //! matrix result attributed to a build that never ran.
@@ -88,10 +88,10 @@ struct Cell {
     /// constraint, or the harness's coarsest equivalent where it has no per-tool allowlist at
     /// all"*.
     ///
-    /// **Four harnesses, four different shapes of answer, and that is the content of the field.**
+    /// **Each harness has its own shape of answer, and that is the content of the field.**
     /// Claude Code has a real per-tool allowlist and records its literal contents; codex has one
-    /// sandbox mode; gemini has one approval mode; opencode has nothing marion compiles at all and
-    /// records that it has nothing. A *uniform* value across the four is what this field carried
+    /// sandbox mode; opencode has nothing marion compiles at all and records that it has nothing.
+    /// A *uniform* value across them is what this field carried
     /// until now — `["apply_patch", "shell"]`, hardcoded in `build_contract` — and it was wrong on
     /// every one of them: on three it named tools those harnesses have never had, and on codex,
     /// where it looks plausible, it is exactly the per-tool echo §3.1 forbids.
@@ -491,36 +491,6 @@ fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
         // the per-tool echo that section forbids by name.
         expected_allowed_tools: &["sandbox:workspace-write"],
         expected_wire: "responses",
-    };
-    let ev = drive(&cell);
-    assert_cell(&cell, &ev);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
-    assert!(
-        on_path("gemini"),
-        "this cell drives a REAL gemini child; put `gemini` ({}) on PATH",
-        pinned_version("gemini")
-    );
-    let cell = Cell {
-        agent_type: "gemini-orchestrator",
-        // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
-        model: Some("gemini-2.5-flash"),
-        script: Script {
-            // gemini's own spelling of marion's report tool: `mcp_<server>_<tool>`.
-            gemini_report_tool: "mcp_marion_report".into(),
-            gemini_report_args: json!({ "narrative": NARRATIVE }),
-            ..Script::default()
-        },
-        expected_harness: Harness::Gemini,
-        expected_model: Some("gemini-2.5-flash"),
-        // The mode IS the constraint on this harness, and the withholding one is recorded quite as
-        // explicitly as the relaxing one: under `default`, 0.53.0 keeps the mutating tools out of
-        // `functionDeclarations` entirely.
-        expected_allowed_tools: &["approval-mode:default"],
-        expected_wire: "gemini",
     };
     let ev = drive(&cell);
     assert_cell(&cell, &ev);

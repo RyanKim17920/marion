@@ -194,20 +194,6 @@ fn a_codex_node_cannot_write_outside_its_workspace() {
     });
 }
 
-/// **Not reachable through a shell yet**: this row's harness denies its shell tool in a headless
-/// canned run ("Permission denied and could not request permission"), so no command runs and
-/// the cell would prove nothing. The row's launch is still sandboxed (`os_sandbox` unit tests);
-/// a write-tool cell for it is phase 2's.
-#[ignore = "the harness denies its shell in a headless canned run; see the doc"]
-#[test]
-fn a_gemini_node_cannot_write_outside_its_workspace() {
-    cell(&Row {
-        agent_type: "gemini",
-        program: "gemini",
-        shell: Some(("run_shell_command", command_only)),
-    });
-}
-
 #[test]
 fn an_opencode_node_cannot_write_outside_its_workspace() {
     cell(&Row {

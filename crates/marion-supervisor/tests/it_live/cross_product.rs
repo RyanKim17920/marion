@@ -4,7 +4,7 @@
 //!
 //! - `harness_matrix.rs` drives four children through `run_spawn` **directly**, with no root in the
 //!   run at all. It proves the *child* axis.
-//! - `launch_only_root.rs` drives the three **`LaunchOnly`** roots — codex, gemini and opencode —
+//! - `launch_only_root.rs` drives the **`LaunchOnly`** roots — codex and opencode then —
 //!   through the real `marion` binary against a **stub** harness on `PATH`, one `#[test]` per
 //!   harness per property. It proves the *root* axis for that surface: claude-code's duplex root
 //!   path is not in it, and nothing real is on the other end of `spawn`.
@@ -12,8 +12,8 @@
 //!   child — end to end against real binaries. It is this file's claude→codex cell now, which
 //!   carries its out-of-scope write and its offered-`spawn` check.
 //!
-//! That left fifteen combinations that had never run. A gemini root spawning an opencode child
-//! is not implied by "gemini works as a root" and "opencode works as a child": the two nodes share
+//! That left fifteen combinations that had never run. A copilot root spawning an opencode child
+//! is not implied by "copilot works as a root" and "opencode works as a child": the two nodes share
 //! one canned provider, one bridge binary, one state tree and — in four of the sixteen cells — one
 //! **wire**, and each of those is a place the two halves can meet and fail. This file closes it.
 //!
@@ -24,7 +24,7 @@
 //! every harness **as a root** and every harness **as a child**, and one pair per **wire class**
 //! (the same-wire cells below, and a ring over the OpenAI-chat harnesses), plus three pairs that
 //! cross wires: claude→claude, claude→codex, claude→opencode (the verifying cell), codex→codex,
-//! gemini→gemini, opencode→copilot, copilot→goose, goose→cline, cline→opencode, pi→pi and
+//! opencode→copilot, copilot→goose, goose→cline, cline→opencode, pi→pi and
 //! qwen→claude. Each runs a harness about as often as a stub on the other side would. The rest of
 //! the square is [`full_matrix_cell`]: skipped by name unless `MARION_FULL_MATRIX=1`, which the
 //! nightly canary and `scripts/admit-harness.sh` set, so every pair still runs every night and on
@@ -96,14 +96,14 @@
 //! the guard lives in `marion-provider`'s unit tests and not in this file.
 //!
 //! **The grant is the child's and not these roots'.** It rides on [`Node::child_agent_type`], not
-//! on the harness: the root types in this matrix (`claude`, `gemini`, …) declare nothing, so their
+//! on the harness: the root types in this matrix (`claude`, `copilot-orchestrator`, …) declare nothing, so their
 //! availability axis is empty. That is now a property of what these cells *ask for* rather than an
 //! invariant of `root::prepare` — §9's grant gate gives a root its own type's list over a
 //! repository marion is recording (`root::availability_axis`).
 //!
 //! # The same-wire cells, and why they are not ambiguous
 //!
-//! Four cells — claude→claude, codex→codex, gemini→gemini, opencode→opencode — put the root's
+//! Same-harness cells — claude→claude, codex→codex, opencode→opencode among them — put the root's
 //! delegate turn and the child's report turn on **one wire**, at a provider that dispatches on
 //! request *shape* and is forbidden (`marion-provider`'s module docs) from dispatching on arrival
 //! order. The child's entire run happens *inside* the root's `spawn` call, so the two conversations
@@ -122,8 +122,8 @@
 //! cargo test -p marion-supervisor --test it_live cross_product::
 //! ```
 //!
-//! It needs real `claude` (2.1.220), `codex` (0.146.0), `gemini` (0.53.0) and `opencode` (1.17.3)
-//! on `PATH`. Like every other end-to-end file here it is **not** `#[ignore]`d and it does **not**
+//! It needs real `claude` (2.1.220), `codex` (0.146.0) and `opencode` (1.17.3), and the other rows'
+//! binaries for their cells, on `PATH`. Like every other end-to-end file here it is **not** `#[ignore]`d and it does **not**
 //! skip when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion.*
 
@@ -215,8 +215,8 @@ struct Node {
     ///
     /// Two fields and not one, for the same reason [`Node::model`] and [`Node::child_model`] are
     /// two: the roles genuinely differ. §3.1's availability axis is declared per *type*, and the
-    /// grant belongs only to the child's — `claude-impl` and `gemini-impl` declare `[read, write]`
-    /// while `claude` and `gemini` declare nothing. `codex-impl` and `opencode` are the same string
+    /// grant belongs only to the child's — `claude-impl` and `copilot` declare `[read, write]`
+    /// while `claude` and `copilot-orchestrator` declare nothing. `codex-impl` and `opencode` are the same string
     /// in both roles, which is what makes the asymmetry visible rather than uniform: it is a
     /// property of two harnesses, not of the matrix.
     ///
@@ -280,17 +280,6 @@ const CODEX: Node = Node {
     child_model: None,
     wire: "responses",
     program: "codex",
-};
-
-const GEMINI: Node = Node {
-    agent_type: "gemini-orchestrator",
-    child_agent_type: "gemini-impl",
-    harness: Harness::Gemini,
-    // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
-    model: "gemini-2.5-flash",
-    child_model: Some("gemini-2.5-flash"),
-    wire: "gemini",
-    program: "gemini",
 };
 
 const OPENCODE: Node = Node {
@@ -646,11 +635,10 @@ impl Evidence {
 ///
 /// - a request the provider could not route to a wire — Claude Code opens `HEAD /api/hello` as a
 ///   connectivity probe, which carries no body and belongs to nobody;
-/// - the two **auxiliary** requests the provider answers with fixed stubs, each on the one wire
-///   that makes it: Claude Code's concurrent session-title generation and gemini's model-routing
-///   classifier probe. Both are recognised by carrying no tools, which is exactly how
-///   `classify_anthropic` and `classify_gemini` recognise them. The rule is deliberately **not**
-///   applied to the other two wires: codex declares its code-mode catalogue inside `input` rather
+/// - the **auxiliary** request the provider answers with a fixed stub on the one wire that makes
+///   it: Claude Code's concurrent session-title generation. It is recognised by carrying no tools,
+///   which is exactly how `classify_anthropic` recognises it. The rule is deliberately **not**
+///   applied to the other wires: codex declares its code-mode catalogue inside `input` rather
 ///   than in a top-level `tools` array, so a no-tools rule there would classify every one of a
 ///   codex node's real turns as auxiliary.
 fn is_a_turn(request: &Value) -> bool {
@@ -661,7 +649,7 @@ fn is_a_turn(request: &Value) -> bool {
         .as_array()
         .is_some_and(|t| !t.is_empty());
     match wire {
-        "anthropic" | "gemini" => has_tools,
+        "anthropic" => has_tools,
         _ => true,
     }
 }
@@ -740,7 +728,7 @@ fn marion_argv(
 /// file used to assert, with every cell still green.
 #[test]
 fn argv_that_names_a_loopback_endpoint_always_says_canned() {
-    for node in [&CLAUDE, &CODEX, &GEMINI, &OPENCODE] {
+    for node in [&CLAUDE, &CODEX, &OPENCODE] {
         for base_url in ["http://127.0.0.1:8080/v1", "http://localhost:1/v1"] {
             let args = marion_argv(
                 node,
@@ -907,9 +895,8 @@ fn drive_run(root: &Node, child: &Node, script: Script, opt_in: bool) -> Evidenc
 /// the harness actually received, whereas marion's own outgoing frame is marion's testimony about
 /// itself.
 ///
-/// Four wires, four frames, and none of them is a substring scan: each finds the *structured*
-/// result of the root's own call, by the id the provider minted for it (or, on Gemini, by the tool
-/// name — the CLI mints its own call id, so ours is not there to match).
+/// One frame per wire, and none of them is a substring scan: each finds the *structured*
+/// result of the root's own call, by the id the provider minted for it.
 fn root_tool_result(root: &Node, ev: &Evidence, cell: &str) -> String {
     // Latest first: on every wire the whole transcript is replayed each turn, so the last root
     // request is the one that carries the most, and a cell that somehow took extra turns still
@@ -949,27 +936,6 @@ fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
         // wrapper around the MCP result, a string before 0.155.1 and a block list from it. Both
         // are unwrapped structurally in `common::mcp_result`, not by hunting for a `{`.
         "responses" => codex_call_output_text(body, ROOT_CALL_ID),
-        // Gemini: a `functionResponse` part. The CLI mints its own call id, so the match is on the
-        // tool name; and it wraps every MCP result in `<untrusted_context>` before showing it to
-        // the model, which is stripped here rather than tolerated by a substring assertion.
-        "gemini" => {
-            let tool = spawn_tool(root);
-            let output =
-                body["contents"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(|c| c["parts"].as_array())
-                    .flatten()
-                    .find(|p| p["functionResponse"]["name"] == tool.as_str())?["functionResponse"]
-                    ["response"]["output"]
-                    .as_str()?;
-            let inner = output
-                .trim()
-                .strip_prefix("<untrusted_context>")
-                .and_then(|s| s.strip_suffix("</untrusted_context>"))
-                .unwrap_or(output);
-            Some(inner.trim().to_string())
-        }
         // Chat Completions: the `role: "tool"` message answering our `tool_call_id`. Three
         // harnesses, three framings of one MCP result, each measured off these cells' own request
         // logs: opencode, copilot and goose flatten it to the text; qwen 0.23.0 hands the block
@@ -1153,19 +1119,19 @@ fn assert_cell_with(root: &Node, child: &Node, ev: &Evidence, violations: &[&str
         comp.changed_paths,
         ev.log_summary()
     );
-    // **Every cell asserts this, unconditionally.** It was a two-branch check while claude and
-    // gemini children had no write route: those cells asserted the worktree was *untouched*, which
+    // **Every cell asserts this, unconditionally.** It was a two-branch check while some children
+    // had no write route: those cells asserted the worktree was *untouched*, which
     // is the one thing an escaped write also produces, so half the matrix could not tell a child
     // that never wrote from one that wrote somewhere marion never looked. §3.1's availability axis
-    // closed that — `claude-impl` and `gemini-impl` declare `write` (and, since s14, `read`) — and
+    // closed that — `claude-impl` declares `write` (and, since s14, `read`) — and
     // the branch went with it.
     // A guard that is always true reads as coverage while asserting nothing, and invites someone to
     // "restore" the false case later.
     //
-    // What each of the four harnesses writes with, measured off these cells' own request logs
-    // (`claude` 2.1.222, `codex` 0.146.0, `gemini` 0.53.0, `opencode` 1.17.3): codex's
-    // `tools.apply_patch` under code mode, opencode's declared `write`, claude's `Write` and
-    // gemini's `write_file`. The last two arrive only because the child's *agent type* grants them
+    // What the first harnesses write with, measured off these cells' own request logs (`claude`
+    // 2.1.222, `codex` 0.146.0, `opencode` 1.17.3): codex's `tools.apply_patch` under code mode,
+    // opencode's declared `write` and claude's `Write`. The last arrives only because the child's
+    // *agent type* grants it
     // — see [`Node::child_agent_type`] — and a canned provider may only call a tool the harness
     // declared, so a cell that stopped being granted one fails here rather than passing vacuously.
     assert!(
@@ -1421,12 +1387,6 @@ fn b_claude_root_spawns_a_codex_child_and_receives_its_contract() {
     );
 }
 
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn c_claude_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&CLAUDE, &GEMINI);
-}
-
 /// **An opencode child of a claude root, with every feature a child has** (s36's parity cell): the
 /// eleven assertions [`cell`] makes, and on top of them the three a plain cell does not — the
 /// spawn's `verification` ran in the child's worktree and passed, the child's write landed on its
@@ -1519,39 +1479,9 @@ fn f_codex_root_spawns_a_codex_child_and_receives_its_contract() {
     cell(&CODEX, &CODEX);
 }
 
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn g_codex_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&CODEX, &GEMINI);
-}
-
 #[test]
 fn h_codex_root_spawns_an_opencode_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &OPENCODE);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn i_gemini_root_spawns_a_claude_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &CLAUDE);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn j_gemini_root_spawns_a_codex_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn k_gemini_root_spawns_a_gemini_child_and_receives_its_contract() {
-    cell(&GEMINI, &GEMINI);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn l_gemini_root_spawns_an_opencode_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &OPENCODE);
 }
 
 #[test]
@@ -1562,12 +1492,6 @@ fn m_opencode_root_spawns_a_claude_child_and_receives_its_contract() {
 #[test]
 fn n_opencode_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&OPENCODE, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn o_opencode_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&OPENCODE, &GEMINI);
 }
 
 #[test]
@@ -1589,12 +1513,6 @@ fn r_codex_root_spawns_a_copilot_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &COPILOT);
 }
 
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn s_gemini_root_spawns_a_copilot_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &COPILOT);
-}
-
 #[test]
 fn t_opencode_root_spawns_a_copilot_child_and_receives_its_contract() {
     cell(&OPENCODE, &COPILOT);
@@ -1608,12 +1526,6 @@ fn u_copilot_root_spawns_a_claude_child_and_receives_its_contract() {
 #[test]
 fn v_copilot_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&COPILOT, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn w_copilot_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&COPILOT, &GEMINI);
 }
 
 #[test]
@@ -1641,12 +1553,6 @@ fn zb_codex_root_spawns_a_goose_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &GOOSE);
 }
 
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn zc_gemini_root_spawns_a_goose_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &GOOSE);
-}
-
 #[test]
 fn zd_opencode_root_spawns_a_goose_child_and_receives_its_contract() {
     full_matrix_cell(&OPENCODE, &GOOSE);
@@ -1665,12 +1571,6 @@ fn zf_goose_root_spawns_a_claude_child_and_receives_its_contract() {
 #[test]
 fn zg_goose_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&GOOSE, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn zh_goose_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&GOOSE, &GEMINI);
 }
 
 #[test]
@@ -1702,12 +1602,6 @@ fn zm_codex_root_spawns_a_cline_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &CLINE);
 }
 
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn zn_gemini_root_spawns_a_cline_child_and_receives_its_contract() {
-    full_matrix_cell(&GEMINI, &CLINE);
-}
-
 #[test]
 fn zo_opencode_root_spawns_a_cline_child_and_receives_its_contract() {
     full_matrix_cell(&OPENCODE, &CLINE);
@@ -1731,12 +1625,6 @@ fn zr_cline_root_spawns_a_claude_child_and_receives_its_contract() {
 #[test]
 fn zs_cline_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&CLINE, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn zt_cline_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&CLINE, &GEMINI);
 }
 
 #[test]
@@ -1775,12 +1663,6 @@ fn zzf_qwen_root_spawns_a_claude_child_and_receives_its_contract() {
 #[test]
 fn zzg_qwen_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&QWEN, &CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn zzh_qwen_root_spawns_a_gemini_child_and_receives_its_contract() {
-    full_matrix_cell(&QWEN, &GEMINI);
 }
 
 #[test]

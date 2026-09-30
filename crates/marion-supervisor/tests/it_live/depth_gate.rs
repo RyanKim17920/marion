@@ -79,8 +79,8 @@
 //! cargo test -p marion-supervisor --test it_live depth_gate::
 //! ```
 //!
-//! It needs real `claude` (2.1.220), `codex` (0.146.0), `gemini` (0.53.0) and `opencode` (1.17.3)
-//! on `PATH`, and like every other end-to-end file here it is **not** `#[ignore]`d and does **not**
+//! It needs real `claude` (2.1.220), `codex` (0.146.0) and `opencode` (1.17.3), and the other
+//! rows' binaries for their cells, on `PATH`, and like every other end-to-end file here it is **not** `#[ignore]`d and does **not**
 //! skip when a binary is missing: §9's standing rule is that a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion.
 
@@ -192,16 +192,6 @@ const CODEX: Node = Node {
     model: None,
     wire: "responses",
     program: "codex",
-    refused_by: RefusedBy::DepthGate,
-};
-
-const GEMINI: Node = Node {
-    agent_type: "gemini-orchestrator",
-    harness: Harness::Gemini,
-    // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
-    model: Some("gemini-2.5-flash"),
-    wire: "gemini",
-    program: "gemini",
     refused_by: RefusedBy::DepthGate,
 };
 
@@ -833,12 +823,6 @@ fn a_claude_code_child_at_max_depth_is_refused_a_grandchild_rather_than_running_
 #[test]
 fn a_codex_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one() {
     refuses_a_grandchild(&CODEX);
-}
-
-#[ignore = "gemini CLI retired upstream; use agy"]
-#[test]
-fn a_gemini_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one() {
-    refuses_a_grandchild(&GEMINI);
 }
 
 #[test]
