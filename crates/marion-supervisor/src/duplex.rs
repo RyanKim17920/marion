@@ -30,7 +30,7 @@
 //! denied the moment it arrives, on every node.
 
 use std::io::Write;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as SysCommand, Stdio};
 use std::sync::Arc;
@@ -599,7 +599,7 @@ pub fn run_duplex(
         // The group exists so marion's expiry kill can address the whole tree without touching its
         // own group — `signal_targets` refuses marion's own pgid, so without this the kill would
         // reach nothing. With no wall clock there is no kill and nothing to address.
-        command.process_group(0);
+        crate::kill::lead_own_session(command);
     }
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;

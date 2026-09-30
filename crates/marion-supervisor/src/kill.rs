@@ -12,6 +12,27 @@ use std::time::{Duration, Instant};
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn getpgrp() -> i32;
+    fn getsid(pid: i32) -> i32;
+    fn setsid() -> i32;
+}
+
+/// **Start `command` leading a session of its own**, and so a process group of its own: what
+/// every node marion runs under a bound needs. The group is what the expiry kill addresses without
+/// touching marion's own (`signal_targets` refuses marion's group); the session is what still
+/// names a descendant that changed its group and lost its parent ([`session_orphans`]). A node has
+/// no controlling terminal to lose: marion gives a headless node none (§5.2).
+pub(crate) fn lead_own_session(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setsid` is async-signal-safe and touches nothing but the forked child, which has not
+    // yet `exec`ed; its failure is reported as the spawn's.
+    unsafe {
+        command.pre_exec(|| {
+            if setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        })
+    }
 }
 
 const SIGKILL: i32 = 9;
@@ -86,6 +107,43 @@ fn descendant_pids(rows: &[ProcRow], root: i32) -> Vec<i32> {
     seen
 }
 
+/// **What `root` left behind under pid 1 in its own session**, with their descendants.
+///
+/// A process that changed only its group (a job-control shell's background job, say) and whose
+/// parent then exited belongs to pid 1, in a group no ancestry walk reaches. Its session is still
+/// `root`'s when `root` leads its own session, as every node marion starts does, so the session
+/// finds it. A `root` that leads no session shares one with others — the supervisor's — and is
+/// given nothing here, since that session is not the node's to sweep.
+fn session_orphans(rows: &[ProcRow], root: i32) -> Vec<i32> {
+    // SAFETY: `getsid` reads one process's session id and cannot fail other than by returning -1.
+    if unsafe { getsid(root) } != root {
+        return Vec::new();
+    }
+    let mut out: Vec<i32> = Vec::new();
+    for r in rows.iter().filter(|r| r.ppid == 1 && r.pid != root) {
+        // SAFETY: as above.
+        if unsafe { getsid(r.pid) } == root {
+            for p in descendant_pids(rows, r.pid) {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `root`'s tree and its session's orphans: every pid the two-step kill enumerates.
+fn swept_pids(rows: &[ProcRow], root: i32) -> Vec<i32> {
+    let mut pids = descendant_pids(rows, root);
+    for p in session_orphans(rows, root) {
+        if !pids.contains(&p) {
+            pids.push(p);
+        }
+    }
+    pids
+}
+
 /// Every distinct process group among the pids of `descendant_pids` — the set S7 measured as
 /// sufficient to leave zero survivors.
 ///
@@ -157,7 +215,7 @@ fn signal_targets(pgids: &[i32], own_pgid: i32) -> Vec<i32> {
 /// runaway keeps running.
 pub(crate) fn kill_process_tree(child_pid: i32) {
     let rows = ps_rows();
-    let pids = descendant_pids(&rows, child_pid);
+    let pids = swept_pids(&rows, child_pid);
     if let Ok(mut last) = LAST_SWEEP.lock() {
         last.clone_from(&pids);
     }
@@ -182,7 +240,7 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
 /// by one, `root` excepted.
 pub(crate) fn kill_descendants(root: i32) {
     let rows = ps_rows();
-    let pids = descendant_pids(&rows, root);
+    let pids = swept_pids(&rows, root);
     if let Ok(mut last) = LAST_SWEEP.lock() {
         last.clone_from(&pids);
     }
@@ -326,6 +384,52 @@ mod tests {
             status.signal(),
             None,
             "the root was not signalled: {status:?}"
+        );
+    }
+
+    /// **An orphan in its own group but the node's session dies with the node.** A job-control
+    /// shell puts a background job in a group of its own; once the subshell that started it exits,
+    /// the job's parent is pid 1 and no ancestry walk reaches it. The node leads its session, so
+    /// the session still names it.
+    #[test]
+    fn an_orphan_reparented_to_pid_one_in_the_nodes_session_is_killed_with_the_node() {
+        let dir = marion_testsupport::scratch("kill-session-orphan");
+        let recorded = dir.join("orphan.pid");
+        let mut root = Command::new("sh");
+        root.args([
+            "-c",
+            &format!(
+                "set -m; (sleep 64 & echo $! > {}); sleep 65",
+                recorded.display()
+            ),
+        ]);
+        let mut root = lead_own_session(&mut root).spawn().expect("spawn sh");
+        let pid = root.id() as i32;
+        // SAFETY: reads one process's session id.
+        assert_eq!(
+            unsafe { getsid(pid) },
+            pid,
+            "the node leads its own session"
+        );
+        let orphan = || -> Option<i32> {
+            let p: i32 = std::fs::read_to_string(&recorded)
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            let l = crate::procid::lineage(p)?;
+            (l.ppid == 1 && l.pgid != pid).then_some(p)
+        };
+        assert!(
+            marion_testsupport::until(|| orphan().is_some()),
+            "the job never became an orphan in a group of its own"
+        );
+        let orphan = orphan().unwrap();
+        kill_process_tree(pid);
+        let _ = root.wait();
+        assert!(
+            observe_dead(orphan, Instant::now() + Duration::from_secs(5)),
+            "{orphan} survived its node"
         );
     }
 

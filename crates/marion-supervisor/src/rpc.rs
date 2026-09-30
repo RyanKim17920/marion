@@ -16,7 +16,7 @@
 //! died while something it started still holds its stdout open.
 
 use std::io::{BufRead, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -207,9 +207,9 @@ impl<'a, P: Peer> Driver<'a, P> {
             .stderr(Stdio::piped());
         // A read on a pipe returns EOF only when every write end is closed, so killing the server
         // alone would leave the reader wedged on its children's copies — `duplex` measured that
-        // deadlock. `kill_process_tree` refuses marion's own pgid, so without a group of its own
-        // the sweep would have nothing it may address.
-        cmd.process_group(0);
+        // deadlock. `kill_process_tree` refuses marion's own pgid, so without a group (and a session)
+        // of its own the sweep would have nothing it may address.
+        crate::kill::lead_own_session(&mut cmd);
         let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
         let pid = child.id() as i32;
         let stdin = child.stdin.take();

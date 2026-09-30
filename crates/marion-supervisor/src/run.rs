@@ -14,7 +14,7 @@
 use std::io::Read;
 use std::ops::ControlFlow;
 use std::os::fd::AsRawFd;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as SysCommand, Stdio};
 use std::sync::Arc;
@@ -672,8 +672,7 @@ fn run_bounded_with(
     on_started: Option<&dyn Fn(i32)>,
     on_line: Option<LineHook<'_>>,
 ) -> Result<CommandOutput, SpawnError> {
-    command
-        .process_group(0)
+    crate::kill::lead_own_session(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

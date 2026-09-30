@@ -2291,7 +2291,7 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
 /// that it reached marion's bridge (§6.1 step 8).
 ///
 /// **The bounded run and the kill are [`run_bounded`]'s, not a second copy.** It already does every
-/// part of what a root needs — `process_group(0)`, `stdin(Stdio::null())`, piped stdout/stderr with
+/// part of what a root needs — a session and group of its own, `stdin(Stdio::null())`, piped stdout/stderr with
 /// bounded drains, and §9's two-step group kill whose ordering is load-bearing (enumerate the
 /// descendants' distinct pgids *first*, because once the parent dies its descendants reparent to
 /// pid 1 and no `ps` walk recovers them). A second implementation of that kill is exactly the drift
