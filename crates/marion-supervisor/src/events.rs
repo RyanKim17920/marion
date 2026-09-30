@@ -1163,12 +1163,17 @@ mod tests {
         let (mut reader, _) = EventReader::open_path(&path).unwrap();
         let other = dir.join("fresh.jsonl");
         let mut fresh = EventWriter::open_path(&other, &node()).unwrap();
-        for i in 0..5 {
+        for i in 0..6 {
             fresh.append(frame(&format!("fresh-{i}"))).unwrap();
         }
+        // A rotated file continues the node's ordinals, so its first frame is never the old
+        // file's: drop the fresh file's ordinal 0, which could match the old head byte for byte
+        // within one millisecond.
+        let bytes = std::fs::read(&other).unwrap();
+        let from = bytes.iter().position(|b| *b == b'\n').unwrap() + 1;
         let before = std::fs::metadata(&path).unwrap();
         // In place, so the inode number is the one the reader holds.
-        std::fs::write(&path, std::fs::read(&other).unwrap()).unwrap();
+        std::fs::write(&path, &bytes[from..]).unwrap();
         use std::os::unix::fs::MetadataExt;
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
         let mut out = Vec::new();
