@@ -73,6 +73,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The daemon-only build: marion-supervisor without its default `client` feature, which is
+      # how the daemon and the tests that only drive it skip the terminal emulator and TUI stack.
+      # Nothing else compiles that feature set, so a client-only item the daemon side starts to
+      # reach, or one the gate leaves dead, would otherwise go unseen until someone built it.
+      - run: cargo clippy -p marion-supervisor --no-default-features --all-targets -- -D warnings
       # Harness generality, efficiency and security over every shipped source file, against the
       # ratchet allowlists in checks/. It only parses source — no harness, no process — so it sits
       # with the other static checks on one runner. `cargo test --workspace --lib` in the test job
