@@ -624,10 +624,12 @@ fn stage_three_writes_one_ready_byte_and_lets_the_pipe_go() {
         "no flag, no byte: {:?}",
         again.stdout
     );
-    assert_eq!(
-        bed.supervisors(),
-        vec![id.pid],
-        "the second chain stood down"
+    // The chain's own stage 1 returns before its stage 3 has read the lock and stood down, so
+    // that exit is waited for rather than raced.
+    assert!(
+        until(|| bed.supervisors() == vec![id.pid]),
+        "the second chain stood down: {:?}",
+        bed.supervisors()
     );
 }
 
