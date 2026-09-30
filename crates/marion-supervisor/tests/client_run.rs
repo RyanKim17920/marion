@@ -60,6 +60,7 @@ use marion_core::contract::AgentId;
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::node::StartId;
 use marion_core::proto::notify::Event as Note;
+use marion_harness::spec::{NodeShape, TurnDelivery, delivery_for};
 use marion_provider::script::classify_root;
 use marion_provider::{
     CannedServer, Config, RequestKind, RootStep, Script, TurnGate, classify_anthropic,
@@ -1196,6 +1197,30 @@ fn supervisor_pid(state: &Path, repo: &Path) -> i32 {
         .expect("a writer id is `<pid>-<uuid>`")
 }
 
+/// **Whether `node`'s turns ride the supervisor's own pipe**, read off its harness row in the shape
+/// the journal recorded it launched in (`harness_pane`) — the resolver the steer path uses, so no
+/// harness is named here.
+///
+/// A [`TurnDelivery::TypedTurn`] is a frame the supervisor writes on the node's stdin. Every other
+/// strategy either has no channel after launch (`Continuation`, `None`: a launch-only node) or
+/// reaches the node through a terminal or an MCP pipe, which is not the supervisor's stdin.
+fn turns_ride_the_supervisors_pipe(node: &marion_core::registry::ReplayedNode) -> bool {
+    let harness = node
+        .intent
+        .as_ref()
+        .expect("a node with a process on the record has its intent")
+        .harness;
+    let shape = if node.harness_pane {
+        NodeShape::Interactive
+    } else {
+        NodeShape::Headless
+    };
+    matches!(
+        delivery_for(marion_harness::adapter::harness_spec(harness), shape),
+        TurnDelivery::TypedTurn { .. }
+    )
+}
+
 /// **M2 acceptance criterion 3, second half: after a supervisor SIGKILL, marion can say of every
 /// process on the record whether it is still running — and none of them is untracked.**
 ///
@@ -1218,14 +1243,32 @@ fn supervisor_pid(state: &Path, repo: &Path) -> i32 {
 /// real, live processes. That is what makes the answer interesting: with the supervisor gone,
 /// nothing is attached to either of them, and marion has to decide from the journal plus the kernel
 /// whether the processes the journal names are still the processes wearing those pids. Were they
-/// dead, every resolution would be `Gone` and the test would pass without the start identity ever
-/// being consulted — which is exactly the vacuous pass the assertions at the end rule out.
+/// only ever dead, every resolution would be `Gone` and the test would pass without the start
+/// identity ever being consulted — so the audit is first taken **before** the kill, while every
+/// process is certainly running, and must identify each one as `AliveAndOurs`.
+///
+/// # "Accounted for" depends on where the node's turns come from, and the row says where
+///
+/// A node whose turns ride **the supervisor's own pipe** — a typed control channel on its stdin, as
+/// a headless stream-json or app-server node's do — has nobody writing to it once the supervisor
+/// dies: its stdin reaches EOF and the harness exits, sometimes before the audit runs. This test
+/// used to assert such a node still alive, and flaked on exactly that. So for it, accounted for
+/// means **its process is gone** (waited for, on the kernel's reading), its channel closed with it,
+/// and **the node resumable**: a resume by a new supervisor continues the *same* session, proved on
+/// the child from the provider's side, where the harness sends back its own transcript. A pane node
+/// or a launch-only node has no such pipe, survives its supervisor, and must still read
+/// `AliveAndOurs`.
+///
+/// Which case applies is [`turns_ride_the_supervisors_pipe`]'s reading of the node's harness row,
+/// never a harness name. Either way nothing may be untracked or `cannot-tell`, and the claim must
+/// hold.
 ///
 /// # Bounded, and it fails by assertion
 ///
-/// Every wait is on a fact: the gate parking, the journal reaching two nodes, the supervisor's pid
-/// reading `Gone`. The audit itself is a pure function of the journal and four `sysctl` calls, so
-/// there is nothing to wait for at the point the claim is made.
+/// Every wait is on a fact: the gate parking, the journal reaching two nodes, a pid reading `Gone`,
+/// a generation landing on the journal, a provider request arriving. The audit itself is a pure
+/// function of the journal and four `sysctl` calls, so there is nothing to wait for at the point
+/// the claim is made.
 #[test]
 fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
     if !common::script::require_claude_and_codex() {
@@ -1260,9 +1303,20 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         until(|| gate.parked() == 1),
         "the child's second turn is held, so both nodes are parked with live processes"
     );
+    // A pipe node is accounted for partly by being resumable, and what a resume hands back is the
+    // session its harness named — so the kill waits until every such node has journaled one.
     assert!(
-        until(|| journal_nodes(&state, &repo).len() == 2),
-        "both nodes are in the journal before the supervisor dies"
+        until(|| {
+            let nodes = journal_nodes(&state, &repo);
+            nodes.len() == 2
+                && nodes
+                    .iter()
+                    .filter(|n| turns_ride_the_supervisors_pipe(n))
+                    .all(|n| n.harness_session.is_some())
+        }),
+        "both nodes are in the journal before the supervisor dies, each pipe node with its \
+         session: {:?}",
+        journal_nodes(&state, &repo)
     );
 
     let before = journal_nodes(&state, &repo);
@@ -1281,8 +1335,28 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         "neither node is terminal, so nothing here is `Gone` for the boring reason: {:?}",
         before.iter().map(|n| n.state).collect::<Vec<_>>()
     );
+    // Split by row, once, from the record the kill is applied to.
+    let (piped, surviving): (Vec<_>, Vec<_>) = before
+        .iter()
+        .partition(|n| turns_ride_the_supervisors_pipe(n));
+    let pid_of = |n: &marion_core::registry::ReplayedNode| n.pid.expect("checked above");
+    let piped_pids: Vec<i32> = piped.iter().map(|n| pid_of(n)).collect();
+    let surviving_pids: Vec<i32> = surviving.iter().map(|n| pid_of(n)).collect();
 
-    // ---- the supervisor dies uncatchably, and its nodes do not ---------------------------------
+    // **The start identity is consulted on live processes**, here, while the supervisor is up and
+    // every node parked: after the kill a pipe node is gone, and a `Gone` proves nothing about it.
+    let live = marion_supervisor::procid::audit(&marion_core::registry::replay(&journal_bytes(
+        &state, &repo,
+    )));
+    assert_eq!(
+        live.alive().len(),
+        pids.len(),
+        "before the kill each process is positively identified as marion's own — not merely \
+         `something is wearing that number`: {:?}",
+        live.resolved
+    );
+
+    // ---- the supervisor dies uncatchably -------------------------------------------------------
     let sup = supervisor_pid(&state, &repo);
     // SAFETY: `kill` with a pid read from the journal this test's own supervisor wrote.
     unsafe { kill(sup, 9) };
@@ -1291,9 +1365,16 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         "the supervisor must really be gone before anything below is attributed to its absence"
     );
     assert!(
-        pids.iter().all(|p| liveness(*p) == Liveness::Alive),
-        "and its nodes are still running — a SIGKILLed supervisor does not take its fleet with it, \
-         which is what makes the question below a real one: {pids:?}"
+        until(|| piped_pids.iter().all(|p| liveness(*p) == Liveness::Gone)),
+        "a node whose turns rode the supervisor's pipe reads EOF on it and exits — its channel \
+         closed with its supervisor: {piped_pids:?}"
+    );
+    assert!(
+        surviving_pids
+            .iter()
+            .all(|p| liveness(*p) == Liveness::Alive),
+        "and every node with no such pipe is still running — a SIGKILLed supervisor does not take \
+         its fleet with it: {surviving_pids:?}"
     );
 
     // ---- replay, §7.2's marking, then the process audit ----------------------------------------
@@ -1322,11 +1403,18 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
          one: {:?}",
         audit.cannot_tell()
     );
+    let mut alive: Vec<i32> = audit.alive().iter().map(|r| r.pid).collect();
+    let mut gone: Vec<i32> = audit.gone().iter().map(|r| r.pid).collect();
+    alive.sort_unstable();
+    gone.sort_unstable();
+    let (mut want_alive, mut want_gone) = (surviving_pids.clone(), piped_pids.clone());
+    want_alive.sort_unstable();
+    want_gone.sort_unstable();
     assert_eq!(
-        audit.alive().len(),
-        pids.len(),
-        "each is positively identified as still being marion's own process — not merely `something \
-         is wearing that number`: {:?}",
+        (alive, gone),
+        (want_alive, want_gone),
+        "each survivor is identified as still being marion's own process, and each pipe node's \
+         process as gone: {:?}",
         audit.resolved
     );
     assert!(
@@ -1340,6 +1428,75 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         marion_supervisor::procid::Claim::Holds,
         "§9 criterion 3, second half: **no untracked live process**"
     );
+
+    // ---- a pipe node is resumable: a new supervisor continues the same session -----------------
+    //
+    // Proved on the child, the node whose turn the gate held. Its harness sends its own earlier
+    // transcript back on the first request of a resumed session, so a request carrying both the
+    // resume prompt and the first life's task (`common::script`'s spawn prompt) was made inside the
+    // session the first life created — not by a fresh run wearing the same id. The root is not
+    // resumed here: its canned script would read the resumed transcript as a first turn and spawn a
+    // second child. Its resumability is the session it journaled, which the wait above required.
+    let child = before
+        .iter()
+        .find(|n| n.depth() == Some(1))
+        .expect("exactly one child");
+    assert!(
+        turns_ride_the_supervisors_pipe(child) && child.launch_workspace.is_some(),
+        "the premise of the resume below: the child's row drives it over the supervisor's pipe, \
+         and it journaled the tree its session was created in: {child:?}"
+    );
+    const RESUME_PROMPT: &str = "MARION-CLIENT-RUN-RESUME-7c1e: confirm the marker and report.";
+    let seq_before = server
+        .requests()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r["seq"].as_u64())
+        .max()
+        .unwrap_or(0);
+    let mut resume = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "resume",
+            &child.agent_id.0,
+            "--prompt",
+            RESUME_PROMPT,
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--base-url",
+            &server.base_url(),
+            "--canned",
+        ])
+        .current_dir(&*dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("marion resume starts");
+    assert!(
+        until(|| journal_nodes(&state, &repo)
+            .iter()
+            .any(|n| n.agent_id == child.agent_id && n.spawn_generation >= 2)),
+        "the child comes back under its own id as generation two: {:?}",
+        journal_nodes(&state, &repo)
+    );
+    // The first life's held request is released so the second life's is answered, not parked.
+    gate.release();
+    let continued = || {
+        server.requests().unwrap_or_default().iter().any(|r| {
+            r["seq"].as_u64().is_some_and(|seq| seq > seq_before)
+                && r["wire"].as_str() == Some(CHILD_WIRE)
+                && r.to_string().contains(RESUME_PROMPT)
+                && r.to_string().contains("Add the marker file under src/")
+        })
+    };
+    assert!(
+        until(continued),
+        "the resumed child's next request carries the resume prompt inside the first life's \
+         transcript — the same session, continued"
+    );
+    let _ = resume.kill();
+    let _ = resume.wait();
 
     // ---- and the same tree once the processes really are gone ----------------------------------
     //
