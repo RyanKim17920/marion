@@ -2748,7 +2748,9 @@ mod tests {
         };
         let dial = || {
             let s = UnixStream::connect(paths.socket()).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            // macOS refuses the option with EINVAL on a connection the server has already closed —
+            // which is what a dial past the limit is — and a closed one reads EOF at once anyway.
+            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
             s
         };
         let first = dial();
