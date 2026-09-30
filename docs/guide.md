@@ -224,12 +224,13 @@ It exits 1 when no seat passes. A `spawn` with `candidates` from `marion mcp` ra
 ### Workflows: a sequence of steps, each on the agents it names
 
 A workflow is a TOML file of steps, run in order: `.marion/workflows/<name>.toml` in the
-repository, or your own in `~/.config/marion/workflows/`.
+repository, or your own in `~/.config/marion/workflows/` (yours wins when both define a name).
 
 ```toml
 schema = 1
 name = "ship"
 inputs = ["task"]
+budget = { tokens = 2_000_000, wall = "45m" }
 
 [[step]]
 id = "plan"
@@ -240,40 +241,71 @@ prompt = "Plan: {input.task}"
 
 [[step]]
 id = "build"
-kind = "agent"
-on = "codex"
+kind = "race"
+on = ["codex", "opencode", "pi"]
 prompt = "{input.task}\n\nThe plan:\n{plan.report}"
 verify = ["cargo test"]
+
+[[step]]
+id = "gate"
+kind = "review"
+of = "build"
+max_rounds = 3
+
+[[step]]
+id = "land"
+kind = "land"
+of = "gate"
+mode = "branch"
 ```
 
-An `agent` step runs one agent; a `parallel` step runs the same read-only task on several
-(`on = ["claude", "codex"]`) and its report is all of theirs. `{input.X}` is an input you pass, and
-`{step.report}`, `{step.branch}` or `{step.diffstat}` is what an earlier step left, handed to the
-next agent marked as another agent's output. `when = "build:failed"` runs a step only if an earlier
-one ended that way; a step that fails with nothing gated on it ends the run. Each step's agents are
-top-level agents in worktrees of their own, like `marion race`'s seats. A `race` step
-(`on = [...]`, `verify = [...]`, optionally `first` and `prune`) races its candidates, and the step
-after it builds on the winner's work: each step that changes files is cut at the commit of the
-last step before it that did. A `review` step (`of = "<step>"`, optionally `on` for the reviewer and
-`max_rounds` up to 3) reviews that step's work read-only; blocking findings go to a fixer on the
-work's own agent type, cut at its commit, and the fix is reviewed again, until a round is clean
-(`clean`) or the last one still blocks (`blocked`). `{gate.findings}` is the last review's list.
-A `land` step (`of = "<step>"`) lands that step's work: `mode = "branch"` (the default) names its
-branch and the command that merges it; `mode = "ff"` fast-forwards your checkout to it, but only
-while the checkout has no uncommitted change and is still on the commit it was on when the run
-started — never a merge commit, never a force.
+The step kinds:
 
-`budget = { tokens = 2_000_000, wall = "45m" }` bounds the whole run. Each step's agents get the
-least of the step's own `tokens`, its `share` of the total, and what the run has left, split evenly
-among the agents it starts at once; an agent that spends its part is cancelled like any over-budget
-agent. No step's `timeout` outlives the run's wall clock.
+- **`agent`** runs one agent (`on = "codex"`, or `"claude:haiku"` for a model). `read_only = true`
+  keeps it from changing files; `verify = [...]` are the checks its work must pass.
+- **`parallel`** runs the same read-only task on several agents (`on = ["claude", "codex"]`), and
+  its report is all of theirs.
+- **`race`** races its candidates like `marion race` (`verify` is required; optionally `first` and
+  `prune`), and the step after it builds on the winner's work.
+- **`review`** (`of = "<step>"`, optionally `on` for the reviewer, `max_rounds` up to 3) reviews
+  that step's work read-only, on another model family than the work's where marion can tell,
+  unless you name one.
+  Blocking findings go to a fixer on the work's own agent type, cut at its commit, and the fix is
+  reviewed again, until a round is clean (`clean`) or the last one still blocks (`blocked`).
+- **`land`** (`of = "<step>"`) lands that step's work: `mode = "branch"` (the default) names its
+  branch and the command that merges it; `mode = "ff"` fast-forwards your checkout to it, only while
+  the checkout has no uncommitted change and is still on the commit it was on when the run started
+  — never a merge commit, never a force.
+
+Each step's agents are top-level agents in worktrees of their own, and each step that changes files
+is cut at the commit of the last step before it that did. `{input.X}` is an input you pass;
+`{plan.report}`, `{build.branch}`, `{build.diffstat}` and `{gate.findings}` are what an earlier step
+left, handed to the next agent marked as another agent's output. `when = "build:failed"` runs a step
+only if an earlier one ended that way; a step that fails with nothing gated on it ends the run.
+
+`budget` bounds the whole run. Each step's agents get the least of the step's own `tokens`, its
+`share` of the total, and what the run has left, split evenly among the agents it starts at once; an
+agent that spends its part is cancelled like any over-budget agent. No step's `timeout` outlives the
+run's `wall`.
 
 ```sh
 marion workflow list                      # every workflow, and whether it may run
 marion workflow check .marion/workflows/ship.toml   # what it would run
 marion workflow run ship --task "add rate limiting"  # watch it; exits 1 unless it succeeds
+marion workflow run ship --task "…" --detach         # return once it has started
 marion workflow cancel <run id>           # start nothing more, cancel what runs, keep its work
 ```
+
+On Watch a run is one header row over its steps, `workflow ship · 3/4 gate r2 · Σ1.4M/2M · 12m04s`:
+the step it is on and the review round, its spend against its budget, its clock. Each step's agent
+says its step, a race step's seats sit under the race's own header, and Enter on the run's header
+goes to the step running now. From an MCP client, `marion mcp` offers a `workflow` tool listing the
+workflows that may run; `wait`, `status` and `cancel` take the run's id. An agent marion started is
+never offered it.
+
+A supervisor that restarts picks up every run left open and carries it on. A step whose agent was
+lost with the old supervisor is not started again: it fails, as a race's lost seat does, and a step
+gated on that failure runs.
 
 A repository's workflow runs only after `marion trust allow <file>`, which shows every step, agent
 and verification command first; any edit revokes it.

@@ -13,6 +13,11 @@
 #   s3  claude root -> opencode child  fix an off-by-one it has to read the file to find
 #   s4  claude root -> codex child     add average(nums); the operator steers the running child
 #                                      with "also handle empty input" (`marion steer`)
+#   s39 a workflow, no root: plan on claude (haiku, read-only) -> race codex / opencode / pi ->
+#       review on another model family -> at most two fixes -> land on its branch. Fix the
+#       last_n_lines off-by-one. Runs only when named (`scripts/live-smoke.sh s39`): it starts
+#       six or more agents, the suite's most expensive scenario. Its wall clock is
+#       MARION_LIVE_SMOKE_S39_WALL_SECS (default 2400).
 #
 # Usage:
 #   MARION_LIVE_SMOKE=1 scripts/live-smoke.sh            # all four, once
@@ -149,6 +154,8 @@ logged_in() {
 		codex) codex -c check_for_update_on_startup=false login status >/dev/null 2>&1 ;;
 		# opencode's status probe is a file (the README's profile table); no binary launch at all.
 		opencode) [ -s "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" ] ;;
+		# pi's too: its row's profile status is that <agent dir>/auth.json exists, never opened.
+		pi) [ -e "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" ] ;;
 		*) return 1 ;;
 	esac
 }
@@ -312,6 +319,155 @@ scenario s4 claude haiku codex \
 	'from textutil import average as a; assert a([1, 2, 3]) == 2; assert a([]) == 0.0, "empty input was not handled"' \
 	"Also handle empty input: average([]) must return 0.0 instead of raising. Add a test for it."
 
+# ---- a workflow scenario ----------------------------------------------------------------------------
+
+# workflow_scenario <id> <workflow toml> <task> <check> <harness>...
+#
+# No root: `marion workflow run` drives the steps itself. The workflow is written into the fixture
+# repository and trusted there by its bytes, and that trust entry is removed again afterwards, so
+# the operator's trust store keeps nothing of the run. Judged on the run's own result.json, the
+# journal's step intents, and the fixture's tests plus the check on the branch the run landed.
+workflow_scenario() {
+	local id=$1 toml=$2 task=$3 check=$4
+	shift 4
+	if [ "$ONLY" != "$id" ]; then
+		return 0
+	fi
+	local dir="$RUN/$id" out="$OUT/$id"
+	mkdir -p "$dir/state" "$out"
+	for h in "$@"; do
+		if [ -z "$CANNED" ] && ! logged_in "$h"; then
+			echo "live-smoke: $id BLOCKED: $h is not logged in (log in with its own CLI, then rerun $id)" >&2
+			printf '{"scenario":"%s","blocked":"%s not logged in"}\n' "$id" "$h" >"$out/result.json"
+			return 0
+		fi
+	done
+	make_fixture "$dir/repo"
+	local file="$dir/repo/.marion/workflows/$id.toml"
+	mkdir -p "$(dirname "$file")"
+	printf '%s\n' "$toml" >"$file"
+	cp "$file" "$out/workflow.toml"
+	(cd "$dir/repo" && "$BIN" trust allow "$file") >"$dir/trust.out" 2>&1 || {
+		echo "live-smoke: $id: marion trust allow refused the workflow (see $dir/trust.out)" >&2
+		return 0
+	}
+
+	local args=(workflow run "$id" --task "$task" --repo "$dir/repo" --state-dir "$dir/state")
+	[ -n "$CANNED" ] && args+=(--canned)
+	echo "live-smoke: $id: workflow run (wall ${WALL_SECS}s)" >&2
+	local start end rc=0 timed_out=no
+	start=$(date +%s)
+	(cd "$dir/repo" && exec timeout -k 15 "$WALL_SECS" "$BIN" "${args[@]}") >"$dir/run.out" 2>&1 || rc=$?
+	end=$(date +%s)
+	[ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] && timed_out=yes
+	if [ "$timed_out" = yes ]; then
+		# The supervisor carries a run on after its client is killed: stop the run first, so it
+		# launches nothing more, then whatever still runs.
+		local wf
+		wf=$(sed -n 's/^marion: workflow .* is running as \([^ ]*\) .*/\1/p' "$dir/run.out" | head -1)
+		[ -n "$wf" ] && { (cd "$dir/repo" && "$BIN" workflow cancel "$wf" --force --state-dir "$dir/state") >>"$dir/run.out" 2>&1 || true; }
+		stop_leftovers "$dir"
+	fi
+	(cd "$dir/repo" && "$BIN" trust deny "$file") >>"$dir/trust.out" 2>&1 ||
+		echo "live-smoke: $id: could not revoke the scratch workflow's trust entry; \`marion trust list\` shows it" >&2
+
+	python3 - "$dir" "$out" "$id" "$TEST_CMD" "$check" $((end - start)) "$timed_out" "$rc" <<-'EOF' ||
+		import json, pathlib, subprocess, sys
+		dir, out, scenario, test_cmd, check, wall, timed_out, rc = sys.argv[1:9]
+		dir, out = pathlib.Path(dir), pathlib.Path(out)
+		results = sorted((dir / "state").glob("*/workflows/*/result.json"))
+		r = {"scenario": scenario, "workflow": True, "wall_secs": int(wall),
+		     "timed_out": timed_out == "yes", "exit": int(rc)}
+		if not results:
+		    r["outcome"] = "never closed"
+		    (out / "result.json").write_text(json.dumps(r, indent=2) + "\n")
+		    sys.exit(0)
+		res = json.loads(results[-1].read_text())
+		r["outcome"] = res["outcome"] if isinstance(res["outcome"], str) else next(iter(res["outcome"]))
+		r["steps"] = [{"id": s["id"], "kind": s["kind"], "verdict": s.get("verdict"),
+		               "nodes": len(s.get("nodes", [])), "note": s.get("note")} for s in res["steps"]]
+		intents = {}
+		for j in (dir / "state").glob("*/journal.jsonl"):
+		    for line in j.read_text(errors="replace").splitlines():
+		        try:
+		            k = json.loads(line).get("kind")
+		        except json.JSONDecodeError:
+		            continue
+		        if isinstance(k, dict) and "SpawnIntent" in k and k["SpawnIntent"].get("workflow"):
+		            i = k["SpawnIntent"]
+		            intents[i["agent_id"]] = i
+		by_step = lambda n: [i for i in intents.values() if i["workflow"].get("step", 0) == n]
+		harness = lambda i: i.get("harness") if isinstance(i.get("harness"), str) else json.dumps(i.get("harness"))
+		plan, race, review = by_step(0), by_step(1), by_step(2)
+		r["plan"] = [harness(i) for i in plan]
+		r["race_seats"] = [harness(i) for i in race]
+		winner = next((s.get("work") for s in res["steps"] if s["kind"] == "race"), None)
+		r["winner"] = harness(intents[winner["agent_id"]]) if winner and winner["agent_id"] in intents else None
+		r["reviewers"] = [harness(i) for i in review if i["workflow"].get("part", 0) == 0]
+		r["fixes"] = sum(1 for i in review if i["workflow"].get("part", 0) == 1)
+		r["reviewer_family_differs"] = bool(r["winner"]) and all(h != r["winner"] for h in r["reviewers"])
+		land = next((s for s in res["steps"] if s["kind"] == "land"), {})
+		r["landed"] = land.get("note")
+		branch = None
+		if land.get("note") and "changes on branch " in land["note"]:
+		    branch = land["note"].split("changes on branch ", 1)[1].split(" ", 1)[0]
+		r["branch"] = branch
+		r["verify"] = "not landed"
+		if branch:
+		    tree = dir / "landed"
+		    subprocess.run(["git", "-C", str(dir / "repo"), "worktree", "add", "-q", "--detach", str(tree), branch], check=False)
+		    tests = subprocess.run(test_cmd.split(), cwd=tree, capture_output=True, text=True)
+		    probe = subprocess.run(["python3", "-c", check], cwd=tree, capture_output=True, text=True)
+		    r["verify"] = "pass" if tests.returncode == 0 and probe.returncode == 0 else "fail"
+		    r["verify_output"] = (tests.stdout + tests.stderr + probe.stderr)[-2000:]
+		    subprocess.run(["git", "-C", str(dir / "repo"), "worktree", "remove", "--force", str(tree)], check=False)
+		(out / "result.json").write_text(json.dumps(r, indent=2) + "\n")
+		for f in ["run.out", "trust.out"]:
+		    if (dir / f).exists():
+		        (out / f).write_text((dir / f).read_text(errors="replace"))
+	EOF
+		echo "live-smoke: $id: collecting results failed (see $dir)" >&2
+	echo "live-smoke: $id done in $((end - start))s (marion workflow run exit $rc)" >&2
+	prune_folder_records
+}
+
+S39_OPENCODE="opencode${OPENCODE_MODEL:+:$OPENCODE_MODEL}"
+# Six agents or more, one after another: its own wall clock, the run's and the scenario's both.
+S39_WALL_SECS=${MARION_LIVE_SMOKE_S39_WALL_SECS:-2400}
+WALL_SECS=$S39_WALL_SECS workflow_scenario s39 "schema = 1
+name = \"s39\"
+inputs = [\"task\"]
+budget = { wall = \"$((S39_WALL_SECS / 60))m\" }
+
+[[step]]
+id = \"plan\"
+kind = \"agent\"
+on = \"claude:haiku\"
+read_only = true
+prompt = \"Read the code and write a short plan for this task. Do not change any file.\\n\\nTask: {input.task}\"
+
+[[step]]
+id = \"build\"
+kind = \"race\"
+on = [\"codex\", \"$S39_OPENCODE\", \"pi\"]
+prompt = \"{input.task}\\n\\nA plan another agent wrote:\\n{plan.report}\"
+verify = [\"$TEST_CMD\"]
+
+[[step]]
+id = \"gate\"
+kind = \"review\"
+of = \"build\"
+max_rounds = 3
+
+[[step]]
+id = \"land\"
+kind = \"land\"
+of = \"gate\"
+mode = \"branch\"" \
+	"last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]' \
+	claude codex opencode pi
+
 # ---- the table --------------------------------------------------------------------------------------
 
 python3 - "$OUT" <<-'EOF' | tee "$OUT/results.md"
@@ -324,6 +480,13 @@ python3 - "$OUT" <<-'EOF' | tee "$OUT/results.md"
 	    r = json.loads(p.read_text())
 	    if "blocked" in r:
 	        print(f"| {r['scenario']} | BLOCKED: {r['blocked']} ||||||||")
+	        continue
+	    if r.get("workflow"):
+	        steps = ", ".join(f"{s['id']}: {s['verdict']}" for s in r.get("steps", []))
+	        seats = "/".join(r.get("race_seats", []))
+	        review = f"reviewers {'/'.join(r.get('reviewers', []))}, other family {yn(r.get('reviewer_family_differs'))}, fixes {r.get('fixes')}"
+	        wall = f"{r['wall_secs']}s" + (" (timed out)" if r["timed_out"] else "")
+	        print(f"| {r['scenario']} | workflow {r['outcome']}: {steps} | race {seats}, won {r.get('winner')} | {review} | {r.get('verify')} | {yn(r.get('branch'))} | {wall} | - | - | - |")
 	        continue
 	    kids = r["children"]
 	    expected = f"{r['child_harness_expected']}" + ("" if r["child_harness_matches"] else " (never ran)")
