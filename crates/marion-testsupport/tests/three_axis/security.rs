@@ -233,9 +233,18 @@ fn check_fields(
     }
 }
 
+/// The rendering crate: it is handed display text by the supervisor and holds no credential, so a
+/// type there named for a keyboard `Key` or a `Token` count is judged by its fields' names alone —
+/// a field named like a secret (`token`, `api_key`) is still one.
+const VIEW_CRATE: &str = "crates/marion-tui/";
+
+fn type_is_secret(s: &Scanner, name: &str) -> bool {
+    is_secret_type_name(name) && !s.file.starts_with(VIEW_CRATE)
+}
+
 pub fn check_struct(s: &mut Scanner, i: &syn::ItemStruct) {
     let name = i.ident.to_string();
-    let secret = is_secret_type_name(&name);
+    let secret = type_is_secret(s, &name);
     check_fields(s, &name, &i.fields, secret, derives_debug(&i.attrs));
 }
 
@@ -244,7 +253,7 @@ pub fn check_struct(s: &mut Scanner, i: &syn::ItemStruct) {
 pub fn check_enum(s: &mut Scanner, i: &syn::ItemEnum) {
     let name = i.ident.to_string();
     let debug = derives_debug(&i.attrs);
-    let secret = is_secret_type_name(&name);
+    let secret = type_is_secret(s, &name);
     for v in &i.variants {
         let owner = format!("{name}::{}", v.ident);
         check_fields(s, &owner, &v.fields, secret, debug);

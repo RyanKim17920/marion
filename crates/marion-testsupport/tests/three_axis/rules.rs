@@ -413,3 +413,24 @@ fn marions_own_key_verbs_are_not_a_harness_login_but_a_harness_login_still_is() 
     assert!(t(r#"fn t() { marion(&home, &["claude login"]); }"#).contains(&login));
     assert!(t(r#"fn t() { run("codex login"); }"#).contains(&login));
 }
+
+/// **A view type in the rendering crate is judged by its fields' names**: a keyboard `Key`, a
+/// `KeyRow`, a `TokenView` of counts pass; a field named like a secret there is still flagged, and
+/// the same types outside the crate are judged as before.
+#[test]
+fn a_rendering_crate_view_type_is_judged_by_its_fields_and_a_secret_field_still_fails() {
+    let tui = |src: &str| {
+        scan_at("crates/marion-tui/src/home/x.rs", src, false, false)
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect::<Vec<_>>()
+    };
+    assert!(tui("#[derive(Debug)] struct KeyRow { key: String, desc: String }").is_empty());
+    assert!(tui("#[derive(Debug)] enum Key { Paste(String), Enter }").is_empty());
+    assert!(tui("#[derive(Debug)] struct TokenView { window: String }").is_empty());
+    assert!(tui("#[derive(Debug)] struct TokenView { token: String }").contains(&"secret-debug"));
+    assert!(tui("#[derive(Debug)] struct Row { api_key: String }").contains(&"secret-debug"));
+    assert!(rules("#[derive(Debug)] struct Key(String);").contains(&"secret-debug"));
+    assert!(rules("#[derive(Debug)] struct KeyRow { key: String }").contains(&"secret-debug"));
+    assert!(rules("#[derive(Debug)] struct Config { api_key: String }").contains(&"secret-debug"));
+}
