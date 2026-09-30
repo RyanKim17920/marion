@@ -282,6 +282,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
                 answer: DialogAnswer::Keys(b"\r"),
                 note: "S37 0.155.1 directory trust, default `1. Yes, continue`: CR trusts",
             },
+            // 0.159.2 (conformance P-tui, 2026-09-30; `tests/fixtures/s37-boot-dialogs/
+            // codex-0.159.2.raw`) reworded it: "Trust this folder? …", then
+            // `› 1. Trust and continue` / `2. Quit` / `enter continue · esc quit`.
+            BootDialog {
+                needle: "› 1. Trust and continue 2. Quit",
+                action: "trust {repo} in codex once (run `codex` there and choose `Trust and continue`); worktrees inherit it",
+                answer: DialogAnswer::Keys(b"\r"),
+                note: "0.159.2 directory trust, default `1. Trust and continue`: CR trusts",
+            },
             BootDialog {
                 needle: "Do you trust the contents of this directory?",
                 action: "trust {repo} in codex once (run `codex` there and choose `Yes, continue`); worktrees inherit it",
