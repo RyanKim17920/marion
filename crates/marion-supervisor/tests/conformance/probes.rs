@@ -824,10 +824,11 @@ fn documents_with(l: &Launch, key: &str) -> Vec<std::path::PathBuf> {
     l.files
         .iter()
         .filter(|f| {
-            std::fs::read_to_string(f)
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .is_some_and(|v| has_key(&v, key))
+            std::fs::read_to_string(f).is_ok_and(|t| match serde_json::from_str::<Value>(&t) {
+                Ok(v) => has_key(&v, key),
+                // TOML, read the way `strip_key` strips it: a line that sets the key.
+                Err(_) => t.lines().any(|line| line.trim_start().starts_with(key)),
+            })
         })
         .cloned()
         .collect()
@@ -841,21 +842,44 @@ fn has_key(v: &Value, key: &str) -> bool {
     }
 }
 
-/// Merge `contest`, a JSON object, into the top level of each document.
+/// Merge `contest` into the top level of each document: a JSON object into a JSON document, and
+/// `key = value` lines into a TOML one, each replacing the top-level line that set its key.
 fn contest_documents(files: &[std::path::PathBuf], contest: &str) {
-    let Ok(Value::Object(add)) = serde_json::from_str::<Value>(contest) else {
-        panic!("a row's contest is a JSON object: {contest}");
-    };
     for f in files {
-        let Some(Value::Object(mut doc)) = std::fs::read_to_string(f)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        else {
+        let Ok(text) = std::fs::read_to_string(f) else {
             continue;
         };
-        doc.extend(add.clone());
-        let _ = std::fs::write(f, Value::Object(doc).to_string());
+        let merged = match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(mut doc)) => {
+                let Ok(Value::Object(add)) = serde_json::from_str::<Value>(contest) else {
+                    panic!("a JSON document's contest is a JSON object: {contest}");
+                };
+                doc.extend(add);
+                Value::Object(doc).to_string()
+            }
+            Ok(_) => continue,
+            Err(_) => contest_toml(&text, contest),
+        };
+        let _ = std::fs::write(f, merged);
     }
+}
+
+/// `contest`'s `key = value` lines ahead of `text`'s own, whose top-level lines setting the same
+/// keys are dropped — a TOML key may be set once, and only above the first table.
+fn contest_toml(text: &str, contest: &str) -> String {
+    let key_of = |line: &str| line.split('=').next().map(|k| k.trim().to_string());
+    let keys: Vec<String> = contest.lines().filter_map(key_of).collect();
+    let mut top = true;
+    let kept = text.lines().filter(|line| {
+        top &= !line.trim_start().starts_with('[');
+        !(top && key_of(line).is_some_and(|k| keys.contains(&k)))
+    });
+    contest
+        .lines()
+        .map(str::to_string)
+        .chain(kept.map(str::to_string))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn strip_key(l: &mut Launch, key: &str) {
@@ -1621,6 +1645,17 @@ mod tests {
         let mut b = args(&["--allow-tool=marion(report)", "-p"]);
         strip_flag(&mut b, "--allow-tool", true);
         assert_eq!(b, args(&["-p"]));
+    }
+
+    /// A TOML contest replaces the top-level line that set its key and goes above the first
+    /// table; a key of the same name inside a table is left alone.
+    #[test]
+    fn a_toml_contest_replaces_the_top_level_key_and_nothing_under_a_table() {
+        let doc = "model = \"m\"\napproval_policy = \"never\"\n\n[t]\napproval_policy = \"x\"";
+        assert_eq!(
+            contest_toml(doc, r#"approval_policy = "on-request""#),
+            "approval_policy = \"on-request\"\nmodel = \"m\"\n\n[t]\napproval_policy = \"x\""
+        );
     }
 
     #[test]

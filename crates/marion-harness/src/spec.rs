@@ -908,8 +908,8 @@ pub enum Approval {
     /// else — codex's `default_tools_approval_mode = "approve"`, gemini's `trust: true`.
     DeclarationKey {
         key: &'static str,
-        /// The operator config the key exists to override, as a JSON object merged at the top of
-        /// the declaration document — where the harness's own default already runs marion's tool
+        /// The operator config the key exists to override, merged at the top of the declaration
+        /// document — a JSON object into a JSON document, `key = value` lines into a TOML one — where the harness's own default already runs marion's tool
         /// unasked, stripping the key alone proves nothing, and this is what makes the grant
         /// load-bearing (conformance's P-approval). `None` where the harness refuses the tool
         /// by default without the key.

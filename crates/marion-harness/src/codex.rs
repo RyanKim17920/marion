@@ -218,9 +218,13 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // alike: without it every marion call is cancelled silently (S6).
     approval: Approval::DeclarationKey {
         key: "default_tools_approval_mode",
-        contest: None,
+        contest: Some(r#"approval_policy = "on-request""#),
+        // 0.159.2 runs an MCP tool unasked under marion's own `approval_policy = "never"`, so the
+        // key's case is an operator's `on-request`, where it is still what lets `report` run.
         note: "S6 on 0.146.0: without `default_tools_approval_mode = \"approve\"` every marion \
-               tool call is cancelled and the run ends Unreported",
+               tool call is cancelled and the run ends Unreported. 0.159.2 (conformance, \
+               2026-09-30): with no key the call runs under `approval_policy = \"never\"`; under \
+               `on-request` it is rejected without the key and runs with it",
     },
     // s38 (0.155.1): `sandbox_mode = "read-only"` refuses `apply_patch` and the shell's writes alike,
     // where `write` → `workspace-write` (the whole availability axis) would be satisfied anyway.
