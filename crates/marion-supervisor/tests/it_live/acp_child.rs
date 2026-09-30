@@ -402,3 +402,120 @@ fn a_failing_verification_demotes_an_acp_child_to_failed() {
     assert_eq!(comp.evidence.len(), 1, "{comp:?}");
     assert_eq!(comp.evidence[0].exit_code, Some(3));
 }
+
+const REFUSED_ROOT: &str = "MARION-ACP-MODE-REFUSED-ROOT-6d2e";
+
+/// A tree row whose ACP session mode `opencode acp` does not offer (it offers `build` and `plan`).
+const REFUSED_AGENTS_TOML: &str = r#"
+[[agent]]
+name = "acp-opencode-yolo"
+harness = "acp:opencode"
+approval_mode = "bypassPermissions"
+description = "An opencode acp child in a session mode opencode does not have."
+"#;
+
+/// **A spawn whose ACP child is refused after its process exists answers the parent, promptly.**
+/// The child's session opens and then refuses the select its type names, so marion ends the child
+/// before its first prompt, with a process already journaled. That refusal is the spawn's answer:
+/// the root's next request carries the refusal's own sentence and the run ends on its own, long
+/// before its wall clock. Measured live (2026-09-30, s5): a claude root whose `acp-opencode` child
+/// was refused the bare model `deepseek-v4-flash` sat in its `spawn` until the scenario's 420 s wall,
+/// because nothing closed the child's stream, which a blocking `spawn` reads to its end.
+#[test]
+fn a_spawn_whose_acp_child_is_refused_after_it_started_answers_the_parent() {
+    if !on_path("opencode") || !marion_testsupport::harness_available("claude") {
+        eprintln!("skipped: `opencode` or `claude` is not installed");
+        return;
+    }
+    let dir = scratch("acp-mode-refused");
+    let repo = fixture_repo(&dir);
+    let file = repo.join(marion_supervisor::run::AGENT_TYPES_FILE);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, REFUSED_AGENTS_TOML).unwrap();
+    marion_testsupport::git(&repo, &["add", "-A"]);
+    marion_testsupport::git(
+        &repo,
+        &[
+            "-c",
+            "user.email=marion@example.invalid",
+            "-c",
+            "user.name=marion",
+            "commit",
+            "-qm",
+            "agent types",
+        ],
+    );
+    // `approval_mode` widens what a node may do, so the row runs only once the operator trusts it,
+    // into a store of this test's own.
+    let data = dir.join("data");
+    marion_supervisor::trust::run(
+        &["allow".into()],
+        &repo,
+        data.join("marion")
+            .join(marion_supervisor::trust::STORE_FILE),
+        &mut Vec::new(),
+    )
+    .expect("the row is allowed");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let server = marion_provider::CannedServer::start(marion_provider::Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: dir.join("provider-requests.jsonl"),
+        script: Script {
+            root: Some(marion_provider::RootScript {
+                marker: REFUSED_ROOT.into(),
+                turn: marion_provider::RootTurn {
+                    tool: "mcp__marion__spawn".into(),
+                    args: serde_json::json!({
+                        "agent_type": "acp-opencode-yolo",
+                        // A canned opencode session is reached only through a `provider/model`.
+                        "model": "marion/canned-1",
+                        "prompt": "Create a file under src/ and report back through marion.",
+                        "acceptance_criteria": ["a file under src/ was created"],
+                        "timeout_secs": 60,
+                    }),
+                    final_text: "The child could not start.".into(),
+                },
+            }),
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+    let stderr = dir.join("run.stderr");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "run",
+            "claude-orchestrator",
+            "--prompt",
+            &format!("{REFUSED_ROOT}: delegate to an opencode acp child."),
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--base-url",
+            &server.base_url(),
+            "--canned",
+            // The ACP row is not measured under marion's sandbox, and the claude root is in it.
+            "--allow-wider-children",
+            "--timeout",
+            "240",
+        ])
+        .current_dir(&*dir)
+        .env("XDG_DATA_HOME", &data)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .expect("marion run starts");
+    common::run::finish(run, std::time::Duration::from_secs(120), &stderr);
+    let requests = server.requests().unwrap_or_default();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.to_string().contains("bypassPermissions")
+                && r.to_string().contains("does not offer it")),
+        "the root's model read the child's refusal in its own words (request log: {}); marion \
+         run's stderr:\n{}",
+        server.reqlog_path().display(),
+        std::fs::read_to_string(&stderr).unwrap_or_default()
+    );
+}

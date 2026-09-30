@@ -718,22 +718,32 @@ fn a_run_that_leaves_early_still_journals_what_its_stream_said_it_spent() {
             .count()
     };
     let leave_early = || -> Result<(), SpawnError> {
-        let _spend = SpendOnEveryEnd {
+        let mut spend = SpendOnEveryEnd {
             project: &project,
             agent_id: &id,
             events: Some(&sink),
             recorded: false,
+            aborted: None,
+            closes: true,
         };
-        Err(SpawnError::NodeAborted("the driver failed".into()))
+        spend.aborting(Err(SpawnError::NodeAborted("the driver failed".into())))
     };
     assert!(leave_early().is_err());
     assert_eq!(usage_records(), 1, "the early return journaled the spend");
+    // And closed the stream a blocking parent reads to its end, in the error's own words.
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        events.contains("Aborted") && events.contains("the driver failed"),
+        "the early return wrote the closing bookend: {events}"
+    );
 
     let mut spend = SpendOnEveryEnd {
         project: &project,
         agent_id: &id,
         events: Some(&sink),
         recorded: false,
+        aborted: None,
+        closes: true,
     };
     assert_eq!(spend.record().map(|u| (u.input, u.output)), Some((12, 3)));
     drop(spend);

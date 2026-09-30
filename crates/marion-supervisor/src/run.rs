@@ -2256,6 +2256,8 @@ pub fn run_spawn_watched(
         agent_id: &agent_id,
         events: events.as_ref(),
         recorded: false,
+        aborted: None,
+        closes: true,
     };
     // The node's harness session, journaled the moment its stream names one — the handle a later
     // `node/resume` hands back. Beside `events` because both read the same live frames, and for
@@ -2608,8 +2610,9 @@ pub fn run_spawn_watched(
         // error still goes back to the caller as the driver reported it.
         if run.is_err() && killed {
             resolution.armed = false;
+            spend.closes = false;
         }
-        let mut run = run?;
+        let mut run = spend.aborting(resolution.filed(run))?;
         // An endpoint node's key never outlives the process in what it wrote: a harness that echoes
         // its credential in an error would otherwise put it in the contract and the event log.
         redact_run(&mut run, endpoint.as_ref(), gateway.as_ref());
@@ -3255,11 +3258,23 @@ fn select_workspace(
 /// journal — left through a `?` before the one line that recorded it. Whatever the stream stated,
 /// every generation's, is written once: by [`Self::record`] on the contract path, before the
 /// terminal records, or on drop by any other exit.
+///
+/// **And any other exit closes the node's stream.** A parent's blocking `spawn` reads the child's
+/// stream until its closing bookend (`courier::await_contract`), and only the contract path wrote
+/// one. Measured live (s5, 2026-09-30): an `opencode acp` child refused the model its launch named
+/// left through the driver's `?` after its process existed, so the stream never closed and its
+/// claude parent sat in `spawn` until the run's 420 s wall. The drop writes `Aborted` with the
+/// error's own sentence ([`Self::aborting`]), which the parent's `spawn` then answers with.
 struct SpendOnEveryEnd<'a> {
     project: &'a ProjectDir,
     agent_id: &'a AgentId,
     events: Option<&'a crate::events::EventSink>,
     recorded: bool,
+    /// Why the run is leaving early, once a `?` passed through [`Self::aborting`].
+    aborted: Option<String>,
+    /// Whether an early exit closes the stream: not for a node the operator's kill ended, whose
+    /// `KillConfirmed` is its end (see the driver's `?` in `run_spawn`).
+    closes: bool,
 }
 
 impl SpendOnEveryEnd<'_> {
@@ -3271,12 +3286,31 @@ impl SpendOnEveryEnd<'_> {
         crate::journal::record_usage(self.project, self.agent_id, spent);
         usage
     }
+
+    /// Pass a fallible step's result through, keeping its error's sentence for the stream's
+    /// closing bookend. The error itself is returned exactly as it was.
+    fn aborting<T>(&mut self, result: Result<T, SpawnError>) -> Result<T, SpawnError> {
+        if let Err(e) = &result {
+            self.aborted = Some(e.to_string());
+        }
+        result
+    }
 }
 
 impl Drop for SpendOnEveryEnd<'_> {
     fn drop(&mut self) {
         if !self.recorded {
             self.record();
+            if self.closes
+                && let Some(es) = self.events
+            {
+                es.lifecycle(marion_core::event::Lifecycle::Aborted {
+                    reason: self.aborted.take().unwrap_or_else(|| {
+                        "marion left the spawn path before the child reached a terminal record"
+                            .into()
+                    }),
+                });
+            }
         }
     }
 }
