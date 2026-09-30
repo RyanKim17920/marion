@@ -41,7 +41,7 @@ use marion_testsupport::{
     Liveness, Scratch, fixture_repo, liveness, persisted_contracts, scratch, survivors, sweep,
 };
 
-mod common;
+use crate::common;
 use common::Supervisor;
 
 /// A bound that exists only to fail: every wait here is on work the test has already caused.

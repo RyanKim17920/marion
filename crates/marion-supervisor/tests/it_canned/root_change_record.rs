@@ -29,7 +29,7 @@ use marion_supervisor::run::run_bounded;
 use marion_supervisor::spawn::TreeSnapshot;
 use marion_testsupport::{fixture_repo, git, scratch, write_executable};
 
-mod common;
+use crate::common;
 
 /// Generous. The bound exists so a hung `marion` fails the suite loudly instead of wedging it —
 /// `launch_only_root.rs`'s `RUN_BOUND`, and the same reasoning.

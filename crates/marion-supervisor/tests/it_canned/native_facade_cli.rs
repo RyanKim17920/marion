@@ -325,7 +325,7 @@ fn reexec_command(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn probe_command(stdin: Stdio, stdout: Stdio, controlling_fd: Option<i32>) -> Command {
     reexec_command(
-        "nested_tty_dispatch_probe",
+        "native_facade_cli::nested_tty_dispatch_probe",
         "MARION_NATIVE_TTY_PROBE",
         stdin,
         stdout,
@@ -336,7 +336,7 @@ fn probe_command(stdin: Stdio, stdout: Stdio, controlling_fd: Option<i32>) -> Co
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn session_command(stdin: Stdio, stdout: Stdio) -> Command {
     reexec_command(
-        "nested_tty_session_helper",
+        "native_facade_cli::nested_tty_session_helper",
         "MARION_NATIVE_TTY_SESSION",
         stdin,
         stdout,
@@ -428,7 +428,11 @@ fn nested_tty_fixture_watchdog_reaps_a_probe_that_never_completes() {
 
     let mut command = Command::new(std::env::current_exe().expect("integration test path"));
     command
-        .args(["--exact", "nested_tty_watchdog_probe", "--nocapture"])
+        .args([
+            "--exact",
+            "native_facade_cli::nested_tty_watchdog_probe",
+            "--nocapture",
+        ])
         .env("MARION_NATIVE_TTY_WATCHDOG_PROBE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -605,7 +609,11 @@ fn nested_tty_session_helper() {
 
     let mut probe = Command::new(std::env::current_exe().expect("integration test path"));
     probe
-        .args(["--exact", "nested_tty_dispatch_probe", "--nocapture"])
+        .args([
+            "--exact",
+            "native_facade_cli::nested_tty_dispatch_probe",
+            "--nocapture",
+        ])
         .env("MARION_NATIVE_TTY_PROBE", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

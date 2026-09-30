@@ -23,7 +23,7 @@ use marion_supervisor::spawn::SpawnError;
 use marion_supervisor::types_snapshot::TypesSnapshot;
 use marion_testsupport::scratch;
 
-mod common;
+use crate::common;
 
 use common::canned::canned_env;
 

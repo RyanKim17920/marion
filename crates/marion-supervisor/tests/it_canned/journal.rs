@@ -314,7 +314,7 @@ fn two_concurrent_writer_processes_interleave_at_record_granularity() {
     for w in ["proc-a", "proc-b"] {
         kids.push(
             std::process::Command::new(&exe)
-                .args(["--exact", "journal_writer_child", "--nocapture"])
+                .args(["--exact", "journal::journal_writer_child", "--nocapture"])
                 .env("MARION_JOURNAL_CHILD", &path)
                 .env("MARION_JOURNAL_WRITER", w)
                 .spawn()

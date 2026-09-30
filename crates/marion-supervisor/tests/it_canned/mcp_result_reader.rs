@@ -4,7 +4,7 @@
 //! compiled into every suite that declares `mod common`, and its tests would then be counted five
 //! times over in every admission's per-suite tallies.
 
-mod common;
+use crate::common;
 use common::mcp_result::{codex_call_output_text, tool_result_text};
 use serde_json::{Value, json};
 

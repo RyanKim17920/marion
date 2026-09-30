@@ -18,7 +18,7 @@ use marion_harness::{
 use marion_supervisor::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use marion_testsupport::{Scratch, scratch, write_executable};
 
-mod common;
+use crate::common;
 
 use common::native::opaque;
 

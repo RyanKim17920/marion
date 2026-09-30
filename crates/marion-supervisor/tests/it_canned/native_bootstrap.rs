@@ -13,8 +13,6 @@ use marion_supervisor::socket::own_uid;
 use marion_supervisor::socket::{Acquired, acquire, socket_paths};
 use marion_testsupport::scratch;
 
-mod common;
-
 fn request_context(selector: &str, tail: Vec<OsString>) -> DirectNativeRequestContext {
     DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(b"/canonical/project-\xff".to_vec())),
@@ -402,7 +400,7 @@ mod enabled_launch {
             command
                 .args([
                     "--exact",
-                    "enabled_launch::native_launch_probe",
+                    "native_bootstrap::enabled_launch::native_launch_probe",
                     "--nocapture",
                 ])
                 .current_dir(cwd)

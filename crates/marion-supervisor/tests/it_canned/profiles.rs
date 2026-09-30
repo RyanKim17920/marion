@@ -34,7 +34,7 @@ use marion_core::proto::{Call, Frame, Method, MethodResult, Outcome, Request, Re
 use marion_supervisor::socket::{SocketPaths, own_uid, project_root, socket_paths};
 use marion_testsupport::{Scratch, fixture_repo, git, scratch, write_executable};
 
-mod common;
+use crate::common;
 use common::{shell_quote, walk};
 
 /// A bound that exists only to fail.

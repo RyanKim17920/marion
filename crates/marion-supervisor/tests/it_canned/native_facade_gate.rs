@@ -17,7 +17,7 @@ use marion_core::proto::{
 };
 use marion_testsupport::{Scratch, fixture_repo, scratch, write_executable};
 
-mod common;
+use crate::common;
 use common::Supervisor;
 use common::native::opaque;
 

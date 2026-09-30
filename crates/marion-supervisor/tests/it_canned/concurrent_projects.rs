@@ -57,7 +57,7 @@ use marion_core::root_change::{RootChange, RootDelta};
 use marion_supervisor::socket::project_root;
 use marion_testsupport::fixture_repo;
 
-mod common;
+use crate::common;
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;

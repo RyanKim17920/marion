@@ -61,7 +61,7 @@ use marion_testsupport::{
 };
 use serde_json::{Value, json};
 
-mod common;
+use crate::common;
 use common::{Supervisor, declaration_of, walk};
 
 unsafe extern "C" {

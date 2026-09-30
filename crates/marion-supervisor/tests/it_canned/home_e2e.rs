@@ -25,7 +25,7 @@ use marion_core::contract::AgentId;
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
 use marion_testsupport::{Scratch, fixture_repo, scratch, sweep};
 
-mod common;
+use crate::common;
 use common::cast::cast_records;
 
 const BOUND: Duration = Duration::from_secs(90);

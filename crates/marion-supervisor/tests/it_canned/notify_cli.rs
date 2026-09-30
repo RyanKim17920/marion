@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-mod common;
+use crate::common;
 
 fn marion(config: &Path, args: &[&str], backend: Option<&str>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));

@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use marion_supervisor::socket::{own_uid, project_root, socket_paths};
 
-mod common;
+use crate::common;
 use marion_testsupport::{
     Scratch, fixture_repo, scratch, survivors, sweep, until_within, write_executable,
 };

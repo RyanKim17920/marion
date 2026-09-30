@@ -22,7 +22,7 @@ use marion_supervisor::socket::{
 };
 use marion_testsupport::{alive, until_within, write_executable};
 
-mod common;
+use crate::common;
 use common::journal::seed;
 
 unsafe extern "C" {
