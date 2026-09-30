@@ -6,7 +6,7 @@
 //! new ACP refinement, is in the battery the day it lands and nothing here names it. Each target's
 //! agent type is the built-in marion would spawn for that harness (the plain implementer), or for a
 //! row from a file the type an agent-types file naming it gets by default; each launch goes through
-//! `run::child_launch_spec` → `config_files` → `compile` → `session_declaration`, the one
+//! `run::child_launch_spec` → `launch_documents` → `compile` → `session_declaration`, the one
 //! derivation a real child takes; the battery adds nothing to the launch but the provider URL.
 
 use std::path::{Path, PathBuf};
@@ -249,10 +249,11 @@ pub fn compile(
         bridge,
         bridge_args: vec!["mcp".into()],
     };
+    // Every document a real spawn writes, the overlay's seeds included (claude's onboarding).
     let files = t
         .adapter
-        .config_files(&spec, &ctx)
-        .map_err(|e| format!("config_files: {e}"))?;
+        .launch_documents(&spec, &ctx)
+        .map_err(|e| format!("launch_documents: {e}"))?;
     let mut written = Vec::new();
     for (path, body) in files {
         if let Some(dir) = path.parent() {
@@ -283,4 +284,37 @@ pub fn compile(
         rpc: t.adapter.spec().surfaces.rpc(),
         dialect: Dialect::of(t.adapter.spec()),
     })
+}
+
+/// **A probe's launch writes every document a real spawn writes** (`launch_documents`, not only
+/// `config_files`): claude's pane opened on the theme picker in the battery alone, because the
+/// onboarding seed a canned launch writes was never on disk.
+#[test]
+fn a_probes_launch_writes_every_document_a_real_spawn_writes() {
+    let scratch = marion_testsupport::scratch("conformance-launch-documents");
+    let mut checked = 0;
+    for (selector, built) in all() {
+        let Ok(t) = built else { continue };
+        if t.spec.overlay_documents.is_empty() {
+            continue;
+        }
+        let w = World::new(&scratch, &selector.replace(':', "-"));
+        let knobs = Knobs {
+            pane: t.spec.pane.is_some(),
+            ..Knobs::default()
+        };
+        compile(&t, &w, "http://127.0.0.1:9", "", &knobs)
+            .unwrap_or_else(|e| panic!("{selector}: {e}"));
+        for (rel, body) in t.spec.overlay_documents {
+            let path = w.config.join(rel);
+            assert_eq!(
+                std::fs::read_to_string(&path).ok().as_deref(),
+                Some(*body),
+                "{selector}: {} is written before the harness starts",
+                path.display()
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "some row carries an overlay document");
 }
