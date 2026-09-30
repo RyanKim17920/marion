@@ -394,7 +394,13 @@ fn timeline(
                 ..Timeline::default()
             };
         }
-        lines.extend(page.lines);
+        // A call that ended well says nothing a report reader needs; one that failed says what
+        // went wrong, so its end stays, under its call.
+        lines.extend(
+            page.lines
+                .into_iter()
+                .filter(|l| l.kind != ActionKind::Ended || !crate::activity::succeeded(l)),
+        );
         if page.next <= cursor {
             break;
         }

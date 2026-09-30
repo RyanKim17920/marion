@@ -106,7 +106,7 @@ mod tests {
             [
                 "claude 8ea3 · exited:ok · claude (claude-opus-5-5) · 257.1k tokens",
                 "├── codex 1b2c · exited:ok · codex (gpt-5.5-codex) · 84.4k tokens",
-                "└── codex 5d6e · exited:failed · codex (gpt-5.5) · 912 tokens",
+                "└── codex 5d6e openrouter:gpt-5.5 · exited:failed · codex (gpt-5.5) · 912 tokens",
             ]
         );
         let [root, landed, refused] = &r.nodes[..] else {

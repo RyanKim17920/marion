@@ -5,7 +5,7 @@
 ```text
 claude 8ea3 · exited:ok · claude (claude-opus-5-5) · 257.1k tokens
 ├── codex 1b2c · exited:ok · codex (gpt-5.5-codex) · 84.4k tokens
-└── codex 5d6e · exited:failed · codex (gpt-5.5) · 912 tokens
+└── codex 5d6e openrouter:gpt-5.5 · exited:failed · codex (gpt-5.5) · 912 tokens
 ```
 
 ## claude 8ea3 · exited:ok
@@ -76,7 +76,7 @@ claude 8ea3 · exited:ok · claude (claude-opus-5-5) · 257.1k tokens
 
 Changed: `src/limits/bucket.rs`, `src/limits/mod.rs`
 
-## codex 5d6e · exited:failed
+## codex 5d6e openrouter:gpt-5.5 · exited:failed
 
 - **harness**: codex (gpt-5.5)
 - **type**: codex

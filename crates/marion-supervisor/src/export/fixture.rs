@@ -338,15 +338,16 @@ fn write_root(p: &ProjectDir) {
     write_stream(p, ROOT, Harness::ClaudeCode, 2, 4, &frames);
 }
 
+/// A codex item as app-server reports its end (S36 P4): `item/completed` with the item in `params`.
 fn codex_item(item: serde_json::Value) -> String {
-    serde_json::json!({"type": "item.completed", "item": item}).to_string()
+    serde_json::json!({"method": "item/completed", "params": {"item": item}}).to_string()
 }
 
 fn write_landed(p: &ProjectDir) {
     let command = |n: u32, cmd: &str| {
         codex_item(serde_json::json!({
-            "id": format!("item_{n}"), "type": "command_execution", "command": cmd,
-            "aggregated_output": "", "exit_code": 0, "status": "completed"
+            "id": format!("item_{n}"), "type": "commandExecution", "command": cmd,
+            "aggregatedOutput": "", "exitCode": 0, "status": "completed"
         }))
     };
     let frames = [
@@ -354,7 +355,7 @@ fn write_landed(p: &ProjectDir) {
         command(1, "bash -lc 'rg -n bucket src'"),
         command(2, "bash -lc 'rg -n refill src'"),
         codex_item(serde_json::json!({
-            "id": "item_3", "type": "file_change", "status": "completed",
+            "id": "item_3", "type": "fileChange", "status": "completed",
             "changes": [{"path": "src/limits/bucket.rs", "kind": "add"},
                         {"path": "src/limits/mod.rs", "kind": "update"}]
         })),
@@ -365,12 +366,12 @@ fn write_landed(p: &ProjectDir) {
         command(5, &format!("OPENROUTER_KEY={STORE_KEY} ./probe")),
         command(6, "bash -lc 'cargo test -q'"),
         codex_item(serde_json::json!({
-            "id": "item_7", "type": "mcp_tool_call", "server": "marion", "tool": "report",
+            "id": "item_7", "type": "mcpToolCall", "server": "marion", "tool": "report",
             "arguments": {"narrative": "token bucket added; tests pass"},
             "result": null, "error": null, "status": "completed"
         })),
         codex_item(serde_json::json!({
-            "id": "item_8", "type": "agent_message",
+            "id": "item_8", "type": "agentMessage",
             "text": format!("Done. (debug: {})", SENTINELS[5].1)
         })),
     ];
