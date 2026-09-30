@@ -287,10 +287,15 @@ pub fn ensure_supervisor_within(
     let mut last_spawn: Option<DetachError> = None;
     loop {
         if let Some(mut stream) = dial_live_supervisor(paths)? {
-            crate::client_auth::identity_for(paths)
-                .and_then(|who| crate::client_auth::hello(&mut stream, &who))
-                .map_err(DetachError::Hello)?;
-            return Ok(Ensured { stream, started });
+            let who = crate::client_auth::identity_for(paths).map_err(DetachError::Hello)?;
+            match crate::client_auth::hello(&mut stream, &who) {
+                Ok(()) => return Ok(Ensured { stream, started }),
+                // The lock is held but the socket is still an older listener nobody answers on —
+                // a supervisor starting now has not yet bound its own. Dial again.
+                Err(crate::client_auth::HelloError::Unanswered(_)) if Instant::now() < deadline => {
+                }
+                Err(e) => return Err(DetachError::Hello(e.to_string())),
+            }
         }
         if may_start_another(attempts, last_attempt, paths) {
             attempts += 1;
