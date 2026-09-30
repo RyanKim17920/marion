@@ -251,7 +251,8 @@ fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
         return Check::new(
             Level::Ok,
             format!(
-                "node sandbox: {}; canned and endpoint nodes of the rows measured under it write                  only their workspace, TMPDIR and agent dir",
+                "node sandbox: {}; canned and endpoint nodes of the rows measured under it write \
+                 only their workspace, TMPDIR and agent dir",
                 s.describe()
             ),
         );
@@ -259,7 +260,8 @@ fn sandbox(s: &marion_harness::os_sandbox::Support) -> Check {
     Check::new(
         Level::Warn,
         format!(
-            "node sandbox {}. Nodes run as before: a node on a harness with no sandbox of its own              writes as you, and a sandboxed node still cannot start one",
+            "node sandbox {}. Nodes run as before: a node on a harness with no sandbox of its own \
+             writes as you, and a sandboxed node still cannot start one",
             s.describe()
         ),
     )
@@ -416,6 +418,16 @@ mod tests {
             .expect("a sandbox line");
         assert_eq!(line.level, Level::Warn);
         assert!(line.text.contains("inside a sandbox"), "{}", line.text);
+        let on = checks(&facts())
+            .into_iter()
+            .find(|c| c.text.contains("node sandbox"))
+            .expect("a sandbox line");
+        for text in [&line.text, &on.text] {
+            assert!(
+                !text.contains("  "),
+                "one sentence, no source indentation: {text}"
+            );
+        }
     }
 
     /// A Keychain key the `security` tool stored is a warning naming the command that re-stores
