@@ -1031,6 +1031,16 @@ pub const MCP_SERVER_KEY: &str = "mcp_servers.marion";
 /// routes cannot drift into disabling different things.
 pub const PLUGINS_FEATURE_KEY: &str = "features.plugins";
 
+/// The feature flag whose default `true` writes a snapshot of the login shell — its whole
+/// environment, a provider key included — to `$CODEX_HOME/shell_snapshots/*.sh` for every session.
+///
+/// A credential at rest in a directory nothing else treats as secret: the 2026-09-30 canary found
+/// marion's endpoint key in one under a node's config dir (0.159.2). Verified on 0.159.2: `codex
+/// features list` reports `shell_snapshot  stable  true` by default and `false` under both
+/// `-c features.shell_snapshot=false` and a `[features] shell_snapshot = false` config. Without a
+/// snapshot codex runs each command in a fresh login shell, as it did before the feature.
+pub const SHELL_SNAPSHOT_FEATURE_KEY: &str = "features.shell_snapshot";
+
 /// The whole of marion's configuration for a **live** codex node, as `-c key=value` pairs.
 ///
 /// **Why argv and not a file.** Under [`Auth::Inherited`] `CODEX_HOME` is unset, so
@@ -1100,6 +1110,9 @@ pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
     // the fact — §9's kill rule turns on enumerating descendants *before* the child dies — so
     // prevention at config time is the only remedy, on this route exactly as on the other.
     out.push((PLUGINS_FEATURE_KEY.to_string(), "false".to_string()));
+    // The operator's environment, credentials included, written into `~/.codex` for every node
+    // marion starts: see [`SHELL_SNAPSHOT_FEATURE_KEY`].
+    out.push((SHELL_SNAPSHOT_FEATURE_KEY.to_string(), "false".to_string()));
     out
 }
 
@@ -1131,6 +1144,9 @@ approval_policy = "never"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -1631,6 +1647,21 @@ mod tests {
     /// has exited**, reparented to pid 1, writing into the agent-dir marion is deleting. It is not
     /// reapable after the fact — §9's kill rule turns on enumerating descendants *before* the
     /// child dies — so the only remedy is not to start it.
+    /// A shell snapshot is the environment written to disk, a key included: off on both routes,
+    /// under the key `codex features list` reads back.
+    #[test]
+    fn no_route_lets_codex_write_its_shell_environment_to_disk() {
+        let t = config_toml(&bridge_env(), "http://x/v1");
+        let features = t.split("[features]").nth(1).unwrap();
+        let features = features.split("\n[").next().unwrap();
+        assert!(features.contains("shell_snapshot = false"), "{t}");
+        assert_eq!(SHELL_SNAPSHOT_FEATURE_KEY, "features.shell_snapshot");
+        assert!(
+            live_config_overrides(&bridge_env())
+                .contains(&(SHELL_SNAPSHOT_FEATURE_KEY.to_string(), "false".to_string()))
+        );
+    }
+
     #[test]
     fn the_background_plugin_fetch_that_outlives_exec_is_disabled() {
         let t = config_toml(&bridge_env(), "http://x/v1");

@@ -27,6 +27,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -93,6 +96,8 @@ args:
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
   -c
   features.plugins=false
+  -c
+  features.shell_snapshot=false
 env:
 
 ## live pane
@@ -131,6 +136,8 @@ args:
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
   -c
   features.plugins=false
+  -c
+  features.shell_snapshot=false
   -C
   /wt
   do the task
@@ -164,6 +171,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -212,6 +222,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -255,6 +268,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -309,6 +325,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -363,6 +382,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -408,6 +430,9 @@ sandbox_mode = "workspace-write"
 # does not. There is nothing for marion to reap here, so the fix is to never start it.
 [features]
 plugins = false
+# The login shell's whole environment, marion's provider key included, written to
+# `$CODEX_HOME/shell_snapshots/` otherwise (0.159.2; `SHELL_SNAPSHOT_FEATURE_KEY`).
+shell_snapshot = false
 
 [model_providers.canned]
 name = "canned"
@@ -463,6 +488,8 @@ args:
   mcp_servers.marion.env_vars=["MARION_NODE_TOKEN_FILE"]
   -c
   features.plugins=false
+  -c
+  features.shell_snapshot=false
 env:
 
 ## live resume pane
