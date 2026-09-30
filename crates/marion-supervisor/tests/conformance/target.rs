@@ -18,7 +18,7 @@ use marion_harness::adapter::harness_spec;
 use marion_harness::invocation::Invocation;
 use marion_harness::spec::HarnessSpec;
 use marion_harness::{Auth, HarnessAdapter, SpawnCtx, acp, adapter_for_type};
-use marion_supervisor::duplex::{LaunchPath, launch_path};
+use marion_supervisor::duplex::{Dialect, LaunchPath, launch_path};
 use marion_supervisor::run::{Env, SpawnRequest, child_launch_spec, child_prompt};
 use serde_json::Value;
 
@@ -144,6 +144,8 @@ pub struct Launch {
     pub ready_file: Option<PathBuf>,
     /// The row's JSON-RPC thread vocabulary, on an app-server row (`session` is then its opening).
     pub rpc: Option<&'static marion_harness::rpc_channel::RpcChannel>,
+    /// What the typed pipe pair speaks, on a duplex row: stream-json or the row's JSONL channel.
+    pub dialect: Dialect,
 }
 
 /// What a probe may change in a launch before it is compiled.
@@ -265,5 +267,6 @@ pub fn compile(
         session,
         ready_file,
         rpc: t.adapter.spec().surfaces.rpc(),
+        dialect: Dialect::of(t.adapter.spec()),
     })
 }

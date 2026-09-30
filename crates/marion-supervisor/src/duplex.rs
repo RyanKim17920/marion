@@ -141,14 +141,14 @@ impl Dialect {
             .map_or(Dialect::StreamJson, Dialect::Jsonl)
     }
 
-    fn handshake(self, id: &str) -> String {
+    pub fn handshake(self, id: &str) -> String {
         match self {
             Dialect::StreamJson => initialize_request(id),
             Dialect::Jsonl(c) => c.handshake.render(Some((c.id, id)), "").to_string(),
         }
     }
 
-    fn is_handshake_reply(self, frame: &Value, id: &str) -> bool {
+    pub fn is_handshake_reply(self, frame: &Value, id: &str) -> bool {
         match self {
             Dialect::StreamJson => is_control_response_to(frame, id),
             Dialect::Jsonl(c) => c.is_reply_to(frame, id),
@@ -156,7 +156,7 @@ impl Dialect {
     }
 
     /// `text` as a turn: the next one (`mid_turn: false`) or folded into the running one.
-    fn turn(self, text: &str, mid_turn: bool) -> String {
+    pub fn turn(self, text: &str, mid_turn: bool) -> String {
         match self {
             Dialect::StreamJson => user_message(text),
             Dialect::Jsonl(c) if mid_turn => c.steer.render(None, text).to_string(),
@@ -164,7 +164,7 @@ impl Dialect {
         }
     }
 
-    fn seen(self, frame: &Value) -> Seen {
+    pub fn seen(self, frame: &Value) -> Seen {
         match self {
             Dialect::StreamJson => match frame.get("type").and_then(Value::as_str) {
                 Some("result") => Seen::TurnEnded,
@@ -180,7 +180,7 @@ impl Dialect {
     }
 
     /// The frame that ends a running turn early, where the dialect has one.
-    fn abort(self) -> Option<String> {
+    pub fn abort(self) -> Option<String> {
         match self {
             Dialect::StreamJson => None,
             Dialect::Jsonl(c) => Some(c.abort.render(None, "").to_string()),
@@ -907,8 +907,9 @@ fn await_initialize(
 }
 
 /// What one line said about the node's turns.
-#[derive(PartialEq)]
-enum Seen {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// Anything else.
     Other,
     /// `system`/`init`: claude opens every turn with one (S31 `p0a/out/a`).
     TurnStarted,

@@ -1689,6 +1689,7 @@ mod tests {
             session: None,
             ready_file: None,
             rpc: None,
+            dialect: marion_supervisor::duplex::Dialect::StreamJson,
         };
         strip_key(&mut l, "trust");
         assert_eq!(l.inv.args, args(&["exec", "-c", "x=1"]));
