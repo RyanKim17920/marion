@@ -23,8 +23,8 @@
 //! No `#[cfg(test)]` hook, no injected writer, no fake `Journal`: the fault here is one the shipped
 //! code already refuses on its own. `marion_core::journal::MAX_RECORD_BYTES` caps a record at 16 KiB
 //! at **encode** time — the cap that makes `O_APPEND`'s single-`write(2)` atomicity hold — and a
-//! root's `Spawned` record embeds `Invocation::model`, which for gemini is `--model` verbatim
-//! (`gemini::compile`). A `--model` argument past the cap is therefore a real, reachable,
+//! root's `Spawned` record embeds `Invocation::model`, which for copilot is `--model` verbatim
+//! (`ModelForm::AsGiven`). A `--model` argument past the cap is therefore a real, reachable,
 //! production-path append failure that lands on the `Spawned` barrier and on nothing else: the
 //! `SpawnIntent` written before it carries no model and fits comfortably.
 //!
@@ -34,15 +34,15 @@
 //! adapter, or anywhere before `spawn()`, would leave this file passing for a reason that has
 //! nothing to do with the barrier and the control is what says so.
 //!
-//! # Why gemini, and why the root path
+//! # Why copilot, and why the root path
 //!
-//! gemini is `LaunchOnly`, so the whole run is a shell stub on `PATH` reached through the real
-//! `marion` binary — no provider, no real CLI, no MCP handshake — and it is the one harness that
-//! puts `--model` on the wire *and* records it in `Invocation::model` (codex compiles no `-m` at
-//! all, so its `Spawned` carries `model: None` and cannot be made to overflow this way). The root
-//! path and the child path make the *same* decision through the same `journal::append` — that
-//! symmetry is the reason `journal::record` states its policy once for both — so measuring it here
-//! measures the rule, and `run.rs`'s `announce_started` is its other spelling.
+//! copilot is `LaunchOnly`, so the whole run is a shell stub on `PATH` reached through the real
+//! `marion` binary — no provider, no real CLI, no MCP handshake — and it puts `--model` on the wire
+//! as given *and* records it in `Invocation::model` (codex compiles no `-m` at all, so its
+//! `Spawned` carries `model: None` and cannot be made to overflow this way). The root path and the
+//! child path make the *same* decision through the same `journal::append` — that symmetry is the
+//! reason `journal::record` states its policy once for both — so measuring it here measures the
+//! rule, and `run.rs`'s `announce_started` is its other spelling.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,9 +55,10 @@ use marion_testsupport::{scratch, sweep, write_executable};
 /// and short enough to stay far below `ARG_MAX`.
 const OVERSIZED_MODEL_BYTES: usize = MAX_RECORD_BYTES + 4096;
 
-/// A real gemini model spelling, for the control. The adapter refuses to compile without one
-/// (S12's `auto` router hang), so "no model" is not an available control.
-const ORDINARY_MODEL: &str = "gemini-2.5-flash";
+/// The model copilot's canned route asks for, for the control. A canned copilot launch refuses to
+/// compile without one (BYOK requires an explicit model), so "no model" is not an available
+/// control.
+const ORDINARY_MODEL: &str = marion_core::agent_type::COPILOT_DEFAULT_MODEL;
 
 const RUN_BOUND: Duration = Duration::from_secs(60);
 
@@ -67,7 +68,7 @@ struct Run {
     state: PathBuf,
 }
 
-/// A `gemini` on `PATH` that produces one **answered** marion tool call and exits 0.
+/// A `copilot` on `PATH` that produces one **answered** marion tool call and exits 0.
 ///
 /// The success shape on purpose: the failure this file is about must be the barrier's and only the
 /// barrier's, so with the fix reverted the same run has to reach exit 0. A stub that failed on its
@@ -89,10 +90,10 @@ struct Run {
 /// the group precisely because a child's own descendants are as unnameable as it is. Under the
 /// mutation the stub runs to completion, `marion run` answers 0, and the descendant is still there
 /// with nothing on the record able to name what started it.
-fn gemini_stub(dir: &Path, lingers: bool) -> PathBuf {
+fn copilot_stub(dir: &Path, lingers: bool) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let program = bin.join("gemini");
+    let program = bin.join("copilot");
     let linger = if lingers {
         format!("/bin/sh -c 'sleep 30; : {}' &\n", dir.display())
     } else {
@@ -105,8 +106,8 @@ fn gemini_stub(dir: &Path, lingers: bool) -> PathBuf {
              if [ \"$1\" = --version ]; then echo 0.0.0-stub; exit 0; fi\n\
              {linger}\
              cat <<'EOF'\n\
-             {{\"type\":\"tool_use\",\"tool_name\":\"mcp_marion_spawn\",\"tool_id\":\"call-1\",\"args\":{{}}}}\n\
-             {{\"type\":\"tool_result\",\"tool_id\":\"call-1\",\"status\":\"success\",\"output\":\"ok\"}}\n\
+             {{\"type\":\"tool.execution_start\",\"data\":{{\"toolCallId\":\"call-1\",\"toolName\":\"marion-spawn\",\"arguments\":{{}}}}}}\n\
+             {{\"type\":\"tool.execution_complete\",\"data\":{{\"toolCallId\":\"call-1\",\"success\":true}}}}\n\
              EOF\n\
              exit 0\n"
         ),
@@ -119,7 +120,7 @@ fn marion_run(dir: &Path, model: &str, lingers: bool) -> Run {
     std::fs::create_dir_all(&repo).unwrap();
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
-    let bin = gemini_stub(dir, lingers);
+    let bin = copilot_stub(dir, lingers);
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -129,7 +130,7 @@ fn marion_run(dir: &Path, model: &str, lingers: bool) -> Run {
         Command::new(env!("CARGO_BIN_EXE_marion"))
             .args([
                 "run",
-                "gemini-orchestrator",
+                "copilot-orchestrator",
                 "--prompt",
                 "delegate one thing",
                 "--repo",
