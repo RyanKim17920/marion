@@ -22,6 +22,7 @@ marion run <agent-type> --prompt <text>   # watch it to the end in this terminal
 marion run codex --prompt "…" --detach    # return once the root has started
 marion run claude --prompt "…" --pane     # run in a terminal marion owns; attach to it later
 marion run claude --prompt "…" --model haiku --timeout 600
+marion run codex --prompt "…" --budget-tokens 200000   # cancel the tree past 200k tokens
 marion ls                                 # the home screen on Watch; in a pipe, list's lines
 marion ls <id>                            # one node's detail
 marion ls --attention                     # only the nodes that need you
@@ -41,6 +42,14 @@ An `<id>` is a node's whole id, the short id its tree row shows, or a unique sta
 `--timeout` is the root's wall clock on every harness: past it, marion kills the node's process
 tree, confirms it is gone and records the run as timed out. A permission the node asks for that
 no rule decides is refused at once, since marion has nobody to ask.
+
+A child's own clock never runs past what is left of its parent's, or its root's where the root
+has a wall clock. `--budget-tokens <n>` caps the tokens a root and everything it spawns may spend
+together; at 80% the root is told to wrap up, and at the limit marion cancels the tree and keeps
+the work each node committed. A child's `spawn` may state a smaller `budget.tokens`, never a
+larger one, and an agent type may carry its own:
+`budget = { tokens = 50000, tree_tokens = 200000, warn_pct = 80 }` in `.marion/agents.toml`.
+Budgets are tokens only, and are refused on a harness whose stream reports no usage.
 
 `marion resume` survives the supervisor's own death: `kill -9` it, and `resume` relaunches the
 lost root under the same id against the same harness session, recorded as a second generation.
