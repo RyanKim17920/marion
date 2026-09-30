@@ -1577,6 +1577,25 @@ struct LiveView {
 }
 
 impl LiveView {
+    /// [`Self::event`], for a frame the node's `harness` wrote: a frame of no shape the console
+    /// knows is read by that harness's row ([`render_by_row`]) before it is named by kind.
+    fn vendor(
+        &mut self,
+        harness: marion_core::harness::Harness,
+        frame: &Value,
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
+        // Asked into a scratch buffer: a known frame is rendered by [`Self::event`], which holds
+        // ACP's chunks across frames.
+        let mut row: Vec<u8> = Vec::new();
+        if !render_known_frame(frame, &mut Vec::new())? && render_by_row(harness, frame, &mut row)?
+        {
+            self.flush(out)?;
+            return out.write_all(&row);
+        }
+        self.event(StreamEvent::Frame(frame), out)
+    }
+
     fn event(&mut self, event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
         if let StreamEvent::Frame(frame) = event
             && frame["method"] == "session/update"
@@ -1742,8 +1761,17 @@ fn mcp_result_text(text: &str) -> Option<String> {
 /// ACP's and has no `type`, so its shape is read first. A frame of a JSON-RPC server with no
 /// `jsonrpc` member (codex's app-server, S36 P2) is named by its `method`.
 fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if render_known_frame(frame, out)? {
+        return Ok(());
+    }
+    render_unknown_frame(frame, out)
+}
+
+/// [`render_frame`]'s shapes, each by its own renderer; `false`, having written nothing, for a
+/// frame of none of them.
+fn render_known_frame(frame: &Value, out: &mut dyn Write) -> io::Result<bool> {
     if frame["jsonrpc"] == "2.0" {
-        return render_json_rpc(frame, out);
+        return render_json_rpc(frame, out).map(|()| true);
     }
     let subtype = frame["subtype"].as_str().unwrap_or_default();
     let kind = frame["type"].as_str().or_else(|| frame["method"].as_str());
@@ -1787,8 +1815,49 @@ fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
                     .unwrap_or("(no request_id)")
             ),
         ),
-        kind => render_unknown_frame(kind, subtype, out),
+        _ => return Ok(false),
     }
+    .map(|()| true)
+}
+
+/// **A frame of no shape [`render_known_frame`] knows, read by its harness's row.** opencode's
+/// `run --format json` and pi's `--mode rpc` print frames of their own, which the console showed
+/// only by kind (`frame     tool_use`), so a watcher of an opencode or pi root never saw it call
+/// `spawn` or say anything (live smoke s6, 2026-09-30). The row's [`ActivityRule`] — the one the
+/// `status` peek reads — names the calls and the words a frame carries; `false`, having written
+/// nothing, where the row reads none from it.
+///
+/// [`ActivityRule`]: marion_harness::grammar::ActivityRule
+fn render_by_row(
+    harness: marion_core::harness::Harness,
+    frame: &Value,
+    out: &mut dyn Write,
+) -> io::Result<bool> {
+    use marion_harness::grammar::{Activity, activity_stream};
+    let Ok(adapter) = marion_harness::adapter::adapter_for(harness) else {
+        return Ok(false);
+    };
+    let Some(rule) = adapter.activity() else {
+        return Ok(false);
+    };
+    let marion_prefix = adapter.marion_tool_name("");
+    let mut wrote = false;
+    for item in activity_stream(rule, std::slice::from_ref(frame)) {
+        match item.item {
+            Activity::Call(call) => {
+                let args = call_args(&call.args);
+                match call.name.strip_prefix(marion_prefix.as_str()) {
+                    Some(verb) => say(out, "MARION", format!("{verb}  {args}").trim_end())?,
+                    None => say(out, "tool", format!("{}  {args}", call.name).trim_end())?,
+                }
+            }
+            Activity::Said(text) => say(out, "root", &text)?,
+            // The call's line already said what it was; its end is the tool result's news.
+            Activity::Ended(_) => continue,
+        }
+        wrote = true;
+    }
+    Ok(wrote)
 }
 
 /// The `system/init` frame as one `session` line: model, tool count and each MCP server's status.
@@ -1849,7 +1918,12 @@ fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> 
 }
 
 /// Rule 1. Not a dump and not silence: the kind, and its subtype when it has one.
-fn render_unknown_frame(kind: &str, subtype: &str, out: &mut dyn Write) -> io::Result<()> {
+fn render_unknown_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let subtype = frame["subtype"].as_str().unwrap_or_default();
+    let kind = frame["type"]
+        .as_str()
+        .or_else(|| frame["method"].as_str())
+        .unwrap_or_default();
     let body = match (kind, subtype) {
         ("", _) => "a stdout frame with no `type` or `method` field".to_string(),
         (other, "") => other.to_string(),
@@ -3332,8 +3406,10 @@ fn watch_the_root(
                 return;
             };
             match payload {
-                Payload::Vendor { json, .. } => {
-                    self.show(StreamEvent::Frame(&json));
+                Payload::Vendor { harness, json, .. } => {
+                    let mut buf: Vec<u8> = Vec::new();
+                    let _ = self.view.vendor(harness, &json, &mut buf);
+                    self.write(&buf);
                     self.transcript.push(json);
                 }
                 Payload::Raw(line) => self.show(StreamEvent::Unparsed(&line)),
@@ -3817,6 +3893,55 @@ mod tests {
             .lines()
             .map(|l| l.trim_end().to_string())
             .collect()
+    }
+
+    /// One frame a node of `harness` wrote, through the live view, as the lines shown.
+    fn shown_from(harness: marion_core::harness::Harness, frame: &str) -> Vec<String> {
+        let v: Value = serde_json::from_str(frame).expect("the fixture frame parses");
+        let mut buf: Vec<u8> = Vec::new();
+        let mut view = LiveView::default();
+        view.vendor(harness, &v, &mut buf)
+            .expect("rendering a frame cannot fail");
+        view.flush(&mut buf).unwrap();
+        String::from_utf8(buf)
+            .expect("the renderer writes UTF-8")
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    /// **An opencode or pi root's calls and words are shown, read by its row.** Their frames are
+    /// shapes of their own, which the console named only by kind (`frame     tool_use`), so the
+    /// live smoke's opencode root was never seen calling `spawn` (s6, 2026-09-30). A frame the row
+    /// reads nothing from keeps its one-line name.
+    #[test]
+    fn an_opencode_or_pi_roots_calls_and_words_are_read_by_its_row() {
+        use marion_core::harness::Harness;
+        let oc_spawn = r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","callID":"c1","state":{"status":"running","input":{"agent_type":"codex","prompt":"add word_count"}}}}"#;
+        let oc_text = r#"{"type":"text","part":{"type":"text","text":"Delegating to codex."}}"#;
+        let pi_spawn = r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"mcp__marion__spawn","args":{"agent_type":"codex"}}"#;
+        let pi_bash = r#"{"type":"tool_execution_start","toolCallId":"t2","toolName":"bash","args":{"command":"ls"}}"#;
+        let spawned = |lines: &[String]| {
+            lines.len() == 1 && lines[0].starts_with("MARION") && lines[0].contains("spawn")
+        };
+        let oc = shown_from(Harness::OpenCode, oc_spawn);
+        assert!(spawned(&oc), "{oc:?}");
+        assert!(oc[0].contains("agent_type"), "{oc:?}");
+        assert_eq!(
+            shown_from(Harness::OpenCode, oc_text),
+            ["root      Delegating to codex."]
+        );
+        let pi = shown_from(Harness::Pi, pi_spawn);
+        assert!(spawned(&pi), "{pi:?}");
+        let bash = shown_from(Harness::Pi, pi_bash);
+        assert!(
+            bash[0].starts_with("tool") && bash[0].contains("bash"),
+            "{bash:?}"
+        );
+        assert_eq!(
+            shown_from(Harness::Pi, r#"{"type":"turn_start"}"#),
+            ["frame     turn_start"]
+        );
     }
 
     /// **A root's answer is shown as its words**, on the item-stream shape too (codex `exec
