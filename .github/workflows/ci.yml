@@ -140,30 +140,40 @@ jobs:
       - name: Integration — marion-tui
         run: cargo test -p marion-tui --test threshold
 
+      # The supervisor's suites are modules of two binaries, it_canned and it_live
+      # (crates/marion-supervisor/tests/), so each is named by its module path: `<suite>::`
+      # selects that suite's tests and nothing else. l45_tree is still a target of its own.
       - name: Integration — marion-supervisor
         run: >
           cargo test -p marion-supervisor
-          --test attach_verb
-          --test auth_mode
-          --test background_spawn
-          --test child_events
-          --test child_stream
-          --test client_run
-          --test concurrent_projects
-          --test detached_spawn
-          --test detached_supervisor
-          --test journal
           --test l45_tree
-          --test launch_only_root
-          --test mcp_conformance
-          --test native_bootstrap
-          --test native_facade_cli
-          --test native_facade_gate
-          --test native_injection_binding
-          --test native_mode_matrix
-          --test node_attach
-          --test report_on_a_root
-          --test root_change_record
-          --test run_stream
-          --test spawned_barrier
-          --test top_level_mcp
+
+      - name: Integration — marion-supervisor (merged suites)
+        run: >
+          cargo test -p marion-supervisor
+          --test it_canned
+          --test it_live
+          --
+          attach_verb::
+          auth_mode::
+          background_spawn::
+          child_events::
+          child_stream::
+          client_run::
+          concurrent_projects::
+          detached_spawn::
+          detached_supervisor::
+          journal::
+          launch_only_root::
+          mcp_conformance::
+          native_bootstrap::
+          native_facade_cli::
+          native_facade_gate::
+          native_injection_binding::
+          native_mode_matrix::
+          node_attach::
+          report_on_a_root::
+          root_change_record::
+          run_stream::
+          spawned_barrier::
+          top_level_mcp::
