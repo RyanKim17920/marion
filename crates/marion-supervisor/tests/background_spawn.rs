@@ -2480,7 +2480,10 @@ fn a_child_that_never_reports_is_asked_once_and_its_last_words_are_marions_synth
         q["source"] == "ReportRequested"
     });
     assert_eq!(asked.len(), 1, "asked exactly once: {journal}");
-    let delivered = journal_records(&journal, "MessageDelivered", |_| true);
+    // To the child: its end reaching the root is the root's delivery, not a turn of the child's.
+    let delivered = journal_records(&journal, "MessageDelivered", |d| {
+        d["agent_id"] == asked[0]["agent_id"]
+    });
     assert_eq!(
         delivered.len(),
         1,
