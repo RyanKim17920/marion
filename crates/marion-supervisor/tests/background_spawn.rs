@@ -2369,7 +2369,8 @@ fn status_on_a_running_child_shows_its_recent_tool_calls_within_bounds() {
 /// live codex root was relaunched for a whole generation just to hear about a child it had
 /// already waited on. Here the root's bridge waits on a backgrounded child; marion queues the
 /// child's end for the root (it backgrounded it), and the bridge's `node/collected` resolves that
-/// message `via: "wait"` in whichever order the two land, so no turn of the root carries it.
+/// message `via: "wait"`, so no turn of the root carries it — unless the end lands before the
+/// `wait` is blocked on it, when a root whose row folds takes it into its running turn instead.
 #[test]
 fn a_childs_end_the_parent_collected_with_wait_is_not_delivered_as_a_turn() {
     let fx = fixture("bg-collected");
@@ -2396,18 +2397,23 @@ fn a_childs_end_the_parent_collected_with_wait_is_not_delivered_as_a_turn() {
             .into_iter()
             .filter(|q| q["source"].get("ChildEnded").is_some())
             .collect();
-        let via_wait: Vec<Value> = records(&journal, "MessageDelivered")
+        // Once, and never as a turn of its own: by the root's `wait`, or — where the end landed
+        // before that `wait` was blocked on it, and the root's row folds a message into the
+        // running turn — over the root's own channel.
+        let delivered: Vec<Value> = records(&journal, "MessageDelivered")
             .into_iter()
-            .filter(|d| d["via"] == "wait")
+            .filter(|d| {
+                d["via"] == "wait" || d["via"].as_str().is_some_and(|v| v.contains("mid-turn"))
+            })
             .collect();
-        if let ([q], [d]) = (ended.as_slice(), via_wait.as_slice()) {
+        if let ([q], [d]) = (ended.as_slice(), delivered.as_slice()) {
             assert_eq!(q["message_id"], d["message_id"], "{journal}");
             assert_eq!(q["agent_id"], fx.root_id.0.as_str(), "{journal}");
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the child's end was not resolved through `wait`: {journal}"
+            "the child's end was not resolved once, by `wait` or into the running turn: {journal}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
