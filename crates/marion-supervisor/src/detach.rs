@@ -279,6 +279,7 @@ pub fn ensure_supervisor_within(
     launch: &Launch,
     within: Duration,
 ) -> Result<Ensured, DetachError> {
+    crate::socket::check_fallback_dir(paths)?;
     let deadline = Instant::now() + within;
     let mut started = false;
     let mut attempts = 0usize;
@@ -813,6 +814,46 @@ mod tests {
         .to_string();
         assert!(said.contains("/s/p/supervisor.sock"), "{said}");
         assert!(!said.contains('§'), "{said}");
+    }
+
+    /// **A `/tmp` fallback directory somebody else controls is refused before anything starts**,
+    /// with the way out: a supervisor started into it could not bind or even open its log, and
+    /// the client would wait out its whole bound to report something unrelated.
+    #[test]
+    fn a_fallback_directory_somebody_else_controls_is_refused_before_anything_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        // A uid nobody has, so the fallback directory is this test's own.
+        let uid = 4_000_000_000 + std::process::id();
+        let squatted = PathBuf::from(format!("/tmp/marion-{uid}"));
+        let _ = std::fs::remove_dir_all(&squatted);
+        std::fs::create_dir(&squatted).unwrap();
+        std::fs::set_permissions(&squatted, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let dir = marion_testsupport::scratch("detach-squatted");
+        let state = dir.join("s".repeat(120));
+        let paths = crate::socket::socket_paths(&state, Path::new("/p/.git"), uid);
+        assert!(
+            paths.overflow().is_some(),
+            "the long state path takes the fallback"
+        );
+        let launch = Launch {
+            program: dir.join("no-such-supervisor"),
+            state_dir: state,
+            project_root: PathBuf::from("/p/.git"),
+            idle_grace: Duration::from_millis(250),
+            auth: marion_harness::Auth::Canned,
+            base_url: None,
+        };
+        let e = ensure_supervisor_within(&paths, &launch, Duration::from_secs(1))
+            .expect_err("nothing may start into that directory");
+        let _ = std::fs::remove_dir_all(&squatted);
+        assert!(
+            matches!(e, DetachError::Socket(SocketError::UnsafeDir { .. })),
+            "the directory is the diagnosis, not a failed start: {e}"
+        );
+        assert!(
+            e.to_string().contains("MARION_STATE_DIR"),
+            "and the way out: {e}"
+        );
     }
 
     /// The three stages carry **one** description of the project between them, so stage 3 cannot

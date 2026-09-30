@@ -805,7 +805,10 @@ pub enum SocketError {
         "{path} already exists and is not a private directory owned by this user ({detail}). It \
          holds a socket that grants full control of this project's fleet, and /tmp is writable by \
          everyone, so marion refuses to bind inside it rather than serve through a directory \
-         somebody else can replace."
+         somebody else can replace. marion uses /tmp only because your state directory's path is \
+         too long for a socket: set MARION_STATE_DIR (or pass --state-dir) to a shorter path and \
+         the socket stays under it; a directory another user owns can be removed only by them or \
+         by root."
     )]
     UnsafeDir { path: PathBuf, detail: String },
     #[error("marion could not take {path}: {source}")]
@@ -1111,36 +1114,7 @@ fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
 fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
     let dir = paths.dir();
     match std::fs::symlink_metadata(dir) {
-        Ok(md) => {
-            // Only the `/tmp` branch is *audited*. Under `<state>` the parent chain is the user's
-            // own `$HOME`/`$XDG_STATE_HOME` and the directory may predate this code with whatever
-            // mode `marion run` gave it; under `/tmp` the parent is world-writable and the check is
-            // the only thing between the fleet's control plane and anyone with a shell.
-            if paths.overflow().is_some() {
-                let mut faults = Vec::new();
-                if md.is_symlink() {
-                    faults.push("it is a symlink".to_string());
-                } else if !md.is_dir() {
-                    faults.push("it is not a directory".to_string());
-                }
-                if md.uid() != uid {
-                    faults.push(format!("it is owned by uid {} and not {uid}", md.uid()));
-                }
-                if md.permissions().mode() & 0o077 != 0 {
-                    faults.push(format!(
-                        "its mode is {:o} and group or other can write into it",
-                        md.permissions().mode() & 0o7777
-                    ));
-                }
-                if !faults.is_empty() {
-                    return Err(SocketError::UnsafeDir {
-                        path: dir.to_path_buf(),
-                        detail: faults.join("; "),
-                    });
-                }
-            }
-            Ok(())
-        }
+        Ok(md) => audit_fallback_dir(paths, &md, uid),
         Err(e) if e.kind() == ErrorKind::NotFound => std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -1153,6 +1127,54 @@ fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
             path: dir.to_path_buf(),
             source: e,
         }),
+    }
+}
+
+/// **The `/tmp` fallback directory, audited** — whether one that already exists is a private
+/// directory `uid` owns. Only that branch is audited: under `<state>` the parent chain is the user's
+/// own `$HOME`/`$XDG_STATE_HOME` and the directory may predate this code with whatever mode `marion
+/// run` gave it; under `/tmp` the parent is world-writable and the check is the only thing between
+/// the fleet's control plane and anyone with a shell.
+fn audit_fallback_dir(
+    paths: &SocketPaths,
+    md: &std::fs::Metadata,
+    uid: u32,
+) -> Result<(), SocketError> {
+    if paths.overflow().is_none() {
+        return Ok(());
+    }
+    let mut faults = Vec::new();
+    if md.is_symlink() {
+        faults.push("it is a symlink".to_string());
+    } else if !md.is_dir() {
+        faults.push("it is not a directory".to_string());
+    }
+    if md.uid() != uid {
+        faults.push(format!("it is owned by uid {} and not {uid}", md.uid()));
+    }
+    if md.permissions().mode() & 0o077 != 0 {
+        faults.push(format!(
+            "its mode is {:o} and group or other can write into it",
+            md.permissions().mode() & 0o7777
+        ));
+    }
+    if faults.is_empty() {
+        Ok(())
+    } else {
+        Err(SocketError::UnsafeDir {
+            path: paths.dir().to_path_buf(),
+            detail: faults.join("; "),
+        })
+    }
+}
+
+/// [`audit_fallback_dir`] for a client about to start a supervisor: a directory that exists and
+/// fails the audit is refused now, by name, rather than by a supervisor that could not open its
+/// log there. A directory that does not exist yet passes — the supervisor creates it.
+pub fn check_fallback_dir(paths: &SocketPaths) -> Result<(), SocketError> {
+    match std::fs::symlink_metadata(paths.dir()) {
+        Ok(md) => audit_fallback_dir(paths, &md, own_uid()),
+        Err(_) => Ok(()),
     }
 }
 
