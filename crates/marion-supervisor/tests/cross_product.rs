@@ -1421,6 +1421,7 @@ fn b_claude_root_spawns_a_codex_child_and_receives_its_contract() {
     );
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn c_claude_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&CLAUDE, &GEMINI);
@@ -1518,6 +1519,7 @@ fn f_codex_root_spawns_a_codex_child_and_receives_its_contract() {
     cell(&CODEX, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn g_codex_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &GEMINI);
@@ -1528,21 +1530,25 @@ fn h_codex_root_spawns_an_opencode_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &OPENCODE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn i_gemini_root_spawns_a_claude_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &CLAUDE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn j_gemini_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn k_gemini_root_spawns_a_gemini_child_and_receives_its_contract() {
     cell(&GEMINI, &GEMINI);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn l_gemini_root_spawns_an_opencode_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &OPENCODE);
@@ -1558,6 +1564,7 @@ fn n_opencode_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&OPENCODE, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn o_opencode_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&OPENCODE, &GEMINI);
@@ -1582,6 +1589,7 @@ fn r_codex_root_spawns_a_copilot_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &COPILOT);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn s_gemini_root_spawns_a_copilot_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &COPILOT);
@@ -1602,6 +1610,7 @@ fn v_copilot_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&COPILOT, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn w_copilot_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&COPILOT, &GEMINI);
@@ -1632,6 +1641,7 @@ fn zb_codex_root_spawns_a_goose_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &GOOSE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn zc_gemini_root_spawns_a_goose_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &GOOSE);
@@ -1657,6 +1667,7 @@ fn zg_goose_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&GOOSE, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn zh_goose_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&GOOSE, &GEMINI);
@@ -1691,6 +1702,7 @@ fn zm_codex_root_spawns_a_cline_child_and_receives_its_contract() {
     full_matrix_cell(&CODEX, &CLINE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn zn_gemini_root_spawns_a_cline_child_and_receives_its_contract() {
     full_matrix_cell(&GEMINI, &CLINE);
@@ -1721,6 +1733,7 @@ fn zs_cline_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&CLINE, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn zt_cline_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&CLINE, &GEMINI);
@@ -1764,6 +1777,7 @@ fn zzg_qwen_root_spawns_a_codex_child_and_receives_its_contract() {
     full_matrix_cell(&QWEN, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn zzh_qwen_root_spawns_a_gemini_child_and_receives_its_contract() {
     full_matrix_cell(&QWEN, &GEMINI);

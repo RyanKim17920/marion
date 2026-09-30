@@ -1310,6 +1310,7 @@ fn chat_cell(agent_type: &'static str, report_tool: &str) -> Cell {
     }
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn a_gemini_child_runs_on_the_users_provider_over_the_gemini_wire() {
     assert!(

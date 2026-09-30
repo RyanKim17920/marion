@@ -5,7 +5,8 @@
 # operator's machine auto-updates into it. This workflow looks first. Each night it:
 #
 #   1. installs the latest release of every harness that installs without a prompt or a login
-#      (eight from npm, goose from Homebrew) — no credentials of any kind are configured;
+#      (seven from npm, goose from Homebrew; not gemini, whose CLI is retired upstream) — no
+#      credentials of any kind are configured;
 #   2. reports which installed releases PINNED_HARNESSES does not admit (the harness_drift example);
 #   3. runs `marion-supervisor doctor --capabilities`, then the whole workspace test suite with
 #      MARION_GATE=warn, so every suite that drives a real harness against marion's canned local
@@ -98,7 +99,6 @@ jobs:
             @openai/codex@latest \
             opencode-ai@latest \
             @github/copilot@latest \
-            @google/gemini-cli@latest \
             cline@latest \
             @qwen-code/qwen-code@latest \
             @earendil-works/pi-coding-agent@latest

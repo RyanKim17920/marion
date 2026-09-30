@@ -835,6 +835,7 @@ fn a_codex_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one() 
     refuses_a_grandchild(&CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn a_gemini_child_at_max_depth_is_refused_a_grandchild_rather_than_running_one() {
     refuses_a_grandchild(&GEMINI);

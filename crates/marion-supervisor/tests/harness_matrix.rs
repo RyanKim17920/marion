@@ -496,6 +496,7 @@ fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
     assert_cell(&cell, &ev);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
     assert!(

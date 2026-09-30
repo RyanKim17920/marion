@@ -1057,6 +1057,7 @@ fn b_claude_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&CLAUDE, &CLAUDE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn c_claude_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&CLAUDE, &GEMINI);
@@ -1077,6 +1078,7 @@ fn f_codex_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn g_codex_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &GEMINI);
@@ -1087,21 +1089,25 @@ fn h_codex_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &OPENCODE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn i_gemini_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &CLAUDE);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn j_gemini_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn k_gemini_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &GEMINI);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn l_gemini_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &OPENCODE);
@@ -1117,6 +1123,7 @@ fn n_opencode_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &CODEX);
 }
 
+#[ignore = "gemini CLI retired upstream; use agy"]
 #[test]
 fn o_opencode_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &GEMINI);
