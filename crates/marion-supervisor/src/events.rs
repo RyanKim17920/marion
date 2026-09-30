@@ -167,8 +167,8 @@ impl Draft {
 /// and S12's gemini capture, and `method` is the one on every JSON-RPC notification (S21's ACP
 /// `session/update`, S36's app-server `item/completed`). A frame that carries neither — a JSON-RPC
 /// answer — gets an **empty** key rather than an invented one: the whole frame is still in `json`,
-/// so nothing is lost, and guessing a discriminator would be the fabrication `handler.rs`'s
-/// `Unprojectable` refuses.
+/// so nothing is lost, and guessing a discriminator would be the fabrication
+/// `handler/summary.rs`'s `Unprojectable` refuses.
 pub fn from_stream_event(harness: Harness, ev: StreamEvent<'_>) -> Draft {
     let payload = match ev {
         StreamEvent::Frame(json) => Payload::Vendor {
@@ -1387,7 +1387,8 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // A frame with no recognisable discriminator is still carried; `key` is empty rather than
-        // invented, which is the same refusal `handler.rs` makes about a fact it cannot source.
+        // invented, which is the same refusal `handler/summary.rs` makes about a fact it cannot
+        // source.
         match from_stream_event(Harness::Codex, StreamEvent::Frame(&json!({"a": 1}))).payload {
             Payload::Vendor { key, .. } => assert_eq!(key, ""),
             other => panic!("{other:?}"),

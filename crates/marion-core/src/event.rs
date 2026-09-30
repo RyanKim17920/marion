@@ -56,8 +56,8 @@
 //! normalization that **does not exist in this workspace**: the adapters' `parse_stream` produces a
 //! `StreamOutcome`, an aggregate over a whole run, and no code anywhere turns a codex
 //! `item.completed` into a `ToolResult`. Emitting them now would mean inventing a mapping and
-//! stamping `Transformation::Normalized` on a guess, which is what `handler.rs`'s `Unprojectable`
-//! exists to refuse.
+//! stamping `Transformation::Normalized` on a guess, which is what `handler/summary.rs`'s
+//! `Unprojectable` exists to refuse.
 //!
 //! Refusing in prose would let a future implementer read past it. So the refusal is
 //! [`Payload::Normalized`], carrying [`Normalization`] — an **uninhabited** enum. The variant is
