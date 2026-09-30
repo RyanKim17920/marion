@@ -28,6 +28,7 @@ pub mod review;
 pub mod root_change;
 pub mod scope;
 pub mod secret;
+pub mod text;
 pub mod workflow;
 
 pub use agent_type::{

@@ -20,6 +20,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// Two row formatters the supervisor prints through too, so they live below both crates.
+pub use marion_core::text::{elapsed, shell_word};
+
 /// Display columns `s` occupies.
 pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
@@ -242,27 +245,6 @@ pub fn squeeze<'a>(mut lines: Vec<Option<Line<'a>>>, rows: usize) -> Vec<Line<'a
         .collect()
 }
 
-/// One argument as a POSIX shell would need it typed: bare when it is made only of characters no
-/// shell treats specially, else in double quotes with `"`, `\\`, `$` and `` ` `` escaped.
-pub fn shell_word(arg: &str) -> String {
-    let plain = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
-    if plain {
-        return arg.to_string();
-    }
-    let mut out = String::from("\"");
-    for c in arg.chars() {
-        if matches!(c, '"' | '\\' | '$' | '`') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    out
-}
-
 /// `argv` as one shell line in at most `w` columns. When it is too wide, the longest argument —
 /// in practice the prompt — is clipped **inside its quotes**, so the line still reads as a command
 /// an operator could finish typing; only if that is not enough is the whole line clipped.
@@ -313,17 +295,6 @@ pub fn tokens(n: u64) -> String {
         1_000..=99_949 => tenths((n + 50) / 100, "k"),
         99_950..=999_499 => format!("{}k", (n + 500) / 1000),
         _ => tenths((n + 50_000) / 100_000, "M"),
-    }
-}
-
-/// A duration in seconds the way a row prints it: `42s`, `2m17s`, `1h04m`, `2d03h`. The unit
-/// below the largest is zero-padded so a ticking column does not jitter.
-pub fn elapsed(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m{:02}s", secs / 60, secs % 60),
-        3600..=86_399 => format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60),
-        _ => format!("{}d{:02}h", secs / 86_400, (secs % 86_400) / 3600),
     }
 }
 
@@ -454,16 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_words_quote_only_what_a_shell_would_mangle() {
-        assert_eq!(shell_word("claude"), "claude");
-        assert_eq!(shell_word("--model"), "--model");
-        assert_eq!(shell_word("a b"), "\"a b\"");
-        assert_eq!(shell_word("say \"hi\" $HOME"), "\"say \\\"hi\\\" \\$HOME\"");
-        assert_eq!(shell_word(""), "\"\"");
-        assert_eq!(shell_word("<type>"), "\"<type>\"");
-    }
-
-    #[test]
     fn a_long_prompt_is_clipped_inside_its_quotes() {
         let argv: Vec<String> = [
             "marion",
@@ -495,13 +456,5 @@ mod tests {
         assert_eq!(tokens(999_400), "999k");
         assert_eq!(tokens(1_300_000), "1.3M");
         assert_eq!(tokens(151_000), "151k");
-    }
-
-    #[test]
-    fn elapsed_reads_like_a_timer() {
-        assert_eq!(elapsed(42), "42s");
-        assert_eq!(elapsed(137), "2m17s");
-        assert_eq!(elapsed(3840), "1h04m");
-        assert_eq!(elapsed(2 * 86_400 + 3 * 3600), "2d03h");
     }
 }

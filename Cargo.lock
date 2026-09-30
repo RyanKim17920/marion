@@ -602,6 +602,7 @@ name = "marion-tui"
 version = "0.2.0"
 dependencies = [
  "insta",
+ "marion-core",
  "marion-term",
  "ratatui",
  "serde_json",

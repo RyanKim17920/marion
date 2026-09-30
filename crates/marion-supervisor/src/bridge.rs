@@ -984,7 +984,7 @@ pub(crate) fn command_line(cmd: &marion_core::contract::Command) -> String {
         ("sh", [flag, script]) if flag == "-c" => script.clone(),
         _ => std::iter::once(cmd.program.as_str())
             .chain(cmd.args.iter().map(String::as_str))
-            .map(marion_tui::home::text::shell_word)
+            .map(marion_core::text::shell_word)
             .collect::<Vec<_>>()
             .join(" "),
     }

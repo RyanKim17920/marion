@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# `home::text`'s `elapsed` and `shell_word`, which the supervisor prints through too: the one
+# crate below both of them holds them, so the daemon need not link this one to spell a duration.
+marion-core = { path = "../marion-core" }
 marion-term = { path = "../marion-term" }
 # The render path is `impl Widget for &Term`, which is marion-term's. This dependency is here for
 # `view`, which sizes and clips that widget; nothing in this crate draws a cell itself.

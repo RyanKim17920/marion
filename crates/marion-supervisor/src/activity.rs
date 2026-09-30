@@ -245,7 +245,7 @@ fn between(from: &str, to: &str) -> Option<String> {
     Some(match d.as_millis() {
         ms @ 0..=999 => format!("{ms}ms"),
         1_000..=59_999 => format!("{:.1}s", d.as_secs_f64()),
-        _ => marion_tui::home::text::elapsed(d.as_secs()),
+        _ => marion_core::text::elapsed(d.as_secs()),
     })
 }
 
