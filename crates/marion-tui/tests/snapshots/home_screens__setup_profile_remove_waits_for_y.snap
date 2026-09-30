@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   y yes · any key no                                                                       F1 help
 --- styles ---
-  163  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  172  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    37  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionworkRemovetheprofi"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
+   30  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
   505  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
   223  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯y"

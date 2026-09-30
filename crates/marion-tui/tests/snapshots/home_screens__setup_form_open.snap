@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   tab next field · ←→ choose · enter preview · esc close               F1 help
 --- styles ---
-   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   27  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
   428  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
@@ -68,9 +68,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   tab next field · ←→ choose · enter preview · esc close                                   F1 help
 --- styles ---
-   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   27  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
   488  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"
@@ -128,9 +128,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"form\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   tab next field · ←→ choose · enter preview · esc close                                                                                               F1 help
 --- styles ---
-   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   54  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    17  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariondescription"
-   27  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPEtab←→enteres"
+   12  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPE"
   668  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     2  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯❯"

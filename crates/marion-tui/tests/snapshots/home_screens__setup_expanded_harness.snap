@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter details · r re-check · e edit types · n new type    F1 help
 --- styles ---
-  134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  147  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   49  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   36  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   519  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
@@ -70,9 +70,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
 --- styles ---
-  181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  195  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   67  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   668  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"
@@ -132,9 +132,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"setup\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter details · r re-check · e edit types · n new type · a add key                                                                        F1 help
 --- styles ---
-  218  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  232  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   73  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   59  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
  1062  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    18  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯geminiaxaux❯"

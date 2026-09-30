@@ -1094,6 +1094,32 @@ fn unmeasured_capabilities_are_greyed_not_hidden() {
     );
 }
 
+/// **`NO_COLOR` leaves no colour on the screen**, only weight, dimness and the glyphs that carry
+/// every status by themselves: a watch screen full of states, drawn mono, has every cell's colours
+/// reset and still shows each status glyph.
+#[test]
+fn no_color_draws_every_cell_without_colour_and_keeps_the_glyphs() {
+    let v = watch_view(1, None);
+    let mut sc = screen(Body::Watch(&v), command("x", ""), "watch");
+    sc.theme = Theme {
+        mono: true,
+        ..Theme::TRUECOLOR
+    };
+    let buf = draw(&sc, 100, 30);
+    for cell in buf.content() {
+        assert_eq!(
+            (cell.fg, cell.bg),
+            (ratatui::style::Color::Reset, ratatui::style::Color::Reset),
+            "{:?}",
+            cell.symbol()
+        );
+    }
+    let text = rows_of(&buf).join("\n");
+    for glyph in ["●", "◐", "✗", "✓"] {
+        assert!(text.contains(glyph), "{glyph} is gone:\n{text}");
+    }
+}
+
 /// A notice replaces the hints until the next key, and says so in bold.
 #[test]
 fn a_notice_takes_the_hint_row() {

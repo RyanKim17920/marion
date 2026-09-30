@@ -28,8 +28,8 @@ expression: "report(&sc, 80, 24)"
  ╰────────────────────────────────────────────────────────────────────────────╯
   tab Start                                                            F1 help
 --- styles ---
+    5  Style::new().fg(Color::Reset).bg(Color::Reset)  "tabF1"
    28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNothingrunninghere"
-    5  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "tabF1"
   319  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
     9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchtab❯"

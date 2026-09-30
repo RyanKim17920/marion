@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Setup(&v), input, \"profiles\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                F1 help
 --- styles ---
-  134  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  142  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion+addaprofile"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
   705  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    17  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigrator"
    46  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupamarionlogin<provid"

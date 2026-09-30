@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Setup(&v), input, \"confirm\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   y yes · any key no                                                                       F1 help
 --- styles ---
-   39  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
+   48  Style::new().fg(Color::Reset).bg(Color::Reset)  "reviewercodexReviewsadif"
    55  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionproviderWriterevie"
-   27  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPECHANGEyanyke"
+   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "NEWAGENTTYPECHANGE"
   294  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
   200  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆▏╭─────────────────────"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯y"

@@ -202,5 +202,6 @@ impl Widget for &Screen<'_> {
             notice: self.notice.as_deref(),
         }
         .render(layout.hints, buf);
+        self.theme.decolour(area, buf);
     }
 }

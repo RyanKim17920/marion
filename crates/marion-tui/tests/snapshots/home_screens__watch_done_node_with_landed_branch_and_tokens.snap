@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel           F1 help
 --- styles ---
-  125  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
+  138  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexcodex✓impl3c33Addto"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
+   34  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
   581  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
     8  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆━━━━━━━"
@@ -71,9 +71,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                     F1 help
 --- styles ---
-  174  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  188  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   48  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
+   34  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
   797  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
    21  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s━━━━━━━"
@@ -134,9 +134,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                                                                                 F1 help
 --- styles ---
-  345  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
+  359  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexcodexcodex✓im"
    24  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexmarion/t-3c33"
-   65  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
+   51  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKSTEERSRANTOKEN"
  1385  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     9  Style::new().fg(Color::Rgb(138, 138, 138)).bg(Color::Reset)  "interrupt"
    37  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▃▂▄▅▇█▆▄▃▄"

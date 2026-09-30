@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel           F1 help
 --- styles ---
-  107  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
+  120  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   37  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
+   24  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
   591  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
@@ -70,9 +70,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                     F1 help
 --- styles ---
-  169  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
+  183  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
+   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
   804  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"
@@ -132,9 +132,9 @@ expression: "at_every_size(&screen(Body::Watch(&v), input, \"watch\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                                                                                 F1 help
 --- styles ---
-  185  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
+  199  Style::new().fg(Color::Reset).bg(Color::Reset)  "orchestrator5e1aShipther"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   46  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
+   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGSUBTREE"
  1176  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"

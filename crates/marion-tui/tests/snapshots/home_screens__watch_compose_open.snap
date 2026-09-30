@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Watch(&v), input, \"watch\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge                     F1 help
 --- styles ---
-  166  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
+  180  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Implementt"
    20  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodexsteera1f0"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
+   25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
   893  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    15  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s▏"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"

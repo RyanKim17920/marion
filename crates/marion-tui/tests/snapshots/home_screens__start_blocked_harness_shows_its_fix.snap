@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens  F1 help
 --- styles ---
-   49  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+   67  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   44  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+   26  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
   465  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
@@ -70,9 +70,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                      F1 help
 --- styles ---
-   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  103  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   50  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
   783  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"
@@ -132,9 +132,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(\"\"), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                                                                                  F1 help
 --- styles ---
-   98  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  116  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
    13  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncopilot"
-   50  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
+   32  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSFIXTYPEMODELOPTIO"
  1059  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    45  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯brewupgradecopilot"

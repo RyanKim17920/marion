@@ -28,21 +28,35 @@ pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 /// The selection caret, drawn in the accent at the left edge of the selected row.
 pub const CARET: &str = "❯";
 
-/// Which accent the terminal can show. Everything else in the palette is the same either way.
+/// Which accent the terminal can show, and whether to show colour at all. Everything else in the
+/// palette is the same either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub truecolor: bool,
+    /// `NO_COLOR` is set (<https://no-color.org>): no colour anywhere, only weight and glyphs, which
+    /// already carry every status on their own.
+    pub mono: bool,
 }
 
 impl Theme {
     /// The truecolour theme, which the snapshots and PNG renders use.
-    pub const TRUECOLOR: Theme = Theme { truecolor: true };
+    pub const TRUECOLOR: Theme = Theme {
+        truecolor: true,
+        mono: false,
+    };
     /// The 256-colour fallback.
-    pub const INDEXED: Theme = Theme { truecolor: false };
+    pub const INDEXED: Theme = Theme {
+        truecolor: false,
+        mono: false,
+    };
 
-    /// Read `COLORTERM` the way terminals advertise 24-bit colour (`truecolor` or `24bit`).
+    /// Read `COLORTERM` the way terminals advertise 24-bit colour (`truecolor` or `24bit`), and
+    /// `NO_COLOR` the way <https://no-color.org> says: set and not empty means no colour.
     pub fn from_env() -> Theme {
-        Theme::from_colorterm(std::env::var("COLORTERM").ok().as_deref())
+        Theme {
+            mono: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+            ..Theme::from_colorterm(std::env::var("COLORTERM").ok().as_deref())
+        }
     }
 
     /// [`Theme::from_env`] without the environment, for tests.
@@ -51,7 +65,25 @@ impl Theme {
             value.map(str::to_ascii_lowercase).as_deref(),
             Some("truecolor" | "24bit")
         );
-        Theme { truecolor }
+        Theme {
+            truecolor,
+            mono: false,
+        }
+    }
+
+    /// Strip every colour from `area` of `buf` where the theme is [`Theme::mono`], keeping weight,
+    /// dimness and every glyph: what a screen drawn with colour becomes under `NO_COLOR`.
+    pub fn decolour(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        if !self.mono {
+            return;
+        }
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let cell = &mut buf[(x, y)];
+                cell.set_fg(Color::Reset);
+                cell.set_bg(Color::Reset);
+            }
+        }
     }
 
     pub fn accent_color(self) -> Color {

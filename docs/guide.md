@@ -76,22 +76,28 @@ harness.
 ## The home screen
 
 Bare `marion` on a terminal opens it; in a pipe it prints usage and exits non-zero. `Tab` changes
-screen, `?` is help, `q` or `^c` quits. The box at the bottom shows the command each key runs.
+screen, F1 (or `?` wherever you are not typing) is help and Esc leaves it, `q` or `^c` quits. The
+box at the bottom shows the command each key runs. `NO_COLOR` draws it without colour: every
+status is also a glyph.
 
 - **Start** lists each harness's readiness as `marion doctor` finds it (● ready, ✗ broken with
   the fix, ○ not installed). `↑↓` picks the harness, `^o` its agent type (the plain name edits in
   a worktree; `<harness>-orchestrator` is read-only), `←→` a model you last ran it on, `^p`
-  headless or pane. Type the task and press Enter: it runs `marion run … --detach`.
-- **Watch** is the forest. `j/k` move, and the selected node opens in place with the task marion
-  sent it, its steers, a live stream of its calls (`J/K` or Page Up/Down scroll), its tokens
-  (never a price), its capabilities with the unmeasured ones greyed, and the branch it landed.
-  Enter attaches, `s` steers, `x` cancels after asking, `u` resumes an ended node, `o` opens a
-  shell in its workspace, `d` shows what its branch changed, `c` copies the merge command, `!`
-  jumps to the next node that needs you.
-- **Setup** shows the doctor checks with their fixes (`r` re-checks), the agent types (`e` edits
-  `.marion/agents.toml` and validates it, `n` adds one) and your stored API keys (`a` adds one,
-  `x` removes one after asking).
-- **Help** lists the keys.
+  headless or pane. Type the task and press Enter: it runs `marion run … --detach`, and a failed
+  run's reason stays on the hint row until Esc.
+- **Watch** lists the agents. `j/k` move, and the selected agent opens in place with its task,
+  its steers, a live stream of its calls (`J/K` or Page Up/Down scroll), its tokens (never a
+  price), its capabilities with the unmeasured ones greyed, and the branch it landed. Enter shows
+  a headless agent's stream full-screen (Esc goes back) and attaches to a pane agent; `s` steers,
+  `x` cancels after asking, `u` brings back an ended agent, `o` opens a shell in its workspace,
+  `d` shows what its branch changed, `m` merges it after asking (`c` copies the command), `!`
+  jumps to the next agent that needs you. On a race's row, Enter goes to the winner and `m`
+  merges it.
+- **Setup** shows the doctor checks with their fixes (Enter shows a harness's details, `r`
+  re-checks), the agent types (`e` edits `.marion/agents.toml` and validates it, `n` adds one),
+  your API KEYS (`a` adds one, `x` removes one after asking) and your LOGINS, the harness
+  profiles (`a` adds one, `u` uses it, `x` removes it).
+- **Help** lists the keys, in two columns on a wide screen, the tab you came from first.
 
 ## Steering
 

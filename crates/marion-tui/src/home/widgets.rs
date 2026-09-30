@@ -304,13 +304,15 @@ impl Widget for HintRow<'_> {
                 if i > 0 {
                     g.push(span(" · ", dim()));
                 }
-                g.push(span(h.key.clone(), label()));
+                // The key at normal weight and full brightness, its verb dim: the key is what a
+                // reader's eye is looking for, and bold-dim read as heavy and faint at once.
+                g.push(span(h.key.clone(), Style::default()));
                 g.push(span(format!(" {}", h.verb), dim()));
                 g
             })
             .collect();
         // F1, not `?`: on Start a typed prompt takes `?` as text, and F1 works everywhere.
-        let right = vec![span("F1 ", label()), span("help  ", dim())];
+        let right = vec![span("F1 ", Style::default()), span("help  ", dim())];
         let mut left = vec![Span::raw("  ")];
         match self.notice {
             Some(n) => left.push(span(n.to_string(), bold())),

@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Help(&v), command(\"marion --help\", \"\"), \"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   tab back                                                                                 F1 help
 --- styles ---
-   79  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenattachthispage"
+   84  Style::new().fg(Color::Reset).bg(Color::Reset)  "nextscreenattachthispage"
     6  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marion"
-   25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTARTtabF"
+   20  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "EVERYWHEREWATCHSTART"
   346  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "?tabenter?sqxc!enter↑↓←→"

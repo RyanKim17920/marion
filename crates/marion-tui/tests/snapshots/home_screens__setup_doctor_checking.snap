@@ -34,9 +34,9 @@ expression: "report(&screen(Body::Setup(&v), input, \"setup\"), 100, 30)"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · enter details · r re-check · e edit types · n new type · a add key            F1 help
 --- styles ---
-  181  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
+  195  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodex/usr/local/bi"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "mariongemini"
-   67  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
+   53  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESBINARYVERSIONAU"
   680  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    20  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠸⠼⠴reviewermigrator"
    13  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setup❯gemini❯"

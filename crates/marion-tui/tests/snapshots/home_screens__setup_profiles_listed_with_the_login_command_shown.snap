@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                            F1 help
 --- styles ---
-   77  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
+   85  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeclaude-orchestrato"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   31  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESAPIKEYSLOGINSj"
+   23  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTTYPESAPIKEYSLOGINS"
   543  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
@@ -69,9 +69,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                F1 help
 --- styles ---
-  156  Style::new().fg(Color::Reset).bg(Color::Reset)  "geminiopencodecopilotagy"
+  164  Style::new().fg(Color::Reset).bg(Color::Reset)  "geminiopencodecopilotagy"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   38  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
+   30  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "PROJECTAGENTTYPESAPIKEYS"
   705  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    25  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    79  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"
@@ -131,9 +131,9 @@ expression: "at_every_size(&screen(Body::Setup(&v), input, \"profiles\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · a add login · u use · x remove                                                                                                            F1 help
 --- styles ---
-  169  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
+  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudecodexgeminiopencod"
     8  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncx"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
+   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSESPROJECTAGENTTYP"
  1064  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartWatc"
    26  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆reviewermigratordefault"
    82  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Setupax❯CODEX_HOME='/Use"

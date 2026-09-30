@@ -40,9 +40,9 @@ expression: "report(&screen, 92, 36)"
  ╰────────────────────────────────────────────────────────────────────────────────────────╯
   j/k move · ! needs you · enter stream · s steer · x cancel · m merge             F1 help
 --- styles ---
-  289  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Adda--topN"
+  303  Style::new().fg(Color::Reset).bg(Color::Reset)  "claudeimpla1f0Adda--topN"
    11  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marioncodex"
-   39  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
+   25  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTSTASKRUNNINGACTIVIT"
   876  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
    14  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆⠋12m04s⠸2m17s"
     7  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watch❯❯"

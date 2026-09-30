@@ -28,9 +28,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens  F1 help
 --- styles ---
-  110  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  128  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   41  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSe"
+   23  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONS"
   518  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
@@ -70,9 +70,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                      F1 help
 --- styles ---
-  159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+   29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
   890  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
@@ -132,9 +132,9 @@ expression: "at_every_size(&screen(Body::Start(&v), prompt(PROMPT), \"start\"))"
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
   enter run · ↑↓ harness · ←→ model · ^o type · ^p pane · tab screens                                                                                  F1 help
 --- styles ---
-  159  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
+  177  Style::new().fg(Color::Reset).bg(Color::Reset)  "codexgeminiopencodecopil"
    12  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionclaude"
-   47  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
+   29  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "HARNESSTYPEMODELOPTIONSR"
  1162  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiWatchSetu"
     3  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆$▏"
    19  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Start❯▸claude▸opus❯"
