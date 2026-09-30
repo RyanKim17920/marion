@@ -194,24 +194,10 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
     }
     let x = area.x + GUTTER;
     let w = (area.width - GUTTER * 2) as usize;
-    if !v.supervisor {
-        let y = area.y + area.height / 3;
-        centred(
-            buf,
-            area,
-            y,
-            Line::from(span("No supervisor is running for this project.", bold())),
-        );
-        centred(
-            buf,
-            area,
-            y + 2,
-            Line::from(code_spans(
-                "Start a task on the Start tab, or run `marion run <type> --prompt …` in a shell.",
-                dim(),
-                theme,
-            )),
-        );
+    // Nothing running and nothing to show, whether or not a supervisor answered: one plain state,
+    // saying the one thing to do. Whether a supervisor is up is not the operator's concern here.
+    if !v.supervisor || v.rows.is_empty() {
+        empty(buf, area, theme);
         return;
     }
     let mut note = format!("{} · {} running", v.rows.len(), v.running);
@@ -239,21 +225,6 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
         return;
     }
     buf.set_line(x, area.y, &section("Agents", &note), w as u16);
-    if v.rows.is_empty() {
-        let y = area.y + area.height / 3;
-        centred(buf, area, y, Line::from(span("No agents yet.", bold())));
-        centred(
-            buf,
-            area,
-            y + 2,
-            Line::from(code_spans(
-                "Start a task on the Start tab, or run `marion run` in a shell.",
-                dim(),
-                theme,
-            )),
-        );
-        return;
-    }
 
     // Every line of the list, each with the column it starts at, then a window over them that
     // keeps the selected node and its whole expansion on screen.
@@ -316,6 +287,23 @@ pub fn render(v: &WatchView, theme: Theme, frame: usize, area: Rect, buf: &mut B
             buf.set_line(x, fy, &Line::from(fit(l, w)), w as u16);
         }
     }
+}
+
+/// Watch with nothing on it.
+fn empty(buf: &mut Buffer, area: Rect, theme: Theme) {
+    let y = area.y + area.height / 3;
+    centred(
+        buf,
+        area,
+        y,
+        Line::from(span("Nothing running here yet.", bold())),
+    );
+    centred(
+        buf,
+        area,
+        y + 2,
+        Line::from(code_spans("Type a task on Start (`tab`).", dim(), theme)),
+    );
 }
 
 /// Rows the node list has: the body under its header and a blank row.

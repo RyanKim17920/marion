@@ -6,14 +6,14 @@ expression: "report(&sc, 80, 24)"
  ◆ marion  ~/code/acme-api                           Start   Watch   Setup   ?
  ──────────────────────────────────────────────────────────────────────────────
 
-  AGENTS   0 · 0 running
 
 
 
 
-                                 No agents yet.
 
-          Start a task on the Start tab, or run marion run in a shell.
+                           Nothing running here yet.
+
+                          Type a task on Start (tab).
 
 
 
@@ -28,8 +28,8 @@ expression: "report(&sc, 80, 24)"
  ╰────────────────────────────────────────────────────────────────────────────╯
   tab Start                                                            F1 help
 --- styles ---
-   18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNoagentsyet."
-   11  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "AGENTStabF1"
-  348  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
+   28  Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "marionNothingrunninghere"
+    5  Style::new().fg(Color::Reset).bg(Color::Reset).bold().dim()  "tabF1"
+  319  Style::new().fg(Color::Reset).bg(Color::Reset).dim()  "~/code/acme-apiStartSetu"
     1  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset)  "◆"
-   15  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchmarionrun❯"
+    9  Style::new().fg(Color::Rgb(193, 95, 60)).bg(Color::Reset).bold()  "Watchtab❯"
