@@ -6872,6 +6872,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         })
     }
 
@@ -7233,6 +7234,7 @@ mod tests {
                 timeout_secs: bound,
                 verification: vec![],
                 race: None,
+                workflow: None,
             })
         };
         let bounded = node_of(&[line(0, 1, intent_with(Some(120)))], "r");
@@ -7274,6 +7276,7 @@ mod tests {
             timeout_secs: Some(60),
             verification: vec![],
             race: None,
+            workflow: None,
         };
         std::fs::write(&file, row("codex")).unwrap();
         assert_eq!(
@@ -15368,6 +15371,7 @@ mod tests {
                     timeout_secs: None,
                     verification: vec![],
                     race: None,
+                    workflow: None,
                 }),
                 spawned("child"),
                 session("child", workspace),

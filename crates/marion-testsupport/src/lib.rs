@@ -1658,6 +1658,7 @@ pub fn finished_project(project: &marion_core::paths::ProjectDir) -> FinishedPro
             review_of: None,
             race: None,
             budget: None,
+            workflow: None,
         })
     };
     let spawned = |id: &AgentId| {

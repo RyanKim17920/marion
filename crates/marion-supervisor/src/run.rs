@@ -2062,6 +2062,7 @@ pub fn run_spawn_watched(
             // A seat keeps its seat across a resume: the resume rebuilds this request from the
             // intent.
             race: req.race.clone(),
+            workflow: None,
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {

@@ -421,6 +421,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         })
     }
 

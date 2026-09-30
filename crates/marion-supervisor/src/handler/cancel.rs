@@ -498,6 +498,7 @@ mod tests {
                 verification: vec![],
                 race: None,
                 review_of: None,
+                workflow: None,
             }));
             self.write(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -932,6 +933,7 @@ mod tests {
             verification: vec![],
             race: None,
             review_of: None,
+            workflow: None,
         }));
         fx.handle.live.refresh();
         let e = fx.cancel("root", None).expect_err("a node without a pid");

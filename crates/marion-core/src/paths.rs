@@ -166,10 +166,41 @@ impl ProjectDir {
         self.races_dir().join(format!("{}.json", id.0))
     }
 
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.0.join("workflows")
+    }
+
+    /// `workflows/<wf_id>/` — one run's own files: `spec.json` (the checked workflow and its
+    /// inputs, private to the operator, since the inputs are the operator's words) and, once it
+    /// closes, `result.json`. The id is a UUIDv7, so it is safe as a path component.
+    pub fn workflow(&self, id: &crate::workflow::WorkflowId) -> WorkflowDir {
+        WorkflowDir(self.workflows_dir().join(&id.0))
+    }
+
     /// `<agent-dir>`. `AgentId` is used **verbatim** as the path component (§6.7), which is safe
     /// precisely because it is a lowercase hyphenated UUIDv7 — see `crate::ids`.
     pub fn agent(&self, id: &AgentId) -> AgentDir {
         AgentDir(self.agents_dir().join(&id.0))
+    }
+}
+
+/// `<state>/<project-hash>/workflows/<wf_id>` and its contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowDir(PathBuf);
+
+impl WorkflowDir {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The checked workflow, its inputs and what it was read from, as the run opened.
+    pub fn spec(&self) -> PathBuf {
+        self.0.join("spec.json")
+    }
+
+    /// The closed run's scoreboard: each step, its nodes, its verdict.
+    pub fn result(&self) -> PathBuf {
+        self.0.join("result.json")
     }
 }
 

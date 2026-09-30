@@ -140,6 +140,7 @@ fn write_journal(p: &ProjectDir) {
             review_of: None,
             race: None,
             budget: None,
+            workflow: None,
         })
     };
     let spawned = |agent: &str, version: &str, model: &str, credential: Option<&str>| {

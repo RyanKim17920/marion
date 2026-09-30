@@ -954,6 +954,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             }),
             RecordKind::Spawned(Spawned {
                 agent_id: AgentId("019f0000-0000-7000-8000-00000000000a".into()),
@@ -1072,6 +1073,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             }),
             RecordKind::Spawned(Spawned {
                 agent_id: decided.clone(),
@@ -1151,6 +1153,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             }),
         };
         tree.extend(format!("{}\n", serde_json::to_string(&rec).unwrap()).as_bytes());

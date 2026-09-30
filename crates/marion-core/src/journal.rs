@@ -220,6 +220,15 @@ pub enum RecordKind {
     /// A race was decided; `races/<race_id>.json` is authoritative for its scoreboard. About no one
     /// node. Not a barrier: a lost record is re-derived, since a restart re-drives an open race.
     RaceDecided(RaceDecided),
+    /// A workflow run began: written just before its first step's `SpawnIntent`, whose fsync makes
+    /// it durable. Names the workflow, the digest of the file it was read from, who asked, and the
+    /// commit the checkout was on — never the prompts or the inputs, which are in the run's own
+    /// `spec.json`. About no one node.
+    WorkflowOpened(WorkflowOpened),
+    /// A workflow step ended, and how. Not a barrier: a restart re-derives it from the step's nodes.
+    WorkflowStepDecided(WorkflowStepDecided),
+    /// A workflow run ended. Not a barrier, for the same reason.
+    WorkflowClosed(WorkflowClosed),
     /// A node's spend crossed a line of its budget ([`crate::budget`]): the warn line, which tells
     /// the owner once, or the limit, which the [`Self::CancelRequested`] it precedes acts on. Not a
     /// barrier: the cancel that follows a `Stop` is.
@@ -283,8 +292,23 @@ impl RecordKind {
             RecordKind::BudgetCrossed(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_)
             | RecordKind::RaceOpened(_)
-            | RecordKind::RaceDecided(_) => None,
+            | RecordKind::RaceDecided(_)
+            | RecordKind::WorkflowOpened(_)
+            | RecordKind::WorkflowStepDecided(_)
+            | RecordKind::WorkflowClosed(_) => None,
         }
+    }
+
+    /// A record about a run of many nodes rather than about one: a race's or a workflow's.
+    pub fn is_group_record(&self) -> bool {
+        matches!(
+            self,
+            RecordKind::RaceOpened(_)
+                | RecordKind::RaceDecided(_)
+                | RecordKind::WorkflowOpened(_)
+                | RecordKind::WorkflowStepDecided(_)
+                | RecordKind::WorkflowClosed(_)
+        )
     }
 }
 
@@ -341,6 +365,13 @@ pub struct SpawnIntent {
     /// not a seat is byte-identical to what the previous build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub race: Option<crate::race::RaceSeat>,
+    /// **The workflow step this node runs**, when a workflow started it. Recorded on the intent —
+    /// durable before the process exists — so a restarted supervisor finds the step already
+    /// launched and never launches it twice, and a resumed node keeps its step.
+    ///
+    /// **Additive**: absent when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<crate::workflow::WorkflowSeat>,
     /// **The spawn's `verification` lines, in the order the caller gave them** — the commands the
     /// supervisor runs after the child exits and records as the contract's evidence. Empty for a
     /// root, which has no contract, and for a spawn that asked for none.
@@ -411,6 +442,44 @@ pub struct RaceDecided {
     pub decided_by: crate::race::DecidedBy,
     /// `(seat, verdict)`, seat order.
     pub verdicts: Vec<(u8, crate::race::SeatVerdict)>,
+}
+
+/// See [`RecordKind::WorkflowOpened`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowOpened {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub name: String,
+    /// SHA-256 of the workflow file's text as it was read, lowercase hex: which file this run is.
+    pub digest: String,
+    /// The node that asked, or [`crate::workflow::OPERATOR`] for the operator.
+    pub requester: AgentId,
+    /// The commit the checkout was on at open — what a `land = "ff"` step requires it still to be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// When the run's wall clock ends, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<crate::encoding::SystemTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
+}
+
+/// See [`RecordKind::WorkflowStepDecided`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowStepDecided {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub step: u8,
+    pub round: u8,
+    pub verdict: crate::workflow::StepVerdict,
+    /// The nodes the step ran, in launch order; empty for a skipped step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<AgentId>,
+}
+
+/// See [`RecordKind::WorkflowClosed`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowClosed {
+    pub wf_id: crate::workflow::WorkflowId,
+    pub outcome: crate::workflow::Outcome,
 }
 
 /// §6.1 step 7's confirmation: the process exists.
@@ -835,6 +904,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         })
     }
 
@@ -1059,6 +1129,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         };
         assert!(intent(None, None).is_root(), "the operator's own session");
         assert!(
@@ -1066,6 +1137,43 @@ mod tests {
             "a top-level contracted node"
         );
         assert!(!intent(Some("p"), Some("t")).is_root(), "a child");
+    }
+
+    /// **A step node's intent names its workflow step, and an ordinary intent is unchanged**: the
+    /// seat's round and part appear only when they are not 0, and no seat writes no key.
+    #[test]
+    fn a_step_nodes_intent_names_its_seat_and_an_ordinary_one_is_unchanged() {
+        let mut intent = SpawnIntent {
+            budget: None,
+            review_of: None,
+            agent_id: AgentId("a".into()),
+            parent_id: None,
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 1,
+            task_id: Some(crate::contract::TaskId("t".into())),
+            timeout_secs: None,
+            verification: vec![],
+            race: None,
+            workflow: None,
+        };
+        let plain = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
+        assert!(!plain.contains("workflow"), "{plain}");
+        intent.workflow = Some(crate::workflow::WorkflowSeat {
+            wf_id: crate::workflow::WorkflowId("w".into()),
+            step: 2,
+            round: 0,
+            part: 1,
+        });
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(intent.clone())).unwrap();
+        assert!(
+            line.contains(r#""workflow":{"wf_id":"w","step":2,"part":1}"#),
+            "{line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(intent)
+        );
     }
 
     #[test]
@@ -1084,6 +1192,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             })
             .is_barrier()
         );
@@ -1244,6 +1353,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(without)).unwrap(),
@@ -1264,6 +1374,7 @@ mod tests {
             timeout_secs: Some(300),
             verification: vec![],
             race: None,
+            workflow: None,
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
         assert!(
@@ -1307,6 +1418,7 @@ mod tests {
             timeout_secs: None,
             verification,
             race: None,
+            workflow: None,
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(intent(vec![]))).unwrap(),
@@ -1354,6 +1466,7 @@ mod tests {
             task_id: None,
             timeout_secs: None,
             verification: vec![],
+            workflow: None,
         };
         assert_eq!(
             serde_json::to_string(&RecordKind::SpawnIntent(intent(None))).unwrap(),
@@ -1558,6 +1671,7 @@ mod tests {
                 role: RaceRole::Candidate(3),
             }),
             budget: None,
+            workflow: None,
         };
         let line = serde_json::to_string(&RecordKind::SpawnIntent(seat.clone())).unwrap();
         assert!(line.contains(r#""race":{"race_id":"019f0000-0000-7000-8000-00000000000a","role":{"Candidate":3}}"#), "{line}");
@@ -1587,7 +1701,29 @@ mod tests {
                 .map(|n| (n, SeatVerdict::Failed))
                 .collect(),
         });
-        for kind in [opened, decided] {
+        let wf = crate::workflow::WorkflowId("019f0000-0000-7000-8000-00000000000c".into());
+        let wf_opened = RecordKind::WorkflowOpened(WorkflowOpened {
+            wf_id: wf.clone(),
+            name: "ship".into(),
+            digest: "0".repeat(64),
+            requester: AgentId(crate::workflow::OPERATOR.into()),
+            base: Some("f".repeat(40)),
+            deadline: None,
+            budget_tokens: Some(2_000_000),
+        });
+        let wf_decided = RecordKind::WorkflowStepDecided(WorkflowStepDecided {
+            wf_id: wf.clone(),
+            step: 3,
+            round: 2,
+            verdict: crate::workflow::StepVerdict::Blocked,
+            nodes: vec![AgentId("019f0000-0000-7000-8000-00000000000d".into())],
+        });
+        let wf_closed = RecordKind::WorkflowClosed(WorkflowClosed {
+            wf_id: wf,
+            outcome: crate::workflow::Outcome::Failed { step: 3 },
+        });
+        for kind in [opened, decided, wf_opened, wf_decided, wf_closed] {
+            assert!(kind.is_group_record());
             assert_eq!(kind.agent_id(), None);
             assert!(!kind.is_barrier());
             let line = serde_json::to_string(&kind).unwrap();

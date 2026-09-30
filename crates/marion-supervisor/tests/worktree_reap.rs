@@ -185,6 +185,9 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::SupervisorExited(_) => "SupervisorExited",
             RecordKind::RaceOpened(_) => "RaceOpened",
             RecordKind::RaceDecided(_) => "RaceDecided",
+            RecordKind::WorkflowOpened(_) => "WorkflowOpened",
+            RecordKind::WorkflowStepDecided(_) => "WorkflowStepDecided",
+            RecordKind::WorkflowClosed(_) => "WorkflowClosed",
         })
         .collect()
 }

@@ -61,6 +61,25 @@ pub const MAX_FANOUT: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WorkflowId(pub String);
 
+/// [`crate::journal::WorkflowOpened::requester`] for a run the operator started.
+pub const OPERATOR: &str = "operator";
+
+/// Which workflow step a node runs, on its spawn intent: the run, the step's index, the round (0
+/// but for a review's later rounds) and, for a step of several nodes, which of them (0-based).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WorkflowSeat {
+    pub wf_id: WorkflowId,
+    pub step: u8,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u8,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub part: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
+}
+
 /// Mint a [`WorkflowId`] from the caller's clock reading and entropy; this crate performs no I/O.
 pub fn new_workflow_id(unix_millis: u64, rand: [u8; RAND_BYTES]) -> WorkflowId {
     WorkflowId(uuid_v7(unix_millis, rand))

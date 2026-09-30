@@ -660,6 +660,7 @@ mod tests {
                 review_of: None,
                 budget: None,
                 race: None,
+                workflow: None,
             }));
             self.write(RecordKind::Spawned(Spawned {
                 agent_id: AgentId(id.into()),

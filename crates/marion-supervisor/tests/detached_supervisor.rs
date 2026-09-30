@@ -831,6 +831,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         }),
     );
     seed(

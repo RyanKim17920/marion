@@ -376,6 +376,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             }));
             self.push(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -451,6 +452,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         }));
         log.push(RecordKind::SpawnAborted(SpawnAborted {
             agent_id: id("nevergot"),

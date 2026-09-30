@@ -69,6 +69,7 @@ pub fn a_finished_node(
         timeout_secs: None,
         verification: vec![],
         race: None,
+        workflow: None,
     }));
     next(RecordKind::Spawned(Spawned {
         agent_id: id.clone(),

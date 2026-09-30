@@ -979,6 +979,7 @@ pub fn prepare_watched(
             timeout_secs: Some(spec.bound_secs),
             verification: vec![],
             race: None,
+            workflow: None,
         }),
     )
     .map_err(|source| SpawnError::SpawnIntentBarrier {

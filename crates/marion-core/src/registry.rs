@@ -417,7 +417,10 @@ impl ReplayedNode {
             RecordKind::ProfileFailover(_) => {}
             RecordKind::SupervisorExited(_)
             | RecordKind::RaceOpened(_)
-            | RecordKind::RaceDecided(_) => {
+            | RecordKind::RaceDecided(_)
+            | RecordKind::WorkflowOpened(_)
+            | RecordKind::WorkflowStepDecided(_)
+            | RecordKind::WorkflowClosed(_) => {
                 unreachable!("a record about no one node returned before selecting a node")
             }
         }
@@ -614,6 +617,40 @@ pub struct Replay {
     unresolved: Vec<(AgentId, String)>,
     /// Races in first-mention order. See [`Replay::races`].
     races: Vec<ReplayedRace>,
+    /// Workflow runs in first-mention order. See [`Replay::workflows`].
+    workflows: Vec<ReplayedWorkflow>,
+}
+
+/// A workflow run, as the journal knows it: that it opened, which nodes ran each step, how each
+/// step was decided and how the run closed. The run's `spec.json` holds what it was asked; this is
+/// what the tree and a restart need to step it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayedWorkflow {
+    pub wf_id: crate::workflow::WorkflowId,
+    /// `None` only where the journal's head no longer holds the opening record.
+    pub opened: Option<crate::journal::WorkflowOpened>,
+    /// `(seat, node)` for every node a step launched, in intent order.
+    pub nodes: Vec<(crate::workflow::WorkflowSeat, AgentId)>,
+    /// Every step decision, in journal order; a later one for a step (a review's later round)
+    /// supersedes an earlier.
+    pub decided: Vec<crate::journal::WorkflowStepDecided>,
+    pub closed: Option<crate::workflow::Outcome>,
+}
+
+impl ReplayedWorkflow {
+    /// The last decision recorded for `step`, if any.
+    pub fn decision(&self, step: u8) -> Option<&crate::journal::WorkflowStepDecided> {
+        self.decided.iter().rev().find(|d| d.step == step)
+    }
+
+    /// The nodes launched for `step` in `round`.
+    pub fn step_nodes(&self, step: u8, round: u8) -> Vec<&AgentId> {
+        self.nodes
+            .iter()
+            .filter(|(s, _)| s.step == step && s.round == round)
+            .map(|(_, a)| a)
+            .collect()
+    }
 }
 
 /// A race, as the journal knows it: that it opened, which nodes took its seats, and how it was
@@ -658,6 +695,52 @@ impl Replay {
 
     pub fn race(&self, id: &RaceId) -> Option<&ReplayedRace> {
         self.races.iter().find(|r| &r.race_id == id)
+    }
+
+    /// Every workflow run the journal mentions, in first-mention order.
+    pub fn workflows(&self) -> &[ReplayedWorkflow] {
+        &self.workflows
+    }
+
+    pub fn workflow(&self, id: &crate::workflow::WorkflowId) -> Option<&ReplayedWorkflow> {
+        self.workflows.iter().find(|w| &w.wf_id == id)
+    }
+
+    fn workflow_mut(&mut self, id: &crate::workflow::WorkflowId) -> &mut ReplayedWorkflow {
+        let i = match self.workflows.iter().position(|w| &w.wf_id == id) {
+            Some(i) => i,
+            None => {
+                self.workflows.push(ReplayedWorkflow {
+                    wf_id: id.clone(),
+                    opened: None,
+                    nodes: Vec::new(),
+                    decided: Vec::new(),
+                    closed: None,
+                });
+                self.workflows.len() - 1
+            }
+        };
+        &mut self.workflows[i]
+    }
+
+    /// A workflow record, or a step node's intent: the run's own entry.
+    fn apply_workflow(&mut self, kind: &RecordKind) {
+        match kind {
+            RecordKind::WorkflowOpened(o) => self.workflow_mut(&o.wf_id).opened = Some(o.clone()),
+            RecordKind::WorkflowStepDecided(d) => {
+                self.workflow_mut(&d.wf_id).decided.push(d.clone())
+            }
+            RecordKind::WorkflowClosed(c) => self.workflow_mut(&c.wf_id).closed = Some(c.outcome),
+            RecordKind::SpawnIntent(i) => {
+                if let Some(seat) = &i.workflow {
+                    let wf = self.workflow_mut(&seat.wf_id);
+                    if !wf.nodes.iter().any(|(_, a)| a == &i.agent_id) {
+                        wf.nodes.push((seat.clone(), i.agent_id.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn race_mut(&mut self, id: &RaceId) -> &mut ReplayedRace {
@@ -784,13 +867,11 @@ impl Replay {
             _ => {}
         }
         self.apply_race(&r.kind);
+        self.apply_workflow(&r.kind);
         let Some(agent_id) = r.agent_id().cloned() else {
-            debug_assert!(matches!(
-                r.kind,
-                RecordKind::SupervisorExited(_)
-                    | RecordKind::RaceOpened(_)
-                    | RecordKind::RaceDecided(_)
-            ));
+            debug_assert!(
+                matches!(r.kind, RecordKind::SupervisorExited(_)) || r.kind.is_group_record()
+            );
             return;
         };
         let ts = r.ts;
@@ -976,6 +1057,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("root"),
@@ -999,6 +1081,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("child"),
@@ -1624,6 +1707,7 @@ mod tests {
                     timeout_secs: None,
                     verification: vec![],
                     race: None,
+                    workflow: None,
                 }),
             ),
             record(
@@ -1721,6 +1805,7 @@ mod tests {
                     timeout_secs: None,
                     verification: vec![],
                     race: None,
+                    workflow: None,
                 }),
             ),
             at(
@@ -1944,6 +2029,7 @@ mod tests {
                 timeout_secs: None,
                 verification: vec![],
                 race: None,
+                workflow: None,
             }),
         )];
         if let Some(observation) = change {
@@ -2241,6 +2327,7 @@ mod tests {
             timeout_secs: None,
             verification: vec![],
             race: None,
+            workflow: None,
         })
     }
 
@@ -2559,6 +2646,7 @@ mod tests {
                     role: RaceRole::Candidate(n),
                 }),
                 budget: None,
+                workflow: None,
             })
         };
         let opened = RecordKind::RaceOpened(RaceOpened {
@@ -2612,5 +2700,85 @@ mod tests {
         );
         // A race record names no node, so it adds none to the tree.
         assert_eq!(r.nodes().len(), 2);
+    }
+
+    /// **A workflow run folds beside the tree**: its opening, each step's nodes off their
+    /// intents, every step decision (a later round superseding an earlier), and its close. Its
+    /// records name no node; its step nodes are ordinary nodes.
+    #[test]
+    fn a_workflow_folds_its_step_nodes_decisions_and_close() {
+        use crate::journal::{WorkflowClosed, WorkflowOpened, WorkflowStepDecided};
+        use crate::workflow::{Outcome, StepVerdict, WorkflowId, WorkflowSeat};
+        let wf = WorkflowId("w-1".into());
+        let node = |agent: &str, step: u8, round: u8| {
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id(agent),
+                parent_id: None,
+                agent_type: "claude".into(),
+                harness: Harness::ClaudeCode,
+                depth: 1,
+                task_id: Some(TaskId(format!("t-{agent}"))),
+                timeout_secs: None,
+                verification: vec![],
+                review_of: None,
+                race: None,
+                budget: None,
+                workflow: Some(WorkflowSeat {
+                    wf_id: wf.clone(),
+                    step,
+                    round,
+                    part: 0,
+                }),
+            })
+        };
+        let decided = |step: u8, round: u8, verdict: StepVerdict, nodes: &[&str]| {
+            RecordKind::WorkflowStepDecided(WorkflowStepDecided {
+                wf_id: wf.clone(),
+                step,
+                round,
+                verdict,
+                nodes: nodes.iter().map(|n| id(n)).collect(),
+            })
+        };
+        let records = vec![
+            record(
+                0,
+                RecordKind::WorkflowOpened(WorkflowOpened {
+                    wf_id: wf.clone(),
+                    name: "ship".into(),
+                    digest: "ab".into(),
+                    requester: id(crate::workflow::OPERATOR),
+                    base: Some("c0ffee".into()),
+                    deadline: None,
+                    budget_tokens: Some(1000),
+                }),
+            ),
+            record(1, node("plan", 0, 0)),
+            record(2, decided(0, 0, StepVerdict::Succeeded, &["plan"])),
+            record(3, node("gate", 1, 0)),
+            record(4, decided(1, 0, StepVerdict::Blocked, &["gate"])),
+            record(5, node("gate2", 1, 1)),
+            record(6, decided(1, 1, StepVerdict::Clean, &["gate2"])),
+            record(
+                7,
+                RecordKind::WorkflowClosed(WorkflowClosed {
+                    wf_id: wf.clone(),
+                    outcome: Outcome::Succeeded,
+                }),
+            ),
+        ];
+        let r = replay(&bytes(&records));
+        let fold = r.workflow(&wf).expect("the run is on record");
+        assert_eq!(fold.opened.as_ref().unwrap().name, "ship");
+        assert_eq!(fold.step_nodes(1, 1), vec![&id("gate2")]);
+        assert_eq!(fold.step_nodes(0, 0), vec![&id("plan")]);
+        assert_eq!(
+            fold.decision(1).unwrap().verdict,
+            StepVerdict::Clean,
+            "the later round supersedes"
+        );
+        assert_eq!(fold.closed, Some(Outcome::Succeeded));
+        assert_eq!(r.nodes().len(), 3, "the run's own records add no node");
+        assert_eq!(r.workflows().len(), 1);
     }
 }

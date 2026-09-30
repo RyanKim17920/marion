@@ -252,6 +252,7 @@ mod tests {
                 review_of: None,
                 budget: None,
                 race: None,
+                workflow: None,
             }),
         )
         .unwrap();
