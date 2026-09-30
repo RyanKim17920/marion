@@ -5,6 +5,8 @@
 //! tree is walked with `ps` *first* — parent links and process groups both — and every group it
 //! reaches is signalled, marion's own excepted. [`kill_process_tree_and_wait`] adds §6.7's second
 //! step: a confirmation that means *observed dead*, not merely "SIGKILL was sent".
+//!
+//! [`kill_process_tree_and_wait`]: crate::kill::kill_process_tree_and_wait
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};

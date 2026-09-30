@@ -120,6 +120,14 @@
 //! what detaching makes the supervisor. Nothing here depends on the choice: [`acquire`] is the same
 //! call for an in-process M1 supervisor and a detached M2 one, and neither the path nor the lock
 //! depends on process group or session membership.
+//!
+//! [`SUN_PATH_MAX`]: crate::socket::SUN_PATH_MAX
+//! [`acquire`]: crate::socket::acquire
+//! [`SocketPaths`]: crate::socket::SocketPaths
+//! [`Serving`]: crate::socket::Serving
+//! [`SupervisorIdentity`]: crate::socket::SupervisorIdentity
+//! [`Serving::drop`]: crate::socket::Serving::drop
+//! [`read_identity`]: crate::socket::read_identity
 
 use std::io::ErrorKind;
 use std::os::fd::AsRawFd;
@@ -512,7 +520,7 @@ pub fn read_identity(paths: &SocketPaths) -> Option<SupervisorIdentity> {
 /// `true` is a **proof**, not a guess: the lock was free at the moment of the call, and a supervisor
 /// holds its lock for its entire serving life, so no supervisor existed then. It says nothing about
 /// the next instant — a stage 3 between its `exec` and its `flock` is invisible to it — which is why
-/// [`crate::detach::MAX_START_ATTEMPTS`] bounds what may be done on the strength of it.
+/// `crate::detach::MAX_START_ATTEMPTS` bounds what may be done on the strength of it.
 pub fn nobody_is_serving(paths: &SocketPaths) -> bool {
     !someone_is_serving(paths.lock())
 }

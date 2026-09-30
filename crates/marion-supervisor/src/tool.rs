@@ -65,6 +65,10 @@
 //! s9's cases the moment anyone added a `?`. So the flag is set explicitly, at each site, by the
 //! code that knows which of the two happened — and [`ToolOutcome::text`] takes it as an argument
 //! rather than inferring it from anything.
+//!
+//! [`ToolOutcome`]: crate::tool::ToolOutcome
+//! [`from_wire`]: crate::tool::from_wire
+//! [`ToolOutcome::text`]: crate::tool::ToolOutcome::text
 
 use serde_json::Value;
 

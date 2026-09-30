@@ -10,6 +10,8 @@
 //!
 //! A node driven by another process (a `marion run` outside any supervisor) publishes nothing here;
 //! its row shows its figure once its record is on the journal. No harness is named here.
+//!
+//! [`shown`]: crate::spending::shown
 
 use marion_core::contract::{AgentId, TokenUsage, add_usage_claims};
 use marion_core::journal::MAX_RECORDED_TURNS;

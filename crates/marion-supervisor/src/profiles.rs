@@ -30,6 +30,11 @@
 //!
 //! What differs per harness — the variable, the probe, the login command — is the row's
 //! [`ProfileCarrier`]; nothing here names a harness.
+//!
+//! [`login_state`]: crate::profiles::login_state
+//! [`limit_notice`]: crate::profiles::limit_notice
+//! [`failover_target`]: crate::profiles::failover_target
+//! [`ProfileCarrier`]: marion_harness::profile::ProfileCarrier
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

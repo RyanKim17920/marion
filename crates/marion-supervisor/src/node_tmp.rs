@@ -16,6 +16,8 @@
 //! Not isolation: `TMPDIR` carries no credential for any of the seven harnesses this was measured
 //! on (claude, codex, gemini, copilot, opencode, pi, goose — each one's auth status reads the same
 //! under a private `TMPDIR`), so the operator's login is inherited exactly as before.
+//!
+//! [`AgentDir::tmp_dir`]: marion_core::paths::AgentDir::tmp_dir
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};

@@ -69,6 +69,11 @@
 //! and a **complete line that is not an event stops the reader for good**, because an append-only
 //! file cannot heal a bad line and a reader that narrated past bytes it does not understand would
 //! be inventing a stream.
+//!
+//! [`EventWriter::open_path`]: crate::events::EventWriter::open_path
+//! [`MAX_EVENTS_FILE_BYTES`]: crate::events::MAX_EVENTS_FILE_BYTES
+//! [`EventReader`]: crate::events::EventReader
+//! [`EventWriter::append`]: crate::events::EventWriter::append
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -681,6 +686,9 @@ impl Drop for EventWriter {
 ///
 /// How much of a file's start [`EventReader`] keeps to tell it from another file at the same inode
 /// number: the first frame's envelope, its ordinal and its timestamp.
+///
+/// [`Self::open_path`]: EventReader::open_path
+/// [`Self::poll`]: EventReader::poll
 const HEAD_BYTES: usize = 128;
 
 pub struct EventReader {

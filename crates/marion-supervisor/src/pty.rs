@@ -80,7 +80,7 @@
 //!    claims the terminal *itself* when it starts as a session leader without one and its stdin is
 //!    a tty — so what it measured was `sh`. Every test in `pty/tests.rs` inherits that confound for
 //!    the same reason, which is why
-//!    [`tests::tiocsctty_and_not_setsid_is_what_claims_the_terminal`] execs `/bin/sleep` directly:
+//!    `tests::tiocsctty_and_not_setsid_is_what_claims_the_terminal` execs `/bin/sleep` directly:
 //!    it is the only shell-free topology in the file and the only place the deletion goes red.
 //! 6. **The parent closes its own slave copies immediately after `spawn()`.** Otherwise the master
 //!    never sees EOF, because the parent is itself a writer.
@@ -88,6 +88,11 @@
 //! 8. **`EIO` on the master is EOF, not an error.** Linux reports the last slave closing that way;
 //!    macOS returns 0. A reader treating `EIO` as a fault reports a read failure for every normal
 //!    exit.
+//!
+//! [`PtyHost`]: crate::pty::PtyHost
+//! [`PtyMaster`]: crate::pty::PtyMaster
+//! [`PtyMaster::open_slave`]: crate::pty::PtyMaster::open_slave
+//! [`StdinPlan::TerminalSlave`]: crate::pty::StdinPlan::TerminalSlave
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};

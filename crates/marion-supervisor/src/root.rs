@@ -1401,7 +1401,7 @@ pub trait PaneOwner: Send + Sync {
 /// `ended_by_kill` is the owner's [`crate::run::SpawnObserver::process_ended`] for this root, asked
 /// once when the process has ended and before anything terminal is written. `None` is a caller that
 /// holds the root for its whole turn and so can never have been asked to kill it from outside.
-/// `kill_requested` is its [`crate::run::SpawnObserver::kill_requested`]: the check between one
+/// `kill_requested` is its `crate::run::SpawnObserver::kill_requested`: the check between one
 /// attempt and a key rotation's next, which settles nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_owned(
@@ -2305,6 +2305,8 @@ fn spawned_record(node: &RootNode, harness_version: &str, pid: Option<i32>) -> S
 ///
 /// stdin is `null` rather than a pty for two independent reasons: §5.2 says marion **MUST NOT**
 /// give a headless node a pty on stdin, and on this surface there is nothing to write to it.
+///
+/// [`run_bounded`]: crate::run::run_bounded
 fn launch_only(
     node: &RootNode,
     tmpdir: &Path,
@@ -2846,6 +2848,8 @@ fn tell_pane_owner_failed(
 /// being filled from a scrape of the pty bytes: those bytes are a *rendering*, full of cursor
 /// motion and repaints, and anything recovered from them would be a guess presented in the same
 /// shape as a parsed frame.
+///
+/// [`PtyHost::shutdown`]: crate::pty::PtyHost::shutdown
 fn launch_terminal(
     node: &RootNode,
     tmpdir: &Path,

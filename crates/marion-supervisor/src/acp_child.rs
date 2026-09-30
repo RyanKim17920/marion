@@ -47,6 +47,10 @@
 //!
 //! The workspace has no async runtime and `agent-client-protocol` 2.0.0 is not a dependency. One
 //! detached reader thread per pipe and a poll loop, exactly as `doctor` and `run_bounded` do it.
+//!
+//! [`Invocation`]: marion_harness::Invocation
+//! [`McpDeclaration::None`]: marion_harness::McpDeclaration::None
+//! [`acp::initialize_request`]: marion_harness::acp::initialize_request
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -15,6 +15,8 @@
 //! The record goes through [`crate::journal::record`]'s never-fail-the-run policy: a node whose
 //! session could not be journaled is a node that cannot be resumed later, and that is a loss to
 //! report — not a reason to kill a run that is otherwise fine.
+//!
+//! [`RecordKind::SessionObserved`]: marion_core::journal::RecordKind::SessionObserved
 
 use std::cell::{Cell, RefCell};
 

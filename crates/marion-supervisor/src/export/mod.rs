@@ -8,6 +8,9 @@
 //!
 //! Every string of a report passes through [`scrub::Scrubber`] once, at one point
 //! ([`model::Report::scrub`]), before it is rendered, and the rendered text passes through it again.
+//!
+//! [`scrub::Scrubber`]: crate::export::scrub::Scrubber
+//! [`model::Report::scrub`]: crate::export::model::Report::scrub
 
 pub mod cli;
 pub mod collect;

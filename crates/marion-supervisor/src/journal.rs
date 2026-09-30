@@ -56,6 +56,10 @@
 //! held across an fsync serialises two processes on the slowest syscall in the path, which is
 //! precisely what group commit exists to avoid. Ordering is not lost by dropping the lock: §4.3
 //! makes the journal's total order the **file's** order, and the kernel assigns it.
+//!
+//! [`GROUP_COMMIT_INTERVAL`]: crate::journal::GROUP_COMMIT_INTERVAL
+//! [`Journal::append`]: crate::journal::Journal::append
+//! [`JournalError::TornWrite`]: crate::journal::JournalError::TornWrite
 
 use std::fs::File;
 use std::io::Write;

@@ -83,6 +83,9 @@
 //! So `N` racing clients may transiently create `N` stage-3 processes and exactly one survives. That
 //! is the cross-process reading of §5.7's rule, and it costs one flock rather than a second
 //! exclusion protocol that would have to agree with the first.
+//!
+//! [`ensure_supervisor`]: crate::detach::ensure_supervisor
+//! [`Acquired::Dialed`]: crate::socket::Acquired::Dialed
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -98,7 +101,7 @@ unsafe extern "C" {
 
 /// The subcommand. One word, on `marion-supervisor` and not on `marion`: §10's table already names
 /// the detached process, and §5.7 starts it *on demand by a client* — so there is no operator who
-/// needs to type it, and `bin/marion.rs`'s refusal of every argv[0] but `run` stays where it is.
+/// needs to type it, and `bin/marion.rs`'s refusal of every `argv[0]` but `run` stays where it is.
 pub const SERVE: &str = "serve";
 
 /// Stage 2's marker. See the module doc's table.

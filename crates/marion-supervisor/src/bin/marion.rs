@@ -1068,6 +1068,8 @@ fn is_loopback_url(url: &str) -> bool {
 /// logged in to, which is the whole premise — marion overlays nothing rather than pointing the node
 /// somewhere. `$MARION_BASE_URL` is ignored there for that reason; it names marion's canned server,
 /// and inheriting it silently is precisely the accident case 1 refuses loudly.
+///
+/// [`Auth::Inherited`]: marion_harness::Auth::Inherited
 fn resolve_base_url(
     canned: bool,
     explicit: Option<String>,

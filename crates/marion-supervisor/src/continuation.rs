@@ -24,6 +24,8 @@
 //!
 //! A message that cannot be a turn — the node's stream never named a session, or its clock is
 //! spent — is dropped with that reason and the boundary is taken again.
+//!
+//! [`TurnSource::held`]: crate::inbox::TurnSource::held
 
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;

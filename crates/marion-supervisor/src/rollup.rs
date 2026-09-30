@@ -10,6 +10,9 @@
 //! "184k over all 4". Changed files are summed across nodes, so a file two nodes both touched — a
 //! child's work merged into its parent's — is counted twice: the figure is labelled a sum (`Σ`),
 //! not a count of distinct files.
+//!
+//! [`Totals::tokens`]: crate::rollup::Totals::tokens
+//! [`Totals::claimed`]: crate::rollup::Totals::claimed
 
 use std::collections::HashMap;
 

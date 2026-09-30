@@ -17,6 +17,13 @@
 //! race in a drain, a platform without a watch, a file replaced under the watch, a descriptor
 //! limit — costs latency up to that bound and never a hang. What the wakes buy is that the bound
 //! can be tens of seconds rather than milliseconds.
+//!
+//! [`Pipe`]: crate::wake::Pipe
+//! [`Signal`]: crate::wake::Signal
+//! [`Signal::wait_past`]: crate::wake::Signal::wait_past
+//! [`Watch`]: crate::wake::Watch
+//! [`wait_until`]: crate::wake::wait_until
+//! [`LOST_WAKE_BACKSTOP`]: crate::wake::LOST_WAKE_BACKSTOP
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;

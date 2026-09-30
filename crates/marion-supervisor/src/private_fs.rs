@@ -9,6 +9,8 @@
 //! It is also the one place a document is *replaced*: [`write_atomic`] is the only way marion
 //! rewrites a whole file it keeps (a contract, a config document, an index), so a reader or a crash
 //! sees the old document or the new one and never a truncated middle.
+//!
+//! [`write_atomic`]: crate::private_fs::write_atomic
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};

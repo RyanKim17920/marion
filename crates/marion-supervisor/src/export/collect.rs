@@ -7,6 +7,8 @@
 //! reads, and its activity through [`crate::activity::page`] — the very lines the Watch tab shows.
 //!
 //! Nothing here is cleaned: [`super::export`] scrubs the whole [`Report`] at one point after this.
+//!
+//! [`super::export`]: crate::export
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

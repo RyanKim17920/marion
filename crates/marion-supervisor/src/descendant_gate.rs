@@ -43,6 +43,13 @@
 //! ([`crate::run::Unwatched`]) cannot see the tree and the gate leaves the two flags unset — the
 //! supervisor is the only owner of a child since §11 item 28, so that path is fixtures and
 //! `marion run`'s own root, which `root.rs` gates on its own terms.
+//!
+//! [`gate`]: crate::descendant_gate::gate
+//! [`Stop::Concluded`]: crate::descendant_gate::Stop::Concluded
+//! [`Stop::Voluntary`]: crate::descendant_gate::Stop::Voluntary
+//! [`Stop::Involuntary`]: crate::descendant_gate::Stop::Involuntary
+//! [`gate_or_woken`]: crate::descendant_gate::gate_or_woken
+//! [`Verdict::Hold`]: crate::descendant_gate::Verdict::Hold
 
 use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};

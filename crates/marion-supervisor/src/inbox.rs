@@ -36,6 +36,13 @@
 //!
 //! `MessageQueued` / `MessageDelivered` / `MessageDropped`, keyed by the message id — **the
 //! message's length and SHA-256, never its text**. They are not barriers (`journal.rs` says why).
+//!
+//! [`DeliveryPort`]: crate::inbox::DeliveryPort
+//! [`Inboxes::take_or_seal`]: crate::inbox::Inboxes::take_or_seal
+//! [`Inboxes::enqueue`]: crate::inbox::Inboxes::enqueue
+//! [`Inboxes::owe`]: crate::inbox::Inboxes::owe
+//! [`Inboxes::announce`]: crate::inbox::Inboxes::announce
+//! [`TurnSource::held`]: crate::inbox::TurnSource::held
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};

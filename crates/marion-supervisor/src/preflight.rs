@@ -4,6 +4,9 @@
 //! Split in two so the verdicts are testable without the machine: [`gather`] reads the facts
 //! (it runs `--version` on marion and git, and creates the state directory as any marion verb
 //! would), and [`checks`] turns them into lines, as a pure function.
+//!
+//! [`gather`]: crate::preflight::gather
+//! [`checks`]: crate::preflight::checks
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

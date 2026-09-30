@@ -866,7 +866,7 @@ fn note_truncated_capture(description: &str) -> String {
 /// a five-hundred-line launcher is a rule that gets reordered by someone fixing something else — which
 /// is how it came to be the wrong way round. Named, it can also be tested, which the inline version
 /// could not be: the difference between the right order and the wrong one is purely temporal, so the
-/// only way to see it is from inside the window (see [`at_contract_write`]).
+/// only way to see it is from inside the window (see `at_contract_write`).
 ///
 /// **`ended_by_kill` leaves the terminal record to the kill.** A node marion ended on an operator's
 /// kill already has one coming — the killer's `KillConfirmed`, §6.7's `Exited(Cancelled)` — and an
@@ -3531,6 +3531,8 @@ pub fn child_launch_spec(
 /// a name, and a listed workspace reads the branch its worktree has checked out
 /// ([`crate::spawn::checked_out_branch`]), so an old node's branch and a new one's are found the
 /// same way.
+///
+/// [`make_worktree`]: crate::spawn::make_worktree
 pub(crate) fn worktree_branch(agent_id: &AgentId, prompt: &str) -> String {
     let short = crate::node_label::short_id(&agent_id.0);
     match slug(prompt) {

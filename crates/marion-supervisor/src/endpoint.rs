@@ -19,6 +19,8 @@
 //! (`marion_core::provider::TRANSLATIONS`): the harness is pointed at a gateway started for the node
 //! ([`open`]) with the gateway's own bearer, and the key stays in marion. A native route always
 //! wins, so the gateway runs only where the two wires genuinely differ.
+//!
+//! [`open`]: crate::endpoint::open
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;

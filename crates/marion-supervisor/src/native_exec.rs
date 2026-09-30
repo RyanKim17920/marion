@@ -62,7 +62,7 @@ impl NativeLifecycleSpawner for ThreadNativeLifecycleSpawner {
 
 /// A launched and published native process which has not yet crossed the response handoff.
 ///
-/// Drop is rollback: callers must [`Self::commit`] only after every fallible step needed to hand
+/// Drop is rollback: callers must `Self::commit` only after every fallible step needed to hand
 /// the launch to its client has succeeded. This keeps a failed bootstrap from leaving either a
 /// registered pane or a child whose only owner was the failed request.
 pub(crate) struct LaunchedNativeCommand {

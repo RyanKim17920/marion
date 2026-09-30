@@ -26,6 +26,9 @@
 //!
 //! **Never a prompt.** A spawn arrives over MCP from a model, which cannot consent on the
 //! operator's behalf; the refusal names the one command the operator runs instead.
+//!
+//! [`require_model_named`]: crate::trust::require_model_named
+//! [`ACP_ALLOW_FILE`]: crate::trust::ACP_ALLOW_FILE
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

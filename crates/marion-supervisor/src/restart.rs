@@ -87,6 +87,10 @@
 //! died with that process. That is a **fact**, not a judgement — no later writer can deliver it,
 //! because only the supervisor that queued it held it — so none of the three reasons above applies,
 //! and [`drop_undelivered`] records it as `MessageDropped { reason: "supervisor restarted" }`.
+//!
+//! [`Marking::ReapIntentUnresolved`]: crate::restart::Marking::ReapIntentUnresolved
+//! [`Marking::Orphaned`]: crate::restart::Marking::Orphaned
+//! [`drop_undelivered`]: crate::restart::drop_undelivered
 
 use marion_core::contract::AgentId;
 use marion_core::journal::{MessageDelivered, MessageDropped, RecordKind};

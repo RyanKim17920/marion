@@ -67,6 +67,15 @@
 //! configured replacement). The callback journals the ordinary exit record before `exiting`
 //! becomes true. Reversing those steps recreates the §5.7 ambiguity between *finished and left*
 //! and *died*.
+//!
+//! [`Handle`]: crate::serve::Handle
+//! [`Lines`]: crate::serve::Lines
+//! [`Outbound::send`]: crate::serve::Outbound::send
+//! [`Departure::TooSlow`]: crate::serve::Departure::TooSlow
+//! [`Handle::gone`]: crate::serve::Handle::gone
+//! [`Departure`]: crate::serve::Departure
+//! [`Handle::begin_idle_exit`]: crate::serve::Handle::begin_idle_exit
+//! [`DEFAULT_IDLE_GRACE`]: crate::serve::DEFAULT_IDLE_GRACE
 
 use std::collections::HashMap;
 use std::io::{Read, Write};

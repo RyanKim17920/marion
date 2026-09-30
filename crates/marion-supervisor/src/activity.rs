@@ -11,8 +11,12 @@
 //!
 //! Bounded three ways, so a chatty child cannot flood its parent's context: at most
 //! [`MAX_CALLS`] calls, each line at most [`LINE_CAP`] characters, and the whole at most
-//! [`PEEK_CAP`] bytes. The file is read from its last [`TAIL_BYTES`] only, so a long run costs a
+//! [`PEEK_CAP`] bytes. The file is read from its last `TAIL_BYTES` only, so a long run costs a
 //! peek no more than a short one.
+//!
+//! [`MAX_CALLS`]: crate::activity::MAX_CALLS
+//! [`LINE_CAP`]: crate::activity::LINE_CAP
+//! [`PEEK_CAP`]: crate::activity::PEEK_CAP
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;

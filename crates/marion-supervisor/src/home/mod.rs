@@ -20,6 +20,13 @@
 //! key is pressed: the home screen teaches the CLI rather than hiding it. `marion`'s own tests parse
 //! each of those lines back through the binary's argument parser and compare, so an effect and its
 //! echo cannot drift apart.
+//!
+//! [`Home`]: crate::home::Home
+//! [`Home::key`]: crate::home::Home::key
+//! [`Effect`]: crate::home::Effect
+//! [`view`]: crate::home::view
+//! [`session`]: crate::home::session
+//! [`Effect::argv`]: crate::home::Effect::argv
 
 pub mod session;
 pub mod types_form;

@@ -70,6 +70,22 @@
 //! `MessageDelivered { via: "pty:paste" }` once the paste and its submit reached the master, or
 //! `MessageDropped` with the reason. The cast carries the paste itself: an `m` marker naming the
 //! message id, then the `i` records — the recording says what marion typed and that marion typed it.
+//!
+//! [`TurnDelivery::TerminalPaste`]: marion_harness::spec::TurnDelivery::TerminalPaste
+//! [`PasteInjector`]: crate::paste::PasteInjector
+//! [`DeliveryPort`]: crate::inbox::DeliveryPort
+//! [`PtyHost::inject`]: crate::pty::PtyHost::inject
+//! [`PastePolicy::paste_mode_grace`]: crate::paste::PastePolicy::paste_mode_grace
+//! [`PastePolicy::operator_quiet`]: crate::paste::PastePolicy::operator_quiet
+//! [`BootSignal`]: marion_harness::spec::BootSignal
+//! [`IdleSignal`]: marion_harness::spec::IdleSignal
+//! [`Hold::Booting`]: crate::paste::Hold::Booting
+//! [`Gate::Answer`]: crate::paste::Gate::Answer
+//! [`Hold::BootDialog`]: crate::paste::Hold::BootDialog
+//! [`PasteParams::of`]: crate::paste::PasteParams::of
+//! [`BootSignal::WindowTitle`]: marion_harness::spec::BootSignal::WindowTitle
+//! [`BootSignal::operator_can_switch_off`]: marion_harness::spec::BootSignal::operator_can_switch_off
+//! [`Gate::Graced`]: crate::paste::Gate::Graced
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, Weak};

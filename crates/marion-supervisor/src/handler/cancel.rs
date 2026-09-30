@@ -28,6 +28,8 @@
 //!
 //! Exactly as `node/steer`: `caller: None` is the operator ([`super::root_spawn_authorized`]),
 //! `caller: Some` a node proved by its token, cancelling only a strict descendant.
+//!
+//! [`super::root_spawn_authorized`]: crate::handler::root_spawn_authorized
 
 use std::time::{Duration, Instant};
 

@@ -269,6 +269,8 @@ pub fn spawn(sock: &SocketPaths, params: AgentSpawnParams) -> Result<AgentSpawnR
 /// A node this project's journal has no record of comes back as the supervisor's own `not_found`
 /// sentence through [`SpawnError::SupervisorRefused`], which already names the id and says how
 /// current the registry is.
+///
+/// [`NodeSummary`]: marion_core::proto::NodeSummary
 pub fn node_get(sock: &SocketPaths, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
     node_get_with(sock, agent_id, None)
 }

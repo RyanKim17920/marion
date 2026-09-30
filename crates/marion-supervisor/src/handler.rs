@@ -63,6 +63,15 @@
 //! kept on the supervisor's side and exposed as [`RegistryHandle::unprojectable`], where a test can
 //! see it and a `doctor` will read it. Naming the gap is not the same as closing it, and this one is
 //! open until the vocabulary has a field for it.
+//!
+//! [`NodeSummary`]: marion_core::proto::NodeSummary
+//! [`summarize`]: crate::handler::summarize
+//! [`RegistryHandle::subscribe`]: crate::handler::RegistryHandle::subscribe
+//! [`Call::SessionQuit`]: marion_core::proto::Call::SessionQuit
+//! [`Handle::gone`]: crate::serve::Handle::gone
+//! [`ClientGone::Quit`]: marion_core::proto::ClientGone::Quit
+//! [`Handle::begin_idle_exit`]: crate::serve::Handle::begin_idle_exit
+//! [`RegistryHandle::unprojectable`]: crate::handler::RegistryHandle::unprojectable
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

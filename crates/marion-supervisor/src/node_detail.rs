@@ -7,6 +7,9 @@
 //!
 //! Every read is a view: a missing or unreadable file leaves its field `None` rather than failing
 //! the `node/get` it rides on, because the row itself is still true.
+//!
+//! [`inputs`]: crate::node_detail::inputs
+//! [`read`]: crate::node_detail::read
 
 use crate::spending::Spent;
 use marion_core::contract::Oid;

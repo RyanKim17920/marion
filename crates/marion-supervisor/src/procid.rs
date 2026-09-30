@@ -47,7 +47,7 @@
 //!
 //! # Which platforms can answer at all
 //!
-//! macOS and Linux, and nowhere else. Both arms are measured — see [`read_impl`] — and every other
+//! macOS and Linux, and nowhere else. Both arms are measured — see `read_impl` — and every other
 //! platform refuses by name, so a `cannot-tell` there blocks the claim rather than pretending to
 //! satisfy it. The Linux arm was a refusal until it was measured, and the table above was
 //! unreachable on that platform for as long as it was: every node resolved to `cannot tell`
@@ -59,6 +59,10 @@
 //! *identity*; a zombie is alive to `kill(pid, 0)` and gone to anyone waiting for work to happen.
 //! Neither answers "is this the same process". They are not interchangeable and neither replaces
 //! the other.
+//!
+//! [`Resolution`]: crate::procid::Resolution
+//! [`Audit::claim`]: crate::procid::Audit::claim
+//! [`StartId`]: marion_core::node::StartId
 
 use marion_core::contract::AgentId;
 use marion_core::node::StartId;

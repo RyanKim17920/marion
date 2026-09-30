@@ -41,6 +41,9 @@
 //! §5.6 also lists *"permission and elicitation queues"*. They are not built. No acceptance
 //! criterion names them, marion denies every permission today (§11 item 22), and a queue rendering
 //! decisions marion has already made would be a widget with nothing to show.
+//!
+//! [`NodeSummary`]: marion_core::proto::NodeSummary
+//! [`Subscription`]: crate::tree::Subscription
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -492,8 +495,8 @@ type Refusal = String;
 ///
 /// The screen's own dial and the screen's own subscribe, so the list and the tree cannot disagree
 /// about which supervisor they asked or what its answer adds up to; the notifications that arrive
-/// before the answer are folded exactly as the screen folds them. Refuses as [`run`] does, for
-/// [`run`]'s reason, when nobody is serving.
+/// before the answer are folded exactly as the screen folds them. Refuses as `run` does, for
+/// `run`'s reason, when nobody is serving.
 pub fn snapshot(repo: &Path, state_dir: &Path) -> Result<Vec<NodeSummary>, Refusal> {
     Ok(Subscription::open(repo, state_dir)?.nodes)
 }
@@ -581,7 +584,7 @@ pub fn subtree_words(t: &crate::rollup::Totals) -> String {
     words.join(" ")
 }
 
-/// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
+/// Dial the supervisor for `repo`, **refusing to start one** (see `run`), and say how the status
 /// row should name the project and where a steer dials.
 fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {
     let key = key.to_path_buf();

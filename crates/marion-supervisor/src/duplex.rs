@@ -28,6 +28,8 @@
 //! [`DuplexSpec::wall_clock`] and [`crate::kill::kill_process_tree`], the one kill in the workspace
 //! measured to leave no survivors (S7). A permission ask nobody can answer spends none of it: it is
 //! denied the moment it arrives, on every node.
+//!
+//! [`DuplexSpec::wall_clock`]: crate::duplex::DuplexSpec::wall_clock
 
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
