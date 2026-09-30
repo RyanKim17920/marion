@@ -103,6 +103,12 @@ fn list_prints_the_finished_nodes_from_the_journal_without_a_supervisor() {
         lines[0].contains(&fx.root.0) && lines[0].contains(" exited:ok "),
         "{stdout}"
     );
+    // The root has a child, so its line adds up its subtree; the child's is only itself.
+    assert!(
+        lines[0].contains(" · Σ") && lines[0].ends_with("2 nodes (0 running)"),
+        "{stdout}"
+    );
+    assert!(!lines[1].contains(" · Σ"), "{stdout}");
     assert!(
         lines[1].contains(&fx.child.0) && lines[1].contains(" parent "),
         "{stdout}"
@@ -171,6 +177,20 @@ fn ls_of_a_finished_node_prints_its_contract_from_the_journal_without_a_supervis
         );
     }
     assert_untouched(&state, &before);
+
+    let root = marion(&["ls", &fx.root.0], &repo, &state);
+    let root = String::from_utf8_lossy(&root.stdout);
+    assert!(
+        root.lines()
+            .any(|l| l.trim_start().starts_with("subtree") && l.contains("2 nodes")),
+        "a parent's detail adds up its subtree: {root}"
+    );
+    assert!(
+        !stdout
+            .lines()
+            .any(|l| l.trim_start().starts_with("subtree")),
+        "a leaf's does not: {stdout}"
+    );
 
     let unknown = marion(&["ls", "nobody"], &repo, &state);
     assert!(!unknown.status.success());

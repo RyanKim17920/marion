@@ -516,6 +516,22 @@ pub fn list_line(node: &NodeSummary) -> String {
     line
 }
 
+/// **A subtree in the words `marion ls` prints**: `Σ1.3M 14f 12m04s 6 nodes (2 running)` — tokens
+/// where some node reported them, files its contracts changed, wall clock, and nodes.
+pub fn subtree_words(t: &crate::rollup::Totals) -> String {
+    use marion_tui::home::text::{elapsed, tokens};
+    let mut words = Vec::new();
+    if t.claimed > 0 {
+        words.push(format!("Σ{}", tokens(t.tokens)));
+    }
+    words.push(format!("{}f", t.changed));
+    if let Some(wall) = t.wall_to(std::time::SystemTime::now()) {
+        words.push(elapsed(wall.as_secs()));
+    }
+    words.push(format!("{} nodes ({} running)", t.nodes, t.live));
+    words.join(" ")
+}
+
 /// Dial the supervisor for `repo`, **refusing to start one** (see [`run`]), and say how the status
 /// row should name the project and where a steer dials.
 fn dial(key: &Path, state_dir: &Path) -> Result<(UnixStream, String, PathBuf), Refusal> {

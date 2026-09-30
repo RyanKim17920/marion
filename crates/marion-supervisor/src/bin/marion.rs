@@ -469,16 +469,20 @@ fn ls_one(target: &str, repo: &Path, state: &Path) -> ExitCode {
     let found = offline.and_then(|view| match view {
         Some(view) => {
             eprintln!("{FROM_JOURNAL}");
-            view.node(target)
+            view.node(target).map(|(n, d)| (n, d, view.nodes()))
         }
         None => live_node(target, repo, state),
     });
     match found {
-        Ok((node, detail)) => {
+        Ok((node, detail, nodes)) => {
+            let rollup = marion_supervisor::rollup::Rollup::build(&nodes);
+            let subtree = rollup
+                .get(&node.agent_id)
+                .filter(|_| rollup.has_children(&node.agent_id));
             // A task, a narrative and a stream line are node-authored text.
             print!(
                 "{}",
-                marion_supervisor::printable::printable(&detail_text(&node, &detail))
+                marion_supervisor::printable::printable(&detail_text(&node, &detail, subtree))
             );
             ExitCode::SUCCESS
         }
@@ -503,6 +507,7 @@ fn live_node(
     (
         marion_core::proto::NodeSummary,
         marion_core::proto::result::NodeDetail,
+        Vec<marion_core::proto::NodeSummary>,
     ),
     String,
 > {
@@ -521,7 +526,7 @@ fn live_node(
             Some(marion_core::proto::params::ActivityCursor::Tail),
         )
         .map_err(|e| e.to_string())?;
-        Ok((node, got.detail))
+        Ok((node, got.detail, nodes))
     })
 }
 
@@ -529,6 +534,7 @@ fn live_node(
 fn detail_text(
     node: &marion_core::proto::NodeSummary,
     d: &marion_core::proto::result::NodeDetail,
+    subtree: Option<&marion_supervisor::rollup::Totals>,
 ) -> String {
     use marion_core::contract::Workspace;
     let mut out = format!(
@@ -542,6 +548,9 @@ fn detail_text(
 "
         ))
     };
+    if let Some(t) = subtree {
+        kv("subtree", &marion_supervisor::tree::subtree_words(t));
+    }
     if let Some(t) = &d.task {
         for (i, line) in t.prompt.lines().enumerate() {
             kv(if i == 0 { "task" } else { "" }, line);
@@ -626,12 +635,19 @@ fn list_lines(repo: &Path, state: &Path, attention: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let rollup = marion_supervisor::rollup::Rollup::build(&nodes);
     let mut out = io::stdout().lock();
     for node in nodes
         .iter()
         .filter(|n| !attention || tree::attention_of(n).is_some())
     {
-        let line = tree::list_line(node);
+        let mut line = tree::list_line(node);
+        if let Some(t) = rollup
+            .get(&node.agent_id)
+            .filter(|_| rollup.has_children(&node.agent_id))
+        {
+            line.push_str(&format!(" · {}", tree::subtree_words(t)));
+        }
         if writeln!(out, "{}", marion_supervisor::printable::printable(&line)).is_err() {
             // A closed stdout — `marion list | head -1` — is the reader's decision, not a failure.
             return ExitCode::SUCCESS;
@@ -5356,7 +5372,7 @@ mod tests {
             }))),
             ..Default::default()
         };
-        let text = detail_text(&node, &with);
+        let text = detail_text(&node, &with, None);
         assert!(text.contains("  diff       +6 −3 · 1 files\n"), "{text}");
         assert!(
             text.contains("  merge      git merge --no-ff marion/t-1\n"),
@@ -5366,6 +5382,6 @@ mod tests {
             completion: Some(completion(None)),
             ..Default::default()
         };
-        assert!(!detail_text(&node, &without).contains("diff"));
+        assert!(!detail_text(&node, &without, None).contains("diff"));
     }
 }
