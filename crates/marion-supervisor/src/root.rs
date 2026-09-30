@@ -547,8 +547,11 @@ pub enum RootError {
          refused rather than allowed to end in plain text with no error anywhere."
     )]
     McpNeverReady(StdDuration, PathBuf),
-    #[error("the root exited before answering marion's initialize control request")]
-    DiedBeforeInitialize,
+    #[error(
+        "the root exited before answering marion's opening handshake; {}",
+        crate::duplex::last_words(.stderr)
+    )]
+    DiedBeforeInitialize { stderr: String },
     #[error("compiling the root's launch: {0}")]
     Harness(#[from] marion_harness::HarnessError),
     #[error("unknown agent type {0}")]
@@ -3222,7 +3225,7 @@ fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
     match e {
         DuplexError::Io(e) => RootError::Io(e),
         DuplexError::McpNeverReady(_, path) => RootError::McpNeverReady(mcp_ready_timeout, path),
-        DuplexError::DiedBeforeInitialize => RootError::DiedBeforeInitialize,
+        DuplexError::DiedBeforeInitialize { stderr } => RootError::DiedBeforeInitialize { stderr },
     }
 }
 

@@ -564,8 +564,31 @@ pub enum DuplexError {
          allowed to end in plain text with no error anywhere."
     )]
     McpNeverReady(StdDuration, PathBuf),
-    #[error("the node exited before answering marion's initialize control request")]
-    DiedBeforeInitialize,
+    /// The node exited before it answered the opening handshake (stream-json's `initialize`, a
+    /// JSONL row's own). Its stderr's last lines are the reason: measured live (2026-09-30, s5), a
+    /// pi child given a model its operator's pi does not list wrote `Error: Model "…" not found`
+    /// and exited, and the parent was told only that it had exited.
+    #[error("the node exited before answering marion's opening handshake; {}", last_words(.stderr))]
+    DiedBeforeInitialize { stderr: String },
+}
+
+/// The last few non-empty lines of a node's stderr, printable, for a refusal that quotes why the
+/// node stopped; or a plain statement that it wrote nothing.
+pub fn last_words(stderr: &str) -> String {
+    const LINES: usize = 3;
+    let text = crate::printable::printable(stderr);
+    let mut tail: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .rev()
+        .take(LINES)
+        .collect();
+    if tail.is_empty() {
+        return "it wrote nothing to stderr".to_string();
+    }
+    tail.reverse();
+    format!("its stderr ends: {}", tail.join(" | "))
 }
 
 /// Start `command` as a duplex node and drive it to completion.
@@ -667,8 +690,8 @@ pub fn run_duplex(
     writeln!(stdin, "{}", spec.dialect.handshake(&spec.init_id))?;
     stdin.flush()?;
     if !await_initialize(&rx, spec, &mut outcome) {
-        guard.stop(true, &mut child);
-        return Err(DuplexError::DiedBeforeInitialize);
+        let (stderr, _) = guard.stop(true, &mut child);
+        return Err(DuplexError::DiedBeforeInitialize { stderr });
     }
 
     writeln!(stdin, "{}", spec.dialect.turn(spec.prompt, false))?;
@@ -2483,6 +2506,33 @@ exit 0"#,
         assert_eq!(fx.delivered(), [(id, VIA_JSONL_NEXT_TURN.to_string())]);
         assert!(fx.sealed());
         assert_eq!(out.exit_code, Some(0), "stdin closed after the last turn");
+    }
+
+    /// **A node that exits before answering the handshake is refused with its own last words.**
+    /// pi 0.80.2 given a model it does not list prints `Error: Model "…" not found` on stderr and
+    /// exits 0 before any reply (live s5, 2026-09-30); the refusal quotes that line, printable,
+    /// rather than saying only that the node exited.
+    #[test]
+    fn a_node_that_exits_before_the_handshake_is_refused_with_its_stderr() {
+        let dir = scratch("duplex-died-before-handshake");
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let fx = fed(MidTurn::Queue);
+        let script = r#"read -r hs
+printf '\033[?2026hloaded\n' >&2
+printf 'Error: Model "copilot/nope" not found.\n' >&2
+exit 0"#;
+        let e = run_duplex(
+            SysCommand::new("sh").args(["-c", script]),
+            &jsonl_spec(&marker, &fx.feed, StdDuration::from_secs(20)),
+        )
+        .expect_err("no handshake reply, no run");
+        assert!(matches!(e, DuplexError::DiedBeforeInitialize { .. }), "{e}");
+        let said = e.to_string();
+        assert!(
+            said.contains(r#"Error: Model "copilot/nope" not found."#) && !said.contains('\x1b'),
+            "the refusal quotes the node's last words, printable: {said}"
+        );
     }
 
     /// **A message for a running JSONL node is written at once as the row's steer**, and the one

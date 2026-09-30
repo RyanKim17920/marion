@@ -1858,7 +1858,7 @@ fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
             ) | matches!(
                 &e,
                 SpawnError::Duplex(crate::duplex::DuplexError::McpNeverReady(_, _))
-                    | SpawnError::Duplex(crate::duplex::DuplexError::DiedBeforeInitialize)
+                    | SpawnError::Duplex(crate::duplex::DuplexError::DiedBeforeInitialize { .. })
             ),
             "a refusal is still an acceptable outcome — but a typed one belonging to the \
              harness that was asked for, never a fallback onto another. §6.1 step 8's gate \
