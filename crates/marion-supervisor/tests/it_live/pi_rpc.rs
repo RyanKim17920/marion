@@ -519,7 +519,8 @@ fn tool_ends(events: &str) -> Vec<(String, bool, String)> {
 /// **A pi parent backgrounds a child, peeks at it with `status`, and collects it with `wait`**:
 /// the three verbs a parent has, each through marion's extension. `status` and `wait` both answer
 /// without error, `wait` hands back the child's own report, and the end is journaled delivered
-/// once, by that `wait`, never pushed to the parent as a turn of its own.
+/// once, by that `wait` or by the fold into the running turn that beat it, never as a turn of its
+/// own.
 #[test]
 fn a_pi_parent_collects_its_background_child_with_status_and_wait() {
     let Some(bed) = Bed::new(
@@ -593,10 +594,14 @@ fn a_pi_parent_collects_its_background_child_with_status_and_wait() {
         "wait hands back the child's own report: {}",
         ends[2].2
     );
-    assert_eq!(
-        bed.delivered(&root),
-        ["wait"],
-        "the end is delivered once, by the wait that collected it, and never pushed as a turn"
+    // Once: by the `wait` that collected it, or, where the child ended before that `wait` was in
+    // flight, by the fold into the root's running turn (`jsonl-rpc:mid-turn`, the push a parent
+    // gets when it is not waiting; both measured under load). An end is journaled delivered by
+    // whichever came first.
+    let delivered = bed.delivered(&root);
+    assert!(
+        delivered == ["wait"] || delivered == ["jsonl-rpc:mid-turn"],
+        "the end is delivered once, by the wait or by the fold before it: {delivered:?}"
     );
     let child = bed.child().expect("the child's intent is journaled");
     assert!(
