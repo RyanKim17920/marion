@@ -290,6 +290,9 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
                 &state.to_string_lossy(),
                 "--model",
                 "gpt-5.6-sol",
+                // A sandboxed codex root starting claude children is a wider delegation: this file
+                // tests fan-in, so the run opts in (`containment.rs` tests the refusal).
+                "--allow-wider-children",
                 "--canned",
                 "--base-url",
                 &server.base_url(),

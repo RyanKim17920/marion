@@ -235,7 +235,7 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
     let depth =
         u8::try_from(intent.depth).map_err(|_| Unprojectable::DepthOutOfRange(intent.depth))?;
     Ok(NodeSummary {
-        uncontained: node.uncontained_opt_in,
+        widened: node.widened.clone(),
         agent_id: node.agent_id.clone(),
         parent_id: intent.parent_id.clone(),
         // Not a placeholder. See the module doc: nothing sets `Node.name` yet, so `None` is what
@@ -351,7 +351,7 @@ struct Extra {
     /// A seat's verdict moves when its race is decided, with no change to the node's state.
     race_verdict: Option<marion_core::race::SeatVerdict>,
     // Journaled just after the intent, so it can land after the node was first told.
-    uncontained: bool,
+    widened: bool,
 }
 
 impl Extra {
@@ -370,7 +370,7 @@ impl Extra {
             }),
             review: tally(n),
             race_verdict: n.race_verdict,
-            uncontained: n.uncontained_opt_in,
+            widened: !n.widened.is_empty(),
         }
     }
 }
@@ -1825,7 +1825,7 @@ fn root_spec_from_spawn(
     agent_type: &marion_core::agent_type::AgentType,
 ) -> crate::root::RootSpec {
     crate::root::RootSpec {
-        uncontained_children: p.uncontained_children.unwrap_or(false),
+        wider_children: p.wider_children.unwrap_or(false),
         agent_type: p.agent_type.clone(),
         prompt: p.prompt.clone(),
         native_launch: p.native_launch.as_deref().cloned(),
@@ -3593,20 +3593,18 @@ impl RegistryHandle {
         }
         Ok(())
     }
-    /// **The containment opt-in is the operator's, for a whole tree**: a spawn with a `caller` —
-    /// a node asking for its child — must not state `uncontained_children`, or a sandboxed node
-    /// could lift its own sandbox by asking.
-    fn check_child_uncontained(
-        p: &marion_core::proto::params::AgentSpawnParams,
-    ) -> Result<(), RpcError> {
-        if p.caller.is_some() && p.uncontained_children.is_some() {
+    /// **The opt-in to wider children is the operator's, for a whole tree**: a spawn with a
+    /// `caller` — a node asking for its child — must not state `wider_children`, or a node could
+    /// lift its own limits by asking.
+    fn check_child_wider(p: &marion_core::proto::params::AgentSpawnParams) -> Result<(), RpcError> {
+        if p.caller.is_some() && p.wider_children.is_some() {
             return Err(RpcError::refused(
-                "uncontained_children",
-                "only the operator can let sandboxed agents start unsandboxed ones, for a whole \
-                 run: `marion run --uncontained-children`, or `[containment] \
-                 allow_uncontained_children = true` in ~/.config/marion/config.toml. An agent \
-                 cannot ask for it.",
-                "containment",
+                "wider_children",
+                "only the operator can let an agent start agents with more authority than its own, \
+                 for a whole run: `marion run --allow-wider-children`, or `[delegation] \
+                 allow_wider_children = true` in ~/.config/marion/config.toml. An agent cannot \
+                 ask for it.",
+                "delegation",
             ));
         }
         Ok(())
@@ -3655,7 +3653,7 @@ impl RegistryHandle {
         Self::check_root_contract_fields(p)?;
         Self::check_child_no_change_record(p)?;
         Self::check_child_pane(p)?;
-        Self::check_child_uncontained(p)?;
+        Self::check_child_wider(p)?;
         crate::profiles::check_child_profile(p)?;
         crate::trust::check_child_spawn(p)?;
         let Some(env) = self.spawn_env.clone() else {
@@ -4887,7 +4885,7 @@ impl RegistryHandle {
             .transpose()?
             .ok_or_else(spawn_refused_before_the_node_existed)?;
         let spec = crate::root::RootSpec {
-            uncontained_children: false,
+            wider_children: false,
             agent_type: node.agent_type().unwrap_or_default().to_string(),
             prompt: prompt.to_string(),
             native_launch: None,
@@ -12547,7 +12545,7 @@ mod tests {
 
         fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
-                uncontained_children: None,
+                wider_children: None,
                 review_of: None,
                 candidates: vec![],
                 race: None,
@@ -13474,11 +13472,11 @@ mod tests {
             assert_eq!(journal_len(&fx), before, "and nothing was created");
         }
 
-        /// **An agent cannot lift its own tree's sandbox by asking**: `uncontained_children` on a
+        /// **An agent cannot lift its own tree's sandbox by asking**: `wider_children` on a
         /// spawn with a caller is refused by name, before anything exists, whatever its value.
         #[test]
-        fn a_caller_that_asks_for_uncontained_children_is_refused_by_name() {
-            let fx = owning("owns-uncontained", vec![intent("root", None, "codex", 0)]);
+        fn a_caller_that_asks_for_wider_children_is_refused_by_name() {
+            let fx = owning("owns-wider", vec![intent("root", None, "codex", 0)]);
             let token = fx.handle.claim(
                 &id("root"),
                 Some(marion_core::contract::TaskId("t".into())),
@@ -13488,7 +13486,7 @@ mod tests {
             let e = spawn(
                 &fx,
                 AgentSpawnParams {
-                    uncontained_children: Some(false),
+                    wider_children: Some(false),
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),

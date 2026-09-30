@@ -798,7 +798,7 @@ mod tests {
         let e = spawn(
             socket,
             AgentSpawnParams {
-                uncontained_children: None,
+                wider_children: None,
                 review_of: None,
                 notify_parent: false,
                 agent_type: "codex-impl".into(),

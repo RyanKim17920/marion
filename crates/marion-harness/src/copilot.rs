@@ -337,6 +337,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // does not name, and an ungranted `create` is denied at exit 0.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).

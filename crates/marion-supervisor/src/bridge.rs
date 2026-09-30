@@ -2353,7 +2353,7 @@ mod tests {
         use marion_core::node::{NodeState, ReapState};
         use marion_core::proto::model::NodeSummary;
         let node = |state| NodeSummary {
-            uncontained: false,
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: AgentId("019f-child".into()),

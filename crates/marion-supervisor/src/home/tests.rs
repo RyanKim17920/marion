@@ -10,7 +10,7 @@ use marion_core::proto::result::{ActionKind, ActionLine, ActivityPage, Completio
 
 fn node(id: &str, parent: Option<&str>, state: NodeState) -> NodeSummary {
     NodeSummary {
-        uncontained: false,
+        widened: vec![],
         review_of: None,
         review: None,
         agent_id: AgentId(id.into()),

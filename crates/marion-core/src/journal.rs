@@ -141,11 +141,12 @@ pub enum RecordKind {
     /// §9 says so in as many words, because the node it happens to may be a root, and a root has
     /// no contract to record it in.
     PermissionDenied(PermissionDenied),
-    /// **A sandboxed caller was let spawn a less-contained child because the operator opted in**
-    /// (`[containment] allow_uncontained_children`, or `marion run --uncontained-children`).
-    /// Written right after the child's intent, so every such delegation is on the record and the
-    /// node can say so wherever it is shown.
-    UncontainedDelegation(UncontainedDelegation),
+    /// **A caller was let start a child with more authority than its own because the operator
+    /// opted the tree in** (`[delegation] allow_wider_children`, or `marion run
+    /// --allow-wider-children`). Written right after the child's intent, so every widened
+    /// delegation is on the record, with the axes it widened, and the node can say so wherever it
+    /// is shown.
+    WiderDelegation(WiderDelegation),
     /// §9: what a **root** did to the operator's own repository, and whether marion looked at all.
     ///
     /// The same shape as [`Self::ContractPersisted`], for the same reason: this record is O(1) in
@@ -258,7 +259,7 @@ impl RecordKind {
             RecordKind::KillConfirmed(r) => Some(&r.agent_id),
             RecordKind::ContractPersisted(r) => Some(&r.agent_id),
             RecordKind::PermissionDenied(r) => Some(&r.agent_id),
-            RecordKind::UncontainedDelegation(r) => Some(&r.agent_id),
+            RecordKind::WiderDelegation(r) => Some(&r.agent_id),
             RecordKind::RootChanged(r) => Some(&r.agent_id),
             RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
             RecordKind::SessionObserved(r) => Some(&r.agent_id),
@@ -579,14 +580,18 @@ pub struct ContractPersisted {
     pub review: Option<crate::review::ReviewTally>,
 }
 
-/// See [`RecordKind::UncontainedDelegation`]. `agent_id` is the child's.
+/// See [`RecordKind::WiderDelegation`]. `agent_id` is the child's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UncontainedDelegation {
+pub struct WiderDelegation {
     pub agent_id: AgentId,
-    /// The caller's agent type, which ran sandboxed.
+    /// The caller's agent type.
     pub caller_type: String,
-    /// The child's agent type, which runs with less containment than its caller.
+    /// The child's agent type, which holds more than its caller on [`Self::axes`].
     pub child_type: String,
+    /// The axes the child exceeds its caller on (`write`, `shell`, `read-only`, `containment`,
+    /// `approval-mode`, `writable-scope`).
+    #[serde(default)]
+    pub axes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

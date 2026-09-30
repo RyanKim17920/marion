@@ -1874,7 +1874,7 @@ mod tests {
             id,
             &MethodResult::NodeAttach(marion_core::proto::result::NodeAttachResult {
                 node: NodeSummary {
-                    uncontained: false,
+                    widened: vec![],
                     review_of: None,
                     review: None,
                     agent_id: AgentId("root".into()),

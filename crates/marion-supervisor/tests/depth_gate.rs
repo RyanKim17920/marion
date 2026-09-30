@@ -415,7 +415,7 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
     AgentSpawnParams {
         // The chain's root is the operator's, opted in: this file tests depth, not containment
         // (`containment.rs` does), and its node under test runs on every harness.
-        uncontained_children: repo.map(|_| true),
+        wider_children: repo.map(|_| true),
         review_of: None,
         notify_parent: false,
         agent_type: CHAIN_TYPE.into(),

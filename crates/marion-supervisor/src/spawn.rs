@@ -67,21 +67,11 @@ pub enum SpawnError {
     /// rather than a message.
     #[error("spawn refused (§6.1 step 2): {0}")]
     Gate(#[from] marion_core::agent_type::SpawnGateError),
-    /// **A node asked for a child less contained than itself** — a sandboxed caller delegating to a
-    /// type whose harness would run outside that sandbox, which would give the child every write
-    /// and command the caller was kept from. Refused before anything exists.
-    #[error(
-        "{caller_type} runs sandboxed here; {child_type} {}, so a {caller_type} agent can't start \
-         it. To allow this, set `[containment] allow_uncontained_children = true` in \
-         ~/.config/marion/config.toml, or run `marion run --uncontained-children`.",
-        child.as_child()
-    )]
-    LessContained {
-        caller_type: String,
-        caller: marion_harness::containment::Containment,
-        child_type: String,
-        child: marion_harness::containment::Containment,
-    },
+    /// **A node asked for a child with more authority than its own**, on the axes the refusal
+    /// names — write, shell, read-only, containment, approval mode or writable scope — and it says
+    /// how the operator can allow it. Refused before anything exists.
+    #[error("{0}")]
+    WiderThanParent(marion_harness::authority::Refusal),
     /// §5.4's `allow_concurrent_writes`, in the **only** direction marion cannot serve.
     ///
     /// §11 item 23 left this parameter accepted-and-dropped and called it *inverted* relative to

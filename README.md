@@ -1,8 +1,7 @@
 # marion
 
 Any model, any harness, as any subagent. A Claude Code session can delegate to a codex child,
-and codex can delegate to any harness once you allow uncontained children; by default a
-sandboxed agent only delegates to equally sandboxed ones. Each child runs in its own git worktree,
+and codex can delegate to any harness once you allow it. Each child runs in its own git worktree,
 marion checks its work, and the result goes back to the parent as a structured contract, not as
 prose.
 
@@ -170,6 +169,22 @@ and never hides your credentials from the harness.
 - **A model cannot run a program by naming it.** A `spawn` from a node or an MCP client may name
   `acp:<command>` only for a command you listed in `~/.config/marion/acp.toml`; your own
   `marion run acp:<command>` needs no listing.
+- **An agent never starts one with more authority than its own.** marion compares the two on
+  every axis before the child exists: a parent that cannot write or run commands cannot start
+  one that can, a sandboxed agent (codex) cannot start one with no sandbox (claude and the rest),
+  a child cannot take an approval mode its parent lacks, and its writable scope stays inside its
+  parent's. The built-in `*-orchestrator` planners are the one exception on writing: they write
+  nothing themselves and exist to start implementers, still bounded by containment, scope and
+  approval mode. Any other read-only agent starts only read-only ones — including a session you
+  started in a read-only mode, such as `marion claude --permission-mode plan` or `marion codex
+  --sandbox read-only`. marion sees only the flags you launched with: a mode you switch to inside
+  the session (claude's shift-tab) or set in the harness's own config is invisible to it. The
+  refusal names the axis and the fix: `marion run --allow-wider-children`, or `[delegation]
+  allow_wider_children = true` in `~/.config/marion/config.toml`. Only you can opt in, and every
+  child it lets through is journaled and marked on its row.
+- **A repository cannot run its own command without your consent.** A `.marion/agents.toml`
+  row with `harness = "acp:<command>"` runs only after `marion trust allow` has recorded the
+  file's exact bytes, and any edit revokes that. There is never a prompt.
 - **Near-zero idle cost.** marion waits on events, not timers. An idle supervisor with no
   running nodes measured 4 context switches per second, down from 264. The release binaries
   are 2.7 MB (`marion`) and 4.6 MB (`marion-supervisor`) on arm64 macOS.

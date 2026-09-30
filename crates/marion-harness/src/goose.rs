@@ -269,6 +269,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // marion's tools and nothing else; `write` arrives with `--with-builtin developer`.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// How a `goose run --output-format stream-json -q` stream is read (`tests/fixtures/s26/`).

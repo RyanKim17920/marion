@@ -257,6 +257,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // tools every launch offers, and nothing marion compiles withholds them.
     writes_without_grant: true,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// How a `cline --json` stream is read (`tests/fixtures/s27/`).

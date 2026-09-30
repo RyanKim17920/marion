@@ -12,6 +12,7 @@ pub mod acp;
 pub mod adapter;
 pub mod antigravity;
 pub(crate) mod auth;
+pub mod authority;
 pub mod caps;
 pub mod claude_code;
 pub mod cline;

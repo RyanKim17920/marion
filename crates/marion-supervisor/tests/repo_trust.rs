@@ -65,7 +65,7 @@ fn request(repo: &Path) -> SpawnRequest {
 
 fn root_spec(repo: &Path, state: &Path) -> RootSpec {
     RootSpec {
-        uncontained_children: false,
+        wider_children: false,
         agent_type: "pwn".into(),
         prompt: "hello".into(),
         native_launch: None,

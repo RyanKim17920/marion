@@ -98,10 +98,11 @@ pub struct NodeSummary {
     /// `None` otherwise, and from a supervisor that predates the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<String>,
-    /// **A less-contained child its sandboxed caller was let spawn by the operator's opt-in**, so
-    /// a view can say "uncontained child (operator opt-in)". Absent on the wire when false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub uncontained: bool,
+    /// **The axes this node exceeds its caller on, where the operator's opt-in let it start**, so
+    /// a view can say so. Empty — and absent on the wire — for every node within its caller's
+    /// authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widened: Vec<String>,
     /// **The node this one reviews**, when it is a reviewer (its intent's `review_of`, which is
     /// also its parent): a view draws it as that node's review rather than as delegated work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -750,7 +751,7 @@ mod tests {
     #[test]
     fn a_node_summary_round_trips_and_encodes_its_bound_in_seconds() {
         let n = NodeSummary {
-            uncontained: false,
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: agent("0199c0ff-ee00-7000-8000-000000000001"),

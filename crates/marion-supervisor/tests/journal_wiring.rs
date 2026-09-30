@@ -253,8 +253,8 @@ fn marion_argv(
         args.push(m.into());
     }
     // The operator's opt-in, for the pairings whose sandboxed root asks for a less-contained child.
-    if common::needs_uncontained_opt_in(root.agent_type, child.agent_type) {
-        args.push("--uncontained-children".into());
+    if common::needs_wider_opt_in(root.agent_type, child.agent_type) {
+        args.push("--allow-wider-children".into());
     }
     args
 }
@@ -332,7 +332,7 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
-            RecordKind::UncontainedDelegation(_) => "UncontainedDelegation",
+            RecordKind::WiderDelegation(_) => "WiderDelegation",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",
@@ -884,7 +884,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
-            RecordKind::UncontainedDelegation(_) => "UncontainedDelegation",
+            RecordKind::WiderDelegation(_) => "WiderDelegation",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",

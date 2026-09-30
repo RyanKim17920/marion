@@ -664,7 +664,7 @@ fn marion_argv(
     repo: &Path,
     state: &Path,
     base_url: &str,
-    uncontained_children: bool,
+    wider_children: bool,
 ) -> Vec<String> {
     let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
     let mut args: Vec<String> = vec![
@@ -690,8 +690,8 @@ fn marion_argv(
         root.model.into(),
     ];
     // The operator's opt-in, for the cells whose sandboxed root asks for a less-contained child.
-    if uncontained_children {
-        args.push("--uncontained-children".into());
+    if wider_children {
+        args.push("--allow-wider-children".into());
     }
     args
 }
@@ -761,7 +761,7 @@ fn drive(root: &Node, child: &Node) -> Evidence {
 
 /// [`drive`], with the root's `spawn` also carrying `verification` commands.
 fn drive_with(root: &Node, child: &Node, verification: &[&str]) -> Evidence {
-    let opt_in = common::needs_uncontained_opt_in(root.agent_type, child.child_agent_type);
+    let opt_in = common::needs_wider_opt_in(root.agent_type, child.child_agent_type);
     drive_as(root, child, verification, opt_in)
 }
 

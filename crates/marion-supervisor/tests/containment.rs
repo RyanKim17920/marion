@@ -13,6 +13,7 @@ use std::path::Path;
 
 use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::journal::RecordKind;
+use marion_harness::authority::Axis;
 use marion_supervisor::run::{Caller, SpawnRequest, run_spawn};
 use marion_supervisor::spawn::SpawnError;
 use marion_supervisor::types_snapshot::TypesSnapshot;
@@ -51,7 +52,19 @@ fn spawn_opted(
     child_type: &str,
     opt_in: bool,
 ) -> (Result<(), SpawnError>, Vec<RecordKind>) {
-    let dir = scratch(&format!("containment-{caller_type}-{child_type}-{opt_in}"));
+    spawn_in(caller_type, child_type, opt_in, false)
+}
+
+/// [`spawn_opted`], from a root whose session the operator started (or not) in a read-only mode.
+fn spawn_in(
+    caller_type: &str,
+    child_type: &str,
+    opt_in: bool,
+    read_only_session: bool,
+) -> (Result<(), SpawnError>, Vec<RecordKind>) {
+    let dir = scratch(&format!(
+        "containment-{caller_type}-{child_type}-{opt_in}-{read_only_session}"
+    ));
     // Not a repository: an allowed spawn stops at the worktree question, before any process.
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree).unwrap();
@@ -59,7 +72,8 @@ fn spawn_opted(
     // The caller's recorded table, carrying the opt-in exactly as a root started with it would.
     TypesSnapshot::take(&tree, Some(caller_type))
         .unwrap()
-        .allowing_uncontained_children(opt_in)
+        .allowing_wider_children(opt_in)
+        .with_read_only_session(read_only_session)
         .write(env.project_dir.agent(&AgentId("root".into())).path())
         .unwrap();
     let caller = Caller::root(
@@ -81,7 +95,7 @@ fn spawn_opted(
 fn a_sandboxed_node_cannot_spawn_an_uncontained_one() {
     let err = spawn_from("codex", "claude").expect_err("the escape must be refused");
     assert!(
-        matches!(err, SpawnError::LessContained { .. }),
+        matches!(&err, SpawnError::WiderThanParent(r) if r.axes == [Axis::Containment]),
         "refused for containment, not for something later: {err}"
     );
     let said = err.to_string();
@@ -93,14 +107,14 @@ fn a_sandboxed_node_cannot_spawn_an_uncontained_one() {
         "{said}"
     );
     assert!(
-        said.contains("allow_uncontained_children = true")
-            && said.contains("marion run --uncontained-children"),
+        said.contains("allow_wider_children = true")
+            && said.contains("marion run --allow-wider-children"),
         "the refusal says how to allow it: {said}"
     );
 }
 
 /// **With the operator's opt-in the same spawn passes the gate, and is journaled**: one
-/// `UncontainedDelegation` naming the child and both types, beside the child's intent.
+/// `WiderDelegation` naming the child and both types, beside the child's intent.
 #[test]
 fn the_operators_opt_in_lets_the_spawn_through_and_journals_it() {
     let (result, kinds) = spawn_opted("codex", "claude", true);
@@ -109,7 +123,7 @@ fn the_operators_opt_in_lets_the_spawn_through_and_journals_it() {
     let delegated: Vec<_> = kinds
         .iter()
         .filter_map(|k| match k {
-            RecordKind::UncontainedDelegation(d) => Some(d),
+            RecordKind::WiderDelegation(d) => Some(d),
             _ => None,
         })
         .collect();
@@ -121,25 +135,27 @@ fn the_operators_opt_in_lets_the_spawn_through_and_journals_it() {
         ),
         ("codex", "claude")
     );
+    assert_eq!(delegated[0].axes, ["containment"]);
     // An allowed spawn that needed no opt-in leaves no such record.
     let (_, kinds) = spawn_opted("codex", "codex", true);
     assert!(
         !kinds
             .iter()
-            .any(|k| matches!(k, RecordKind::UncontainedDelegation(_))),
+            .any(|k| matches!(k, RecordKind::WiderDelegation(_))),
         "{kinds:?}"
     );
 }
 
-/// A codex node may spawn codex (as contained) and a read-only type (more contained); an
-/// uncontained caller may spawn anything. Each gets past the gate, to the worktree question.
+/// A node may spawn a type holding no more than itself on every axis. Each gets past the gate,
+/// to the worktree question.
 #[test]
 fn a_node_may_spawn_types_at_least_as_contained_as_itself() {
     for (caller, child) in [
         ("codex", "codex"),
         ("codex", "claude-orchestrator"),
-        // An orchestrator is read-only by choice, not by a sandbox: delegating writes is its job.
-        ("claude-orchestrator", "claude"),
+        ("claude-orchestrator", "claude-orchestrator"),
+        // A built-in planner delegates writes: starting an implementer is its job.
+        ("claude-orchestrator", "codex"),
         ("claude", "claude"),
         ("claude", "codex"),
     ] {
@@ -149,4 +165,21 @@ fn a_node_may_spawn_types_at_least_as_contained_as_itself() {
             "{caller} -> {child} passed the containment gate: {err}"
         );
     }
+}
+
+/// **A session started in plan mode is a read-only non-delegator**, even on claude's implementer
+/// type: it may start read-only agents and nothing that writes.
+#[test]
+fn a_plan_mode_session_starts_only_read_only_agents() {
+    let (result, _) = spawn_in("claude", "codex", false, true);
+    let err = result.expect_err("a planning session cannot hand out writes");
+    assert!(
+        matches!(&err, SpawnError::WiderThanParent(r) if r.axes == [Axis::ReadOnly]),
+        "{err}"
+    );
+    let (result, _) = spawn_in("claude", "claude-orchestrator", false, true);
+    assert!(
+        matches!(result, Err(SpawnError::NotAGitRepo { .. })),
+        "a read-only child passes the gate: {result:?}"
+    );
 }

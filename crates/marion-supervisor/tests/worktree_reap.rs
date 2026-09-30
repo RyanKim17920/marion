@@ -170,7 +170,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
-            RecordKind::UncontainedDelegation(_) => "UncontainedDelegation",
+            RecordKind::WiderDelegation(_) => "WiderDelegation",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
             RecordKind::SessionObserved(_) => "SessionObserved",

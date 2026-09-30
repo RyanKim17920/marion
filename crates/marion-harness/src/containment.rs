@@ -4,7 +4,7 @@
 //! `read-only` seatbelt/landlock modes) or it does not, and then a node that may write or run a
 //! command does so as the operator, anywhere. Each row states which ([`ContainmentRule`]); an
 //! agent type's grants then place a node on one ordered scale ([`Containment`]), and a caller may
-//! spawn only a child at least as contained as itself ([`check`]). Without that, a sandboxed node
+//! spawn only a child at least as contained as itself ([`crate::authority::permits`]). Without that, a sandboxed node
 //! escapes by delegating: a codex implementer asks for a claude implementer, whose shell is the
 //! operator's.
 
@@ -96,18 +96,6 @@ pub fn sandboxed(t: &AgentType) -> bool {
     )
 }
 
-/// Whether a caller of type `caller` may spawn a child of type `child`: a sandboxed caller only a
-/// child at least as contained as itself, any other caller anything. `Err` carries both positions
-/// for the refusal.
-pub fn check(caller: &AgentType, child: &AgentType) -> Result<(), (Containment, Containment)> {
-    let (c, k) = (of(caller), of(child));
-    if sandboxed(caller) && k < c {
-        Err((c, k))
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,23 +115,6 @@ mod tests {
         assert_eq!(at("claude"), Containment::Uncontained);
         assert!(Containment::Uncontained < Containment::WorkspaceWrites);
         assert!(Containment::WorkspaceWrites < Containment::ReadOnly);
-    }
-
-    /// **The rule is one comparison, for a sandboxed caller**: its child may be as contained as it
-    /// or more, never less, whichever harness the child runs on.
-    #[test]
-    fn a_caller_may_spawn_only_types_at_least_as_contained() {
-        let ty = |n: &str| builtin(n).unwrap();
-        assert!(check(&ty("codex"), &ty("codex")).is_ok());
-        assert!(check(&ty("codex"), &ty("claude-orchestrator")).is_ok());
-        assert_eq!(
-            check(&ty("codex"), &ty("claude")),
-            Err((Containment::WorkspaceWrites, Containment::Uncontained))
-        );
-        assert!(check(&ty("claude"), &ty("codex")).is_ok());
-        // An orchestrator is read-only by choice, not by a sandbox: delegating writes is its job.
-        assert!(check(&ty("claude-orchestrator"), &ty("codex")).is_ok());
-        assert!(check(&ty("claude-orchestrator"), &ty("claude")).is_ok());
     }
 
     /// Only a row with a sandbox offers one to run verification in, and it carries the row's own

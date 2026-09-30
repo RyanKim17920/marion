@@ -144,10 +144,9 @@ pub fn label_of(node: &NodeSummary) -> String {
         Some(note) => format!("{label} · {note}"),
         None => label,
     };
-    if node.uncontained {
-        format!("{label} · {UNCONTAINED_NOTE}")
-    } else {
-        label
+    match widened_note(node) {
+        Some(note) => format!("{label} · {note}"),
+        None => label,
     }
 }
 
@@ -250,8 +249,20 @@ impl RaceSummary {
         }
     }
 }
-/// What a node's row says when its sandboxed caller was let start it by the operator's opt-in.
-pub const UNCONTAINED_NOTE: &str = "uncontained child (operator opt-in)";
+
+/// **What a node's row says when the operator's opt-in let it start with more than its caller**:
+/// "uncontained child (operator opt-in)" when its caller ran sandboxed and it does not, else the
+/// axes it widened. `None` for every node within its caller's authority.
+pub fn widened_note(node: &NodeSummary) -> Option<String> {
+    match node.widened.as_slice() {
+        [] => None,
+        [one] if one == "containment" => Some("uncontained child (operator opt-in)".into()),
+        axes => Some(format!(
+            "wider than its parent: {} (operator opt-in)",
+            axes.join(", ")
+        )),
+    }
+}
 
 /// **What a reviewer row adds**: that it is a review, and once its report is read, how many
 /// findings it made and how many block. `None` for every node that is not a reviewer. The tree
@@ -873,7 +884,7 @@ mod tests {
 
     fn summary(id: &str, harness: Harness, pane: bool, version: Option<&str>) -> NodeSummary {
         NodeSummary {
-            uncontained: false,
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: AgentId(id.into()),
@@ -1152,13 +1163,18 @@ mod tests {
 
     /// **A child the operator's opt-in let a sandboxed caller start says so on its row**.
     #[test]
-    fn an_uncontained_child_says_so_on_its_row() {
+    fn a_widened_child_says_so_on_its_row() {
         let mut n = summary("kid", Harness::ClaudeCode, false, None);
-        assert!(!row(&n).label.contains(UNCONTAINED_NOTE));
-        n.uncontained = true;
+        assert_eq!(widened_note(&n), None);
+        n.widened = vec!["containment".into()];
         assert_eq!(
             row(&n).label,
             "codex-impl kid · uncontained child (operator opt-in)"
+        );
+        n.widened = vec!["write".into(), "shell".into()];
+        assert_eq!(
+            row(&n).label,
+            "codex-impl kid · wider than its parent: write, shell (operator opt-in)"
         );
     }
 

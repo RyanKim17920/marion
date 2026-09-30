@@ -302,10 +302,33 @@ pub struct RootSpec {
     /// `profiles.toml`'s `[default]` — a caller's own choice, or on a resume the profile the
     /// session was recorded under. See [`crate::profiles::Launch::resolve`].
     pub profile: Option<String>,
-    /// **The operator's `marion run --uncontained-children`**: sandboxed nodes in this root's tree
-    /// may spawn less-contained children, each one journaled. Or-ed with their user-level config
+    /// **The operator's `marion run --allow-wider-children`**: nodes in this root's tree may start
+    /// children with more authority than their own, each one journaled. Or-ed with their user-level config
     /// when the root starts ([`crate::user_config`]); nothing in the repository can set it.
-    pub uncontained_children: bool,
+    pub wider_children: bool,
+}
+
+/// **Whether the operator started this root's session in a read-only mode**, as far as marion can
+/// see: a native launch's own flags against its row's read-only modes
+/// ([`marion_harness::authority::session_read_only`]). A mode picked inside the session later, or
+/// set in the harness's own config, is not visible here.
+fn read_only_session(spec: &RootSpec) -> bool {
+    let Some(native) = &spec.native_launch else {
+        return false;
+    };
+    let argv = match native {
+        NativeLaunchContext::V1(c) => &c.argv,
+        NativeLaunchContext::V2(c) => &c.argv,
+    };
+    let argv: Vec<std::ffi::OsString> = argv.iter().filter_map(|a| a.to_os_string().ok()).collect();
+    let Some(harness) = marion_core::agent_type::builtin(&spec.agent_type).map(|t| t.harness)
+    else {
+        return false;
+    };
+    marion_harness::authority::session_read_only(
+        marion_harness::adapter::harness_spec(harness).read_only_modes,
+        &argv,
+    )
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -759,8 +782,8 @@ pub fn prepare_watched(
         Ok(_) => {
             // The operator's containment opt-in, fixed for the whole tree here: their CLI flag, or
             // their user-level config — never anything in the repository.
-            let allow = spec.uncontained_children
-                || crate::user_config::allow_uncontained_children().map_err(|error| {
+            let allow = spec.wider_children
+                || crate::user_config::allow_wider_children().map_err(|error| {
                     RootError::Run(SpawnError::AgentTypesFile {
                         path: crate::user_config::path().unwrap_or_default(),
                         error,
@@ -768,7 +791,8 @@ pub fn prepare_watched(
                 })?;
             crate::types_snapshot::TypesSnapshot::take(&spec.repo, Some(&spec.agent_type))
                 .map_err(RootError::Run)?
-                .allowing_uncontained_children(allow)
+                .allowing_wider_children(allow)
+                .with_read_only_session(read_only_session(spec))
         }
         Err(e) => return Err(RootError::Run(e)),
     };
@@ -3830,7 +3854,7 @@ mod tests {
 
     fn root_spec(dir: &Path, agent_type: &str) -> RootSpec {
         RootSpec {
-            uncontained_children: false,
+            wider_children: false,
             agent_type: agent_type.into(),
             prompt: "delegate it".into(),
             native_launch: None,

@@ -319,7 +319,7 @@ mod tests {
 
     fn node() -> NodeSummary {
         NodeSummary {
-            uncontained: false,
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: agent("a"),
@@ -500,7 +500,7 @@ mod tests {
                 // is the one carrying the most structure — a `SpawnCaller` nested inside an
                 // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
-                    uncontained_children: None,
+                    wider_children: None,
                     review_of: None,
                     notify_parent: false,
                     no_change_record: None,

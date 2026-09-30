@@ -333,6 +333,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     containment: crate::containment::ContainmentRule::HarnessSandbox {
         verify: &["sandbox", "-c", "sandbox_mode=\"workspace-write\"", "--"],
     },
+    // codex's own `-s/--sandbox read-only`: its sandbox refuses every write.
+    read_only_modes: &[crate::authority::ReadOnlyMode {
+        flags: &["-s", "--sandbox"],
+        values: &["read-only"],
+    }],
 };
 
 /// **The `codex exec` row**: the prompt rides argv, the JSONL stream is read, and a later turn is

@@ -228,6 +228,10 @@ pub struct HarnessSpec {
     /// and a child's verification runs inside its row's sandbox where there is one. Stated by every
     /// row, so a new harness cannot inherit a sandbox nobody measured.
     pub containment: crate::containment::ContainmentRule,
+    /// **The launch flags that put this harness in a read-only mode** ([`crate::authority`]): a
+    /// session the operator started that way is a read-only node that delegates nothing that
+    /// writes. Empty where no read-only mode is measured.
+    pub read_only_modes: &'static [crate::authority::ReadOnlyMode],
 }
 
 /// **The capabilities a row's binary claims**, keyed by version: what every version measured

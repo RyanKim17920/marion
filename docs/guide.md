@@ -103,24 +103,33 @@ codex mcp add marion -- marion mcp --repo "$PWD"    # Codex
 
 Any other client takes `command: "marion", args: ["mcp", "--repo", "/path/to/repo"]`.
 
-## Sandboxed agents and what they can start
+## What an agent can start
 
-codex runs its tools inside its own sandbox, which keeps its writes and commands to its
-workspace; no other harness has a sandbox marion can apply. So a codex agent can start another
-codex agent, or a read-only one such as `claude-orchestrator`, but not `claude` or any other
-harness whose shell runs as you: that child could do everything its parent was kept from doing,
-and the spawn is refused with the reason and the way to allow it. To let sandboxed agents start
-unsandboxed ones, opt in for one run with `marion run --uncontained-children`, or for every run
-in `~/.config/marion/config.toml`:
+An agent can never start another with more authority than its own. marion compares the two on
+every axis: a parent that cannot write files cannot start one that can, a parent without a shell
+cannot start one with a shell, a read-only agent starts only read-only agents (the built-in
+`*-orchestrator` planners excepted: they exist to start implementers), a session you started in a
+read-only mode (`marion claude --permission-mode plan`, `marion codex --sandbox read-only`) counts
+as read-only whatever its type, a sandboxed parent cannot start a less-contained one, a child cannot run in an approval
+mode its parent does not, and a child's writable scope stays inside its parent's (a spawn that
+names no scope inherits its parent's). codex is the only harness with a sandbox marion can rely
+on: its tools stay inside its workspace, so a codex agent can start codex or a read-only agent but
+not `claude` or any other harness whose shell runs as you. A refusal names the axis and the way to
+allow it. marion reads a session's mode from the flags it was launched with; a mode switched to
+inside the session (claude's shift-tab) or set in the harness's own config is not visible to it.
+
+To let agents start wider ones, opt in for one run with `marion run --allow-wider-children`, or
+for every run in `~/.config/marion/config.toml`:
 
 ```toml
-[containment]
-allow_uncontained_children = true
+[delegation]
+allow_wider_children = true
 ```
 
 Only you can set this: never a repository file, an agent type or a model's tool call. Every child
-it lets through is recorded in the journal and marked "uncontained child (operator opt-in)" on
-its row. A child's verification lines run inside codex's sandbox when the child is a codex
+it lets through is recorded in the journal with the axes it widened and marked on its row
+("uncontained child (operator opt-in)", or "wider than its parent: write, shell (operator
+opt-in)"). A child's verification lines run inside codex's sandbox when the child is a codex
 agent, and as you otherwise, which its contract states (`verification_containment`); either way
 they see none of marion's variables or provider keys.
 

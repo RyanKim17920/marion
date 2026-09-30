@@ -5,10 +5,11 @@
 //! MCP call or an agent type: what this file decides is the operator's alone to decide.
 //!
 //! ```toml
-//! [containment]
-//! # Let a sandboxed node (codex) spawn a type with no sandbox marion can apply (claude, …).
-//! # Each such spawn is journaled and shown on the node.
-//! allow_uncontained_children = true
+//! [delegation]
+//! # Let a node start a child with more authority than its own (a sandboxed codex starting
+//! # claude, a read-only planner starting an implementer). Each such spawn is journaled and
+//! # shown on the node.
+//! allow_wider_children = true
 //! ```
 
 use std::path::PathBuf;
@@ -22,14 +23,14 @@ pub const CONFIG_FILE: &str = "config.toml";
 #[serde(deny_unknown_fields)]
 struct File {
     #[serde(default)]
-    containment: Containment,
+    delegation: Delegation,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Containment {
+struct Delegation {
     #[serde(default)]
-    allow_uncontained_children: bool,
+    allow_wider_children: bool,
 }
 
 /// Where the file is, or would be.
@@ -39,11 +40,11 @@ pub fn path() -> Option<PathBuf> {
         .map(|d| d.join(CONFIG_FILE))
 }
 
-/// **Whether the operator allows sandboxed nodes to spawn less-contained children**, from
+/// **Whether the operator allows a node to start a child with more authority than its own**, from
 /// [`path`]. No file, or no key, is `false`. A file that exists and cannot be read or parsed is an
 /// error naming it: an opt-in the operator believes they set must not silently read as off, and a
 /// typo must not silently read as on.
-pub fn allow_uncontained_children() -> Result<bool, String> {
+pub fn allow_wider_children() -> Result<bool, String> {
     let Some(path) = path() else {
         return Ok(false);
     };
@@ -56,7 +57,7 @@ pub fn allow_uncontained_children() -> Result<bool, String> {
 }
 
 fn parse(text: &str) -> Result<bool, toml::de::Error> {
-    toml::from_str::<File>(text).map(|f| f.containment.allow_uncontained_children)
+    toml::from_str::<File>(text).map(|f| f.delegation.allow_wider_children)
 }
 
 #[cfg(test)]
@@ -66,10 +67,10 @@ mod tests {
     #[test]
     fn the_opt_in_is_off_unless_the_operator_states_it() {
         assert!(!parse("").unwrap());
-        assert!(!parse("[containment]\n").unwrap());
-        assert!(parse("[containment]\nallow_uncontained_children = true\n").unwrap());
+        assert!(!parse("[delegation]\n").unwrap());
+        assert!(parse("[delegation]\nallow_wider_children = true\n").unwrap());
         assert!(
-            parse("[containment]\nallow_uncontained_childen = true\n").is_err(),
+            parse("[delegation]\nallow_wider_childen = true\n").is_err(),
             "a misspelt key is an error, never a silent default"
         );
     }

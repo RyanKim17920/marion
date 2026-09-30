@@ -392,6 +392,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     },
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    // claude's own `--permission-mode plan`: plans and reads, edits nothing.
+    read_only_modes: &[crate::authority::ReadOnlyMode {
+        flags: &["--permission-mode"],
+        values: &["plan"],
+    }],
 };
 
 /// Each turn's `result` frame (`s4/claude-code/stream-*.jsonl`, `s9`, `s10`) totals that turn:

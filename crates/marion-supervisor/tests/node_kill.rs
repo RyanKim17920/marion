@@ -157,7 +157,7 @@ impl Bed {
 
     fn spawn_root(&self, marker: &str) -> AgentId {
         self.spawn(AgentSpawnParams {
-            uncontained_children: None,
+            wider_children: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex".into(),
@@ -185,7 +185,7 @@ impl Bed {
             .remove("MARION_NODE_TOKEN")
             .expect("declaration_of asserts the token is there");
         self.spawn(AgentSpawnParams {
-            uncontained_children: None,
+            wider_children: None,
             review_of: None,
             notify_parent: false,
             agent_type: "codex-impl".into(),

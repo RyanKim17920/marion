@@ -389,8 +389,9 @@ fn run_help() -> String {
          \x20 --detach             run it in the background, and return; `marion ls` watches it\n\
          \x20 --no-change-record   skip the snapshot of your checkout taken when it starts and\n\
          \x20                      ends; the agent then gets no file tools. Needed outside git.\n\
-         \x20 --uncontained-children  let a sandboxed agent (codex) start agents with no sandbox\n\
-         \x20                      (claude, ...); each one is recorded and shown on its node\n\
+         \x20 --allow-wider-children  let an agent start agents with more authority than its\n\
+         \x20                      own (a sandboxed codex starting claude, a planner starting an\n\
+         \x20                      implementer); each one is recorded and shown on its node\n\
          {BACKEND_HELP}\n\
          {PLACE_HELP}\n\
          \n\

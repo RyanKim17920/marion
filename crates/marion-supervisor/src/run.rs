@@ -1792,23 +1792,71 @@ pub fn run_spawn_watched(
         caller.depth,
         caller.live_children,
     )?;
-    // **No escape by delegation**: a sandboxed caller gets only children at least as contained
-    // as itself, before anything exists (see `marion_harness::containment`) — unless the operator
-    // opted this tree in, and then the delegation is journaled below, beside the child's intent.
-    let uncontained_by_opt_in =
-        match marion_harness::containment::check(&caller.agent_type, &agent_type) {
-            Ok(()) => false,
-            Err(_) if snapshot.allows_uncontained_children() => true,
-            Err((caller_is, child_is)) => {
-                return Err(SpawnError::LessContained {
-                    caller_type: caller.agent_type.name.clone(),
-                    caller: caller_is,
-                    child_type: agent_type.name.clone(),
-                    child: child_is,
+    // **A child never receives more authority than its caller holds**, on any axis — write,
+    // shell, read-only, containment, approval mode, writable scope (`marion_harness::authority`) —
+    // refused before anything exists, unless the operator opted this tree in; then the widened
+    // axes are journaled below, beside the child's intent.
+    //
+    // A spawn that names no scope inherits its caller's granted one rather than `**`, so a child
+    // of a narrowly scoped node is as narrow by default; one that names a scope must stay inside.
+    let granted = snapshot.granted_scope();
+    let requested = match (
+        granted,
+        req.writable_scope.is_empty() && req.review.is_none(),
+    ) {
+        (Some(granted), true) => granted.to_vec(),
+        _ => requested_scope(req),
+    };
+    // The caller's authority as it stands: its type's, or none to delegate writes with where the
+    // operator started its session in a read-only mode.
+    let caller_type = snapshot.bounded(caller.agent_type.clone())?;
+    let mut caller_authority = marion_harness::authority::Authority::of(&caller_type);
+    if snapshot.read_only_session() {
+        caller_authority = caller_authority.in_read_only_session();
+    }
+    // A reviewer runs read-only whatever its type, so that is the authority it is judged by.
+    let mut child_authority = marion_harness::authority::Authority::of(&agent_type);
+    if req.review.is_some() {
+        child_authority = child_authority.in_read_only_session();
+    }
+    let mut refused = marion_harness::authority::permits_between(
+        &caller_authority,
+        &caller_type.name,
+        &child_authority,
+        &agent_type.name,
+    )
+    .err();
+    if let Some(granted) = granted
+        && let Err(outside) = marion_harness::authority::permits_scope(granted, &requested)
+    {
+        let axis = marion_harness::authority::Axis::WritableScope;
+        let why = format!("the spawn's scope {outside}.");
+        match refused.as_mut() {
+            Some(r) if !r.axes.contains(&axis) => {
+                r.axes.push(axis);
+                r.why = format!("{} {why}", r.why);
+            }
+            Some(_) => {}
+            None => {
+                refused = Some(marion_harness::authority::Refusal {
+                    axes: vec![axis],
+                    parent: caller.agent_type.name.clone(),
+                    child: agent_type.name.clone(),
+                    why: format!(
+                        "{} may write only inside its own scope, and {why}",
+                        caller.agent_type.name
+                    ),
                 });
             }
-        };
-    let requested = requested_scope(req);
+        }
+    }
+    let widened: Vec<String> = match refused {
+        None => Vec::new(),
+        Some(r) if snapshot.allows_wider_children() => {
+            r.axes.iter().map(|a| a.as_str().to_string()).collect()
+        }
+        Some(r) => return Err(SpawnError::WiderThanParent(r)),
+    };
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
     // The verification lines ride on the intent below, so a set too large to journal is refused
     // here, with the other refusals and before the node has an identity at all.
@@ -1896,15 +1944,16 @@ pub fn run_spawn_watched(
         agent_id: agent_id.clone(),
         source,
     })?;
-    // Every less-contained child the operator's opt-in let a sandboxed caller start is on the
-    // record, so the node can say so wherever it is shown.
-    if uncontained_by_opt_in {
+    // Every child the operator's opt-in let start with more than its caller is on the record,
+    // with the axes it widened, so the node can say so wherever it is shown.
+    if !widened.is_empty() {
         crate::journal::record(
             &env.project_dir,
-            RecordKind::UncontainedDelegation(marion_core::journal::UncontainedDelegation {
+            RecordKind::WiderDelegation(marion_core::journal::WiderDelegation {
                 agent_id: agent_id.clone(),
                 caller_type: caller.agent_type.name.clone(),
                 child_type: agent_type.name.clone(),
+                axes: widened.clone(),
             }),
         );
     }
@@ -1925,8 +1974,12 @@ pub fn run_spawn_watched(
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
     crate::private_fs::create_dir_all(&ch)?;
-    // The child's children resolve through the same table: handed down before the child exists.
-    snapshot.write(agent_dir.path())?;
+    // The child's children resolve through the same table, and are held inside the scope this
+    // child was granted: handed down before the child exists.
+    snapshot
+        .clone()
+        .granting(requested.clone())
+        .write(agent_dir.path())?;
     // Everything that can be refused is refused before this line — see [`select_workspace`] for
     // why a worktree is the first irreversible thing a spawn does.
     let (workspace, base, cwd_claim, mut prelaunch) = select_workspace(

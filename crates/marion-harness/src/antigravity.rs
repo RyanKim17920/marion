@@ -185,6 +185,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // auto-denied; `--mode accept-edits` is what a `write` compiles.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// How an `agy -p --output-format stream-json` stream is read (`tests/fixtures/s32/`).

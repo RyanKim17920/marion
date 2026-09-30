@@ -298,6 +298,11 @@ pub struct AgentType {
     /// **expired or refused login only** — never for a usage limit. Empty, the default, is the
     /// harness's own default login, or `profiles.toml`'s `[default]` for the harness.
     pub profiles: Vec<String>,
+    /// **A planner that delegates**: a node of this type writes nothing and runs nothing itself,
+    /// and may still start children that do — the one exception to "a read-only parent starts
+    /// only read-only children" (`marion_harness::authority`). marion-owned: true on the built-in
+    /// `*-orchestrator` types alone, and never read from a repository's `.marion/agents.toml`.
+    pub delegates_writes: bool,
 }
 
 impl AgentType {
@@ -377,6 +382,7 @@ impl AgentType {
             provider: None,
             credentials: Vec::new(),
             profiles: Vec::new(),
+            delegates_writes: false,
         }
     }
 }
@@ -410,6 +416,8 @@ struct Builtin {
     tools: &'static [&'static str],
     /// Stated only by the `acp` rows, and meaningless on the others.
     acp_agent: Option<&'static str>,
+    /// See [`AgentType::delegates_writes`]: true on the orchestrators alone.
+    delegates_writes: bool,
 }
 
 impl Builtin {
@@ -424,6 +432,7 @@ impl Builtin {
             model: self.model.map(str::to_string),
             acp_agent: self.acp_agent.map(str::to_string),
             tools: self.tools.iter().map(|t| (*t).to_string()).collect(),
+            delegates_writes: self.delegates_writes,
             ..AgentType::defaults(self.canonical, self.description, self.harness)
         }
     }
@@ -474,6 +483,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("claude-acp"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-codex-acp",
@@ -483,6 +493,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("codex-acp"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-copilot",
@@ -492,6 +503,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("copilot"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-fast-agent",
@@ -501,6 +513,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("fast-agent"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-goose",
@@ -510,6 +523,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("goose"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-kilo",
@@ -519,6 +533,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("kilo"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-opencode",
@@ -529,6 +544,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(OPENCODE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: Some("opencode"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-qwen",
@@ -538,6 +554,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("qwen"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-vibe",
@@ -547,6 +564,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("vibe"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "acp-vtcode",
@@ -556,6 +574,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: Some("vtcode"),
+        delegates_writes: false,
     },
     Builtin {
         canonical: "claude",
@@ -565,6 +584,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "claude-orchestrator",
@@ -575,6 +595,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // No `tools`: codex grants writes under its own `workspace-write` sandbox, and has no read
     // tool for `read` to map to (see [`TOOL_READ`]).
@@ -586,6 +607,7 @@ const BUILTINS: &[Builtin] = &[
         model: None,
         tools: &[],
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "gemini",
@@ -596,6 +618,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(GEMINI_DEFAULT_MODEL),
         tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "gemini-orchestrator",
@@ -606,6 +629,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(GEMINI_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // No `tools`: opencode's default tool list already grants reads and writes.
     Builtin {
@@ -616,6 +640,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(OPENCODE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: false,
     },
     // The adapter withholds every built-in it is not told to declare (`--available-tools`), so
     // the grant has to live on the type.
@@ -628,6 +653,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(COPILOT_DEFAULT_MODEL),
         tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "copilot-orchestrator",
@@ -638,6 +664,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(COPILOT_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // `write` compiles `--with-builtin developer`; `read` is deliberately absent — the developer
     // extension has no read-only tool, and answering `read` with an extension that also carries
@@ -650,6 +677,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(GOOSE_DEFAULT_MODEL),
         tools: &[TOOL_WRITE, TOOL_EDIT, TOOL_BASH],
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "goose-orchestrator",
@@ -660,6 +688,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(GOOSE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // On opencode's footing: cline grants its 26 built-ins unconditionally, so a declaration
     // would name a grant marion does not compile (S27 item 12). A model because `providers.json`
@@ -672,6 +701,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(CLINE_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: false,
     },
     // The adapter offers only what `--core-tools` names, so the grant has to live on the type.
     Builtin {
@@ -682,6 +712,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(QWEN_DEFAULT_MODEL),
         tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "qwen-orchestrator",
@@ -692,6 +723,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(QWEN_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // The ninth binary, run only on the operator's own login: agy has no canned provider route.
     // The default `request-review` mode auto-denies a headless write, and a `write` declaration
@@ -707,6 +739,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(AGY_DEFAULT_MODEL),
         tools: &[TOOL_READ, TOOL_WRITE],
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "agy-orchestrator",
@@ -717,6 +750,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(AGY_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
     // The tenth binary. The adapter offers only what `--tools` names, extension tools included,
     // so a grant has to live on a type (S34).
@@ -728,6 +762,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(PI_DEFAULT_MODEL),
         tools: IMPLEMENTER_TOOLS,
         acp_agent: None,
+        delegates_writes: false,
     },
     Builtin {
         canonical: "pi-orchestrator",
@@ -737,6 +772,7 @@ const BUILTINS: &[Builtin] = &[
         model: Some(PI_DEFAULT_MODEL),
         tools: &[],
         acp_agent: None,
+        delegates_writes: true,
     },
 ];
 

@@ -212,6 +212,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // agent it is until the process exists (see the field's doc).
     writes_without_grant: true,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**

@@ -245,6 +245,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // and `--tools ""` offers nothing at all.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// **pi's `--mode rpc` vocabulary** (item 12, `pi-rpc-steer-mid-tool`, `pi-rpc-abort-mid-tool`).

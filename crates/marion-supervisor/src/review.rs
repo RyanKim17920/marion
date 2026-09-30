@@ -195,7 +195,7 @@ pub fn request(
     let spawned = crate::courier::spawn(
         socket,
         marion_core::proto::params::AgentSpawnParams {
-            uncontained_children: None,
+            wider_children: None,
             review_of: Some(target.clone()),
             notify_parent: false,
             candidates: vec![],

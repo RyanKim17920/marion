@@ -37,11 +37,21 @@ pub struct TypesSnapshot {
     /// of a caller marion holds no snapshot for (see [`for_caller`]).
     root_type: Option<String>,
     /// **The operator let sandboxed nodes in this tree spawn less-contained children**: their
-    /// user-level `[containment] allow_uncontained_children`, or `marion run
-    /// --uncontained-children`, read when the root started ([`crate::user_config`]). Never from the
+    /// user-level `[delegation] allow_wider_children`, or `marion run
+    /// --allow-wider-children`, read when the root started ([`crate::user_config`]). Never from the
     /// tree itself.
     #[serde(default)]
-    allow_uncontained_children: bool,
+    allow_wider_children: bool,
+    /// **The writable scope this node was granted** by its caller's spawn: what its own children's
+    /// scopes must stay inside. `None` for a root, which is bounded by its type's ceiling alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    granted_scope: Option<Vec<marion_core::contract::Glob>>,
+    /// **This node is a session the operator started in a read-only mode** (`marion claude
+    /// --permission-mode plan`, `marion codex --sandbox read-only`, as its row states them): it
+    /// counts as a read-only node that delegates nothing that writes, whatever its type grants.
+    /// A root's alone — never handed down, since each child's authority is its own type's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    session_read_only: bool,
 }
 
 impl TypesSnapshot {
@@ -56,21 +66,50 @@ impl TypesSnapshot {
             source,
             text,
             root_type: root_type.map(str::to_string),
-            allow_uncontained_children: false,
+            allow_wider_children: false,
+            granted_scope: None,
+            session_read_only: false,
         })
     }
 
-    /// This snapshot with the operator's containment opt-in set as stated.
-    pub fn allowing_uncontained_children(self, allow: bool) -> TypesSnapshot {
+    /// This snapshot for a root whose session the operator started read-only (or not).
+    pub fn with_read_only_session(self, read_only: bool) -> TypesSnapshot {
         TypesSnapshot {
-            allow_uncontained_children: allow,
+            session_read_only: read_only,
+            ..self
+        }
+    }
+
+    /// Whether the node holding this snapshot is a session started in a read-only mode.
+    pub fn read_only_session(&self) -> bool {
+        self.session_read_only
+    }
+
+    /// This snapshot for a child granted `scope`: what that child's own children must stay inside.
+    pub fn granting(self, scope: Vec<marion_core::contract::Glob>) -> TypesSnapshot {
+        TypesSnapshot {
+            granted_scope: Some(scope),
+            session_read_only: false,
+            ..self
+        }
+    }
+
+    /// The writable scope the node holding this snapshot was granted, `None` for a root.
+    pub fn granted_scope(&self) -> Option<&[marion_core::contract::Glob]> {
+        self.granted_scope.as_deref()
+    }
+
+    /// This snapshot with the operator's containment opt-in set as stated.
+    pub fn allowing_wider_children(self, allow: bool) -> TypesSnapshot {
+        TypesSnapshot {
+            allow_wider_children: allow,
             ..self
         }
     }
 
     /// Whether the operator let sandboxed nodes in this tree spawn less-contained children.
-    pub fn allows_uncontained_children(&self) -> bool {
-        self.allow_uncontained_children
+    pub fn allows_wider_children(&self) -> bool {
+        self.allow_wider_children
     }
 
     /// The snapshot in `agent_dir`, or `None` where the node has none.
@@ -172,13 +211,12 @@ pub fn for_caller(
             ),
         });
     }
-    let allow = crate::user_config::allow_uncontained_children().map_err(|error| {
-        SpawnError::AgentTypesFile {
+    let allow =
+        crate::user_config::allow_wider_children().map_err(|error| SpawnError::AgentTypesFile {
             path: crate::user_config::path().unwrap_or_default(),
             error,
-        }
-    })?;
-    Ok(TypesSnapshot::take(tree, Some(caller_type))?.allowing_uncontained_children(allow))
+        })?;
+    Ok(TypesSnapshot::take(tree, Some(caller_type))?.allowing_wider_children(allow))
 }
 
 #[cfg(test)]

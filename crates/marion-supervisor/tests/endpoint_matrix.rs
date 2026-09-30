@@ -1046,7 +1046,7 @@ fn a_rate_limited_root_fails_over_to_the_next_stated_credential_before_its_first
     let _cells = providers_at(&base_url);
     let t = tree("root-rot", Some(base_url.clone()));
     let node = root::prepare(&RootSpec {
-        uncontained_children: false,
+        wider_children: false,
         agent_type: "codex".into(),
         prompt: "Report back through marion.".into(),
         native_launch: None,

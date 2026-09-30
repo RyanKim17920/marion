@@ -295,6 +295,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // and `write_file` is in `tools[]` only when the launch names it.
     writes_without_grant: false,
     containment: crate::containment::ContainmentRule::ToolsOnly,
+    read_only_modes: &[],
 };
 
 /// Relocates `settings.json`, `projects/<cwd-slug>/chats/<session>.jsonl`, `usage/`,

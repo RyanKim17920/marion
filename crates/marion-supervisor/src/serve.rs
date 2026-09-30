@@ -2278,7 +2278,7 @@ mod tests {
 
     fn a_node() -> NodeSummary {
         NodeSummary {
-            uncontained: false,
+            widened: vec![],
             review_of: None,
             review: None,
             agent_id: AgentId("a".into()),

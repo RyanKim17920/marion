@@ -89,7 +89,7 @@ fn script() -> Script {
 
 fn review_params(target: &str, repo: &std::path::Path) -> AgentSpawnParams {
     AgentSpawnParams {
-        uncontained_children: None,
+        wider_children: None,
         review_of: Some(AgentId(target.into())),
         candidates: vec![],
         race: None,
