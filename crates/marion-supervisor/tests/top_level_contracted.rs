@@ -526,3 +526,46 @@ fn marion_race_runs_the_seats_and_prints_the_scoreboard() {
     );
     assert!(!bed.repo.join(DONE_FILE).exists());
 }
+
+/// **`marion run --verify` runs the agent as a contracted node**, in its own worktree, and the
+/// command's verdict is the contract's: where the work is and how many checks passed.
+#[test]
+fn marion_run_with_a_check_runs_a_contracted_node_and_reports_its_contract() {
+    let Some(bed) = bed("top-run-cli", false) else {
+        return;
+    };
+    let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args(["run", "claude", "--prompt"])
+        .arg(format!(
+            "{MARKER}: create the file the task needs, then report."
+        ))
+        .args(["--verify", &format!("test -f {DONE_FILE}")])
+        .args([
+            "--timeout",
+            "120",
+            "--canned",
+            "--base-url",
+            &bed.server.base_url(),
+        ])
+        .arg("--repo")
+        .arg(&bed.repo)
+        .arg("--state-dir")
+        .arg(&bed.state)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the marion binary runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    marion_testsupport::sweep(&bed.state.to_string_lossy());
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("its work is on marion/"), "{stderr}");
+    assert!(stderr.contains("1 of 1 checks passed"), "{stderr}");
+    assert!(!bed.repo.join(DONE_FILE).exists(), "not in the checkout");
+    let intent = records(&bed.project.journal())
+        .into_iter()
+        .find_map(|k| match k {
+            RecordKind::SpawnIntent(i) => Some(i),
+            _ => None,
+        })
+        .expect("the node's intent");
+    assert!(intent.parent_id.is_none() && intent.task_id.is_some() && !intent.is_root());
+}

@@ -23,6 +23,8 @@ marion run codex --prompt "…" --detach    # return once the root has started
 marion run claude --prompt "…" --pane     # run in a terminal marion owns; attach to it later
 marion run claude --prompt "…" --model haiku --timeout 600
 marion run codex --prompt "…" --budget-tokens 200000   # cancel the tree past 200k tokens
+marion run codex --prompt "…" --verify "cargo test"     # in its own worktree, checked at the end
+marion race --prompt "…" --on claude,codex --verify "cargo test"  # keep the seat that passes
 marion ls                                 # the home screen on Watch; in a pipe, list's lines
 marion ls <id>                            # one node's detail
 marion ls --attention                     # only the nodes that need you
@@ -33,6 +35,10 @@ marion steer <id> <text…>                 # `-` reads the message from stdin
 ```
 
 An `<id>` is an agent's whole id, the short id its tree row shows, or a unique start of its id.
+
+A plain `marion run` works in your checkout. With `--worktree` or `--verify <command>` it runs the
+agent in a worktree of its own on a `marion/` branch instead, runs each check there when it ends,
+and exits with the checks' verdict; the branch it names is the one to merge.
 
 `--repo` defaults to the enclosing git repository, else the working directory. State
 (journals, transcripts, sockets) lives under `$MARION_STATE_DIR`, else `$XDG_STATE_HOME/marion`,

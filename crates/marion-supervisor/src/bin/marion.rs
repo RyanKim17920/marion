@@ -61,6 +61,12 @@ fn usage() -> ! {
 struct Args {
     agent_type: String,
     prompt: String,
+    /// `--worktree`: run in its own worktree on a `marion/` branch under a contract, rather than as
+    /// a root in the checkout. See [`Args::contracted`].
+    worktree: bool,
+    /// `--verify <command>`, repeatable: checks run in the node's worktree when it ends. Implies
+    /// `--worktree`: a check is judged against a contract, which only a worktree node has.
+    verify: Vec<String>,
     place: Place,
     backend: Backend,
     model: Option<String>,
@@ -867,6 +873,8 @@ fn parse_args(argv: &[String]) -> Result<Args, Exit> {
     let mut args = Args {
         agent_type: String::new(),
         prompt: String::new(),
+        worktree: false,
+        verify: Vec::new(),
         place: Place::default(),
         backend: Backend::from_env(),
         model: None,
@@ -897,7 +905,31 @@ fn parse_args(argv: &[String]) -> Result<Args, Exit> {
     if args.prompt.is_empty() {
         return Err(Exit::Usage("needs --prompt <text>, the task".into()));
     }
+    // A contracted node runs in a worktree it is given, headless, under its contract; these two
+    // are about a root in the operator's own checkout.
+    if args.contracted() {
+        for (stated, flag) in [
+            (args.pane, "--pane"),
+            (args.no_change_record, "--no-change-record"),
+        ] {
+            if stated {
+                return Err(Exit::Usage(format!(
+                    "{flag} is for an agent in your checkout; --worktree and --verify run it in \
+                     a worktree of its own"
+                )));
+            }
+        }
+    }
     Ok(args)
+}
+
+impl Args {
+    /// **A contracted node rather than a root**: the operator asked for a worktree, or for checks,
+    /// which only a contract carries. The supervisor makes it the operator's own child — a
+    /// worktree on a `marion/` branch, verification, a contract — at the top of the tree.
+    fn contracted(&self) -> bool {
+        self.worktree || !self.verify.is_empty()
+    }
 }
 
 /// One of `run`'s own flags, taking its value from `words` when it has one. `false` when `flag` is
@@ -914,6 +946,8 @@ fn apply_run_flag(
         "--no-change-record" => args.no_change_record = cli::switch(flag, inline)?,
         "--pane" => args.pane = cli::switch(flag, inline)?,
         "--detach" => args.detach = cli::switch(flag, inline)?,
+        "--worktree" => args.worktree = cli::switch(flag, inline)?,
+        "--verify" => args.verify.push(words.value(flag, inline)?),
         "--allow-wider-children" => args.wider_children = cli::switch(flag, inline)?,
         "--prompt" => args.prompt = words.value(flag, inline)?,
         "--model" => args.model = Some(words.value(flag, inline)?),
@@ -2842,7 +2876,57 @@ fn run(args: &Args) -> Result<ExitCode, ExitCode> {
     let watched = watch_the_root(&mut supervisor, &root_id, &terminal);
     stop.store(true, Ordering::Relaxed);
     let _ = poller.join();
-    report_watched(watched, &project.journal(), &root_id, blocked_bound)
+    let verdict = report_watched(watched, &project.journal(), &root_id, blocked_bound);
+    match &spawned.task_id {
+        // A contracted node's verdict is its contract's: its checks decide, not its exit.
+        Some(task) if verdict.is_ok() => Ok(contract_verdict(&project, &root_id, task)),
+        _ => verdict,
+    }
+}
+
+/// **A contracted node's end, as its contract records it**: where its work is and whether its
+/// checks passed. The exit code is the contract's status, so a node that exited 0 with a failing
+/// check fails the command.
+fn contract_verdict(
+    project: &marion_core::paths::ProjectDir,
+    agent: &marion_core::contract::AgentId,
+    task: &marion_core::contract::TaskId,
+) -> ExitCode {
+    let path = project.agent(agent).contract(task);
+    let Some(contract) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<marion_core::contract::TaskContract>(&b).ok())
+    else {
+        eprintln!(
+            "marion: the node ended and its contract could not be read at {}",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    if let marion_core::contract::Workspace::Worktree { branch, .. } = &contract.workspace {
+        eprintln!("marion: its work is on {branch}");
+    }
+    let Some(completion) = &contract.completion else {
+        eprintln!("marion: its contract records no end");
+        return ExitCode::FAILURE;
+    };
+    let passed = completion
+        .evidence
+        .iter()
+        .filter(|e| e.exit_code == Some(0))
+        .count();
+    if !contract.verification.is_empty() {
+        eprintln!(
+            "marion: {passed} of {} checks passed",
+            contract.verification.len()
+        );
+    }
+    eprintln!("marion: it ended {}", completion.status.word());
+    if completion.status == ExitStatus::Ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// **What a client does once its root exists** — one rule, read by `run` and `resume` both.
@@ -3061,27 +3145,29 @@ fn spawn_root(
             native_launch: None,
             caller: None,
             repo: Some(repo.to_path_buf()),
-            // A root states none: §9's contract terms belong to a child's `spawn`, and a root
-            // has no contract to carry them.
+            // A root states none: §9's contract terms belong to a contracted node, and a root has
+            // no contract to carry them.
             acceptance_criteria: vec![],
-            verification: vec![],
+            verification: args.verify.clone(),
             writable_scope: vec![],
             // Stated as the operator stated it. The supervisor resolves it, so a number
             // invented here would be a second source of truth for §3.1's own key.
             timeout_secs: args.timeout_secs,
             model: args.model.clone(),
             // Root-only, and stated rather than defaulted so the supervisor can tell an
-            // operator who declined the snapshot from one who said nothing.
-            no_change_record: Some(args.no_change_record),
+            // operator who declined the snapshot from one who said nothing. A contracted node
+            // has no checkout to snapshot, and is refused the field.
+            no_change_record: (!args.contracted()).then_some(args.no_change_record),
             // **Stated only when asked for**, exactly as `no_change_record` is: absent and
             // `false` must stay distinguishable on the wire, or the supervisor's root-only
             // pairing refusal would fire on every operator who never mentioned a pane.
             pane: args.pane.then_some(true),
-            // **Child-only, and the supervisor refuses either of them beside `caller: None`.**
-            // A root's workspace is not a choice: it is the operator's own checkout at `repo`,
-            // which is what §9's change record measures. `marion run` therefore has no
-            // `--isolation` flag to forward and states neither field.
-            isolation: None,
+            // **A worktree, beside `caller: None`, is what asks for a contracted node** rather than
+            // a root: a root's workspace is not a choice — it is the operator's own checkout at
+            // `repo`, which is what §9's change record measures.
+            isolation: args
+                .contracted()
+                .then_some(marion_core::contract::Isolation::Worktree),
             allow_concurrent_writes: None,
             // The operator's choice of login, where they stated one; the supervisor resolves the
             // agent type's and the default otherwise.
@@ -4709,6 +4795,43 @@ mod tests {
     fn a_prompt_is_required_because_a_root_with_no_turn_does_nothing() {
         assert!(parse_args(&argv(&["run", "claude"])).is_err());
         assert!(parse_args(&argv(&["run", "--prompt", "p"])).is_err());
+    }
+
+    /// **`--worktree` or `--verify` makes the run a contracted node**: its own worktree, the checks
+    /// in it, a contract. `--verify` implies the worktree, since only a contract carries a check,
+    /// and a root's own `--pane` / `--no-change-record` are refused beside either.
+    #[test]
+    fn worktree_or_verify_makes_the_run_a_contracted_node() {
+        let plain = parse_args(&argv(&["run", "claude", "--prompt", "p"])).unwrap();
+        assert!(!plain.contracted(), "a bare run is a root in the checkout");
+        let w = parse_args(&argv(&["run", "claude", "--prompt", "p", "--worktree"])).unwrap();
+        assert!(w.contracted() && w.verify.is_empty());
+        let v = parse_args(&argv(&[
+            "run",
+            "claude",
+            "--prompt",
+            "p",
+            "--verify",
+            "cargo test",
+            "--verify=true",
+        ]))
+        .unwrap();
+        assert!(v.contracted(), "--verify implies the worktree");
+        assert_eq!(v.verify, ["cargo test", "true"]);
+        for flag in ["--pane", "--no-change-record"] {
+            let e = parse_args(&argv(&[
+                "run",
+                "claude",
+                "--prompt",
+                "p",
+                "--worktree",
+                flag,
+            ]));
+            assert!(
+                matches!(&e, Err(Exit::Usage(m)) if m.contains(flag)),
+                "a root's {flag} beside a worktree is refused by name"
+            );
+        }
     }
 
     /// The canned provider is a **fixture**, so reaching it is the thing that must be typed. A

@@ -418,6 +418,10 @@ fn run_help() -> String {
          \x20 --timeout <secs>     stop the agent after this many seconds (default: its type's)\n\
          \x20 --profile <name>     which of your logins to use (see `marion profile`)\n\
          \x20 --budget-tokens <n>  stop it and everything it starts once they spend n tokens\n\
+         \x20 --worktree           run it in its own worktree on a marion/ branch, with a record of\n\
+         \x20                      what it did, instead of in your checkout\n\
+         \x20 --verify <command>   a check run in its worktree when it ends; exit 0 passes, and\n\
+         \x20                      the run fails otherwise (implies --worktree; repeatable)\n\
          \x20 --pane               run it in a terminal you open with `marion attach`, and return\n\
          \x20 --detach             run it in the background, and return; `marion ls` watches it\n\
          \x20 --no-change-record   skip the snapshot of your checkout taken when it starts and\n\
