@@ -326,7 +326,7 @@ scenario s2 codex - claude \
 	"" wider
 
 scenario s3 claude haiku opencode \
-	"Delegate this to an opencode agent (agent_type \"opencode\")${OPENCODE_MODEL:+ with model \"$OPENCODE_MODEL\", spelled exactly so}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to an opencode agent (agent_type \"opencode\")${OPENCODE_MODEL:+ with model \"$OPENCODE_MODEL\", spelled exactly so}, and tell it to make the change itself rather than delegate further: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]; assert l("a\nb\nc", 3) == ["a", "b", "c"]'
 
 scenario s4 claude haiku codex \
@@ -335,7 +335,7 @@ scenario s4 claude haiku codex \
 	"Also handle empty input: average([]) must return 0.0 instead of raising. Add a test for it."
 
 scenario s5 claude haiku pi \
-	"Delegate this to a pi agent (agent_type \"pi\")${PI_MODEL:+ with model \"$PI_MODEL\", spelled exactly so}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
+	"Delegate this to a pi agent (agent_type \"pi\")${PI_MODEL:+ with model \"$PI_MODEL\", spelled exactly so}, and tell it to make the change itself rather than delegate further: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
 	'from textutil import last_n_lines as l; assert l("a\nb\nc", 2) == ["b", "c"], l("a\nb\nc", 2); assert l("a\nb\nc", 1) == ["c"]; assert l("a\nb\nc", 3) == ["a", "b", "c"]'
 
 # The roots that are not claude or codex: each delegates to codex, on the model its operator names.
