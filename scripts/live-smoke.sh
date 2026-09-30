@@ -206,9 +206,13 @@ TEST_CMD="python3 -m unittest -q"
 
 # ---- one scenario -----------------------------------------------------------------------------------
 
-# scenario <id> <root harness> <root model|-> <child harness> <prompt> <check> [<steer text>]
+# scenario <id> <root harness> <root model|-> <child harness> <prompt> <check> [<steer text>] [wider]
+#
+# `wider` passes --allow-wider-children: the operator's opt-in for a child with more authority than
+# its root, which a sandboxed root (codex) needs to start an unsandboxed child (claude on a real
+# login). Stated per scenario and recorded in its result, never defaulted.
 scenario() {
-	local id=$1 root=$2 model=$3 child=$4 prompt=$5 check=$6 steer=${7:-}
+	local id=$1 root=$2 model=$3 child=$4 prompt=$5 check=$6 steer=${7:-} wider=${8:-}
 	if [ -n "$ONLY" ] && [ "$ONLY" != "$id" ]; then
 		return 0
 	fi
@@ -226,6 +230,7 @@ scenario() {
 	local args=(run "$root" --prompt "$prompt" --repo "$dir/repo" --state-dir "$dir/state" --timeout "$WALL_SECS")
 	[ "$model" != "-" ] && args+=(--model "$model")
 	[ -n "$CANNED" ] && args+=(--canned)
+	[ "$wider" = wider ] && args+=(--allow-wider-children)
 
 	echo "live-smoke: $id: $root root -> $child child (wall ${WALL_SECS}s)" >&2
 	local start end rc=0 timed_out=no
@@ -243,7 +248,7 @@ scenario() {
 
 	python3 "$COLLECT" --state "$dir/state" --scratch "$RUN" --scenario "$id" --expect-child "$child" \
 		--repo "$dir/repo" --test-cmd "$TEST_CMD" --check "$check" --wall-secs $((end - start)) \
-		--timed-out "$timed_out" --steer "$steer" --console "$dir/run.out" --steer-log "$dir/steer.out" \
+		--timed-out "$timed_out" --steer "$steer" --wider-children "${wider:+yes}" --console "$dir/run.out" --steer-log "$dir/steer.out" \
 		--out "$out" >/dev/null ||
 		echo "live-smoke: $id: collecting results failed (see $dir)" >&2
 	echo "live-smoke: $id done in $((end - start))s (marion run exit $rc)" >&2
@@ -308,7 +313,8 @@ scenario s1 claude haiku codex \
 
 scenario s2 codex - claude \
 	"Delegate this to a claude agent on the haiku model: add a char_frequency(s) function to textutil.py that returns a dict mapping each character of s to how many times it occurs, with unit tests in test_textutil.py. The project's test command is \`$TEST_CMD\`." \
-	'from textutil import char_frequency as f; assert f("aab") == {"a": 2, "b": 1}, f("aab"); assert f("") == {}'
+	'from textutil import char_frequency as f; assert f("aab") == {"a": 2, "b": 1}, f("aab"); assert f("") == {}' \
+	"" wider
 
 scenario s3 claude haiku opencode \
 	"Delegate this to an opencode agent${OPENCODE_MODEL:+ on the $OPENCODE_MODEL model}: last_n_lines in textutil.py has an off-by-one bug. Fix it and add a regression test to test_textutil.py. The project's test command is \`$TEST_CMD\`." \
@@ -503,5 +509,6 @@ python3 - "$OUT" <<-'EOF' | tee "$OUT/results.md"
 	        recs = [s["record"] + (f" via {s['detail'].get('via')}" if s["detail"].get("via") else "") for s in r["steer_records"]]
 	        steer = ", ".join(recs) or "not queued"
 	    wall = f"{r['wall_secs']}s" + (" (timed out)" if r["timed_out"] else "")
-	    print(f"| {r['scenario']} | {yn(r['delegated'])} | {expected} | {yn(r['reported'])} | {r['verify']} | {yn(r['branch_landed'])} | {wall} | {root_tok} / {kid_tok} | {every} | {steer} |")
+	    wider = " (--allow-wider-children)" if r.get("wider_children") else ""
+	    print(f"| {r['scenario']}{wider} | {yn(r['delegated'])} | {expected} | {yn(r['reported'])} | {r['verify']} | {yn(r['branch_landed'])} | {wall} | {root_tok} / {kid_tok} | {every} | {steer} |")
 EOF

@@ -319,6 +319,7 @@ def main():
     ap.add_argument("--wall-secs", required=True, type=int)
     ap.add_argument("--timed-out", default="no")
     ap.add_argument("--steer", default="")
+    ap.add_argument("--wider-children", default="", help="`yes` when the run passed --allow-wider-children")
     ap.add_argument("--console", type=Path, help="the root's `marion run` output")
     ap.add_argument("--steer-log", type=Path, help="what the driver's `marion steer` printed")
     ap.add_argument("--out", required=True, type=Path)
@@ -398,6 +399,7 @@ def main():
         "scope_violations": comp.get("scope_violations"),
         "verify": verify,
         "steer": a.steer or None,
+        "wider_children": a.wider_children == "yes",
         "steer_records": [{"record": s["record"], "detail": red.value(s["detail"])} for s in steers],
         "wall_secs": a.wall_secs,
         "timed_out": a.timed_out == "yes",
