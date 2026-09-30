@@ -438,6 +438,14 @@ pub struct SessionQuitResult {
     pub outcome: QuitOutcome,
 }
 
+/// `notify/configure`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyConfigureResult {
+    /// The supervisor now shows notices. `false` when asked for off, and when asked for on where
+    /// nothing can show one (`MARION_NOTIFY_BACKEND=off`).
+    pub enabled: bool,
+}
+
 /// `notify/claim`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotifyClaimResult {

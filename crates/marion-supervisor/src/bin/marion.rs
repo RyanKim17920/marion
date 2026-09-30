@@ -2526,10 +2526,46 @@ fn trust_main(argv: &[String]) -> Result<ExitCode, Exit> {
 
 /// `marion notify`, parsed by its own module.
 fn notify_main(argv: &[String]) -> Result<ExitCode, Exit> {
-    if cli::asks_for_help(&argv[1..]) {
-        return Err(Exit::Help);
+    let mut words = Words::after_verb(argv);
+    let mut place = Place::default();
+    let mut verb: Vec<String> = Vec::new();
+    while let Some(word) = words.next()? {
+        match word {
+            Word::Flag(f, v) if place.take(f, v, &mut words)? => {}
+            Word::Flag(f, _) => return Err(cli::unknown(f)),
+            Word::Plain(w) => verb.push(w.to_string()),
+        }
     }
-    Ok(marion_supervisor::notify::main(&argv[1..]))
+    let code = marion_supervisor::notify::main(&verb);
+    let turned = match verb.first().map(String::as_str) {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        _ => None,
+    };
+    if let (Some(enabled), true) = (turned, code == ExitCode::SUCCESS) {
+        tell_running_supervisor(&place, enabled);
+    }
+    Ok(code)
+}
+
+/// **The running supervisor of this project turns its notices on or off now**, rather than when it
+/// next starts. Nothing is started where none is running, and a supervisor that cannot be reached
+/// is left to read the file when it next starts; either way the file already says it.
+fn tell_running_supervisor(place: &Place, enabled: bool) {
+    let Some((repo, state)) = resolve_project(place) else {
+        return;
+    };
+    let sock = socket::socket_paths(&state, &socket::project_root(&repo), socket::own_uid());
+    if std::os::unix::net::UnixStream::connect(sock.socket()).is_err() {
+        return;
+    }
+    match marion_supervisor::courier::notify_configure(&sock, enabled) {
+        Ok(now) => println!(
+            "marion: this project's running supervisor has them {} now",
+            if now { "on" } else { "off" }
+        ),
+        Err(e) => eprintln!("marion: this project's running supervisor was not told: {e}"),
+    }
 }
 
 /// `marion doctor …` is `marion-supervisor doctor …`: the supervisor owns the probes, and this

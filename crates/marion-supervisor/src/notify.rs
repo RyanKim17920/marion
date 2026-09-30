@@ -313,6 +313,32 @@ fn on_path(program: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
 }
 
+/// **What a supervisor builds its notifier from**, kept so `notify/configure` can turn notices on
+/// or off while it runs: the config it loaded, the backend it resolved, the project that titles
+/// each notice. Only `enabled` changes after the start.
+#[derive(Debug, Clone)]
+pub struct NotifySeed {
+    pub config: NotifyConfig,
+    pub backend: Backend,
+    pub project: String,
+}
+
+impl NotifySeed {
+    /// The notifier this seed makes with notices `enabled` or not — `None` where they are off, or
+    /// where nothing can show one. A fresh one learns the tree before it tells anything, so turning
+    /// notices back on never replays what happened while they were off.
+    pub fn notifier(&self, enabled: bool) -> Option<Notifier> {
+        Notifier::new(
+            NotifyConfig {
+                enabled,
+                ..self.config
+            },
+            self.backend.clone(),
+            &self.project,
+        )
+    }
+}
+
 /// **The notifier**: what each node's last notice was, and where notices go.
 pub struct Notifier {
     config: NotifyConfig,
@@ -498,8 +524,7 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "marion: notifications {verb}, in {}. A supervisor reads it when it starts, so \
-                 one already running keeps what it had.",
+                "marion: notifications {verb}, in {}.",
                 dir.join(CONFIG_FILE).display()
             );
             ExitCode::SUCCESS

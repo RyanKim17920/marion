@@ -578,13 +578,17 @@ fn trust_help() -> String {
 }
 
 fn notify_help() -> String {
-    "usage: marion notify on | off | status | test\n\
-     \n\
-     Tell you when an agent ends or needs you, by a desktop notice or, where there is no\n\
-     notifier, a ring in the terminal marion is showing. Off unless you turn it on; a\n\
-     supervisor reads the setting when it starts. `status` shows what is on and how it is\n\
-     shown; `test` sends one notice now."
-        .to_string()
+    format!(
+        "usage: marion notify on | off | status | test [--repo <path>] [--state-dir <path>]\n\
+         \n\
+         Tell you when an agent ends or needs you, by a desktop notice or, where there is no\n\
+         notifier, a ring in the terminal marion is showing. Off unless you turn it on. `on`\n\
+         and `off` apply at once to this project's running supervisor, and to every other\n\
+         when it next starts. `status` shows what is on and how it is shown; `test` sends one\n\
+         notice now.\n\
+         \n\
+         {PLACE_HELP}"
+    )
 }
 
 fn doctor_help() -> String {

@@ -1806,7 +1806,11 @@ pub struct RegistryHandle {
     budgets: Arc<crate::budget::BudgetBook>,
     /// **Desktop notifications** ([`crate::notify`]), observed on each flush. `None` — the
     /// default — where the operator has not turned them on, and for a handle that runs no nodes.
-    notifier: Option<crate::notify::Notifier>,
+    /// Replaced by `notify/configure` while the supervisor runs; always taken before `shared`.
+    notifier: Mutex<Option<crate::notify::Notifier>>,
+    /// What [`Self::notifier`] is built from, so `notify/configure` can rebuild it. `None` for a
+    /// handle that runs no nodes.
+    notify_seed: Option<crate::notify::NotifySeed>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -1962,13 +1966,13 @@ impl RegistryHandle {
         env: crate::run::Env,
         socket_path: PathBuf,
     ) -> Arc<RegistryHandle> {
-        let notifier = notifier_for(&env.project_root);
+        let seed = notify_seed_for(&env.project_root);
         let handle = Self::build(
             live,
             socket_path,
             Arc::new(SystemQuitRuntime),
             Some(env),
-            notifier,
+            Some(seed),
         );
         handle.redrive_open_races();
         handle
@@ -1981,14 +1985,14 @@ impl RegistryHandle {
         live: Arc<LiveRegistry>,
         env: crate::run::Env,
         socket_path: PathBuf,
-        notifier: crate::notify::Notifier,
+        seed: crate::notify::NotifySeed,
     ) -> Arc<RegistryHandle> {
         let handle = Self::build(
             live,
             socket_path,
             Arc::new(SystemQuitRuntime),
             Some(env),
-            Some(notifier),
+            Some(seed),
         );
         handle.redrive_open_races();
         handle
@@ -2008,8 +2012,11 @@ impl RegistryHandle {
         socket_path: PathBuf,
         runtime: Arc<dyn QuitRuntime>,
         spawn_env: Option<crate::run::Env>,
-        notifier: Option<crate::notify::Notifier>,
+        notify_seed: Option<crate::notify::NotifySeed>,
     ) -> Arc<RegistryHandle> {
+        let notifier = notify_seed
+            .as_ref()
+            .and_then(|s| s.notifier(s.config.enabled));
         // `new_cyclic` rather than a `Mutex<Option<Weak<_>>>` filled in afterwards: a node's thread
         // outlives the call that started it and has to hold the handle it reports to, so the
         // reference is a property of the value and not a step a construction site could forget.
@@ -2073,7 +2080,8 @@ impl RegistryHandle {
                 sent: Mutex::new(HashMap::new()),
                 spending,
                 budgets,
-                notifier,
+                notifier: Mutex::new(notifier),
+                notify_seed,
                 quit: Mutex::new(()),
                 quit_waived_grace: AtomicBool::new(false),
                 stopped_reported: AtomicBool::new(false),
@@ -2160,10 +2168,12 @@ impl RegistryHandle {
         // precisely so an operator's keystroke is not written under the lock every `tree/subscribe`
         // waits on, and taking them in the other order here would rebuild that coupling.
         let panes = self.pane_ids();
+        // Taken before `shared`, as `notify_claim` takes them.
+        let notifier = lock(&self.notifier);
         let mut g = lock(&self.shared);
         // **Before the subscriber check**: a notice is for the operator, who may have no client
         // open at all. The notifier returns at once when the journal has not moved.
-        if let Some(n) = &self.notifier {
+        if let Some(n) = notifier.as_ref() {
             let shown = self.live.read(|r| n.observe(r.tree(), r.generation()));
             if !shown.is_empty() && !n.deliver(shown.clone()) {
                 notify_claimer(&mut g, n.ring(), &shown);
@@ -2263,8 +2273,7 @@ impl RegistryHandle {
     /// `notify/claim`: queue this connection to show desktop notices in its terminal, where
     /// notices are on and reach a terminal at all.
     fn notify_claim(&self, out: &Outbound) -> marion_core::proto::result::NotifyClaimResult {
-        let terminal = self
-            .notifier
+        let terminal = lock(&self.notifier)
             .as_ref()
             .is_some_and(|n| *n.backend() == crate::notify::Backend::Terminal);
         let mut g = lock(&self.shared);
@@ -2275,6 +2284,38 @@ impl RegistryHandle {
             terminal,
             head: terminal && g.claimers.first().is_some_and(|c| c.conn() == out.conn()),
         }
+    }
+
+    /// `notify/configure`: turn this supervisor's desktop notices on or off now — `marion notify
+    /// on|off` has already written the file a later start reads. The operator's own call: a peer
+    /// running as another user is refused.
+    fn notify_configure(
+        &self,
+        p: &marion_core::proto::params::NotifyConfigureParams,
+        peer: Peer,
+    ) -> Result<marion_core::proto::result::NotifyConfigureResult, RpcError> {
+        match peer {
+            Peer::Uid(uid) if uid == crate::socket::own_uid() => {}
+            _ => {
+                return Err(RpcError::refused(
+                    "enabled",
+                    "only a client running as this supervisor's own user may turn its \
+                     notifications on or off.",
+                    "§2",
+                ));
+            }
+        }
+        let Some(seed) = &self.notify_seed else {
+            return Err(RpcError::unimplemented(
+                "notify/configure",
+                "this handle runs no nodes, so it has no notifications to turn on or off.",
+                "§2",
+            ));
+        };
+        let next = seed.notifier(p.enabled);
+        let enabled = next.is_some();
+        *lock(&self.notifier) = next;
+        Ok(marion_core::proto::result::NotifyConfigureResult { enabled })
     }
 
     fn subscribe(&self, out: &Outbound) -> TreeSubscribeResult {
@@ -6178,6 +6219,9 @@ impl Handle for RegistryHandle {
                 .agent_spawn(p, out.peer())
                 .map(MethodResult::AgentSpawn),
             Call::NotifyClaim(_) => Ok(MethodResult::NotifyClaim(self.notify_claim(out))),
+            Call::NotifyConfigure(p) => self
+                .notify_configure(p, out.peer())
+                .map(MethodResult::NotifyConfigure),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
@@ -6495,9 +6539,9 @@ fn journal_ts(ts: Option<marion_core::encoding::SystemTime>) -> marion_core::enc
 ///
 /// [`Outbound::send`] never blocks, so this cannot be slowed by a client — see `serve.rs`: a full
 /// queue is a verdict about that client, and §5.7 is what makes it the right one.
-/// The notifier the operator's `notify.toml` and `MARION_NOTIFY` ask for, titled with the
-/// project's directory name, or `None` where notifications are off.
-fn notifier_for(project_root: &std::path::Path) -> Option<crate::notify::Notifier> {
+/// What the operator's `notify.toml` and `MARION_NOTIFY` ask for, titled with the project's
+/// directory name: the notifier's seed, whether notices start on or off.
+fn notify_seed_for(project_root: &std::path::Path) -> crate::notify::NotifySeed {
     let config = crate::notify::NotifyConfig::load(
         crate::credentials::config_dir().ok().as_deref(),
         std::env::var(crate::notify::NOTIFY_ENV).ok().as_deref(),
@@ -6512,11 +6556,16 @@ fn notifier_for(project_root: &std::path::Path) -> Option<crate::notify::Notifie
         Some(".git") => project_root.parent().unwrap_or(project_root),
         _ => project_root,
     };
-    let name = shown
+    let project = shown
         .file_name()
         .and_then(|f| f.to_str())
-        .unwrap_or("project");
-    crate::notify::Notifier::new(config, backend, name)
+        .unwrap_or("project")
+        .to_string();
+    crate::notify::NotifySeed {
+        config,
+        backend,
+        project,
+    }
 }
 
 /// Send `shown` to the first claimer still connected; a claimer whose send fails is gone, and the
@@ -13067,16 +13116,15 @@ mod tests {
             let live = Arc::new(crate::registry::LiveRegistry::follow(
                 Registry::boot_path(&project.journal()).unwrap(),
             ));
-            let notifier = crate::notify::Notifier::new(
-                crate::notify::NotifyConfig {
+            let notifier = crate::notify::NotifySeed {
+                config: crate::notify::NotifyConfig {
                     enabled: true,
                     finished: crate::notify::Finished::All,
                     terminal: crate::notify::TerminalRing::Bell,
                 },
                 backend,
-                "repo",
-            )
-            .unwrap();
+                project: "repo".into(),
+            };
             let handle = RegistryHandle::owning_notified(
                 live,
                 crate::run::Env {
@@ -13166,6 +13214,82 @@ mod tests {
                 2,
                 "a restart only learns what is already true"
             );
+        }
+
+        /// **`notify/configure` turns a running supervisor's notices off and on**: a node that
+        /// fails while they are off is told nobody, one that fails after they are back on is, and
+        /// turning them back on does not replay what happened while they were off.
+        #[test]
+        fn notify_configure_turns_a_running_supervisors_notices_off_and_on() {
+            let dir = scratch("owns-notify-configure");
+            let record = dir.join("notices.jsonl");
+            let (handle, journal) = notified(&dir, crate::notify::Backend::Record(record.clone()));
+            let (out, _rx) = crate::serve::capture(ConnId(601));
+            handle.hello_as_operator(out.conn());
+            let configure = |enabled: bool| match handle
+                .call(
+                    out.conn(),
+                    &Call::NotifyConfigure(marion_core::proto::params::NotifyConfigureParams {
+                        enabled,
+                    }),
+                    &out,
+                )
+                .expect("notify/configure is served")
+            {
+                MethodResult::NotifyConfigure(r) => r.enabled,
+                other => panic!("{}", other.method().as_str()),
+            };
+            let told = || {
+                std::fs::read_to_string(&record)
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+            };
+            let failed = |agent: &str| {
+                RecordKind::Exited(marion_core::journal::Exited {
+                    agent_id: id(agent),
+                    status: marion_core::contract::ExitStatus::Failed,
+                    exit: marion_core::contract::ProcessExit {
+                        code: Some(1),
+                        signal: None,
+                        description: "boom".into(),
+                    },
+                })
+            };
+            let step = |seq: u64, kind: RecordKind| {
+                append(&journal, &line(seq, 1_000 + seq, kind));
+                handle.live.refresh();
+                handle.flush();
+            };
+            step(0, intent("quiet", None, "codex-impl", 0));
+            step(1, intent("loud", None, "codex-impl", 0));
+            assert!(!configure(false), "off");
+            step(2, failed("quiet"));
+            assert!(configure(true), "on again");
+            step(
+                3,
+                RecordKind::Exited(marion_core::journal::Exited {
+                    agent_id: id("nobody"),
+                    status: marion_core::contract::ExitStatus::Ok,
+                    exit: marion_core::contract::ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: String::new(),
+                    },
+                }),
+            );
+            step(4, failed("loud"));
+            assert!(
+                marion_testsupport::until_within(
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_millis(10),
+                    || told() >= 1
+                ),
+                "the failure after notices came back on was never told"
+            );
+            let lines = std::fs::read_to_string(&record).unwrap();
+            assert_eq!(told(), 1, "only the failure while on: {lines}");
+            assert!(!lines.contains("quiet"), "{lines}");
         }
 
         /// **Only the first claimer is shown a terminal notice**, and when it goes the next in

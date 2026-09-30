@@ -398,6 +398,26 @@ pub fn kill(sock: &SocketPaths, agent_id: &AgentId) -> Result<NodeKillResult, Sp
     }
 }
 
+/// **Turn a running supervisor's desktop notices on or off** — §2's `notify/configure`, what `marion
+/// notify on|off` sends after writing the file a later start reads. `true` when it now shows them.
+pub fn notify_configure(sock: &SocketPaths, enabled: bool) -> Result<bool, SpawnError> {
+    match Conn::dial(sock)?.ask(
+        Call::NotifyConfigure(marion_core::proto::params::NotifyConfigureParams { enabled }),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `notify/configure` within {} s, so its notifications stay as they \
+             were until it restarts",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NotifyConfigure(r) => Ok(r.enabled),
+        _ => Err(unreachable(
+            sock.socket(),
+            "it answered `notify/configure` with a result marion cannot read",
+        )),
+    }
+}
+
 /// **Cancel one node and everything below it, as the operator** — §2's `node/cancel`: each running
 /// turn is ended by its row's abort, bottom-up, and whatever outlives its grace is killed. The
 /// answer names every node ended and whether it had to be killed. A refusal is the supervisor's

@@ -18,15 +18,15 @@ use crate::proto::error::RpcError;
 use crate::proto::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
     NodeCollectedParams, NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams,
-    NodeRenameParams, NodeResumeParams, NodeSteerParams, NotifyClaimParams, POLICY_SET_UNSPECIFIED,
-    PermissionReplyParams, SessionHelloParams, SessionQuitParams, TreeSubscribeParams,
-    UnspecifiedPolicy,
+    NodeRenameParams, NodeResumeParams, NodeSteerParams, NotifyClaimParams, NotifyConfigureParams,
+    POLICY_SET_UNSPECIFIED, PermissionReplyParams, SessionHelloParams, SessionQuitParams,
+    TreeSubscribeParams, UnspecifiedPolicy,
 };
 use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
     NodeCollectedResult, NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult,
-    NodeResumeResult, NotifyClaimResult, ReplyResult, SessionHelloResult, SessionQuitResult,
-    TreeSubscribeResult,
+    NodeResumeResult, NotifyClaimResult, NotifyConfigureResult, ReplyResult, SessionHelloResult,
+    SessionQuitResult, TreeSubscribeResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -64,6 +64,8 @@ pub enum Method {
     NotifyClaim,
     /// Who a connection speaks for — the operator or one node — stated before any other call.
     SessionHello,
+    /// The operator turned desktop notices on or off (`marion notify on|off`).
+    NotifyConfigure,
 }
 
 impl Method {
@@ -90,10 +92,11 @@ impl Method {
             Method::SessionQuit => "session/quit",
             Method::NotifyClaim => "notify/claim",
             Method::SessionHello => "session/hello",
+            Method::NotifyConfigure => "notify/configure",
         }
     }
 
-    pub const ALL: [Method; 19] = [
+    pub const ALL: [Method; 20] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
@@ -113,6 +116,7 @@ impl Method {
         Method::SessionQuit,
         Method::NotifyClaim,
         Method::SessionHello,
+        Method::NotifyConfigure,
     ];
 
     pub fn from_wire(s: &str) -> Option<Method> {
@@ -159,6 +163,7 @@ impl Method {
             Method::SessionQuit => MethodResult::SessionQuit(take(self, body)?),
             Method::NotifyClaim => MethodResult::NotifyClaim(take(self, body)?),
             Method::SessionHello => MethodResult::SessionHello(take(self, body)?),
+            Method::NotifyConfigure => MethodResult::NotifyConfigure(take(self, body)?),
         })
     }
 }
@@ -216,6 +221,8 @@ pub enum Call {
     NotifyClaim(NotifyClaimParams),
     #[serde(rename = "session/hello")]
     SessionHello(SessionHelloParams),
+    #[serde(rename = "notify/configure")]
+    NotifyConfigure(NotifyConfigureParams),
 }
 
 impl Call {
@@ -240,6 +247,7 @@ impl Call {
             Call::SessionQuit(_) => Method::SessionQuit,
             Call::NotifyClaim(_) => Method::NotifyClaim,
             Call::SessionHello(_) => Method::SessionHello,
+            Call::NotifyConfigure(_) => Method::NotifyConfigure,
         }
     }
 }
@@ -271,6 +279,7 @@ pub enum MethodResult {
     SessionQuit(SessionQuitResult),
     NotifyClaim(NotifyClaimResult),
     SessionHello(SessionHelloResult),
+    NotifyConfigure(NotifyConfigureResult),
 }
 
 impl MethodResult {
@@ -295,6 +304,7 @@ impl MethodResult {
             MethodResult::SessionQuit(_) => Method::SessionQuit,
             MethodResult::NotifyClaim(_) => Method::NotifyClaim,
             MethodResult::SessionHello(_) => Method::SessionHello,
+            MethodResult::NotifyConfigure(_) => Method::NotifyConfigure,
         }
     }
 
@@ -322,6 +332,7 @@ impl MethodResult {
             MethodResult::SessionQuit(r) => v(r),
             MethodResult::NotifyClaim(r) => v(r),
             MethodResult::SessionHello(r) => v(r),
+            MethodResult::NotifyConfigure(r) => v(r),
         }
     }
 }
@@ -615,6 +626,14 @@ mod tests {
                     principal: SessionPrincipal::Node(agent("a")),
                 }),
             ),
+            (
+                Call::NotifyConfigure(crate::proto::params::NotifyConfigureParams {
+                    enabled: true,
+                }),
+                MethodResult::NotifyConfigure(crate::proto::result::NotifyConfigureResult {
+                    enabled: true,
+                }),
+            ),
         ]
     }
 
@@ -622,9 +641,9 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            19,
-            "§2's fifteen plus node/resume (plan step 6), node/collected, notify/claim and \
-             session/hello"
+            20,
+            "§2's fifteen plus node/resume (plan step 6), node/collected, notify/claim, \
+             session/hello and notify/configure"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -649,6 +668,7 @@ mod tests {
                 "session/quit",
                 "notify/claim",
                 "session/hello",
+                "notify/configure",
             ],
             "the list, in §2's order"
         );

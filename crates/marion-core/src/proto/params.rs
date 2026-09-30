@@ -617,6 +617,15 @@ pub struct SessionHelloParams {
     pub node: Option<SpawnCaller>,
 }
 
+/// `notify/configure` — **turn the running supervisor's desktop notices on or off**, as `marion
+/// notify on|off` has just written them to `notify.toml`. Only `enabled` changes: which ends are
+/// told and which terminal escape rings stay as the supervisor loaded them when it started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyConfigureParams {
+    pub enabled: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
