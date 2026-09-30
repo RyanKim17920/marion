@@ -43,8 +43,9 @@
 //! And on an opencode child killed **during its first request**, before any frame named its
 //! session: the resume finds the session by the title marion launched it under, in the harness's
 //! own listing, along with the tree it was created in.
+//! And on a **pi** child over its `--mode rpc` channel, whose second life is `--session <id>`.
 //!
-//! It needs a real `codex` and `opencode` on `PATH`. Every model call is the CannedServer's: no
+//! It needs a real `codex`, `opencode` and `pi` on `PATH`. Every model call is the CannedServer's: no
 //! paid tokens.
 //! Bounded throughout, so a wedged binary fails as a named timeout rather than a hang.
 
@@ -193,6 +194,38 @@ fn opencode_root_script(child_type: &str) -> Script {
     s
 }
 
+/// A pi root that spawns a pi child over pi's `--mode rpc` channel, both answered on the Chat
+/// Completions wire: the child writes the marker through pi's own `write`, then reports through
+/// marion's extension.
+fn pi_script() -> Script {
+    let mut s = Script {
+        root: Some(RootScript {
+            marker: ROOT_MARKER.into(),
+            turn: RootTurn {
+                tool: "mcp__marion__spawn".into(),
+                args: json!({
+                    "agent_type": "pi",
+                    "prompt": "Add the marker file under src/ and report back.",
+                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
+                    "writable_scope": ["src/**"],
+                    "verification": [VERIFICATION],
+                    "timeout_secs": 60,
+                    "model": "canned-1",
+                }),
+                final_text: "The child completed the task and reported back.".into(),
+            },
+        }),
+        ..Script::default()
+    };
+    s.openai_report_tool = "mcp__marion__report".into();
+    s.openai_report_args = json!({ "narrative": NARRATIVE });
+    s.openai_edit = Some(EditTurn {
+        tool: "write".into(),
+        args: json!({ "path": CHILD_FILE, "content": CHILD_CONTENT }),
+    });
+    s
+}
+
 /// One harness's root-and-child tree, as the arc needs it.
 struct Tree {
     program: &'static str,
@@ -246,6 +279,18 @@ const ACP_OPENCODE_TREE: Tree = Tree {
     hold_from: 3,
     named_before_kill: true,
     script: acp_opencode_script,
+};
+
+/// A pi child names its session on the `get_state` handshake's reply, before any request, so
+/// holding its first request (the root's is the first on the wire) parks it with the session
+/// journaled.
+const PI_TREE: Tree = Tree {
+    program: "pi",
+    root_type: "pi-orchestrator",
+    wire: "openai",
+    hold_from: 2,
+    named_before_kill: true,
+    script: pi_script,
 };
 
 /// A codex root and its codex child, both with **live processes**, parked on the child's first
@@ -641,6 +686,15 @@ fn an_opencode_child_lost_during_its_first_request_resumes_the_session_its_title
         &OPENCODE_FIRST_REQUEST_TREE,
         "restart-resume-oc-first-request-e2e",
     );
+}
+
+/// **And on a pi child**, the JSONL-channel row: its session is the one pi's `get_state` reply
+/// named, and its second life is `pi --mode rpc --session <id>` in the worktree its first life
+/// left, so the request after the relaunch carries the resume prompt and the first life's task.
+#[test]
+#[ignore = "drives a real pi binary and a detached supervisor; run deliberately"]
+fn a_lost_pi_child_resumes_its_own_session_under_its_parent_and_takes_its_next_turn() {
+    a_lost_child_resumes(&PI_TREE, "restart-resume-pi-child-e2e");
 }
 
 fn a_lost_child_resumes(tree: &Tree, tag: &str) {
