@@ -14753,6 +14753,16 @@ mod tests {
                 "{}",
                 workflow.message
             );
+            let stop = call_on(
+                &fx,
+                conn,
+                Call::WorkflowCancel(marion_core::proto::params::WorkflowCancelParams {
+                    wf_id: marion_core::workflow::WorkflowId("w-1".into()),
+                    force: true,
+                }),
+            )
+            .expect_err("a node cannot stop the operator's workflow run");
+            assert!(stop.message.contains("operator"), "{}", stop.message);
 
             let forged = call_on(
                 &fx,
